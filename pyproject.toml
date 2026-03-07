@@ -1,0 +1,13 @@
+[project]
+name = "neobot"
+version = "0.0.1"
+description = "a QQ LLM Bot "
+requires-python = ">=3.10"
+dependencies = [
+    "Asyncio",
+    "aiohttp",
+]
+
+[[tool.uv.index]]
+url="https://pypi.tuna.tsinghua.edu.cn/simple"
+default=true
