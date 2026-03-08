@@ -1,539 +1,516 @@
 from pathlib import Path
 from app.utils.logger import get_module_logger
 from app.config.bot_config import BotConfig
-from app.config.env_config import env_config
-from typing import Optional, get_origin, get_args, Union
+from app.config.env_config import EnvConfig
+from typing import Optional, get_origin, get_args, Union, Type, TypeVar, Tuple, Any
 import inspect
 import sys
-from typing import Dict, Any
+import dataclasses
+from dataclasses import fields, is_dataclass, MISSING
+from typing import Dict, Any, List
 import tomlkit
+import os
+import shutil
+import datetime
+import re
+
+T = TypeVar('T')
 
 logger = get_module_logger("config_loader")
 
-env_path = Path("../../../../.env")
-config_path = Path("../../../../data/config.toml")
+# 项目根目录（相对于当前配置文件的父级的父级的父级）
+HOME = Path(__file__).parent.parent.parent.parent.parent
 
-def parse_env_file(path: Path) -> dict:
-    """解析.env 文件，返回键值对字典"""
-    env_dict = {}
-    
-    if not path.exists():
-        return env_dict
-    
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            # 跳过空行和注释
-            if not line or line.startswith('#'):
-                continue
-            
-            # 解析键值对
-            if '=' in line:
-                key, value = line.split('=', 1)
-                env_dict[key.strip()] = value.strip()
+# 配置文件路径
+env_path = HOME / ".env"
+config_path = HOME / "data" / "config.toml"
+config_backup_path = HOME / "data" / "config_backup"
 
-    return env_dict
+# 确保data目录存在
+config_path.parent.mkdir(parents=True, exist_ok=True)
+# 确保备份目录存在
+config_backup_path.mkdir(parents=True, exist_ok=True)
 
-
-def parse_toml_file(path: Path) -> Dict[str, Any]:
-    """解析TOML文件，返回字典"""
-    if not path.exists():
-        return {}
-
-    with open(path, 'rb') as f:
-        try:
-            return tomlkit.load(f)
-        except Exception as e:
-            logger.error(f"解析TOML文件失败：{e}")
-            sys.exit(1)
-
-
-def get_nested_value(data: Dict[str, Any], key_path: str) -> Any:
-    """
-    从嵌套字典中获取值，key_path为点分隔路径（如 'bot.ACCOUNT'）
-    如果路径不存在则返回None
-    """
-    keys = key_path.split('.')
-    current = data
-    for key in keys:
-        if isinstance(current, dict) and key in current:
-            current = current[key]
-        else:
-            return None
-    return current
-
-
-def set_nested_value(data: Dict[str, Any], key_path: str, value: Any) -> None:
-    """
-    在嵌套字典中设置值，key_path为点分隔路径（如 'bot.ACCOUNT'）
-    自动创建中间字典
-    """
-    keys = key_path.split('.')
-    current = data
-    for i, key in enumerate(keys[:-1]):
-        if key not in current or not isinstance(current[key], dict):
-            current[key] = {}
-        current = current[key]
-    current[keys[-1]] = value
-
-
-def flatten_dict(data: Dict[str, Any], prefix="") -> Dict[str, Any]:
-    """
-    将嵌套字典扁平化为点分隔路径字典
-    """
-    result = {}
-    for key, value in data.items():
-        full_key = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, dict):
-            result.update(flatten_dict(value, full_key))
-        else:
-            result[full_key] = value
-    return result
-
-
-def is_optional_type(type_hint) -> bool:
-    """
-    判断一个类型是否为Optional 类型
-    
-    Optional[T] 实际上是 Union[T, None] 的语法糖
-    使用 get_origin 和 get_args 来正确检测
-    """
-    origin = get_origin(type_hint)
-    args = get_args(type_hint)
-    
-    # Optional[T] 等价于 Union[T, None]
-    # 所以 origin 应该是 Union，并且 args 中应该包含 type(None)
-    return origin is Union and type(None) in args
-
-
-def get_config_items(config_class) -> Dict[str, Dict[str, Any]]:
-    """从配置类中提取配置项定义（扁平化，支持嵌套类）"""
-    items = {}
-
-    def collect_from_class(cls, prefix=""):
-        for name, value in inspect.getmembers(cls):
-            # 跳过内置属性
-            if name.startswith('_'):
-                continue
-
-            # 如果是嵌套类，递归处理
-            if inspect.isclass(value):
-                # 嵌套类表示一个section，递归收集其配置项
-                new_prefix = f"{prefix}.{name}" if prefix else name
-                collect_from_class(value, new_prefix)
-            # 检查是否是配置项（应该是字典类型且包含 type 和 description 键）
-            elif isinstance(value, dict) and 'type' in value and 'description' in value:
-                full_name = f"{prefix}.{name}" if prefix else name
-                items[full_name] = value
-
-    collect_from_class(config_class)
-    return items
-
-
-def get_nested_config_structure(config_class) -> Dict[str, Any]:
-    """
-    获取嵌套配置结构，返回层级字典
-
-    Returns:
-        Dict[str, Any]: 嵌套字典，结构为 {
-            'sections': {
-                'section_name': {
-                    'description': str,  # section的描述（来自docstring）
-                    'items': Dict[str, Dict[str, Any]]  # 该section下的配置项
-                }
-            },
-            'root_items': Dict[str, Dict[str, Any]]  # 根级配置项
-        }
-    """
-    result = {
-        'sections': {},
-        'root_items': {}
-    }
-
-    for name, value in inspect.getmembers(config_class):
-        # 跳过内置属性
-        if name.startswith('_'):
-            continue
-
-        # 如果是嵌套类，表示一个section
-        if inspect.isclass(value):
-            section_name = name
-            section_description = inspect.getdoc(value) or ''
-            section_items = {}
-
-            # 收集该section下的配置项
-            for item_name, item_value in inspect.getmembers(value):
-                if item_name.startswith('_'):
-                    continue
-                if isinstance(item_value, dict) and 'type' in item_value and 'description' in item_value:
-                    section_items[item_name] = item_value
-
-            result['sections'][section_name] = {
-                'description': section_description,
-                'items': section_items
-            }
-        # 如果是配置项，放在根级
-        elif isinstance(value, dict) and 'type' in value and 'description' in value:
-            result['root_items'][name] = value
-
-    return result
-
-
-def generate_env_template():
-    """根据 env_config 自动生成.env 模板文件，包含注释说明"""
+def generate_env():
+    logger.info("尝试生成环境变量模板...")
+    fields = EnvConfig.__dataclass_fields__
     lines = []
-    
-    config_items = get_config_items(env_config)
-
-    for name, config_item in config_items.items():
-        description = config_item.get('description', '')
-        value_type = config_item.get('type', '')
-        default_value = config_item.get('value', '')
-
-        # 添加必填/可选标记
-        required_txt = ""
-        if not is_optional_type(value_type):
-            required_txt = ' [必须项]'
+    for field_name, field_obj in fields.items():
+        # 获取字段类型
+        field_type = field_obj.type
+        # 判断是否为 Optional
+        optional = get_origin(field_type) is Union and type(None) in get_args(field_type)
+        required = not optional
+        # 获取描述
+        description = field_obj.metadata.get('description', '')
+        # 获取默认值
+        default = field_obj.default if field_obj.default is not MISSING else None
+        # 环境变量名
+        env_key = field_name.upper()
+        # 默认值字符串
+        if default is None or default is MISSING:
+            default_str = ''
         else:
-            required_txt = ' [可选项]'
+            default_str = str(default)
+        # 构建行
+        line = f"#{description} [{'必须项' if required else '非必须项'}]\n{env_key}={default_str}"
+        lines.append(line)
 
-        # 添加描述注释
-        lines.append(f"# {description}"+required_txt)
-
-        # 添加配置项
-        lines.append(f"{name}={default_value}")
-
-        # 空行分隔
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def generate_toml_template(config_class, existing_values: Dict[str, Any] = None) -> str:
-    """根据配置类自动生成TOML模板文件，包含注释说明（支持嵌套section）"""
-    lines = ["# TOML 配置文件", "# 请根据实际情况填写以下配置项\n"]
-
-    # 获取嵌套配置结构
-    structure = get_nested_config_structure(config_class)
-    sections = structure['sections']
-    root_items = structure['root_items']
-
-    # 处理根级配置项（如果有）
-    if root_items:
-        lines.append("# 根级配置项")
-        for name, config_item in root_items.items():
-            description = config_item.get('description', '')
-            value_type = config_item.get('type', '')
-            default_value = config_item.get('value', '')
-
-            # 获取现有值（扁平路径）
-            value_to_use = default_value
-            if existing_values and name in existing_values:
-                value_to_use = existing_values[name]
-
-            # 格式化值
-            toml_value = format_value_for_toml(value_to_use)
-
-            # 添加注释和配置项
-            required_text = " [必须项]" if not is_optional_type(value_type) else " [可选项]"
-            # 注释放在同一行后方，不换行
-            lines.append(f"{name} = {toml_value}  # {description}{required_text}")
-        lines.append("")
-
-    # 处理每个section
-    for section_name, section_data in sections.items():
-        section_description = section_data['description']
-        items = section_data['items']
-
-        # 添加section描述注释（如果非空）
-        if section_description:
-            lines.append(f"# {section_description}")
-
-        # 添加section头部
-        lines.append(f"[{section_name}]")
-
-        # 添加该section下的配置项
-        for name, config_item in items.items():
-            description = config_item.get('description', '')
-            value_type = config_item.get('type', '')
-            default_value = config_item.get('value', '')
-
-            # 获取现有值（嵌套结构）
-            value_to_use = default_value
-            if existing_values:
-                # 尝试从嵌套结构中获取值
-                if section_name in existing_values and name in existing_values[section_name]:
-                    value_to_use = existing_values[section_name][name]
-                # 也尝试从扁平路径获取（兼容旧格式）
-                elif f"{section_name}.{name}" in existing_values:
-                    value_to_use = existing_values[f"{section_name}.{name}"]
-
-            # 格式化值
-            toml_value = format_value_for_toml(value_to_use)
-
-            # 添加配置项，注释放在同一行后方
-            required_text = " [必须项]" if not is_optional_type(value_type) else " [可选项]"
-            lines.append(f"{name} = {toml_value}  # {description}{required_text}")
-
-        # section之间空行分隔
-        lines.append("")
-
-    return "\n".join(lines).rstrip("\n")
+    # 写入文件
+    try:
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        logger.info(f"环境变量模板已生成: {env_path}")
+    except Exception as e:
+        logger.error(f"生成环境变量模板失败: {e}")
 
 
-def format_value_for_toml(value) -> str:
-    """将Python值格式化为TOML字符串"""
-    if isinstance(value, str):
-        if value == '':
-            return '""'  # 空字符串
+def load_env():
+    logger.info("尝试加载环境变量...")
+    if env_path.exists():
+        logger.info(f"环境变量文件 {env_path} 存在，开始加载...")
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ[key] = value
+        logger.info(f"环境变量文件 {env_path} 加载完毕")
+    else:
+        logger.info("环境变量文件不存在")
+        generate_env()
+        logger.info("请手动填写环境变量文件再重启")
+
+
+def _validate_type(value: Any, expected_type: Type) -> Tuple[bool, Any]:
+    """
+    验证值是否与预期类型匹配，如果不匹配则尝试转换
+
+    返回: (是否有效, 转换后的值或原始值)
+    """
+    # 处理 Optional 类型
+    origin = get_origin(expected_type)
+    if origin is Union and type(None) in get_args(expected_type):
+        # 提取非 None 类型
+        inner_types = [t for t in get_args(expected_type) if t is not type(None)]
+        if len(inner_types) == 1:
+            expected_type = inner_types[0]
         else:
-            # 尝试转换为适当格式
+            # 多个非 None 类型，检查是否匹配任何一个
+            for inner_type in inner_types:
+                valid, converted = _validate_type(value, inner_type)
+                if valid:
+                    return True, converted
+            return False, value
+
+    # 处理嵌套 dataclass
+    if is_dataclass(expected_type):
+        if isinstance(value, dict):
+            # 递归验证嵌套字典
             try:
-                # 如果是布尔字符串
-                if value.lower() in ('true', 'false'):
-                    return value.lower()
-                # 如果是数字字符串
-                elif value.isdigit():
-                    return value
-                else:
-                    return f'"{value}"'
-            except:
-                return f'"{value}"'
-    elif isinstance(value, bool):
-        return str(value).lower()
-    elif isinstance(value, (int, float)):
-        return str(value)
-    elif value is None:
-        return '""'
-    else:
-        return f'"{value}"'
-
-
-def check_file(file_path: Path) -> bool:
-    """检查文件是否存在且为普通文件"""
-    return file_path.exists() and file_path.is_file()
-
-def generic_config_loader(
-    config_class,
-    config_path: Path,
-    config_type: str = "env",
-    logger_prefix: str = "配置"
-) -> Dict[str, Any]:
-    """
-    通用配置加载器
-
-    Args:
-        config_class: 配置类（如 env_config, BotConfig）
-        config_path: 配置文件路径
-        config_type: 配置文件类型，'env' 或 'toml'
-        logger_prefix: 日志前缀
-
-    Returns:
-        解析后的配置字典
-    """
-    config_name = config_path.name
-
-    if not check_file(config_path):
-        logger.info(f"未找到 {config_name} 文件，尝试创建模板")
-
-        # 根据类型生成模板内容
-        if config_type == "env":
-            template_content = generate_env_template()
-        elif config_type == "toml":
-            template_content = generate_toml_template(config_class)
+                # 尝试转换为 dataclass，会在递归中验证类型
+                return True, _dict_to_dataclass(value, expected_type)
+            except Exception:
+                return False, value
+        elif isinstance(value, expected_type):
+            # 值已经是正确的 dataclass 类型
+            return True, value
         else:
-            logger.error(f"不支持的配置文件类型：{config_type}")
-            sys.exit(1)
+            return False, value
 
-        # 确保目录存在
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+    # 基本类型检查
+    if expected_type is Any:
+        return True, value
 
-        # 写入文件
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(template_content)
-        
-        logger.info(f"已创建{config_name}文件：{config_path}")
-        logger.info(f"请填写{config_name}文件并重新启动")
-        sys.exit(0)
-    
-    # 如果配置文件存在，解析并检查
-    logger.info(f"发现 {config_name} 文件，开始验证配置项")
+    # 类型匹配检查
+    if isinstance(value, expected_type):
+        return True, value
 
-    # 解析现有配置
-    if config_type == "env":
-        existing_config = parse_env_file(config_path)
-        logger.success(f"解析.env文件成功")
-    elif config_type == "toml":
-        existing_config = parse_toml_file(config_path)
-        logger.success(f"config配置项验证通过")
-    else:
-        logger.error(f"不支持的配置文件类型：{config_type}")
-        sys.exit(1)
+    # 尝试类型转换（例如 int -> float, str -> int 等）
+    try:
+        if expected_type is int and isinstance(value, (int, float, str)):
+            converted = int(value)
+            # 检查是否丢失精度（例如 3.14 -> 3 可以接受，但应该警告）
+            if isinstance(value, float) and abs(converted - value) > 0.0001:
+                logger.warning(f"浮点数 {value} 转换为整数 {converted} 可能丢失精度")
+            return True, converted
+        elif expected_type is float and isinstance(value, (int, float, str)):
+            converted = float(value)
+            return True, converted
+        elif expected_type is bool and isinstance(value, (bool, int, str)):
+            if isinstance(value, str):
+                lower_val = value.lower()
+                if lower_val in ('true', '1', 'yes', 'on'):
+                    return True, True
+                elif lower_val in ('false', '0', 'no', 'off'):
+                    return True, False
+            elif isinstance(value, int):
+                return True, bool(value)
+        elif expected_type is str:
+            return True, str(value)
+    except (ValueError, TypeError):
+        pass
 
-    # 获取配置项定义
-    config_items = get_config_items(config_class)
+    return False, value
 
-    # 递归收集配置文件中所有键的路径（扁平化）
-    def collect_keys(data, prefix=""):
-        keys = []
-        for key, value in data.items():
-            full_key = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict):
-                # 递归处理嵌套字典
-                keys.extend(collect_keys(value, full_key))
+
+def _dict_to_dataclass(data: dict, schema: Type[T]) -> T:
+    """递归将字典转换为 dataclass，并进行类型验证"""
+    if not is_dataclass(schema):
+        return data
+    kwargs = {}
+    for field in fields(schema):
+        field_name = field.name
+        raw_value = data.get(field_name)
+
+        # 如果原始值存在，进行类型验证
+        if raw_value is not None:
+            valid, validated_value = _validate_type(raw_value, field.type)
+            if not valid:
+                logger.warning(
+                    f"配置项 '{field_name}' 的类型不匹配: "
+                    f"期望 {field.type}, 实际 {type(raw_value).__name__}, "
+                    f"值: {repr(raw_value)}. 将视为缺失项并使用默认值"
+                )
+                # 视为缺失项，使用默认值
+                validated_value = None
             else:
-                keys.append(full_key)
-        return keys
+                value = validated_value
+        else:
+            value = None
 
-    # 收集所有配置键
-    all_config_keys = collect_keys(existing_config)
+        # 处理嵌套dataclass
+        if is_dataclass(field.type) and value is not None:
+            if isinstance(value, dict):
+                # 如果是字典，转换为 dataclass
+                value = _dict_to_dataclass(value, field.type)
+            elif not isinstance(value, field.type):
+                # 如果既不是字典也不是正确的类型，视为无效
+                logger.warning(
+                    f"嵌套配置项 '{field_name}' 的类型不匹配: "
+                    f"期望 {field.type}, 实际 {type(value).__name__}"
+                )
+                value = None
 
-    # 检查配置文件中是否有未在类中定义的配置项
-    for config_key in all_config_keys:
-        if config_key not in config_items:
-            logger.info(f"{logger_prefix}文件中存在未在类中定义的配置项 '{config_key}'，这可能是一个已弃用或尚不支持的配置项")
+        # 如果值为None，尝试使用默认值
+        if value is None:
+            if field.default is not MISSING:
+                value = field.default
+            elif field.default_factory is not MISSING:
+                value = field.default_factory()
+
+        kwargs[field_name] = value
+    return schema(**kwargs)
+
+
+def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: bool = True) -> tuple[tomlkit.TOMLDocument, list, list]:
+    """
+    将dataclass schema转换为toml文档，并与现有数据比较，返回缺失的必须项和非必须项
+
+    参数:
+        schema: dataclass类型
+        existing_data: 现有数据字典
+        is_root: 是否为根文档（添加文件头注释）
+
+    返回值: (toml_document, missing_required, missing_optional)
+    """
+    if not is_dataclass(schema):
+        return None, [], []
+
+    # 创建文档或表
+    if is_root:
+        doc = tomlkit.document()
+        # 添加文件头注释
+        doc.add(tomlkit.comment("警告:此文件由程序自动生成和维护"))
+        doc.add(tomlkit.comment("所有除了键值的内容（包括注释）都会在重新执行程序时丢失"))
+        doc.add(tomlkit.comment("如需更改配置项/注释,请修改app/src/app/config/bot_config.py文件"))
+        doc.add(tomlkit.comment("格式损坏的文件会被覆盖,data/config_backup下会存储最多十五个备份,如果意外损坏导致文件被覆盖,可自行提取备份"))
+        doc.add(tomlkit.nl())
+    else:
+        doc = tomlkit.table()
 
     missing_required = []
     missing_optional = []
-    empty_optional = []
-    needs_update = False
-    
-    # 检查每个配置项
-    for name, config_item in config_items.items():
-        type_hint = config_item.get('type', str)
-        description = config_item.get('description', '')
-        default_value = config_item.get('value', '')
-        value_type = config_item.get('type', str)
-        
-        # 判断是否为可选字段：检查 type 是否为Optional 类型
-        is_optional = is_optional_type(value_type)
 
-        # 根据配置类型获取现有值
-        if config_type == "env":
-            # env文件：扁平访问
-            config_value = existing_config.get(name)
-        else:
-            # toml文件：嵌套访问
-            config_value = get_nested_value(existing_config, name)
+    for field in fields(schema):
+        field_name = field.name
+        description = field.metadata.get('description', '')
+        field_type = field.type
 
-        # 检查配置项是否存在
-        if config_value is None:
-            # 配置项完全不存在
-            if not is_optional:
-                missing_required.append(name)
-            else:
-                missing_optional.append(name)
-                needs_update = True
-        else:
-            # 配置项存在，检查值是否为空
-            # 对于 TOML，值可能已经是适当类型，对于 ENV 总是字符串
-            if config_type == "env":
-                # env 文件中的值总是字符串
-                if config_value == '':
-                    if not is_optional:
-                        # 必须项值为空，使用默认值填充
-                        existing_config[name] = default_value
-                        needs_update = True
-                        logger.warning(f"{logger_prefix}必须项 '{name}' 值为空，已使用默认值：{default_value}")
-                    else:
-                        empty_optional.append(name)
-            else:
-                # TOML 文件，值可能已经是适当类型
-                # 检查是否为 None（TOML 中缺失或显式设置为 null）
-                if config_value is None:
-                    if not is_optional:
-                        # 使用默认值并设置到嵌套字典中
-                        set_nested_value(existing_config, name, default_value)
-                        needs_update = True
-                        logger.warning(f"{logger_prefix}必须项 '{name}' 值为 None，已使用默认值：{default_value}")
-                    else:
-                        empty_optional.append(name)
+        # 判断是否为Optional
+        optional = get_origin(field_type) is Union and type(None) in get_args(field_type)
+        required = not optional
 
-    # 处理必须项缺失 - 自动添加并记录 warning
-    if missing_required:
-        for name in missing_required:
-            config_item = config_items[name]
-            description = config_item.get('description', '')
-            default_value = config_item.get('value', '')
-            logger.error(f"缺少{logger_prefix}必须项：{name} (描述：{description})，已使用默认值：{default_value}")
-            if config_type == "env":
-                existing_config[name] = default_value
-            else:
-                set_nested_value(existing_config, name, default_value)
-        needs_update = True
-    
-    # 如果需要更新文件（有缺失或空值的配置项），重新写入完整内容
-    if needs_update:
-        # 根据类型生成完整内容
-        if config_type == "env":
-            # 生成完整的.env 内容
-            new_lines = []
-            for name, config_item in config_items.items():
-                description = config_item.get('description', '')
-                value_type = config_item.get('type', '')
-                default_value = config_item.get('value', '')
-                
-                # 判断是否为可选字段
-                is_optional = is_optional_type(value_type)
-
-                # 使用现有值或默认值
-                value = existing_config.get(name, default_value)
-
-                required_text = ""
-                if not is_optional:
-                    required_text = ' [必须项]'
+        # 获取现有值并进行类型验证
+        existing_value = None
+        if existing_data is not None and field_name in existing_data:
+            raw_value = existing_data.get(field_name)
+            if raw_value is not None:
+                valid, validated_value = _validate_type(raw_value, field_type)
+                if valid:
+                    existing_value = validated_value
                 else:
-                    required_text = ' [可选项]'
-                new_lines.append(f"# {description}" + required_text)
-                new_lines.append(f"{name}={value}")
-                new_lines.append("")
+                    logger.warning(
+                        f"配置项 '{field_name}' 的类型不匹配: "
+                        f"期望 {field_type}, 实际 {type(raw_value).__name__}, "
+                        f"值: {repr(raw_value)}. 将视为缺失项"
+                    )
+                    # 视为缺失项
+                    existing_value = None
+            else:
+                existing_value = None
 
-            content = "\n".join(new_lines)
-        elif config_type == "toml":
-            # 重新生成完整的TOML内容，保留现有值
-            content = generate_toml_template(config_class, existing_config)
+        # 处理嵌套dataclass
+        if is_dataclass(field_type):
+            # 对于嵌套dataclass，递归处理（不是根文档）
+            nested_existing = None
+            if existing_value is not None:
+                # 如果 existing_value 已经是验证后的 dataclass 实例，需要转换为字典
+                if is_dataclass(type(existing_value)):
+                    # 将 dataclass 实例转换为字典以便递归处理
+                    nested_existing = dataclasses.asdict(existing_value)
+                elif isinstance(existing_value, dict):
+                    nested_existing = existing_value
+            nested_doc, nested_req, nested_opt = _dataclass_to_toml(field_type, nested_existing, is_root=False)
 
-        # 写入完整的配置文件
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+            # 记录当前字段的缺失状态（如果整个嵌套表缺失）
+            if existing_value is None:
+                # 检查是否有默认值或默认工厂
+                has_default = field.default is not MISSING or field.default_factory is not MISSING
+                if required and not has_default:
+                    missing_required.append(field_name)
+                elif not has_default:
+                    missing_optional.append(field_name)
 
-        logger.info(f"已更新{config_name}文件，补充了缺失的配置项，请重新填写后重启")
+            if nested_doc is not None:
+                doc[field_name] = nested_doc
+                # 添加嵌套字段的缺失项（带前缀）
+                missing_required.extend([f"{field_name}.{req}" for req in nested_req])
+                missing_optional.extend([f"{field_name}.{opt}" for opt in nested_opt])
+            continue
+
+        # 非嵌套字段（基本类型）
+        # 检查是否有默认值
+        default_value = None
+        if field.default is not MISSING:
+            default_value = field.default
+        elif field.default_factory is not MISSING:
+            # 对于基本类型，尝试调用默认工厂
+            try:
+                default_value = field.default_factory()
+            except Exception:
+                # 如果调用失败（例如需要参数的dataclass），则使用None
+                default_value = None
+
+        # 确定要使用的值
+        value_to_use = existing_value if existing_value is not None else default_value
+
+        # 记录缺失项
+        if existing_value is None:
+            if required and default_value is None:
+                missing_required.append(field_name)
+            elif default_value is None:
+                missing_optional.append(field_name)
+        
+        # 添加到文档并添加注释
+        if value_to_use is not None:
+            # 根据类型显式创建 tomlkit 项目
+            item = None
+            if isinstance(value_to_use, bool):
+                item = tomlkit.item(value_to_use)
+            elif isinstance(value_to_use, int):
+                item = tomlkit.item(value_to_use)
+            elif isinstance(value_to_use, float):
+                item = tomlkit.item(value_to_use)
+            elif isinstance(value_to_use, str):
+                item = tomlkit.item(value_to_use)
+            else:
+                # 其他类型使用通用方法
+                item = tomlkit.item(value_to_use)
+
+            # 添加注释（包括必填/可选标记）
+            if required:
+                required_text = "[必须项]"
+            else:
+                required_text = "[可选项]"
+            if description and item is not None and hasattr(item, 'comment'):
+                text = f"{description} {required_text}"
+                item.comment(text)
+            doc[field_name] = item
+        else:
+            # 如果没有值，根据类型提供占位符值（TOML 不支持 null）
+            # 获取实际类型（处理 Optional）
+            actual_type = field_type
+            if get_origin(field_type) is Union and type(None) in get_args(field_type):
+                # 提取非 None 类型
+                types = [t for t in get_args(field_type) if t is not type(None)]
+                if types:
+                    actual_type = types[0]
+        
+            # 根据类型设置占位符
+            placeholder = None
+            if actual_type is int:
+                placeholder = 0
+            elif actual_type is str:
+                placeholder = ""
+            elif actual_type is bool:
+                placeholder = False
+            elif actual_type is float:
+                placeholder = 0.0
+            else:
+                # 未知类型，使用空字符串
+                placeholder = ""
+        
+            # 创建带注释的占位符项
+            item = None
+            if isinstance(placeholder, bool):
+                item = tomlkit.item(placeholder)
+            elif isinstance(placeholder, int):
+                item = tomlkit.item(placeholder)
+            elif isinstance(placeholder, float):
+                item = tomlkit.item(placeholder)
+            elif isinstance(placeholder, str):
+                item = tomlkit.item(placeholder)
+            else:
+                item = tomlkit.item(placeholder)
+            if required:
+                required_text = "[必须项]"
+            else:
+                required_text = "[可选项]"
+            if description and item is not None and hasattr(item, 'comment'):
+                text = f"{description} {required_text}"
+                item.comment(text)
+            doc[field_name] = item
+
+    return doc, missing_required, missing_optional
+
+
+def backup_config_file(file_path: Path, backup_dir: Path, max_backups: int = 15) -> None:
+    """
+    备份配置文件到备份目录，保留指定数量的最新备份
+
+    参数:
+        file_path: 原始配置文件路径
+        backup_dir: 备份目录
+        max_backups: 最大备份数量，默认15
+    """
+    if not file_path.exists():
+        logger.info(f"配置文件不存在，无需备份: {file_path}")
+        return
+
+    # 生成备份文件名（使用时间戳）
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"config_{timestamp}.toml"
+    backup_path = backup_dir / backup_name
+
+    try:
+        # 复制文件
+        shutil.copy2(file_path, backup_path)
+        logger.info(f"配置文件已备份到: {backup_path}")
+    except Exception as e:
+        logger.error(f"备份配置文件失败: {e}")
+        return
+
+    # 清理旧备份，只保留最新的 max_backups 个
+    try:
+        # 获取备份目录下所有备份文件
+        backup_files = []
+        pattern = re.compile(r'^config_\d{8}_\d{6}\.toml$')
+        for file in backup_dir.iterdir():
+            if file.is_file() and pattern.match(file.name):
+                backup_files.append(file)
+
+        # 按修改时间排序（最老的在前面）
+        backup_files.sort(key=lambda x: x.stat().st_mtime)
+
+        # 如果备份数量超过限制，删除最老的
+        if len(backup_files) > max_backups:
+            files_to_delete = backup_files[:len(backup_files) - max_backups]
+            for old_file in files_to_delete:
+                old_file.unlink()
+                logger.info(f"删除旧备份文件: {old_file}")
+    except Exception as e:
+        logger.error(f"清理旧备份失败: {e}")
+
+
+def load_config(file_path: Path, schema: Type[T]) -> T:
+    """
+    加载配置文件，如果不存在则生成，如果存在则检查并补全缺失项
+
+    参数:
+        file_path: 配置文件路径
+        schema: dataclass schema类型
+
+    返回:
+        schema实例
+    """
+    logger.info(f"加载配置文件: {file_path}")
+
+    existing_data = {}
+    file_exists = file_path.exists()
+
+    if file_exists:
+        # 读取现有配置文件
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                existing_data = tomlkit.parse(content).unwrap()
+            logger.info(f"配置文件已读取: {file_path}")
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            existing_data = {}
+
+    # 生成toml文档并检查缺失项（根文档）
+    toml_doc, missing_required, missing_optional = _dataclass_to_toml(schema, existing_data if file_exists else None, is_root=True)
+
+    # 记录缺失项
+    if missing_required:
+        for field in missing_required:
+            logger.error(f"缺失必须配置项: {field}")
+    if missing_optional:
+        for field in missing_optional:
+            logger.info(f"缺失非必须配置项: {field}")
+
+    # 备份现有配置文件（如果存在）
+    if file_exists:
+        backup_config_file(file_path, config_backup_path)
+
+    # 写入配置文件（无论是否存在，都写入以确保格式一致和补全缺失项）
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(tomlkit.dumps(toml_doc))
+        if file_exists:
+            logger.info(f"配置文件已更新并补全缺失项: {file_path}")
+        else:
+            logger.info(f"配置文件已生成: {file_path}")
+    except Exception as e:
+        logger.error(f"写入配置文件失败: {e}")
+        if not file_exists:
+            logger.error("无法生成配置文件，程序退出")
+            sys.exit(1)
+
+    # 如果缺失必须项，退出程序
+    if missing_required:
+        logger.error("存在缺失的必须配置项，程序退出")
         sys.exit(1)
-    
-    # 处理可选项值为空 - 记录 info
-    if empty_optional:
-        for name in empty_optional:
-            logger.info(f"{logger_prefix}可选项 '{name}' 值为空，请根据需要填写")
 
-    # 返回加载后的配置内容
-    return existing_config
-
-
-def env_loader():
-    """加载.env 文件，如果不存在则根据 env_config 创建模板；如果存在则验证完整性并补充缺失项"""
-    return generic_config_loader(
-        config_class=env_config,
-        config_path=env_path,
-        config_type="env",
-        logger_prefix="环境变量"
-    )
+    # 重新读取文件并转换为dataclass
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            config_dict = tomlkit.parse(content).unwrap()
+        config_obj = _dict_to_dataclass(config_dict, schema)
+        logger.info("配置文件加载成功")
+        return config_obj
+    except Exception as e:
+        logger.error(f"解析配置文件失败: {e}")
+        sys.exit(1)
 
 
-def bot_config_loader() -> Dict[str, Any]:
-    """加载config.toml文件，如果不存在则根据BotConfig创建模板；如果存在则验证完整性并补充缺失项"""
-    return generic_config_loader(
-        config_class=BotConfig,
-        config_path=config_path,
-        config_type="toml",
-        logger_prefix="机器人配置"
-    )
 
-
-# 加载 env 环境变量
-env = env_loader()
-logger.debug(f"加载环境变量文件：{env}")
-
+# 加载环境变量
+load_env()
 # 加载机器人配置
-config = bot_config_loader()
-logger.debug(f"加载机器人配置文件：{config}")
+bot_config = load_config(config_path, BotConfig)
 
