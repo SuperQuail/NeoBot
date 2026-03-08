@@ -4,9 +4,9 @@ requires-python = ">=3.13"
 
 [manifest]
 members = [
-    "app",
     "neobot",
     "neobot-adapter",
+    "neobot-app",
     "neobot-chat",
     "neobot-memory",
     "neobot-modloader",
@@ -99,27 +99,6 @@ dependencies = [
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl", hash = "sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e", size = 7490, upload-time = "2025-07-03T22:54:42.156Z" },
-]
-
-[[package]]
-name = "app"
-version = "0.2.0"
-source = { editable = "app" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "asyncio" },
-    { name = "loguru" },
-    { name = "python-dotenv" },
-    { name = "tomlkit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp" },
-    { name = "asyncio" },
-    { name = "loguru" },
-    { name = "python-dotenv", specifier = ">=1.2.2" },
-    { name = "tomlkit" },
 ]
 
 [[package]]
@@ -340,6 +319,27 @@ requires-dist = [{ name = "tomlkit", specifier = ">=0.14.0" }]
 name = "neobot-adapter"
 version = "0.1.0"
 source = { editable = "packages/adapter" }
+
+[[package]]
+name = "neobot-app"
+version = "0.2.0"
+source = { editable = "app" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "asyncio" },
+    { name = "loguru" },
+    { name = "python-dotenv" },
+    { name = "tomlkit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp" },
+    { name = "asyncio" },
+    { name = "loguru" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "tomlkit" },
+]
 
 [[package]]
 name = "neobot-chat"

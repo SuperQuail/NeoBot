@@ -1,20 +1,32 @@
-from pathlib import Path
-from app.utils.logger import get_module_logger
-from app.config.bot_config import BotConfig
-from app.config.env_config import EnvConfig
-from typing import Optional, get_origin, get_args, Union, Type, TypeVar, Tuple, Any
-import inspect
-import sys
 import dataclasses
-from dataclasses import fields, is_dataclass, MISSING
-from typing import Dict, Any, List
-import tomlkit
-import os
-import shutil
 import datetime
+import inspect
+import os
 import re
+import shutil
+import sys
+from dataclasses import MISSING, fields, is_dataclass
+from pathlib import Path
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
-T = TypeVar('T')
+import tomlkit
+
+from neobot_app.config.bot_config import BotConfig
+from neobot_app.config.env_config import EnvConfig
+from neobot_app.utils.logger import get_module_logger
+
+T = TypeVar("T")
 
 logger = get_module_logger("config_loader")
 
@@ -31,6 +43,7 @@ config_path.parent.mkdir(parents=True, exist_ok=True)
 # 确保备份目录存在
 config_backup_path.mkdir(parents=True, exist_ok=True)
 
+
 def generate_env():
     logger.info("尝试生成环境变量模板...")
     fields = EnvConfig.__dataclass_fields__
@@ -39,17 +52,19 @@ def generate_env():
         # 获取字段类型
         field_type = field_obj.type
         # 判断是否为 Optional
-        optional = get_origin(field_type) is Union and type(None) in get_args(field_type)
+        optional = get_origin(field_type) is Union and type(None) in get_args(
+            field_type
+        )
         required = not optional
         # 获取描述
-        description = field_obj.metadata.get('description', '')
+        description = field_obj.metadata.get("description", "")
         # 获取默认值
         default = field_obj.default if field_obj.default is not MISSING else None
         # 环境变量名
         env_key = field_name.upper()
         # 默认值字符串
         if default is None or default is MISSING:
-            default_str = ''
+            default_str = ""
         else:
             default_str = str(default)
         # 构建行
@@ -58,8 +73,8 @@ def generate_env():
 
     # 写入文件
     try:
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
         logger.info(f"环境变量模板已生成: {env_path}")
     except Exception as e:
         logger.error(f"生成环境变量模板失败: {e}")
@@ -141,9 +156,9 @@ def _validate_type(value: Any, expected_type: Type) -> Tuple[bool, Any]:
         elif expected_type is bool and isinstance(value, (bool, int, str)):
             if isinstance(value, str):
                 lower_val = value.lower()
-                if lower_val in ('true', '1', 'yes', 'on'):
+                if lower_val in ("true", "1", "yes", "on"):
                     return True, True
-                elif lower_val in ('false', '0', 'no', 'off'):
+                elif lower_val in ("false", "0", "no", "off"):
                     return True, False
             elif isinstance(value, int):
                 return True, bool(value)
@@ -204,7 +219,9 @@ def _dict_to_dataclass(data: dict, schema: Type[T]) -> T:
     return schema(**kwargs)
 
 
-def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: bool = True) -> tuple[tomlkit.TOMLDocument, list, list]:
+def _dataclass_to_toml(
+    schema: Type[T], existing_data: dict = None, is_root: bool = True
+) -> tuple[tomlkit.TOMLDocument, list, list]:
     """
     将dataclass schema转换为toml文档，并与现有数据比较，返回缺失的必须项和非必须项
 
@@ -223,9 +240,19 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
         doc = tomlkit.document()
         # 添加文件头注释
         doc.add(tomlkit.comment("警告:此文件由程序自动生成和维护"))
-        doc.add(tomlkit.comment("所有除了键值的内容（包括注释）都会在重新执行程序时丢失"))
-        doc.add(tomlkit.comment("如需更改配置项/注释,请修改app/src/app/config/bot_config.py文件"))
-        doc.add(tomlkit.comment("格式损坏的文件会被覆盖,data/config_backup下会存储最多十五个备份,如果意外损坏导致文件被覆盖,可自行提取备份"))
+        doc.add(
+            tomlkit.comment("所有除了键值的内容（包括注释）都会在重新执行程序时丢失")
+        )
+        doc.add(
+            tomlkit.comment(
+                "如需更改配置项/注释,请修改app/src/app/config/bot_config.py文件"
+            )
+        )
+        doc.add(
+            tomlkit.comment(
+                "格式损坏的文件会被覆盖,data/config_backup下会存储最多十五个备份,如果意外损坏导致文件被覆盖,可自行提取备份"
+            )
+        )
         doc.add(tomlkit.nl())
     else:
         doc = tomlkit.table()
@@ -235,11 +262,13 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
 
     for field in fields(schema):
         field_name = field.name
-        description = field.metadata.get('description', '')
+        description = field.metadata.get("description", "")
         field_type = field.type
 
         # 判断是否为Optional
-        optional = get_origin(field_type) is Union and type(None) in get_args(field_type)
+        optional = get_origin(field_type) is Union and type(None) in get_args(
+            field_type
+        )
         required = not optional
 
         # 获取现有值并进行类型验证
@@ -272,12 +301,16 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
                     nested_existing = dataclasses.asdict(existing_value)
                 elif isinstance(existing_value, dict):
                     nested_existing = existing_value
-            nested_doc, nested_req, nested_opt = _dataclass_to_toml(field_type, nested_existing, is_root=False)
+            nested_doc, nested_req, nested_opt = _dataclass_to_toml(
+                field_type, nested_existing, is_root=False
+            )
 
             # 记录当前字段的缺失状态（如果整个嵌套表缺失）
             if existing_value is None:
                 # 检查是否有默认值或默认工厂
-                has_default = field.default is not MISSING or field.default_factory is not MISSING
+                has_default = (
+                    field.default is not MISSING or field.default_factory is not MISSING
+                )
                 if required and not has_default:
                     missing_required.append(field_name)
                 elif not has_default:
@@ -312,7 +345,7 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
                 missing_required.append(field_name)
             elif default_value is None:
                 missing_optional.append(field_name)
-        
+
         # 添加到文档并添加注释
         if value_to_use is not None:
             # 根据类型显式创建 tomlkit 项目
@@ -334,7 +367,7 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
                 required_text = "[必须项]"
             else:
                 required_text = "[可选项]"
-            if description and item is not None and hasattr(item, 'comment'):
+            if description and item is not None and hasattr(item, "comment"):
                 text = f"{description} {required_text}"
                 item.comment(text)
             doc[field_name] = item
@@ -347,7 +380,7 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
                 types = [t for t in get_args(field_type) if t is not type(None)]
                 if types:
                     actual_type = types[0]
-        
+
             # 根据类型设置占位符
             placeholder = None
             if actual_type is int:
@@ -361,7 +394,7 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
             else:
                 # 未知类型，使用空字符串
                 placeholder = ""
-        
+
             # 创建带注释的占位符项
             item = None
             if isinstance(placeholder, bool):
@@ -378,7 +411,7 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
                 required_text = "[必须项]"
             else:
                 required_text = "[可选项]"
-            if description and item is not None and hasattr(item, 'comment'):
+            if description and item is not None and hasattr(item, "comment"):
                 text = f"{description} {required_text}"
                 item.comment(text)
             doc[field_name] = item
@@ -386,7 +419,9 @@ def _dataclass_to_toml(schema: Type[T], existing_data: dict = None, is_root: boo
     return doc, missing_required, missing_optional
 
 
-def backup_config_file(file_path: Path, backup_dir: Path, max_backups: int = 15) -> None:
+def backup_config_file(
+    file_path: Path, backup_dir: Path, max_backups: int = 15
+) -> None:
     """
     备份配置文件到备份目录，保留指定数量的最新备份
 
@@ -416,7 +451,7 @@ def backup_config_file(file_path: Path, backup_dir: Path, max_backups: int = 15)
     try:
         # 获取备份目录下所有备份文件
         backup_files = []
-        pattern = re.compile(r'^config_\d{8}_\d{6}\.toml$')
+        pattern = re.compile(r"^config_\d{8}_\d{6}\.toml$")
         for file in backup_dir.iterdir():
             if file.is_file() and pattern.match(file.name):
                 backup_files.append(file)
@@ -426,7 +461,7 @@ def backup_config_file(file_path: Path, backup_dir: Path, max_backups: int = 15)
 
         # 如果备份数量超过限制，删除最老的
         if len(backup_files) > max_backups:
-            files_to_delete = backup_files[:len(backup_files) - max_backups]
+            files_to_delete = backup_files[: len(backup_files) - max_backups]
             for old_file in files_to_delete:
                 old_file.unlink()
                 logger.info(f"删除旧备份文件: {old_file}")
@@ -453,7 +488,7 @@ def load_config(file_path: Path, schema: Type[T]) -> T:
     if file_exists:
         # 读取现有配置文件
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 existing_data = tomlkit.parse(content).unwrap()
             logger.info(f"配置文件已读取: {file_path}")
@@ -462,7 +497,9 @@ def load_config(file_path: Path, schema: Type[T]) -> T:
             existing_data = {}
 
     # 生成toml文档并检查缺失项（根文档）
-    toml_doc, missing_required, missing_optional = _dataclass_to_toml(schema, existing_data if file_exists else None, is_root=True)
+    toml_doc, missing_required, missing_optional = _dataclass_to_toml(
+        schema, existing_data if file_exists else None, is_root=True
+    )
 
     # 记录缺失项
     if missing_required:
@@ -478,7 +515,7 @@ def load_config(file_path: Path, schema: Type[T]) -> T:
 
     # 写入配置文件（无论是否存在，都写入以确保格式一致和补全缺失项）
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(tomlkit.dumps(toml_doc))
         if file_exists:
             logger.info(f"配置文件已更新并补全缺失项: {file_path}")
@@ -497,7 +534,7 @@ def load_config(file_path: Path, schema: Type[T]) -> T:
 
     # 重新读取文件并转换为dataclass
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
             config_dict = tomlkit.parse(content).unwrap()
         config_obj = _dict_to_dataclass(config_dict, schema)
@@ -508,9 +545,7 @@ def load_config(file_path: Path, schema: Type[T]) -> T:
         sys.exit(1)
 
 
-
 # 加载环境变量
 load_env()
 # 加载机器人配置
 bot_config = load_config(config_path, BotConfig)
-
