@@ -1,15 +1,19 @@
 [project]
 name = "neobot"
-version = "0.0.1"
+version = "0.1.0"
 description = "a QQ LLM Bot "
-requires-python = ">=3.10"
-dependencies = [
-    "Asyncio",
-    "aiohttp",
-    "loguru",
-    "python-dotenv>=1.2.2",
+requires-python = ">=3.13"
+dependencies = []
+authors = [
+    { name = "wsrsq", email = "wsrsq001@163.com" }
 ]
 
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+    "app",
+]
