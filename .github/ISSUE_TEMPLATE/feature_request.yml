@@ -1,0 +1,33 @@
+name: "功能建议"
+description: 为 neobot 提交功能请求或改进建议
+title: "[功能建议]: "
+labels: ["pending triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+       **开始之前...**
+
+        此表单仅用于提交功能请求。如果你有使用问题或不确定这是否真的是一个错误，请确保：
+        另外，请先搜索你的问题 - 可能已经有其他用户提出过类似的请求！
+
+  - type: textarea
+    id: problem-description
+    attributes:
+      label: 这个功能解决什么问题？
+      description: |
+        解释你的使用场景、背景和这个功能请求背后的理由。更重要的是，
+        你想要构建的**最终用户体验**是什么，从而产生了对这个功能的需求？
+      placeholder: 问题描述
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-API
+    attributes:
+      label: 建议的 API 是什么样的？
+      description: |
+        描述你建议如何解决这个问题，并提供 API 实现后如何工作的代码示例。
+        你可以使用 [Markdown](https://guides.github.com/features/mastering-markdown/) 来格式化代码块。
+      placeholder: API 建议
+    validations:
+      required: true
