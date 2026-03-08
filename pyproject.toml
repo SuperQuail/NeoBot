@@ -3,9 +3,12 @@ name = "neobot"
 version = "0.1.0"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "tomlkit>=0.14.0",
+]
 authors = [
-    { name = "wsrsq", email = "wsrsq001@163.com" }
+    { name = "wsrsq", email = "wsrsq001@163.com" },
+    { name = "tangtian", email = "a14b@126.com" },
 ]
 
 [[tool.uv.index]]

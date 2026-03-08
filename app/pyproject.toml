@@ -1,14 +1,25 @@
 [project]
-name = "neobot-app"
-version = "0.1.0"
+name = "app"
+version = "0.2.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "wsrsq", email = "wsrsq001@163.com" }
+    { name = "wsrsq", email = "wsrsq001@163.com" },
+    { name = "tangtian", email = "a14b@126.com" },
 ]
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "Asyncio",
+    "aiohttp",
+    "loguru",
+    "python-dotenv>=1.2.2",
+    "tomlkit",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv.build]
+# 指定源代码目录结构
+src = true

@@ -109,3 +109,4 @@ cov.xml
 # ide
 .idea
 .zed
+/data/
