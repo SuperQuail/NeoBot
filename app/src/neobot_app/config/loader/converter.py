@@ -156,6 +156,7 @@ def dataclass_to_toml(
         required = not optional
 
         existing_value = None
+        raw_value = None
         if existing_data is not None and field_name in existing_data:
             raw_value = existing_data.get(field_name)
             if raw_value is not None:
@@ -170,12 +171,10 @@ def dataclass_to_toml(
                     )
 
         if is_dataclass(field_type):
+            # 对于嵌套 dataclass，使用原始字典数据以正确检测缺失项
             nested_existing = None
-            if existing_value is not None:
-                if is_dataclass(type(existing_value)):
-                    nested_existing = dataclasses.asdict(existing_value)
-                elif isinstance(existing_value, dict):
-                    nested_existing = existing_value
+            if raw_value is not None and isinstance(raw_value, dict):
+                nested_existing = raw_value
             nested_doc, nested_req, nested_opt = dataclass_to_toml(
                 field_type, nested_existing, is_root=False  # type: ignore[arg-type]
             )
@@ -207,9 +206,9 @@ def dataclass_to_toml(
         value_to_use = existing_value if existing_value is not None else default_value
 
         if existing_value is None:
-            if required and default_value is None:
+            if required:
                 missing_required.append(field_name)
-            elif default_value is None:
+            else:
                 missing_optional.append(field_name)
 
         if value_to_use is not None:
