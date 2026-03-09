@@ -1,0 +1,26 @@
+[project]
+name = "neobot"
+version = "0.2.0"
+description = "a QQ LLM Bot "
+requires-python = ">=3.13"
+authors = [
+    { name = "wsrsq", email = "wsrsq001@163.com" },
+    { name = "tangtian", email = "a14b@126.com" },
+]
+
+[[tool.uv.index]]
+url="https://pypi.tuna.tsinghua.edu.cn/simple"
+default=true
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+    "app",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pyinstaller>=6.19.0",
+    "ruff>=0.15.5",
+]
