@@ -1,11 +1,8 @@
 [project]
 name = "neobot"
-version = "0.1.0"
+version = "0.2.0"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
-dependencies = [
-    "tomlkit>=0.14.0",
-]
 authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
@@ -19,4 +16,11 @@ default=true
 members = [
     "packages/*",
     "app",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pyinstaller>=6.19.0",
+    "ruff>=0.15.5",
 ]

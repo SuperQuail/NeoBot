@@ -14,12 +14,9 @@ dependencies = [
     "loguru",
     "python-dotenv>=1.2.2",
     "tomlkit",
+    "union"
 ]
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
-
-[tool.uv.build]
-# 指定源代码目录结构
-src = true

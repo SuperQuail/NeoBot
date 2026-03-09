@@ -1,6 +1,12 @@
+from typing import TYPE_CHECKING
+
 import loguru
 
-def get_module_logger(module_name: str) -> loguru.logger:
+if TYPE_CHECKING:
+    from loguru import Logger
+
+
+def get_module_logger(module_name: str) -> "Logger":
     """
     获取带有自定义模块名称的 logger
 
