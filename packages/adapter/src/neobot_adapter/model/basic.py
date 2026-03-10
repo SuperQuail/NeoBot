@@ -71,14 +71,14 @@ class Post_MetaEvent_Type(Enum):
 
 class Status_Statistics(BaseModel):
     """一个数据结构,是心跳包的status字段的stat字段"""
-    packet_received: int #收包数
-    packet_sent: int #发包数
-    packet_lost: int #丢包数
-    message_received: int #接收到的消息数
-    message_sent: int #发送的消息数
-    disconnect_times: int #连接断开次数
-    lost_times: int #连接丢失次数
-    last_message_time: int #最后一次消息时间
+    packet_received: Optional[int] #收包数
+    packet_sent: Optional[int] #发包数
+    packet_lost: Optional[int] #丢包数
+    message_received: Optional[int] #接收到的消息数
+    message_sent: Optional[int] #发送的消息数
+    disconnect_times: Optional[int] #连接断开次数
+    lost_times: Optional[int] #连接丢失次数
+    last_message_time: Optional[int] #最后一次消息时间
 
 class Status(BaseModel):
     """一个数据结构,在心跳包上报中作为成员使用"""

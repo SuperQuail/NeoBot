@@ -94,18 +94,18 @@ class Message(BaseModel):
     """消息结构"""
     class face(BaseModel):
         """表情结构-收/发"""
-        type = message_type.face
+        type = Optional[message_type.face]
         class data(BaseModel):
             """表情数据结构"""
-            id: int
+            id: Optional[int]
 
     class record(BaseModel):
         """语音结构-收/发"""
-        type = message_type.record
+        type = Optional[message_type.record]
         class data(BaseModel):
             """语音数据结构"""
-            file: str #文件URL
-            magic: Flag = 0 #启用变声
+            file: Optional[str] #文件URL
+            magic: Optional[Flag] = 0 #启用变声
             url:  Optional[str] #文件URL
             cache: Optional[Flag] = Flag.ON #是否启用缓存
             proxy: Optional[Flag] = Flag.ON #是否启用代理
@@ -113,52 +113,52 @@ class Message(BaseModel):
 
     class video(BaseModel):
         """视频结构-收/发-发送依赖ffmpeg"""
-        type = message_type.video
+        type = Optional[message_type.video]
         class data(BaseModel):
             """视频数据结构"""
-            file: str #文件URL
-            cover: str #封面URL
-            c : int #下载线程数 2/3 ,发送依赖ffmpeg
+            file: Optional[str] #文件URL
+            cover: Optional[str] #封面URL
+            c : Optional[int] #下载线程数 2/3 ,发送依赖ffmpeg
 
     class at(BaseModel):
         """@结构-收/发"""
-        type = message_type.at
+        type = Optional[message_type.at]
         class data(BaseModel):
             """@数据结构"""
-            qq: int
+            qq: Optional[int]
             name: Optional[str]
 
     class rps(BaseModel):
         """猜拳结构-不支持"""
-        type = message_type.rps
+        type = Optional[message_type.rps]
         class data(BaseModel):
             """猜拳数据结构"""
             pass
 
     class dice(BaseModel):
         """骰子结构-不支持"""
-        type = message_type.dice
+        type = Optional[message_type.dice]
         class data(BaseModel):
             """骰子数据结构"""
             pass
 
     class shake(BaseModel):
         """窗口抖动结构-不支持-发"""
-        type = message_type.shake
+        type = Optional[message_type.shake]
         class data(BaseModel):
             """窗口抖动数据结构"""
             pass
 
     class anonymous(BaseModel):
         """匿名发消息结构-发"""
-        type = message_type.anonymous
+        type = Optional[message_type.anonymous]
         class data(BaseModel):
             """匿名数据结构"""
-            ignore: Flag = Flag.OFF #无法匿名时是否继续发送
+            ignore: Optional[Flag] = Flag.OFF #无法匿名时是否继续发送
 
     class share(BaseModel):
         """链接分享结构-收/发"""
-        type = message_type.share
+        type = Optional[message_type.share]
         class data(BaseModel):
             """分享数据结构"""
             url =  str #分享URL
@@ -166,27 +166,27 @@ class Message(BaseModel):
 
     class contact(BaseModel):
         """推荐好友/群结构-不支持-收/发"""
-        type = message_type.contact
+        type = Optional[message_type.contact]
         class data(BaseModel):
             """推荐好友/群数据结构"""
-            id : int
+            id : Optional[int]
 
     class location(BaseModel):
         """位置结构-收/发-不支持"""
-        type = message_type.location
+        type = Optional[message_type.location]
         class data(BaseModel):
             """位置数据结构"""
-            lat: float #纬度
-            lon: float #经度
+            lat: Optional[float] #纬度
+            lon: Optional[float] #经度
             title: Optional[str] #标题
             content: Optional[str] #内容
 
     class music(BaseModel):
         """音乐分享/音乐自定义分享结构-发"""
-        type = message_type.music
+        type = Optional[message_type.music]
         class data(BaseModel):
             """音乐数据结构"""
-            type: music_type #音乐来源
+            type: Optional[music_type] #音乐来源
             """ID分享"""
             id: Optional[int] #音乐ID
             """URL分享"""
@@ -198,7 +198,7 @@ class Message(BaseModel):
 
     class image(BaseModel):
         """图片结构-收/发"""
-        type = message_type.image
+        type = Optional[message_type.image]
         class data(BaseModel):
             """图片数据结构"""
             file:Optional[str] #图片文件名
@@ -223,7 +223,7 @@ class Message(BaseModel):
 
     class reply(BaseModel):
         """回复结构-收/发"""
-        type = message_type.reply
+        type = Optional[message_type.reply]
         class data(BaseModel):
             """回复数据结构"""
             id: Optional[int] #回复消息ID,必须为本群ID
@@ -234,36 +234,36 @@ class Message(BaseModel):
 
     class redbag(BaseModel):
         """红包结构-收"""
-        type = message_type.redbag
+        type = Optional[message_type.redbag]
         class data(BaseModel):
             """红包数据结构"""
-            title : str #祝福语/口令
+            title : Optional[str] #祝福语/口令
 
     class poke(BaseModel):
         """戳一戳结构-发-仅群聊"""
-        type = message_type.poke
+        type = Optional[message_type.poke]
         class data(BaseModel):
             """戳一戳数据结构"""
-            qq: int #戳的QQ号
+            qq: Optional[int] #戳的QQ号
 
     class gift(BaseModel):
         """礼物结构-发"""
-        type = message_type.gift
+        type = Optional[message_type.gift]
         class data(BaseModel):
             """礼物数据结构"""
-            qq: int #赠送的QQ号
-            id: gift_id #礼物ID
+            qq: Optional[int] #赠送的QQ号
+            id: Optional[gift_id] #礼物ID
 
     class forward(BaseModel):
         """合并转发结构-收"""
-        type = message_type.forward
+        type = Optional[message_type.forward]
         class data(BaseModel):
             """合并转发数据结构"""
-            id: str #合并转发id,需要通过 /get_forward_msg API获取转发的具体内容
+            id: Optional[str] #合并转发id,需要通过 /get_forward_msg API获取转发的具体内容
 
     class node(BaseModel):
         """合并转发消息节点结构-发"""
-        type = message_type.node
+        type = Optional[message_type.node]
         class data(BaseModel):
             """合并转发消息节点数据结构"""
             id: Optional[int] #转发消息ID
@@ -281,16 +281,16 @@ class Message(BaseModel):
 
     class xml(BaseModel):
         """XML结构-收/发"""
-        type = message_type.xml
+        type = Optional[message_type.xml]
         class data(BaseModel):
-            data : str #XML内容
+            data : Optional[str] #XML内容
             resid : Optional[str] #可能为空, 或空字符串
 
     class json(BaseModel):
         """JSON结构-收/发"""
-        type = message_type.json
+        type = Optional[message_type.json]
         class data(BaseModel):
-            data : str #JSON内容
+            data : Optional[str] #JSON内容
             resid : Optional[int] #默认不填为0, 走小程序通道, 填了走富文本通道发送
             """json中的字符串需要进行转义 :
             ","=> &#44;
@@ -300,7 +300,7 @@ class Message(BaseModel):
 
     class cardimage(BaseModel):
         """xml大图片结构-发"""
-        type = message_type.cardimage
+        type = Optional[message_type.cardimage]
         class data(BaseModel):
             file: Optional[str] #与image的file字段对齐,支持程度也相同
             minwidth : Optional[int] #默认不填为400, 最小width
@@ -312,12 +312,12 @@ class Message(BaseModel):
 
     class tts(BaseModel):
         """TTS结构-发"""
-        type = message_type.tts
+        type = Optional[message_type.tts]
         class data(BaseModel):
-            text: str #TTS内容, 音源与账号性别设置有关
+            text: Optional[str] #TTS内容, 音源与账号性别设置有关
 
 
-    Segment = Union['face']
+    Segment = Union['face', 'text', 'image', 'reply', 'redbag', 'poke', 'gift', 'forward', 'node', 'xml', 'json', 'cardimage', 'tts']
     message = List[Segment]
 
 Message.model_rebuild()
@@ -334,14 +334,14 @@ class sub_type(Enum):
 
 class GeneralMessage(General):
     """上报消息数据结构"""
-    message_type : message_type #消息类型
-    sub_type : sub_type #消息子类型
-    message_id : int #消息ID
-    user_id : int #发送者QQ号
-    message : Message #消息内容
-    raw_message : str #原始消息内容
-    font : int #字体
-    sender : Post_Message_MessageSender
+    message_type : Optional[message_type] #消息类型
+    sub_type : Optional[sub_type] #消息子类型
+    message_id : Optional[int] #消息ID
+    user_id : Optional[int] #发送者QQ号
+    message : Optional[Message] #消息内容
+    raw_message : Optional[str] #原始消息内容
+    font : Optional[int] #字体
+    sender : Optional[Post_Message_MessageSender]
 
 class PrivateMessage(GeneralMessage):
     """私聊消息数据结构"""
@@ -349,7 +349,7 @@ class PrivateMessage(GeneralMessage):
     temp_source : Optional[Post_Message_TempSource]
 
 class FastPrivateReplay(PrivateMessage):
-    reply: Message #回复内容
+    reply: Optional[Message] #回复内容
     auto_escape: Optional[bool] = True #是否自动转换CQ码,只在replay为字符串时起效
 
 class anonymous(BaseModel):
@@ -360,10 +360,10 @@ class anonymous(BaseModel):
 
 class GroupMessage(GeneralMessage):
     """群消息数据结构"""
-    group_id : int #群号
+    group_id : Optional[int] #群号
 
 class FastGroupReplay(GroupMessage):
-    reply: Message #回复内容
+    reply: Optional[Message] #回复内容
     auto_escape: Optional[bool] = True #是否自动转换CQ码,只在replay为字符串时起效
     at_sender: Optional[bool] = False #是否at发送者
     delete : Optional[bool] = False #是否撤回消息
