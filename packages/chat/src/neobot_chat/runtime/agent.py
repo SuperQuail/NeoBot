@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from neobot_chat.providers.base import Provider
-from neobot_chat.schema.protocol import StatePreprocessor, ToolExecutor
+from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
 from neobot_chat.schema.types import (
     ChatChunk,
     Message,
     OnEvent,
     State,
+    ToolAccessAction,
+    ToolAccessPolicy,
+    ToolAccessRule,
     ToolCall,
     ToolDefinition,
+    ToolGuardContext,
 )
 from neobot_chat.skills.inject import build_skill_preprocessor
+from neobot_chat.runtime.prompt import SystemPromptState
 from neobot_chat.skills.registry import SkillRegistry
-from neobot_chat.tools.builtin import BuiltinTools
+from neobot_chat.tools.builtin import build_builtin_toolset
 from neobot_chat.tools.registry import AgentRegistry
+from neobot_chat.tools.toolset import Toolset
 from neobot_chat.utils import parse_tool_args
 
 
@@ -27,8 +34,7 @@ class Agent:
         self,
         provider: Provider,
         *,
-        tools: list[ToolDefinition] | None = None,
-        tool_executor: ToolExecutor | None = None,
+        toolset: Toolset | None = None,
         preprocessor: StatePreprocessor | None = None,
         agent_registry: AgentRegistry | None = None,
         skills: SkillRegistry | None = None,
@@ -39,21 +45,28 @@ class Agent:
         allowed_commands: list[str] | None = None,
         system_prompt: str | None = None,
         on_event: OnEvent | None = None,
+        tool_guard: ToolGuard | None = None,
     ):
         self.provider = provider
+        self.cwd = Path(cwd).resolve() if cwd is not None else None
+        self.allowed_commands = list(allowed_commands or [])
+        self.allowed_paths = self._build_allowed_paths(skills)
+        self.tool_guard = tool_guard
 
-        self.tool_executor = tool_executor or self._build_legacy_tool_executor(
+        builtin_toolset = build_builtin_toolset(
             agent_registry=agent_registry,
-            skills=skills,
             cwd=cwd,
             command_timeout=command_timeout,
+            allowed_paths=[skill.path.parent for skill in skills.skills.values()] if skills else None,
             allowed_commands=allowed_commands,
         )
-        self.tool_definitions = list(tools or [])
-        self.custom_tools = self.tool_definitions
+        self.toolset = Toolset.merge([builtin_toolset, toolset])
+        self._tool_specs = {spec.name: spec for spec in self.toolset.specs}
+
         self.skills = skills
         self.description = description
         self.max_iterations = max_iterations
+        self.command_timeout = command_timeout
         self.system_prompt = system_prompt
         self.on_event = on_event
         self.preprocessor = preprocessor or self._build_legacy_preprocessor(skills)
@@ -76,7 +89,6 @@ class Agent:
         return {**state, "messages": messages}
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
-        """流式执行：yield 文本 delta，工具调用透明处理"""
         state, tools, messages = self._prepare(state)
 
         for i in range(self.max_iterations):
@@ -104,12 +116,11 @@ class Agent:
         yield ChatChunk(state={**state, "messages": messages})
 
     async def close(self) -> None:
-        """释放底层 provider 资源。"""
-        await self.tool_executor.close()
+        await self.toolset.executor.close()
         await self.provider.close()
 
     def _all_tools(self) -> list[ToolDefinition]:
-        return self.tool_executor.definitions() + self.tool_definitions
+        return self.toolset.definitions()
 
     def _prepare(
         self, state: State
@@ -118,35 +129,34 @@ class Agent:
         if self.preprocessor:
             state = self.preprocessor(state)
         messages: list[Message] = list(state.get("messages", []))
+        matched_skills = state.get("_matched_skills") if self.skills else None
 
-        has_system = any(m.get("role") == "system" for m in messages)
+        system_parts: list[str] = []
+        rest: list[Message] = []
+        for message in messages:
+            if message.get("role") == "system":
+                content = message.get("content")
+                if content:
+                    system_parts.append(content)
+            else:
+                rest.append(message)
 
-        if self.system_prompt:
-            if has_system:
-                for i, m in enumerate(messages):
-                    if m.get("role") == "system":
-                        messages[i] = {"role": "system", "content": self.system_prompt}
-                        break
-            else:
-                messages.insert(0, {"role": "system", "content": self.system_prompt})
-        elif tools:
-            names = ", ".join(t["function"]["name"] for t in tools)
-            tool_instruction = (
-                f"You have access to the following tools: {names}. "
-                "When the user asks you to perform actions "
-                "(file operations, running commands, etc.), "
-                "you MUST use the provided tool functions. "
-                "Do NOT write code or commands in your text response."
-            )
-            if has_system:
-                for i, m in enumerate(messages):
-                    if m.get("role") == "system":
-                        messages[i]["content"] = (
-                            tool_instruction + "\n\n" + m["content"]
-                        )
-                        break
-            else:
-                messages.insert(0, {"role": "system", "content": tool_instruction})
+        prompt_state = SystemPromptState.from_messages(system_parts)
+        prompt_state.add_instruction(self.system_prompt)
+        prompt_state.set_description(self.description)
+        prompt_state.set_tools([t["function"]["name"] for t in tools] if tools else None)
+        prompt_state.set_skills(matched_skills)
+        prompt_state.set_runtime(
+            cwd=str(self.cwd) if self.cwd else None,
+            max_iterations=self.max_iterations,
+            command_timeout=self.command_timeout,
+            allowed_commands=self.allowed_commands or None,
+        )
+        prompt = prompt_state.render()
+        if prompt:
+            messages = [{"role": "system", "content": prompt}, *rest]
+        else:
+            messages = rest
 
         return state, tools, messages
 
@@ -155,36 +165,21 @@ class Agent:
             self.on_event(event, data)
 
     @staticmethod
-    def _build_legacy_preprocessor(
-        skills: SkillRegistry | None,
-    ) -> StatePreprocessor | None:
+    def _build_legacy_preprocessor(skills: SkillRegistry | None) -> StatePreprocessor | None:
         return build_skill_preprocessor(skills)
 
-    @staticmethod
-    def _build_legacy_tool_executor(
-        *,
-        agent_registry: AgentRegistry | None,
-        skills: SkillRegistry | None,
-        cwd: str | Path | None,
-        command_timeout: int,
-        allowed_commands: list[str] | None,
-    ) -> ToolExecutor:
-        allowed_paths = []
+    def _build_allowed_paths(self, skills: SkillRegistry | None) -> list[Path]:
+        allowed_paths: list[Path] = []
+        if self.cwd is not None:
+            allowed_paths.append(self.cwd)
         if skills:
             for skill in skills.skills.values():
-                allowed_paths.append(skill.path.parent)
+                skill_dir = skill.path.parent.resolve()
+                if skill_dir not in allowed_paths:
+                    allowed_paths.append(skill_dir)
+        return allowed_paths
 
-        return BuiltinTools(
-            agent_registry=agent_registry,
-            cwd=cwd,
-            command_timeout=command_timeout,
-            allowed_paths=allowed_paths,
-            allowed_commands=allowed_commands,
-        )
-
-    def _emit_response(
-        self, response: Message, tool_calls: list[ToolCall] | None
-    ) -> None:
+    def _emit_response(self, response: Message, tool_calls: list[ToolCall] | None) -> None:
         self._emit(
             "llm_end",
             {
@@ -193,27 +188,58 @@ class Agent:
             },
         )
 
-    async def _run_tools(
-        self, tool_calls: list[ToolCall], messages: list[Message]
-    ) -> None:
+    def _build_tool_guard_context(self) -> ToolGuardContext:
+        return ToolGuardContext(
+            cwd=self.cwd,
+            allowed_paths=list(self.allowed_paths),
+            allowed_commands=list(self.allowed_commands),
+        )
+
+    def _resolve_rule(self, rule: ToolAccessRule) -> ToolAccessAction:
+        if rule.action != "ask":
+            return rule.action
+        if self.tool_guard is not None:
+            return "ask"
+        return rule.fallback_action or "deny"
+
+    def _decide_tool_action(self, name: str, args: dict) -> ToolAccessAction:
+        spec = self._tool_specs.get(name)
+        if spec is None:
+            return "allow"
+        rule = spec.access_resolver(args, self._build_tool_guard_context(), self.toolset.policy)
+        return self._resolve_rule(rule)
+
+    async def _ask_tool_guard(self, name: str, args: dict) -> bool:
+        if self.tool_guard is None:
+            return False
+        result = self.tool_guard(name, args, self._build_tool_guard_context())
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    async def _run_tools(self, tool_calls: list[ToolCall], messages: list[Message]) -> None:
         for call in tool_calls:
             name = call["function"]["name"]
             raw = call["function"]["arguments"]
             args = parse_tool_args(raw)
+            action = self._decide_tool_action(name, args)
+
+            if action == "ask" and not await self._ask_tool_guard(name, args):
+                action = "deny"
+
+            if action == "deny":
+                result = f"Error: Tool execution denied by policy: {name}"
+                self._emit("tool_denied", {"name": name, "args": args})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                continue
 
             self._emit("tool_start", {"name": name, "args": args})
             try:
-                result = await self.tool_executor.execute(name, args)
-            except Exception as e:
-                result = f"Error: {type(e).__name__}: {e}"
+                result = await self.toolset.executor.execute(name, args)
+            except Exception as exc:
+                result = f"Error: {type(exc).__name__}: {exc}"
                 self._emit("error", {"name": name, "error": result})
             else:
                 self._emit("tool_end", {"name": name, "result": result[:500]})
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": result,
-                }
-            )
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})

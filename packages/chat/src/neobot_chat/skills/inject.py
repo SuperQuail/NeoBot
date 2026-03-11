@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 from neobot_chat.schema.protocol import StatePreprocessor
-from neobot_chat.skills.registry import SkillRegistry
 from neobot_chat.schema.types import Message, State
+from neobot_chat.skills.registry import SkillRegistry
 
 
 def inject_skills(skills: SkillRegistry | None, state: State) -> State:
-    """将匹配到的 skills 与已有 system prompt 合并为一条 XML 结构的 system message
-
-    - 提取 messages 中已有的 system message（如有）
-    - 匹配最后一条 user message 的 skills
-    - 用 build_system_prompt 合并为统一的 <system> XML
-    - 替换/插入到 messages 最前面，保证只有一条 system message
-    """
+    """匹配最后一条 user message 对应的 skills，并挂到 state 上。"""
     if not skills:
         return state
 
@@ -24,22 +18,12 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
         return state
 
     matched = skills.match(user_msgs[-1])
-    if not matched:
-        return state
-
-    system_parts: list[str] = []
-    rest: list[Message] = []
-    for msg in messages:
-        if msg.get("role") == "system":
-            system_parts.append(msg.get("content", ""))
-        else:
-            rest.append(msg)
-
-    prompt = SkillRegistry.build_system_prompt(
-        instructions="\n\n".join(system_parts),
-        skills=matched,
-    )
-    return {**state, "messages": [{"role": "system", "content": prompt}, *rest]}
+    next_state = dict(state)
+    if matched:
+        next_state["_matched_skills"] = matched
+    else:
+        next_state.pop("_matched_skills", None)
+    return next_state
 
 
 def build_skill_preprocessor(skills: SkillRegistry | None) -> StatePreprocessor | None:

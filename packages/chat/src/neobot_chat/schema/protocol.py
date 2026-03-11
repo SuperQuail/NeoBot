@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol
 
-from neobot_chat.schema.types import ChatChunk, State, ToolDefinition
+from neobot_chat.schema.types import ChatChunk, State, ToolDefinition, ToolGuardContext
 
 StatePreprocessor = Callable[[State], State]
+ToolGuard = Callable[[str, dict, ToolGuardContext], bool | Awaitable[bool]]
 
 
 class Runnable(Protocol):

@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from neobot_chat.utils.xml import XmlNode
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 _SKILL_FILENAME = "SKILL.md"
 
@@ -38,8 +40,6 @@ class SkillRegistry:
     def __post_init__(self):
         self.root = Path(self.root)
 
-    # ── 公共 API ──
-
     def discover(self) -> SkillRegistry:
         """扫描 root 下所有 SKILL.md 并加载"""
         self._skills.clear()
@@ -70,32 +70,22 @@ class SkillRegistry:
         """将 skills 格式化为 XML 片段（仅元数据）"""
         if not skills:
             return ""
-        sections = "\n".join(
-            f'<skill name="{s.name}" description="{s.description}" skill_dir="{s.path.parent.absolute()}" />'
-            for s in skills
+        node = XmlNode(
+            "skills",
+            children=[
+                XmlNode(
+                    "skill",
+                    attributes={
+                        "name": s.name,
+                        "description": s.description,
+                        "skill_dir": str(s.path.parent.absolute()),
+                    },
+                    self_closing=True,
+                )
+                for s in skills
+            ],
         )
-        return f"<skills>\n{sections}\n</skills>"
-
-    @staticmethod
-    def build_system_prompt(
-            instructions: str = "",
-            skills: list[Skill] | None = None,
-    ) -> str:
-        """组装完整的 system prompt（XML 结构）"""
-        parts: list[str] = []
-        if instructions:
-            parts.append(f"<instructions>\n{instructions}\n</instructions>")
-        if skills:
-            parts.append(
-                "当需要使用 skill 时，先用工具读取 skill_dir 下的 SKILL.md 文件获取完整说明。\n"
-                "SKILL.md 中的相对路径（如 scripts/analyze.py）相对于 skill_dir。\n\n"
-                + SkillRegistry.format_skills_xml(skills)
-            )
-        if not parts:
-            return ""
-        return "<system>\n" + "\n\n".join(parts) + "\n</system>"
-
-    # ── 内部方法 ──
+        return node.to_xml()
 
     @staticmethod
     def _load(path: Path) -> Skill | None:
