@@ -16,6 +16,7 @@ from neobot_chat.schema.protocol import (
 from neobot_chat.schema.types import (
     ChatChunk,
     Message,
+    MessageContent,
     OnEvent,
     State,
     ToolAccessPolicy,
@@ -34,6 +35,7 @@ __all__ = [
     "ChatService",
     "GraphError",
     "Message",
+    "MessageContent",
     "OnEvent",
     "ProviderError",
     "Runnable",

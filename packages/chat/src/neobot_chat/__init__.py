@@ -12,6 +12,7 @@ from neobot_chat.skills import SkillRegistry, build_skill_preprocessor, inject_s
 from neobot_chat.tools import AgentRegistry, BuiltinTools, CompositeToolExecutor, Toolset, build_builtin_toolset
 from neobot_chat.schema.types import (
     ChatChunk,
+    MessageContent,
     OnEvent,
     State,
     ToolAccessPolicy,
@@ -30,6 +31,7 @@ __all__ = [
     "CompositeToolExecutor",
     "ChatService",
     "ChatChunk",
+    "MessageContent",
     "CompiledGraph",
     "compose_preprocessors",
     "END",

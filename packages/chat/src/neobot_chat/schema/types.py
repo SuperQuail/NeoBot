@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypeAlias, TypedDict
 
 
 class ToolFunction(TypedDict):
@@ -17,9 +17,13 @@ class ToolCall(TypedDict):
     function: ToolFunction
 
 
+MessageContent: TypeAlias = str | dict[str, Any] | list[dict[str, Any]] | None
+
+
 class Message(TypedDict, total=False):
     role: str
-    content: str | None
+    content: MessageContent
+    extensions: dict[str, Any]
     tool_calls: list[ToolCall]
     tool_call_id: str
 
@@ -83,5 +87,6 @@ class ToolAccessPolicy:
 @dataclass
 class ChatChunk:
     delta: str = ""
+    reasoning_delta: str = ""
     message: Message | None = field(default=None, repr=False)
     state: State | None = field(default=None, repr=False)

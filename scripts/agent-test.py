@@ -12,7 +12,10 @@ CHAT_SRC = ROOT / "packages" / "chat" / "src"
 if str(CHAT_SRC) not in sys.path:
     sys.path.insert(0, str(CHAT_SRC))
 
-from neobot_chat.providers import OpenAIProvider  # noqa: E402
+from neobot_chat.providers import (  # noqa: E402
+    DeepSeekOfficialProvider,
+    OpenAIProvider,
+)
 from neobot_chat.runtime.agent import Agent  # noqa: E402
 from neobot_chat.schema.types import (  # noqa: E402
     Message,
@@ -30,9 +33,22 @@ except ImportError:  # pragma: no cover
     PromptSession = None
     InMemoryHistory = None
 
-API_KEY = ""
-BASE_URL = "https://aihubmix.com/v1"
-MODEL = "deepseek-v3.2"
+PROVIDER = os.getenv("NEOBOT_PROVIDER", "deepseek_official")
+API_KEY = os.getenv("NEOBOT_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("NEOBOT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+MODEL = os.getenv("NEOBOT_MODEL", "deepseek-reasoner")
+STREAM = os.getenv("NEOBOT_STREAM", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+SHOW_REASONING = os.getenv("NEOBOT_SHOW_REASONING", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 SYSTEM_PROMPT = (
     "你是 NeoBot。回答简洁、直接、友好。"
@@ -130,16 +146,32 @@ def on_event(event: str, data: dict) -> None:
         print(f"\n[tool_error] {data.get('name')} error={data.get('error')}")
 
 
+def build_provider() -> OpenAIProvider | DeepSeekOfficialProvider:
+    provider_name = PROVIDER.strip().lower()
+    if provider_name in {"deepseek_offical", "deepseek_official"}:
+        return DeepSeekOfficialProvider(
+            api_key=API_KEY,
+            base_url="https://api.deepseek.com",
+            model=MODEL,
+        )
+    if provider_name == "openai":
+        return OpenAIProvider(
+            api_key=API_KEY,
+            base_url=OPENAI_BASE_URL,
+            model=MODEL,
+        )
+    raise ValueError(
+        f"Unsupported provider: {PROVIDER}. Expected 'openai', 'deepseek_official', or legacy 'deepseek_offical'."
+    )
+
+
 async def chat_loop() -> None:
     if not API_KEY:
-        print("Missing OPENAI_API_KEY. Bye!")
+        print("Missing NEOBOT_API_KEY. Bye!")
         return
 
-    provider = OpenAIProvider(
-        api_key=API_KEY,
-        base_url=BASE_URL,
-        model=MODEL,
-    )
+    provider = build_provider()
+
     policy = ToolAccessPolicy(
         delegate_rule=ToolAccessRule(action="ask", fallback_action="allow"),
         path_out_of_scope_rule=ToolAccessRule(action="ask", fallback_action="deny"),
@@ -158,8 +190,16 @@ async def chat_loop() -> None:
     messages: list[Message] = []
     system_prompt_sent = False
 
+    print(f"Provider: {PROVIDER}")
     print(f"Model: {MODEL}")
-    print(f"Base URL: {BASE_URL}")
+    active_base_url = (
+        "https://api.deepseek.com"
+        if PROVIDER.strip().lower() in {"deepseek_offical", "deepseek_official"}
+        else OPENAI_BASE_URL
+    )
+    print(f"Base URL: {active_base_url}")
+    print(f"Stream: {STREAM}")
+    print(f"Show reasoning: {SHOW_REASONING}")
     print(f"CWD: {ROOT}")
     print(f"Allowed commands: {', '.join(ALLOWED_COMMANDS)}")
     print(
@@ -213,12 +253,38 @@ async def chat_loop() -> None:
             printed = False
 
             try:
-                async for chunk in agent.stream_invoke({"messages": messages}):
-                    if chunk.delta:
-                        print(chunk.delta, end="", flush=True)
+                if STREAM:
+                    reasoning_started = False
+                    async for chunk in agent.stream_invoke({"messages": messages}):
+                        if SHOW_REASONING and chunk.reasoning_delta:
+                            if not reasoning_started:
+                                print("\n[reasoning] ", end="", flush=True)
+                                reasoning_started = True
+                            print(chunk.reasoning_delta, end="", flush=True)
+                        if chunk.delta:
+                            if reasoning_started:
+                                print("\nAssistant: ", end="", flush=True)
+                                reasoning_started = False
+                            print(chunk.delta, end="", flush=True)
+                            printed = True
+                        if chunk.state is not None:
+                            final_state = chunk.state
+                else:
+                    final_state = await agent.invoke({"messages": messages})
+                    final_message = (
+                        final_state.get("messages", [])[-1]
+                        if final_state.get("messages")
+                        else None
+                    )
+                    final_content = (
+                        final_message.get("content") if final_message else None
+                    )
+                    if isinstance(final_content, str) and final_content:
+                        print(final_content, end="", flush=True)
                         printed = True
-                    if chunk.state is not None:
-                        final_state = chunk.state
+                    elif final_content is not None:
+                        print(str(final_content), end="", flush=True)
+                        printed = True
             except KeyboardInterrupt:
                 print("\nInterrupted. Bye!")
                 break

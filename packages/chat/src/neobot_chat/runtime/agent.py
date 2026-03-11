@@ -96,6 +96,8 @@ class Agent:
 
             response: Message | None = None
             async for chunk in self.provider.stream(messages, tools=tools):
+                if chunk.reasoning_delta:
+                    yield ChatChunk(reasoning_delta=chunk.reasoning_delta)
                 if chunk.delta:
                     yield ChatChunk(delta=chunk.delta)
                 chunk_message = chunk.message
@@ -136,7 +138,7 @@ class Agent:
         for message in messages:
             if message.get("role") == "system":
                 content = message.get("content")
-                if content:
+                if isinstance(content, str) and content:
                     system_parts.append(content)
             else:
                 rest.append(message)
@@ -183,7 +185,7 @@ class Agent:
         self._emit(
             "llm_end",
             {
-                "content": (response.get("content") or "")[:200],
+                "content": response.get("content")[:200] if isinstance(response.get("content"), str) else "",
                 "tool_calls": [tc["function"]["name"] for tc in (tool_calls or [])],
             },
         )
