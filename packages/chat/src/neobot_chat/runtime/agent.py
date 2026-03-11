@@ -103,6 +103,7 @@ class Agent:
                 chunk_message = chunk.message
                 if chunk_message is not None:
                     response = chunk_message
+                    yield ChatChunk(message=chunk_message)
 
             if response is None:
                 break

@@ -267,6 +267,9 @@ async def chat_loop() -> None:
                                 reasoning_started = False
                             print(chunk.delta, end="", flush=True)
                             printed = True
+                        if chunk.message is not None and reasoning_started:
+                            print()
+                            reasoning_started = False
                         if chunk.state is not None:
                             final_state = chunk.state
                 else:
