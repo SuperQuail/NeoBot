@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from neobot_chat.exceptions import GraphError
+from neobot_chat.schema.exceptions import GraphError
 from neobot_chat.graph.constants import END
-from neobot_chat.types import State
+from neobot_chat.graph.types import StateCondition, StateNode
+from neobot_chat.schema.types import State
 
 
 class CompiledGraph:
     """编译后的可执行图"""
 
     def __init__(
-            self,
-            nodes: dict[str, Callable],
-            edges: dict[str, str],
-            conditional_edges: dict[str, tuple[Callable, dict[str, str]]],
-            entry_point: str,
-            max_steps: int = 100,
+        self,
+        nodes: dict[str, StateNode],
+        edges: dict[str, str],
+        conditional_edges: dict[str, tuple[StateCondition, dict[str, str]]],
+        entry_point: str,
+        max_steps: int = 100,
     ):
         self._nodes = nodes
         self._edges = edges

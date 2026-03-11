@@ -1,33 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from neobot_chat.graph.constants import END
 from neobot_chat.graph.executor import CompiledGraph
 from neobot_chat.graph.graph import StateGraph
-from neobot_chat.types import State
-
-# State → State 预处理器（如 inject_skills）
-Preprocessor = Callable[[State], State]
+from neobot_chat.graph.types import StateNode
+from neobot_chat.schema.protocol import StatePreprocessor
+from neobot_chat.schema.types import State
 
 
 class Workflow:
-    """基于 Graph 的链式工作流
+    """基于 Graph 的链式工作流"""
 
-    可选 preprocessor 在 invoke 前对 state 做预处理（如 skills 注入）::
-
-        from neobot_chat.skills.inject import inject_skills
-        from functools import partial
-
-        wf = Workflow(preprocessor=partial(inject_skills, my_skills))
-    """
-
-    def __init__(self, preprocessor: Preprocessor | None = None):
-        self._steps: list[tuple[str, Callable]] = []
+    def __init__(self, preprocessor: StatePreprocessor | None = None):
+        self._steps: list[tuple[str, StateNode]] = []
         self._compiled: CompiledGraph | None = None
         self._preprocessor = preprocessor
 
-    def add_step(self, func: Callable) -> Workflow:
+    def add_step(self, func: StateNode) -> Workflow:
         self._steps.append((f"step_{len(self._steps)}", func))
         self._compiled = None
         return self

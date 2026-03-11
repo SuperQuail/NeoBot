@@ -1,27 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol
 
-from neobot_chat.types import State
-
-
-class AgentProtocol(Protocol):
-    """子 Agent 必须实现的接口"""
-
-    description: str
-    custom_tools: list[dict]
-
-    async def invoke(self, state: State) -> State: ...
+from neobot_chat.schema.protocol import AgentLike
 
 
 class AgentRegistry:
     """子 Agent 注册表"""
 
     def __init__(self):
-        self._agents: dict[str, AgentProtocol] = {}
+        self._agents: dict[str, AgentLike] = {}
 
-    def register(self, name: str, agent: AgentProtocol) -> None:
+    def register(self, name: str, agent: AgentLike) -> None:
         self._agents[name] = agent
 
     @property
@@ -47,29 +37,25 @@ class AgentRegistry:
             return f"Agent '{name}' not found"
 
         header = f"Agent {name}: {agent.description}"
-        if not agent.custom_tools:
+        if not agent.tool_definitions:
             return header
 
         lines = [
             f"- {t['function']['name']}: {t['function'].get('description', '')}"
-            for t in agent.custom_tools
+            for t in agent.tool_definitions
         ]
         return f"{header}\nTools:\n" + "\n".join(lines)
 
     async def delegate(
-            self,
-            agent: str | None = None,
-            task: str | None = None,
-            tasks: list[dict] | None = None,
+        self,
+        agent: str | None = None,
+        task: str | None = None,
+        tasks: list[dict] | None = None,
     ) -> str:
         if tasks:
-            coros = [
-                self.delegate(agent=t["agent"], task=t["task"]) for t in tasks
-            ]
+            coros = [self.delegate(agent=t["agent"], task=t["task"]) for t in tasks]
             results = await asyncio.gather(*coros)
-            return "\n\n".join(
-                f"{t['agent']}: {r}" for t, r in zip(tasks, results)
-            )
+            return "\n\n".join(f"{t['agent']}: {r}" for t, r in zip(tasks, results))
 
         if not agent or not task:
             return "Missing agent or task parameter"

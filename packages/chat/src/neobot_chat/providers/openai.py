@@ -5,18 +5,18 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from neobot_chat.providers.base import BaseHTTPProvider
-from neobot_chat.types import ChatChunk
+from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
 class OpenAIProvider(BaseHTTPProvider):
     """OpenAI Chat Completions API"""
 
     def __init__(
-            self,
-            api_key: str,
-            model: str,
-            base_url: str = "https://api.openai.com/v1",
-            timeout: float = 120.0,
+        self,
+        api_key: str,
+        model: str,
+        base_url: str = "https://api.openai.com/v1",
+        timeout: float = 120.0,
     ):
         super().__init__(api_key, base_url, timeout)
         self.model = model
@@ -27,9 +27,31 @@ class OpenAIProvider(BaseHTTPProvider):
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _build_tool_call(
+        *, tool_id: object, tool_name: object, arguments: object
+    ) -> ToolCall | None:
+        if not isinstance(tool_id, str) or not isinstance(tool_name, str):
+            return None
+
+        if isinstance(arguments, str):
+            parsed_arguments = arguments
+        else:
+            parsed_arguments = json.dumps(arguments if arguments is not None else {})
+
+        tool_call: ToolCall = {
+            "id": tool_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": parsed_arguments,
+            },
+        }
+        return tool_call
+
     async def chat(
-            self, messages: list[dict], tools: list[dict] | None = None
-    ) -> dict:
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
+    ) -> Message:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -43,30 +65,32 @@ class OpenAIProvider(BaseHTTPProvider):
         data = resp.json()
 
         choice = data["choices"][0]["message"]
-        result: dict[str, Any] = {
+        content = choice.get("content")
+        result: Message = {
             "role": "assistant",
-            "content": choice.get("content"),
+            "content": content if isinstance(content, str) else None,
         }
 
-        if choice.get("tool_calls"):
-            result["tool_calls"] = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["function"]["name"],
-                        "arguments": tc["function"]["arguments"],
-                    },
-                }
-                for tc in choice["tool_calls"]
-            ]
+        tool_calls: list[ToolCall] = []
+        for tc in choice.get("tool_calls", []):
+            function = tc.get("function", {})
+            tool_call = self._build_tool_call(
+                tool_id=tc.get("id"),
+                tool_name=function.get("name"),
+                arguments=function.get("arguments"),
+            )
+            if tool_call is not None:
+                tool_calls.append(tool_call)
+
+        if tool_calls:
+            result["tool_calls"] = tool_calls
 
         return result
 
     # ── 流式 API ──
 
     async def stream(
-            self, messages: list[dict], tools: list[dict] | None = None
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
     ) -> AsyncIterator[ChatChunk]:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -78,10 +102,10 @@ class OpenAIProvider(BaseHTTPProvider):
             payload["tool_choice"] = "auto"
 
         content_parts: list[str] = []
-        tool_calls_map: dict[int, dict] = {}
+        tool_calls_map: dict[int, ToolCall] = {}
 
         async with self.client.stream(
-                "POST", "/chat/completions", json=payload
+            "POST", "/chat/completions", json=payload
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -97,31 +121,37 @@ class OpenAIProvider(BaseHTTPProvider):
                     continue
                 delta = choices[0].get("delta", {})
 
-                if delta.get("content"):
-                    content_parts.append(delta["content"])
-                    yield ChatChunk(delta=delta["content"])
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    content_parts.append(content)
+                    yield ChatChunk(delta=content)
 
                 for tc_delta in delta.get("tool_calls", []):
-                    idx = tc_delta["index"]
+                    idx = tc_delta.get("index")
+                    if not isinstance(idx, int):
+                        continue
                     if idx not in tool_calls_map:
-                        tool_calls_map[idx] = {
-                            "id": tc_delta.get("id", ""),
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        }
+                        tool_call = self._build_tool_call(
+                            tool_id=tc_delta.get("id", ""),
+                            tool_name="",
+                            arguments="",
+                        )
+                        if tool_call is None:
+                            continue
+                        tool_calls_map[idx] = tool_call
                     entry = tool_calls_map[idx]
                     fn = tc_delta.get("function", {})
-                    if fn.get("name"):
-                        entry["function"]["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        entry["function"]["arguments"] += fn["arguments"]
+                    name = fn.get("name")
+                    if isinstance(name, str) and name:
+                        entry["function"]["name"] += name
+                    arguments = fn.get("arguments")
+                    if isinstance(arguments, str) and arguments:
+                        entry["function"]["arguments"] += arguments
 
-        message: dict[str, Any] = {
+        message: Message = {
             "role": "assistant",
             "content": "".join(content_parts) or None,
         }
         if tool_calls_map:
-            message["tool_calls"] = [
-                tool_calls_map[i] for i in sorted(tool_calls_map)
-            ]
+            message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
         yield ChatChunk(message=message)

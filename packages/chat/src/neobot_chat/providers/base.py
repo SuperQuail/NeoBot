@@ -5,18 +5,18 @@ from typing import Protocol
 
 import httpx
 
-from neobot_chat.types import ChatChunk
+from neobot_chat.schema.types import ChatChunk, Message, ToolDefinition
 
 
 class Provider(Protocol):
     """LLM Provider 协议：统一的 chat / stream / close 接口"""
 
     async def chat(
-            self, messages: list[dict], tools: list[dict] | None = None
-    ) -> dict: ...
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
+    ) -> Message: ...
 
     def stream(
-            self, messages: list[dict], tools: list[dict] | None = None
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
     ) -> AsyncIterator[ChatChunk]: ...
 
     async def close(self) -> None: ...
@@ -26,11 +26,11 @@ class BaseHTTPProvider:
     """HTTP Provider 基类：管理 httpx 客户端生命周期"""
 
     def __init__(
-            self,
-            api_key: str,
-            base_url: str,
-            timeout: float = 120.0,
-            extra_headers: dict[str, str] | None = None,
+        self,
+        api_key: str,
+        base_url: str,
+        timeout: float = 120.0,
+        extra_headers: dict[str, str] | None = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
