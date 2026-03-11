@@ -273,15 +273,49 @@ async def chat_loop() -> None:
                         if chunk.state is not None:
                             final_state = chunk.state
                 else:
+                    previous_len = len(messages)
                     final_state = await agent.invoke({"messages": messages})
+                    all_messages = list(final_state.get("messages", []))
+                    new_messages = all_messages[previous_len:]
+                    assistant_messages = [
+                        message
+                        for message in new_messages
+                        if message.get("role") == "assistant"
+                    ]
+
+                    for assistant_message in assistant_messages:
+                        assistant_extensions = assistant_message.get("extensions")
+                        assistant_reasoning = None
+                        if isinstance(assistant_extensions, dict):
+                            deepseek = assistant_extensions.get("deepseek")
+                            if isinstance(deepseek, dict):
+                                reasoning_content = deepseek.get("reasoning_content")
+                                if (
+                                    isinstance(reasoning_content, str)
+                                    and reasoning_content
+                                ):
+                                    assistant_reasoning = reasoning_content
+                        if SHOW_REASONING and assistant_reasoning:
+                            print(f"\n[reasoning] {assistant_reasoning}")
+                        assistant_tool_calls = assistant_message.get("tool_calls") or []
+                        if assistant_tool_calls:
+                            tool_names = [
+                                tool_call["function"]["name"]
+                                for tool_call in assistant_tool_calls
+                                if tool_call.get("function")
+                                and tool_call["function"].get("name")
+                            ]
+                            if tool_names:
+                                print(f"[tool_calls] {', '.join(tool_names)}")
+
                     final_message = (
-                        final_state.get("messages", [])[-1]
-                        if final_state.get("messages")
-                        else None
+                        assistant_messages[-1] if assistant_messages else None
                     )
                     final_content = (
                         final_message.get("content") if final_message else None
                     )
+                    if final_message and SHOW_REASONING:
+                        print("Assistant: ", end="", flush=True)
                     if isinstance(final_content, str) and final_content:
                         print(final_content, end="", flush=True)
                         printed = True
