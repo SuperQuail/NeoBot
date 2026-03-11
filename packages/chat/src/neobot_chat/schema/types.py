@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
 
@@ -40,6 +41,43 @@ class State(TypedDict, total=False):
 
 
 OnEvent = Callable[[str, dict], None]
+ToolAccessAction = Literal["allow", "deny", "ask"]
+
+
+@dataclass(frozen=True)
+class ToolGuardContext:
+    cwd: Path | None = None
+    allowed_paths: list[Path] = field(default_factory=list)
+    allowed_commands: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolAccessRule:
+    action: ToolAccessAction = "allow"
+    fallback_action: ToolAccessAction | None = None
+
+
+@dataclass(frozen=True)
+class ToolAccessPolicy:
+    default_rule: ToolAccessRule = field(default_factory=ToolAccessRule)
+    list_agents_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="allow")
+    )
+    delegate_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="ask", fallback_action="allow")
+    )
+    path_in_scope_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="allow")
+    )
+    path_out_of_scope_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="ask", fallback_action="deny")
+    )
+    command_allowed_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="allow")
+    )
+    command_disallowed_rule: ToolAccessRule = field(
+        default_factory=lambda: ToolAccessRule(action="ask", fallback_action="deny")
+    )
 
 
 @dataclass
