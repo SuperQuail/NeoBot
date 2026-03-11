@@ -1,5 +1,4 @@
 from neobot_chat.runtime.agent import Agent
-from neobot_chat.factory import create_basic_agent, create_tool_agent
 from neobot_chat.graph import END, CompiledGraph, StateGraph, skill_node
 from neobot_chat.schema.protocol import (
     AgentLike,
@@ -25,8 +24,6 @@ __all__ = [
     "ChatChunk",
     "CompiledGraph",
     "compose_preprocessors",
-    "create_basic_agent",
-    "create_tool_agent",
     "END",
     "build_skill_preprocessor",
     "inject_skills",

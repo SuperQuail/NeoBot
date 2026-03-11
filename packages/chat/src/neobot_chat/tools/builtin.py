@@ -9,9 +9,9 @@ from typing import Any
 
 from neobot_chat.schema.exceptions import ToolError
 from neobot_chat.schema.protocol import ToolExecutor
+from neobot_chat.schema.types import ToolDefinition
 from neobot_chat.tools.registry import AgentRegistry
 from neobot_chat.tools.shell import PersistentShell
-from neobot_chat.schema.types import ToolDefinition
 
 
 def _tool_def(name: str, description: str, parameters: dict) -> ToolDefinition:
@@ -48,6 +48,7 @@ class BuiltinTools(ToolExecutor):
         self._dispatch: dict[str, Any] = {
             "read_file": self._read_file,
             "write_file": self._write_file,
+            "list_files": self._list_files,
             "list_agents": self._list_agents,
             "delegate": self._delegate,
         }
@@ -69,7 +70,6 @@ class BuiltinTools(ToolExecutor):
             if not parts:
                 return False, ""
             cmd = parts[0]
-            # 支持通配符匹配
             for pattern in self.allowed_commands:
                 if fnmatch(cmd, pattern):
                     return True, cmd
@@ -101,6 +101,19 @@ class BuiltinTools(ToolExecutor):
                         },
                     },
                     "required": ["path", "content"],
+                },
+            ),
+            _tool_def(
+                "list_files",
+                "List files and directories under a path. Relative paths resolve from current working directory.",
+                {
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Directory path to list",
+                            "default": ".",
+                        }
+                    },
                 },
             ),
         ]
@@ -185,8 +198,6 @@ class BuiltinTools(ToolExecutor):
             raise ToolError(f"Unknown tool: {name}")
         return await handler(**args)
 
-    # ── 工具实现 ──
-
     def _resolve_path(self, path: str) -> Path:
         p = Path(path).expanduser()
         resolved = p.resolve() if p.is_absolute() else (self.cwd / p).resolve()
@@ -214,18 +225,38 @@ class BuiltinTools(ToolExecutor):
         except Exception as e:
             return f"Error writing file: {e}"
 
+    async def _list_files(self, path: str = ".") -> str:
+        try:
+            resolved = self._resolve_path(path)
+            if not self._is_path_allowed(resolved):
+                return f"Error: Access denied to path: {path}"
+            if not resolved.exists():
+                return f"Error: Path not found: {path}"
+            if resolved.is_file():
+                return resolved.name
+
+            entries = await asyncio.to_thread(lambda: sorted(resolved.iterdir()))
+            if not entries:
+                return "(empty directory)"
+
+            lines = []
+            for entry in entries:
+                suffix = "/" if entry.is_dir() else ""
+                lines.append(f"{entry.name}{suffix}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error listing files: {e}"
+
     async def _execute_command(
         self,
         command: str,
         cwd: str | None = None,
         timeout: int | None = None,
     ) -> str:
-        # 检查命令白名单
         allowed, cmd_name = self._is_command_allowed(command)
         if not allowed:
             return f"Error: Command not allowed: {cmd_name or command}"
 
-        # 验证 cwd 路径
         if cwd:
             cwd_path = Path(cwd).resolve()
             if not self._is_path_allowed(cwd_path):
@@ -233,7 +264,6 @@ class BuiltinTools(ToolExecutor):
             if cwd_path != self.cwd:
                 return await self._execute_in_temp_process(command, cwd, timeout)
 
-        # 使用持久 shell
         return await self._shell.execute(command)
 
     async def _execute_in_temp_process(

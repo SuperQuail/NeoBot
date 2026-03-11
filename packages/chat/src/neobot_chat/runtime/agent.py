@@ -16,6 +16,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.skills.inject import build_skill_preprocessor
 from neobot_chat.skills.registry import SkillRegistry
 from neobot_chat.tools.builtin import BuiltinTools
+from neobot_chat.tools.composite import CompositeToolExecutor
 from neobot_chat.tools.registry import AgentRegistry
 from neobot_chat.utils import parse_tool_args
 
@@ -42,13 +43,19 @@ class Agent:
     ):
         self.provider = provider
 
-        self.tool_executor = tool_executor or self._build_legacy_tool_executor(
+        builtin_tool_executor = self._build_legacy_tool_executor(
             agent_registry=agent_registry,
             skills=skills,
             cwd=cwd,
             command_timeout=command_timeout,
             allowed_commands=allowed_commands,
         )
+        if tool_executor is None:
+            self.tool_executor = builtin_tool_executor
+        else:
+            self.tool_executor = CompositeToolExecutor(
+                [builtin_tool_executor, tool_executor]
+            )
         self.tool_definitions = list(tools or [])
         self.custom_tools = self.tool_definitions
         self.skills = skills
