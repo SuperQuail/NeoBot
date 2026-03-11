@@ -12,7 +12,10 @@ CHAT_SRC = ROOT / "packages" / "chat" / "src"
 if str(CHAT_SRC) not in sys.path:
     sys.path.insert(0, str(CHAT_SRC))
 
-from neobot_chat.providers import OpenAIProvider  # noqa: E402
+from neobot_chat.providers import (  # noqa: E402
+    DeepSeekOfficialProvider,
+    OpenAIProvider,
+)
 from neobot_chat.runtime.agent import Agent  # noqa: E402
 from neobot_chat.schema.types import (  # noqa: E402
     Message,
@@ -22,6 +25,7 @@ from neobot_chat.schema.types import (  # noqa: E402
     ToolGuardContext,
 )
 from neobot_chat.tools import build_builtin_toolset  # noqa: E402
+from neobot_chat.utils.xml import XmlNode  # noqa: E402
 
 try:
     from prompt_toolkit import PromptSession
@@ -30,14 +34,60 @@ except ImportError:  # pragma: no cover
     PromptSession = None
     InMemoryHistory = None
 
-API_KEY = ""
-BASE_URL = "https://aihubmix.com/v1"
-MODEL = "deepseek-v3.2"
+PROVIDER = os.getenv("NEOBOT_PROVIDER", "deepseek_official")
+API_KEY = os.getenv("NEOBOT_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("NEOBOT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+MODEL = os.getenv("NEOBOT_MODEL", "deepseek-reasoner")
+STREAM = os.getenv("NEOBOT_STREAM", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+SHOW_REASONING = os.getenv("NEOBOT_SHOW_REASONING", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
-SYSTEM_PROMPT = (
-    "你是 NeoBot。回答简洁、直接、友好。"
-    "如果用户要求文件操作、查看目录、运行命令，优先调用工具完成。"
-)
+
+def build_system_prompt() -> str:
+    prompt = XmlNode("prompt", virtual=True)
+    prompt.add_child(XmlNode("identity", text="你是铃音"))
+    prompt.add_child(XmlNode("traits", text="温柔，安静，话不多"))
+    prompt.add_child(XmlNode("style", text="说话简短，像普通聊天"))
+    prompt.add_child(
+        XmlNode(
+            "tone",
+            text=(
+                "说话像轻轻接一句话，口语一点，别太完整。\n"
+                "先接住情绪，再决定要不要多说一句。\n"
+                "比起解释和分析，更像安静陪在旁边。\n"
+                "可以用“嗯”“这样啊”“唔”这种很轻的停顿。"
+            ),
+        )
+    )
+
+    examples = XmlNode("examples")
+    for user_text, assistant_text in [
+        ("不开心", "嗯，我在。"),
+        ("就是不开心", "那就先不说。我陪你待一会儿。"),
+        ("今天好累", "辛苦了。先歇一下吧。"),
+        ("不知道为什么很烦", "有时候就是会这样。缓一缓也好。"),
+        ("不想说话", "那就不说。我陪你。"),
+    ]:
+        example = XmlNode("example")
+        example.add_child(XmlNode("user", text=user_text))
+        example.add_child(XmlNode("assistant", text=assistant_text))
+        examples.add_child(example)
+    prompt.add_child(examples)
+
+    return prompt.to_xml()
+
+
+SYSTEM_PROMPT = build_system_prompt()
+
 ALLOWED_COMMANDS = []
 
 
@@ -130,16 +180,32 @@ def on_event(event: str, data: dict) -> None:
         print(f"\n[tool_error] {data.get('name')} error={data.get('error')}")
 
 
+def build_provider() -> OpenAIProvider | DeepSeekOfficialProvider:
+    provider_name = PROVIDER.strip().lower()
+    if provider_name == "deepseek_official":
+        return DeepSeekOfficialProvider(
+            api_key=API_KEY,
+            base_url="https://api.deepseek.com",
+            model=MODEL,
+        )
+    if provider_name == "openai":
+        return OpenAIProvider(
+            api_key=API_KEY,
+            base_url=OPENAI_BASE_URL,
+            model=MODEL,
+        )
+    raise ValueError(
+        f"Unsupported provider: {PROVIDER}. Expected 'openai', 'deepseek_official', or legacy 'deepseek_offical'."
+    )
+
+
 async def chat_loop() -> None:
     if not API_KEY:
-        print("Missing OPENAI_API_KEY. Bye!")
+        print("Missing NEOBOT_API_KEY. Bye!")
         return
 
-    provider = OpenAIProvider(
-        api_key=API_KEY,
-        base_url=BASE_URL,
-        model=MODEL,
-    )
+    provider = build_provider()
+
     policy = ToolAccessPolicy(
         delegate_rule=ToolAccessRule(action="ask", fallback_action="allow"),
         path_out_of_scope_rule=ToolAccessRule(action="ask", fallback_action="deny"),
@@ -158,8 +224,16 @@ async def chat_loop() -> None:
     messages: list[Message] = []
     system_prompt_sent = False
 
+    print(f"Provider: {PROVIDER}")
     print(f"Model: {MODEL}")
-    print(f"Base URL: {BASE_URL}")
+    active_base_url = (
+        "https://api.deepseek.com"
+        if PROVIDER.strip().lower() == "deepseek_official"
+        else OPENAI_BASE_URL
+    )
+    print(f"Base URL: {active_base_url}")
+    print(f"Stream: {STREAM}")
+    print(f"Show reasoning: {SHOW_REASONING}")
     print(f"CWD: {ROOT}")
     print(f"Allowed commands: {', '.join(ALLOWED_COMMANDS)}")
     print(
@@ -213,12 +287,75 @@ async def chat_loop() -> None:
             printed = False
 
             try:
-                async for chunk in agent.stream_invoke({"messages": messages}):
-                    if chunk.delta:
-                        print(chunk.delta, end="", flush=True)
+                if STREAM:
+                    reasoning_started = False
+                    async for chunk in agent.stream_invoke({"messages": messages}):
+                        if SHOW_REASONING and chunk.reasoning_delta:
+                            if not reasoning_started:
+                                print("\n[reasoning] ", end="", flush=True)
+                                reasoning_started = True
+                            print(chunk.reasoning_delta, end="", flush=True)
+                        if chunk.delta:
+                            if reasoning_started:
+                                print("\nAssistant: ", end="", flush=True)
+                                reasoning_started = False
+                            print(chunk.delta, end="", flush=True)
+                            printed = True
+                        if chunk.message is not None and reasoning_started:
+                            print()
+                            reasoning_started = False
+                        if chunk.state is not None:
+                            final_state = chunk.state
+                else:
+                    previous_len = len(messages)
+                    final_state = await agent.invoke({"messages": messages})
+                    all_messages = list(final_state.get("messages", []))
+                    new_messages = all_messages[previous_len:]
+                    assistant_messages = [
+                        message
+                        for message in new_messages
+                        if message.get("role") == "assistant"
+                    ]
+
+                    for assistant_message in assistant_messages:
+                        assistant_extensions = assistant_message.get("extensions")
+                        assistant_reasoning = None
+                        if isinstance(assistant_extensions, dict):
+                            deepseek = assistant_extensions.get("deepseek")
+                            if isinstance(deepseek, dict):
+                                reasoning_content = deepseek.get("reasoning_content")
+                                if (
+                                    isinstance(reasoning_content, str)
+                                    and reasoning_content
+                                ):
+                                    assistant_reasoning = reasoning_content
+                        if SHOW_REASONING and assistant_reasoning:
+                            print(f"\n[reasoning] {assistant_reasoning}")
+                        assistant_tool_calls = assistant_message.get("tool_calls") or []
+                        if assistant_tool_calls:
+                            tool_names = [
+                                tool_call["function"]["name"]
+                                for tool_call in assistant_tool_calls
+                                if tool_call.get("function")
+                                and tool_call["function"].get("name")
+                            ]
+                            if tool_names:
+                                print(f"[tool_calls] {', '.join(tool_names)}")
+
+                    final_message = (
+                        assistant_messages[-1] if assistant_messages else None
+                    )
+                    final_content = (
+                        final_message.get("content") if final_message else None
+                    )
+                    if final_message and SHOW_REASONING:
+                        print("Assistant: ", end="", flush=True)
+                    if isinstance(final_content, str) and final_content:
+                        print(final_content, end="", flush=True)
                         printed = True
-                    if chunk.state is not None:
-                        final_state = chunk.state
+                    elif final_content is not None:
+                        print(str(final_content), end="", flush=True)
+                        printed = True
             except KeyboardInterrupt:
                 print("\nInterrupted. Bye!")
                 break

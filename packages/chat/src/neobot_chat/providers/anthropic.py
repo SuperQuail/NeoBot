@@ -41,21 +41,26 @@ class AnthropicProvider(BaseHTTPProvider):
         for msg in messages:
             match msg["role"]:
                 case "system":
-                    system_parts.append(msg["content"])
+                    content = msg.get("content")
+                    if isinstance(content, str) and content:
+                        system_parts.append(content)
                 case "assistant":
                     converted.append(self._convert_assistant_msg(msg))
                 case "tool":
                     converted.append(self._convert_tool_msg(msg))
                 case _:
-                    converted.append({"role": "user", "content": msg["content"]})
+                    converted.append({"role": "user", "content": msg.get("content")})
         system = "\n\n".join(system_parts) if system_parts else None
         return system, converted
 
     @staticmethod
     def _convert_assistant_msg(msg: Message) -> dict:
         blocks: list[dict] = []
-        if msg.get("content"):
-            blocks.append({"type": "text", "text": msg["content"]})
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            blocks.extend(block for block in content if isinstance(block, dict))
         for tc in msg.get("tool_calls", []):
             blocks.append(
                 {

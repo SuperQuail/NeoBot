@@ -68,7 +68,7 @@ class OpenAIProvider(BaseHTTPProvider):
         content = choice.get("content")
         result: Message = {
             "role": "assistant",
-            "content": content if isinstance(content, str) else None,
+            "content": content,
         }
 
         tool_calls: list[ToolCall] = []

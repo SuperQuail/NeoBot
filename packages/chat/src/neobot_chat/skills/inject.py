@@ -12,7 +12,11 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
 
     messages: list[Message] = list(state.get("messages", []))
     user_msgs = [
-        m["content"] for m in messages if m.get("role") == "user" and m.get("content")
+        content
+        for m in messages
+        if m.get("role") == "user"
+        for content in [m.get("content")]
+        if isinstance(content, str) and content
     ]
     if not user_msgs:
         return state

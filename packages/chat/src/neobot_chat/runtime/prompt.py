@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from neobot_chat.schema.exceptions import ValidationError
 from neobot_chat.skills.registry import Skill
 from neobot_chat.utils.xml import XmlNode
 
@@ -53,7 +54,7 @@ class SystemPromptState:
     def merge_system_xml(self, text: str) -> None:
         incoming = XmlNode.from_xml(text)
         if incoming.tag_name != "system":
-            raise ValueError("system xml root tag must be <system>")
+            raise ValidationError("system xml root tag must be <system>")
         for child in incoming.children:
             if child.tag_name == "instructions":
                 for item in child.children:

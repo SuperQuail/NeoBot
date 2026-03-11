@@ -67,4 +67,5 @@ class AgentRegistry:
         result = await agent_obj.invoke(
             {"messages": [{"role": "user", "content": task}]}
         )
-        return result["messages"][-1]["content"]
+        content = result["messages"][-1].get("content")
+        return content if isinstance(content, str) else str(content)
