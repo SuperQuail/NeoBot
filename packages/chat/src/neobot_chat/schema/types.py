@@ -36,6 +36,7 @@ class ToolFunctionSchema(TypedDict):
 
 class State(TypedDict, total=False):
     messages: list[Message]
+    _matched_skills: list[object]
 
 
 OnEvent = Callable[[str, dict], None]

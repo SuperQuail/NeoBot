@@ -53,7 +53,10 @@ class Agent:
         self.custom_tools = self.tool_definitions
         self.skills = skills
         self.description = description
+        self.cwd = Path(cwd).resolve() if cwd is not None else None
         self.max_iterations = max_iterations
+        self.command_timeout = command_timeout
+        self.allowed_commands = list(allowed_commands or [])
         self.system_prompt = system_prompt
         self.on_event = on_event
         self.preprocessor = preprocessor or self._build_legacy_preprocessor(skills)
@@ -118,35 +121,33 @@ class Agent:
         if self.preprocessor:
             state = self.preprocessor(state)
         messages: list[Message] = list(state.get("messages", []))
+        matched_skills = state.get("_matched_skills") if self.skills else None
 
-        has_system = any(m.get("role") == "system" for m in messages)
+        system_parts: list[str] = []
+        rest: list[Message] = []
+        for message in messages:
+            if message.get("role") == "system":
+                content = message.get("content")
+                if content:
+                    system_parts.append(content)
+            else:
+                rest.append(message)
 
-        if self.system_prompt:
-            if has_system:
-                for i, m in enumerate(messages):
-                    if m.get("role") == "system":
-                        messages[i] = {"role": "system", "content": self.system_prompt}
-                        break
-            else:
-                messages.insert(0, {"role": "system", "content": self.system_prompt})
-        elif tools:
-            names = ", ".join(t["function"]["name"] for t in tools)
-            tool_instruction = (
-                f"You have access to the following tools: {names}. "
-                "When the user asks you to perform actions "
-                "(file operations, running commands, etc.), "
-                "you MUST use the provided tool functions. "
-                "Do NOT write code or commands in your text response."
-            )
-            if has_system:
-                for i, m in enumerate(messages):
-                    if m.get("role") == "system":
-                        messages[i]["content"] = (
-                            tool_instruction + "\n\n" + m["content"]
-                        )
-                        break
-            else:
-                messages.insert(0, {"role": "system", "content": tool_instruction})
+        prompt = SkillRegistry.build_system_xml(
+            instructions=system_parts
+            + ([self.system_prompt] if self.system_prompt else []),
+            tool_names=[t["function"]["name"] for t in tools] if tools else None,
+            skills=matched_skills,
+            description=self.description,
+            cwd=str(self.cwd) if self.cwd else None,
+            max_iterations=self.max_iterations,
+            command_timeout=self.command_timeout,
+            allowed_commands=self.allowed_commands or None,
+        )
+        if prompt:
+            messages = [{"role": "system", "content": prompt}, *rest]
+        else:
+            messages = rest
 
         return state, tools, messages
 

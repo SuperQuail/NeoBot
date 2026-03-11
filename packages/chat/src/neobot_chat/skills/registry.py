@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from neobot_chat.utils.xml import XmlNode
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 _SKILL_FILENAME = "SKILL.md"
 
@@ -70,30 +72,150 @@ class SkillRegistry:
         """将 skills 格式化为 XML 片段（仅元数据）"""
         if not skills:
             return ""
-        sections = "\n".join(
-            f'<skill name="{s.name}" description="{s.description}" skill_dir="{s.path.parent.absolute()}" />'
-            for s in skills
+        node = XmlNode(
+            "skills",
+            children=[
+                XmlNode(
+                    "skill",
+                    attributes={
+                        "name": s.name,
+                        "description": s.description,
+                        "skill_dir": str(s.path.parent.absolute()),
+                    },
+                    self_closing=True,
+                )
+                for s in skills
+            ],
         )
-        return f"<skills>\n{sections}\n</skills>"
+        return node.to_xml()
+
+    @staticmethod
+    def build_system_xml(
+        *,
+        instructions: list[str] | None = None,
+        tool_names: list[str] | None = None,
+        skills: list[Skill] | None = None,
+        description: str = "",
+        cwd: str | None = None,
+        max_iterations: int | None = None,
+        command_timeout: int | None = None,
+        allowed_commands: list[str] | None = None,
+    ) -> str:
+        children: list[XmlNode] = []
+
+        if description:
+            children.append(XmlNode("description", text=description))
+
+        instruction_items = [text for text in (instructions or []) if text.strip()]
+        if instruction_items:
+            children.append(
+                XmlNode(
+                    "instructions",
+                    children=[XmlNode("item", text=text) for text in instruction_items],
+                )
+            )
+
+        if tool_names:
+            children.append(
+                XmlNode(
+                    "tool_policy",
+                    children=[
+                        XmlNode(
+                            "item",
+                            text=(
+                                "When the user asks you to perform actions "
+                                "(file operations, running commands, etc.), you MUST use the provided tool functions."
+                            ),
+                        ),
+                        XmlNode(
+                            "item",
+                            text="Do NOT write code or commands in your text response.",
+                        ),
+                    ],
+                )
+            )
+            children.append(
+                XmlNode(
+                    "tools",
+                    children=[
+                        XmlNode("tool", attributes={"name": name}, self_closing=True)
+                        for name in tool_names
+                    ],
+                )
+            )
+
+        if skills:
+            children.append(
+                XmlNode(
+                    "skill_policy",
+                    children=[
+                        XmlNode(
+                            "item",
+                            text="当需要使用 skill 时，先用工具读取 skill_dir 下的 SKILL.md 文件获取完整说明。",
+                        ),
+                        XmlNode(
+                            "item",
+                            text="SKILL.md 中的相对路径（如 scripts/analyze.py）相对于 skill_dir。",
+                        ),
+                    ],
+                )
+            )
+            children.append(
+                XmlNode(
+                    "skills",
+                    children=[
+                        XmlNode(
+                            "skill",
+                            attributes={
+                                "name": skill.name,
+                                "description": skill.description,
+                                "skill_dir": str(skill.path.parent.absolute()),
+                            },
+                            self_closing=True,
+                        )
+                        for skill in skills
+                    ],
+                )
+            )
+
+        runtime_children: list[XmlNode] = []
+        if cwd:
+            runtime_children.append(XmlNode("cwd", text=cwd))
+        if max_iterations is not None:
+            runtime_children.append(
+                XmlNode("max_iterations", text=str(max_iterations))
+            )
+        if command_timeout is not None:
+            runtime_children.append(
+                XmlNode("command_timeout", text=str(command_timeout))
+            )
+        if allowed_commands:
+            runtime_children.append(
+                XmlNode(
+                    "allowed_commands",
+                    children=[
+                        XmlNode("command", text=command)
+                        for command in allowed_commands
+                    ],
+                )
+            )
+        if runtime_children:
+            children.append(XmlNode("runtime", children=runtime_children))
+
+        if not children:
+            return ""
+        return XmlNode("system", children=children).to_xml()
 
     @staticmethod
     def build_system_prompt(
-            instructions: str = "",
-            skills: list[Skill] | None = None,
+        instructions: str = "",
+        skills: list[Skill] | None = None,
     ) -> str:
         """组装完整的 system prompt（XML 结构）"""
-        parts: list[str] = []
-        if instructions:
-            parts.append(f"<instructions>\n{instructions}\n</instructions>")
-        if skills:
-            parts.append(
-                "当需要使用 skill 时，先用工具读取 skill_dir 下的 SKILL.md 文件获取完整说明。\n"
-                "SKILL.md 中的相对路径（如 scripts/analyze.py）相对于 skill_dir。\n\n"
-                + SkillRegistry.format_skills_xml(skills)
-            )
-        if not parts:
-            return ""
-        return "<system>\n" + "\n\n".join(parts) + "\n</system>"
+        return SkillRegistry.build_system_xml(
+            instructions=[instructions] if instructions else None,
+            skills=skills,
+        )
 
     # ── 内部方法 ──
 
