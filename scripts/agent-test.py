@@ -148,7 +148,7 @@ def on_event(event: str, data: dict) -> None:
 
 def build_provider() -> OpenAIProvider | DeepSeekOfficialProvider:
     provider_name = PROVIDER.strip().lower()
-    if provider_name in {"deepseek_offical", "deepseek_official"}:
+    if provider_name == "deepseek_official":
         return DeepSeekOfficialProvider(
             api_key=API_KEY,
             base_url="https://api.deepseek.com",
@@ -194,7 +194,7 @@ async def chat_loop() -> None:
     print(f"Model: {MODEL}")
     active_base_url = (
         "https://api.deepseek.com"
-        if PROVIDER.strip().lower() in {"deepseek_offical", "deepseek_official"}
+        if PROVIDER.strip().lower() == "deepseek_official"
         else OPENAI_BASE_URL
     )
     print(f"Base URL: {active_base_url}")
