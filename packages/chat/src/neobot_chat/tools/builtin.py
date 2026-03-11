@@ -7,12 +7,14 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from neobot_chat.exceptions import ToolError
+from neobot_chat.schema.exceptions import ToolError
+from neobot_chat.schema.protocol import ToolExecutor
 from neobot_chat.tools.registry import AgentRegistry
 from neobot_chat.tools.shell import PersistentShell
+from neobot_chat.schema.types import ToolDefinition
 
 
-def _tool_def(name: str, description: str, parameters: dict) -> dict:
+def _tool_def(name: str, description: str, parameters: dict) -> ToolDefinition:
     """构造 OpenAI function tool 定义"""
     return {
         "type": "function",
@@ -24,16 +26,16 @@ def _tool_def(name: str, description: str, parameters: dict) -> dict:
     }
 
 
-class BuiltinTools:
+class BuiltinTools(ToolExecutor):
     """内置工具，带会话状态（cwd 持久化）"""
 
     def __init__(
-            self,
-            agent_registry: AgentRegistry | None = None,
-            cwd: str | Path | None = None,
-            command_timeout: int = 30,
-            allowed_paths: list[Path] | None = None,
-            allowed_commands: list[str] | None = None,
+        self,
+        agent_registry: AgentRegistry | None = None,
+        cwd: str | Path | None = None,
+        command_timeout: int = 30,
+        allowed_paths: list[Path] | None = None,
+        allowed_commands: list[str] | None = None,
     ):
         self.agent_registry = agent_registry or AgentRegistry()
         self.cwd = Path(cwd or os.getcwd()).resolve()
@@ -75,7 +77,7 @@ class BuiltinTools:
         except ValueError:
             return False, ""
 
-    def _base_tools(self) -> list[dict]:
+    def _base_tools(self) -> list[ToolDefinition]:
         tools = [
             _tool_def(
                 "read_file",
@@ -130,7 +132,7 @@ class BuiltinTools:
 
         return tools
 
-    def definitions(self) -> list[dict]:
+    def definitions(self) -> list[ToolDefinition]:
         """返回所有工具定义（OpenAI function calling 格式）"""
         tools = self._base_tools()
 
@@ -213,10 +215,10 @@ class BuiltinTools:
             return f"Error writing file: {e}"
 
     async def _execute_command(
-            self,
-            command: str,
-            cwd: str | None = None,
-            timeout: int | None = None,
+        self,
+        command: str,
+        cwd: str | None = None,
+        timeout: int | None = None,
     ) -> str:
         # 检查命令白名单
         allowed, cmd_name = self._is_command_allowed(command)
@@ -235,7 +237,7 @@ class BuiltinTools:
         return await self._shell.execute(command)
 
     async def _execute_in_temp_process(
-            self, command: str, cwd: str, timeout: int | None = None
+        self, command: str, cwd: str, timeout: int | None = None
     ) -> str:
         """在临时进程中执行命令（用于指定不同 cwd 的情况）"""
         timeout = timeout or self.command_timeout
@@ -262,15 +264,16 @@ class BuiltinTools:
 
     async def close(self) -> None:
         """关闭持久 shell 进程"""
-        await self._shell.close()
+        if self._shell is not None:
+            await self._shell.close()
 
     async def _list_agents(self, agent: str | None = None) -> str:
         return self.agent_registry.list_agents(agent)
 
     async def _delegate(
-            self,
-            agent: str | None = None,
-            task: str | None = None,
-            tasks: list[dict] | None = None,
+        self,
+        agent: str | None = None,
+        task: str | None = None,
+        tasks: list[dict] | None = None,
     ) -> str:
         return await self.agent_registry.delegate(agent=agent, task=task, tasks=tasks)

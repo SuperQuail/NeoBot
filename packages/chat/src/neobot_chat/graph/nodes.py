@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from typing import Callable
-
+from neobot_chat.graph.types import StateNode
 from neobot_chat.skills.inject import inject_skills
 from neobot_chat.skills.registry import SkillRegistry
-from neobot_chat.types import State
+from neobot_chat.schema.types import State
 
 
-def skill_node(skills: SkillRegistry) -> Callable[[State], State]:
+def skill_node(skills: SkillRegistry) -> StateNode:
     """创建一个 Graph 内置节点，自动匹配 skills 并注入 system prompt
 
     用法::

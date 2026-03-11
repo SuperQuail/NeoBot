@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from neobot_chat.schema.protocol import StatePreprocessor
 from neobot_chat.skills.registry import SkillRegistry
-from neobot_chat.types import State
+from neobot_chat.schema.types import Message, State
 
 
 def inject_skills(skills: SkillRegistry | None, state: State) -> State:
@@ -15,8 +16,10 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
     if not skills:
         return state
 
-    messages = list(state.get("messages", []))
-    user_msgs = [m["content"] for m in messages if m.get("role") == "user" and m.get("content")]
+    messages: list[Message] = list(state.get("messages", []))
+    user_msgs = [
+        m["content"] for m in messages if m.get("role") == "user" and m.get("content")
+    ]
     if not user_msgs:
         return state
 
@@ -25,7 +28,7 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
         return state
 
     system_parts: list[str] = []
-    rest: list[dict] = []
+    rest: list[Message] = []
     for msg in messages:
         if msg.get("role") == "system":
             system_parts.append(msg.get("content", ""))
@@ -37,3 +40,11 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
         skills=matched,
     )
     return {**state, "messages": [{"role": "system", "content": prompt}, *rest]}
+
+
+def build_skill_preprocessor(skills: SkillRegistry | None) -> StatePreprocessor | None:
+    """将 SkillRegistry 包装为标准预处理器。"""
+
+    if not skills:
+        return None
+    return lambda state: inject_skills(skills, state)
