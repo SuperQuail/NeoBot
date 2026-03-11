@@ -19,6 +19,7 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 from neobot_chat.skills.inject import build_skill_preprocessor
+from neobot_chat.runtime.prompt import SystemPromptState
 from neobot_chat.skills.registry import SkillRegistry
 from neobot_chat.tools.builtin import build_builtin_toolset
 from neobot_chat.tools.registry import AgentRegistry
@@ -140,16 +141,18 @@ class Agent:
             else:
                 rest.append(message)
 
-        prompt = SkillRegistry.build_system_xml(
-            instructions=system_parts + ([self.system_prompt] if self.system_prompt else []),
-            tool_names=[t["function"]["name"] for t in tools] if tools else None,
-            skills=matched_skills,
-            description=self.description,
+        prompt_state = SystemPromptState.from_messages(system_parts)
+        prompt_state.add_instruction(self.system_prompt)
+        prompt_state.set_description(self.description)
+        prompt_state.set_tools([t["function"]["name"] for t in tools] if tools else None)
+        prompt_state.set_skills(matched_skills)
+        prompt_state.set_runtime(
             cwd=str(self.cwd) if self.cwd else None,
             max_iterations=self.max_iterations,
             command_timeout=self.command_timeout,
             allowed_commands=self.allowed_commands or None,
         )
+        prompt = prompt_state.render()
         if prompt:
             messages = [{"role": "system", "content": prompt}, *rest]
         else:
