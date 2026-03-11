@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.schema.exceptions import ProviderError, ValidationError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
@@ -23,7 +24,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         timeout: float = 120.0,
     ):
         if model not in self.SUPPORTED_MODELS:
-            raise ValueError(
+            raise ValidationError(
                 f"Unsupported DeepSeek official model: {model}. "
                 f"Expected one of: {', '.join(sorted(self.SUPPORTED_MODELS))}"
             )
@@ -119,7 +120,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                 body = (await response.aread()).decode("utf-8", errors="replace")
             except Exception:
                 body = "<unable to read response body>"
-        raise RuntimeError(f"DeepSeek API error {response.status_code}: {body}")
+        raise ProviderError(f"DeepSeek API error {response.status_code}: {body}")
 
     def _build_payload(
         self,

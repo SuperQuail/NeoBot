@@ -4,6 +4,7 @@ from neobot_chat.graph.constants import END
 from neobot_chat.graph.executor import CompiledGraph
 from neobot_chat.graph.graph import StateGraph
 from neobot_chat.graph.types import StateNode
+from neobot_chat.schema.exceptions import GraphError
 from neobot_chat.schema.protocol import StatePreprocessor
 from neobot_chat.schema.types import State
 
@@ -25,7 +26,7 @@ class Workflow:
         if self._compiled is not None:
             return self._compiled
         if not self._steps:
-            raise ValueError("Workflow has no steps")
+            raise GraphError("Workflow has no steps")
 
         graph = StateGraph()
         for name, func in self._steps:
