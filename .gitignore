@@ -35,7 +35,7 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Unit adapter / coverage reports
 htmlcov/
 .tox/
 .coverage
@@ -75,7 +75,7 @@ target/
 # pyenv
 .python-version
 
-# celery beat schedule file
+# celery beat schedule File
 celerybeat-schedule
 
 # SageMath parsed files
@@ -110,3 +110,5 @@ cov.xml
 .idea
 .zed
 /data/
+/OpenAPI/
+/.continue/
