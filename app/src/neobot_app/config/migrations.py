@@ -1,7 +1,8 @@
 """配置迁移示例"""
 
 from typing import Any
-from neobot_app.config.core.loader import Config
+
+from neobot_app.config.loader import Config
 
 
 @Config.migration(from_version="0.1.0", to_version="0.2.0")

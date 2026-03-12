@@ -7,7 +7,6 @@ authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
 ]
-
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true
@@ -21,6 +20,7 @@ members = [
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    "prompt-toolkit>=3.0.0",
     "pyinstaller>=6.19.0",
     "ruff>=0.15.5",
 ]

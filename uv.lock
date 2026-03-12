@@ -1361,6 +1361,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "prompt-toolkit" },
     { name = "pyinstaller" },
     { name = "ruff" },
 ]
@@ -1370,6 +1371,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "prompt-toolkit", specifier = ">=3.0.0" },
     { name = "pyinstaller", specifier = ">=6.19.0" },
     { name = "ruff", specifier = ">=0.15.5" },
 ]
@@ -1418,6 +1420,12 @@ requires-dist = [
 name = "neobot-chat"
 version = "0.2.0"
 source = { editable = "packages/chat" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.27.0" }]
 
 [[package]]
 name = "neobot-memory"
