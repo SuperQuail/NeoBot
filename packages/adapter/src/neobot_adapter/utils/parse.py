@@ -22,6 +22,10 @@ def safe_parse_model(data: Union[dict, str],data_type: Type[T]) -> T:
         模型实例
     """
     logger.debug(f"开始解析数据: {data}")
+    if data is None:
+        logger.debug("输入数据为 None，返回全默认实例")
+        return data_type()
+
     # 1. 如果输入是字符串，先尝试解析为 JSON 字典
     if isinstance(data, str):
         try:
@@ -62,7 +66,7 @@ def safe_parse_model(data: Union[dict, str],data_type: Type[T]) -> T:
             field_values[field_name] = parsed_value
         except Exception as e:
             # 解析过程中发生任何异常，回退到默认值（如果有）
-            logger.error(f"字段 '{field_name}' 解析失败: {e}，将使用默认值")
+            logger.debug(f"字段 '{field_name}' 解析失败: {e}，将使用默认值")
             if field_info.is_required():
                 # 必需字段但解析失败：无法获得有效值，用 None 填充（可能引发后续错误）
                 field_values[field_name] = None

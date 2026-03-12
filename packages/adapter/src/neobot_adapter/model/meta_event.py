@@ -1,21 +1,21 @@
 from .gengeral import General
-from .basic import Post_MetaEvent_Type, Status
+from .basic import PostMetaEventType, Status
 from enum import Enum
 from typing import Optional
 
 
 class MetaEvent(General):
     """元事件结构"""
-    meta_event_type: Optional[Post_MetaEvent_Type]
+    meta_event_type: Optional[PostMetaEventType] = None
 
 
 class Heartbeat(MetaEvent):
     """心跳包结构"""
-    status: Optional[Status]
-    interval: Optional[int]  # 心跳间隔, 单位ms
+    status: Optional[Status] = None
+    interval: Optional[int] = None  # 心跳间隔，单位 ms
 
 
-class life_cycle_sub_type(Enum):
+class LifeCycleSubType(Enum):
     """生命周期子类型枚举类"""
     enable = "enable"  # 启用
     disable = "disable"  # 禁用
@@ -24,4 +24,4 @@ class life_cycle_sub_type(Enum):
 
 class LifeCycle(MetaEvent):
     """生命周期结构"""
-    sub_type: Optional[life_cycle_sub_type]
+    sub_type: Optional[LifeCycleSubType] = None

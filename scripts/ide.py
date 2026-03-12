@@ -63,7 +63,7 @@ def fix_pycharm(project_root: Path, src_dirs: list[Path]):
     content = component.find("content")
     if content is None:
         content = ET.Element("content")
-        content.set("url", "file://$MODULE_DIR$")
+        content.set("url", "File://$MODULE_DIR$")
         component.append(content)
 
     for sf in content.findall("sourceFolder"):
@@ -71,7 +71,7 @@ def fix_pycharm(project_root: Path, src_dirs: list[Path]):
 
     for src_dir in src_dirs:
         sf = ET.Element("sourceFolder")
-        sf.set("url", f"file://$MODULE_DIR$/{src_dir}")
+        sf.set("url", f"File://$MODULE_DIR$/{src_dir}")
         sf.set("isTestSource", "false")
         content.insert(0, sf)
 

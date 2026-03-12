@@ -5,8 +5,8 @@ from typing import Optional, Iterator, AsyncIterator, Any
 from neobot_adapter.utils.env import get_websocket_url, get_websocket_host, get_websocket_port
 from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.utils.parse import safe_parse_model
-from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, life_cycle_sub_type
-from neobot_adapter.model.basic import Post_MetaEvent_Type, Post_Type
+from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
+from neobot_adapter.model.basic import PostMetaEventType, PostType
 import asyncio
 import threading
 import websockets
@@ -190,6 +190,7 @@ class AdapterCore:
                 # 区分响应和事件
                 if "echo" in data:
                     echo = data["echo"]
+                    logger.info(f"收到echo响应: echo={echo}, data={data}")
                     if echo in self._pending:
                         self._pending[echo].set_result(data)
                         # 移除echo映射
@@ -253,11 +254,11 @@ class AdapterCore:
                     f"生命周期: 机器人 {lifecycle.self_id}, "
                     f"时间 {lifecycle.time}, 子类型 {lifecycle.sub_type}"
                 )
-                if lifecycle.sub_type == life_cycle_sub_type.disable:
+                if lifecycle.sub_type == LifeCycleSubType.disable:
                     logger.warning(f"机器人 {lifecycle.self_id} 已禁用")
-                elif lifecycle.sub_type == life_cycle_sub_type.enable:
+                elif lifecycle.sub_type == LifeCycleSubType.enable:
                     logger.info(f"机器人 {lifecycle.self_id} 已启用")
-                elif lifecycle.sub_type == life_cycle_sub_type.connect:
+                elif lifecycle.sub_type == LifeCycleSubType.connect:
                     logger.info(f"机器人 {lifecycle.self_id} 连接建立")
             except Exception as e:
                 logger.error(f"生命周期解析失败: {e}, 原始数据: {event}")
@@ -279,9 +280,18 @@ class AdapterCore:
                 "params": params,
                 "echo": echo
             }
+            logger.info(f"发送API请求: {request}")
             await websocket.send(json.dumps(request))
             response = await asyncio.wait_for(fut, timeout)
-            return response.get("data")
+            logger.info(f"收到API响应: {response}")
+            # 根据 OneBot 协议规范，响应有 status 字段
+            if response.get("status") == "ok":
+                # 返回完整的响应数据，包括 data、retcode、message 等
+                # 注意：即使 data 为 None 或空字典，也表示调用成功
+                return response
+            else:
+                logger.warning(f"API调用失败: {response.get('retcode')} - {response.get('message')}")
+                return None
         except asyncio.TimeoutError:
             logger.error(f"API 调用超时: {action}")
             return None
@@ -334,13 +344,14 @@ def initialize_core(max_queue_size: int = 1000) -> AdapterCore:
     Returns:
         已初始化的 AdapterCore 实例。
 
-    Raises:
+    Logger.error:
         RuntimeError: 如果实例已经初始化。
     """
     global _core_instance
     with _core_lock:
         if _core_instance is not None:
-            raise RuntimeError("适配器核心实例已经初始化")
+            logger.error("适配器核心实例已经初始化")
+            return _core_instance
         _core_instance = AdapterCore(max_queue_size=max_queue_size)
         logger.info(f"适配器核心实例已初始化，队列大小: {max_queue_size}")
         return _core_instance
