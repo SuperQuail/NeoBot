@@ -485,9 +485,13 @@ class GetRecordResponse(BaseResponse):
     """获取录音响应模型"""
     data : Optional[GetRecordData] = None
 
+class GetHistoryMsgListData(BaseModel):
+    """获取消息历史数据模型"""
+    messages : Optional[List[GetSignalMsgData]] = None
+
 class GetHistoryMsgListResponse(BaseResponse):
     """获取好友消息列表响应模型"""
-    data : Optional[List[GetSignalMsgData]] = None
+    data : Optional[GetHistoryMsgListData] = None
 
 class TextData(BaseModel):
     """文本消息模型"""

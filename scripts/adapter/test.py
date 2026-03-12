@@ -173,9 +173,16 @@ async def test_async_api() -> bool:
         # for i in [1016011262]:
         #     result = await message.send_group_record_msg(i,"file://D:/Creator/Music/弥音/世末歌者.mp3")
         #     logger.info(f"set_group_whole_ban调用结果：{result}")
-        for i in [1016011262]:
-            result = await message.send_group_msg(i,"喵喵喵")
-            logger.info(f"set_group_whole_ban调用结果：{result}")
+        # for i in [1016011262]:
+        #     result = await message.send_group_msg(i,"喵喵喵")
+        #     logger.info(f"set_group_whole_ban调用结果：{result}")
+        logger.level("INFO")
+        for t in range(2):
+            for i in [1016011262]:
+                start = time.perf_counter()
+                result = await message.get_group_msg_history( i,0,1)
+                end1 = time.perf_counter()
+                logger.info(f"第{t}次调用耗时：{end1-start}")
         # result = await message.send_group_record_msg(1016011262,"file://D:/Creator/Music/弥音-TTS/我会说话了哦.wav")
         # logger.info(f"send_group_record_msg调用结果：{result}")
         # result = await message.send_group_dice_msg(1016011262)

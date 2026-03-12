@@ -737,7 +737,213 @@ async def delete_msg(message_id: int,timeout=5) -> response.BaseResponse:
     result = safe_parse_model(result, response.BaseResponse)
     return result
 
+async def get_file(file : str , download : bool = True , timeout=5) -> response.GetMessageFileResponse:
+    """
+    获取文件
+    :param file:
+    :param download:
+    :param timeout:
+    :return:
+    """
+    action = "get_file"
+    param = {
+        "file": file,
+        "download": download
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetMessageFileResponse)
+    return result
 
+async def get_image(file : str , timeout=5) -> response.GetMessageFileResponse:
+    """
+    获取图片
+    :param file:
+    :param timeout:
+    :return:
+    """
+    action = "get_image"
+    param = {
+        "file": file
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetMessageFileResponse)
+    return result
+
+async def get_record(file : str ,out_format : str = "mp3", timeout=5) -> response.GetRecordResponse:
+    """
+    获取语音
+    :param file:
+    :param out_format
+    :param timeout:
+    :return:
+    """
+    action = "get_record"
+    param = {
+        "file": file,
+        "out_format": out_format
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetRecordResponse)
+    return result
+
+async def set_msg_emoji_like(message_id: int,emoji_id : int, timeout=5) -> response.BaseResponse:
+    """
+    设置消息emoji回复
+    :param message_id:
+    :param emoji_id: 12951 是祝
+    :param timeout:
+    :return:
+    """
+    action = "set_msg_emoji_like"
+    param = {
+        "message_id": message_id,
+        "emoji_id": emoji_id
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.BaseResponse)
+    return result
+
+async def unset_msg_emoji_like(message_id: int,emoji_id : int,timeout=5) -> response.BaseResponse:
+    """
+    取消消息emoji回复
+    :param message_id:
+    :param timeout:
+    :param emoji_id
+    :return:
+    """
+    action = "unset_msg_emoji_like"
+    param = {
+        "message_id": message_id,
+        "emoji_id": emoji_id
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.BaseResponse)
+    return result
+
+async def get_friend_msg_history(user_id : int, message_seq : Optional[int] = 0,count : Optional[int] = 20,reverse_order : Optional[bool] = False, timeout=5) -> response.GetHistoryMsgListResponse :
+    """
+    获取好友消息历史
+    :param user_id:
+    :param message_seq: 0表示从最新开始
+    :param count:
+    :param reverse_order:
+    :param timeout:
+    :return:
+    """
+    action = "get_friend_msg_history"
+    param = {
+        "user_id": user_id,
+        "message_seq": message_seq,
+        "count": count,
+        "reverseOrder": reverse_order
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetHistoryMsgListResponse)
+    return result
+
+async def get_group_msg_history(group_id : int, message_seq : Optional[int] = 0,count : Optional[int] = 20,reverse_order : Optional[bool] = False, timeout=5) -> response.GetHistoryMsgListResponse :
+    """
+    获取群消息历史
+    :param group_id:
+    :param message_seq: 0表示从最新开始
+    :param count:
+    :param reverse_order:
+    :param timeout:
+    :return:
+    """
+    action = "get_group_msg_history"
+    param = {
+        "group_id": group_id,
+        "message_seq": message_seq,
+        "count": count,
+        "reverseOrder": reverse_order
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetHistoryMsgListResponse)
+    return result
+
+async def get_forward_msg(message_id : int, timeout=5) -> response.GetHistoryMsgListResponse:
+    """
+    获取合并转发消息
+    :param message_id:
+    :param timeout:
+    :return:
+    """
+    action = "get_forward_msg"
+    param = {
+        "message_id": message_id
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetHistoryMsgListResponse)
+    return result
+
+async def mark_msg_as_read(message_id : int, timeout=5) -> response.BaseResponse:
+    """
+    标记消息为已读
+    :param message_id:
+    :param timeout:
+    :return:
+    """
+    action = "mark_msg_as_read"
+    param = {
+        "message_id": message_id
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.BaseResponse)
+    return result
+
+async def voice_msg_to_text(message_id : int, timeout=5) -> response.VoiceMsgToTextResponse:
+    """
+    语音转文字
+    :param message_id:
+    :param timeout:
+    :return:
+    """
+    action = "voice_msg_to_text"
+    param = {
+        "message_id": message_id
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.VoiceMsgToTextResponse)
+    return result
+
+async def send_group_ai_record(character : str , group_id : int ,text : str,chat_type : int = 1, timeout=5) -> response.SendMsgResponse:
+    """
+    发送群AI语音
+    :param character:
+    :param group_id:
+    :param text:
+    :param chat_type: 1或2
+    :param timeout:
+    :return:
+    """
+    action = "send_group_ai_record"
+    param = {
+        "character": character,
+        "group_id": group_id,
+        "text": text,
+        "chat_type": chat_type
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.SendMsgResponse)
+    return result
+
+async def get_ai_characters(group_id : int,chat_type : int = 1, timeout=5) -> response.GetAIVoiceResponse:
+    """
+    获取群AI语音角色
+    :param group_id:
+    :param chat_type: 1或2
+    :param timeout:
+    :return:
+    """
+    action = "get_ai_characters"
+    param = {
+        "group_id": group_id,
+        "chat_type": chat_type
+    }
+    result = await core.call_api(action, param, timeout)
+    result = safe_parse_model(result, response.GetAIVoiceResponse)
+    return result
 
 
 

@@ -190,7 +190,7 @@ class AdapterCore:
                 # 区分响应和事件
                 if "echo" in data:
                     echo = data["echo"]
-                    logger.info(f"收到echo响应: echo={echo}, data={data}")
+                    logger.debug(f"收到echo响应: echo={echo}")
                     if echo in self._pending:
                         self._pending[echo].set_result(data)
                         # 移除echo映射
@@ -283,7 +283,7 @@ class AdapterCore:
             logger.info(f"发送API请求: {request}")
             await websocket.send(json.dumps(request))
             response = await asyncio.wait_for(fut, timeout)
-            logger.info(f"收到API响应: {response}")
+            logger.info(f"收到API响应: {response.get('status')}")
             # 根据 OneBot 协议规范，响应有 status 字段
             if response.get("status") == "ok":
                 # 返回完整的响应数据，包括 data、retcode、message 等

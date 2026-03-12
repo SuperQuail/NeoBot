@@ -1,162 +1,269 @@
 import json
 import logging
-from typing import Any, Type, TypeVar, Union, get_origin, get_args
+import time
+from typing import Any, Type, TypeVar, Union, Dict, List, get_origin, get_args
 from pydantic import BaseModel, ValidationError
+from pydantic.type_adapter import TypeAdapter
+from functools import lru_cache
 from neobot_adapter.utils.logger import get_module_logger
 
 logger = get_module_logger("adapter_utils_parse")
 T = TypeVar('T', bound=BaseModel)
 
-
-def safe_parse_model(data: Union[dict, str],data_type: Type[T]) -> T:
+# 缓存模型的解析信息
+@lru_cache(maxsize=128)
+def _get_model_parser(model_type: Type[BaseModel]):
     """
-    将 JSON 数据（字典或字符串）安全地解析为指定的 Pydantic 模型实例。
-    对于缺失或不合法的字段，会尝试使用模型定义的默认值，并记录错误日志。
-    支持嵌套模型、列表、Union/Optional 等类型。
+    获取模型的解析信息，包括字段默认值和类型信息。
+    缓存以避免重复计算。
+    """
+    fields_info = []
+    model_fields = model_type.model_fields
+
+    for field_name, field_info in model_fields.items():
+        fields_info.append({
+            'name': field_name,
+            'annotation': field_info.annotation,
+            'is_required': field_info.is_required(),
+            'default': field_info.get_default(call_default_factory=True)
+                if not field_info.is_required() else None,
+            'default_factory': field_info.default_factory
+                if hasattr(field_info, 'default_factory') else None
+        })
+
+    return {
+        'fields': fields_info,
+        'model_type': model_type
+    }
+
+
+@lru_cache(maxsize=256)
+def _get_type_adapter(type_hint: Any) -> TypeAdapter:
+    """获取或创建指定类型的 TypeAdapter 实例并缓存。"""
+    return TypeAdapter(type_hint)
+
+
+def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
+    """
+    高性能解析 JSON 数据为 Pydantic 模型实例。
+    优化策略：
+    1. 使用 model_validate 作为主要路径（最快）
+    2. 对于复杂嵌套结构，使用预缓存的 TypeAdapter
+    3. 大幅减少日志开销
+    4. 批量处理列表元素
+    5. 避免重复的类型检查和异常捕获
 
     Args:
-        data_type: 要解析的 Pydantic 模型类
         data: 字典或 JSON 字符串
+        data_type: 要解析的 Pydantic 模型类
 
     Returns:
         模型实例
     """
-    logger.debug(f"开始解析数据: {data}")
+    # 极简化的日志记录，只在绝对必要时记录
     if data is None:
-        logger.debug("输入数据为 None，返回全默认实例")
         return data_type()
 
-    # 1. 如果输入是字符串，先尝试解析为 JSON 字典
+    # 1. 快速处理字符串输入
     if isinstance(data, str):
         try:
             data = json.loads(data)
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON 解析失败: {e}，将返回全默认实例")
-            return data_type()  # 返回所有字段为默认值的实例
+        except json.JSONDecodeError:
+            return data_type()
 
     if not isinstance(data, dict):
-        logger.error(f"输入数据类型错误，期望 dict 或 JSON 字符串，实际为 {type(data)}，返回默认实例")
         return data_type()
 
-    # 2. 递归解析每个字段，收集有效值
+    # 2. 首要优化路径：直接使用 model_validate（最快）
+    try:
+        return data_type.model_validate(data, strict=False)
+    except ValidationError:
+        # 验证失败，尝试第二种优化路径
+        pass
+    except Exception:
+        return data_type()
+
+    # 3. 第二种优化路径：使用 TypeAdapter（处理更复杂的验证错误）
+    try:
+        adapter = _get_type_adapter(data_type)
+        return adapter.validate_python(data)
+    except ValidationError:
+        # 仍然失败，使用容错解析
+        pass
+    except Exception:
+        return data_type()
+
+    # 4. 容错解析路径（极少使用）
+    return _fast_fallback_parse(data, data_type)
+
+
+def _fast_fallback_parse(data: Dict[str, Any], data_type: Type[T]) -> T:
+    """
+    快速容错解析，针对大量数据的优化版本。
+    特点：
+    1. 避免日志记录
+    2. 批量处理字段
+    3. 预计算字段信息
+    """
+    # 获取缓存的模型信息
+    parser_info = _get_model_parser(data_type)
     field_values = {}
-    for field_name, field_info in data_type.model_fields.items():
-        # 从输入数据中获取该字段的值，若不存在则为 None（但需区分缺失和显式 None）
-        raw_value = data.get(field_name, None)  # 注意：如果字段存在但值为 None，会返回 None
-        has_key = field_name in data
 
-        # 如果数据中缺少该字段，尝试使用默认值
-        if not has_key:
-            # 字段是否有默认值？
-            if field_info.is_required():
-                # 必需字段且缺失：无法自动处理，记录错误并尝试用类型的默认值（如 None 或空值）填充
-                logger.error(f"字段 '{field_name}' 缺失且无默认值，将使用 None（可能导致后续错误）")
+    for field_info in parser_info['fields']:
+        field_name = field_info['name']
+
+        # 检查字段是否存在
+        if field_name in data:
+            raw_value = data[field_name]
+            if raw_value is None:
                 field_values[field_name] = None
             else:
-                # 有默认值，直接使用默认值（后续不再处理）
-                default_value = field_info.get_default(call_default_factory=True)
-                field_values[field_name] = default_value
-            continue
-
-        # 数据中存在该字段，递归解析其值
-        try:
-            parsed_value = _parse_field(
-                field_name, raw_value, field_info.annotation, data_path=field_name
-            )
-            field_values[field_name] = parsed_value
-        except Exception as e:
-            # 解析过程中发生任何异常，回退到默认值（如果有）
-            logger.debug(f"字段 '{field_name}' 解析失败: {e}，将使用默认值")
-            if field_info.is_required():
-                # 必需字段但解析失败：无法获得有效值，用 None 填充（可能引发后续错误）
+                # 尝试快速解析字段值
+                try:
+                    field_values[field_name] = _fast_parse_value(
+                        raw_value,
+                        field_info['annotation']
+                    )
+                except Exception:
+                    # 解析失败，使用默认值
+                    if field_info['is_required']:
+                        field_values[field_name] = None
+                    else:
+                        field_values[field_name] = field_info['default']
+        else:
+            # 字段缺失
+            if field_info['is_required']:
                 field_values[field_name] = None
             else:
-                field_values[field_name] = field_info.get_default(call_default_factory=True)
+                field_values[field_name] = field_info['default']
 
-    # 3. 使用收集到的值创建模型实例
+    # 尝试创建实例
     try:
         return data_type(**field_values)
-    except Exception as e:
-        logger.error(f"最终模型实例化失败: {e}，返回全默认实例")
+    except Exception:
         return data_type()
 
 
-def _parse_field(field_name: str, value: Any, expected_type: Type, data_path: str) -> Any:
+def _fast_parse_value(value: Any, expected_type: Any) -> Any:
     """
-    递归解析单个字段的值，使其符合 expected_type。
-    支持嵌套模型、List[模型]、Union 等。
+    超快速解析单个值，使用极简化的类型检查和错误处理。
+    优化策略：
+    1. 使用本地变量缓存类型检查结果
+    2. 减少函数调用
+    3. 使用最快的类型判断方法
+    4. 避免创建异常对象
     """
-    # 处理 None 值（如果类型允许 Optional）
+    # 快速路径1：值已经是期望类型
+    if isinstance(value, expected_type):
+        return value
+
+    # 快速路径2：None 值
     if value is None:
-        # 检查 expected_type 是否为 Optional（Union 包含 None）
-        origin = get_origin(expected_type)
-        if origin is Union:
-            args = get_args(expected_type)
-            if type(None) in args:
-                return None
-        # 如果类型不允许 None，则抛出异常，由上层处理
-        raise ValueError(f"字段 '{field_name}' 的值为 None，但类型 {expected_type} 不允许")
+        return None
 
+    # 快速路径3：基本类型转换
+    if expected_type is int:
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            raise
+    elif expected_type is float:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            raise
+    elif expected_type is str:
+        try:
+            return str(value)
+        except (ValueError, TypeError):
+            raise
+    elif expected_type is bool:
+        try:
+            return bool(value)
+        except (ValueError, TypeError):
+            raise
+
+    # 获取类型信息（缓存结果）
     origin = get_origin(expected_type)
-    args = get_args(expected_type)
 
-    # 情况1：期望的类型是 Pydantic 模型（BaseModel 子类）
-    if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
-        if not isinstance(value, dict):
-            raise TypeError(f"字段 '{field_name}' 期望 dict 构建模型 {expected_type.__name__}，实际得到 {type(value)}")
-        # 递归解析子模型
-        return safe_parse_model(value, expected_type)
-
-    # 情况2：列表类型 List[T]
-    elif origin is list:
+    # 处理列表类型（性能关键路径）
+    if origin is list:
         if not isinstance(value, list):
-            raise TypeError(f"字段 '{field_name}' 期望 list，实际得到 {type(value)}")
-        if args:
-            elem_type = args[0]
-            # 解析列表中的每个元素
-            parsed_list = []
-            for idx, item in enumerate(value):
-                item_path = f"{data_path}[{idx}]"
-                try:
-                    parsed_item = _parse_field(
-                        f"{field_name}[{idx}]", item, elem_type, data_path=item_path
-                    )
-                    parsed_list.append(parsed_item)
-                except Exception as e:
-                    # 列表元素解析失败：根据元素类型尝试提供默认值
-                    logger.error(f"列表元素 {item_path} 解析失败: {e}，将使用 None")
-                    # 简单回退为 None（可根据需要调整）
-                    parsed_list.append(None)
-            return parsed_list
-        else:
-            # 没有指定元素类型，直接返回原列表
+            raise TypeError
+
+        args = get_args(expected_type)
+        if not args:
             return value
 
-    # 情况3：Union 类型（包括 Optional）
-    elif origin is Union:
-        # 尝试每个子类型，直到解析成功
+        elem_type = args[0]
+        # 预分配列表大小（性能优化）
+        result = [None] * len(value)
+        for i, item in enumerate(value):
+            try:
+                result[i] = _fast_parse_value(item, elem_type)
+            except Exception:
+                # 保持 None，不抛出异常
+                pass
+        return result
+
+    # 处理 Union 类型（包括 Optional）
+    if origin is Union:
+        args = get_args(expected_type)
+
+        # 检查 None
+        if value is None:
+            for arg in args:
+                if arg is type(None):
+                    return None
+
+        # 尝试每个非None类型
         for arg in args:
-            # 忽略 NoneType（已在开头处理）
             if arg is type(None):
                 continue
             try:
-                return _parse_field(field_name, value, arg, data_path)
+                return _fast_parse_value(value, arg)
             except Exception:
                 continue
-        # 所有类型都失败，抛出异常
-        raise ValueError(f"字段 '{field_name}' 的值 {value} 无法匹配 Union 中的任何类型 {args}")
+        raise ValueError
 
-    # 情况4：其他基本类型（int, str, bool 等）
-    else:
-        # 尝试直接使用类型构造（例如 int(value)），如果失败则抛出异常
+    # 处理 BaseModel 子类（性能优化路径）
+    if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
+        if not isinstance(value, dict):
+            raise TypeError
+
+        # 极速路径：直接使用 TypeAdapter（已缓存）
         try:
-            # 如果 value 已经是期望类型，直接返回；否则尝试转换
-            if isinstance(value, expected_type):
-                return value
-            return expected_type(value)
-        except Exception as e:
-            raise ValueError(f"字段 '{field_name}' 无法转换为 {expected_type}: {e}")
+            adapter = _get_type_adapter(expected_type)
+            return adapter.validate_python(value)
+        except ValidationError:
+            # 验证失败，尝试 model_validate（更宽容）
+            try:
+                return expected_type.model_validate(value, strict=False)
+            except ValidationError:
+                # 最后回退到安全解析
+                return safe_parse_model(value, expected_type)
 
+    # 其他类型：尝试 TypeAdapter
+    try:
+        adapter = _get_type_adapter(expected_type)
+        return adapter.validate_python(value)
+    except Exception:
+        # 最后手段：尝试类型转换
+        try:
+            return expected_type(value)
+        except Exception:
+            raise
+
+
+# 保持向后兼容的函数签名
+def _parse_field(field_name: str, value: Any, expected_type: Type, data_path: str) -> Any:
+    """
+    兼容性函数，委托给 _fast_parse_value
+    """
+    try:
+        return _fast_parse_value(value, expected_type)
+    except Exception as e:
+        raise ValueError(f"字段 '{field_name}' 解析失败: {e}")
 
 # ------------------ 使用示例 ------------------
 # from pydantic import BaseModel

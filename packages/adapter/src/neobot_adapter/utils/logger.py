@@ -15,4 +15,6 @@ def get_module_logger(module_name: str) -> "Logger":
     Returns:
         绑定了对应模块名称的 logger 实例
     """
-    return loguru.logger.bind(module_name=module_name)
+    logger = loguru.logger.bind(module_name=module_name)
+    logger.level("INFO")
+    return logger
