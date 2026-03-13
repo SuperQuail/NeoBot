@@ -1,0 +1,40 @@
+[branches]
+base = "main"
+release = "release"
+
+[tags]
+chore = "Chores"
+feat = "New Features"
+fix = "Bug Fixes"
+perf = "Performance Improvements"
+refactor = "Refactors"
+
+[packages.neobot]
+path = "."
+resolver = "python"
+
+[packages.neobot-app]
+path = "app"
+resolver = "python"
+
+[packages.neobot-adapter]
+path = "packages/adapter"
+resolver = "python"
+
+[packages.neobot-chat]
+path = "packages/chat"
+resolver = "python"
+
+[packages.neobot-memory]
+path = "packages/memory"
+resolver = "python"
+
+[packages.neobot-modloader]
+path = "packages/modloader"
+resolver = "python"
+
+[resolver.python.pre-check]
+url = "https://pypi.org/pypi/{{ package.name }}/{{ package.version }}/json"
+
+[resolver.python.pre-check.extra-headers]
+User-Agent = "Semifold 0.2.14"
