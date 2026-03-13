@@ -1,0 +1,28 @@
+name: Semifold CI
+on:
+  push:
+    branches: [main]
+
+env:
+  CLICOLOR_FORCE: 1
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  build:
+    name: Version or Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup Semifold
+        uses: noctisynth/setup-semifold@main
+      - name: Semifold CI
+        run: semifold ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
