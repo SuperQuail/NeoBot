@@ -2,7 +2,7 @@
 
 import dataclasses
 from dataclasses import MISSING, fields, is_dataclass
-from typing import Any, TypeVar, Union, get_args, get_origin
+from typing import Any, TypeVar, Union, List, Dict, get_args, get_origin
 
 import tomlkit
 from tomlkit.items import Table
@@ -15,17 +15,101 @@ logger = get_module_logger("config_converter")
 
 def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
     """验证值是否与预期类型匹配，如果不匹配则尝试转换"""
-    # 处理Optional类型
+    # 处理Union类型（包括Optional）
     origin = get_origin(expected_type)
-    if origin is type(None) | type:  # Union type
-        inner_types = [t for t in get_args(expected_type) if t is not type(None)]
-        if len(inner_types) == 1:
-            expected_type = inner_types[0]
-        else:
+    if origin is Union:
+        args = get_args(expected_type)
+        # 处理Optional（Union[T, None]）
+        if type(None) in args:
+            inner_types = [t for t in args if t is not type(None)]
+            # 如果值是None且类型是Optional，直接返回True
+            if value is None:
+                return True, None
+            # 检查其他类型
             for inner_type in inner_types:
                 valid, converted = _validate_type(value, inner_type)
                 if valid:
                     return True, converted
+            return False, value
+        else:
+            # 普通Union类型，尝试所有可能性
+            for inner_type in args:
+                valid, converted = _validate_type(value, inner_type)
+                if valid:
+                    return True, converted
+            return False, value
+
+    # 处理List类型
+    if origin is list or (hasattr(expected_type, '__origin__') and getattr(expected_type, '__origin__') is list):
+        if not isinstance(value, list):
+            return False, value
+
+        # 获取列表元素的类型
+        type_args = get_args(expected_type)
+        if len(type_args) == 1:
+            item_type = type_args[0]
+            validated_list = []
+            for item in value:
+                valid, converted_item = _validate_type(item, item_type)
+                if not valid:
+                    return False, value  # 如果任意元素类型不匹配，整个列表不匹配
+                validated_list.append(converted_item)
+            return True, validated_list
+        else:
+            # 没有类型参数（例如 List），直接返回
+            return True, value
+
+    # 处理Dict类型
+    if origin is dict or (hasattr(expected_type, '__origin__') and getattr(expected_type, '__origin__') is dict):
+        if not isinstance(value, dict):
+            return False, value
+
+        # 获取字典键值类型
+        type_args = get_args(expected_type)
+        if len(type_args) == 2:
+            key_type, value_type = type_args
+            validated_dict = {}
+            for k, v in value.items():
+                # 验证键类型
+                valid_key, converted_key = _validate_type(k, key_type)
+                if not valid_key:
+                    return False, value
+                # 验证值类型
+                valid_val, converted_val = _validate_type(v, value_type)
+                if not valid_val:
+                    return False, value
+                validated_dict[converted_key] = converted_val
+            return True, validated_dict
+        else:
+            # 没有类型参数（例如 Dict），直接返回
+            return True, value
+
+    # 处理TypedDict类型
+    if hasattr(expected_type, '__annotations__') and hasattr(expected_type, '__total__'):
+        # 检查是否是TypedDict（通过特征判断）
+        if isinstance(value, dict):
+            # 对于TypedDict，验证字典的键值类型
+            annotations = expected_type.__annotations__
+            total = getattr(expected_type, '__total__', True)
+            validated_dict = {}
+
+            for key, expected_key_type in annotations.items():
+                if key in value:
+                    valid, converted_value = _validate_type(value[key], expected_key_type)
+                    if valid:
+                        validated_dict[key] = converted_value
+                    elif total:
+                        return False, value  # 必需字段类型不匹配
+                elif total:
+                    return False, value  # 必需字段缺失
+
+            # 非必需字段（total=False时）
+            for key, val in value.items():
+                if key not in annotations:
+                    validated_dict[key] = val
+
+            return True, validated_dict
+        else:
             return False, value
 
     # 处理dataclass类型
