@@ -14,7 +14,8 @@ dependencies = [
     "loguru",
     "python-dotenv>=1.2.2",
     "tomlkit",
-    "union"
+    "union",
+    "lunarcalendar>=0.0.9",
 ]
 
 [build-system]
