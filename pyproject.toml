@@ -7,6 +7,9 @@ authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
 ]
+dependencies = [
+    "lunarcalendar>=0.0.9",
+]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true
@@ -15,6 +18,7 @@ default=true
 members = [
     "packages/*",
     "app",
+    "lunarcalendar",
 ]
 
 [dependency-groups]
