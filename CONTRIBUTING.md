@@ -1,4 +1,8 @@
 # 贡献指南
+> [!TIP]
+> 开始前请确保已安装下列内容:
+> - [uv](https://docs.astral.sh/uv/getting-started/installation/)
+> - [smif](https://semifold.noctisynth.org/zh/guide/start/quick-start/index)
 
 感谢你对 NeoBot 的关注！我们欢迎所有形式的贡献。
 
@@ -26,10 +30,6 @@ git checkout -b feat/your-feature-name
 - `chore/` - 构建/工具配置
 
 ### 3. 开发与提交
-> [!INFO]
-> 请确保安装下列内容:
-> - [uv](https://docs.astral.sh/uv/getting-started/installation/)
-> - [smif](https://semifold.noctisynth.org/zh/guide/start/quick-start/index)
 
 ```bash
 # 安装依赖
