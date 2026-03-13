@@ -112,3 +112,6 @@ cov.xml
 /data/
 /OpenAPI/
 /.continue/
+
+# uv lock file
+uv.lock
