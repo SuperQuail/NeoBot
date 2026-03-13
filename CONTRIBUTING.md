@@ -26,7 +26,7 @@ git checkout -b feat/your-feature-name
 - `chore/` - 构建/工具配置
 
 ### 3. 开发与提交
-> [!INFO]
+> [!TIP]
 > 请确保安装下列内容:
 > - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 > - [smif](https://semifold.noctisynth.org/zh/guide/start/quick-start/index)
