@@ -150,7 +150,7 @@ class EventDispatcher:
         def decorator(func: Callable):
             self.register_handler(
                 func=func,
-                post_type="notice",
+                post_type="notice_data",
                 notice_type=notice_type,
                 sub_type=sub_type,
                 priority=priority

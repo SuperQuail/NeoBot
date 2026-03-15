@@ -168,7 +168,7 @@ class AdapterCore:
 
     async def _run_server(self):
         host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
-        port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8091))
+        port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
         # 监听指定路径 /onebot
         async with websockets.serve(self._handle_client, host, port):
             logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")

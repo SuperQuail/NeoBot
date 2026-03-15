@@ -73,7 +73,7 @@ def on_notice(
     """
     通知事件装饰器
 
-    用于处理通知事件（post_type = "notice"）。
+    用于处理通知事件（post_type = "notice_data"）。
 
     Args:
         notice_type: 通知类型，如 "group_increase"（群成员增加）、"friend_add"（好友添加）等
@@ -102,7 +102,7 @@ def on_notice(
         
         from .manager import EventHandler, EventFilter
         filter = EventFilter(
-            post_type='notice',
+            post_type='notice_data',
             notice_type=notice_type,
             sub_type=sub_type
         )
@@ -181,7 +181,7 @@ def on_event(
     用于处理任意类型的事件。
 
     Args:
-        post_type: 事件类型，如 "message"、"notice"、"request"、"meta_event"，
+        post_type: 事件类型，如 "message"、"notice_data"、"request"、"meta_event"，
                   如果为 None 则匹配所有类型的事件
         **filter_kwargs: 过滤条件，如 message_type="private"、notice_type="group_increase" 等
 

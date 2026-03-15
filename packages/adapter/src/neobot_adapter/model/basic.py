@@ -7,7 +7,7 @@ class PostType(Enum):
     message = "message" #消息, 例如, 群聊消息
     message_sent = "message_sent" #消息发送，例如，bot发送在群里的消息
     request = "request" #请求, 例如, 好友申请
-    notice = "notice" #通知, 例如, 群成员增加
+    notice = "notice_data" #通知, 例如, 群成员增加
     meta_event = "meta_event" #元事件, 例如心跳包
 
 class PostMessageType(Enum):
@@ -22,7 +22,7 @@ class PostMessageSubType(Enum):
     anonymous = "anonymous" #匿名
     group_self = "group_self" #群中自身发送
     group = "group" #群临时对话
-    notice = "notice" #系统提示
+    notice = "notice_data" #系统提示
 
 class PostMessageTempSource(Enum):
     """一个枚举, 传输使用 int32"""

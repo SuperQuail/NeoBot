@@ -16,6 +16,7 @@ import os
 import time
 import sys
 from pathlib import Path
+from enum import Enum
 
 import requests
 from neobot_adapter.utils.logger import get_module_logger
@@ -23,6 +24,7 @@ from neobot_adapter.model import notice
 from neobot_adapter.model.message import Message, GroupMessage
 from neobot_adapter.utils.parse import safe_parse_model
 from neobot_adapter.request import private,group,message
+from neobot_app.message.process import history_message_to_text, event_message__to_text, notice_to_text
 
 logger = get_module_logger('测试脚本')
 i = 10989
@@ -176,19 +178,38 @@ async def test_async_api() -> bool:
         # for i in [1016011262]:
         #     result = await message.send_group_msg(i,"喵喵喵")
         #     logger.info(f"set_group_whole_ban调用结果：{result}")
-        logger.level("INFO")
-        for t in range(2):
-            for i in [1016011262]:
-                start = time.perf_counter()
-                result = await message.get_group_msg_history( i,0,1)
-                end1 = time.perf_counter()
-                logger.info(f"第{t}次调用耗时：{end1-start}")
+        # logger.level("INFO")
+        # for t in range(2):
+        #     for i in [1016011262]:
+        #         start = time.perf_counter()
+        #         result = await message.get_group_msg_history( i,0,1)
+        #         end1 = time.perf_counter()
+        #         logger.info(f"第{t}次调用耗时：{end1-start}")
         # result = await message.send_group_record_msg(1016011262,"file://D:/Creator/Music/弥音-TTS/我会说话了哦.wav")
         # logger.info(f"send_group_record_msg调用结果：{result}")
         # result = await message.send_group_dice_msg(1016011262)
         # logger.info(f"send_group_dice_msg调用结果：{result}")
         # result = await message.send_group_music_msg(1016011262, "163", 1389028405)
         # logger.info(f"send_group_music_msg调用结果：{result}")
+
+        result = await message.get_group_msg_history( 1016011262,0,100)
+        logger.info(f"获取到 {len(result.data.messages) if result.data and result.data.messages else 0} 条历史消息")
+        for msg_data in result.data.messages:
+            # 调试输出：检查是否有红包消息
+            if hasattr(msg_data, 'message') and msg_data.message:
+                for segment in msg_data.message:
+                    seg_type = getattr(segment, 'type', None)
+                    if isinstance(seg_type, Enum):
+                        seg_type = seg_type.value
+                    if seg_type == 'redbag':
+                        logger.debug(f"发现红包消息段：{segment}")
+                        logger.debug(f"红包 data 字段：{getattr(segment, 'data', None)}")
+            
+            text_result = await history_message_to_text(msg_data)
+            if '红包' in text_result:  # 只显示包含红包的消息
+                logger.info(f"红包消息：{text_result}")
+            else:
+                logger.info(text_result)
 
     except Exception as e:
         print(f"异步测试出错: {e}")
@@ -289,27 +310,25 @@ def run_continuous_listener() -> int:
         @on_message(message_type="group")
         async def log_group_message(event: dict) -> None:
             """记录群聊消息"""
-            # group_id = event.get('group_id')
-            # user_id = event.get('user_id')
-            # message = event.get('message', '')
-            # logger.info(f"群聊消息: 群={group_id}, 用户={user_id}, 内容={message}")
             tempMessage = safe_parse_model(event, GroupMessage)
-            id = tempMessage.message_id
-            if tempMessage.group_id == 1016011262 and tempMessage.user_id == 1807980091:
-                result = await message.set_msg_emoji_like( id,12951)
-                # i+=1
-                logger.info(f"set_msg_emoji_like调用结果：{result}")
+            logger.info(await event_message__to_text(tempMessage))
+            # id = tempMessage.message_id
+            # if tempMessage.group_id == 1016011262 and tempMessage.user_id == 1807980091:
+            #     result = await message.set_msg_emoji_like( id,12951)
+            #     # i+=1
+            #     logger.info(f"set_msg_emoji_like调用结果：{result}")
 
 
 
         @on_notice()
-        def log_notice(event: dict) -> None:
+        async def log_notice(event: dict) -> None:
             """记录通知事件"""
-            notice_type = event.get('notice_type', 'unknown')
-            logger.info(f"通知事件: type={notice_type}, data={event}")
-            if event.get('sub_type') == notice.PokeSubType.poke.value:
-                event = safe_parse_model(event, notice.GroupPoke)
-                logger.info(f"群 {event.group_id} 的 {event.target_id} 被{event.user_id}戳了")
+
+                    
+            # 调用process中的函数解析并记录
+            if parsed_notice:
+                notice_text = await notice_to_text(parsed_notice)
+                logger.info(notice_text)
 
         @on_request()
         def log_request(event: dict) -> None:

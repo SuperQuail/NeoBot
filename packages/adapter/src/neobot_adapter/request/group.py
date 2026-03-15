@@ -4,10 +4,104 @@ from typing import Optional, Dict, Any, List
 from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.model import response
 from neobot_adapter.utils.parse import safe_parse_model
+import threading
 
 initialize_core()
 core = get_core()
 logger = get_module_logger('request.group')
+
+# 群名词典缓存（线程锁保护）
+_group_name_cache: Dict[int, str] = {}
+_group_name_lock = threading.Lock()
+_group_cache_initialized = False
+
+async def _refresh_group_name_cache() -> bool:
+    """
+    刷新群名词典缓存
+    :return: 是否刷新成功
+    """
+    global _group_name_cache, _group_cache_initialized
+    
+    try:
+        result = await get_group_list(no_cache=False)
+        if result.data:
+            with _group_name_lock:
+                _group_name_cache.clear()
+                for group in result.data:
+                    if group.group_id and group.group_name:
+                        _group_name_cache[group.group_id] = group.group_name
+                _group_cache_initialized = True
+            logger.info(f"群名词典已更新，共 {len(_group_name_cache)} 个群")
+            return True
+        else:
+            logger.warning("群列表为空")
+            return False
+    except Exception as e:
+        logger.error(f"刷新群名词典失败：{e}")
+        return False
+
+async def get_group_name(group_id: int, auto_update: bool = True) -> Optional[str]:
+    """
+    根据群 ID 获取群名
+    :param group_id: 群 ID
+    :param auto_update: 如果词典中不存在，是否自动更新词典
+    :return: 群名，如果找不到则返回 None
+    """
+    global _group_cache_initialized
+    
+    # 检查是否在缓存中
+    with _group_name_lock:
+        if group_id in _group_name_cache:
+            return _group_name_cache[group_id]
+    
+    # 如果缓存未初始化，先刷新
+    if not _group_cache_initialized:
+        logger.info("群名词典未初始化，开始刷新...")
+        await _refresh_group_name_cache()
+        
+        # 再次检查
+        with _group_name_lock:
+            if group_id in _group_name_cache:
+                return _group_name_cache[group_id]
+    
+    # 如果缓存中没有且允许自动更新
+    if auto_update:
+        logger.info(f"群 {group_id} 不在词典中，尝试更新词典...")
+        if await _refresh_group_name_cache():
+            with _group_name_lock:
+                if group_id in _group_name_cache:
+                    return _group_name_cache[group_id]
+        
+        # 如果更新后仍然没有，直接获取群信息
+        try:
+            result = await get_group_info(group_id)
+            if result.data and result.data.group_name:
+                group_name = result.data.group_name
+                with _group_name_lock:
+                    _group_name_cache[group_id] = group_name
+                return group_name
+        except Exception as e:
+            logger.error(f"获取群 {group_id} 信息失败：{e}")
+    
+    return None
+
+def get_all_group_names() -> Dict[int, str]:
+    """
+    获取所有群名（从缓存中）
+    :return: {群 ID: 群名} 的字典
+    """
+    with _group_name_lock:
+        return _group_name_cache.copy()
+
+def clear_group_name_cache() -> None:
+    """
+    清空群名词典缓存
+    """
+    global _group_cache_initialized
+    with _group_name_lock:
+        _group_name_cache.clear()
+        _group_cache_initialized = False
+    logger.info("群名词典缓存已清空")
 
 async def get_group_list(no_cache : Optional[bool] = False,timeout=5) -> response.GetGroupListResponse:
     """

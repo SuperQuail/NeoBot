@@ -220,7 +220,7 @@ def dataclass_to_toml(
         doc = tomlkit.document()
         doc.add(tomlkit.comment("警告:此文件由程序自动生成和维护"))
         doc.add(tomlkit.comment("所有除了键值的内容（包括注释）都会在重新执行程序时丢失"))
-        doc.add(tomlkit.comment("如需更改配置项/注释,请修改app/src/app/config/bot_config.py文件"))
+        doc.add(tomlkit.comment("如需更改配置项/注释,请修改neobot_app/config/schemas/bot.py文件"))
         doc.add(tomlkit.comment("格式损坏的文件会被覆盖,data/config_backup下会存储最多十五个备份,如果意外损坏导致文件被覆盖,可自行提取备份"))
         doc.add(tomlkit.nl())
     else:

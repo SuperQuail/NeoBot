@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional, Union, List, Literal, ClassVar
 
-from neobot_adapter.model.basic import PostMessageType, PostMessageMessagesender, PostMessageTempSource
+from neobot_adapter.model.basic import PostMessageType, PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
 from pydantic import BaseModel
 from neobot_adapter.model.gengeral import General
 
@@ -334,8 +334,8 @@ class MessageSubType(Enum):
 
 class GeneralMessage(General):
     """上报消息数据结构"""
-    message_type : Optional[MessageType] = None #消息类型
-    sub_type : Optional[MessageSubType] = None #消息子类型
+    message_type : Optional[MessageTypeEnum] = None #消息类型
+    sub_type : Optional[PostMessageSubType] = None #消息子类型
     message_id : Optional[int] = None #消息 ID
     user_id : Optional[int] = None #发送者 QQ 号
     message : Optional[Message] = None #消息内容

@@ -147,7 +147,7 @@ def test_event_filtering():
             'group_id': 100001
         },
         {
-            'post_type': 'notice',
+            'post_type': 'notice_data',
             'notice_type': 'group_increase',
             'group_id': 100001,
             'user_id': 654321
@@ -178,7 +178,7 @@ def test_event_filtering():
         if event.get('message_id') == 1002:
             matches[1] += 1
     
-    @on_event(post_type="notice", notice_type="group_increase")
+    @on_event(post_type="notice_data", notice_type="group_increase")
     def handle_notice(event):
         if event.get('group_id') == 100001:
             matches[2] += 1
@@ -312,7 +312,7 @@ def test_event_dispatcher():
     }
     
     notice_event = {
-        'post_type': 'notice',
+        'post_type': 'notice_data',
         'notice_type': 'group_increase',
         'group_id': 100001
     }
@@ -369,7 +369,7 @@ def test_integration():
             'message': 'World'
         },
         {
-            'post_type': 'notice',
+            'post_type': 'notice_data',
             'notice_type': 'friend_add',
             'user_id': 333333
         }
