@@ -1,0 +1,42 @@
+name: "问题反馈"
+description: 报告 neobot 的错误或问题
+title: "[问题反馈]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **开始之前...**
+
+        此表单仅用于提交错误报告。如果你有使用问题或不确定这是否真的是一个错误，请使用讨论区代替。
+
+        另外，请先搜索你的问题 - 它可能已经被回答或在开发分支中修复了。
+        但是，如果你发现一个旧的、已关闭的问题在最新版本中仍然存在，
+        你应该使用下面的表单提交一个新问题，而不是在旧问题下评论。
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: 复现步骤
+      description: |
+        我们需要做什么才能让这个问题出现？
+        清晰简洁的复现步骤对我们及时处理你的问题非常重要。
+        你可以使用 [Markdown](https://guides.github.com/features/mastering-markdown/) 来格式化列表和代码。
+      placeholder: |
+        请提供逐步的复现指南。如果可能的话，
+        请提供截图或视频等文件来展示问题。
+    validations:
+      required: true
+  - type: input
+    id: repro
+    attributes:
+      label: 复现链接
+      description: "请提供问题的最简复现，提供项目的 URL："
+      placeholder: 在此粘贴链接
+  - type: textarea
+    id: actually-happening
+    attributes:
+      label: 实际发生了什么？
+      placeholder: |
+        详细描述发生了什么。
+    validations:
+      required: true
