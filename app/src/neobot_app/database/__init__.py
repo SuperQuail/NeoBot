@@ -14,10 +14,6 @@ from .sqlite import (
 from .chatstream import (
     ChatStreamConfig,
     ChatStreamManager,
-    init_chat_stream,
-    get_chat_stream_manager,
-    initialize_chat_stream,
-    update_chat_stream,
 )
 
 __all__ = [
@@ -31,8 +27,4 @@ __all__ = [
     "get_default_tables",
     "ChatStreamConfig",
     "ChatStreamManager",
-    "init_chat_stream",
-    "get_chat_stream_manager",
-    "initialize_chat_stream",
-    "update_chat_stream",
 ]

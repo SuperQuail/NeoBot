@@ -10,7 +10,7 @@ class SafeDict(dict):
 
 def safe_format(template: str, **kwargs) -> str:
     """
-    安全格式化字符串，缺失的占位符保持原样。
+    安全格式化字符串，缺失的占位符保持原样
 
     :param template: 包含占位符的字符串，如 '群名是{group_name}'
     :param kwargs: 提供的变量值

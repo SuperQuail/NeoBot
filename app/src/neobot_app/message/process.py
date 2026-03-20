@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Awaitable, Callable, Optional
 
 from neobot_adapter.model import notice
 from neobot_adapter.model.response import GetSignalMsgResponse, GetSignalMsgData
@@ -9,14 +10,18 @@ from neobot_adapter.model.notice import (
     GroupLuckyKing, GroupMemberHonorChange, GroupTitleChange, GroupCardUpdate,
     ReceiveOfflineFile, ClientStatusChange, EssenceMessage
 )
-from neobot_adapter.request import private
 from neobot_adapter.utils.parse import safe_parse_model
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
 
+StrangerInfoGetter = Callable[[int], Awaitable[object]]
 
-async def history_message_to_text(message: GetSignalMsgResponse | GetSignalMsgData) -> str:
+
+async def history_message_to_text(
+    message: GetSignalMsgResponse | GetSignalMsgData,
+    get_stranger_info: Optional[StrangerInfoGetter] = None,
+) -> str:
     """
     将 message 对象转换为对应字符串
     :param message: GetSignalMsgResponse 或 GetSignalMsgData 对象
@@ -33,8 +38,12 @@ async def history_message_to_text(message: GetSignalMsgResponse | GetSignalMsgDa
     if msg_data.user_id is None:
         name = "未知用户"
     else:
-        info = await private.get_stranger_info(msg_data.user_id)
-        name = info.data.nickname if info.data else f"QQ:{msg_data.user_id}"
+        if get_stranger_info is None:
+            name = f"QQ:{msg_data.user_id}"
+        else:
+            info = await get_stranger_info(msg_data.user_id)
+            info_data = getattr(info, "data", None)
+            name = info_data.nickname if info_data else f"QQ:{msg_data.user_id}"
     message_str = str(name) + ": "
     if not msg_data.message:
         return message_str
@@ -125,7 +134,7 @@ async def event_message__to_text(message: PrivateMessage|GroupMessage) -> str:
     :param message: PrivateMessage 或 GroupMessage 对象
     :return: 格式化的消息字符串
     """
-    message_str=""
+    message_str = ""
     # 获取发送者名称
     if message.sender and message.sender.nickname:
         name = message.sender.nickname
@@ -136,76 +145,26 @@ async def event_message__to_text(message: PrivateMessage|GroupMessage) -> str:
     else:
         name = "未知用户"
 
-        message_str = str(name) + ": "
+    message_str = str(name) + ": "
 
     # 首先尝试使用结构化的 message 字段
     if message.message:
+        parts: list[str] = []
         for item in message.message:
-            # 获取消息段类型（所有消息段都有 type 属性）
-            msg_type = getattr(item, 'type', None)
-            # 如果是枚举类型，获取其值
+            msg_type = item.type if hasattr(item, 'type') else item.get('type') if isinstance(item, dict) else None
             if isinstance(msg_type, Enum):
                 msg_type = msg_type.value
 
-            # 检查类型是否存在
-            if msg_type is None:
-                message_str += "[未知类型]"
-                continue
-
-            # 检查数据是否存在
-            if item.data is None:
-                message_str += "[无数据]"
-                continue
+            raw_data = item.data if hasattr(item, 'data') else item.get('data') if isinstance(item, dict) else None
+            d = raw_data if isinstance(raw_data, dict) else (raw_data.model_dump() if hasattr(raw_data, 'model_dump') else {}) if raw_data else {}
 
             if msg_type == "text":
-                message_str += item.data.text or ""
-            elif msg_type == "face":
-                message_str += f"表情 [{item.data.id}]"
-            elif msg_type == "record":
-                message_str += f"语音消息 [{item.data.file or item.data.url or '未知'}]"
-            elif msg_type == "video":
-                message_str += f"视频消息 [{item.data.file or item.data.url or '未知'}]"
-            elif msg_type == "at":
-                message_str += f"@{(item.data.name or '某人')}(QQ:{item.data.qq or '未知'})"
-            elif msg_type == "image":
-                message_str += f"图片 [{item.data.file or item.data.url or '未知'}]"
-            elif msg_type == "share":
-                message_str += f"分享 [{item.data.title or item.data.url or '未知链接'}]"
-            elif msg_type == "reply":
-                message_str += f"回复 [消息 ID:{item.data.id}]"
-            elif msg_type == "poke":
-                message_str += f"戳一戳 [QQ:{item.data.qq}]"
-            elif msg_type == "gift":
-                message_str += f"礼物 [QQ:{item.data.qq}, ID:{item.data.id}]"
-            elif msg_type == "forward":
-                message_str += f"合并转发 [ID:{item.data.id}]"
-            elif msg_type == "node":
-                message_str += f"转发节点 [ID:{item.data.id}, 名称:{item.data.name}]"
-            elif msg_type == "xml":
-                message_str += f"XML 消息 [{item.data.data or 'XML 内容'}]"
-            elif msg_type == "json":
-                message_str += f"JSON 消息 [{item.data.data or 'JSON 内容'}]"
-            elif msg_type == "cardimage":
-                message_str += f"卡片图片 [{item.data.file or item.data.url or '未知'}]"
-            elif msg_type == "tts":
-                message_str += f"TTS [{item.data.text or '语音内容'}]"
-            elif msg_type == "rps":
-                message_str += "猜拳"
-            elif msg_type == "dice":
-                message_str += "骰子"
-            elif msg_type == "shake":
-                message_str += "窗口抖动"
-            elif msg_type == "anonymous":
-                message_str += "匿名消息"
-            elif msg_type == "contact":
-                message_str += f"推荐联系人/群 [ID:{item.data.id}]"
-            elif msg_type == "location":
-                message_str += f"位置 [{item.data.title or '未知位置'}]"
-            elif msg_type == "music":
-                message_str += f"音乐 [{item.data.title or item.data.type or '未知音乐'}]"
-            else:
-                # 未知类型，尝试显示基本信息
-                message_str += f"未知消息类型 [{msg_type}]"
+                parts.append(d.get("text") or "")
+            elif msg_type is not None:
+                params = ",".join(f"{k}={v}" for k, v in d.items() if v is not None)
+                parts.append(f"[CQ:{msg_type},{params}]" if params else f"[CQ:{msg_type}]")
+
+        message_str += "".join(parts)
         return message_str
 
     # 如果结构化的 message 为空，尝试使用 raw_message
@@ -434,5 +393,3 @@ def _parse_cq_code(cq_string: str) -> str:
         result += cq_string[pos:]
     
     return result
-
-

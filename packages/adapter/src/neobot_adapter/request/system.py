@@ -1,13 +1,11 @@
-from neobot_adapter.model.response import BaseResponse
-from neobot_adapter.receiver.core import get_core,initialize_core
-from typing import Optional, Dict, Any, List
-from neobot_adapter.utils.logger import get_module_logger
-from neobot_adapter.model import response
-from neobot_adapter.utils.parse import safe_parse_model
+"""系统相关 API"""
 
-initialize_core()
-core = get_core()
-logger = get_module_logger('request.system')
+from neobot_adapter.model.response import BaseResponse
+from neobot_adapter.receiver.core import AdapterCore
+from typing import Optional, Dict, Any, List
+from neobot_adapter.model import response
+from neobot_adapter.request._proxy import core_proxy as core
+from neobot_adapter.utils.parse import safe_parse_model
 
 async def get_login_info(timeout=5) -> response.GetLoginInfoResponse :
     """

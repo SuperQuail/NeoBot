@@ -12,8 +12,8 @@ _TOOL_POLICY_ITEMS = [
 ]
 
 _SKILL_POLICY_ITEMS = [
-    "当需要使用 skill 时，先用工具读取 skill_dir 下的 SKILL.md 文件获取完整说明。",
-    "SKILL.md 中的相对路径（如 scripts/analyze.py）相对于 skill_dir。",
+    "当需要使用 skill 时，先用工具读取 skill_dir 下的 SKILL.md 文件获取完整说明",
+    "SKILL.md 中的相对路径（如 scripts/analyze.py）相对于 skill_dir",
 ]
 
 _SECTION_ORDER = {

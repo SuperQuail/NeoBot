@@ -1,6 +1,6 @@
 [project]
 name = "neobot-adapter"
-version = "0.2.0"
+version = "0.3.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -12,7 +12,11 @@ dependencies = [
     "websockets",
     "pydantic>=2.7.4",
     "loguru>=0.7.2",
+    "neobot-contracts",
 ]
+
+[tool.uv.sources]
+neobot-contracts = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]

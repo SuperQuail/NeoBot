@@ -4,6 +4,8 @@ import inspect
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from neobot_contracts.ports.logging import Logger, NullLogger
+
 from neobot_chat.providers.base import Provider
 from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
 from neobot_chat.schema.types import (
@@ -46,7 +48,9 @@ class Agent:
         system_prompt: str | None = None,
         on_event: OnEvent | None = None,
         tool_guard: ToolGuard | None = None,
+        logger: Logger = NullLogger(),
     ):
+        self._logger = logger
         self.provider = provider
         self.cwd = Path(cwd).resolve() if cwd is not None else None
         self.allowed_commands = list(allowed_commands or [])

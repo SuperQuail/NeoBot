@@ -6,7 +6,7 @@ from neobot_chat.schema.types import ToolDefinition
 
 
 class CompositeToolExecutor(ToolExecutor):
-    """组合多个工具执行器。"""
+    """组合多个工具执行器"""
 
     def __init__(self, executors: list[ToolExecutor] | None = None):
         self._executors = list(executors or [])

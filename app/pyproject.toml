@@ -1,22 +1,32 @@
 [project]
 name = "neobot-app"
-version = "0.2.0"
+version = "0.3.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "Asyncio",
     "aiohttp",
     "loguru",
+    "neobot-adapter",
+    "neobot-contracts",
+    "neobot-memory",
+    "neobot-storage",
     "python-dotenv>=1.2.2",
     "tomlkit",
     "union",
     "lunarcalendar>=0.0.9",
 ]
+
+[tool.uv.sources]
+neobot-adapter = { workspace = true }
+neobot-contracts = { workspace = true }
+neobot-memory = { workspace = true }
+neobot-storage = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]

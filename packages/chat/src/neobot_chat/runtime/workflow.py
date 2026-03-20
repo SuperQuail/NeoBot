@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from neobot_contracts.ports.logging import Logger, NullLogger
+
 from neobot_chat.graph.constants import END
 from neobot_chat.graph.executor import CompiledGraph
 from neobot_chat.graph.graph import StateGraph
@@ -12,10 +14,15 @@ from neobot_chat.schema.types import State
 class Workflow:
     """基于 Graph 的链式工作流"""
 
-    def __init__(self, preprocessor: StatePreprocessor | None = None):
+    def __init__(
+        self,
+        preprocessor: StatePreprocessor | None = None,
+        logger: Logger | None = None,
+    ):
         self._steps: list[tuple[str, StateNode]] = []
         self._compiled: CompiledGraph | None = None
         self._preprocessor = preprocessor
+        self._logger = logger or NullLogger()
 
     def add_step(self, func: StateNode) -> Workflow:
         self._steps.append((f"step_{len(self._steps)}", func))

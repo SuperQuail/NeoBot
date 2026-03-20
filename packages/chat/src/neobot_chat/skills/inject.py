@@ -6,7 +6,7 @@ from neobot_chat.skills.registry import SkillRegistry
 
 
 def inject_skills(skills: SkillRegistry | None, state: State) -> State:
-    """匹配最后一条 user message 对应的 skills，并挂到 state 上。"""
+    """匹配最后一条 user message 对应的 skills，并挂到 state 上"""
     if not skills:
         return state
 
@@ -31,7 +31,7 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
 
 
 def build_skill_preprocessor(skills: SkillRegistry | None) -> StatePreprocessor | None:
-    """将 SkillRegistry 包装为标准预处理器。"""
+    """将 SkillRegistry 包装为标准预处理器"""
 
     if not skills:
         return None

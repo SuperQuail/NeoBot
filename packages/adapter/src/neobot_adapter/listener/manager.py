@@ -1,7 +1,7 @@
 """
 监听器管理器
 
-负责管理事件处理器，从适配器核心消费事件并分发给注册的处理器。
+负责管理事件处理器，从适配器核心消费事件并分发给注册的处理器
 """
 import asyncio
 import threading
@@ -27,7 +27,7 @@ class HandlerType(Enum):
 class EventFilter:
     """事件过滤器
     
-    用于过滤特定类型的事件。
+    用于过滤特定类型的事件
     """
     post_type: Optional[str] = None
     message_type: Optional[str] = None
@@ -88,7 +88,7 @@ class EventFilter:
 class EventHandler:
     """事件处理器
     
-    封装事件处理函数及其配置。
+    封装事件处理函数及其配置
     """
     func: Callable
     filter: EventFilter
@@ -123,7 +123,7 @@ class EventHandler:
 class ListenerManager:
     """监听器管理器（单例）
     
-    负责管理所有事件处理器，并提供事件分发功能。
+    负责管理所有事件处理器，并提供事件分发功能
     """
     _instance = None
     _lock = threading.Lock()
@@ -266,7 +266,7 @@ class ListenerManager:
     def start(self) -> None:
         """启动事件监听器
         
-        开始从适配器核心消费事件并分发给注册的处理器。
+        开始从适配器核心消费事件并分发给注册的处理器
         """
         if self._running:
             logger.warning("监听器已经在运行")
@@ -305,52 +305,3 @@ class ListenerManager:
             self._handlers.clear()
         logger.info("所有事件处理器已清除")
 
-
-# 全局单例实例
-_listener_manager = None
-_listener_manager_lock = threading.Lock()
-
-def get_listener_manager() -> ListenerManager:
-    """获取全局监听器管理器实例
-    
-    Returns:
-        监听器管理器实例
-    """
-    global _listener_manager
-    with _listener_manager_lock:
-        if _listener_manager is None:
-            _listener_manager = ListenerManager()
-        return _listener_manager
-
-
-def setup_listeners(core = None) -> ListenerManager:
-    """设置事件监听器
-    
-    Args:
-        core: 适配器核心实例，如果为 None 则尝试使用全局核心实例
-        
-    Returns:
-        监听器管理器实例
-        
-    Raises:
-        RuntimeError: 如果无法获取适配器核心实例
-    """
-    if core is None:
-        from neobot_adapter.receiver import get_core
-        try:
-            core = get_core()
-        except RuntimeError as e:
-            raise RuntimeError(
-                "无法获取适配器核心实例，请先初始化适配器核心或显式提供核心实例"
-            ) from e
-    
-    manager = get_listener_manager()
-    manager.core = core
-    manager.start()
-    return manager
-
-
-def stop_listening() -> None:
-    """停止事件监听"""
-    manager = get_listener_manager()
-    manager.stop()

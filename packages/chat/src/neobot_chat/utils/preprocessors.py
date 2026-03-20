@@ -7,7 +7,7 @@ from neobot_chat.schema.types import State
 def compose_preprocessors(
     *preprocessors: StatePreprocessor | None,
 ) -> StatePreprocessor | None:
-    """按顺序组合多个预处理器。"""
+    """按顺序组合多个预处理器"""
 
     active = [pre for pre in preprocessors if pre is not None]
     if not active:

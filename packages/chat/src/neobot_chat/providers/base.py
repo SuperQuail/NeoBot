@@ -5,6 +5,8 @@ from typing import Protocol
 
 import httpx
 
+from neobot_contracts.ports.logging import Logger, NullLogger
+
 from neobot_chat.schema.types import ChatChunk, Message, ToolDefinition
 
 
@@ -31,11 +33,13 @@ class BaseHTTPProvider:
         base_url: str,
         timeout: float = 120.0,
         extra_headers: dict[str, str] | None = None,
+        logger: Logger | None = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
+        self._logger = logger or NullLogger()
         self._client: httpx.AsyncClient | None = None
 
     def _build_headers(self) -> dict[str, str]:

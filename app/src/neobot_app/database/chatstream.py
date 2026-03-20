@@ -1,38 +1,20 @@
-"""聊天流管理模块
-
-负责初始化消息队列，获取历史消息，并维护用户信息数据库。
-支持并发控制和重试机制。
-"""
+"""聊天流管理模块"""
 
 import asyncio
 import logging
-import time
-from typing import List, Set, Dict, Any, Optional, Tuple
-from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
-# 导入 adapter 模块
-from neobot_adapter.request.private import get_friend_list,get_stranger_info
-from neobot_adapter.request.group import get_group_list
-from neobot_adapter.request.message import (
-    get_friend_msg_history,
-    get_group_msg_history,
-)
+from neobot_adapter import OneBotAdapter
 from neobot_adapter.model.response import (
-    GetFriendListResponse,
-    GetGroupListResponse,
-    GetHistoryMsgListResponse,
     FriendData,
     GroupData,
-    GetSignalMsgData,
-    StrangerInfoResponse,
 )
 from neobot_adapter.model.message import PrivateMessage, GroupMessage
 
-# 导入本地模块
-# 注意：bot_config 在方法内部延迟导入以避免循环导入
 from neobot_app.database.sqlite import Database
+from neobot_app.message.queue import MessageQueue
 
 logger = logging.getLogger(__name__)
 
@@ -54,19 +36,27 @@ class ChatStreamConfig:
 class ChatStreamManager:
     """聊天流管理器"""
 
-    def __init__(self, config: Optional[ChatStreamConfig] = None):
+    def __init__(
+        self,
+        adapter: OneBotAdapter,
+        config: Optional[ChatStreamConfig] = None,
+        group_message_queue: Optional[MessageQueue] = None,
+        friend_message_queue: Optional[MessageQueue] = None,
+    ):
         """初始化聊天流管理器"""
+        self.adapter = adapter
         self.config = config or ChatStreamConfig()
+        self._group_queue = group_message_queue
+        self._friend_queue = friend_message_queue
         self._semaphore = asyncio.Semaphore(self.config.concurrent_limit)
         self._initialized = False
 
     async def initialize(self) -> None:
         """初始化聊天流
 
-        1. 初始化消息队列
-        2. 获取所有好友和群列表
-        3. 并发获取历史消息并填充队列
-        4. 收集所有用户ID并更新缺失的用户信息到数据库
+        1. 获取所有好友和群列表
+        2. 并发获取历史消息并填充队列
+        3. 收集所有用户ID并更新缺失的用户信息到数据库
         """
         if self._initialized:
             logger.warning("聊天流已初始化，跳过重复初始化")
@@ -74,35 +64,38 @@ class ChatStreamManager:
 
         logger.info("开始初始化聊天流...")
 
-        # 初始化消息队列
-        self._init_message_queues()
+        # 延迟加载配置获取观察上限
+        from neobot_app.config.instance import load_bot_config
+        bot_cfg = load_bot_config()
+        max_group_obs = bot_cfg.chat.max_group_chat_observations
+        max_friend_obs = bot_cfg.chat.max_friend_chat_observations
 
-        # 获取配置（延迟导入以避免循环导入）
-        from neobot_app.config.instance import bot_config
-        max_group_obs = bot_config.chat.max_group_chat_observations
-        max_friend_obs = bot_config.chat.max_friend_chat_observations
+        # 如果队列未通过构造函数注入，则自行创建
+        if self._group_queue is None:
+            self._group_queue = MessageQueue(max_size=max_group_obs)
+        if self._friend_queue is None:
+            self._friend_queue = MessageQueue(max_size=max_friend_obs)
 
         logger.info(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")
 
         try:
             # 获取好友列表
             logger.info("正在获取好友列表...")
-            friend_response = await self._retry_api_call(get_friend_list)
+            friend_response = await self._retry_api_call(self.adapter.get_friend_list)
             friends = friend_response.data if friend_response.data else []
             logger.info(f"获取到 {len(friends)} 个好友")
 
             # 获取群列表
             logger.info("正在获取群列表...")
-            group_response = await self._retry_api_call(get_group_list)
+            group_response = await self._retry_api_call(self.adapter.get_group_list)
             groups = group_response.data if group_response.data else []
             logger.info(f"获取到 {len(groups)} 个群")
 
             # 将群信息存入数据库
             if groups:
                 logger.info("开始将群信息存入数据库...")
-                # 导入数据库实例（延迟导入以避免循环导入）
-                from neobot_app.config.instance import db_instance
-                db = db_instance
+                from neobot_app.database.sqlite import get_db
+                db = get_db()
 
                 for group in groups:
                     try:
@@ -129,13 +122,9 @@ class ChatStreamManager:
             group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
             self._log_task_results(group_results, "群历史消息")
 
-            logger.info("历史消息获取完成，开始收集用户ID...")
-
-            # 收集所有用户ID
+            # 收集所有用户ID并更新缺失的用户信息
+            logger.info("开始收集用户ID并更新缺失的用户信息...")
             user_ids = await self._collect_user_ids_from_messages()
-            logger.info(f"共收集到 {len(user_ids)} 个用户ID")
-
-            # 更新缺失的用户信息
             await self._update_missing_users(user_ids)
 
             self._initialized = True
@@ -152,29 +141,6 @@ class ChatStreamManager:
         """
         logger.info("开始更新聊天流...")
         await self.initialize()  # 目前重新初始化，后续可改为增量更新
-
-    def _init_message_queues(self) -> None:
-        """初始化消息队列"""
-        # 导入 MessageQueue 类
-        from neobot_app.message.queue import MessageQueue
-
-        # 导入 instance 模块以修改其变量（延迟导入以避免循环导入）
-        import neobot_app.config.instance as instance_module
-
-        # 导入 bot_config
-        from neobot_app.config.instance import bot_config
-
-        # 注意：group_message_queue 和 friend_message_queue 是从 neobot_app.config.instance 导入的模块级变量
-        # 我们需要修改原始模块中的变量，而不仅仅是本地引用
-        if instance_module.group_message_queue is None:
-            max_group_obs = bot_config.chat.max_group_chat_observations
-            instance_module.group_message_queue = MessageQueue(max_size=max_group_obs)
-            logger.info(f"群消息队列已初始化，最大大小: {max_group_obs}")
-
-        if instance_module.friend_message_queue is None:
-            max_friend_obs = bot_config.chat.max_friend_chat_observations
-            instance_module.friend_message_queue = MessageQueue(max_size=max_friend_obs)
-            logger.info(f"私聊消息队列已初始化，最大大小: {max_friend_obs}")
 
     @asynccontextmanager
     async def _with_concurrency_limit(self):
@@ -234,7 +200,7 @@ class ChatStreamManager:
         try:
             # 获取好友历史消息
             history_response = await self._retry_api_call(
-                get_friend_msg_history,
+                self.adapter.get_friend_msg_history,
                 user_id=friend.user_id,
                 count=max_observations,
                 reverse_order=False  # 从最新开始
@@ -244,25 +210,19 @@ class ChatStreamManager:
                 logger.debug(f"好友 {friend.user_id} 无历史消息")
                 return
 
-            # 导入消息队列（延迟导入以避免循环导入）
-            from neobot_app.config.instance import friend_message_queue
-
             # 将消息推入队列
             for msg_data in history_response.data.messages:
-                # 调试：检查 msg_data 类型
                 logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
                     logger.warning(f"消息数据是元组而不是对象: {msg_data}")
                     continue
 
-                # 使用队列的转换方法，直接传递 msg_data
                 try:
-                    friend_message_queue.push(str(friend.user_id), msg_data)
+                    self._friend_queue.push(str(friend.user_id), msg_data)
                 except Exception as e:
                     logger.error(f"推送好友 {friend.user_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            # 由于我们可能跳过了一些消息，需要重新计算实际处理的数量
             processed_count = len(history_response.data.messages) - sum(1 for msg in history_response.data.messages if isinstance(msg, tuple))
             logger.debug(f"已处理好友 {friend.user_id} 的 {processed_count} 条历史消息（跳过 {len(history_response.data.messages) - processed_count} 条元组消息）")
 
@@ -274,7 +234,7 @@ class ChatStreamManager:
         try:
             # 获取群历史消息
             history_response = await self._retry_api_call(
-                get_group_msg_history,
+                self.adapter.get_group_msg_history,
                 group_id=group.group_id,
                 count=max_observations,
                 reverse_order=False  # 从最新开始
@@ -284,25 +244,19 @@ class ChatStreamManager:
                 logger.debug(f"群 {group.group_id} 无历史消息")
                 return
 
-            # 导入消息队列（延迟导入以避免循环导入）
-            from neobot_app.config.instance import group_message_queue
-
             # 将消息推入队列
             for msg_data in history_response.data.messages:
-                # 调试：检查 msg_data 类型
                 logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
                     logger.warning(f"消息数据是元组而不是对象: {msg_data}")
                     continue
 
-                # 使用队列的转换方法，直接传递 msg_data
                 try:
-                    group_message_queue.push(str(group.group_id), msg_data)
+                    self._group_queue.push(str(group.group_id), msg_data)
                 except Exception as e:
                     logger.error(f"推送群 {group.group_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            # 由于我们可能跳过了一些消息，需要重新计算实际处理的数量
             processed_count = len(history_response.data.messages) - sum(1 for msg in history_response.data.messages if isinstance(msg, tuple))
             logger.debug(f"已处理群 {group.group_id} 的 {processed_count} 条历史消息（跳过 {len(history_response.data.messages) - processed_count} 条元组消息）")
 
@@ -311,32 +265,28 @@ class ChatStreamManager:
 
     async def _collect_user_ids_from_messages(self) -> Set[str]:
         """从所有消息队列中收集用户ID"""
-        # 导入消息队列（延迟导入以避免循环导入）
-        from neobot_app.config.instance import friend_message_queue, group_message_queue
-
-        user_ids = set()
+        user_ids: Set[str] = set()
 
         # 从私聊队列收集
-        for key in friend_message_queue.get_all_keys():
-            # 私聊队列的 key 就是好友的 user_id
-            user_ids.add(key)
+        if self._friend_queue:
+            for key in self._friend_queue.get_all_keys():
+                user_ids.add(key)
 
         # 从群聊队列收集
-        for key in group_message_queue.get_all_keys():
-            # 需要遍历该群的所有消息，收集 user_id
-            queue = group_message_queue[key]
-            for msg in queue:
-                if isinstance(msg, GroupMessage):
-                    user_ids.add(str(msg.user_id))
+        if self._group_queue:
+            for key in self._group_queue.get_all_keys():
+                queue = self._group_queue[key]
+                for msg in queue:
+                    if isinstance(msg, GroupMessage):
+                        user_ids.add(str(msg.user_id))
 
         return user_ids
 
     async def _update_missing_users(self, user_ids: Set[str]) -> None:
         """更新缺失的用户信息到数据库"""
-        # 导入数据库实例（延迟导入以避免循环导入）
-        from neobot_app.config.instance import db_instance
+        from neobot_app.database.sqlite import get_db
+        db = get_db()
 
-        db = db_instance
         missing_users = []
 
         # 检查哪些用户不在数据库中
@@ -386,7 +336,7 @@ class ChatStreamManager:
         """插入用户信息到 USER_DATA 表"""
         try:
             db.execute(
-                """INSERT OR IGNORE INTO USER_DATA 
+                """INSERT OR IGNORE INTO USER_DATA
                    (user_id, nick_name, relation_ship, profile, birthday, sex, city, country, labs, remark, age, long_nick)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
@@ -413,16 +363,15 @@ class ChatStreamManager:
     def _insert_or_update_group_to_db(self, db: Database, group: GroupData) -> None:
         """插入或更新群信息到 GROUP_DATA 表"""
         try:
-            # 使用 INSERT OR REPLACE 来更新已存在的记录
             db.execute(
-                """INSERT OR REPLACE INTO GROUP_DATA 
+                """INSERT OR REPLACE INTO GROUP_DATA
                    (group_id, group_name, profile, is_quite)
                    VALUES (?, ?, ?, ?)""",
                 (
                     str(group.group_id) if group.group_id else "",
                     group.group_name or "",
-                    group.group_memo or "",  # 使用群介绍作为 profile 字段
-                    0,  # 默认 is_quite 为 0（false）
+                    group.group_memo or "",
+                    0,
                 ),
             )
             db.commit()
@@ -434,7 +383,10 @@ class ChatStreamManager:
     async def _get_stranger_info_and_store(self, user_id: str, db: Database) -> None:
         """获取陌生人信息并存储到数据库"""
         try:
-            response = await self._retry_api_call(get_stranger_info, int(user_id))
+            response = await self._retry_api_call(
+                self.adapter.get_stranger_info,
+                int(user_id),
+            )
             if response.data:
                 user_info = {
                     "nick_name": response.data.nickname or "",
@@ -444,12 +396,11 @@ class ChatStreamManager:
                     "country": response.data.country or "",
                     "long_nick": response.data.long_nick or "",
                     "remark": response.data.remark or "",
-                    "relation_ship": "",  # 接口没有这个字段
-                    "profile": "",  # 接口没有这个字段
-                    "birthday": "",  # 接口可能有生日字段，但需要从 birthday_year/month/day 组合
+                    "relation_ship": "",
+                    "profile": "",
+                    "birthday": "",
                     "labs": ",".join(response.data.labs) if response.data.labs else "",
                 }
-                # 如果有生日信息，组合成字符串
                 if response.data.birthday_year and response.data.birthday_month and response.data.birthday_day:
                     user_info["birthday"] = f"{response.data.birthday_year}-{response.data.birthday_month}-{response.data.birthday_day}"
 
@@ -458,78 +409,3 @@ class ChatStreamManager:
                 logger.warning(f"获取用户 {user_id} 信息返回空数据")
         except Exception as e:
             logger.error(f"获取用户 {user_id} 信息时出错: {e}", exc_info=True)
-
-
-# 全局聊天流管理器实例
-_chat_stream_manager: Optional[ChatStreamManager] = None
-
-def init_chat_stream(config: Optional[ChatStreamConfig] = None) -> ChatStreamManager:
-    """初始化聊天流管理器
-
-    Args:
-        config: 聊天流配置，如果为None则使用默认配置
-
-    Returns:
-        ChatStreamManager: 聊天流管理器实例
-    """
-    global _chat_stream_manager
-
-    if _chat_stream_manager is None:
-        _chat_stream_manager = ChatStreamManager(config)
-
-    return _chat_stream_manager
-
-def get_chat_stream_manager() -> ChatStreamManager:
-    """获取聊天流管理器实例
-
-    Returns:
-        ChatStreamManager: 聊天流管理器实例
-    """
-    global _chat_stream_manager
-
-    if _chat_stream_manager is None:
-        # 使用默认配置创建实例
-        _chat_stream_manager = ChatStreamManager()
-
-    return _chat_stream_manager
-
-
-# 向后兼容的快捷函数
-async def initialize_chat_stream() -> None:
-    """初始化聊天流（向后兼容）
-
-    使用默认配置初始化聊天流
-    """
-    manager = get_chat_stream_manager()
-    await manager.initialize()
-
-async def update_chat_stream() -> None:
-    """更新聊天流（向后兼容）
-
-    定期调用此函数来更新消息队列和用户信息
-    """
-    manager = get_chat_stream_manager()
-    await manager.update()
-
-
-if __name__ == "__main__":
-    # 测试代码
-    import asyncio
-
-    async def test():
-        # 使用默认配置
-        manager = init_chat_stream()
-        await manager.initialize()
-
-        # 导入消息队列（延迟导入以避免循环导入）
-        from neobot_app.config.instance import group_message_queue, friend_message_queue
-
-        print("聊天流初始化测试完成")
-        print(f"群消息队列大小: {group_message_queue.size()}")
-        print(f"私聊消息队列大小: {friend_message_queue.size()}")
-
-        # 测试向后兼容函数
-        await update_chat_stream()
-        print("聊天流更新测试完成")
-
-    asyncio.run(test())

@@ -1,13 +1,14 @@
+"""群相关 API"""
+
 from neobot_adapter.model.response import BaseResponse
-from neobot_adapter.receiver.core import get_core,initialize_core
+from neobot_adapter.receiver.core import AdapterCore
 from typing import Optional, Dict, Any, List
-from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.model import response
+from neobot_adapter.request._proxy import core_proxy as core
+from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.utils.parse import safe_parse_model
 import threading
 
-initialize_core()
-core = get_core()
 logger = get_module_logger('request.group')
 
 # 群名词典缓存（线程锁保护）

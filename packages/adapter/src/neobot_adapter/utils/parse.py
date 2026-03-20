@@ -14,8 +14,8 @@ T = TypeVar('T', bound=BaseModel)
 @lru_cache(maxsize=128)
 def _get_model_parser(model_type: Type[BaseModel]):
     """
-    获取模型的解析信息，包括字段默认值和类型信息。
-    缓存以避免重复计算。
+    获取模型的解析信息，包括字段默认值和类型信息
+    缓存以避免重复计算
     """
     fields_info = []
     model_fields = model_type.model_fields
@@ -39,13 +39,13 @@ def _get_model_parser(model_type: Type[BaseModel]):
 
 @lru_cache(maxsize=256)
 def _get_type_adapter(type_hint: Any) -> TypeAdapter:
-    """获取或创建指定类型的 TypeAdapter 实例并缓存。"""
+    """获取或创建指定类型的 TypeAdapter 实例并缓存"""
     return TypeAdapter(type_hint)
 
 
 def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
     """
-    高性能解析 JSON 数据为 Pydantic 模型实例。
+    高性能解析 JSON 数据为 Pydantic 模型实例
     优化策略：
     1. 使用 model_validate 作为主要路径（最快）
     2. 对于复杂嵌套结构，使用预缓存的 TypeAdapter
@@ -99,7 +99,7 @@ def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
 
 def _fast_fallback_parse(data: Dict[str, Any], data_type: Type[T]) -> T:
     """
-    快速容错解析，针对大量数据的优化版本。
+    快速容错解析，针对大量数据的优化版本
     特点：
     1. 避免日志记录
     2. 批量处理字段
@@ -146,7 +146,7 @@ def _fast_fallback_parse(data: Dict[str, Any], data_type: Type[T]) -> T:
 
 def _fast_parse_value(value: Any, expected_type: Any) -> Any:
     """
-    超快速解析单个值，使用极简化的类型检查和错误处理。
+    超快速解析单个值，使用极简化的类型检查和错误处理
     优化策略：
     1. 使用本地变量缓存类型检查结果
     2. 减少函数调用

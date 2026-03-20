@@ -32,3 +32,9 @@ class ToolExecutor(Protocol):
     async def execute(self, name: str, args: dict) -> str: ...
 
     async def close(self) -> None: ...
+
+
+class MemoryReader(Protocol):
+    async def recall(
+        self, conversation_id: str, query: str, limit: int = 5
+    ) -> list[str]: ...

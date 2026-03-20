@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, Union, List, Literal, ClassVar
+from typing import Any, Optional, Union, List, Literal, ClassVar
 
 from neobot_adapter.model.basic import PostMessageType, PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
 from pydantic import BaseModel
@@ -273,7 +273,7 @@ class Message(BaseModel):
             seq : Optional['Message'] = None #用于自定义消息
         """
         特殊说明: 需要使用单独的API /send_group_forward_msg 发送, 
-        并且由于消息段较为复杂, 仅支持Array形式入参。 如果引用消息和自定义消息同时出现,
+        并且由于消息段较为复杂, 仅支持Array形式入参 如果引用消息和自定义消息同时出现,
         实际查看顺序将取消息段顺序. 
         另外按 Onebot v11 文档说明, data 应全为字符串, 但由于需要接收message 类型的消息, 所以
         仅限此Type的content字段 支持Array套娃
@@ -332,13 +332,19 @@ class MessageSubType(Enum):
     group = "group" #群消息
     public = "public" #公开消息
 
+class MessageSegment(BaseModel):
+    """OneBot 消息段，对应协议中 message 数组的每个元素"""
+    type: str
+    data: dict[str, Any] = {}
+
+
 class GeneralMessage(General):
     """上报消息数据结构"""
     message_type : Optional[MessageTypeEnum] = None #消息类型
     sub_type : Optional[PostMessageSubType] = None #消息子类型
     message_id : Optional[int] = None #消息 ID
     user_id : Optional[int] = None #发送者 QQ 号
-    message : Optional[Message] = None #消息内容
+    message : Optional[List[MessageSegment]] = None #消息内容
     raw_message : Optional[str] = None #原始消息内容
     font : Optional[int] = None #字体
     sender : Optional[PostMessageMessagesender] = None
