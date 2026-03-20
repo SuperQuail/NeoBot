@@ -1,26 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Generic, TypeVar
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.runtime.event_pipeline import EventPipeline
 
+T = TypeVar("T")
+
 
 class ConnectionTimeoutError(RuntimeError):
     """OneBot 连接等待超时"""
 
 
-class NeoBotApplication:
+class NeoBotApplication(Generic[T]):
     def __init__(
         self,
-        adapter: object,
+        adapter: T,
         chat_stream: ChatStreamManager,
         event_pipeline: EventPipeline,
         logger: Logger | None = None,
     ) -> None:
-        self.adapter = adapter
+        self.adapter: T = adapter
         self.chat_stream = chat_stream
         self.event_pipeline = event_pipeline
         self._logger = logger or NullLogger()

@@ -28,7 +28,7 @@ def _load_config() -> BotConfigSchema:
     return Config.load(CONFIG_FILE, BotConfigSchema)
 
 
-def create_application() -> NeoBotApplication:
+def create_application() -> NeoBotApplication[OneBotAdapter]:
     logger_factory = LoguruLoggerFactory()
     clock = SystemClock()
 
