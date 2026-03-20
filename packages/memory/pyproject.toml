@@ -7,7 +7,7 @@ authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = []
 
 [build-system]
