@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict ,Any,TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 
 class KeyWordRule(TypedDict, total=False):
     """关键词规则类型"""
+
     enabled: bool
     keywords: List[str]
     description: str
@@ -14,35 +15,23 @@ class Bot:
     """机器人基础配置"""
 
     account: int = field(
-        default=0, metadata={
-            "description": "机器人QQ号",
-            "placeholder": True
-        }
+        default=0, metadata={"description": "机器人QQ号", "placeholder": True}
     )
-    nick_name: str = field(
-        default="Neo Bot",metadata={
-            "description": "Bot昵称"
-        }
-    )
+    nick_name: str = field(default="Neo Bot", metadata={"description": "Bot昵称"})
     alias_name: Optional[List[str]] = field(
-        default_factory=lambda: ["Neo", "铸币bot"],metadata={
-            "description": "Bot别称"
-        }
+        default_factory=lambda: ["Neo", "铸币bot"], metadata={"description": "Bot别称"}
     )
-    bot_data : str = field(
-        default="你是一个可爱的机器人",metadata={
-            "description": "描述机器人的人设"
-        }
+    bot_data: str = field(
+        default="你是一个可爱的机器人", metadata={"description": "描述机器人的人设"}
     )
     enable_bot_get_married: bool = field(
-        default=False,metadata={
-            "description":"是否允许bot与好友结婚"
-        }
+        default=False, metadata={"description": "是否允许bot与好友结婚"}
     )
+
 
 @dataclass
 class Chat:
-    group_prompt_template : str = field(
+    group_prompt_template: str = field(
         default="""<当前时间>{current_time}</当前时间>
 <群聊>{group_name}[群号:{group_id}]{group_description}</群聊>
 <聊天记录>
@@ -60,41 +49,37 @@ class Chat:
 你想起来之前:
 {memory_list}
 这些内容都是之前的内容,可能很久之前,也可能只是不久之前.
-</你的印象>""",metadata={
-            "description":"Bot提示词模板,非开发者不建议修改"
-        }
+</你的印象>""",
+        metadata={"description": "Bot提示词模板,非开发者不建议修改"},
     )
-    max_group_chat_observations : int = field(
-        default=100,metadata={
-            "description":"群聊观察上限,决定bot最多可以看到多少条聊天记录"
-        }
+    max_group_chat_observations: int = field(
+        default=100,
+        metadata={"description": "群聊观察上限,决定bot最多可以看到多少条聊天记录"},
     )
-    group_chat_chance : float = field(
-        default=0.5,metadata={
-            "description":"群聊基础回复概率"
-        }
+    group_chat_chance: float = field(
+        default=0.5, metadata={"description": "群聊基础回复概率"}
     )
-    group_use_black_list : bool = field(
-        default=True,metadata={
-            "description":"true为群聊列表使用黑名单,false表示使用白名单"
-        }
+    group_use_black_list: bool = field(
+        default=True,
+        metadata={"description": "true为群聊列表使用黑名单,false表示使用白名单"},
     )
-    group_list : Optional[List[str]] = field(
-        default_factory=lambda: ["111111","222222"],metadata={
+    group_list: Optional[List[str]] = field(
+        default_factory=lambda: ["111111", "222222"],
+        metadata={
             "description": "群名单，根据 group_use_black_list 字段确定是白名单/黑名单，决定 bot 是否会在对应群聊对话"
-        }
+        },
     )
-    group_Response_coefficient : Optional[Dict[str,float]] = field(
-        default_factory=lambda: {"111111":0.5,"222222":0.5},metadata={
+    group_Response_coefficient: Optional[Dict[str, float]] = field(
+        default_factory=lambda: {"111111": 0.5, "222222": 0.5},
+        metadata={
             "description": "群聊回复系数，根据群聊 ID 配置回复概率，会在结算时与基础回复概率相乘"
-        }
+        },
     )
-    group_description : Optional[Dict[str,str]] = field(
-        default_factory=lambda: {"111111":"这是不知道谁不知道干什么的群"},metadata={
-            "description": "群描述，可以为特定群配置专属简介"
-        }
+    group_description: Optional[Dict[str, str]] = field(
+        default_factory=lambda: {"111111": "这是不知道谁不知道干什么的群"},
+        metadata={"description": "群描述，可以为特定群配置专属简介"},
     )
-    friend_prompt_template : str = field(
+    friend_prompt_template: str = field(
         default="""<当前时间>{current_time}</当前时间>
 <聊天对象>{friend_name}(你的备注:{remark})</聊天对象>
 <你对ta的印象>{profile}</你对ta的印象>
@@ -110,43 +95,37 @@ class Chat:
 </你是谁>"""
     )
     max_friend_chat_observations: int = field(
-        default=100, metadata={
-            "description": "群聊观察上限,决定bot最多可以看到多少条聊天记录"
-        }
+        default=100,
+        metadata={"description": "群聊观察上限,决定bot最多可以看到多少条聊天记录"},
     )
-    friend_chat_chance : float = field(
-        default=0.5,metadata={
-            "description":"私聊基础回复概率"
-        }
+    friend_chat_chance: float = field(
+        default=0.5, metadata={"description": "私聊基础回复概率"}
     )
-    friend_use_black_list : bool = field(
-        default=True,metadata={
-            "description":"true时私聊使用黑名单,false使用黑名单"
-        }
+    friend_use_black_list: bool = field(
+        default=True, metadata={"description": "true时私聊使用黑名单,false使用黑名单"}
     )
     friend_list: Optional[List[str]] = field(
-        default_factory=lambda: ["111111", "222222"], metadata={
+        default_factory=lambda: ["111111", "222222"],
+        metadata={
             "description": "好友名单，根据 friend_use_black_list 字段确定是白名单/黑名单，决定 bot 是否会在对应私聊对话"
-        }
+        },
     )
     friend_description: Optional[Dict[str, str]] = field(
-        default_factory=lambda: {"111111": "这是不知道谁不知道干什么的人"}, metadata={
-            "description": "好友描述，可以为特定好友配置专属简介"
-        }
+        default_factory=lambda: {"111111": "这是不知道谁不知道干什么的人"},
+        metadata={"description": "好友描述，可以为特定好友配置专属简介"},
     )
     key_word: Optional[List[KeyWordRule]] = field(
         default_factory=lambda: [
             {
                 "enabled": False,
                 "keywords": ["妈妈", "妈"],
-                "description": "当有人叫你妈妈，你可以反问对方是不是叫夏亚"
+                "description": "当有人叫你妈妈，你可以反问对方是不是叫夏亚",
             }
         ],
         metadata={
             "description": "关键词规则列表，每个规则包含 enabled(bool), keywords(List[str]), description(str)"
-        }
+        },
     )
-
 
 
 @dataclass
@@ -173,6 +152,21 @@ class Message:
 
 
 @dataclass
+class FileServer:
+    """文件服务器配置"""
+
+    port: int = field(default=8765, metadata={"description": "文件服务器端口"})
+    host: str = field(
+        default="127.0.0.1",
+        metadata={"description": "文件服务器主机地址，设置为 0.0.0.0 可外部访问"},
+    )
+    public_url: Optional[str] = field(
+        default=None,
+        metadata={"description": "访问地址，如 http://your-domain.com:8765"},
+    )
+
+
+@dataclass
 class BotConfig:
     """机器人主配置"""
 
@@ -181,3 +175,4 @@ class BotConfig:
     chat: Chat = field(default_factory=Chat)
     plugins: Plugins = field(default_factory=Plugins)
     message: Message = field(default_factory=Message)
+    file_server: FileServer = field(default_factory=FileServer)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from neobot_adapter import OneBotAdapter
-from neobot_adapter.gateway import OneBotGateway
 
 from neobot_contracts.ports.clock import SystemClock
 
@@ -51,9 +50,6 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     # 适配器
     adapter = OneBotAdapter(logger=logger_factory.get_logger("adapter"))
 
-    # Gateway
-    gateway = OneBotGateway(adapter)
-
     # Memory
     memory = MemoryService(
         repository=InMemoryMemoryRepository(),
@@ -79,7 +75,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     # 入站管线（未来替代 EventPipeline）
     _inbound_pipeline = InboundPipeline(
-        gateway=gateway,
+        adapter=adapter,
         memory=memory,
         logger=logger_factory.get_logger("app.inbound_pipeline"),
     )
@@ -89,4 +85,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         chat_stream=chat_stream,
         event_pipeline=event_pipeline,
         logger=logger_factory.get_logger("app.runtime"),
+        file_server_port=config.file_server.port,
+        file_server_host=config.file_server.host,
+        file_server_public_url=config.file_server.public_url,
     )

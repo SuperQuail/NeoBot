@@ -5,16 +5,20 @@ IncomingMessage
   -> MemoryRecall（召回相关记忆）
   -> ReplyDecision（概率判断是否回复）
   -> ChatCompletion（调用 chat 生成回复）
-  -> OutboundDispatch（通过 BotGateway 发送）
+  -> OutboundDispatch（通过 Adapter 发送）
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from neobot_contracts.models import IncomingMessage
-from neobot_contracts.ports.gateway import BotGateway
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_memory import MemoryService
+
+if TYPE_CHECKING:
+    from neobot_adapter import OneBotAdapter
 
 
 class InboundPipeline:
@@ -22,11 +26,11 @@ class InboundPipeline:
 
     def __init__(
         self,
-        gateway: BotGateway,
+        adapter: OneBotAdapter,
         memory: MemoryService | None = None,
         logger: Logger | None = None,
     ) -> None:
-        self._gateway = gateway
+        self._adapter = adapter
         self._memory = memory
         self._logger = logger or NullLogger()
 

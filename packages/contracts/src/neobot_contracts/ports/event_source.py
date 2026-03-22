@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
-from neobot_contracts.ports.gateway import Subscription
+
+class Subscription(Protocol):
+    """事件订阅句柄"""
+
+    def unsubscribe(self) -> None: ...
 
 
 @runtime_checkable

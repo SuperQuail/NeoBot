@@ -7,6 +7,8 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.runtime.event_pipeline import EventPipeline
+from neobot_app.core.file_server import FileServer, ExpirationConfig
+from neobot_app.core.paths import get_data_dir
 
 T = TypeVar("T")
 
@@ -22,6 +24,10 @@ class NeoBotApplication(Generic[T]):
         chat_stream: ChatStreamManager,
         event_pipeline: EventPipeline,
         logger: Logger | None = None,
+        file_server_port: int = 8765,
+        file_server_host: str = "127.0.0.1",
+        file_server_public_url: str | None = None,
+        expiration_config: ExpirationConfig | None = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -29,15 +35,21 @@ class NeoBotApplication(Generic[T]):
         self._logger = logger or NullLogger()
         self._shutdown_event = asyncio.Event()
         self._started = False
+        self.file_server = FileServer(
+            get_data_dir(), file_server_port, file_server_host, expiration_config, file_server_public_url
+        )
 
     async def start(self) -> None:
         if self._started:
             return
         self._logger.info("NeoBot启动中")
         self._shutdown_event.clear()
+        await self.file_server.start()
+        self._logger.info("文件服务器启动完成")
         await self.adapter.start()
         connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
         if not connected:
+            await self.file_server.stop()
             await self.adapter.stop()
             raise ConnectionTimeoutError(
                 "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
@@ -64,5 +76,6 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event.set()
         self.event_pipeline.stop()
         await self.adapter.stop()
+        await self.file_server.stop()
         self._started = False
         self._logger.info("NeoBot已停止")

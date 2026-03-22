@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, get_type_hints
 from pydantic import BaseModel
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.models import ConversationRef
 
 from neobot_adapter.model import response
 from neobot_adapter.receiver.core import AdapterCore
@@ -340,34 +341,46 @@ class OneBotAdapter:
     async def send_private_msg(
         self,
         user_id: int,
-        message: str,
+        message: str | list[dict[str, Any]],
         timeout: float = 5.0,
     ) -> response.SendMsgResponse:
-        payload = {
-            "user_id": user_id,
-            "message": {
-                "type": "text",
-                "data": {"text": message},
-            },
-        }
+        if isinstance(message, str):
+            payload = {
+                "user_id": user_id,
+                "message": {"type": "text", "data": {"text": message}},
+            }
+        else:
+            payload = {"user_id": user_id, "message": message}
         result = await self.call_api("send_private_msg", payload, timeout)
         return safe_parse_model(result, response.SendMsgResponse)
 
     async def send_group_msg(
         self,
         group_id: int,
-        message: str,
+        message: str | list[dict[str, Any]],
         timeout: float = 5.0,
     ) -> response.SendMsgResponse:
-        payload = {
-            "group_id": group_id,
-            "message": {
-                "type": "text",
-                "data": {"text": message},
-            },
-        }
+        if isinstance(message, str):
+            payload = {
+                "group_id": group_id,
+                "message": {"type": "text", "data": {"text": message}},
+            }
+        else:
+            payload = {"group_id": group_id, "message": message}
         result = await self.call_api("send_group_msg", payload, timeout)
         return safe_parse_model(result, response.SendMsgResponse)
+
+    async def send(
+        self,
+        conversation: ConversationRef,
+        message: str | list[dict[str, Any]],
+        timeout: float = 5.0,
+    ) -> response.SendMsgResponse:
+        """统一的消息发送接口"""
+        if conversation.kind == "private":
+            return await self.send_private_msg(int(conversation.id), message, timeout)
+        else:
+            return await self.send_group_msg(int(conversation.id), message, timeout)
 
     async def _dispatch_loop(self) -> None:
         while True:
