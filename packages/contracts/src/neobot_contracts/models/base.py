@@ -1,4 +1,4 @@
-"""领域模型"""
+"""基础模型"""
 
 from __future__ import annotations
 

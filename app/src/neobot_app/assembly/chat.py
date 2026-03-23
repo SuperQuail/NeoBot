@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.logging import Logger
 
 
 def build_chat_service(

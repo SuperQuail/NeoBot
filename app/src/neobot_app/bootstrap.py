@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from neobot_adapter import OneBotAdapter
-
 from neobot_contracts.ports.clock import SystemClock
+from neobot_memory import MemoryService
+from neobot_memory.defaults import InMemoryMemoryRepository
+from neobot_storage import run_migrations
 
+from neobot_app.assembly.storage import build_storage
 from neobot_app.config.loader.env import load_env
 from neobot_app.config.loader.manager import Config
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
@@ -16,13 +19,6 @@ from neobot_app.observability.logging import LoguruLoggerFactory
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
-from neobot_app.runtime.history_warmup import HistoryWarmupService
-
-from neobot_memory import MemoryService
-from neobot_memory.defaults import InMemoryMemoryRepository
-from neobot_storage import run_migrations
-
-from neobot_app.assembly.storage import build_storage
 
 
 def _load_config() -> BotConfigSchema:
@@ -45,7 +41,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     # 消息队列
     group_message_queue = MessageQueue(max_size=config.chat.max_group_chat_observations)
-    friend_message_queue = MessageQueue(max_size=config.chat.max_friend_chat_observations)
+    friend_message_queue = MessageQueue(
+        max_size=config.chat.max_friend_chat_observations
+    )
 
     # 适配器
     adapter = OneBotAdapter(logger=logger_factory.get_logger("adapter"))

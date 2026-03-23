@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -13,13 +13,13 @@ class Provider(Protocol):
     async def chat(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        tools: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]: ...
 
     def stream(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        tools: Optional[list[dict[str, Any]]] = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def close(self) -> None: ...
