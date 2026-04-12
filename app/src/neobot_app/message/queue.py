@@ -52,7 +52,7 @@ class MessageQueue:
         初始化消息队列
 
         Args:
-            max_size: 每个队列的最大容量，默认为1000
+            max_size: 每个队列的最大容量，默认为100
         """
         if max_size <= 0:
             raise ValueError("max_size must be greater than 0")
@@ -365,3 +365,16 @@ def create_message_queue(max_size: int = 1000) -> MessageQueue:
         消息队列实例
     """
     return MessageQueue(max_size=max_size)
+
+
+from neobot_app.message.queue_impl import (  # noqa: E402
+    MessageQueue as _EnhancedMessageQueue,
+    MessageQueueType as _EnhancedMessageQueueType,
+    QueueStats as _EnhancedQueueStats,
+    create_message_queue as _enhanced_create_message_queue,
+)
+
+MessageQueue = _EnhancedMessageQueue
+MessageQueueType = _EnhancedMessageQueueType
+QueueStats = _EnhancedQueueStats
+create_message_queue = _enhanced_create_message_queue

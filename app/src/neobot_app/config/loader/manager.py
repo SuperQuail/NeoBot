@@ -1,7 +1,7 @@
 """配置加载器"""
 
 import sys
-from dataclasses import fields
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type, TypeVar
 
@@ -69,6 +69,93 @@ class Config:
 
         logger.warning(f"未找到迁移路径: {current_version} -> {target_version}")
         return data
+
+    @classmethod
+    def register_models(cls, config_obj: Any):
+        """根据配置自动注册模型。"""
+        models_config = getattr(config_obj, "models", None)
+        if models_config is None:
+            return None
+
+        if not is_dataclass(models_config):
+            raise TypeError("config.models 必须是 dataclass")
+
+        from neobot_app.config.schemas.env import EnvConfig
+        from neobot_chat import (
+            ModelPricing,
+            ModelSettings,
+            RegisteredModel,
+            get_model_registry,
+        )
+
+        registry = get_model_registry()
+        registry.clear()
+
+        registered_count = 0
+        for model_field in fields(models_config):
+            model_config = getattr(models_config, model_field.name)
+            if not is_dataclass(model_config):
+                continue
+
+            provider_name = getattr(model_config, "provider", "").strip()
+            model_name = getattr(model_config, "model_name", "").strip()
+            description = getattr(model_config, "description", model_field.name).strip()
+            if not provider_name:
+                raise ValueError(f"模型 {model_field.name} 缺少 provider 配置")
+            if not model_name:
+                raise ValueError(f"模型 {model_field.name} 缺少 model_name 配置")
+
+            platform_config = EnvConfig.get_api_platform_config(provider_name)
+            if not platform_config.url:
+                raise ValueError(
+                    f"模型 {model_field.name} 缺少平台 {provider_name}_URL 配置"
+                )
+            if not platform_config.api_key:
+                raise ValueError(
+                    f"模型 {model_field.name} 缺少平台 {provider_name}_APIKey 配置"
+                )
+
+            pricing_config = getattr(model_config, "pricing", None)
+            settings_config = getattr(model_config, "settings", None)
+            pricing = ModelPricing(
+                input_price_per_mtokens=getattr(
+                    pricing_config, "input_price_per_mtokens", 0.0
+                ),
+                output_price_per_mtokens=getattr(
+                    pricing_config, "output_price_per_mtokens", 0.0
+                ),
+                billing_metric=getattr(pricing_config, "billing_metric", ""),
+            )
+            settings = ModelSettings(
+                temperature=getattr(settings_config, "temperature", None),
+                max_output_tokens=getattr(settings_config, "max_output_tokens", None),
+                timeout_seconds=getattr(settings_config, "timeout_seconds", 120.0),
+                top_p=getattr(settings_config, "top_p", None),
+                frequency_penalty=getattr(
+                    settings_config, "frequency_penalty", None
+                ),
+                presence_penalty=getattr(settings_config, "presence_penalty", None),
+            )
+
+            registry.register(
+                RegisteredModel(
+                    name=model_field.name,
+                    description=description,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    base_url=platform_config.url,
+                    api_key=platform_config.api_key,
+                    pricing=pricing,
+                    settings=settings,
+                )
+            )
+            registered_count += 1
+            logger.info(
+                f"已注册模型: {model_field.name} -> {provider_name}/{model_name}"
+            )
+
+        logger.info(f"模型注册完成，共注册 {registered_count} 个模型")
+        return registry
 
     @classmethod
     def load(cls, file_path: Path, schema: Type[T]) -> T:
@@ -145,6 +232,7 @@ class Config:
                     logger.warning(f"  - {field}")
 
             logger.info("配置文件加载成功")
+            cls.register_models(config_obj)
             return config_obj
         except Exception as e:
             logger.error(f"解析配置文件失败: {e}")

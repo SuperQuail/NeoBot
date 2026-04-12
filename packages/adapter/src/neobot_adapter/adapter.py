@@ -304,6 +304,19 @@ class OneBotAdapter:
         result = await self.call_api("get_group_list", {"no_cache": no_cache}, timeout)
         return safe_parse_model(result, response.GetGroupListResponse)
 
+    async def get_group_member_list(
+        self,
+        group_id: int,
+        no_cache: bool = False,
+        timeout: float = 5.0,
+    ) -> response.GetGroupMemberListResponse:
+        result = await self.call_api(
+            "get_group_member_list",
+            {"group_id": group_id, "no_cache": no_cache},
+            timeout,
+        )
+        return safe_parse_model(result, response.GetGroupMemberListResponse)
+
     async def get_friend_msg_history(
         self,
         user_id: int,

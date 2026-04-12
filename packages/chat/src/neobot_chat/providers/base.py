@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -45,6 +45,31 @@ class BaseHTTPProvider:
     def _build_headers(self) -> dict[str, str]:
         """子类重写以提供特定的认证头"""
         return {"Content-Type": "application/json", **self.extra_headers}
+
+    @staticmethod
+    def _apply_payload_options(
+        payload: dict[str, Any],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if extra_body:
+            payload.update(extra_body)
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        return payload
 
     @property
     def client(self) -> httpx.AsyncClient:

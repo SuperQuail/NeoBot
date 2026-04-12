@@ -12,31 +12,38 @@ if TYPE_CHECKING:
 class ArchiveStorage(Protocol):
     """档案式记忆存储接口"""
 
-    async def create(self, user_id: str, key: str, value: str, tags: list[str]) -> int: ...
+    async def set(
+        self,
+        table_name: str,
+        key: str,
+        value: str,
+        tags: list[str],
+    ) -> ArchiveMemory: ...
 
-    async def update(self, memory_id: int, value: str, tags: list[str]) -> None: ...
-
-    async def delete(self, memory_id: int) -> None: ...
+    async def delete(self, table_name: str, key: str) -> bool: ...
 
 
 @runtime_checkable
 class ArchiveQuery(Protocol):
     """档案式记忆查询接口"""
 
-    async def query_by_user(
+    async def get(
         self,
-        user_id: str,
-        key: Optional[str] = None,
+        table_name: str,
+        key: str,
+    ) -> Optional[ArchiveMemory]: ...
+
+    async def exists(self, table_name: str, key: str) -> bool: ...
+
+    async def list(
+        self,
+        table_name: str,
         tags: Optional[list[str]] = None,
-        limit: int = 10,
+        key_query: Optional[str] = None,
+        value_query: Optional[str] = None,
+        limit: int = 50,
         offset: int = 0,
     ) -> list[ArchiveMemory]: ...
-
-    async def search_by_tags(self, tags: list[str], limit: int = 10) -> list[ArchiveMemory]: ...
-
-    async def search_by_key(self, key: str, limit: int = 10) -> list[ArchiveMemory]: ...
-
-    async def search_by_value(self, query: str, limit: int = 10) -> list[ArchiveMemory]: ...
 
 
 @runtime_checkable

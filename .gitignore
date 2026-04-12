@@ -115,3 +115,7 @@ cov.xml
 
 # uv lock file
 uv.lock
+/test/reports/
+/Reference/
+/TODO/
+/test/

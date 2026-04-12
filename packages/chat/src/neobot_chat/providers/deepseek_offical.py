@@ -7,14 +7,12 @@ from typing import Any
 import httpx
 
 from neobot_chat.providers.base import BaseHTTPProvider
-from neobot_chat.schema.exceptions import ProviderError, ValidationError
+from neobot_chat.schema.exceptions import ProviderError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
 class DeepSeekOfficalProvider(BaseHTTPProvider):
     """DeepSeek 官方 Chat Completions API"""
-
-    SUPPORTED_MODELS = {"deepseek-chat", "deepseek-reasoner"}
 
     def __init__(
         self,
@@ -22,14 +20,21 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         model: str,
         base_url: str = "https://api.deepseek.com",
         timeout: float = 120.0,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
-        if model not in self.SUPPORTED_MODELS:
-            raise ValidationError(
-                f"Unsupported DeepSeek official model: {model}. "
-                f"Expected one of: {', '.join(sorted(self.SUPPORTED_MODELS))}"
-            )
         super().__init__(api_key, base_url, timeout)
         self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.extra_body = extra_body or {}
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -139,6 +144,15 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             payload["tool_choice"] = "auto"
 
         payload["thinking"] = {"type": "enabled" if self._is_reasoner else "disabled"}
+        self._apply_payload_options(
+            payload,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            extra_body=self.extra_body,
+        )
         return payload
 
     def _parse_message(self, raw_message: dict[str, Any]) -> Message:

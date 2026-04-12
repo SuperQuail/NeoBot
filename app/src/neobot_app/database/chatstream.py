@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, List, Optional, Set
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
@@ -14,6 +14,7 @@ from neobot_adapter.model.response import (
 from neobot_adapter.model.message import PrivateMessage, GroupMessage
 
 from neobot_app.message.queue import MessageQueue
+from neobot_app.user_profiles import UserProfileService
 
 logger = logging.getLogger(__name__)
 
@@ -70,22 +71,48 @@ class ChatStreamManager:
         bot_cfg = load_bot_config()
         max_group_obs = bot_cfg.chat.max_group_chat_observations
         max_friend_obs = bot_cfg.chat.max_friend_chat_observations
+        enable_group_startup_history_warmup = getattr(
+            bot_cfg.chat,
+            "enable_group_startup_history_warmup",
+            False,
+        )
+        enable_friend_startup_history_warmup = getattr(
+            bot_cfg.chat,
+            "enable_friend_startup_history_warmup",
+            False,
+        )
+        startup_history_group_whitelist = self._normalize_whitelist(
+            getattr(bot_cfg.chat, "startup_history_group_whitelist", [])
+        )
+        startup_history_friend_whitelist = self._normalize_whitelist(
+            getattr(bot_cfg.chat, "startup_history_friend_whitelist", [])
+        )
+        timestamp_interval_seconds = getattr(
+            bot_cfg.chat,
+            "message_timestamp_interval_seconds",
+            300,
+        )
+        profile_service = UserProfileService(
+            self.adapter,
+            self._uow_factory,
+            bot_cfg,
+        )
 
         # 如果队列未通过构造函数注入，则自行创建
         if self._group_queue is None:
-            self._group_queue = MessageQueue(max_size=max_group_obs)
+            self._group_queue = MessageQueue(
+                max_size=max_group_obs,
+                timestamp_interval_seconds=timestamp_interval_seconds,
+            )
         if self._friend_queue is None:
-            self._friend_queue = MessageQueue(max_size=max_friend_obs)
+            self._friend_queue = MessageQueue(
+                max_size=max_friend_obs,
+                timestamp_interval_seconds=timestamp_interval_seconds,
+            )
 
         logger.info(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")
 
         try:
-            # 获取好友列表
-            logger.info("正在获取好友列表...")
-            friend_response = await self._retry_api_call(self.adapter.get_friend_list)
-            friends = friend_response.data if friend_response.data else []
-            logger.info(f"获取到 {len(friends)} 个好友")
-
             # 获取群列表
             logger.info("正在获取群列表...")
             group_response = await self._retry_api_call(self.adapter.get_group_list)
@@ -104,28 +131,64 @@ class ChatStreamManager:
                     await uow.commit()
                 logger.info(f"群信息存储完成，共处理 {len(groups)} 个群")
 
-            # 并发处理好友历史消息
-            logger.info(f"开始获取好友历史消息，并发限制: {self.config.concurrent_limit}...")
-            friend_tasks = [
-                self._process_friend_history(friend, max_friend_obs)
-                for friend in friends
-            ]
-            friend_results = await asyncio.gather(*friend_tasks, return_exceptions=True)
-            self._log_task_results(friend_results, "好友历史消息")
+            if enable_group_startup_history_warmup:
+                logger.warning("已开启群聊启动历史聊天记录预热，这可能存在风控风险")
+                selected_groups = self._filter_entities_by_whitelist(
+                    groups,
+                    "group_id",
+                    startup_history_group_whitelist,
+                )
+                logger.info(
+                    "群聊启动历史消息白名单过滤完成: "
+                    f"{len(selected_groups)}/{len(groups)}"
+                )
+                logger.info(
+                    f"开始获取群历史消息，并发限制: {self.config.concurrent_limit}..."
+                )
+                group_tasks = [
+                    self._process_group_history(group, max_group_obs)
+                    for group in selected_groups
+                ]
+                group_results = await asyncio.gather(
+                    *group_tasks, return_exceptions=True
+                )
+                self._log_task_results(group_results, "群历史消息")
+            else:
+                logger.info("群聊启动历史聊天记录预热未开启，跳过群历史消息拉取")
 
-            # 并发处理群历史消息
-            logger.info(f"开始获取群历史消息，并发限制: {self.config.concurrent_limit}...")
-            group_tasks = [
-                self._process_group_history(group, max_group_obs)
-                for group in groups
-            ]
-            group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
-            self._log_task_results(group_results, "群历史消息")
+            if enable_friend_startup_history_warmup:
+                logger.warning("已开启私聊启动历史聊天记录预热，这可能存在风控风险")
+                logger.info("正在获取好友列表...")
+                friend_response = await self._retry_api_call(self.adapter.get_friend_list)
+                friends = friend_response.data if friend_response.data else []
+                logger.info(f"获取到 {len(friends)} 个好友")
+                selected_friends = self._filter_entities_by_whitelist(
+                    friends,
+                    "user_id",
+                    startup_history_friend_whitelist,
+                )
+                logger.info(
+                    "私聊启动历史消息白名单过滤完成: "
+                    f"{len(selected_friends)}/{len(friends)}"
+                )
+                logger.info(
+                    f"开始获取好友历史消息，并发限制: {self.config.concurrent_limit}..."
+                )
+                friend_tasks = [
+                    self._process_friend_history(friend, max_friend_obs)
+                    for friend in selected_friends
+                ]
+                friend_results = await asyncio.gather(
+                    *friend_tasks, return_exceptions=True
+                )
+                self._log_task_results(friend_results, "好友历史消息")
+            else:
+                logger.info("私聊启动历史聊天记录预热未开启，跳过私聊历史消息拉取")
 
             # 收集所有用户ID并更新缺失的用户信息
             logger.info("开始收集用户ID并更新缺失的用户信息...")
             user_ids = await self._collect_user_ids_from_messages()
-            await self._update_missing_users(user_ids)
+            await self._update_user_profiles(user_ids, profile_service)
 
             self._initialized = True
             logger.info("聊天流初始化完成")
@@ -195,6 +258,31 @@ class ChatStreamManager:
                 if isinstance(result, Exception):
                     logger.debug(f"任务 {i} 失败: {result}")
 
+    @staticmethod
+    def _normalize_whitelist(values: Optional[List[str]]) -> Optional[Set[str]]:
+        if not values:
+            return None
+        normalized = {
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        }
+        return normalized or None
+
+    @staticmethod
+    def _filter_entities_by_whitelist(
+        entities: List[Any],
+        attr_name: str,
+        whitelist: Optional[Set[str]],
+    ) -> List[Any]:
+        if whitelist is None:
+            return entities
+        return [
+            entity
+            for entity in entities
+            if str(getattr(entity, attr_name, "")).strip() in whitelist
+        ]
+
     async def _process_friend_history(self, friend: FriendData, max_observations: int) -> None:
         """处理单个好友的历史消息"""
         try:
@@ -218,7 +306,7 @@ class ChatStreamManager:
                     continue
 
                 try:
-                    self._friend_queue.push(str(friend.user_id), msg_data)
+                    self._friend_queue.push_history(str(friend.user_id), msg_data)
                 except Exception as e:
                     logger.error(f"推送好友 {friend.user_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
@@ -252,7 +340,7 @@ class ChatStreamManager:
                     continue
 
                 try:
-                    self._group_queue.push(str(group.group_id), msg_data)
+                    self._group_queue.push_history(str(group.group_id), msg_data)
                 except Exception as e:
                     logger.error(f"推送群 {group.group_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
@@ -282,61 +370,32 @@ class ChatStreamManager:
 
         return user_ids
 
-    async def _update_missing_users(self, user_ids: Set[str]) -> None:
-        """更新缺失的用户信息到数据库"""
-        missing_users = []
-
-        # 检查哪些用户不在数据库中
-        async with self._uow_factory() as uow:
-            for user_id in user_ids:
-                if not await self._user_exists_in_db(uow, user_id):
-                    missing_users.append(user_id)
-
-        if not missing_users:
-            logger.info("所有用户都已存在于数据库中")
+    async def _update_user_profiles(
+        self,
+        user_ids: Set[str],
+        profile_service: UserProfileService,
+    ) -> None:
+        """补齐并按配置刷新用户信息。"""
+        if not user_ids:
+            logger.info("消息队列中未发现需要更新的用户信息")
             return
 
-        logger.info(f"发现 {len(missing_users)} 个缺失的用户，开始获取信息...")
-
-        # 并发获取用户信息
-        tasks = [self._get_stranger_info_and_store(user_id) for user_id in missing_users]
+        tasks = [
+            profile_service.ensure_user_profile(user_id)
+            for user_id in sorted(user_ids)
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 检查结果
         success_count = 0
-        for user_id, result in zip(missing_users, results):
+        for user_id, result in zip(sorted(user_ids), results):
             if isinstance(result, Exception):
-                logger.error(f"获取用户 {user_id} 信息失败: {result}")
-            else:
+                logger.error(f"更新用户 {user_id} 信息失败: {result}")
+            elif result is not None:
                 success_count += 1
 
-        logger.info(f"用户信息更新完成，成功获取 {success_count}/{len(missing_users)} 个用户信息")
-
-    async def _user_exists_in_db(self, uow, user_id: str) -> bool:
-        """检查用户是否存在于 user_data 表中"""
-        try:
-            return await uow.profiles.user_exists(user_id)
-        except Exception as e:
-            logger.error(f"检查用户 {user_id} 是否存在时出错: {e}")
-            return False
-
-    async def _group_exists_in_db(self, uow, group_id: str) -> bool:
-        """检查群是否存在于 group_data 表中"""
-        try:
-            return await uow.profiles.group_exists(group_id)
-        except Exception as e:
-            logger.error(f"检查群 {group_id} 是否存在时出错: {e}")
-            return False
-
-    async def _insert_user_to_db(self, uow, user_id: str, user_info: Dict[str, Any]) -> None:
-        """插入用户信息到 user_data 表"""
-        try:
-            await uow.profiles.upsert_user(user_id, **user_info)
-            await uow.commit()
-            logger.info(f"用户 {user_id} 已插入数据库")
-        except Exception as e:
-            logger.error(f"插入用户 {user_id} 到数据库时出错: {e}")
-            await uow.rollback()
+        logger.info(
+            f"用户信息更新完成，成功处理 {success_count}/{len(user_ids)} 个用户信息"
+        )
 
     async def _insert_or_update_group_to_db(self, uow, group: GroupData) -> None:
         """插入或更新群信息到 group_data 表"""
@@ -350,34 +409,3 @@ class ChatStreamManager:
             logger.debug(f"群 {group.group_id} 信息已存入数据库")
         except Exception as e:
             logger.error(f"插入或更新群 {group.group_id} 到数据库时出错: {e}")
-
-    async def _get_stranger_info_and_store(self, user_id: str) -> None:
-        """获取陌生人信息并存储到数据库"""
-        try:
-            response = await self._retry_api_call(
-                self.adapter.get_stranger_info,
-                int(user_id),
-            )
-            if response.data:
-                user_info = {
-                    "nick_name": response.data.nickname or "",
-                    "sex": response.data.sex.value if response.data.sex else "",
-                    "age": response.data.age or 0,
-                    "city": response.data.city or "",
-                    "country": response.data.country or "",
-                    "long_nick": response.data.long_nick or "",
-                    "remark": response.data.remark or "",
-                    "relation_ship": "",
-                    "profile": "",
-                    "birthday": "",
-                    "labs": ",".join(response.data.labs) if response.data.labs else "",
-                }
-                if response.data.birthday_year and response.data.birthday_month and response.data.birthday_day:
-                    user_info["birthday"] = f"{response.data.birthday_year}-{response.data.birthday_month}-{response.data.birthday_day}"
-
-                async with self._uow_factory() as uow:
-                    await self._insert_user_to_db(uow, user_id, user_info)
-            else:
-                logger.warning(f"获取用户 {user_id} 信息返回空数据")
-        except Exception as e:
-            logger.error(f"获取用户 {user_id} 信息时出错: {e}", exc_info=True)
