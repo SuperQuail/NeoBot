@@ -6,12 +6,14 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.database.chatstream import ChatStreamManager
+from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.core.file_server import FileServer, ExpirationConfig
 from neobot_app.core.paths import get_data_dir
 
 if TYPE_CHECKING:
     from neobot_app.audio import TTSService
+    from neobot_app.emoji.service import EmojiService
 
 T = TypeVar("T")
 
@@ -26,6 +28,8 @@ class NeoBotApplication(Generic[T]):
         adapter: T,
         chat_stream: ChatStreamManager,
         event_pipeline: EventPipeline,
+        reply_orchestrator: ReplyOrchestrator | None = None,
+        emoji_service: "EmojiService | None" = None,
         logger: Logger | None = None,
         file_server_port: int = 8765,
         file_server_host: str = "127.0.0.1",
@@ -36,6 +40,8 @@ class NeoBotApplication(Generic[T]):
         self.adapter: T = adapter
         self.chat_stream = chat_stream
         self.event_pipeline = event_pipeline
+        self._reply_orchestrator = reply_orchestrator
+        self._emoji_service = emoji_service
         self._logger = logger or NullLogger()
         self._shutdown_event = asyncio.Event()
         self._started = False
@@ -68,6 +74,9 @@ class NeoBotApplication(Generic[T]):
         self._logger.info("NeoBot适配器启动完成")
         await self.chat_stream.initialize()
         self._logger.info("NeoBot聊天流初始化完成")
+        if self._emoji_service is not None:
+            await self._emoji_service.start()
+            self._logger.info("表情包服务启动完成")
         self.event_pipeline.start()
         self._started = True
 
@@ -86,6 +95,10 @@ class NeoBotApplication(Generic[T]):
             return
         self._shutdown_event.set()
         self.event_pipeline.stop()
+        if self._reply_orchestrator is not None:
+            await self._reply_orchestrator.shutdown()
+        if self._emoji_service is not None:
+            await self._emoji_service.stop()
         await self.adapter.stop()
         if self.tts_service is not None:
             await self.tts_service.close()

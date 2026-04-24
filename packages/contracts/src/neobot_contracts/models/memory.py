@@ -59,3 +59,20 @@ class ImageAnalysis:
     created_at: datetime
     updated_at: datetime
     version: int
+
+
+@dataclass(frozen=True, slots=True)
+class EmojiRecord:
+    """表情包记录 — 解析后的表情包图片元数据与描述"""
+
+    id: int
+    file_hash: str
+    file_name: str
+    file_path: str
+    mime_type: str | None
+    original_width: int | None
+    original_height: int | None
+    analysis_text: str | None
+    created_at: datetime
+    updated_at: datetime
+    version: int

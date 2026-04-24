@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
@@ -10,6 +10,15 @@ if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
 
 ChatMessage = PrivateMessage | GroupMessage
+
+
+@dataclass
+class RuntimeWillingConfig:
+    """Part B 运行时回复意愿配置（内存、不持久化，重启后刷新为默认值）"""
+
+    global_coefficient: float = 1.0
+    conversation_coefficients: dict[str, float] = field(default_factory=dict)
+    blacklisted_conversations: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +50,9 @@ class WillingContext:
     is_allowed: bool
     block_reason: str
     message: ChatMessage
+    at_guaranteed_reply: bool = False
+    config_global_coefficient: float = 1.0
+    runtime_config: RuntimeWillingConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

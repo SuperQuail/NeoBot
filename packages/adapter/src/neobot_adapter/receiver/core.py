@@ -4,7 +4,7 @@ import os
 import queue
 import threading
 import time
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, Callable, AsyncIterator, Iterator, Optional
 
 import websockets
 
@@ -39,7 +39,10 @@ class AdapterCore:
     """
 
     def __init__(
-        self, max_queue_size: int = 1000, heartbeat_timeout_multiplier: float = 2.0
+        self,
+        max_queue_size: int = 1000,
+        heartbeat_timeout_multiplier: float = 2.0,
+        packet_callback: Callable[[dict[str, Any]], None] | None = None,
     ):
         """初始化适配器核心
 
@@ -62,6 +65,7 @@ class AdapterCore:
         self._heartbeat_interval: float = 0.0  # 心跳间隔（秒）
         self._heartbeat_timeout_multiplier: float = heartbeat_timeout_multiplier
         self._heartbeat_checker_task: Optional[asyncio.Task] = None
+        self._packet_callback = packet_callback
 
     def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
         """等待直到有框架连接建立
@@ -158,6 +162,11 @@ class AdapterCore:
         try:
             async for message in websocket:
                 data = json.loads(message)
+                if self._packet_callback is not None:
+                    try:
+                        self._packet_callback(data)
+                    except Exception as exc:
+                        logger.error(f"调试收包回调失败: {exc}")
                 # 区分响应和事件
                 if "echo" in data:
                     echo = data["echo"]

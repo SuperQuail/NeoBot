@@ -111,3 +111,24 @@ class ImageAnalysisData(Base):
         Index("ix_images_updated_at", "updated_at"),
         Index("ix_images_source", "source"),
     )
+
+
+class EmojiData(Base):
+    __tablename__ = "emojis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    file_name: Mapped[str] = mapped_column(String, nullable=False)
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    original_width: Mapped[int | None] = mapped_column(Integer)
+    original_height: Mapped[int | None] = mapped_column(Integer)
+    analysis_text: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("ix_emojis_updated_at", "updated_at"),
+        Index("ix_emojis_file_name", "file_name"),
+    )

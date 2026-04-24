@@ -259,6 +259,15 @@ def dataclass_to_toml(
             nested_existing = None
             if raw_value is not None and isinstance(raw_value, dict):
                 nested_existing = raw_value
+            elif field.default is not MISSING and is_dataclass(field.default):
+                nested_existing = dataclasses.asdict(field.default)
+            elif field.default_factory is not MISSING:
+                try:
+                    default_obj = field.default_factory()
+                except Exception:
+                    default_obj = None
+                if default_obj is not None and is_dataclass(default_obj):
+                    nested_existing = dataclasses.asdict(default_obj)
             nested_doc, nested_req, nested_opt = dataclass_to_toml(
                 field_type, nested_existing, is_root=False  # type: ignore[arg-type]
             )

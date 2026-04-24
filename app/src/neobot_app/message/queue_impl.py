@@ -340,7 +340,8 @@ class MessageQueue:
     def to_text(self, key: str) -> str:
         if key not in self._queues:
             return ""
-        return self._entries_to_text(list(self._queues[key]))
+        entries = list(self._queues[key])
+        return self._entries_to_text(entries, context_entries=entries)
 
     def diff_to_text(self, previous: "MessageQueue", key: str) -> str:
         current_entries = list(self._queues.get(key, ()))
@@ -356,11 +357,15 @@ class MessageQueue:
 
         start_index = self._find_full_entry_start_index(current_entries, overlap)
         diff_entries = current_entries[start_index:]
-        lines: List[str] = []
+        lines: List[str] = self._build_new_duplicate_notes(
+            previous_entries=previous_entries,
+            new_entries=diff_entries,
+            context_entries=current_entries,
+        )
         if overlap == 0 and previous_non_timestamp and current_non_timestamp:
             lines.append(f"[群友发送了太多消息,你只看到了最新的{self.size(key)}条消息]")
 
-        diff_text = self._entries_to_text(diff_entries)
+        diff_text = self._entries_to_text(diff_entries, context_entries=current_entries)
         if diff_text:
             lines.append(diff_text)
         return "\n".join(line for line in lines if line)
@@ -425,17 +430,32 @@ class MessageQueue:
         ]
         return "recall:" + ":".join(parts)
 
-    def _entries_to_text(self, entries: List[QueueEntry]) -> str:
-        lines = [self._entry_to_text(entry) for entry in entries]
+    def _entries_to_text(
+        self,
+        entries: List[QueueEntry],
+        *,
+        context_entries: Optional[List[QueueEntry]] = None,
+    ) -> str:
+        sender_labels = self._build_sender_labels(context_entries or entries)
+        lines = [self._entry_to_text(entry, sender_labels=sender_labels) for entry in entries]
         return "\n".join(line for line in lines if line)
 
-    def _entry_to_text(self, entry: QueueEntry) -> str:
+    def _entry_to_text(
+        self,
+        entry: QueueEntry,
+        *,
+        sender_labels: Optional[Dict[int, str]] = None,
+    ) -> str:
         if entry.kind == QueueEntryType.TIMESTAMP:
             return self._format_timestamp(entry.occurred_at)
         if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-            return self._message_to_text(entry.message)
+            return self._message_to_text(entry.message, sender_labels=sender_labels)
         if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
-            return self._recall_to_text(entry.notice, entry.recalled_message)
+            return self._recall_to_text(
+                entry.notice,
+                entry.recalled_message,
+                sender_labels=sender_labels,
+            )
         return ""
 
     @staticmethod
@@ -445,8 +465,13 @@ class MessageQueue:
         dt = datetime.fromtimestamp(timestamp)
         return f"{dt.year}-{dt.month}-{dt.day}-{dt.hour}:{dt.minute:02d}"
 
-    def _message_to_text(self, message: QueueMessage) -> str:
-        name = self._message_sender_name(message)
+    def _message_to_text(
+        self,
+        message: QueueMessage,
+        *,
+        sender_labels: Optional[Dict[int, str]] = None,
+    ) -> str:
+        name = self._message_sender_label(message, sender_labels=sender_labels)
         content = self._render_message_content(message)
         return f"{name}: {content}" if content else f"{name}: [无消息内容]"
 
@@ -454,6 +479,8 @@ class MessageQueue:
         self,
         notice: RecallNotice,
         recalled_message: Optional[QueueMessage],
+        *,
+        sender_labels: Optional[Dict[int, str]] = None,
     ) -> str:
         if recalled_message is not None:
             return f"消息撤回: {self._message_to_text(recalled_message)}"
@@ -470,6 +497,92 @@ class MessageQueue:
         if message.user_id is not None:
             return f"QQ:{message.user_id}"
         return "未知用户"
+
+    @staticmethod
+    def _message_sender_identity(message: QueueMessage) -> str:
+        if message.user_id is not None:
+            return f"qq:{message.user_id}"
+        return f"name:{MessageQueue._message_sender_name(message)}"
+
+    def _message_sender_label(
+        self,
+        message: QueueMessage,
+        *,
+        sender_labels: Optional[Dict[int, str]] = None,
+    ) -> str:
+        if sender_labels is not None:
+            label = sender_labels.get(id(message))
+            if label:
+                return label
+        return self._message_sender_name(message)
+
+    def _build_sender_labels(self, entries: List[QueueEntry]) -> Dict[int, str]:
+        messages = [
+            entry.message
+            for entry in entries
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
+        ]
+        name_to_sender_ids: Dict[str, set[str]] = {}
+        for message in messages:
+            name = self._message_sender_name(message)
+            sender_id = self._message_sender_identity(message)
+            name_to_sender_ids.setdefault(name, set()).add(sender_id)
+
+        duplicate_names = {
+            name
+            for name, sender_ids in name_to_sender_ids.items()
+            if len(sender_ids) > 1
+        }
+        labels: Dict[int, str] = {}
+        for message in messages:
+            name = self._message_sender_name(message)
+            if name in duplicate_names and message.user_id is not None:
+                labels[id(message)] = f"{name}({message.user_id})"
+            else:
+                labels[id(message)] = name
+        return labels
+
+    def _build_new_duplicate_notes(
+        self,
+        *,
+        previous_entries: List[QueueEntry],
+        new_entries: List[QueueEntry],
+        context_entries: List[QueueEntry],
+    ) -> List[str]:
+        previous_messages = [
+            entry.message
+            for entry in previous_entries
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
+        ]
+        new_messages = [
+            entry.message
+            for entry in new_entries
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
+        ]
+        if not previous_messages or not new_messages:
+            return []
+
+        previous_by_name: Dict[str, Dict[str, QueueMessage]] = {}
+        new_by_name: Dict[str, Dict[str, QueueMessage]] = {}
+
+        for message in previous_messages:
+            name = self._message_sender_name(message)
+            previous_by_name.setdefault(name, {})[self._message_sender_identity(message)] = message
+        for message in new_messages:
+            name = self._message_sender_name(message)
+            new_by_name.setdefault(name, {})[self._message_sender_identity(message)] = message
+
+        notes: List[str] = []
+        for name in sorted(set(previous_by_name) & set(new_by_name)):
+            previous_senders = previous_by_name[name]
+            new_senders = new_by_name[name]
+            if not set(new_senders) - set(previous_senders):
+                continue
+            for message in previous_senders.values():
+                if message.user_id is None:
+                    continue
+                notes.append(f'之前的"{name}"是QQ号为{message.user_id}的')
+        return notes
 
     def _render_message_content(self, message: QueueMessage) -> str:
         if message.message:

@@ -11,6 +11,7 @@ from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
 from neobot_storage.repositories.archive import SqlAlchemyArchiveMemoryAccess
 from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
+from neobot_storage.repositories.emoji import SqlAlchemyEmojiAccess
 
 
 class SqlAlchemyUnitOfWork:
@@ -26,6 +27,7 @@ class SqlAlchemyUnitOfWork:
         self.profiles = SqlAlchemyProfileRepository(self._session)
         self.archive = SqlAlchemyArchiveMemoryAccess(self._session)
         self.images = SqlAlchemyImageAnalysisAccess(self._session)
+        self.emojis = SqlAlchemyEmojiAccess(self._session)
         return self
 
     async def __aexit__(self, *exc: object) -> None:

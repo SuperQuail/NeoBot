@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -13,6 +14,10 @@ from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinitio
 
 class DeepSeekOfficalProvider(BaseHTTPProvider):
     """DeepSeek 官方 Chat Completions API"""
+
+    _THINKING_MODE_KEY = "__deepseek_thinking_mode__"
+    _REASONING_EFFORT_KEY = "__deepseek_reasoning_effort__"
+    _THINKING_PROBABILITY_KEY = "__deepseek_random_thinking_probability__"
 
     def __init__(
         self,
@@ -45,6 +50,59 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
     @property
     def _is_reasoner(self) -> bool:
         return self.model == "deepseek-reasoner"
+
+    def _resolve_extra_body(self) -> tuple[dict[str, Any], str, str | None, float]:
+        extra_body = dict(self.extra_body)
+
+        thinking_mode = str(
+            extra_body.pop(
+                self._THINKING_MODE_KEY,
+                extra_body.pop(
+                    "deepseek_thinking_mode",
+                    "enabled" if self._is_reasoner else "disabled",
+                ),
+            )
+        ).strip().casefold()
+        if thinking_mode not in {"disabled", "enabled", "random"}:
+            thinking_mode = "disabled"
+
+        reasoning_effort_raw = extra_body.pop(
+            self._REASONING_EFFORT_KEY,
+            extra_body.pop("deepseek_reasoning_effort", extra_body.pop("reasoning_effort", None)),
+        )
+        reasoning_effort = (
+            str(reasoning_effort_raw).strip().casefold()
+            if reasoning_effort_raw is not None
+            else None
+        )
+        if reasoning_effort not in {"high", "max"}:
+            reasoning_effort = None
+
+        probability_raw = extra_body.pop(
+            self._THINKING_PROBABILITY_KEY,
+            extra_body.pop("deepseek_random_thinking_probability", 0.6),
+        )
+        try:
+            thinking_probability = float(probability_raw)
+        except (TypeError, ValueError):
+            thinking_probability = 0.6
+        thinking_probability = max(0.0, min(1.0, thinking_probability))
+
+        extra_body.pop("thinking", None)
+        return extra_body, thinking_mode, reasoning_effort, thinking_probability
+
+    def _build_thinking_payload(self) -> tuple[dict[str, str], str | None, dict[str, Any]]:
+        extra_body, thinking_mode, reasoning_effort, thinking_probability = (
+            self._resolve_extra_body()
+        )
+
+        enabled = thinking_mode == "enabled"
+        if thinking_mode == "random":
+            enabled = random.random() < thinking_probability
+
+        thinking_payload = {"type": "enabled" if enabled else "disabled"}
+        effective_reasoning_effort = reasoning_effort if enabled else None
+        return thinking_payload, effective_reasoning_effort, extra_body
 
     @staticmethod
     def _build_tool_call(
@@ -108,7 +166,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                 payload["tool_calls"] = message["tool_calls"]
 
             reasoning_content = self._get_reasoning_content(message)
-            if self._is_reasoner and reasoning_content:
+            if reasoning_content:
                 payload["reasoning_content"] = reasoning_content
 
             serialized.append(payload)
@@ -143,7 +201,10 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        payload["thinking"] = {"type": "enabled" if self._is_reasoner else "disabled"}
+        thinking_payload, reasoning_effort, extra_body = self._build_thinking_payload()
+        payload["thinking"] = thinking_payload
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         self._apply_payload_options(
             payload,
             temperature=self.temperature,
@@ -151,7 +212,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             top_p=self.top_p,
             frequency_penalty=self.frequency_penalty,
             presence_penalty=self.presence_penalty,
-            extra_body=self.extra_body,
+            extra_body=extra_body,
         )
         return payload
 

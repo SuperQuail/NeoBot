@@ -16,6 +16,43 @@ T = TypeVar("T")
 logger = get_module_logger("config_loader")
 
 
+def _build_provider_extra_body(
+    provider_name: str,
+    settings_config: Any,
+) -> dict[str, Any]:
+    if settings_config is None:
+        return {}
+
+    provider_kind = provider_name.strip().casefold().replace("-", "_")
+    if provider_kind not in {"deepseek", "deepseek_offical", "deepseek_official"}:
+        return {}
+
+    thinking_mode = str(
+        getattr(settings_config, "deepseek_thinking_mode", "disabled")
+    ).strip().casefold()
+    if thinking_mode not in {"disabled", "enabled", "random"}:
+        thinking_mode = "disabled"
+
+    reasoning_effort = str(
+        getattr(settings_config, "deepseek_reasoning_effort", "high")
+    ).strip().casefold()
+    if reasoning_effort not in {"high", "max"}:
+        reasoning_effort = "high"
+
+    probability = getattr(settings_config, "deepseek_random_thinking_probability", 0.6)
+    try:
+        random_probability = float(probability)
+    except (TypeError, ValueError):
+        random_probability = 0.6
+    random_probability = max(0.0, min(1.0, random_probability))
+
+    return {
+        "__deepseek_thinking_mode__": thinking_mode,
+        "__deepseek_reasoning_effort__": reasoning_effort,
+        "__deepseek_random_thinking_probability__": random_probability,
+    }
+
+
 def _check_placeholders(obj: Any, path: str = "") -> list[str]:
     """递归检查配置对象中的占位符值"""
     from dataclasses import is_dataclass
@@ -96,6 +133,13 @@ class Config:
             model_config = getattr(models_config, model_field.name)
             if not is_dataclass(model_config):
                 continue
+            creator_config = getattr(getattr(config_obj, "agent", None), "creator", None)
+            if (
+                model_field.name == "creator_image_model"
+                and not getattr(creator_config, "enabled", False)
+            ):
+                logger.info("Creator Agent 未启用，跳过注册 creator_image_model")
+                continue
 
             provider_name = getattr(model_config, "provider", "").strip()
             model_name = getattr(model_config, "model_name", "").strip()
@@ -135,6 +179,7 @@ class Config:
                     settings_config, "frequency_penalty", None
                 ),
                 presence_penalty=getattr(settings_config, "presence_penalty", None),
+                extra_body=_build_provider_extra_body(provider_name, settings_config),
             )
 
             registry.register(

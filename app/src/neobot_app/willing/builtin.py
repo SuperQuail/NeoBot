@@ -22,8 +22,41 @@ class QuailWillingManager(BaseWillingManager):
                 reasons=tuple(reasons),
             )
 
-        probability = context.base_probability * context.conversation_coefficient
-        reasons.append(f"coefficient={context.conversation_coefficient:.3f}")
+        blocked = self._is_runtime_blocked(context)
+        if blocked:
+            reasons.append("blocked=runtime_blacklist")
+            return WillingDecision(
+                manager_name=self.name,
+                probability=0.0,
+                should_reply=False,
+                reasons=tuple(reasons),
+            )
+
+        if context.at_guaranteed_reply and context.mentioned_bot:
+            reasons.append("at_guaranteed_reply=1.000")
+            return WillingDecision(
+                manager_name=self.name,
+                probability=1.0,
+                should_reply=True,
+                reasons=tuple(reasons),
+            )
+
+        probability = context.base_probability
+        probability *= context.config_global_coefficient
+        reasons.append(f"config_global_coeff={context.config_global_coefficient:.3f}")
+        probability *= context.conversation_coefficient
+        reasons.append(f"conversation_coeff={context.conversation_coefficient:.3f}")
+
+        if context.runtime_config is not None:
+            runtime = context.runtime_config
+            probability *= runtime.global_coefficient
+            reasons.append(f"runtime_global_coeff={runtime.global_coefficient:.3f}")
+            runtime_conv_coeff = runtime.conversation_coefficients.get(
+                context.conversation_id, 1.0
+            )
+            probability *= runtime_conv_coeff
+            if runtime_conv_coeff != 1.0:
+                reasons.append(f"runtime_conv_coeff={runtime_conv_coeff:.3f}")
 
         if context.is_direct_message:
             probability += 0.12
@@ -68,3 +101,9 @@ class QuailWillingManager(BaseWillingManager):
             should_reply=probability >= context.reply_threshold,
             reasons=tuple(reasons),
         )
+
+    @staticmethod
+    def _is_runtime_blocked(context: WillingContext) -> bool:
+        if context.runtime_config is None:
+            return False
+        return context.conversation_id in context.runtime_config.blacklisted_conversations

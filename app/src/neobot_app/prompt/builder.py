@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.prompt.keyword_reaction import KeywordReactionBuilder
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.utils.time import get_current_time_and_lunar_date
+
+if TYPE_CHECKING:
+    from neobot_app.message.numbering import MessageNumbering
 
 
 class PromptBuilder:
@@ -32,6 +37,7 @@ class PromptBuilder:
         *,
         key_word_reaction_list: str = "",
         memory_list: str = "",
+        numbering: MessageNumbering | None = None,
     ) -> str:
         current_time = get_current_time_and_lunar_date()
         group_id_str = str(group_id)
@@ -42,7 +48,14 @@ class PromptBuilder:
             group_id,
             message_queue,
         )
-        message_list = message_queue.to_text(group_id_str)
+
+        if numbering is not None:
+            message_list = numbering.apply(message_queue, group_id_str)
+            format_example = numbering.format_example()
+            message_list = f"{format_example}\n\n{message_list}"
+        else:
+            message_list = message_queue.to_text(group_id_str)
+
         keyword_reaction_text = self._keyword_reaction_builder.build(
             queue=message_queue,
             queue_key=group_id_str,
@@ -78,6 +91,7 @@ class PromptBuilder:
         *,
         key_word_reaction_list: str = "",
         memory_list: str = "",
+        numbering: MessageNumbering | None = None,
     ) -> str:
         current_time = get_current_time_and_lunar_date()
         user_id_str = str(user_id)
@@ -88,7 +102,14 @@ class PromptBuilder:
             user_id_str,
             profile=profile,
         )
-        message_list = message_queue.to_text(user_id_str)
+
+        if numbering is not None:
+            message_list = numbering.apply(message_queue, user_id_str)
+            format_example = numbering.format_example()
+            message_list = f"{format_example}\n\n{message_list}"
+        else:
+            message_list = message_queue.to_text(user_id_str)
+
         keyword_reaction_text = self._keyword_reaction_builder.build(
             queue=message_queue,
             queue_key=user_id_str,

@@ -13,8 +13,13 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
-from neobot_app.willing.builtin import QuailWillingManager
-from neobot_app.willing.models import BaseWillingManager, WillingContext, WillingDecision
+from neobot_app.willing.builtin import QuailWillingManager, clamp_probability
+from neobot_app.willing.models import (
+    BaseWillingManager,
+    RuntimeWillingConfig,
+    WillingContext,
+    WillingDecision,
+)
 
 ChatMessage = PrivateMessage | GroupMessage
 
@@ -33,6 +38,7 @@ class WillingService:
         self._custom_dir.mkdir(parents=True, exist_ok=True)
         self._sync_runtime_documents()
         self._manager = self._load_manager(config.willing.manager_name)
+        self._runtime_config = RuntimeWillingConfig()
 
     @property
     def manager(self) -> BaseWillingManager:
@@ -42,15 +48,70 @@ class WillingService:
     def custom_dir(self) -> Path:
         return self._custom_dir
 
+    @property
+    def runtime_config(self) -> RuntimeWillingConfig:
+        return self._runtime_config
+
     def evaluate(
         self,
         *,
         message: ChatMessage,
         queue: MessageQueue,
         queue_key: str,
+        reply_mode: str | None = None,
     ) -> WillingDecision:
-        context = self._build_context(message=message, queue=queue, queue_key=queue_key)
+        if reply_mode is None:
+            reply_mode = getattr(self._config.chat, "reply_mode", "common") or "common"
+        context = self._build_context(
+            message=message,
+            queue=queue,
+            queue_key=queue_key,
+            reply_mode=reply_mode,
+        )
         return self._manager.evaluate(context)
+
+    # ── Part B 运行时系数调整（供 AI 工具调用） ──
+
+    def set_runtime_global_coefficient(self, value: float) -> str:
+        self._runtime_config.global_coefficient = clamp_probability(value)
+        self._logger.info("runtime global coefficient updated", value=value)
+        return f"全局回复系数已设为 {self._runtime_config.global_coefficient:.3f}"
+
+    def set_runtime_conversation_coefficient(self, conv_id: str, value: float) -> str:
+        conv_id = str(conv_id).strip()
+        self._runtime_config.conversation_coefficients[conv_id] = clamp_probability(value)
+        self._logger.info("runtime conversation coefficient updated", conv_id=conv_id, value=value)
+        return f"会话 {conv_id} 的回复系数已设为 {clamp_probability(value):.3f}"
+
+    def add_runtime_blacklist(self, conv_id: str) -> str:
+        conv_id = str(conv_id).strip()
+        self._runtime_config.blacklisted_conversations.add(conv_id)
+        self._logger.info("runtime blacklist added", conv_id=conv_id)
+        return f"已将 {conv_id} 加入临时黑名单"
+
+    def remove_runtime_blacklist(self, conv_id: str) -> str:
+        conv_id = str(conv_id).strip()
+        self._runtime_config.blacklisted_conversations.discard(conv_id)
+        self._logger.info("runtime blacklist removed", conv_id=conv_id)
+        return f"已将 {conv_id} 从临时黑名单移除"
+
+    def remove_runtime_conversation_coefficient(self, conv_id: str) -> str:
+        conv_id = str(conv_id).strip()
+        removed = self._runtime_config.conversation_coefficients.pop(conv_id, None)
+        if removed is not None:
+            self._logger.info("runtime conversation coefficient removed", conv_id=conv_id)
+            return f"已移除会话 {conv_id} 的临时回复系数（原值 {removed:.3f}）"
+        return f"会话 {conv_id} 没有临时回复系数"
+
+    def get_runtime_config_summary(self) -> str:
+        rt = self._runtime_config
+        parts = [f"全局系数: {rt.global_coefficient:.3f}"]
+        if rt.conversation_coefficients:
+            items = ", ".join(f"{k}={v:.3f}" for k, v in rt.conversation_coefficients.items())
+            parts.append(f"会话系数: {items}")
+        if rt.blacklisted_conversations:
+            parts.append(f"临时黑名单: {', '.join(sorted(rt.blacklisted_conversations))}")
+        return "\n".join(parts)
 
     def _sync_runtime_documents(self) -> None:
         template_path = self._README_TEMPLATE_PATH
@@ -136,6 +197,7 @@ class WillingService:
         message: ChatMessage,
         queue: MessageQueue,
         queue_key: str,
+        reply_mode: str = "common",
     ) -> WillingContext:
         conversation_type = "group" if isinstance(message, GroupMessage) else "private"
         text = self._render_message_text(message)
@@ -147,6 +209,16 @@ class WillingService:
         called_bot_name = self._called_bot_name(text)
         replied_to_message = self._has_reply_segment(message)
         matched_keywords = self._matched_keywords(text)
+
+        at_guaranteed = (
+            self._config.chat.at_mention_guaranteed_reply
+            and mentioned_bot
+        )
+
+        if reply_mode == "agent":
+            config_global_coeff = self._config.chat.willing_agent_global_coefficient
+        else:
+            config_global_coeff = self._config.chat.willing_global_coefficient
 
         return WillingContext(
             manager_name=self._manager.name,
@@ -176,6 +248,9 @@ class WillingService:
             is_allowed=allowed,
             block_reason=block_reason,
             message=message,
+            at_guaranteed_reply=at_guaranteed,
+            config_global_coefficient=config_global_coeff,
+            runtime_config=self._runtime_config,
         )
 
     def _observed_messages(self, queue: MessageQueue, queue_key: str) -> list[str]:
@@ -232,11 +307,15 @@ class WillingService:
         return self._clamp_probability(self._config.chat.friend_chat_chance)
 
     def _conversation_coefficient(self, message: ChatMessage) -> float:
-        if not isinstance(message, GroupMessage) or message.group_id is None:
-            return 1.0
-        coefficients = self._config.chat.group_Response_coefficient or {}
-        value = coefficients.get(str(message.group_id), 1.0)
-        return max(0.0, float(value))
+        if isinstance(message, GroupMessage) and message.group_id is not None:
+            coefficients = self._config.chat.group_Response_coefficient or {}
+            return max(0.0, float(coefficients.get(str(message.group_id), 1.0)))
+
+        if isinstance(message, PrivateMessage) and message.user_id is not None:
+            coefficients = getattr(self._config.chat, "friend_Response_coefficient", None) or {}
+            return max(0.0, float(coefficients.get(str(message.user_id), 1.0)))
+
+        return 1.0
 
     def _mentioned_bot(self, message: ChatMessage) -> bool:
         target = str(self._config.bot.account)

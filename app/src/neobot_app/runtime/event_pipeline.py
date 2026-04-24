@@ -9,8 +9,11 @@ from neobot_adapter.utils.parse import safe_parse_model
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.image import ImageParseService
 from neobot_app.message.process import event_message__to_text
 from neobot_app.message.queue import MessageQueue
+from neobot_app.reply import ReplyOrchestrator
+from neobot_app.runtime.inbound_pipeline import InboundPipeline
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
 
@@ -23,6 +26,9 @@ class EventPipeline:
         friend_message_queue: MessageQueue,
         profile_service: UserProfileService | None = None,
         willing_service: WillingService | None = None,
+        reply_orchestrator: ReplyOrchestrator | None = None,
+        image_parse_service: ImageParseService | None = None,
+        inbound_pipeline: InboundPipeline | None = None,
         logger: Logger | None = None,
     ) -> None:
         self.adapter = adapter
@@ -30,6 +36,9 @@ class EventPipeline:
         self._friend_queue = friend_message_queue
         self._profile_service = profile_service
         self._willing_service = willing_service
+        self._reply_orchestrator = reply_orchestrator
+        self._image_parse_service = image_parse_service
+        self._inbound_pipeline = inbound_pipeline
         self._logger = logger or NullLogger()
         self._subscriptions: List[Subscription] = []
         self._started = False
@@ -74,22 +83,30 @@ class EventPipeline:
     async def _handle_private_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, PrivateMessage)
         queue_key = str(message.user_id or "")
+        if self._inbound_pipeline is not None:
+            await self._inbound_pipeline.handle_raw_event(event)
         self._friend_queue.push(queue_key, message)
         await self._refresh_profile_for_message(message)
+        if self._image_parse_service is not None:
+            await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
-        self._log_willing_decision(message=message, queue=self._friend_queue, queue_key=queue_key)
+        self._handle_willing_decision(message=message, queue=self._friend_queue, queue_key=queue_key)
         self._logger.info(f"收到私聊消息: {text}")
 
     async def _handle_group_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, GroupMessage)
         queue_key = str(message.group_id or "")
+        if self._inbound_pipeline is not None:
+            await self._inbound_pipeline.handle_raw_event(event)
         self._group_queue.push(queue_key, message)
         await self._refresh_profile_for_message(message)
+        if self._image_parse_service is not None:
+            await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
-        self._log_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
+        self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
         self._logger.info(f"收到群消息[{message.group_id or '未知'}]: {text}")
 
-    def _log_willing_decision(
+    def _handle_willing_decision(
         self,
         *,
         message: PrivateMessage | GroupMessage,
@@ -124,6 +141,14 @@ class EventPipeline:
             should_reply=decision.should_reply,
             reasons=" | ".join(decision.reasons),
         )
+
+        if decision.should_reply and self._reply_orchestrator is not None:
+            self._reply_orchestrator.start_reply(
+                message=message,
+                queue=queue,
+                queue_key=queue_key,
+                decision=decision,
+            )
 
     async def _refresh_profile_for_message(
         self,

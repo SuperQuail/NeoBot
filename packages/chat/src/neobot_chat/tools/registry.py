@@ -18,6 +18,15 @@ class AgentRegistry:
     def names(self) -> list[str]:
         return list(self._agents)
 
+    def snapshot(self) -> list[dict[str, str]]:
+        return [
+            {
+                "name": name,
+                "description": getattr(agent, "description", ""),
+            }
+            for name, agent in self._agents.items()
+        ]
+
     def __len__(self) -> int:
         return len(self._agents)
 
@@ -36,15 +45,7 @@ class AgentRegistry:
         if not agent:
             return f"Agent '{name}' not found"
 
-        header = f"Agent {name}: {agent.description}"
-        if not agent.tool_definitions:
-            return header
-
-        lines = [
-            f"- {t['function']['name']}: {t['function'].get('description', '')}"
-            for t in agent.tool_definitions
-        ]
-        return f"{header}\nTools:\n" + "\n".join(lines)
+        return f"Agent {name}: {agent.description}"
 
     async def delegate(
         self,
@@ -69,3 +70,11 @@ class AgentRegistry:
         )
         content = result["messages"][-1].get("content")
         return content if isinstance(content, str) else str(content)
+
+    async def close(self) -> None:
+        if not self._agents:
+            return
+        await asyncio.gather(
+            *(agent.close() for agent in self._agents.values()),
+            return_exceptions=True,
+        )

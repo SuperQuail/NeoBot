@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Any, Dict, Iterator, List, Optional, TypedDict
+from typing import Dict, Iterator, List, Optional, TypedDict
 
 
 class KeyWordRule(TypedDict, total=False):
-    """关键词规则类型"""
+    """关键词规则类型。"""
 
     enabled: bool
     keywords: List[str]
@@ -17,110 +17,105 @@ class KeyWordRule(TypedDict, total=False):
 
 @dataclass
 class Bot:
-    """机器人基础配置"""
+    """机器人基础配置。"""
 
     account: int = field(
-        default=0, metadata={"description": "机器人QQ号", "placeholder": True}
+        default=0,
+        metadata={"description": "机器人QQ号", "placeholder": True},
     )
     nick_name: str = field(default="Neo Bot", metadata={"description": "Bot昵称"})
     alias_name: Optional[List[str]] = field(
-        default_factory=lambda: ["Neo", "铸币bot"], metadata={"description": "Bot别称"}
+        default_factory=lambda: ["Neo", "铸币bot"],
+        metadata={"description": "Bot别称"},
     )
     bot_data: str = field(
-        default="你是一个可爱的机器人", metadata={"description": "描述机器人的人设"}
+        default="你是一个可爱的机器人",
+        metadata={"description": "描述机器人的人设"},
     )
     enable_bot_get_married: bool = field(
-        default=False, metadata={"description": "是否允许bot与好友结婚"}
+        default=False,
+        metadata={"description": "是否允许bot与好友结婚"},
     )
 
 
 @dataclass
 class Chat:
     group_prompt_template: str = field(
-        default="""<当前时间>{current_time}</当前时间>
-<群聊>{group_name}[群号:{group_id}]{group_description}</群聊>
-<聊天记录>
-{message_list}
-</聊天记录>
-<群友信息>
-{member_list}
-</群友信息>
-<你是谁>
-你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.
-{bot_data},现在你在这个群里聊天,你打算用日常,口语化的方式回复最后几句聊天记录里你比较感兴趣的内容,个性化一些,不用特意突出科学背景,聊天时你一般不会使用冒号,括号,句号也一般不使用,而是直接换行分成多条(多次调用回复工具).一次回复一句即可,不要太长.
-</你是谁>
-<你的印象>
-{key_word_reaction_list}
-你想起来之前:
-{memory_list}
-这些内容都是之前的内容,可能很久之前,也可能只是不久之前.
-</你的印象>""",
-        metadata={"description": "Bot提示词模板,非开发者不建议修改"},
+        default=(
+            "<当前时间>{current_time}</当前时间>\n"
+            "<群聊>{group_name}[群号:{group_id}]{group_description}</群聊>\n"
+            "<聊天记录>\n{message_list}\n</聊天记录>\n"
+            "<群友信息>\n{member_list}\n</群友信息>\n"
+            "<你是谁>\n"
+            "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
+            "{bot_data}\n"
+            "</你是谁>\n"
+            "<你的印象>\n"
+            "{key_word_reaction_list}\n"
+            "你想起来之前:\n"
+            "{memory_list}\n"
+            "</你的印象>"
+        ),
+        metadata={"description": "群聊提示词模板，非开发者不建议修改"},
     )
     max_group_chat_observations: int = field(
         default=100,
-        metadata={"description": "群聊观察上限,决定bot最多可以看到多少条聊天记录"},
+        metadata={"description": "群聊观察上限"},
     )
     group_chat_chance: float = field(
-        default=0.5, metadata={"description": "群聊基础回复概率"}
+        default=0.5,
+        metadata={"description": "群聊基础回复概率"},
     )
     group_use_black_list: bool = field(
         default=True,
-        metadata={"description": "true为群聊列表使用黑名单,false表示使用白名单"},
+        metadata={"description": "群聊名单是否使用黑名单模式"},
     )
     group_list: Optional[List[str]] = field(
         default_factory=lambda: ["111111", "222222"],
-        metadata={
-            "description": "群名单，根据 group_use_black_list 字段确定是白名单/黑名单，决定 bot 是否会在对应群聊对话"
-        },
+        metadata={"description": "群名单"},
     )
     group_Response_coefficient: Optional[Dict[str, float]] = field(
         default_factory=lambda: {"111111": 0.5, "222222": 0.5},
-        metadata={
-            "description": "群聊回复系数，根据群聊 ID 配置回复概率，会在结算时与基础回复概率相乘"
-        },
+        metadata={"description": "群聊回复系数"},
     )
     group_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的群"},
-        metadata={"description": "群描述，可以为特定群配置专属简介"},
+        metadata={"description": "群描述"},
     )
     friend_prompt_template: str = field(
-        default="""<当前时间>{current_time}</当前时间>
-<聊天对象>{friend_name}(你的备注:{remark})</聊天对象>
-<你对ta的印象>{profile}</你对ta的印象>
-<对方信息>
-{friend_info}
-</对方信息>
-<你的记忆>
-你想起来{memory_list}
-</你的记忆>
-<聊天记录>
-{message_list}
-</聊天记录>
-<你是谁>
-你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.
-{bot_data},现在你在这个群里聊天,你打算用日常,口语化的方式回复最后几句聊天记录里你比较感兴趣的内容,个性化一些,不用特意突出科学背景,聊天时你一般不会使用冒号,括号,句号也一般不使用,而是直接换行分成多条.一次回复一句即可,不要超过三小句.
-</你是谁>"""
+        default=(
+            "<当前时间>{current_time}</当前时间>\n"
+            "<聊天对象>{friend_name}(你的备注:{remark})</聊天对象>\n"
+            "<你对ta的印象>{profile}</你对ta的印象>\n"
+            "<对方信息>\n{friend_info}\n</对方信息>\n"
+            "<你的记忆>\n你想起来{memory_list}\n</你的记忆>\n"
+            "<聊天记录>\n{message_list}\n</聊天记录>\n"
+            "<你是谁>\n"
+            "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
+            "{bot_data}\n"
+            "</你是谁>"
+        ),
+        metadata={"description": "私聊提示词模板，非开发者不建议修改"},
     )
     max_friend_chat_observations: int = field(
         default=100,
-        metadata={"description": "群聊观察上限,决定bot最多可以看到多少条聊天记录"},
+        metadata={"description": "私聊观察上限"},
     )
     friend_chat_chance: float = field(
-        default=0.5, metadata={"description": "私聊基础回复概率"}
+        default=0.5,
+        metadata={"description": "私聊基础回复概率"},
     )
     friend_use_black_list: bool = field(
-        default=True, metadata={"description": "true时私聊使用黑名单,false使用黑名单"}
+        default=True,
+        metadata={"description": "私聊名单是否使用黑名单模式"},
     )
     friend_list: Optional[List[str]] = field(
         default_factory=lambda: ["111111", "222222"],
-        metadata={
-            "description": "好友名单，根据 friend_use_black_list 字段确定是白名单/黑名单，决定 bot 是否会在对应私聊对话"
-        },
+        metadata={"description": "好友名单"},
     )
     friend_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的人"},
-        metadata={"description": "好友描述，可以为特定好友配置专属简介"},
+        metadata={"description": "好友描述"},
     )
     key_word: Optional[List[KeyWordRule]] = field(
         default_factory=lambda: [
@@ -141,11 +136,9 @@ class Chat:
                 "match_mode": "any",
                 "min_depth": -1,
                 "max_depth": -1,
-            }
+            },
         ],
-        metadata={
-            "description": "关键词规则列表；每条规则可配置是否启用、关键词、提示词列表、忽略大小写、匹配模式、最小深度和最大深度"
-        },
+        metadata={"description": "关键词规则列表"},
     )
 
 
@@ -155,15 +148,15 @@ class ModelPricing:
 
     input_price_per_mtokens: float = field(
         default=0.0,
-        metadata={"description": "输入价格，单位为每百万 Tokens"},
+        metadata={"description": "输入价格，单位为每百万Tokens"},
     )
     output_price_per_mtokens: float = field(
         default=0.0,
-        metadata={"description": "输出价格，单位为每百万 Tokens"},
+        metadata={"description": "输出价格，单位为每百万Tokens"},
     )
     billing_metric: str = field(
         default="",
-        metadata={"description": "闈非 Token 计费模型的平台计费标识"},
+        metadata={"description": "非Token计费模型的平台计费标识"},
     )
 
 
@@ -177,7 +170,7 @@ class ModelSettings:
     )
     max_output_tokens: int = field(
         default=2048,
-        metadata={"description": "单次最大回复 Tokens"},
+        metadata={"description": "单次最大回复Tokens"},
     )
     timeout_seconds: float = field(
         default=120.0,
@@ -195,6 +188,22 @@ class ModelSettings:
         default=0.0,
         metadata={"description": "存在惩罚"},
     )
+    deepseek_thinking_mode: str = field(
+        default="disabled",
+        metadata={
+            "description": "DeepSeek 思考模式开关：disabled 关闭，enabled 开启，random 按概率随机开启"
+        },
+    )
+    deepseek_reasoning_effort: str = field(
+        default="high",
+        metadata={"description": "DeepSeek 思考强度，可选 high 或 max"},
+    )
+    deepseek_random_thinking_probability: float = field(
+        default=0.6,
+        metadata={
+            "description": "DeepSeek 随机思考开启概率，范围 0.0 到 1.0，仅在随机模式下生效"
+        },
+    )
 
 
 @dataclass
@@ -207,7 +216,7 @@ class ModelRegistration:
     )
     provider: str = field(
         default="DeepSeek",
-        metadata={"description": "模型供应商，对应 env 中的平台名字"},
+        metadata={"description": "模型供应商"},
     )
     model_name: str = field(
         default="deepseek-chat",
@@ -221,7 +230,7 @@ def _default_primary_chat_model() -> "ModelRegistration":
     return ModelRegistration(
         description="主对话模型",
         provider="DeepSeek",
-        model_name="deepseek-reasoner",
+        model_name="deepseek-v4-flash",
         settings=ModelSettings(
             temperature=1.0,
             max_output_tokens=2048,
@@ -278,6 +287,26 @@ def _default_tts_model() -> "ModelRegistration":
     )
 
 
+def _default_creator_image_model() -> "ModelRegistration":
+    return ModelRegistration(
+        description="创作者Agent生图模型",
+        provider="SiliconFlow",
+        model_name="black-forest-labs/FLUX.1-schnell",
+        settings=ModelSettings(
+            temperature=1.0,
+            max_output_tokens=2048,
+            timeout_seconds=120.0,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+        ),
+        pricing=ModelPricing(
+            input_price_per_mtokens=0.0,
+            output_price_per_mtokens=0.0,
+        ),
+    )
+
+
 @dataclass
 class Models:
     """模型注册配置集合。"""
@@ -294,9 +323,12 @@ class Models:
         default_factory=_default_tts_model,
         metadata={"description": "语音模型"},
     )
+    creator_image_model: ModelRegistration = field(
+        default_factory=_default_creator_image_model,
+        metadata={"description": "创作者Agent生图模型"},
+    )
 
     def iter_registrations(self) -> Iterator[tuple[str, ModelRegistration]]:
-        """遍历所有可注册模型。"""
         for config_field in dataclass_fields(self):
             model = getattr(self, config_field.name)
             if isinstance(model, ModelRegistration):
@@ -325,7 +357,7 @@ class TTSReferenceVoice:
     )
     disable_tts_on_upload_failure: bool = field(
         default=True,
-        metadata={"description": "参考音频上传失败时是否自动禁用 TTS"},
+        metadata={"description": "参考音频上传失败时是否自动禁用TTS"},
     )
 
 
@@ -335,11 +367,11 @@ class TTS:
 
     enabled: bool = field(
         default=True,
-        metadata={"description": "是否启用 TTS 功能"},
+        metadata={"description": "是否启用TTS功能"},
     )
     response_format: str = field(
         default="mp3",
-        metadata={"description": "TTS 输出格式"},
+        metadata={"description": "TTS输出格式"},
     )
     stream: bool = field(
         default=True,
@@ -354,25 +386,25 @@ class TTS:
 
 @dataclass
 class Willing:
-    """回复意愿管理器配置"""
+    """回复意愿管理器配置。"""
 
     manager_name: str = field(
         default="Quail",
-        metadata={"description": "回复意愿管理器名称，默认内置鹌鹑意愿生成器 Quail"},
+        metadata={"description": "回复意愿管理器名称"},
     )
     observe_window: int = field(
         default=5,
-        metadata={"description": "仔细观察窗口，取消息队列最后几条消息作为意愿计算重点观察内容"},
+        metadata={"description": "意愿计算观察窗口"},
     )
     reply_threshold: float = field(
         default=0.5,
-        metadata={"description": "回复概率达到该阈值时视为建议回复"},
+        metadata={"description": "建议回复阈值"},
     )
 
 
 @dataclass
 class Plugins:
-    """插件配置"""
+    """插件配置。"""
 
     enabled: bool = field(default=True, metadata={"description": "是否启用插件"})
     dir: str = field(default="./plugins", metadata={"description": "插件目录"})
@@ -380,39 +412,122 @@ class Plugins:
 
 @dataclass
 class Message:
-    """消息处理配置"""
+    """消息处理配置。"""
 
     max_length: Optional[int] = field(
-        default=1000, metadata={"description": "消息最大长度"}
+        default=1000,
+        metadata={"description": "消息最大长度"},
     )
     enable_group: Optional[bool] = field(
-        default=True, metadata={"description": "是否处理群消息"}
+        default=True,
+        metadata={"description": "是否处理群消息"},
     )
     enable_private: Optional[bool] = field(
-        default=True, metadata={"description": "是否处理私聊消息"}
+        default=True,
+        metadata={"description": "是否处理私聊消息"},
     )
 
 
 @dataclass
 class FileServer:
-    """文件服务器配置"""
+    """文件服务器配置。"""
 
     port: int = field(default=8765, metadata={"description": "文件服务器端口"})
     host: str = field(
         default="127.0.0.1",
-        metadata={"description": "文件服务器主机地址，设置为 0.0.0.0 可外部访问"},
+        metadata={"description": "文件服务器主机地址"},
     )
     public_url: Optional[str] = field(
         default=None,
-        metadata={"description": "访问地址，如 http://your-domain.com:8765"},
+        metadata={"description": "访问地址"},
     )
 
 
 @dataclass
-class BotConfig:
-    """机器人主配置"""
+class Debug:
+    """调试配置。"""
 
-    version: str = field(default="0.2.0", metadata={"description": "配置文件版本"})
+    enabled: bool = field(
+        default=False,
+        metadata={"description": "是否启用 Debug 模式"},
+    )
+
+
+@dataclass
+class AgentCreatorGallery:
+    """Creator Agent 图库配置。"""
+
+    capacity: int = field(
+        default=10,
+        metadata={"description": "图库容量上限；为0时禁用图库管理工具"},
+    )
+
+
+@dataclass
+class AgentCreator:
+    """Creator Agent 配置。"""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"description": "是否启用Creator Agent"},
+    )
+    gallery: AgentCreatorGallery = field(default_factory=AgentCreatorGallery)
+
+
+@dataclass
+class AgentSystem:
+    """System Agent 配置。"""
+
+    allowed_work_dirs: List[str] = field(
+        default_factory=lambda: ["./Data/"],
+        metadata={"description": "System Agent 允许操作的工作目录"},
+    )
+
+
+@dataclass
+class AgentMemoryTrigger:
+    group_interval: int = field(
+        default=50,
+        metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
+    )
+    private_interval: int = field(
+        default=20,
+        metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
+    )
+
+
+@dataclass
+class AgentMemoryArchive:
+    allow_delete: bool = field(
+        default=False,
+        metadata={"description": "是否允许 delete_archive 删除档案记忆"},
+    )
+    allowed_tables: List[str] = field(
+        default_factory=list,
+        metadata={"description": "允许访问的档案表名列表；留空表示不限制"},
+    )
+
+
+@dataclass
+class AgentMemory:
+    trigger: AgentMemoryTrigger = field(default_factory=AgentMemoryTrigger)
+    archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
+
+
+@dataclass
+class Agent:
+    """Agent 配置。"""
+
+    creator: AgentCreator = field(default_factory=AgentCreator)
+    system: AgentSystem = field(default_factory=AgentSystem)
+    memory: AgentMemory = field(default_factory=AgentMemory)
+
+
+@dataclass
+class BotConfig:
+    """机器人主配置。"""
+
+    version: str = field(default="0.3.0", metadata={"description": "配置文件版本"})
     bot: Bot = field(default_factory=Bot)
     chat: Chat = field(default_factory=Chat)
     models: Models = field(default_factory=Models)
@@ -421,6 +536,8 @@ class BotConfig:
     plugins: Plugins = field(default_factory=Plugins)
     message: Message = field(default_factory=Message)
     file_server: FileServer = field(default_factory=FileServer)
+    debug: Debug = field(default_factory=Debug)
+    agent: Agent = field(default_factory=Agent)
 
 
 @dataclass
@@ -429,39 +546,51 @@ class EnhancedChat(Chat):
 
     message_timestamp_interval_seconds: int = field(
         default=300,
-        metadata={"description": "消息队列时间戳插入间隔，单位秒，默认五分钟"},
+        metadata={"description": "消息队列时间戳插入间隔，单位秒"},
     )
     enable_periodic_user_info_update: bool = field(
         default=False,
-        metadata={"description": "是否定时更新用户信息；开启后当数据库中的用户信息超过更新时间时会重新拉取"},
+        metadata={"description": "是否定时更新用户信息"},
     )
     user_info_update_interval_days: int = field(
         default=7,
-        metadata={"description": "用户信息更新时间，单位天；仅在开启定时更新用户信息时生效"},
+        metadata={"description": "用户信息更新时间，单位天"},
+    )
+    reply_mode: str = field(
+        default="common",
+        metadata={"description": "回复模式：common 或 agent"},
+    )
+    at_mention_guaranteed_reply: bool = field(
+        default=True,
+        metadata={"description": "@ 时是否必回"},
+    )
+    willing_global_coefficient: float = field(
+        default=1.0,
+        metadata={"description": "common 模式全局回复概率系数"},
+    )
+    willing_agent_global_coefficient: float = field(
+        default=1.0,
+        metadata={"description": "agent 模式全局回复概率系数"},
+    )
+    friend_Response_coefficient: dict[str, float] = field(
+        default_factory=dict,
+        metadata={"description": "私聊回复系数"},
     )
     enable_group_startup_history_warmup: bool = field(
         default=False,
-        metadata={
-            "description": "是否在程序启动时读取群聊历史聊天记录以预热消息队列，可能存在风控风险，默认关闭"
-        },
+        metadata={"description": "是否在启动时读取群聊历史消息预热队列"},
     )
     enable_friend_startup_history_warmup: bool = field(
         default=False,
-        metadata={
-            "description": "是否在程序启动时读取私聊历史聊天记录以预热消息队列，可能存在风控风险，默认关闭"
-        },
+        metadata={"description": "是否在启动时读取私聊历史消息预热队列"},
     )
     startup_history_group_whitelist: List[str] = field(
         default_factory=list,
-        metadata={
-            "description": "启动时读取历史聊天记录的群聊白名单，填写群号；留空表示获取全部群聊历史，仅在开启启动历史预热时生效"
-        },
+        metadata={"description": "启动历史预热群聊白名单"},
     )
     startup_history_friend_whitelist: List[str] = field(
         default_factory=list,
-        metadata={
-            "description": "启动时读取历史聊天记录的私聊白名单，填写QQ号；留空表示获取全部私聊历史，仅在开启启动历史预热时生效"
-        },
+        metadata={"description": "启动历史预热私聊白名单"},
     )
 
 

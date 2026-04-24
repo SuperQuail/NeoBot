@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
+from neobot_contracts.ports.emoji_access import EmojiAccess
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 from neobot_contracts.ports.repository import MemoryRepository, MessageRepository, ProfileRepository
 
@@ -18,6 +19,7 @@ class UnitOfWork(Protocol):
     profiles: ProfileRepository
     archive: ArchiveMemoryAccess  # 档案式记忆访问接口
     images: ImageAnalysisAccess
+    emojis: EmojiAccess
 
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...
