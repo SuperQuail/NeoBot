@@ -115,6 +115,16 @@ class SqlAlchemyCreatorImageAccess:
         await self._session.flush()
         return True
 
+    async def rename(self, image_id: str, new_file_path: str) -> CreatorImageRecord:
+        row = await self._get_optional_row(image_id)
+        if row is None:
+            raise LookupError(f"creator image not found for image_id={image_id}")
+        row.file_path = new_file_path
+        row.updated_at = datetime.now(timezone.utc)
+        row.version += 1
+        await self._session.flush()
+        return self._to_domain(row)
+
     async def count(self, *, source: Optional[str] = None) -> int:
         stmt = select(func.count()).select_from(CreatorImageData)
         if source is not None:

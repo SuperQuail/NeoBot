@@ -197,7 +197,7 @@ class ArchiveMemoryAutoSummaryService:
         )
 
     async def flush_all(self) -> None:
-        """Flush all pending counters on shutdown.
+        """Flush all pending counters on shutdown concurrently.
 
         Iterates every counter that has unsummarized messages (count > 0) but
         hasn't reached the configured interval yet, and triggers summarisation
@@ -214,51 +214,60 @@ class ArchiveMemoryAutoSummaryService:
             )
             return
 
-        flushed = 0
-        for item in items:
+        semaphore = asyncio.Semaphore(50)
+
+        async def _flush_one(item: Any) -> bool:
             if not item.key or not item.value:
-                continue
+                return False
             try:
                 parts = item.key.split(":", 1)
                 if len(parts) != 2:
-                    continue
+                    return False
                 conversation_kind, conversation_id = parts
                 if conversation_kind not in ("group", "private"):
-                    continue
+                    return False
 
                 state = json.loads(item.value)
                 count = int(state.get("count", 0))
                 interval = self._interval_for(conversation_kind)
                 if count <= 0 or count >= interval:
-                    continue
+                    return False
 
                 messages = state.get("messages", [])
                 if not messages:
-                    continue
+                    return False
 
                 counter_key = item.key
                 lock = self._locks.setdefault(counter_key, asyncio.Lock())
-                async with lock:
-                    current = await self._load_counter(counter_key)
-                    current_count = int(current.get("count", 0))
-                    if current_count <= 0 or current_count >= interval:
-                        continue
-                    current_messages = current.get("messages", [])
-                    if not current_messages:
-                        continue
-                    await self._summarize_and_reset(
-                        conversation_kind=conversation_kind,
-                        conversation_id=conversation_id,
-                        counter_key=counter_key,
-                        messages=current_messages,
-                    )
-                    flushed += 1
+                async with semaphore:
+                    async with lock:
+                        current = await self._load_counter(counter_key)
+                        current_count = int(current.get("count", 0))
+                        if current_count <= 0 or current_count >= interval:
+                            return False
+                        current_messages = current.get("messages", [])
+                        if not current_messages:
+                            return False
+                        await self._summarize_and_reset(
+                            conversation_kind=conversation_kind,
+                            conversation_id=conversation_id,
+                            counter_key=counter_key,
+                            messages=current_messages,
+                        )
+                        return True
             except Exception as exc:
                 self._logger.warning(
                     "archive auto summary flush: failed for counter",
                     key=item.key,
                     error=str(exc),
                 )
+                return False
+
+        results = await asyncio.gather(
+            *(_flush_one(item) for item in items),
+            return_exceptions=True,
+        )
+        flushed = sum(1 for r in results if r is True)
 
         if flushed:
             self._logger.info(
@@ -291,7 +300,7 @@ class ArchiveMemoryAutoSummaryService:
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 message_count=len(messages),
-                result=str(result)[:200],
+                result=str(result),
             )
         except Exception as exc:
             self._logger.warning(

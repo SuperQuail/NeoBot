@@ -30,6 +30,10 @@ class EmojiAccess(Protocol):
 
     async def delete(self, file_hash: str) -> bool: ...
 
+    async def rename(
+        self, file_hash: str, *, new_file_name: str, new_file_path: str
+    ) -> EmojiRecord: ...
+
     async def list_all(self) -> list[EmojiRecord]: ...
 
     async def list(

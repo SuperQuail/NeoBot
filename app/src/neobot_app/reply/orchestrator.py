@@ -708,7 +708,7 @@ class ReplyOrchestrator:
                         f"工具调用: {name}",
                         event_id=event.event_id,
                         tool=name,
-                        args=str(args)[:200],
+                        args=str(args),
                     )
                     self._record_debug(
                         "tool_called",
@@ -750,7 +750,7 @@ class ReplyOrchestrator:
                             f"工具返回: {name}",
                             event_id=event.event_id,
                             tool=name,
-                            result=str(result)[:200],
+                            result=str(result),
                         )
                         self._record_debug(
                             "tool_returned",

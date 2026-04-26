@@ -117,6 +117,19 @@ class SqlAlchemyEmojiAccess:
         await self._session.flush()
         return True
 
+    async def rename(
+        self, file_hash: str, *, new_file_name: str, new_file_path: str
+    ) -> EmojiRecord:
+        row = await self._get_optional_row(file_hash)
+        if row is None:
+            raise LookupError(f"emoji not found for hash={file_hash}")
+        row.file_name = new_file_name
+        row.file_path = new_file_path
+        row.updated_at = datetime.now(timezone.utc)
+        row.version += 1
+        await self._session.flush()
+        return self._to_domain(row)
+
     async def list_all(self) -> list[EmojiRecord]:
         stmt = select(EmojiData).order_by(EmojiData.file_name)
         result = await self._session.execute(stmt)

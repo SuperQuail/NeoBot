@@ -269,6 +269,56 @@ class EmojiService:
             return refreshed
         return EmojiEntry(file_name=entry.file_name, file_path=entry.file_path, analysis_text=text)
 
+    async def rename_entry(self, number: int, new_name: str) -> EmojiEntry:
+        """重命名表情包文件、txt 侧文件并更新数据库。"""
+        entry = self.get_entry(number)
+        if entry is None:
+            raise LookupError(f"表情包编号 {number} 不存在")
+        if not entry.file_path.exists() or not entry.file_path.is_file():
+            raise FileNotFoundError(f"表情包文件不存在: {entry.file_path}")
+
+        safe_name = _safe_emoji_file_name(new_name, entry.file_path.suffix)
+        new_path = self._emoji_dir / safe_name
+
+        old_resolved = entry.file_path.resolve()
+        new_resolved = new_path.resolve()
+        if old_resolved == new_resolved:
+            return entry
+
+        if new_path.exists():
+            raise FileExistsError(f"目标文件名已存在: {safe_name}")
+
+        old_path = entry.file_path
+        old_path.rename(new_path)
+        old_txt = old_path.with_suffix(".txt")
+        new_txt = new_path.with_suffix(".txt")
+        if old_txt.exists():
+            old_txt.rename(new_txt)
+
+        prepared = prepare_local_image(new_path)
+        try:
+            async with self._uow_factory() as uow:
+                await uow.emojis.rename(
+                    prepared.file_hash,
+                    new_file_name=safe_name,
+                    new_file_path=str(new_path.relative_to(self._emoji_dir)),
+                )
+                await uow.commit()
+        except Exception:
+            new_path.rename(old_path)
+            if new_txt.exists():
+                new_txt.rename(old_txt)
+            raise
+
+        updated = EmojiEntry(
+            file_name=safe_name,
+            file_path=new_path,
+            analysis_text=entry.analysis_text,
+            use_count=entry.use_count,
+        )
+        self._entries[number] = updated
+        return updated
+
     async def _scan_folder(self) -> None:
         """扫描表情包文件夹，并同步 txt、数据库与视觉解析结果。"""
         if not self._emoji_dir.exists():
@@ -279,6 +329,7 @@ class EmojiService:
         if not image_files:
             self._logger.info("表情包目录为空")
             self._entries.clear()
+            await self._cleanup_stale_emoji_records({})
             return
 
         hash_to_path: dict[str, Path] = {}
@@ -359,6 +410,40 @@ class EmojiService:
                 self._logger.error(f"保存表情包解析结果失败: {exc}")
 
         self._rebuild_mapping(image_files, existing, path_to_hash, use_counts)
+        await self._cleanup_stale_emoji_records(hash_to_path)
+
+    async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
+        """删除数据库中文件已不存在的表情包记录，更新文件已重命名的记录。"""
+        disk_hashes = set(disk_files.keys())
+        try:
+            async with self._uow_factory() as uow:
+                all_records = await uow.emojis.list_all()
+                for record in all_records:
+                    full_path = self._emoji_dir / record.file_path
+                    if full_path.exists() and full_path.is_file():
+                        new_rel = str(full_path.relative_to(self._emoji_dir))
+                        if new_rel != record.file_path or full_path.name != record.file_name:
+                            await uow.emojis.rename(
+                                record.file_hash,
+                                new_file_name=full_path.name,
+                                new_file_path=new_rel,
+                            )
+                        continue
+                    if record.file_hash in disk_hashes:
+                        disk_path = disk_files[record.file_hash]
+                        new_rel = str(disk_path.relative_to(self._emoji_dir))
+                        if new_rel != record.file_path or disk_path.name != record.file_name:
+                            await uow.emojis.rename(
+                                record.file_hash,
+                                new_file_name=disk_path.name,
+                                new_file_path=new_rel,
+                            )
+                        continue
+                    self._logger.debug(f"清理失效表情包记录: {record.file_name} (文件不存在)")
+                    await uow.emojis.delete(record.file_hash)
+                await uow.commit()
+        except Exception as exc:
+            self._logger.error(f"表情包数据库清理失败: {exc}")
 
     async def _parse_batch(
         self,
