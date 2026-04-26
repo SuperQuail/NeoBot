@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete as sql_delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,6 +114,12 @@ class SqlAlchemyCreatorImageAccess:
         await self._session.delete(row)
         await self._session.flush()
         return True
+
+    async def delete_by_source(self, source: str) -> int:
+        stmt = sql_delete(CreatorImageData).where(CreatorImageData.source == source)
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount
 
     async def rename(self, image_id: str, new_file_path: str) -> CreatorImageRecord:
         row = await self._get_optional_row(image_id)

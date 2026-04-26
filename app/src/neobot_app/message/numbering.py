@@ -69,7 +69,7 @@ class MessageNumbering:
             elif entry.kind.value == "poke" and entry.poke is not None:
                 lines.append(queue._poke_to_text(entry.poke))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
-                lines.append("<以上是上次对话回复过的内容>")
+                lines.append("<以上是上次对话回复过的内容>\n<请回复以下的内容>")
         return "\n".join(lines)
 
     def apply_new(

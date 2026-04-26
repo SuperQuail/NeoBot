@@ -172,6 +172,7 @@ class CreatorImageService:
 
     async def close(self) -> None:
         await self._stop_cleanup_task()
+        await self.cleanup_tmp()
         await self._client.aclose()
 
     async def start(self) -> None:
@@ -238,6 +239,39 @@ class CreatorImageService:
             except asyncio.CancelledError:
                 pass
             self._cleanup_task = None
+
+    async def cleanup_tmp(self) -> None:
+        """Delete all files in the tmp directory and remove corresponding DB records."""
+        deleted_count = 0
+        if self._tmp_dir.exists():
+            for child in self._tmp_dir.iterdir():
+                if child.is_file():
+                    try:
+                        child.unlink()
+                        deleted_count += 1
+                    except OSError as exc:
+                        self._logger.warning(
+                            f"删除临时文件失败: {child}",
+                            error=str(exc),
+                        )
+
+        db_deleted = 0
+        try:
+            async with self._uow_factory() as uow:
+                db_deleted = await uow.creator_images.delete_by_source("tmp")
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning(
+                "清理临时图片数据库记录失败",
+                error=str(exc),
+            )
+
+        if deleted_count or db_deleted:
+            self._logger.info(
+                "creator 临时文件已清理",
+                deleted_files=deleted_count,
+                deleted_records=db_deleted,
+            )
 
     async def generate_image(
         self,

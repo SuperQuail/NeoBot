@@ -107,6 +107,8 @@ class ChatStreamManager:
                 timestamp_interval_seconds=timestamp_interval_seconds,
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
+                bot_account=bot_cfg.bot.account,
+                reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
         if self._friend_queue is None:
             self._friend_queue = MessageQueue(
@@ -114,6 +116,8 @@ class ChatStreamManager:
                 timestamp_interval_seconds=timestamp_interval_seconds,
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
+                bot_account=bot_cfg.bot.account,
+                reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
 
         logger.info(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from neobot_app.willing.models import BaseWillingManager, WillingContext, WillingDecision
 
 
@@ -98,11 +100,12 @@ class QuailWillingManager(BaseWillingManager):
             reasons.append("空消息惩罚=-0.080")
 
         probability = clamp_probability(probability)
+        should_reply = random.random() < probability
         reasons.append(f"最终概率={probability:.3f}")
         return WillingDecision(
             manager_name=self.name,
             probability=probability,
-            should_reply=probability >= context.reply_threshold,
+            should_reply=should_reply,
             reasons=tuple(reasons),
         )
 

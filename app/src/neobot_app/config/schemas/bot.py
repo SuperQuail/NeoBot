@@ -29,7 +29,7 @@ class Bot:
         metadata={"description": "Bot别称"},
     )
     bot_data: str = field(
-        default="你是一个可爱的机器人",
+        default="你是一个可爱的机器人,如果你对别人有备注,你会倾向于叫你备注对方的名字",
         metadata={"description": "描述机器人的人设"},
     )
     enable_bot_get_married: bool = field(
@@ -121,6 +121,10 @@ class Chat:
     friend_list: Optional[List[str]] = field(
         default_factory=lambda: ["111111", "222222"],
         metadata={"description": "好友名单"},
+    )
+    reply_blacklist: Optional[List[int]] = field(
+        default_factory=list,
+        metadata={"description": "回复黑名单(QQ号)，名单内用户@Bot时不强制追加回复要求"},
     )
     friend_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的人"},
@@ -611,7 +615,7 @@ class EnhancedChat(Chat):
         metadata={"description": "消息队列时间戳插入间隔，单位秒"},
     )
     enable_periodic_user_info_update: bool = field(
-        default=False,
+        default=True,
         metadata={"description": "是否定时更新用户信息"},
     )
     user_info_update_interval_days: int = field(
@@ -619,7 +623,7 @@ class EnhancedChat(Chat):
         metadata={"description": "用户信息更新时间，单位天"},
     )
     reply_mode: str = field(
-        default="common",
+        default="agent",
         metadata={"description": "回复模式：common 或 agent"},
     )
     at_mention_guaranteed_reply: bool = field(
@@ -655,7 +659,7 @@ class EnhancedChat(Chat):
         metadata={"description": "启动历史预热私聊白名单"},
     )
     reply_cooldown_seconds: int = field(
-        default=2,
+        default=0,
         metadata={"description": "回复冷却时间，单位秒；距上次回复结束不足此时间则不触发新回复"},
     )
     reply_sentence_cooldown_seconds: float = field(

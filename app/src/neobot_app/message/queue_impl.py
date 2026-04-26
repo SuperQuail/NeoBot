@@ -95,6 +95,8 @@ class MessageQueue:
         cq_fallback_max_length: int = 100,
         poke_weight: float = 0.2,
         reaction_weight: float = 0.2,
+        bot_account: int | None = None,
+        reply_blacklist: set[int] | None = None,
     ) -> None:
         if max_size <= 0:
             raise ValueError("max_size must be greater than 0")
@@ -108,6 +110,8 @@ class MessageQueue:
         self.cq_fallback_max_length = cq_fallback_max_length
         self.poke_weight = max(0.0, min(1.0, poke_weight))
         self.reaction_weight = max(0.0, min(1.0, reaction_weight))
+        self.bot_account = bot_account
+        self._reply_blacklist = reply_blacklist or set()
         self._queues: Dict[str, Deque[QueueEntry]] = {}
         self._stats: Dict[str, QueueStats] = {}
         self._message_counts: Dict[str, int] = {}
@@ -428,6 +432,8 @@ class MessageQueue:
             cq_fallback_max_length=self.cq_fallback_max_length,
             poke_weight=self.poke_weight,
             reaction_weight=self.reaction_weight,
+            bot_account=self.bot_account,
+            reply_blacklist=self._reply_blacklist,
         )
 
         if key is None:
@@ -493,12 +499,15 @@ class MessageQueue:
         all_new_message = "<当前均为新消息，没有上次回复过的内容>" if all_new else None
         if last_reply_message_id is not None and separator_index is None:
             all_new_message = "<当前均为新消息，没有上次回复过的内容>"
-        return self._entries_to_text(
+        text = self._entries_to_text(
             entries,
             context_entries=entries,
             separator_after_index=separator_index,
             all_new_message=all_new_message,
         )
+        if self._should_request_reply(entries):
+            text += "\n<最新消息为@你的内容，请回复这句话>"
+        return text
 
     @staticmethod
     def _find_separator_index(entries: list[QueueEntry], last_reply_message_id: int | None) -> int | None:
@@ -513,13 +522,42 @@ class MessageQueue:
                 return idx
         return None
 
+    def _should_request_reply(self, entries: list[QueueEntry]) -> bool:
+        """Check if the latest message is someone @-mentioning the bot and not in reply blacklist."""
+        if self.bot_account is None:
+            return False
+        for entry in reversed(entries):
+            if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
+                continue
+            message = entry.message
+            sender_id = getattr(message, "user_id", None)
+            if sender_id is not None and sender_id in self._reply_blacklist:
+                return False
+            if message.message:
+                for segment in message.message:
+                    segment_type = getattr(segment, "type", None) or ""
+                    if str(segment_type) != "at":
+                        continue
+                    data = getattr(segment, "data", None) or {}
+                    qq = str(data.get("qq") or "")
+                    if qq == str(self.bot_account):
+                        return True
+            raw = str(getattr(message, "raw_message", "") or "")
+            if f"[CQ:at,qq={self.bot_account}" in raw:
+                return True
+            return False
+        return False
+
     def diff_to_text(self, previous: "MessageQueue", key: str) -> str:
         current_entries = list(self._queues.get(key, ()))
         previous_entries = list(previous._queues.get(key, ()))
         if not current_entries:
             return ""
         if not previous_entries:
-            return self._entries_to_text(current_entries)
+            text = self._entries_to_text(current_entries)
+            if self._should_request_reply(current_entries):
+                text += "\n<最新消息为@你的内容，请回复这句话>"
+            return text
 
         current_non_timestamp = [entry for entry in current_entries if entry.kind != QueueEntryType.TIMESTAMP]
         previous_non_timestamp = [entry for entry in previous_entries if entry.kind != QueueEntryType.TIMESTAMP]
@@ -538,6 +576,8 @@ class MessageQueue:
         diff_text = self._entries_to_text(diff_entries, context_entries=current_entries)
         if diff_text:
             lines.append(diff_text)
+        if self._should_request_reply(current_entries):
+            lines.append("<最新消息为@你的内容，请回复这句话>")
         return "\n".join(line for line in lines if line)
 
     def _find_suffix_prefix_overlap(
