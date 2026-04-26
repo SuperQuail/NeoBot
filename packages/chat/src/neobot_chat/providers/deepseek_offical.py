@@ -51,20 +51,30 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
     def _is_reasoner(self) -> bool:
         return self.model == "deepseek-reasoner"
 
+    @staticmethod
+    def _detect_thinking_format() -> str:
+        """自动检测思考模式参数格式。
+
+        根据当前 Provider 类型返回对应的参数格式：
+        - DeepSeek / OpenAI 兼容 API → ``"openai"``
+        - Anthropic API → ``"anthropic"``
+
+        默认为 ``"openai"`` 格式，子类可重写以适配不同 API。
+        """
+        return "openai"
+
     def _resolve_extra_body(self) -> tuple[dict[str, Any], str, str | None, float]:
         extra_body = dict(self.extra_body)
 
-        thinking_mode = str(
+        thinking_mode = self._normalize_thinking_mode(
             extra_body.pop(
                 self._THINKING_MODE_KEY,
                 extra_body.pop(
                     "deepseek_thinking_mode",
-                    "enabled" if self._is_reasoner else "disabled",
+                    True if self._is_reasoner else False,
                 ),
             )
-        ).strip().casefold()
-        if thinking_mode not in {"disabled", "enabled", "random"}:
-            thinking_mode = "disabled"
+        )
 
         reasoning_effort_raw = extra_body.pop(
             self._REASONING_EFFORT_KEY,
@@ -75,8 +85,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             if reasoning_effort_raw is not None
             else None
         )
-        if reasoning_effort not in {"high", "max"}:
-            reasoning_effort = None
+        reasoning_effort = self._normalize_reasoning_effort(reasoning_effort)
 
         probability_raw = extra_body.pop(
             self._THINKING_PROBABILITY_KEY,
@@ -96,13 +105,37 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             self._resolve_extra_body()
         )
 
-        enabled = thinking_mode == "enabled"
+        enabled = thinking_mode == "true"
         if thinking_mode == "random":
             enabled = random.random() < thinking_probability
 
         thinking_payload = {"type": "enabled" if enabled else "disabled"}
         effective_reasoning_effort = reasoning_effort if enabled else None
         return thinking_payload, effective_reasoning_effort, extra_body
+
+    @staticmethod
+    def _normalize_thinking_mode(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        normalized = str(value).strip().casefold()
+        if normalized in {"true", "1", "yes", "on", "enabled", "enable"}:
+            return "true"
+        if normalized == "random":
+            return "random"
+        return "false"
+
+    @staticmethod
+    def _normalize_reasoning_effort(value: str | None) -> str | None:
+        """标准化思考强度值，兼容 low/medium→high, xhigh→max 映射。"""
+        if value is None:
+            return None
+        if value in {"low", "medium"}:
+            return "high"
+        if value == "xhigh":
+            return "max"
+        if value in {"high", "max"}:
+            return value
+        return None
 
     @staticmethod
     def _build_tool_call(
@@ -203,8 +236,13 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
 
         thinking_payload, reasoning_effort, extra_body = self._build_thinking_payload()
         payload["thinking"] = thinking_payload
+
         if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
+            fmt = self._detect_thinking_format()
+            if fmt == "anthropic":
+                payload["output_config"] = {"effort": reasoning_effort}
+            else:
+                payload["reasoning_effort"] = reasoning_effort
         self._apply_payload_options(
             payload,
             temperature=self.temperature,

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
-from neobot_adapter.model.notice import GroupMessageDelete, PrivateMessageDelete
+from neobot_adapter.model.notice import EmojiReaction, GroupMessageDelete, GroupPoke, PrivateMessageDelete, PrivatePoke
 from neobot_adapter.utils.parse import safe_parse_model
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.image import ImageParseService
 from neobot_app.message.process import event_message__to_text
 from neobot_app.message.queue import MessageQueue
 from neobot_app.reply import ReplyOrchestrator
+from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
+from neobot_app.willing.models import WillingDecision
 
 
 class EventPipeline:
@@ -29,6 +33,8 @@ class EventPipeline:
         reply_orchestrator: ReplyOrchestrator | None = None,
         image_parse_service: ImageParseService | None = None,
         inbound_pipeline: InboundPipeline | None = None,
+        archive_summary_service: ArchiveMemoryAutoSummaryService | None = None,
+        config: BotConfig | None = None,
         logger: Logger | None = None,
     ) -> None:
         self.adapter = adapter
@@ -39,9 +45,13 @@ class EventPipeline:
         self._reply_orchestrator = reply_orchestrator
         self._image_parse_service = image_parse_service
         self._inbound_pipeline = inbound_pipeline
+        self._archive_summary_service = archive_summary_service
+        self._config = config
         self._logger = logger or NullLogger()
         self._subscriptions: List[Subscription] = []
         self._started = False
+        self._warmed_up_friends: set[str] = set()
+        self._warmup_lock = asyncio.Lock()
 
     def start(self) -> None:
         if self._started:
@@ -80,31 +90,187 @@ class EventPipeline:
         self._started = False
         self._logger.info("实时事件管线已停止")
 
+    async def flush_pending_summaries(self) -> None:
+        """Trigger summarisation for all counters that have pending messages below the threshold."""
+        if self._archive_summary_service is not None:
+            await self._archive_summary_service.flush_all()
+
     async def _handle_private_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, PrivateMessage)
         queue_key = str(message.user_id or "")
         if self._inbound_pipeline is not None:
             await self._inbound_pipeline.handle_raw_event(event)
-        self._friend_queue.push(queue_key, message)
+        replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
+        self._friend_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
-        self._handle_willing_decision(message=message, queue=self._friend_queue, queue_key=queue_key)
+        await self._record_archive_summary(
+            conversation_kind="private",
+            conversation_id=queue_key,
+            message_text=text,
+            sender_id=str(message.user_id or ""),
+            sender_name=_sender_name(message),
+        )
+        if queue_key:
+            await self._maybe_warmup_friend_chat(queue_key)
+        await self._handle_private_reply(message=message, queue_key=queue_key)
         self._logger.info(f"收到私聊消息: {text}")
+
+    async def _maybe_warmup_friend_chat(self, user_id: str) -> None:
+        if self._config is None:
+            return
+        if not getattr(self._config.chat, "private_chat_dynamic_warmup", True):
+            return
+        if user_id in self._warmed_up_friends:
+            return
+
+        async with self._warmup_lock:
+            if user_id in self._warmed_up_friends:
+                return
+            count = getattr(self._config.chat, "private_chat_warmup_history_count", 100)
+            self._logger.info(f"私聊动态预热开始", user_id=user_id, history_count=count)
+            try:
+                result = await self.adapter.get_friend_msg_history(
+                    user_id=int(user_id),
+                    count=count,
+                    reverse_order=False,
+                )
+                if result and result.data and result.data.messages:
+                    for msg in result.data.messages:
+                        if isinstance(msg, tuple):
+                            continue
+                        try:
+                            self._friend_queue.push(user_id, msg)
+                        except Exception as exc:
+                            self._logger.debug(
+                                "warmup push message failed",
+                                user_id=user_id,
+                                error=str(exc),
+                            )
+                    self._logger.info(
+                        f"私聊动态预热完成",
+                        user_id=user_id,
+                        message_count=len(result.data.messages),
+                    )
+            except Exception as exc:
+                self._logger.warning(
+                    f"私聊动态预热失败",
+                    user_id=user_id,
+                    error=str(exc),
+                )
+            finally:
+                self._warmed_up_friends.add(user_id)
+
+    async def _handle_private_reply(self, message: Any, queue_key: str) -> None:
+        """私聊直接触发回复（跳过意愿管理器），延迟指定秒数以收集后续消息。"""
+        delay = 5.0
+        if self._config is not None:
+            val = getattr(self._config.chat, "private_chat_reply_delay_seconds", None)
+            if isinstance(val, (int, float)) and val >= 0:
+                delay = float(val)
+
+        if delay > 0:
+            self._logger.debug(f"私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
+            await asyncio.sleep(delay)
+
+        if self._reply_orchestrator is None:
+            return
+
+        from neobot_app.willing.models import WillingDecision
+
+        decision = WillingDecision(
+            manager_name="private_direct",
+            probability=1.0,
+            should_reply=True,
+            reasons=["私聊直接回复（跳过意愿管理器）"],
+        )
+        self._logger.info(
+            f"私聊触发回复",
+            queue_key=queue_key,
+            delay_seconds=delay,
+        )
+        self._reply_orchestrator.start_reply(
+            message=message,
+            queue=self._friend_queue,
+            queue_key=queue_key,
+            decision=decision,
+        )
 
     async def _handle_group_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, GroupMessage)
         queue_key = str(message.group_id or "")
         if self._inbound_pipeline is not None:
             await self._inbound_pipeline.handle_raw_event(event)
-        self._group_queue.push(queue_key, message)
+        replied_messages = await self._fetch_replied_messages(message, self._group_queue, queue_key)
+        self._group_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
+        await self._record_archive_summary(
+            conversation_kind="group",
+            conversation_id=queue_key,
+            message_text=text,
+            sender_id=str(message.user_id or ""),
+            sender_name=_sender_name(message),
+        )
         self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
         self._logger.info(f"收到群消息[{message.group_id or '未知'}]: {text}")
+
+    async def _record_archive_summary(
+        self,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        message_text: str,
+        sender_id: str | None = None,
+        sender_name: str | None = None,
+    ) -> None:
+        if self._archive_summary_service is None or not conversation_id:
+            return
+        try:
+            await self._archive_summary_service.record_message(
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                message_text=message_text,
+                sender_id=sender_id,
+                sender_name=sender_name,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "archive auto summary record failed",
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                error=str(exc),
+            )
+
+    async def _fetch_replied_messages(
+        self,
+        message: PrivateMessage | GroupMessage,
+        queue: MessageQueue,
+        queue_key: str,
+    ) -> list:
+        replied_messages: list = []
+        for message_id in _extract_reply_message_ids(message):
+            existing = queue.find_by_message_id(queue_key, message_id)
+            if existing is not None:
+                replied_messages.append(existing)
+                continue
+            try:
+                response = await self.adapter.get_msg(message_id)
+            except Exception as exc:
+                self._logger.debug(
+                    "failed to fetch replied message",
+                    message_id=message_id,
+                    error=str(exc),
+                )
+                continue
+            data = getattr(response, "data", None)
+            if data is not None:
+                replied_messages.append(data)
+        return replied_messages
 
     def _handle_willing_decision(
         self,
@@ -117,6 +283,33 @@ class EventPipeline:
             return
 
         conversation_type = "group" if isinstance(message, GroupMessage) else "private"
+        chat_type = "群聊" if conversation_type == "group" else "私聊"
+
+        # 被@时直接触发回复，跳过意愿计算
+        if self._willing_service.is_at_mentioned(message):
+            decision = WillingDecision(
+                manager_name="Quail",
+                probability=1.0,
+                should_reply=True,
+                reasons=("被@提及，直接触发回复",),
+            )
+            self._logger.info(
+                "回复意愿",
+                会话类型=chat_type,
+                会话ID=queue_key,
+                概率="1.000",
+                决策="回复",
+                详情="原因: 被@提及，直接触发",
+            )
+            if self._reply_orchestrator is not None:
+                self._reply_orchestrator.start_reply(
+                    message=message,
+                    queue=queue,
+                    queue_key=queue_key,
+                    decision=decision,
+                )
+            return
+
         try:
             decision = self._willing_service.evaluate(
                 message=message,
@@ -126,20 +319,20 @@ class EventPipeline:
         except Exception as exc:
             self._logger.warning(
                 "回复意愿计算失败",
-                conversation_type=conversation_type,
-                conversation_id=queue_key,
-                error=str(exc),
+                会话类型=chat_type,
+                会话ID=queue_key,
+                错误=str(exc),
             )
             return
 
+        detail = " | ".join(decision.reasons)
         self._logger.info(
             "回复意愿",
-            conversation_type=conversation_type,
-            conversation_id=queue_key,
-            manager=decision.manager_name,
-            probability=f"{decision.probability:.3f}",
-            should_reply=decision.should_reply,
-            reasons=" | ".join(decision.reasons),
+            会话类型=chat_type,
+            会话ID=queue_key,
+            概率=f"{decision.probability:.3f}",
+            决策="回复" if decision.should_reply else "不回复",
+            详情=detail,
         )
 
         if decision.should_reply and self._reply_orchestrator is not None:
@@ -190,18 +383,90 @@ class EventPipeline:
             queue_key = str(notice.group_id or "")
             if queue_key:
                 self._group_queue.push_notice(queue_key, notice)
+        elif notice_type == "message_reaction":
+            await self._handle_reaction_notice(event)
+        elif notice_type == "notify" and sub_type == "poke":
+            await self._handle_poke_notice(event)
 
         # 构建详情
         details: list[str] = []
         for key in ("user_id", "operator_id", "sender_id", "target_id",
                      "group_id", "message_id", "file", "duration",
-                     "honor_type", "title", "card_new", "card_old"):
+                     "honor_type", "title", "card_new", "card_old",
+                     "emoji_id"):
             val = event.get(key)
             if val is not None:
                 details.append(f"{key}={val}")
 
         info = " ".join(details)
         self._logger.info(f"收到通知[{label}] {info}".rstrip())
+
+    async def _handle_reaction_notice(self, event: Dict[str, Any]) -> None:
+        from neobot_app.message.queue_impl import ReactionEntry
+
+        notice = safe_parse_model(event, EmojiReaction)
+        if notice.message_id is None or notice.emoji_id is None:
+            return
+
+        group_id = notice.group_id or event.get("group_id")
+        user_id = notice.user_id or event.get("user_id")
+        if group_id is not None:
+            queue_key = str(group_id)
+            queue = self._group_queue
+        elif user_id is not None:
+            queue_key = str(user_id)
+            queue = self._friend_queue
+        else:
+            return
+
+        operator_name = f"QQ:{user_id}" if user_id is not None else "未知用户"
+        if user_id is not None and self._profile_service is not None:
+            try:
+                profile = await self._profile_service.get_user(str(user_id))
+                if profile is not None and getattr(profile, "nick_name", None):
+                    operator_name = profile.nick_name
+            except Exception:
+                pass
+
+        queue.push_reaction(
+            queue_key,
+            ReactionEntry(
+                target_message_id=notice.message_id,
+                emoji_id=notice.emoji_id,
+                operator_user_id=user_id or 0,
+                operator_name=operator_name,
+            ),
+        )
+
+    async def _handle_poke_notice(self, event: Dict[str, Any]) -> None:
+        from neobot_app.message.queue_impl import PokeEntry
+
+        group_id = event.get("group_id")
+        if group_id is not None:
+            notice = safe_parse_model(event, GroupPoke)
+            queue_key = str(notice.group_id or group_id)
+            queue = self._group_queue
+            poke = PokeEntry(
+                sender_id=notice.user_id or 0,
+                user_id=notice.user_id or 0,
+                target_id=notice.target_id or 0,
+                sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
+                group_id=notice.group_id or int(group_id),
+            )
+        else:
+            notice = safe_parse_model(event, PrivatePoke)
+            queue_key = str(notice.user_id or "")
+            queue = self._friend_queue
+            poke = PokeEntry(
+                sender_id=notice.sender_id or 0,
+                user_id=notice.user_id or 0,
+                target_id=notice.target_id or 0,
+                sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
+                group_id=None,
+            )
+
+        if queue_key:
+            queue.push_poke(queue_key, poke)
 
     async def _handle_request(self, event: Dict[str, Any]) -> None:
         request_type = event.get("request_type", "未知")
@@ -216,3 +481,42 @@ class EventPipeline:
 
         info = " ".join(details)
         self._logger.info(f"收到请求[{label}] {info}".rstrip())
+
+
+def _extract_reply_message_ids(message: PrivateMessage | GroupMessage) -> list[int]:
+    ids: list[int] = []
+    for segment in getattr(message, "message", None) or []:
+        segment_type = getattr(segment, "type", None)
+        if hasattr(segment_type, "value"):
+            segment_type = segment_type.value
+        if str(segment_type) != "reply":
+            continue
+        raw_data = getattr(segment, "data", None)
+        if isinstance(raw_data, dict):
+            data = raw_data
+        elif hasattr(raw_data, "model_dump"):
+            data = raw_data.model_dump(exclude_none=True)
+        else:
+            data = {}
+        message_id = _safe_int(data.get("id"))
+        if message_id is not None and message_id not in ids:
+            ids.append(message_id)
+    return ids
+
+
+def _sender_name(message: PrivateMessage | GroupMessage) -> str:
+    sender = getattr(message, "sender", None)
+    if sender is not None:
+        for field in ("card", "nickname"):
+            value = getattr(sender, field, None)
+            if value:
+                return str(value)
+    user_id = getattr(message, "user_id", None)
+    return f"QQ:{user_id}" if user_id is not None else ""
+
+
+def _safe_int(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None

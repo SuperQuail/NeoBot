@@ -22,6 +22,13 @@ class EmojiEntry:
     file_name: str
     file_path: Path
     analysis_text: str
+    use_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EmojiImportResult:
+    number: int
+    entry: EmojiEntry
 
 
 class EmojiService:
@@ -41,12 +48,14 @@ class EmojiService:
         uow_factory: UnitOfWorkFactory,
         vision_provider: Provider | None = None,
         max_concurrency: int = 20,
+        page_size: int = 50,
         logger: Logger | None = None,
     ) -> None:
         self._emoji_dir = data_dir / self._EMOJI_DIR_NAME
         self._uow_factory = uow_factory
         self._vision_provider = vision_provider
         self._max_concurrency = max_concurrency
+        self._page_size = page_size
         self._logger = logger or NullLogger()
         self._entries: dict[int, EmojiEntry] = {}
         self._next_number: int = 1
@@ -56,18 +65,96 @@ class EmojiService:
     def emoji_count(self) -> int:
         return len(self._entries)
 
+    @property
+    def page_size(self) -> int:
+        return self._page_size
+
     def get_entry(self, number: int) -> EmojiEntry | None:
         return self._entries.get(number)
 
-    def build_prompt_text(self) -> str:
-        """构建表情包提示词文本，格式为 [编号]: [表情包：描述]"""
+    def list_entries(self) -> list[tuple[int, EmojiEntry]]:
+        """返回所有表情包，按使用次数从少到多排列。"""
+        sorted_entries = sorted(self._entries.items(), key=lambda item: item[1].use_count)
+        return sorted_entries
+
+    def list_entries_paginated(
+        self,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[list[tuple[int, EmojiEntry]], int, bool]:
+        """分页返回表情包列表，按使用次数从少到多排列。
+
+        Returns (items, total, has_more)
+        """
+        limit = limit if limit is not None else self._page_size
+        sorted_entries = sorted(self._entries.items(), key=lambda item: item[1].use_count)
+        total = len(sorted_entries)
+        page = sorted_entries[offset : offset + limit]
+        has_more = offset + limit < total
+        return page, total, has_more
+
+    def search_entries(self, keyword: str, limit: int | None = None) -> list[tuple[int, EmojiEntry]]:
+        """搜索表情包描述和文件名，按使用次数从少到多排列。"""
+        limit = limit if limit is not None else self._page_size
+        kw = keyword.lower()
+        matches: list[tuple[int, EmojiEntry]] = []
+        for number, entry in self._entries.items():
+            if kw in entry.analysis_text.lower() or kw in entry.file_name.lower():
+                matches.append((number, entry))
+        matches.sort(key=lambda item: item[1].use_count)
+        return matches[:limit]
+
+    def build_prompt_text(
+        self,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> str:
+        """构建表情包提示词文本，按使用次数从少到多排列（使用次数均衡器）。
+
+        格式为 [编号]: [表情包：描述 | 已用N次]
+        """
         if not self._entries:
             return ""
+        limit = limit if limit is not None else self._page_size
+        sorted_entries = sorted(self._entries.items(), key=lambda item: item[1].use_count)
+        page = sorted_entries[offset : offset + limit]
+
         lines: list[str] = []
-        for number in sorted(self._entries):
-            entry = self._entries[number]
-            lines.append(f"[{number}]: [表情包：{entry.analysis_text}]")
-        return "\n".join(lines)
+        for number, entry in page:
+            usage_info = f" | 已用{entry.use_count}次" if entry.use_count > 0 else ""
+            lines.append(f"[{number}]: [表情包：{entry.analysis_text}{usage_info}]")
+
+        total = len(sorted_entries)
+        header = f"共{total}个表情包"
+        if total > limit:
+            header += f"，当前显示第{offset + 1}-{min(offset + limit, total)}个"
+            if offset > 0:
+                header += f"，往前翻页使用 offset={max(0, offset - limit)}"
+            if offset + limit < total:
+                header += f"，往后翻页使用 offset={offset + limit}"
+        return header + "\n" + "\n".join(lines)
+
+    async def record_usage(self, number: int) -> None:
+        """记录一次表情包使用，递增 use_count。"""
+        entry = self._entries.get(number)
+        if entry is None:
+            return
+        try:
+            file_hash = prepare_local_image(entry.file_path).file_hash
+            async with self._uow_factory() as uow:
+                await uow.emojis.increment_usage(file_hash)
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning(f"记录表情包使用次数失败 #{number}: {exc}")
+            return
+
+        # 更新内存中的计数
+        self._entries[number] = EmojiEntry(
+            file_name=entry.file_name,
+            file_path=entry.file_path,
+            analysis_text=entry.analysis_text,
+            use_count=entry.use_count + 1,
+        )
 
     async def start(self) -> None:
         """启动时扫描表情包文件夹"""
@@ -84,8 +171,106 @@ class EmojiService:
                 pass
             self._refresh_task = None
 
+    async def add_image_bytes(
+        self,
+        image_bytes: bytes,
+        *,
+        file_name: str | None = None,
+        analysis_text: str | None = None,
+    ) -> EmojiImportResult:
+        """Add one image file to the emoji folder and refresh the in-memory index."""
+        if not image_bytes:
+            raise ValueError("图片内容为空")
+
+        self._emoji_dir.mkdir(parents=True, exist_ok=True)
+        suffix = _detect_image_suffix(image_bytes)
+        target_name = _safe_emoji_file_name(file_name, suffix)
+        target_path = self._emoji_dir / target_name
+        while target_path.exists():
+            from uuid import uuid4
+            target_name = f"emoji_{uuid4().hex[:12]}.{suffix}"
+            target_path = self._emoji_dir / target_name
+
+        target_path.write_bytes(image_bytes)
+
+        text = (analysis_text or "").strip()
+        if text:
+            target_path.with_suffix(".txt").write_text(text, encoding="utf-8")
+            prepared = prepare_local_image(target_path)
+            async with self._uow_factory() as uow:
+                await uow.emojis.set(
+                    prepared.file_hash,
+                    file_name=target_path.name,
+                    file_path=str(target_path.relative_to(self._emoji_dir)),
+                    mime_type=prepared.mime_type,
+                    original_width=prepared.original_width,
+                    original_height=prepared.original_height,
+                    analysis_text=text,
+                )
+                await uow.commit()
+
+        await self._scan_folder()
+        for number, entry in self.list_entries():
+            if entry.file_path == target_path:
+                return EmojiImportResult(number=number, entry=entry)
+        raise LookupError(f"表情包已写入但未能建立编号: {target_path.name}")
+
+    async def delete_entry(self, number: int) -> bool:
+        entry = self.get_entry(number)
+        if entry is None:
+            return False
+
+        file_hash: str | None = None
+        try:
+            file_hash = prepare_local_image(entry.file_path).file_hash
+        except Exception as exc:
+            self._logger.warning(f"计算表情包哈希失败 {entry.file_name}: {exc}")
+
+        if file_hash:
+            try:
+                async with self._uow_factory() as uow:
+                    await uow.emojis.delete(file_hash)
+                    await uow.commit()
+            except Exception as exc:
+                self._logger.warning(f"删除表情包数据库记录失败 {entry.file_name}: {exc}")
+
+        entry.file_path.unlink(missing_ok=True)
+        entry.file_path.with_suffix(".txt").unlink(missing_ok=True)
+        await self._scan_folder()
+        return True
+
+    async def update_entry_description(self, number: int, analysis_text: str) -> EmojiEntry:
+        text = analysis_text.strip()
+        if not text:
+            raise ValueError("表情包描述不能为空")
+        entry = self.get_entry(number)
+        if entry is None:
+            raise LookupError(f"表情包编号 {number} 不存在")
+        if not entry.file_path.exists() or not entry.file_path.is_file():
+            raise FileNotFoundError(f"表情包文件不存在: {entry.file_path}")
+
+        entry.file_path.with_suffix(".txt").write_text(text, encoding="utf-8")
+        prepared = prepare_local_image(entry.file_path)
+        async with self._uow_factory() as uow:
+            await uow.emojis.set(
+                prepared.file_hash,
+                file_name=entry.file_name,
+                file_path=str(entry.file_path.relative_to(self._emoji_dir)),
+                mime_type=prepared.mime_type,
+                original_width=prepared.original_width,
+                original_height=prepared.original_height,
+                analysis_text=text,
+            )
+            await uow.commit()
+
+        await self._scan_folder()
+        refreshed = self.get_entry(number)
+        if refreshed is not None:
+            return refreshed
+        return EmojiEntry(file_name=entry.file_name, file_path=entry.file_path, analysis_text=text)
+
     async def _scan_folder(self) -> None:
-        """扫描表情包文件夹，对比数据库后进行并发解析"""
+        """扫描表情包文件夹，并同步 txt、数据库与视觉解析结果。"""
         if not self._emoji_dir.exists():
             self._logger.warning(f"表情包目录不存在: {self._emoji_dir}")
             return
@@ -96,7 +281,6 @@ class EmojiService:
             self._entries.clear()
             return
 
-        # 计算所有文件的哈希（仅一次）
         hash_to_path: dict[str, Path] = {}
         path_to_hash: dict[Path, str] = {}
         for file_path in image_files:
@@ -110,31 +294,56 @@ class EmojiService:
         if not hash_to_path:
             return
 
-        # 查询数据库中已有的解析结果
-        existing: dict[str, str] = {}  # hash -> analysis_text
-        try:
-            async with self._uow_factory() as uow:
-                for file_hash in hash_to_path:
-                    record = await uow.emojis.get_by_hash(file_hash)
-                    if record is not None and record.analysis_text:
-                        existing[file_hash] = record.analysis_text
-        except Exception as exc:
-            self._logger.error(f"查询表情包数据库失败: {exc}")
-
-        # 找出需要解析的新文件
+        existing: dict[str, str] = {}
+        use_counts: dict[str, int] = {}
         to_parse: list[tuple[str, Path]] = []
-        for file_hash, file_path in hash_to_path.items():
-            if file_hash not in existing:
-                to_parse.append((file_hash, file_path))
+
+        async with self._uow_factory() as uow:
+            for file_path in image_files:
+                file_hash = path_to_hash.get(file_path)
+                if file_hash is None:
+                    continue
+
+                prepared = prepare_local_image(file_path)
+                txt_text = _read_sidecar_text(file_path)
+                if txt_text:
+                    await uow.emojis.set(
+                        file_hash,
+                        file_name=file_path.name,
+                        file_path=str(file_path.relative_to(self._emoji_dir)),
+                        mime_type=prepared.mime_type,
+                        original_width=prepared.original_width,
+                        original_height=prepared.original_height,
+                        analysis_text=txt_text,
+                    )
+                    existing[file_hash] = txt_text
+                    continue
+
+                try:
+                    record = await uow.emojis.get_by_hash(file_hash)
+                except Exception as exc:
+                    self._logger.error(f"查询表情包数据库失败: {exc}")
+                    record = None
+                db_text = (getattr(record, "analysis_text", None) or "").strip() if record else ""
+                if db_text:
+                    file_path.with_suffix(".txt").write_text(db_text, encoding="utf-8")
+                    existing[file_hash] = db_text
+                else:
+                    to_parse.append((file_hash, file_path))
+
+                if record is not None:
+                    use_counts[file_hash] = getattr(record, "use_count", 0)
+
+            await uow.commit()
 
         if to_parse:
-            self._logger.info(f"发现 {len(to_parse)} 个新表情包，开始并发解析")
+            self._logger.info(f"发现 {len(to_parse)} 个需要解析的表情包，开始并发解析")
             new_results = await self._parse_batch(to_parse)
-            # 存入数据库
             try:
                 async with self._uow_factory() as uow:
                     for file_hash, file_path, analysis_text in new_results:
                         prepared = prepare_local_image(file_path)
+                        file_path.with_suffix(".txt").write_text(analysis_text, encoding="utf-8")
                         await uow.emojis.set(
                             file_hash,
                             file_name=file_path.name,
@@ -149,8 +358,7 @@ class EmojiService:
             except Exception as exc:
                 self._logger.error(f"保存表情包解析结果失败: {exc}")
 
-        # 重建编号映射（传入 path->hash 避免重复计算）
-        self._rebuild_mapping(image_files, existing, path_to_hash)
+        self._rebuild_mapping(image_files, existing, path_to_hash, use_counts)
 
     async def _parse_batch(
         self,
@@ -196,8 +404,10 @@ class EmojiService:
         image_files: list[Path],
         analysis_map: dict[str, str],
         path_to_hash: dict[Path, str],
+        use_counts: dict[str, int] | None = None,
     ) -> None:
         """根据当前文件列表和分析结果重建编号映射"""
+        counts = use_counts or {}
         # 保留仍存在的旧条目编号
         old_by_name: dict[str, tuple[int, EmojiEntry]] = {}
         for number, entry in self._entries.items():
@@ -208,15 +418,25 @@ class EmojiService:
 
         for file_path in image_files:
             name = file_path.name
+            file_hash = path_to_hash.get(file_path)
+            entry_use_count = counts.get(file_hash, 0) if file_hash else 0
+
             if name in old_by_name and old_by_name[name][1].file_path == file_path:
-                # 文件未变，保留原编号和分析文本
                 num = old_by_name[name][0]
-                new_entries[num] = old_by_name[name][1]
+                analysis_text = (
+                    analysis_map.get(file_hash, old_by_name[name][1].analysis_text)
+                    if file_hash is not None
+                    else old_by_name[name][1].analysis_text
+                )
+                new_entries[num] = EmojiEntry(
+                    file_name=name,
+                    file_path=file_path,
+                    analysis_text=analysis_text,
+                    use_count=entry_use_count,
+                )
                 if num > max_existing_number:
                     max_existing_number = num
             else:
-                # 新文件或文件已变更，使用已有哈希查找分析结果
-                file_hash = path_to_hash.get(file_path)
                 analysis_text = "[待解析]"
                 if file_hash is not None:
                     analysis_text = analysis_map.get(file_hash, "[待解析]")
@@ -229,9 +449,9 @@ class EmojiService:
                     file_name=name,
                     file_path=file_path,
                     analysis_text=analysis_text,
+                    use_count=entry_use_count,
                 )
 
-        # 清理已不存在的文件
         removed = set(self._entries) - set(new_entries)
         if removed:
             self._logger.info(f"表情包文件已删除，移除编号: {sorted(removed)}")
@@ -262,3 +482,36 @@ class EmojiService:
                 raise
             except Exception as exc:
                 self._logger.error(f"表情包定时刷新失败: {exc}")
+
+
+def _detect_image_suffix(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "webp"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "gif"
+    return "png"
+
+
+def _read_sidecar_text(file_path: Path) -> str | None:
+    txt_path = file_path.with_suffix(".txt")
+    if not txt_path.exists():
+        return None
+    try:
+        text = txt_path.read_text(encoding="utf-8").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _safe_emoji_file_name(file_name: str | None, suffix: str) -> str:
+    raw_name = Path(str(file_name or "")).name.strip()
+    if not raw_name:
+        from uuid import uuid4
+        return f"emoji_{uuid4().hex[:12]}.{suffix}"
+    stem = Path(raw_name).stem.strip() or f"emoji_{uuid4().hex[:12]}"
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in stem)
+    return f"{cleaned[:80] or 'emoji'}.{suffix}"

@@ -2,7 +2,7 @@
 
 import dataclasses
 from dataclasses import MISSING, fields, is_dataclass
-from typing import Any, TypeVar, Union, List, Dict, get_args, get_origin
+from typing import Any, TypeVar, Union, get_args, get_origin
 
 import tomlkit
 from tomlkit.items import Table
@@ -146,9 +146,9 @@ def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
         elif expected_type is bool and isinstance(value, (bool, int, str)):
             if isinstance(value, str):
                 lower_val = value.lower()
-                if lower_val in ("true", "1", "yes", "on"):
+                if lower_val in ("true", "1", "yes", "on", "enabled", "enable"):
                     return True, True
-                elif lower_val in ("false", "0", "no", "off"):
+                elif lower_val in ("false", "0", "no", "off", "disabled", "disable", "unable"):
                     return True, False
             elif isinstance(value, int):
                 return True, bool(value)
@@ -168,7 +168,7 @@ def dict_to_dataclass(data: dict, schema: type[T]) -> T:
     kwargs = {}
     for field in fields(schema):
         field_name = field.name
-        raw_value = data.get(field_name)
+        raw_value = _get_config_value(data, field)
 
         # 验证和转换值
         if raw_value is not None:
@@ -185,8 +185,11 @@ def dict_to_dataclass(data: dict, schema: type[T]) -> T:
 
         # 处理嵌套dataclass
         if is_dataclass(field.type) and value is not None:
+            actual_type = _resolve_actual_type(field, field.type)
             if isinstance(value, dict):
-                value = dict_to_dataclass(value, field.type)
+                # 通过实际数据检测子类（如 DeepSeekModelSettings）
+                actual_type = _resolve_nested_type_from_default(actual_type, value)
+                value = dict_to_dataclass(value, actual_type)
             elif not is_dataclass(type(value)):
                 logger.warning(
                     f"嵌套配置项 '{field_name}' 的类型不匹配: "
@@ -206,10 +209,59 @@ def dict_to_dataclass(data: dict, schema: type[T]) -> T:
     return schema(**kwargs)
 
 
+def _resolve_actual_type(field: dataclasses.Field, declared_type: Any) -> Any:
+    """如果字段默认值是其声明类型的子类，则返回子类类型。
+
+    这使得 ``DeepSeekModelSettings`` 等子类在生成 TOML 时能包含额外字段。
+    """
+    if field.default_factory is not MISSING:
+        try:
+            default_obj = field.default_factory()
+        except Exception:
+            return declared_type
+        if is_dataclass(default_obj) and type(default_obj) is not declared_type:
+            return type(default_obj)
+    elif field.default is not MISSING and is_dataclass(field.default) and type(field.default) is not declared_type:
+        return type(field.default)
+    return declared_type
+
+
+def _resolve_nested_type_from_default(declared_type: Any, default_data: Any) -> Any:
+    """通过父级默认数据检测实际应使用的子类类型。
+
+    当父级默认工厂返回了声明类型的子类实例时，子类的 asdict 会包含基类
+    没有的字段。本函数通过匹配额外字段来找到最具体的子类。
+    """
+    if not is_dataclass(declared_type) or not isinstance(default_data, dict):
+        return declared_type
+
+    base_field_names = {f.name for f in fields(declared_type)}
+    extra_keys = set(default_data.keys()) - base_field_names
+    if not extra_keys:
+        return declared_type
+
+    for subclass in declared_type.__subclasses__():
+        subclass_extra = {f.name for f in fields(subclass)} - base_field_names
+        if extra_keys & subclass_extra:
+            return _resolve_nested_type_from_default(subclass, default_data)
+
+    return declared_type
+
+
+def _get_config_value(data: dict[Any, Any], field: dataclasses.Field) -> Any:
+    if field.name in data:
+        return data.get(field.name)
+    for alias in field.metadata.get("aliases", ()):
+        if alias in data:
+            return data.get(alias)
+    return None
+
+
 def dataclass_to_toml(
     schema: type[T],
     existing_data: dict[Any, Any] | None = None,
     is_root: bool = True,
+    default_data: dict[Any, Any] | None = None,
 ) -> tuple[tomlkit.TOMLDocument | Table | None, list[Any], list[Any]]:
     """将dataclass schema转换为toml文档，并与现有数据比较"""
     if not is_dataclass(schema):
@@ -241,8 +293,8 @@ def dataclass_to_toml(
 
         existing_value = None
         raw_value = None
-        if existing_data is not None and field_name in existing_data:
-            raw_value = existing_data.get(field_name)
+        if existing_data is not None:
+            raw_value = _get_config_value(existing_data, field)
             if raw_value is not None:
                 valid, validated_value = _validate_type(raw_value, field_type)
                 if valid:
@@ -255,21 +307,25 @@ def dataclass_to_toml(
                     )
 
         if is_dataclass(field_type):
+            # 如果默认值是声明类型的子类，使用子类以包含额外字段
+            actual_field_type = _resolve_actual_type(field, field_type)
+
             # 对于嵌套 dataclass，使用原始字典数据以正确检测缺失项
             nested_existing = None
             if raw_value is not None and isinstance(raw_value, dict):
                 nested_existing = raw_value
-            elif field.default is not MISSING and is_dataclass(field.default):
-                nested_existing = dataclasses.asdict(field.default)
-            elif field.default_factory is not MISSING:
-                try:
-                    default_obj = field.default_factory()
-                except Exception:
-                    default_obj = None
-                if default_obj is not None and is_dataclass(default_obj):
-                    nested_existing = dataclasses.asdict(default_obj)
+            nested_default = _nested_default_data(field, default_data)
+
+            # 通过父级默认数据检测子类（如 DeepSeekModelSettings）
+            actual_field_type = _resolve_nested_type_from_default(
+                actual_field_type, nested_default
+            )
+
             nested_doc, nested_req, nested_opt = dataclass_to_toml(
-                field_type, nested_existing, is_root=False  # type: ignore[arg-type]
+                actual_field_type,  # type: ignore[arg-type]
+                nested_existing,
+                is_root=False,
+                default_data=nested_default,
             )
 
             if existing_value is None:
@@ -287,8 +343,10 @@ def dataclass_to_toml(
                 missing_optional.extend([f"{field_name}.{opt}" for opt in nested_opt])
             continue
 
-        default_value = None
-        if field.default is not MISSING:
+        default_value = _get_default_data_value(default_data, field_name)
+        if default_value is not None:
+            pass
+        elif field.default is not MISSING:
             default_value = field.default
         elif field.default_factory is not MISSING:
             try:
@@ -330,3 +388,31 @@ def dataclass_to_toml(
         doc[field_name] = item
 
     return doc, missing_required, missing_optional
+
+
+def _get_default_data_value(default_data: dict[Any, Any] | None, field_name: str) -> Any:
+    if default_data is None:
+        return None
+    return default_data.get(field_name)
+
+
+def _nested_default_data(
+    field: dataclasses.Field,
+    parent_default_data: dict[Any, Any] | None,
+) -> dict[Any, Any] | None:
+    if parent_default_data is not None:
+        nested = parent_default_data.get(field.name)
+        if isinstance(nested, dict):
+            return nested
+        if is_dataclass(type(nested)):
+            return dataclasses.asdict(nested)
+    if field.default is not MISSING and is_dataclass(field.default):
+        return dataclasses.asdict(field.default)
+    if field.default_factory is not MISSING:
+        try:
+            default_obj = field.default_factory()
+        except Exception:
+            return None
+        if default_obj is not None and is_dataclass(default_obj):
+            return dataclasses.asdict(default_obj)
+    return None

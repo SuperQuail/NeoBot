@@ -16,26 +16,60 @@ class MessageNumbering:
         self._reverse: dict[int, int] = {}
         self._next_number: int = 1
 
-    def apply(self, queue: "MessageQueue", queue_key: str) -> str:
+    def apply(
+        self,
+        queue: "MessageQueue",
+        queue_key: str,
+        last_reply_message_id: int | None = None,
+        *,
+        all_new: bool = False,
+    ) -> str:
         """Number all messages in one queue and render them as text."""
         lines: list[str] = []
         entries = list(queue._queues.get(queue_key, []))
         sender_labels = queue._build_sender_labels(entries)
 
-        for entry in entries:
+        found_last_reply = False
+        if last_reply_message_id is not None:
+            found_last_reply = any(
+                entry.kind.value == "message"
+                and entry.message is not None
+                and entry.message.message_id == last_reply_message_id
+                for entry in entries
+            )
+        if all_new or (last_reply_message_id is not None and not found_last_reply):
+            lines.append("<当前均为新消息，没有上次回复过的内容>")
+
+        for i, entry in enumerate(entries):
             if entry.kind.value == "message" and entry.message is not None:
+                lines.extend(self._format_replied_messages(entry, queue))
                 msg = entry.message
                 msg_id = msg.message_id
                 if msg_id is None:
                     continue
                 number = self._assign_number(msg_id)
                 sender = queue._message_sender_label(msg, sender_labels=sender_labels)
-                content = queue._render_message_content(msg)
+                content = queue._render_message_content(
+                    msg,
+                    replied_messages=entry.replied_messages,
+                    reply_number_resolver=self._assign_number,
+                )
                 lines.append(f"{number}: {sender}: {content}")
             elif entry.kind.value == "timestamp":
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             elif entry.kind.value == "recall":
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind.value == "reaction" and entry.reaction is not None:
+                reaction = entry.reaction
+                target_number = self.get_number(reaction.target_message_id)
+                if target_number is not None:
+                    lines.append(
+                        self._format_reaction(reaction, target_number)
+                    )
+            elif entry.kind.value == "poke" and entry.poke is not None:
+                lines.append(queue._poke_to_text(entry.poke))
+            if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
+                lines.append("<以上是上次对话回复过的内容>")
         return "\n".join(lines)
 
     def apply_new(
@@ -63,15 +97,28 @@ class MessageNumbering:
             )
 
         for entry in messages:
-            if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
-                continue
-            msg_id = entry.message.message_id
-            if msg_id is None:
-                continue
-            number = self._assign_number(msg_id)
-            sender = queue._message_sender_label(entry.message, sender_labels=sender_labels)
-            content = queue._render_message_content(entry.message)
-            lines.append(f"{number}: {sender}: {content}")
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                lines.extend(self._format_replied_messages(entry, queue))
+                msg_id = entry.message.message_id
+                if msg_id is None:
+                    continue
+                number = self._assign_number(msg_id)
+                sender = queue._message_sender_label(entry.message, sender_labels=sender_labels)
+                content = queue._render_message_content(
+                    entry.message,
+                    replied_messages=entry.replied_messages,
+                    reply_number_resolver=self._assign_number,
+                )
+                lines.append(f"{number}: {sender}: {content}")
+            elif entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
+                reaction = entry.reaction
+                target_number = self.get_number(reaction.target_message_id)
+                if target_number is not None:
+                    lines.append(
+                        self._format_reaction(reaction, target_number)
+                    )
+            elif entry.kind == QueueEntryType.POKE and entry.poke is not None:
+                lines.append(queue._poke_to_text(entry.poke))
         return "\n".join(lines)
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:
@@ -106,10 +153,7 @@ class MessageNumbering:
         return (
             "消息格式说明：每条消息以“编号: 用户名: 消息内容”的格式呈现，"
             "编号可用于 reply_to 参数指定回复目标消息。\n"
-            "示例：\n"
-            "1: 小明: 今天天气真好\n"
-            "2: 小红: 是呀，适合出去玩\n"
-            "3: 小明: 有人想去看电影吗"
+            "例如：1: 小明: 你好"
         )
 
     def _assign_number(self, message_id: int) -> int:
@@ -121,6 +165,29 @@ class MessageNumbering:
         self._reverse[message_id] = number
         self._next_number += 1
         return number
+
+    def _format_replied_messages(self, entry, queue: "MessageQueue") -> list[str]:
+        lines: list[str] = []
+        for replied_message in getattr(entry, "replied_messages", []) or []:
+            msg_id = getattr(replied_message, "message_id", None)
+            if msg_id is None or self.get_number(msg_id) is not None:
+                continue
+            number = self._assign_number(msg_id)
+            sender = queue._message_sender_label(replied_message)
+            content = queue._render_message_content(replied_message)
+            lines.append(f"{number}: [被回复消息] {sender}: {content}")
+        return lines
+
+    @staticmethod
+    def _format_reaction(reaction, target_number: int) -> str:
+        from neobot_app.emoji.mapping import lookup_emoji
+
+        emoji_info = lookup_emoji(reaction.emoji_id)
+        if emoji_info is not None:
+            emoji_name = emoji_info[0]
+        else:
+            emoji_name = f"表情#{reaction.emoji_id}"
+        return f"{reaction.operator_name} 回应了消息{target_number}:{emoji_name}"
 
     @staticmethod
     def _sender_name(message) -> str:

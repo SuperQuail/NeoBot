@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.event import ReplyEvent
 
 
@@ -39,18 +40,25 @@ def _markdown_escape(value: str) -> str:
 
 
 class DebugRecorder:
-    def __init__(self, log_dir: Path) -> None:
+    def __init__(self, log_dir: Path, logger: Logger | None = None) -> None:
         self._log_dir = log_dir
         self._reply_md_dir = self._log_dir / "reply_events"
         self._lock = threading.Lock()
+        self._logger = logger or NullLogger()
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._reply_md_dir.mkdir(parents=True, exist_ok=True)
+        self._logger.info(
+            "DebugRecorder 已初始化",
+            log_dir=str(log_dir),
+            reply_md_dir=str(self._reply_md_dir),
+        )
 
     @property
     def log_dir(self) -> Path:
         return self._log_dir
 
     def record_packet(self, packet: dict[str, Any]) -> None:
+        self._logger.debug("记录数据包", post_type=packet.get("post_type", ""))
         self._write_jsonl(
             "packets.jsonl",
             {
@@ -65,6 +73,7 @@ class DebugRecorder:
         event: ReplyEvent,
         **extra: Any,
     ) -> None:
+        self._logger.debug("记录回复事件", stage=stage, event_id=event.event_id)
         payload = {
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "stage": stage,
@@ -107,16 +116,43 @@ class DebugRecorder:
 
     def _write_reply_markdown(self, payload: dict[str, Any]) -> None:
         event = payload["event"]
-        event_id = str(event["event_id"])
-        target = self._reply_md_dir / f"{event_id}.md"
+        stem = self._get_event_filename_stem(event)
+        target = self._reply_md_dir / f"{stem}.md"
+        is_new = not target.exists()
         lines: list[str] = []
-        if not target.exists():
+        if is_new:
             lines.extend(self._build_markdown_header(event))
+            self._write_event_json(stem, event)
         lines.extend(self._build_markdown_section(payload))
         content = "\n".join(lines) + "\n"
         with self._lock:
             with target.open("a", encoding="utf-8") as f:
                 f.write(content)
+
+    @staticmethod
+    def _get_event_filename_stem(event: dict[str, Any]) -> str:
+        created_at = event.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(str(created_at))
+        except (ValueError, TypeError):
+            dt = datetime.now(timezone.utc)
+        short_id = str(event.get("event_id", ""))[-6:]
+        return f"{dt.year}-{dt.month}-{dt.day}-{dt.hour:02d}-{dt.minute:02d}-{short_id}"
+
+    def _write_event_json(self, stem: str, event: dict[str, Any]) -> None:
+        target = self._reply_md_dir / f"{stem}.json"
+        data = {
+            "event_id": event.get("event_id"),
+            "created_at": event.get("created_at"),
+            "mode": event.get("mode"),
+            "conversation_ref": event.get("conversation_ref"),
+            "message": event.get("message"),
+        }
+        with self._lock:
+            target.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
 
     def _build_markdown_header(self, event: dict[str, Any]) -> list[str]:
         conversation = event.get("conversation_ref") or {}
@@ -147,18 +183,6 @@ class DebugRecorder:
             f"| 回复预览 | {self._single_line(event.get('generated_text') or '')} |",
             "",
         ]
-
-        if event.get("message") is not None:
-            lines.extend(
-                [
-                    "### 原始消息",
-                    "",
-                    "```json",
-                    json.dumps(event["message"], ensure_ascii=False, indent=2),
-                    "```",
-                    "",
-                ]
-            )
 
         prompt = extra.get("prompt")
         if isinstance(prompt, str):

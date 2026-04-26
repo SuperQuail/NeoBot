@@ -53,6 +53,8 @@ class WillingContext:
     at_guaranteed_reply: bool = False
     config_global_coefficient: float = 1.0
     runtime_config: RuntimeWillingConfig | None = None
+    is_official_bot: bool = False
+    official_bot_coefficient: float = 0.05
 
 
 @dataclass(frozen=True, slots=True)

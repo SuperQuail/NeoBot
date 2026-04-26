@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -21,10 +21,12 @@ class PromptBuilder:
         config: BotConfigSchema,
         profile_service: UserProfileService,
         logger: Logger | None = None,
+        archive_memory_service: Any | None = None,
     ) -> None:
         self._config = config
         self._profile_service = profile_service
         self._logger = logger or NullLogger()
+        self._archive_memory_service = archive_memory_service
         self._keyword_reaction_builder = KeywordReactionBuilder(
             config.chat.key_word or [],
             logger=self._logger,
@@ -38,6 +40,8 @@ class PromptBuilder:
         key_word_reaction_list: str = "",
         memory_list: str = "",
         numbering: MessageNumbering | None = None,
+        last_reply_message_id: int | None = None,
+        all_new: bool = False,
     ) -> str:
         current_time = get_current_time_and_lunar_date()
         group_id_str = str(group_id)
@@ -48,13 +52,34 @@ class PromptBuilder:
             group_id,
             message_queue,
         )
+        bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
+            group_id,
+            self._config.bot.account,
+            message_queue,
+        )
+
+        # 查询群聊档案记忆（table_name='group_profile', key=群号）
+        group_profile = await self._fetch_archive("group_profile", group_id_str) or ""
+        group_summary = await self._fetch_archive("group_summary", group_id_str) or ""
+        group_info = _merge_labeled_prompt_fragments(
+            ("群聊档案", group_profile),
+            ("近期阶段摘要", group_summary),
+        )
 
         if numbering is not None:
-            message_list = numbering.apply(message_queue, group_id_str)
+            message_list = numbering.apply(
+                message_queue, group_id_str,
+                last_reply_message_id=last_reply_message_id,
+                all_new=all_new,
+            )
             format_example = numbering.format_example()
             message_list = f"{format_example}\n\n{message_list}"
         else:
-            message_list = message_queue.to_text(group_id_str)
+            message_list = message_queue.to_text(
+                group_id_str,
+                last_reply_message_id=last_reply_message_id,
+                all_new=all_new,
+            )
 
         keyword_reaction_text = self._keyword_reaction_builder.build(
             queue=message_queue,
@@ -71,6 +96,7 @@ class PromptBuilder:
             group_name=group_name,
             group_id=group_id,
             group_description=group_description,
+            group_info=group_info,
             message_list=message_list,
             member_list=member_list,
             bot_name=self._config.bot.nick_name,
@@ -80,6 +106,9 @@ class PromptBuilder:
             key_word_reaction_list=merged_keyword_reaction_list,
             memory_list=memory_list,
         )
+        prompt = _merge_prompt_fragments(prompt, bot_group_admin_status)
+        if group_info and "{group_info}" not in self._config.chat.group_prompt_template:
+            prompt = _merge_prompt_fragments(prompt, group_info)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.group_prompt_template:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
         return prompt
@@ -92,6 +121,8 @@ class PromptBuilder:
         key_word_reaction_list: str = "",
         memory_list: str = "",
         numbering: MessageNumbering | None = None,
+        last_reply_message_id: int | None = None,
+        all_new: bool = False,
     ) -> str:
         current_time = get_current_time_and_lunar_date()
         user_id_str = str(user_id)
@@ -104,11 +135,19 @@ class PromptBuilder:
         )
 
         if numbering is not None:
-            message_list = numbering.apply(message_queue, user_id_str)
+            message_list = numbering.apply(
+                message_queue, user_id_str,
+                last_reply_message_id=last_reply_message_id,
+                all_new=all_new,
+            )
             format_example = numbering.format_example()
             message_list = f"{format_example}\n\n{message_list}"
         else:
-            message_list = message_queue.to_text(user_id_str)
+            message_list = message_queue.to_text(
+                user_id_str,
+                last_reply_message_id=last_reply_message_id,
+                all_new=all_new,
+            )
 
         keyword_reaction_text = self._keyword_reaction_builder.build(
             queue=message_queue,
@@ -118,6 +157,12 @@ class PromptBuilder:
         merged_keyword_reaction_list = _merge_prompt_fragments(
             key_word_reaction_list,
             keyword_reaction_text,
+        )
+
+        private_summary = await self._fetch_archive("private_summary", user_id_str) or ""
+        merged_memory_list = _merge_labeled_prompt_fragments(
+            ("既有记忆", memory_list),
+            ("近期阶段摘要", private_summary),
         )
 
         prompt = self._config.chat.friend_prompt_template.format(
@@ -132,11 +177,32 @@ class PromptBuilder:
             other_name=_build_bot_other_name(self._config),
             bot_data=self._config.bot.bot_data,
             key_word_reaction_list=merged_keyword_reaction_list,
-            memory_list=memory_list,
+            memory_list=merged_memory_list,
         )
+        if merged_memory_list and "{memory_list}" not in self._config.chat.friend_prompt_template:
+            prompt = _merge_prompt_fragments(prompt, merged_memory_list)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.friend_prompt_template:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
+        prompt += (
+            "\n<私聊提示>"
+            "\n这是私聊对话。发送回复后，如果对方话没有说完或你认为对方可能还有更多内容，"
+            "请使用 wait 工具等待新消息，不要直接结束对话。"
+            "如果对方消息没有明显的结束意图，你应当持续等待而非结束事件。"
+            "\n</私聊提示>"
+        )
         return prompt
+
+
+    async def _fetch_archive(self, table_name: str, key: str) -> str | None:
+        if self._archive_memory_service is None:
+            return None
+        try:
+            item = await self._archive_memory_service.get(table_name, key)
+        except Exception:
+            return None
+        if item is not None and item.value:
+            return item.value.strip()
+        return None
 
 
 def _build_bot_other_name(config: BotConfigSchema) -> str:
@@ -149,6 +215,15 @@ def _build_bot_other_name(config: BotConfigSchema) -> str:
 
 def _merge_prompt_fragments(*parts: str) -> str:
     cleaned = [part.strip() for part in parts if part and part.strip()]
+    return "\n".join(cleaned)
+
+
+def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
+    cleaned = [
+        f"<{label}>\n{value.strip()}\n</{label}>"
+        for label, value in parts
+        if value and value.strip()
+    ]
     return "\n".join(cleaned)
 
 

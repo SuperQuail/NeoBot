@@ -209,10 +209,10 @@ async def notice_to_text(notice_data: Notice) -> str:
         return f"好友添加: 用户 {notice_data.user_id or '未知'} 添加为好友"
     elif isinstance(notice_data, PrivatePoke):
         sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
-        return f"私聊戳一戳: 用户 {notice_data.sender_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})"
+        return f"私聊戳一戳: 用户 {notice_data.sender_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
     elif isinstance(notice_data, GroupPoke):
         sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
-        return f"群戳一戳: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})"
+        return f"群戳一戳: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
     elif isinstance(notice_data, GroupLuckyKing):
         sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
         return f"群红包运气王: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 成为了用户 {notice_data.target_id or '未知'} 发送的红包运气王 ({sub_type})"

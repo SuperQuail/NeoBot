@@ -19,13 +19,13 @@ class ArchiveMemoryService:
     async def get(self, table_name: str, key: str) -> Optional[ArchiveMemory]:
         async with self._uow_factory() as uow:
             item = await uow.archive.get(table_name, key)
-        self._logger.debug("archive memory fetched", table_name=table_name, key=key, found=item is not None)
+        self._logger.debug("存档记忆已获取", table_name=table_name, key=key, found=item is not None)
         return item
 
     async def exists(self, table_name: str, key: str) -> bool:
         async with self._uow_factory() as uow:
             exists = await uow.archive.exists(table_name, key)
-        self._logger.debug("archive memory existence checked", table_name=table_name, key=key, exists=exists)
+        self._logger.debug("存档记忆存在检查", table_name=table_name, key=key, exists=exists)
         return exists
 
     async def list(
@@ -48,7 +48,7 @@ class ArchiveMemoryService:
                 offset=offset,
             )
         self._logger.debug(
-            "archive memories listed",
+            "存档记忆列表已获取",
             table_name=table_name,
             count=len(items),
             limit=limit,
@@ -61,7 +61,7 @@ class ArchiveMemoryService:
             item = await uow.archive.set(table_name, key, value, tags)
             await uow.commit()
         self._logger.debug(
-            "archive memory saved",
+            "存档记忆已保存",
             table_name=table_name,
             key=key,
             version=item.version,
@@ -73,5 +73,5 @@ class ArchiveMemoryService:
             deleted = await uow.archive.delete(table_name, key)
             if deleted:
                 await uow.commit()
-        self._logger.debug("archive memory deleted", table_name=table_name, key=key, deleted=deleted)
+        self._logger.debug("存档记忆已删除", table_name=table_name, key=key, deleted=deleted)
         return deleted

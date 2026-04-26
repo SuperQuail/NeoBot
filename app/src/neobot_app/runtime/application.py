@@ -36,6 +36,7 @@ class NeoBotApplication(Generic[T]):
         file_server_public_url: str | None = None,
         expiration_config: ExpirationConfig | None = None,
         tts_service: "TTSService | None" = None,
+        bot_detector: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -51,6 +52,7 @@ class NeoBotApplication(Generic[T]):
         self.tts_service = tts_service
         if self.tts_service is not None:
             self.tts_service.bind_file_server(self.file_server)
+        self._bot_detector = bot_detector
 
     async def start(self) -> None:
         if self._started:
@@ -72,6 +74,9 @@ class NeoBotApplication(Generic[T]):
                 "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
             )
         self._logger.info("NeoBot适配器启动完成")
+        if self._bot_detector is not None:
+            await self._bot_detector.refresh()
+            self._logger.info("官方Bot检测范围已加载")
         await self.chat_stream.initialize()
         self._logger.info("NeoBot聊天流初始化完成")
         if self._emoji_service is not None:
@@ -81,9 +86,12 @@ class NeoBotApplication(Generic[T]):
         self._started = True
 
     async def run_forever(self) -> None:
+        """Run until a shutdown signal is received, then stop gracefully."""
         await self.start()
         try:
             await self._shutdown_event.wait()
+        except asyncio.CancelledError:
+            self._logger.info("收到取消信号，正在关闭...")
         finally:
             await self.stop()
 
@@ -95,6 +103,7 @@ class NeoBotApplication(Generic[T]):
             return
         self._shutdown_event.set()
         self.event_pipeline.stop()
+        await self.event_pipeline.flush_pending_summaries()
         if self._reply_orchestrator is not None:
             await self._reply_orchestrator.shutdown()
         if self._emoji_service is not None:

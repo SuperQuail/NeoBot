@@ -26,8 +26,10 @@ class UserData(Base):
     country: Mapped[str | None] = mapped_column(Text)
     labs: Mapped[str | None] = mapped_column(Text)
     remark: Mapped[str | None] = mapped_column(Text)
+    avatar_analysis: Mapped[str | None] = mapped_column(Text)
     age: Mapped[int | None] = mapped_column(Integer)
     long_nick: Mapped[str | None] = mapped_column(Text)
+    favorability: Mapped[int] = mapped_column(Integer, default=0)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -124,6 +126,7 @@ class EmojiData(Base):
     original_width: Mapped[int | None] = mapped_column(Integer)
     original_height: Mapped[int | None] = mapped_column(Integer)
     analysis_text: Mapped[str | None] = mapped_column(Text)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -131,4 +134,28 @@ class EmojiData(Base):
     __table_args__ = (
         Index("ix_emojis_updated_at", "updated_at"),
         Index("ix_emojis_file_name", "file_name"),
+        Index("ix_emojis_use_count", "use_count"),
+    )
+
+
+class CreatorImageData(Base):
+    __tablename__ = "creator_images"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    image_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    file_hash: Mapped[str] = mapped_column(String, nullable=False)
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    prompt: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    original_width: Mapped[int | None] = mapped_column(Integer)
+    original_height: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("ix_creator_images_source_updated_at", "source", "updated_at"),
+        Index("ix_creator_images_file_hash", "file_hash"),
     )

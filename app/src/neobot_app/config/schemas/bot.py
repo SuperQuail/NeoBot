@@ -43,13 +43,18 @@ class Chat:
     group_prompt_template: str = field(
         default=(
             "<当前时间>{current_time}</当前时间>\n"
-            "<群聊>{group_name}[群号:{group_id}]{group_description}</群聊>\n"
+            "<群聊>{group_name}[群号:{group_id}]{group_description}\n"
+            "<群聊档案>\n{group_info}\n</群聊档案>\n"
+            "</群聊>\n"
             "<聊天记录>\n{message_list}\n</聊天记录>\n"
             "<群友信息>\n{member_list}\n</群友信息>\n"
             "<你是谁>\n"
             "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
             "{bot_data}\n"
             "</你是谁>\n"
+            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),不要使用markdown,和正常聊天一样,回复短句即可.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.</回复要求>\n"
+            "<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>\n"
+            "<回复样例>\n回复1:好哦\n回复2:我这就去看看\n注意,短句分开回复,而不是以整段回复\n</回复样例>\n"
             "<你的印象>\n"
             "{key_word_reaction_list}\n"
             "你想起来之前:\n"
@@ -74,9 +79,9 @@ class Chat:
         default_factory=lambda: ["111111", "222222"],
         metadata={"description": "群名单"},
     )
-    group_Response_coefficient: Optional[Dict[str, float]] = field(
+    group_response_coefficient: Optional[Dict[str, float]] = field(
         default_factory=lambda: {"111111": 0.5, "222222": 0.5},
-        metadata={"description": "群聊回复系数"},
+        metadata={"description": "群聊回复系数", "aliases": ("group_Response_coefficient",)},
     )
     group_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的群"},
@@ -94,6 +99,9 @@ class Chat:
             "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
             "{bot_data}\n"
             "</你是谁>"
+            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),不要使用markdown,和正常聊天一样,回复短句即可.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.</回复要求>\n"
+            "<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>\n"
+            "<回复样例>\n回复1:好哦\n回复2:我这就去看看\n注意,短句分开回复,而不是以整段回复\n</回复样例>\n"
         ),
         metadata={"description": "私聊提示词模板，非开发者不建议修改"},
     )
@@ -188,20 +196,30 @@ class ModelSettings:
         default=0.0,
         metadata={"description": "存在惩罚"},
     )
+
+
+@dataclass
+class DeepSeekModelSettings(ModelSettings):
+    """DeepSeek 模型运行设置（包含思考模式相关配置）。
+    注意：思考模式配置统一采用 OpenAI 样式作为参考填写，程序会自动根据实际 API 提供方进行样式转换。
+    """
+
     deepseek_thinking_mode: str = field(
-        default="disabled",
+        default="enabled",
         metadata={
-            "description": "DeepSeek 思考模式开关：disabled 关闭，enabled 开启，random 按概率随机开启"
+            "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启"
         },
     )
     deepseek_reasoning_effort: str = field(
         default="high",
-        metadata={"description": "DeepSeek 思考强度，可选 high 或 max"},
+        metadata={
+            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max"
+        },
     )
     deepseek_random_thinking_probability: float = field(
         default=0.6,
         metadata={
-            "description": "DeepSeek 随机思考开启概率，范围 0.0 到 1.0，仅在随机模式下生效"
+            "description": "随机思考开启概率，范围 0.0 到 1.0，仅在思考模式为 random 时生效"
         },
     )
 
@@ -231,13 +249,16 @@ def _default_primary_chat_model() -> "ModelRegistration":
         description="主对话模型",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
-        settings=ModelSettings(
+        settings=DeepSeekModelSettings(
             temperature=1.0,
             max_output_tokens=2048,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
             presence_penalty=0.0,
+            deepseek_thinking_mode="enabled",
+            deepseek_reasoning_effort="high",
+            deepseek_random_thinking_probability=0.6,
         ),
         pricing=ModelPricing(
             input_price_per_mtokens=0.0,
@@ -256,8 +277,6 @@ def _default_vision_model() -> "ModelRegistration":
             max_output_tokens=2048,
             timeout_seconds=120.0,
             top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
         ),
         pricing=ModelPricing(
             input_price_per_mtokens=1.89,
@@ -270,19 +289,15 @@ def _default_tts_model() -> "ModelRegistration":
     return ModelRegistration(
         description="语音模型",
         provider="硅基流动",
-        model_name="IndexTeam/IndexTTS-2",
+        model_name="FunAudioLLM/CosyVoice2-0.5B",
         settings=ModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
             timeout_seconds=120.0,
-            top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
         ),
         pricing=ModelPricing(
             input_price_per_mtokens=0.0,
             output_price_per_mtokens=0.0,
-            billing_metric="indexteam/indextts-2.online.utf8-bytes",
+            billing_metric="funaudiollm/cosyvoice2-0.5b.utf8-bytes",
         ),
     )
 
@@ -294,11 +309,7 @@ def _default_creator_image_model() -> "ModelRegistration":
         model_name="black-forest-labs/FLUX.1-schnell",
         settings=ModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
             timeout_seconds=120.0,
-            top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
         ),
         pricing=ModelPricing(
             input_price_per_mtokens=0.0,
@@ -461,6 +472,28 @@ class AgentCreatorGallery:
         default=10,
         metadata={"description": "图库容量上限；为0时禁用图库管理工具"},
     )
+    page_size: int = field(
+        default=50,
+        metadata={"description": "图库列表每页显示数量；图片总数超过此值时分页展示"},
+    )
+
+
+@dataclass
+class AgentCreatorEmoji:
+    """Creator Agent 表情包管理配置。"""
+
+    allow_add: bool = field(
+        default=False,
+        metadata={"description": "是否允许 Creator Agent 增加表情包"},
+    )
+    allow_delete: bool = field(
+        default=False,
+        metadata={"description": "是否允许 Creator Agent 删除表情包"},
+    )
+    page_size: int = field(
+        default=50,
+        metadata={"description": "表情包列表每页显示数量；总数超过此值时分页展示"},
+    )
 
 
 @dataclass
@@ -472,6 +505,7 @@ class AgentCreator:
         metadata={"description": "是否启用Creator Agent"},
     )
     gallery: AgentCreatorGallery = field(default_factory=AgentCreatorGallery)
+    emoji: AgentCreatorEmoji = field(default_factory=AgentCreatorEmoji)
 
 
 @dataclass
@@ -506,12 +540,39 @@ class AgentMemoryArchive:
         default_factory=list,
         metadata={"description": "允许访问的档案表名列表；留空表示不限制"},
     )
+    auto_compact_chars: int = field(
+        default=500,
+        metadata={"description": "单条档案超过此字符数时触发一次 AI 自动精简；0表示禁用"},
+    )
+    max_chars: int = field(
+        default=600,
+        metadata={"description": "单条档案最大字符数；超过后截断写入"},
+    )
+
+
+@dataclass
+class AgentMemoryFavorability:
+    """好感度系统配置。"""
+
+    max_change_per_summary: int = field(
+        default=5,
+        metadata={"description": "每次档案总结时好感度单次变更上限"},
+    )
+    min_value: int = field(
+        default=-1000,
+        metadata={"description": "好感度下限"},
+    )
+    max_value: int = field(
+        default=1000,
+        metadata={"description": "好感度上限"},
+    )
 
 
 @dataclass
 class AgentMemory:
     trigger: AgentMemoryTrigger = field(default_factory=AgentMemoryTrigger)
     archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
+    favorability: AgentMemoryFavorability = field(default_factory=AgentMemoryFavorability)
 
 
 @dataclass
@@ -572,9 +633,9 @@ class EnhancedChat(Chat):
         default=1.0,
         metadata={"description": "agent 模式全局回复概率系数"},
     )
-    friend_Response_coefficient: dict[str, float] = field(
+    friend_response_coefficient: dict[str, float] = field(
         default_factory=dict,
-        metadata={"description": "私聊回复系数"},
+        metadata={"description": "私聊回复系数", "aliases": ("friend_Response_coefficient",)},
     )
     enable_group_startup_history_warmup: bool = field(
         default=False,
@@ -591,6 +652,93 @@ class EnhancedChat(Chat):
     startup_history_friend_whitelist: List[str] = field(
         default_factory=list,
         metadata={"description": "启动历史预热私聊白名单"},
+    )
+    reply_cooldown_seconds: int = field(
+        default=2,
+        metadata={"description": "回复冷却时间，单位秒；距上次回复结束不足此时间则不触发新回复"},
+    )
+    reply_sentence_cooldown_seconds: float = field(
+        default=2.0,
+        metadata={"description": "群聊每条回复短句之间的冷却时间，单位秒；用于模拟打字间隔"},
+    )
+    private_chat_sentence_cooldown_seconds: float = field(
+        default=2.0,
+        metadata={"description": "私聊每条回复短句之间的冷却时间，单位秒"},
+    )
+    agent_wait_max_seconds: int = field(
+        default=60,
+        metadata={"description": "Agent wait 工具单次最大等待秒数"},
+    )
+    random_sticker_probability: float = field(
+        default=0.1,
+        metadata={"description": "回复事件中随机触发聊天互动agent发送表情包的概率，范围0.0~1.0"},
+    )
+    ai_reply_check: bool = field(
+        default=False,
+        metadata={"description": "AI回复检查；开启后 send_reply 会先返回切分结果供主Agent确认"},
+    )
+    long_reply_fallback_template: str = field(
+        default="{bot_name}懒得和你说道理，你不配听",
+        metadata={"description": "回复过长或切分条数过多时使用的默认回复，支持 {bot_name} 占位符"},
+    )
+    long_reply_max_length: int = field(
+        default=300,
+        metadata={"description": "回复最大字符数，超过此长度将触发 fallback 回复"},
+    )
+    long_reply_max_sentence_count: int = field(
+        default=12,
+        metadata={"description": "回复自动切分后允许的最大消息条数，超过此数量将触发 fallback 回复"},
+    )
+    enable_ai_reply_regenerate_on_length_limit: bool = field(
+        default=True,
+        metadata={
+            "description": "当回复超过长度/句数限制时，是否让 AI 重新生成更简短的版本，"
+            "而非直接使用 fallback 模板"
+        },
+    )
+    emoji_page_size: int = field(
+        default=50,
+        metadata={"description": "表情包列表每页显示数量；总数超过此值时分页展示，agent 可使用翻页参数查看"},
+    )
+    enable_last_reply_tracking: bool = field(
+        default=True,
+        metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置并在提示词中显示"},
+    )
+    poke_weight: float = field(
+        default=0.2,
+        metadata={"description": "戳一戳事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个戳一戳等同1条消息）"},
+    )
+    reaction_weight: float = field(
+        default=0.2,
+        metadata={"description": "表情回应事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个表情回应等同1条消息）"},
+    )
+    official_bot_reply_coefficient: float = field(
+        default=0.05,
+        metadata={"description": "官方Bot回复概率系数，识别到消息发送者为官方Bot时，基础概率乘以此系数"},
+    )
+    private_chat_suspend_wait_seconds: int = field(
+        default=300,
+        metadata={"description": "私聊回复后挂起等待秒数；超时无新消息则结束会话，默认300秒（5分钟）"},
+    )
+    private_chat_max_tokens: int = field(
+        default=10000,
+        metadata={"description": "私聊会话最大token数；超过后重启聊天管线"},
+    )
+    private_chat_dynamic_warmup: bool = field(
+        default=True,
+        metadata={"description": "首次收到私聊消息时是否动态预热历史消息"},
+    )
+    private_chat_warmup_history_count: int = field(
+        default=100,
+        metadata={"description": "私聊动态预热时拉取的历史消息条数"},
+    )
+    private_chat_new_message_collect_seconds: float = field(
+        default=5.0,
+        metadata={"description": "私聊挂起期间收到首条新消息后继续收集新消息的时间窗口（秒）"},
+    )
+    private_chat_reply_delay_seconds: float = field(
+        default=5.0,
+        metadata={"description": "私聊收到消息后延迟多少秒再触发回复（在此期间收集后续消息）"},
     )
 
 

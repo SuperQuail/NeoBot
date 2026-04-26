@@ -19,13 +19,13 @@ class ImageAnalysisService:
     async def get(self, file_hash: str) -> Optional[ImageAnalysis]:
         async with self._uow_factory() as uow:
             item = await uow.images.get(file_hash)
-        self._logger.debug("image analysis fetched", file_hash=file_hash, found=item is not None)
+        self._logger.debug("图像分析已获取", file_hash=file_hash, found=item is not None)
         return item
 
     async def exists(self, file_hash: str) -> bool:
         async with self._uow_factory() as uow:
             exists = await uow.images.exists(file_hash)
-        self._logger.debug("image analysis existence checked", file_hash=file_hash, exists=exists)
+        self._logger.debug("图像分析存在检查", file_hash=file_hash, exists=exists)
         return exists
 
     async def list(
@@ -44,7 +44,7 @@ class ImageAnalysisService:
                 offset=offset,
             )
         self._logger.debug(
-            "image analyses listed",
+            "图像分析列表已获取",
             count=len(items),
             limit=limit,
             offset=offset,
@@ -77,7 +77,7 @@ class ImageAnalysisService:
             )
             await uow.commit()
         self._logger.debug(
-            "image analysis saved",
+            "图像分析已保存",
             file_hash=file_hash,
             version=item.version,
         )
@@ -88,5 +88,5 @@ class ImageAnalysisService:
             deleted = await uow.images.delete(file_hash)
             if deleted:
                 await uow.commit()
-        self._logger.debug("image analysis deleted", file_hash=file_hash, deleted=deleted)
+        self._logger.debug("图像分析已删除", file_hash=file_hash, deleted=deleted)
         return deleted

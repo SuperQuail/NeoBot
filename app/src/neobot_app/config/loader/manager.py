@@ -9,7 +9,7 @@ import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
-from neobot_app.core import CONFIG_FILE, CONFIG_BACKUP_DIR
+from neobot_app.core import CONFIG_BACKUP_DIR
 from neobot_app.utils.logger import get_module_logger
 
 T = TypeVar("T")
@@ -27,17 +27,13 @@ def _build_provider_extra_body(
     if provider_kind not in {"deepseek", "deepseek_offical", "deepseek_official"}:
         return {}
 
-    thinking_mode = str(
-        getattr(settings_config, "deepseek_thinking_mode", "disabled")
-    ).strip().casefold()
-    if thinking_mode not in {"disabled", "enabled", "random"}:
-        thinking_mode = "disabled"
+    thinking_mode = _normalize_deepseek_thinking_mode(
+        getattr(settings_config, "deepseek_thinking_mode", True)
+    )
 
     reasoning_effort = str(
         getattr(settings_config, "deepseek_reasoning_effort", "high")
     ).strip().casefold()
-    if reasoning_effort not in {"high", "max"}:
-        reasoning_effort = "high"
 
     probability = getattr(settings_config, "deepseek_random_thinking_probability", 0.6)
     try:
@@ -51,6 +47,17 @@ def _build_provider_extra_body(
         "__deepseek_reasoning_effort__": reasoning_effort,
         "__deepseek_random_thinking_probability__": random_probability,
     }
+
+
+def _normalize_deepseek_thinking_mode(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    normalized = str(value).strip().casefold()
+    if normalized in {"true", "1", "yes", "on", "enabled", "enable"}:
+        return "true"
+    if normalized in {"random"}:
+        return "random"
+    return "false"
 
 
 def _check_placeholders(obj: Any, path: str = "") -> list[str]:

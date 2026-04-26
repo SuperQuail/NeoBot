@@ -92,6 +92,8 @@ class ChatStreamManager:
             "message_timestamp_interval_seconds",
             300,
         )
+        poke_weight = getattr(bot_cfg.chat, "poke_weight", 0.2)
+        reaction_weight = getattr(bot_cfg.chat, "reaction_weight", 0.2)
         profile_service = UserProfileService(
             self.adapter,
             self._uow_factory,
@@ -103,11 +105,15 @@ class ChatStreamManager:
             self._group_queue = MessageQueue(
                 max_size=max_group_obs,
                 timestamp_interval_seconds=timestamp_interval_seconds,
+                poke_weight=poke_weight,
+                reaction_weight=reaction_weight,
             )
         if self._friend_queue is None:
             self._friend_queue = MessageQueue(
                 max_size=max_friend_obs,
                 timestamp_interval_seconds=timestamp_interval_seconds,
+                poke_weight=poke_weight,
+                reaction_weight=reaction_weight,
             )
 
         logger.info(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")

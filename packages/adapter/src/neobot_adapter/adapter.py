@@ -326,6 +326,20 @@ class OneBotAdapter:
         )
         return safe_parse_model(result, response.GetGroupMemberListResponse)
 
+    async def get_group_member_info(
+        self,
+        group_id: int,
+        user_id: int,
+        no_cache: bool = False,
+        timeout: float = 5.0,
+    ) -> response.GetGroupMemberInfoResponse:
+        result = await self.call_api(
+            "get_group_member_info",
+            {"group_id": group_id, "user_id": user_id, "no_cache": no_cache},
+            timeout,
+        )
+        return safe_parse_model(result, response.GetGroupMemberInfoResponse)
+
     async def get_friend_msg_history(
         self,
         user_id: int,
@@ -359,6 +373,14 @@ class OneBotAdapter:
         }
         result = await self.call_api("get_group_msg_history", params, timeout)
         return safe_parse_model(result, response.GetHistoryMsgListResponse)
+
+    async def get_msg(
+        self,
+        message_id: int,
+        timeout: float = 5.0,
+    ) -> response.GetSignalMsgResponse:
+        result = await self.call_api("get_msg", {"message_id": message_id}, timeout)
+        return safe_parse_model(result, response.GetSignalMsgResponse)
 
     async def send_private_msg(
         self,

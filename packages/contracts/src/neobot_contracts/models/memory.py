@@ -73,6 +73,26 @@ class EmojiRecord:
     original_width: int | None
     original_height: int | None
     analysis_text: str | None
+    use_count: int
+    created_at: datetime
+    updated_at: datetime
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
+class CreatorImageRecord:
+    """Creator Agent image metadata."""
+
+    id: int
+    image_id: str
+    source: str
+    file_hash: str
+    file_path: str
+    prompt: str | None
+    description: str | None
+    mime_type: str | None
+    original_width: int | None
+    original_height: int | None
     created_at: datetime
     updated_at: datetime
     version: int

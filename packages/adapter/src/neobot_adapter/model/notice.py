@@ -179,3 +179,10 @@ class EssenceMessage(Notice):
     operator_id : Optional[int] = None #操作者 QQ 号
     message_id : Optional[int] = None #消息 ID
     sub_type : Optional[EssentialMessageType] = None #消息类型
+
+class EmojiReaction(Notice):
+    """消息表情回应"""
+    message_id : Optional[int] = None #被回应的消息 ID
+    emoji_id : Optional[int] = None #表情 ID
+    user_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[int] = None #群号（群聊场景）

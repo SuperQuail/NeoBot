@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 import json
@@ -35,6 +35,8 @@ class QueueEntryType(Enum):
     MESSAGE = "message"
     TIMESTAMP = "timestamp"
     RECALL = "recall"
+    REACTION = "reaction"
+    POKE = "poke"
 
 
 @dataclass
@@ -48,6 +50,27 @@ class QueueStats:
 
 
 @dataclass
+class ReactionEntry:
+    """Emoji reaction on a message."""
+
+    target_message_id: int
+    emoji_id: int
+    operator_user_id: int
+    operator_name: str
+
+
+@dataclass
+class PokeEntry:
+    """Poke (戳一戳) event entry."""
+
+    sender_id: int
+    user_id: int
+    target_id: int
+    sub_type: str
+    group_id: int | None = None
+
+
+@dataclass
 class QueueEntry:
     """Single queue event."""
 
@@ -56,6 +79,9 @@ class QueueEntry:
     message: Optional[QueueMessage] = None
     notice: Optional[RecallNotice] = None
     recalled_message: Optional[QueueMessage] = None
+    reaction: Optional[ReactionEntry] = None
+    poke: Optional[PokeEntry] = None
+    replied_messages: List[QueueMessage] = field(default_factory=list)
 
 
 class MessageQueue:
@@ -67,6 +93,8 @@ class MessageQueue:
         *,
         timestamp_interval_seconds: int = 300,
         cq_fallback_max_length: int = 100,
+        poke_weight: float = 0.2,
+        reaction_weight: float = 0.2,
     ) -> None:
         if max_size <= 0:
             raise ValueError("max_size must be greater than 0")
@@ -78,10 +106,14 @@ class MessageQueue:
         self.max_size = max_size
         self.timestamp_interval_seconds = timestamp_interval_seconds
         self.cq_fallback_max_length = cq_fallback_max_length
+        self.poke_weight = max(0.0, min(1.0, poke_weight))
+        self.reaction_weight = max(0.0, min(1.0, reaction_weight))
         self._queues: Dict[str, Deque[QueueEntry]] = {}
         self._stats: Dict[str, QueueStats] = {}
         self._message_counts: Dict[str, int] = {}
+        self._weighted_counts: Dict[str, float] = {}
         self._last_message_times: Dict[str, Optional[int]] = {}
+        self._last_reply_positions: Dict[str, int] = {}
 
     def _convert_message(self, message: MessageType) -> QueueMessage:
         if isinstance(message, (PrivateMessage, GroupMessage)):
@@ -106,6 +138,7 @@ class MessageQueue:
             self._queues[key] = deque()
             self._stats[key] = QueueStats()
             self._message_counts[key] = 0
+            self._weighted_counts[key] = 0.0
             self._last_message_times[key] = None
         return self._queues[key]
 
@@ -146,11 +179,20 @@ class MessageQueue:
             return
         queue.append(QueueEntry(kind=QueueEntryType.TIMESTAMP, occurred_at=occurred_at))
 
-    def _ensure_capacity_for_non_timestamp_entry(self, key: str) -> None:
+    def _get_entry_weight(self, kind: QueueEntryType) -> float:
+        """Return the weight for a given entry kind."""
+        if kind == QueueEntryType.POKE:
+            return self.poke_weight
+        if kind == QueueEntryType.REACTION:
+            return self.reaction_weight
+        return 1.0
+
+    def _ensure_capacity_for_non_timestamp_entry(self, key: str, entry_weight: float = 1.0) -> None:
         queue = self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
 
-        if self._get_message_count(key) < self.max_size:
+        weighted_count = self._weighted_counts.get(key, 0.0)
+        if weighted_count + entry_weight <= self.max_size:
             return
 
         while queue:
@@ -159,6 +201,7 @@ class MessageQueue:
                 continue
 
             self._message_counts[key] -= 1
+            self._weighted_counts[key] -= self._get_entry_weight(dropped_entry.kind)
             stats.dropped_messages += 1
             break
 
@@ -179,8 +222,13 @@ class MessageQueue:
         *,
         occurred_at: Optional[int] = None,
         include_initial_timestamp: bool = True,
+        replied_messages: Optional[List[MessageType]] = None,
     ) -> None:
         converted_message = self._convert_message(message)
+        converted_replies = [
+            self._convert_message(replied_message)
+            for replied_message in (replied_messages or [])
+        ]
         resolved_time = self._resolve_occurred_at(occurred_at, converted_message)
 
         self._get_or_create_queue(key)
@@ -191,16 +239,18 @@ class MessageQueue:
             resolved_time,
             include_on_empty=include_initial_timestamp,
         )
-        self._ensure_capacity_for_non_timestamp_entry(key)
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=1.0)
 
         self._queues[key].append(
             QueueEntry(
                 kind=QueueEntryType.MESSAGE,
                 occurred_at=resolved_time,
                 message=converted_message,
+                replied_messages=converted_replies,
             )
         )
         self._message_counts[key] += 1
+        self._weighted_counts[key] += 1.0
         self._last_message_times[key] = resolved_time
 
         stats.total_messages += 1
@@ -208,8 +258,20 @@ class MessageQueue:
         if stats.oldest_message_id is None:
             stats.oldest_message_id = converted_message.message_id
 
-    def push(self, key: str, message: MessageType, *, occurred_at: Optional[int] = None) -> None:
-        self._push_message(key, message, occurred_at=occurred_at)
+    def push(
+        self,
+        key: str,
+        message: MessageType,
+        *,
+        occurred_at: Optional[int] = None,
+        replied_messages: Optional[List[MessageType]] = None,
+    ) -> None:
+        self._push_message(
+            key,
+            message,
+            occurred_at=occurred_at,
+            replied_messages=replied_messages,
+        )
 
     def push_history(
         self,
@@ -239,7 +301,7 @@ class MessageQueue:
         self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
 
-        self._ensure_capacity_for_non_timestamp_entry(key)
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=1.0)
         self._queues[key].append(
             QueueEntry(
                 kind=QueueEntryType.RECALL,
@@ -249,8 +311,48 @@ class MessageQueue:
             )
         )
         self._message_counts[key] += 1
+        self._weighted_counts[key] += 1.0
         stats.total_messages += 1
         self._refresh_oldest_message_id(key)
+
+    def push_reaction(self, key: str, reaction: ReactionEntry) -> None:
+        """Push an emoji reaction entry.
+
+        Only adds the reaction if the target message still exists in the queue.
+        """
+        target = self.find_by_message_id(key, reaction.target_message_id)
+        if target is None:
+            return
+
+        self._get_or_create_queue(key)
+        entry_weight = self.reaction_weight
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight)
+        self._queues[key].append(
+            QueueEntry(
+                kind=QueueEntryType.REACTION,
+                occurred_at=reaction.target_message_id,
+                reaction=reaction,
+            )
+        )
+        self._message_counts[key] += 1
+        self._weighted_counts[key] += entry_weight
+
+    def push_poke(self, key: str, poke: PokeEntry, *, occurred_at: Optional[int] = None) -> None:
+        """Push a poke (戳一戳) event entry."""
+        resolved_time = self._resolve_occurred_at(occurred_at, poke)
+
+        self._get_or_create_queue(key)
+        entry_weight = self.poke_weight
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight)
+        self._queues[key].append(
+            QueueEntry(
+                kind=QueueEntryType.POKE,
+                occurred_at=resolved_time,
+                poke=poke,
+            )
+        )
+        self._message_counts[key] += 1
+        self._weighted_counts[key] += entry_weight
 
     def _message_entries(self, key: str) -> List[QueueEntry]:
         return [
@@ -292,12 +394,14 @@ class MessageQueue:
             self._queues.clear()
             self._stats.clear()
             self._message_counts.clear()
+            self._weighted_counts.clear()
             self._last_message_times.clear()
             return
 
         self._queues.pop(key, None)
         self._stats.pop(key, None)
         self._message_counts.pop(key, None)
+        self._weighted_counts.pop(key, None)
         self._last_message_times.pop(key, None)
 
     def iterate_from_oldest(self, key: str) -> Iterator[QueueMessage]:
@@ -322,6 +426,8 @@ class MessageQueue:
             max_size=self.max_size,
             timestamp_interval_seconds=self.timestamp_interval_seconds,
             cq_fallback_max_length=self.cq_fallback_max_length,
+            poke_weight=self.poke_weight,
+            reaction_weight=self.reaction_weight,
         )
 
         if key is None:
@@ -333,15 +439,79 @@ class MessageQueue:
             cloned._queues[queue_key] = deque(copy.deepcopy(list(self._queues[queue_key])))
             cloned._stats[queue_key] = copy.deepcopy(self._stats.get(queue_key, QueueStats()))
             cloned._message_counts[queue_key] = self._message_counts.get(queue_key, 0)
+            cloned._weighted_counts[queue_key] = self._weighted_counts.get(queue_key, 0.0)
             cloned._last_message_times[queue_key] = self._last_message_times.get(queue_key)
+            if queue_key in self._last_reply_positions:
+                cloned._last_reply_positions[queue_key] = self._last_reply_positions[queue_key]
 
         return cloned
 
-    def to_text(self, key: str) -> str:
+    def set_last_reply_position(self, key: str) -> None:
+        """记录当前队列中最后一条消息的位置（索引），表示'上次回复到'该位置。"""
+        queue = self._queues.get(key)
+        if queue is None or not queue:
+            return
+        # 从后往前找最后一条 MESSAGE 类型条目，记录其在 deque 中的位置
+        for idx in range(len(queue) - 1, -1, -1):
+            if queue[idx].kind == QueueEntryType.MESSAGE and queue[idx].message is not None:
+                message_id = queue[idx].message.message_id
+                if message_id is not None:
+                    self._last_reply_positions[key] = message_id
+                return
+
+    def get_last_reply_position(self, key: str) -> int | None:
+        """获取上次回复的最后一条消息的 message_id。"""
+        return self._last_reply_positions.get(key)
+
+    def get_last_reply_info(self, key: str) -> str:
+        """生成'上次回复到'信息文本，用于提示词。"""
+        last_msg_id = self._last_reply_positions.get(key)
+        if last_msg_id is None:
+            return ""
+        # 查找该 message_id 在队列中的位置索引
+        queue = self._queues.get(key)
+        if queue is None:
+            return ""
+        position = None
+        for idx, entry in enumerate(queue):
+            if (
+                entry.kind == QueueEntryType.MESSAGE
+                and entry.message is not None
+                and entry.message.message_id == last_msg_id
+            ):
+                position = idx
+                break
+        if position is not None:
+            return f"上次回复之后的新消息（从第 {position + 1} 条开始）"
+        return f"上次回复到 message_id={last_msg_id}"
+
+    def to_text(self, key: str, last_reply_message_id: int | None = None, *, all_new: bool = False) -> str:
         if key not in self._queues:
             return ""
         entries = list(self._queues[key])
-        return self._entries_to_text(entries, context_entries=entries)
+        separator_index = self._find_separator_index(entries, last_reply_message_id)
+        all_new_message = "<当前均为新消息，没有上次回复过的内容>" if all_new else None
+        if last_reply_message_id is not None and separator_index is None:
+            all_new_message = "<当前均为新消息，没有上次回复过的内容>"
+        return self._entries_to_text(
+            entries,
+            context_entries=entries,
+            separator_after_index=separator_index,
+            all_new_message=all_new_message,
+        )
+
+    @staticmethod
+    def _find_separator_index(entries: list[QueueEntry], last_reply_message_id: int | None) -> int | None:
+        if last_reply_message_id is None:
+            return None
+        for idx, entry in enumerate(entries):
+            if (
+                entry.kind == QueueEntryType.MESSAGE
+                and entry.message is not None
+                and entry.message.message_id == last_reply_message_id
+            ):
+                return idx
+        return None
 
     def diff_to_text(self, previous: "MessageQueue", key: str) -> str:
         current_entries = list(self._queues.get(key, ()))
@@ -410,6 +580,10 @@ class MessageQueue:
             return self._message_fingerprint(entry.message)
         if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
             return self._recall_fingerprint(entry.notice, entry.occurred_at)
+        if entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
+            return f"reaction:{entry.reaction.target_message_id}:{entry.reaction.emoji_id}:{entry.reaction.operator_user_id}"
+        if entry.kind == QueueEntryType.POKE and entry.poke is not None:
+            return f"poke:{entry.poke.sender_id}:{entry.poke.target_id}:{entry.poke.sub_type}:{entry.occurred_at or 0}"
         return f"{entry.kind.value}:{entry.occurred_at or 0}"
 
     @staticmethod
@@ -435,10 +609,20 @@ class MessageQueue:
         entries: List[QueueEntry],
         *,
         context_entries: Optional[List[QueueEntry]] = None,
+        separator_after_index: int | None = None,
+        all_new_message: str | None = None,
     ) -> str:
         sender_labels = self._build_sender_labels(context_entries or entries)
-        lines = [self._entry_to_text(entry, sender_labels=sender_labels) for entry in entries]
-        return "\n".join(line for line in lines if line)
+        lines: list[str] = []
+        if all_new_message is not None:
+            lines.append(all_new_message)
+        for i, entry in enumerate(entries):
+            line = self._entry_to_text(entry, sender_labels=sender_labels)
+            if line:
+                lines.append(line)
+            if separator_after_index is not None and i == separator_after_index:
+                lines.append("<以上是上次对话回复过的内容>")
+        return "\n".join(lines)
 
     def _entry_to_text(
         self,
@@ -449,13 +633,21 @@ class MessageQueue:
         if entry.kind == QueueEntryType.TIMESTAMP:
             return self._format_timestamp(entry.occurred_at)
         if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-            return self._message_to_text(entry.message, sender_labels=sender_labels)
+            return self._message_to_text(
+                entry.message,
+                sender_labels=sender_labels,
+                replied_messages=entry.replied_messages,
+            )
         if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
             return self._recall_to_text(
                 entry.notice,
                 entry.recalled_message,
                 sender_labels=sender_labels,
             )
+        if entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
+            return self._reaction_to_text(entry.reaction)
+        if entry.kind == QueueEntryType.POKE and entry.poke is not None:
+            return self._poke_to_text(entry.poke)
         return ""
 
     @staticmethod
@@ -470,9 +662,15 @@ class MessageQueue:
         message: QueueMessage,
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        replied_messages: Optional[List[QueueMessage]] = None,
+        reply_number_resolver: Optional[Callable[[int], int]] = None,
     ) -> str:
         name = self._message_sender_label(message, sender_labels=sender_labels)
-        content = self._render_message_content(message)
+        content = self._render_message_content(
+            message,
+            replied_messages=replied_messages,
+            reply_number_resolver=reply_number_resolver,
+        )
         return f"{name}: {content}" if content else f"{name}: [无消息内容]"
 
     def _recall_to_text(
@@ -486,6 +684,31 @@ class MessageQueue:
             return f"消息撤回: {self._message_to_text(recalled_message)}"
         message_id = notice.message_id if notice.message_id is not None else "未知"
         return f"消息撤回: [原消息不可用, message_id={message_id}]"
+
+    @staticmethod
+    def _reaction_to_text(reaction: ReactionEntry) -> str:
+        from neobot_app.emoji.mapping import lookup_emoji
+
+        emoji_info = lookup_emoji(reaction.emoji_id)
+        if emoji_info is not None:
+            emoji_name = emoji_info[0]
+        else:
+            emoji_name = f"表情#{reaction.emoji_id}"
+        return (
+            f"{reaction.operator_name} 回应了消息[msg_id={reaction.target_message_id}]:{emoji_name}"
+        )
+
+    @staticmethod
+    def _poke_to_text(poke: PokeEntry) -> str:
+        if poke.group_id is not None:
+            return (
+                f"群戳一戳: 群{poke.group_id}中 QQ:{poke.user_id} 戳了 QQ:{poke.target_id}"
+                f"（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+            )
+        return (
+            f"私聊戳一戳: QQ:{poke.sender_id} 戳了 QQ:{poke.target_id}"
+            f"（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+        )
 
     @staticmethod
     def _message_sender_name(message: QueueMessage) -> str:
@@ -584,9 +807,29 @@ class MessageQueue:
                 notes.append(f'之前的"{name}"是QQ号为{message.user_id}的')
         return notes
 
-    def _render_message_content(self, message: QueueMessage) -> str:
+    def _render_message_content(
+        self,
+        message: QueueMessage,
+        *,
+        replied_messages: Optional[List[QueueMessage]] = None,
+        reply_number_resolver: Optional[Callable[[int], int]] = None,
+    ) -> str:
+        reply_by_id = {
+            reply.message_id: reply
+            for reply in (replied_messages or [])
+            if reply.message_id is not None
+        }
         if message.message:
-            parts = [self._normalize_inline_text(self._segment_to_text(segment)) for segment in message.message]
+            parts = [
+                self._normalize_inline_text(
+                    self._segment_to_text(
+                        segment,
+                        reply_by_id=reply_by_id,
+                        reply_number_resolver=reply_number_resolver,
+                    )
+                )
+                for segment in message.message
+            ]
             text = "".join(parts).strip()
             return text or "[无消息内容]"
 
@@ -596,7 +839,13 @@ class MessageQueue:
 
         return "[无消息内容]"
 
-    def _segment_to_text(self, segment: object) -> str:
+    def _segment_to_text(
+        self,
+        segment: object,
+        *,
+        reply_by_id: Optional[Dict[int, QueueMessage]] = None,
+        reply_number_resolver: Optional[Callable[[int], int]] = None,
+    ) -> str:
         msg_type = getattr(segment, "type", None)
         if isinstance(msg_type, Enum):
             msg_type = msg_type.value
@@ -610,6 +859,12 @@ class MessageQueue:
             return "[未知消息]"
 
         data = self._segment_data_to_dict(raw_data)
+        if str(msg_type) == "reply":
+            return self._format_reply_segment(
+                data,
+                reply_by_id or {},
+                reply_number_resolver,
+            )
         formatter = self._segment_formatters().get(str(msg_type))
         if formatter is not None:
             return formatter(data)
@@ -629,6 +884,25 @@ class MessageQueue:
             return raw_data.model_dump(exclude_none=True)
         return {}
 
+    def _format_reply_segment(
+        self,
+        data: Dict[str, object],
+        reply_by_id: Dict[int, QueueMessage],
+        reply_number_resolver: Optional[Callable[[int], int]] = None,
+    ) -> str:
+        message_id = _safe_int(data.get("id"))
+        if message_id is None:
+            return "[回复:消息ID=未知]"
+        replied_message = reply_by_id.get(message_id)
+        if replied_message is None:
+            return f"[回复:消息ID={message_id}]"
+
+        number = reply_number_resolver(message_id) if reply_number_resolver is not None else None
+        label = f"回复消息{number}" if number is not None else f"回复消息ID={message_id}"
+        sender = self._message_sender_name(replied_message)
+        content = self._render_message_content(replied_message)
+        return f"[{label}: {sender}: {content}]"
+
     @staticmethod
     def _segment_formatters() -> Dict[str, SegmentFormatter]:
         return {
@@ -641,7 +915,7 @@ class MessageQueue:
             "share": lambda d: f"[分享:{d.get('title') or d.get('url') or '未知链接'}]",
             "reply": lambda d: f"[回复:消息ID={d.get('id', '未知')}]",
             "redbag": lambda d: f"[红包:{d.get('title') or '恭喜发财'}]",
-            "poke": lambda d: f"[戳一戳:QQ={d.get('qq', '未知')}]",
+            "poke": lambda d: f"[戳一戳:QQ={d.get('qq', '未知')}（这是QQ的一个互动功能，会让被戳的人手机轻微震动）]",
             "gift": lambda d: f"[礼物:QQ={d.get('qq', '未知')},ID={d.get('id', '未知')}]",
             "forward": lambda d: f"[合并转发:ID={d.get('id', '未知')}]",
             "node": lambda d: f"[转发节点:ID={d.get('id', '未知')},名称={d.get('name', '未知')}]",
@@ -755,9 +1029,20 @@ def create_message_queue(
     *,
     timestamp_interval_seconds: int = 300,
     cq_fallback_max_length: int = 100,
+    poke_weight: float = 0.2,
+    reaction_weight: float = 0.2,
 ) -> MessageQueue:
     return MessageQueue(
         max_size=max_size,
         timestamp_interval_seconds=timestamp_interval_seconds,
         cq_fallback_max_length=cq_fallback_max_length,
+        poke_weight=poke_weight,
+        reaction_weight=reaction_weight,
     )
+
+
+def _safe_int(value: object) -> Optional[int]:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None

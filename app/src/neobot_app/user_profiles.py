@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.favorability import favorability_to_text
+
 
 def _sex_to_text(value: object) -> str | None:
     raw = getattr(value, "value", value)
@@ -35,11 +37,13 @@ class UserProfileService:
         uow_factory: Any,
         config: Any,
         logger: Logger | None = None,
+        archive_memory_service: Any | None = None,
     ) -> None:
         self._adapter = adapter
         self._uow_factory = uow_factory
         self._config = config
         self._logger = logger or NullLogger()
+        self._archive_memory_service = archive_memory_service
 
     async def ensure_user_profile(
         self,
@@ -68,6 +72,37 @@ class UserProfileService:
         async with self._uow_factory() as uow:
             return await uow.profiles.get_group(str(group_id))
 
+    async def update_user_remark(self, user_id: str | int, remark: str | None) -> Any | None:
+        user_id_str = str(user_id)
+        remark_text = str(remark or "").strip()
+        async with self._uow_factory() as uow:
+            await uow.profiles.upsert_user(user_id_str, remark=remark_text)
+            await uow.commit()
+            return await uow.profiles.get_user(user_id_str)
+
+    async def update_user_avatar_analysis(
+        self,
+        user_id: str | int,
+        avatar_analysis: str | None,
+    ) -> Any | None:
+        user_id_str = str(user_id)
+        avatar_text = str(avatar_analysis or "").strip()
+        async with self._uow_factory() as uow:
+            await uow.profiles.upsert_user(user_id_str, avatar_analysis=avatar_text)
+            await uow.commit()
+            return await uow.profiles.get_user(user_id_str)
+
+    async def update_user_favorability(
+        self,
+        user_id: str | int,
+        favorability: int,
+    ) -> Any | None:
+        user_id_str = str(user_id)
+        async with self._uow_factory() as uow:
+            await uow.profiles.upsert_user(user_id_str, favorability=favorability)
+            await uow.commit()
+            return await uow.profiles.get_user(user_id_str)
+
     async def get_group_name(self, group_id: str | int) -> str:
         group = await self.get_group(group_id)
         if group is not None and getattr(group, "group_name", None):
@@ -93,10 +128,34 @@ class UserProfileService:
                 user_id,
                 observed_fields=self._observed_fields_from_group_member(member),
             )
-            rendered = self._format_group_member_line(index, member, profile)
+            archive_text = await self._fetch_user_archive(str(user_id))
+            rendered = self._format_group_member_line(index, member, profile, archive_text=archive_text)
             if rendered:
                 lines.append(rendered)
         return "\n".join(lines)
+
+    async def render_bot_group_admin_status(
+        self,
+        group_id: str | int,
+        bot_account: str | int,
+        message_queue: Any | None = None,
+    ) -> str:
+        is_admin = await self.is_bot_group_admin(
+            group_id,
+            bot_account,
+            message_queue=message_queue,
+        )
+        return "你是该群管理员" if is_admin else "你不是该群管理员"
+
+    async def is_bot_group_admin(
+        self,
+        group_id: str | int,
+        bot_account: str | int,
+        *,
+        message_queue: Any | None = None,
+    ) -> bool:
+        role = await self._get_bot_group_role(group_id, bot_account, message_queue=message_queue)
+        return role in {"owner", "admin"}
 
     async def render_friend_info(
         self,
@@ -106,7 +165,19 @@ class UserProfileService:
     ) -> str:
         if profile is None:
             profile = await self.ensure_user_profile(user_id)
-        return self._format_friend_info_line(str(user_id), profile)
+        archive_text = await self._fetch_user_archive(str(user_id))
+        return self._format_friend_info_line(str(user_id), profile, archive_text=archive_text)
+
+    async def _fetch_user_archive(self, user_id: str) -> str | None:
+        if self._archive_memory_service is None:
+            return None
+        try:
+            item = await self._archive_memory_service.get("user_profile", user_id)
+        except Exception:
+            return None
+        if item is not None and item.value:
+            return item.value.strip()
+        return None
 
     @staticmethod
     def _collect_group_members_from_queue(
@@ -136,6 +207,7 @@ class UserProfileService:
                     "nickname": None,
                     "card": None,
                     "sex": None,
+                    "role": None,
                 }
                 ordered_user_ids.append(user_id_str)
 
@@ -155,10 +227,58 @@ class UserProfileService:
             if sex is not None:
                 members_by_user[user_id_str]["sex"] = sex
 
+            role = getattr(sender, "role", None)
+            if role is not None:
+                members_by_user[user_id_str]["role"] = role
+
         return [
             SimpleNamespace(**members_by_user[user_id])
             for user_id in ordered_user_ids
         ]
+
+    async def _get_bot_group_role(
+        self,
+        group_id: str | int,
+        bot_account: str | int,
+        *,
+        message_queue: Any | None = None,
+    ) -> str | None:
+        bot_account_int = _safe_int(bot_account)
+        if bot_account_int is None:
+            return None
+
+        group_id_int = _safe_int(group_id)
+        if group_id_int is not None:
+            getter = getattr(self._adapter, "get_group_member_info", None)
+            if getter is not None:
+                try:
+                    response = await getter(group_id_int, bot_account_int)
+                    role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
+                    if role:
+                        return role
+                except Exception as exc:
+                    self._logger.warning(
+                        "查询 Bot 群成员信息失败",
+                        group_id=str(group_id),
+                        bot_account=str(bot_account),
+                        error=str(exc),
+                    )
+
+            try:
+                response = await self._adapter.get_group_member_list(group_id_int)
+                role = _find_member_role(getattr(response, "data", None), bot_account_int)
+                if role:
+                    return role
+            except Exception as exc:
+                self._logger.warning(
+                    "查询群成员列表失败",
+                    group_id=str(group_id),
+                    bot_account=str(bot_account),
+                    error=str(exc),
+                )
+
+        members = self._collect_group_members_from_queue(group_id, message_queue)
+        return _find_member_role(members, bot_account_int)
 
     def _needs_refresh(self, profile: Any) -> bool:
         if not getattr(self._config.chat, "enable_periodic_user_info_update", False):
@@ -236,7 +356,7 @@ class UserProfileService:
             fields.update({k: v for k, v in observed_fields.items() if v not in (None, "")})
 
         if data is None:
-            for key in ("relation_ship", "profile", "known_gender", "birthday"):
+            for key in ("relation_ship", "profile", "known_gender", "birthday", "avatar_analysis"):
                 if key not in fields and current_values.get(key) not in (None, ""):
                     fields[key] = current_values[key]
             return fields
@@ -253,6 +373,7 @@ class UserProfileService:
                 "relation_ship": fields.get("relation_ship") or current_values.get("relation_ship") or "",
                 "profile": fields.get("profile") or current_values.get("profile") or "",
                 "known_gender": fields.get("known_gender") or current_values.get("known_gender") or "",
+                "avatar_analysis": fields.get("avatar_analysis") or current_values.get("avatar_analysis") or "",
                 "labs": ",".join(getattr(data, "labs", None) or []) or current_values.get("labs") or "",
             }
         )
@@ -275,7 +396,59 @@ class UserProfileService:
         }
 
     @staticmethod
-    def _format_group_member_line(index: int, member: Any, profile: Any | None) -> str:
+    def _build_qq_profile_segment(profile: Any | None) -> str | None:
+        """Build a compact QQ profile info segment with a disclaimer.
+
+        These fields are set by the QQ user themselves and may not be accurate.
+        """
+        if profile is None:
+            return None
+
+        parts: list[str] = []
+
+        age = getattr(profile, "age", None)
+        if age is not None and str(age).strip():
+            parts.append(f"年龄:{age}")
+
+        birthday = getattr(profile, "birthday", None)
+        if birthday and str(birthday).strip():
+            parts.append(f"生日:{birthday}")
+
+        country = getattr(profile, "country", None)
+        city = getattr(profile, "city", None)
+        location_parts: list[str] = []
+        if country and str(country).strip():
+            location_parts.append(str(country).strip())
+        if city and str(city).strip():
+            location_parts.append(str(city).strip())
+        if location_parts:
+            parts.append(f"所在地:{' '.join(location_parts)}")
+
+        long_nick = getattr(profile, "long_nick", None)
+        if long_nick and str(long_nick).strip():
+            parts.append(f"个性签名:{long_nick}")
+
+        labs = getattr(profile, "labs", None)
+        if labs and str(labs).strip():
+            parts.append(f"标签:{labs}")
+
+        relation_ship = getattr(profile, "relation_ship", None)
+        if relation_ship and str(relation_ship).strip():
+            parts.append(f"情感状态:{relation_ship}")
+
+        if not parts:
+            return None
+
+        return f"QQ个人资料({','.join(parts)})(注意:以上信息由QQ用户自行填写,未必真实)"
+
+    @staticmethod
+    def _format_group_member_line(
+        index: int,
+        member: Any,
+        profile: Any | None,
+        *,
+        archive_text: str | None = None,
+    ) -> str:
         user_id = getattr(member, "user_id", None)
         if user_id is None:
             return ""
@@ -306,10 +479,30 @@ class UserProfileService:
         if profile_text:
             segments.append(f"你对Ta的印象:{profile_text}")
 
+        avatar_analysis = getattr(profile, "avatar_analysis", None)
+        if avatar_analysis:
+            segments.append(f"头像记忆:{avatar_analysis}")
+
+        qq_profile = UserProfileService._build_qq_profile_segment(profile)
+        if qq_profile:
+            segments.append(qq_profile)
+
+        favorability = getattr(profile, "favorability", 0) or 0
+        favorability_label = favorability_to_text(favorability)
+        segments.append(f"好感度:{favorability_label}({favorability})")
+
+        if archive_text:
+            segments.append(f"你记得关于Ta的信息:{archive_text}")
+
         return f"<群友_{index}>{','.join(segments)}</群友_{index}>"
 
     @staticmethod
-    def _format_friend_info_line(user_id: str, profile: Any | None) -> str:
+    def _format_friend_info_line(
+        user_id: str,
+        profile: Any | None,
+        *,
+        archive_text: str | None = None,
+    ) -> str:
         nickname = getattr(profile, "nick_name", None) or f"QQ:{user_id}"
         remark = getattr(profile, "remark", None)
         nickname_part = f"昵称:{nickname}"
@@ -332,4 +525,45 @@ class UserProfileService:
         if profile_text:
             segments.append(f"你对Ta的印象:{profile_text}")
 
+        avatar_analysis = getattr(profile, "avatar_analysis", None)
+        if avatar_analysis:
+            segments.append(f"头像记忆:{avatar_analysis}")
+
+        qq_profile = UserProfileService._build_qq_profile_segment(profile)
+        if qq_profile:
+            segments.append(qq_profile)
+
+        favorability = getattr(profile, "favorability", 0) or 0
+        favorability_label = favorability_to_text(favorability)
+        segments.append(f"好感度:{favorability_label}({favorability})")
+
+        if archive_text:
+            segments.append(f"你记得关于Ta的信息:{archive_text}")
+
         return f"<聊天对象>{','.join(segments)}</聊天对象>"
+
+
+def _safe_int(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_role(value: object) -> str | None:
+    role = getattr(value, "value", value)
+    if role is None:
+        return None
+    role_text = str(role).strip().lower()
+    return role_text or None
+
+
+def _find_member_role(members: Any, bot_account: int) -> str | None:
+    if not members:
+        return None
+    for member in members:
+        user_id = _safe_int(getattr(member, "user_id", None))
+        if user_id != bot_account:
+            continue
+        return _normalize_role(getattr(member, "role", None))
+    return None

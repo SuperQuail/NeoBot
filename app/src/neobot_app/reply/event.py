@@ -22,13 +22,14 @@ class ReplyState(Enum):
     SENDING = auto()
     COMPLETED = auto()
     FAILED = auto()
+    CANCELLED = auto()
 
 
 _VALID_TRANSITIONS: dict[ReplyState, set[ReplyState]] = {
-    ReplyState.PENDING: {ReplyState.BUILDING_PROMPT, ReplyState.FAILED},
-    ReplyState.BUILDING_PROMPT: {ReplyState.GENERATING, ReplyState.FAILED},
-    ReplyState.GENERATING: {ReplyState.SENDING, ReplyState.FAILED},
-    ReplyState.SENDING: {ReplyState.COMPLETED, ReplyState.FAILED},
+    ReplyState.PENDING: {ReplyState.BUILDING_PROMPT, ReplyState.FAILED, ReplyState.CANCELLED},
+    ReplyState.BUILDING_PROMPT: {ReplyState.GENERATING, ReplyState.FAILED, ReplyState.CANCELLED},
+    ReplyState.GENERATING: {ReplyState.SENDING, ReplyState.FAILED, ReplyState.CANCELLED},
+    ReplyState.SENDING: {ReplyState.COMPLETED, ReplyState.GENERATING, ReplyState.FAILED, ReplyState.CANCELLED},
 }
 
 
@@ -55,9 +56,9 @@ class ReplyEvent:
                 f"非法状态转换: {self.state.name} -> {new_state.name}"
             )
         self.state = new_state
-        if new_state in (ReplyState.COMPLETED, ReplyState.FAILED):
+        if new_state in (ReplyState.COMPLETED, ReplyState.FAILED, ReplyState.CANCELLED):
             self.completed_at = datetime.now(timezone.utc)
 
     @property
     def is_terminal(self) -> bool:
-        return self.state in (ReplyState.COMPLETED, ReplyState.FAILED)
+        return self.state in (ReplyState.COMPLETED, ReplyState.FAILED, ReplyState.CANCELLED)

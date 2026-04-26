@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,6 +123,60 @@ class SqlAlchemyEmojiAccess:
         rows = result.scalars().all()
         return [self._to_domain(row) for row in rows]
 
+    async def list(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        order_by_use_count: bool = False,
+    ) -> list[EmojiRecord]:
+        stmt = select(EmojiData)
+        if order_by_use_count:
+            stmt = stmt.order_by(EmojiData.use_count.asc(), EmojiData.file_name)
+        else:
+            stmt = stmt.order_by(EmojiData.file_name)
+        stmt = stmt.offset(max(offset, 0)).limit(max(limit, 0))
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        return [self._to_domain(row) for row in rows]
+
+    async def search(
+        self,
+        keyword: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[EmojiRecord]:
+        pattern = f"%{keyword}%"
+        stmt = (
+            select(EmojiData)
+            .where(
+                or_(
+                    EmojiData.analysis_text.like(pattern),
+                    EmojiData.file_name.like(pattern),
+                )
+            )
+            .order_by(EmojiData.use_count.asc(), EmojiData.file_name)
+            .offset(max(offset, 0))
+            .limit(max(limit, 0))
+        )
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        return [self._to_domain(row) for row in rows]
+
+    async def increment_usage(self, file_hash: str) -> None:
+        stmt = (
+            update(EmojiData)
+            .where(EmojiData.file_hash == file_hash)
+            .values(use_count=EmojiData.use_count + 1)
+        )
+        await self._session.execute(stmt)
+
+    async def count(self) -> int:
+        stmt = select(func.count()).select_from(EmojiData)
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
+
     async def _get_optional_row(self, file_hash: str) -> Optional[EmojiData]:
         stmt = select(EmojiData).where(EmojiData.file_hash == file_hash)
         result = await self._session.execute(stmt)
@@ -145,6 +199,7 @@ class SqlAlchemyEmojiAccess:
             original_width=row.original_width,
             original_height=row.original_height,
             analysis_text=row.analysis_text,
+            use_count=row.use_count,
             created_at=SqlAlchemyEmojiAccess._normalize_datetime(row.created_at),
             updated_at=SqlAlchemyEmojiAccess._normalize_datetime(row.updated_at),
             version=row.version,

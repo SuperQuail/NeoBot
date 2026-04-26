@@ -31,6 +31,7 @@ class WillingService:
         self,
         config: BotConfig,
         logger: Logger | None = None,
+        bot_detector: Any = None,
     ) -> None:
         self._config = config
         self._logger = logger or NullLogger()
@@ -39,6 +40,7 @@ class WillingService:
         self._sync_runtime_documents()
         self._manager = self._load_manager(config.willing.manager_name)
         self._runtime_config = RuntimeWillingConfig()
+        self._bot_detector = bot_detector
 
     @property
     def manager(self) -> BaseWillingManager:
@@ -220,6 +222,11 @@ class WillingService:
         else:
             config_global_coeff = self._config.chat.willing_global_coefficient
 
+        is_official_bot = self._is_official_bot(str(message.user_id or ""))
+        official_bot_coeff = float(
+            getattr(self._config.chat, "official_bot_reply_coefficient", 0.05) or 0.05
+        )
+
         return WillingContext(
             manager_name=self._manager.name,
             conversation_type=conversation_type,
@@ -251,6 +258,8 @@ class WillingService:
             at_guaranteed_reply=at_guaranteed,
             config_global_coefficient=config_global_coeff,
             runtime_config=self._runtime_config,
+            is_official_bot=is_official_bot,
+            official_bot_coefficient=official_bot_coeff,
         )
 
     def _observed_messages(self, queue: MessageQueue, queue_key: str) -> list[str]:
@@ -308,14 +317,28 @@ class WillingService:
 
     def _conversation_coefficient(self, message: ChatMessage) -> float:
         if isinstance(message, GroupMessage) and message.group_id is not None:
-            coefficients = self._config.chat.group_Response_coefficient or {}
+            coefficients = (
+                getattr(self._config.chat, "group_response_coefficient", None)
+                or getattr(self._config.chat, "group_Response_coefficient", None)
+                or {}
+            )
             return max(0.0, float(coefficients.get(str(message.group_id), 1.0)))
 
         if isinstance(message, PrivateMessage) and message.user_id is not None:
-            coefficients = getattr(self._config.chat, "friend_Response_coefficient", None) or {}
+            coefficients = (
+                getattr(self._config.chat, "friend_response_coefficient", None)
+                or getattr(self._config.chat, "friend_Response_coefficient", None)
+                or {}
+            )
             return max(0.0, float(coefficients.get(str(message.user_id), 1.0)))
 
         return 1.0
+
+    def is_at_mentioned(self, message: ChatMessage) -> bool:
+        """检查机器人是否被 @提及，且配置了被@必回。"""
+        if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
+            return False
+        return self._mentioned_bot(message)
 
     def _mentioned_bot(self, message: ChatMessage) -> bool:
         target = str(self._config.bot.account)
@@ -355,6 +378,11 @@ class WillingService:
     @staticmethod
     def _has_question(text: str) -> bool:
         return ("?" in text) or ("\uFF1F" in text)
+
+    def _is_official_bot(self, sender_id: str) -> bool:
+        if not sender_id or self._bot_detector is None:
+            return False
+        return self._bot_detector.is_official_bot(sender_id)
 
     def _matched_keywords(self, text: str) -> list[str]:
         lowered_text = text.casefold()
