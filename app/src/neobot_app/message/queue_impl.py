@@ -68,6 +68,9 @@ class PokeEntry:
     target_id: int
     sub_type: str
     group_id: int | None = None
+    sender_name: str = ""
+    target_name: str = ""
+    action_text: str = ""
 
 
 @dataclass
@@ -722,6 +725,7 @@ class MessageQueue:
         if all_are_new and entries:
             lines.append("<这是新的可能要回答的内容>")
         new_section_opened = False
+        poke_count = 0
         for i, entry in enumerate(entries):
             if separator_after_index is not None and i == separator_after_index:
                 lines.append("<以上是上次对话回复过的内容>")
@@ -729,13 +733,14 @@ class MessageQueue:
                 continue
             if new_section_opened and i == separator_after_index + 1:
                 lines.append("<这是新的可能要回答的内容>")
-            line = self._entry_to_text(
-                entry, sender_labels=sender_labels,
-                wrap_at_mention=(
-                    (new_section_opened or all_are_new)
-                    and self.bot_account is not None
-                ),
-            )
+            if entry.kind == QueueEntryType.POKE and entry.poke is not None:
+                poke_count += 1
+                line = self._poke_to_text(entry.poke, poke_index=poke_count)
+            else:
+                line = self._entry_to_text(
+                    entry, sender_labels=sender_labels,
+                    wrap_at_mention=False,
+                )
             if line:
                 lines.append(line)
         if new_section_opened or (all_are_new and entries):
@@ -821,15 +826,20 @@ class MessageQueue:
         )
 
     @staticmethod
-    def _poke_to_text(poke: PokeEntry) -> str:
-        action_desc = _poke_sub_type_text(poke.sub_type)
-        if poke.group_id is not None:
-            return (
-                f"群{poke.group_id}中 QQ:{poke.user_id} 对 QQ:{poke.target_id} 使用了{action_desc}"
-            )
-        return (
-            f"QQ:{poke.sender_id} 对 QQ:{poke.target_id} 使用了{action_desc}"
-        )
+    def _poke_to_text(poke: PokeEntry, *, poke_index: int = 0) -> str:
+        if poke.action_text:
+            text = poke.action_text
+        else:
+            action_desc = _poke_sub_type_text(poke.sub_type)
+            sender = poke.sender_name or f"QQ:{poke.user_id}"
+            target = poke.target_name or f"QQ:{poke.target_id}"
+            text = f"{sender} 对 {target} 使用了{action_desc}"
+
+        if poke_index == 1:
+            return f"{text} [这是QQ戳一戳的消息,会让被戳的人手机轻微震动]"
+        if poke_index >= 2:
+            return f"{text} [戳一戳消息]"
+        return text
 
     @staticmethod
     def _message_sender_name(message: QueueMessage) -> str:

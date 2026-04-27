@@ -31,7 +31,8 @@ from neobot_contracts.models import ConversationRef
 EXPOSED_TO_MAIN_AGENT_NAME = "chat_interaction"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "聊天互动与社交管理。可执行群管理（设管理员/禁言/踢人/群名片/群名/头衔/加群请求/精华/撤回）、"
-    "好友管理（备注/分组/删除/好友请求/为好友主页点赞/戳一戳）、读取合并转发消息、发送表情包。"
+    "好友管理（备注/分组/删除/好友请求/为好友QQ空间主页点赞）、读取合并转发消息、发送表情包。"
+    "戳一戳请使用主Agent的 poke_user 工具。"
     "需提供目标群号/QQ号；修改好友备注用 manage_friend(set_remark)，修改群名片用 manage_group(set_card)。"
 )
 
@@ -178,7 +179,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         tools.append(
             _tool_def(
                 "manage_friend",
-                "好友管理：备注、分组、删除、好友请求、点赞用户主页（QQ资料卡）、戳一戳。",
+                "好友管理：备注、分组、删除、好友请求、点赞用户主页（QQ资料卡）。戳一戳请使用主Agent的 poke_user 工具。",
                 {
                     "properties": {
                         "action": {
@@ -189,7 +190,6 @@ class ChatInteractionToolExecutor(ToolExecutor):
                                 "delete_friend",
                                 "handle_add_request",
                                 "send_like",
-                                "poke",
                             ],
                             "description": "要执行的好友管理动作。send_like=点赞用户QQ主页/资料卡",
                         },
@@ -508,38 +508,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
                 "user_id": self._require(user_id, "user_id"),
                 "times": int(args.get("times") or 1),
             }
-        if action == "poke":
-            group_id = self._detect_group_id_for_poke(args)
-            if group_id is not None:
-                return "group_poke", {
-                    "group_id": group_id,
-                    "user_id": self._require(user_id, "user_id"),
-                }
-            return "friend_poke", {"user_id": self._require(user_id, "user_id")}
         raise ValueError(f"未知好友管理动作: {action}")
-
-    @staticmethod
-    def _detect_group_id_for_poke(args: dict[str, Any]) -> int | None:
-        """从 delegate 上下文中检测当前是否为群聊场景，自动提取 group_id。
-
-        优先使用显式传入的 group_id 参数，其次从 _CHAT_INTERACTION_CONTEXT 中
-        查找主Agent提示词中的群号信息。
-        """
-        explicit = args.get("group_id")
-        if explicit not in (None, ""):
-            try:
-                return int(explicit)
-            except (ValueError, TypeError):
-                pass
-
-        ctx = _CHAT_INTERACTION_CONTEXT.get("").strip()
-        if not ctx:
-            return None
-        import re
-        m = re.search(r"群号[：:]\s*(\d+)", ctx)
-        if m:
-            return int(m.group(1))
-        return None
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
@@ -590,7 +559,7 @@ def _build_system_prompt() -> str:
         "你是聊天互动代理。\n"
         "负责执行聊天互动、群管理、好友管理。\n"
         "群管理动作包括设管理员、禁言、踢人、群名/备注/名片/头衔、请求处理、精华和撤回。\n"
-        "好友管理动作包括备注、分组、删除、请求处理、点赞用户主页（QQ资料卡）和戳一戳。\n"
+        "好友管理动作包括备注、分组、删除、请求处理、点赞用户主页（QQ资料卡）。\n"
         "如果任务缺少群号/QQ号或需要确认聊天上下文中的指代信息，先调用 get_chat_context 查看主Agent上下文和消息编号映射。\n"
         "禁止使用Markdown。\n"
         "输出尽可能精简，只返回必要结果。\n"

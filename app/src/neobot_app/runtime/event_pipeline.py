@@ -23,6 +23,45 @@ from neobot_app.willing import WillingService
 from neobot_app.willing.models import WillingDecision
 
 
+def _build_poke_action_text(
+    raw_info: list | None,
+    sender_name: str,
+    target_name: str,
+) -> str:
+    """从 raw_info 构建完整的戳一戳动作文本，如 '唐天揉了揉弥音的脸'。
+
+    raw_info 结构示例:
+    [
+        {"col": "0", ...},
+        {"col": "1", ...},
+        {"col": "2", "txt": "揉了揉"},   # 动作前缀
+        {"col": "3", ...},               # 目标占位
+        {"col": "4", "txt": "的脸"},     # 动作后缀
+    ]
+    """
+    if not isinstance(raw_info, list) or not raw_info:
+        return ""
+
+    sender = sender_name or "QQ用户"
+    target = target_name or "QQ用户"
+
+    try:
+        first_txt = ""
+        second_txt = ""
+        # raw_info[2] 是动作前缀，raw_info[4] 是动作后缀
+        if len(raw_info) > 2 and isinstance(raw_info[2], dict):
+            first_txt = str(raw_info[2].get("txt", "") or "")
+        if len(raw_info) > 4 and isinstance(raw_info[4], dict):
+            second_txt = str(raw_info[4].get("txt", "") or "")
+
+        if first_txt:
+            return f"{sender}{first_txt}{target}{second_txt}"
+    except Exception:
+        pass
+
+    return ""
+
+
 class EventPipeline:
     def __init__(
         self,
@@ -573,27 +612,91 @@ class EventPipeline:
             notice = safe_parse_model(event, GroupPoke)
             queue_key = str(notice.group_id or group_id)
             queue = self._group_queue
+            sender_id = notice.user_id or 0
+            target_id = notice.target_id or 0
+            resolved_group_id = notice.group_id or int(group_id)
+
+            sender_name = await self._resolve_name(sender_id, group_id=resolved_group_id)
+            target_name = await self._resolve_name(target_id, group_id=resolved_group_id)
+            action_text = _build_poke_action_text(event.get("raw_info"), sender_name, target_name)
+
             poke = PokeEntry(
-                sender_id=notice.user_id or 0,
-                user_id=notice.user_id or 0,
-                target_id=notice.target_id or 0,
+                sender_id=sender_id,
+                user_id=sender_id,
+                target_id=target_id,
                 sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
-                group_id=notice.group_id or int(group_id),
+                group_id=resolved_group_id,
+                sender_name=sender_name,
+                target_name=target_name,
+                action_text=action_text,
             )
         else:
             notice = safe_parse_model(event, PrivatePoke)
             queue_key = str(notice.user_id or "")
             queue = self._friend_queue
+            sender_id = notice.sender_id or notice.user_id or 0
+            target_id = notice.target_id or 0
+
+            sender_name = await self._resolve_name(sender_id, group_id=None)
+            target_name = await self._resolve_name(target_id, group_id=None)
+            action_text = _build_poke_action_text(event.get("raw_info"), sender_name, target_name)
+
             poke = PokeEntry(
-                sender_id=notice.sender_id or 0,
+                sender_id=sender_id,
                 user_id=notice.user_id or 0,
-                target_id=notice.target_id or 0,
+                target_id=target_id,
                 sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
                 group_id=None,
+                sender_name=sender_name,
+                target_name=target_name,
+                action_text=action_text,
             )
 
         if queue_key:
             queue.push_poke(queue_key, poke)
+
+    async def _resolve_name(self, user_id: int, group_id: int | None = None) -> str:
+        """Resolve a user's display name.
+
+        Priority:
+        1. Database (user_profiles.nick_name / remark)
+        2. API: group member info (card > nickname) for group, stranger info for private
+        3. Fallback to QQ:xxx
+        """
+        if not user_id:
+            return ""
+
+        # 1. Try database first
+        if self._profile_service is not None:
+            try:
+                profile = await self._profile_service.get_user(str(user_id))
+                if profile is not None:
+                    remark = getattr(profile, "remark", None)
+                    nick_name = getattr(profile, "nick_name", None)
+                    if remark:
+                        return str(remark)
+                    if nick_name:
+                        return str(nick_name)
+            except Exception:
+                pass
+
+        # 2. API fallback
+        if group_id is not None:
+            try:
+                resp = await self._adapter.get_group_member_info(group_id, user_id)
+                if resp and resp.data:
+                    return resp.data.card or resp.data.nickname or resp.data.card_or_nickname or f"QQ:{user_id}"
+            except Exception:
+                pass
+        else:
+            try:
+                resp = await self._adapter.get_stranger_info(user_id)
+                if resp and resp.data:
+                    return resp.data.nickname or f"QQ:{user_id}"
+            except Exception:
+                pass
+
+        return f"QQ:{user_id}"
 
     async def _handle_request(self, event: Dict[str, Any]) -> None:
         request_type = event.get("request_type", "未知")

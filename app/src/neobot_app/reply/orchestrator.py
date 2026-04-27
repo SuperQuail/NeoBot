@@ -676,6 +676,19 @@ class ReplyOrchestrator:
             await self._adapter.send(event.conversation_ref, [segment])
             return f"语音消息已发送，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
+        async def poke_user_handler(user_id: int) -> str:
+            if conv_kind == "group":
+                result = await self._adapter.call_api("group_poke", {
+                    "group_id": int(conv_id),
+                    "user_id": user_id,
+                })
+                return f"已在群{conv_id}中戳一戳 QQ:{user_id}" if self._api_succeeded(result) else f"群戳一戳失败: {result}"
+            else:
+                result = await self._adapter.call_api("friend_poke", {
+                    "user_id": user_id,
+                })
+                return f"已戳一戳好友 QQ:{user_id}" if self._api_succeeded(result) else f"好友戳一戳失败: {result}"
+
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
         reply_toolset = build_reply_toolset(
@@ -691,6 +704,7 @@ class ReplyOrchestrator:
             cancel_handler=cancel_handler,
             tts_service=self._tts_service,
             speak_handler=speak_handler,
+            poke_user_handler=poke_user_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
@@ -1240,6 +1254,17 @@ class ReplyOrchestrator:
         return segments
 
     # ── 工具方法 ──
+
+    @staticmethod
+    def _api_succeeded(result: Any) -> bool:
+        if result is None:
+            return False
+        if not isinstance(result, dict):
+            return True
+        status = result.get("status")
+        if status is None:
+            return True
+        return status == "ok"
 
     @staticmethod
     def _build_conversation_ref(

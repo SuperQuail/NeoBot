@@ -49,6 +49,7 @@ class ReplyToolExecutor(ToolExecutor):
         cancel_handler: Any = None,
         tts_service: Any = None,
         speak_handler: Any = None,
+        poke_user_handler: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -73,6 +74,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._cancel = cancel_handler
         self._tts_service = tts_service
         self._speak_handler = speak_handler
+        self._poke_user = poke_user_handler
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -304,6 +306,23 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 ),
             )
+        if self._poke_user is not None:
+            tools.append(
+                _tool_def(
+                    "poke_user",
+                    "戳一戳指定的QQ用户。在群聊中自动使用群戳一戳，在私聊中自动使用好友戳一戳。"
+                    "只需提供目标QQ号，Bot会自动判断会话类型。",
+                    {
+                        "properties": {
+                            "user_id": {
+                                "type": "integer",
+                                "description": "要戳一戳的目标QQ号。",
+                            },
+                        },
+                        "required": ["user_id"],
+                    },
+                ),
+            )
         if self._agent_registry:
             tools.extend(
                 [
@@ -404,6 +423,8 @@ class ReplyToolExecutor(ToolExecutor):
             return self._execute_search_qq_emoji(args)
         if name == "speak":
             return await self._execute_speak(args)
+        if name == "poke_user":
+            return await self._execute_poke_user(args)
         if name == "list_agents":
             return self._execute_list_agents(args)
         if name == "delegate":
@@ -612,6 +633,17 @@ class ReplyToolExecutor(ToolExecutor):
         except Exception as exc:
             return f"语音生成失败：{exc}"
 
+    async def _execute_poke_user(self, args: dict) -> str:
+        if self._poke_user is None:
+            return "错误：poke_user 处理器未配置"
+        try:
+            user_id = int(args.get("user_id", -1))
+        except (ValueError, TypeError):
+            return "错误：user_id 必须为整数"
+        if user_id <= 0:
+            return f"错误：user_id 无效，收到 {args.get('user_id')}"
+        return await self._poke_user(user_id=user_id)
+
     def _execute_list_agents(self, args: dict) -> str:
         if self._agent_registry is None:
             return "No agents available"
@@ -728,6 +760,7 @@ def build_reply_toolset(
     cancel_handler: Any = None,
     tts_service: Any = None,
     speak_handler: Any = None,
+    poke_user_handler: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -754,6 +787,7 @@ def build_reply_toolset(
         cancel_handler=cancel_handler,
         tts_service=tts_service,
         speak_handler=speak_handler,
+        poke_user_handler=poke_user_handler,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

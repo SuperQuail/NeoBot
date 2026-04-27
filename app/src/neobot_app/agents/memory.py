@@ -48,7 +48,7 @@ _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
 PEER_AGENT_DESCRIPTIONS = (
     "同级 sub agent 及其职责：\n"
     "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
-    "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞/戳一戳等）、发送表情包。\n"
+    "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞等）、发送表情包。\n"
     "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
     "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
 )
