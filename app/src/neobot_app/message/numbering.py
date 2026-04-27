@@ -40,6 +40,7 @@ class MessageNumbering:
         if all_new or (last_reply_message_id is not None and not found_last_reply):
             lines.append("<当前均为新消息，没有上次回复过的内容>")
 
+        new_section_opened = False
         for i, entry in enumerate(entries):
             if entry.kind.value == "message" and entry.message is not None:
                 lines.extend(self._format_replied_messages(entry, queue))
@@ -49,12 +50,18 @@ class MessageNumbering:
                     continue
                 number = self._assign_number(msg_id)
                 sender = queue._message_sender_label(msg, sender_labels=sender_labels)
+                wrap_at = new_section_opened and queue.bot_account is not None
                 content = queue._render_message_content(
                     msg,
                     replied_messages=entry.replied_messages,
                     reply_number_resolver=self._assign_number,
+                    wrap_at_mention=wrap_at,
                 )
-                lines.append(f"{number}: {sender}: {content}")
+                if wrap_at:
+                    # _render_message_content already wraps @-mention or entire message
+                    lines.append(f"{number}: {sender}: {content}")
+                else:
+                    lines.append(f"{number}: {sender}: {content}")
             elif entry.kind.value == "timestamp":
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             elif entry.kind.value == "recall":
@@ -69,7 +76,15 @@ class MessageNumbering:
             elif entry.kind.value == "poke" and entry.poke is not None:
                 lines.append(queue._poke_to_text(entry.poke))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
-                lines.append("<以上是上次对话回复过的内容>\n<请回复以下的内容>")
+                lines.append("<以上是上次对话回复过的内容>")
+                new_section_opened = True
+                continue
+            if new_section_opened and i > 0:
+                prev_entry = entries[i - 1]
+                if prev_entry.kind.value == "message" and prev_entry.message is not None and prev_entry.message.message_id == last_reply_message_id:
+                    lines.append("<这是新的可能要回答的内容>")
+        if new_section_opened:
+            lines.append("</这是新的可能要回答的内容>")
         return "\n".join(lines)
 
     def apply_new(

@@ -30,8 +30,9 @@ from neobot_contracts.models import ConversationRef
 
 EXPOSED_TO_MAIN_AGENT_NAME = "chat_interaction"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "可执行聊天互动、群管理、好友管理,修改好友备注；需提供目标群号/QQ号和动作。"
-    "注意:一般修改备注指的是修改好友备注,修改群备注一般叫修改群昵称"
+    "聊天互动与社交管理。可执行群管理（设管理员/禁言/踢人/群名片/群名/头衔/加群请求/精华/撤回）、"
+    "好友管理（备注/分组/删除/好友请求/为好友主页点赞/戳一戳）、读取合并转发消息、发送表情包。"
+    "需提供目标群号/QQ号；修改好友备注用 manage_friend(set_remark)，修改群名片用 manage_group(set_card)。"
 )
 
 _CHAT_INTERACTION_CONTEXT: ContextVar[str] = ContextVar("chat_interaction_context", default="")
@@ -39,10 +40,10 @@ _CHAT_INTERACTION_CONTEXT: ContextVar[str] = ContextVar("chat_interaction_contex
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
 PEER_AGENT_DESCRIPTIONS = (
     "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片到群聊/私聊。\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注、查看聊天记录、解析用户头像。\n"
-    "- image_parse: 按需求解析图片内容（不保存、不导入、不管理图库/表情包）。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要尝试越权处理。"
+    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
+    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
+    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
+    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
 )
 
 
@@ -76,11 +77,15 @@ class ChatInteractionToolExecutor(ToolExecutor):
         emoji_service: "EmojiService | None" = None,
         profile_service: "UserProfileService | None" = None,
         logger: Logger | None = None,
+        forward_display_threshold: int = 50,
+        forward_max_nesting: int = 10,
     ) -> None:
         self._adapter = adapter
         self._emoji_service = emoji_service
         self._profile_service = profile_service
         self._logger = logger or NullLogger()
+        self._forward_display_threshold = forward_display_threshold
+        self._forward_max_nesting = forward_max_nesting
 
     def definitions(self) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = [
@@ -88,6 +93,19 @@ class ChatInteractionToolExecutor(ToolExecutor):
                 "get_chat_context",
                 "读取主Agent本轮看到的聊天上下文和消息编号映射。仅在任务缺少群号/QQ号、或需要判断上下文中的指代时调用。",
                 {"properties": {}, "required": []},
+            ),
+            _tool_def(
+                "read_forward_msg",
+                "读取合并转发消息的具体内容。传入消息 ID（来自 [合并转发:ID=xxx] 中的 ID），返回转发消息中的节点列表。支持嵌套转发（转发中包含转发）的递归展开。",
+                {
+                    "properties": {
+                        "message_id": {
+                            "type": "string",
+                            "description": "合并转发消息的 ID，来自聊天记录中 [合并转发:ID=xxx] 的 ID 部分。",
+                        },
+                    },
+                    "required": ["message_id"],
+                },
             ),
         ]
         if self._emoji_service is not None:
@@ -160,7 +178,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         tools.append(
             _tool_def(
                 "manage_friend",
-                "好友管理：备注、分组、删除、好友请求、点赞、戳一戳。",
+                "好友管理：备注、分组、删除、好友请求、点赞用户主页（QQ资料卡）、戳一戳。",
                 {
                     "properties": {
                         "action": {
@@ -173,14 +191,17 @@ class ChatInteractionToolExecutor(ToolExecutor):
                                 "send_like",
                                 "poke",
                             ],
-                            "description": "要执行的好友管理动作。",
+                            "description": "要执行的好友管理动作。send_like=点赞用户QQ主页/资料卡",
                         },
                         "user_id": {"type": "integer", "description": "目标 QQ 号"},
                         "remark": {"type": "string", "description": "好友备注"},
                         "category_id": {"type": "integer", "description": "好友分组 ID"},
                         "flag": {"type": "string", "description": "好友请求 flag"},
                         "approve": {"type": "boolean", "description": "是否同意请求"},
-                        "times": {"type": "integer", "description": "点赞次数"},
+                        "times": {
+                            "type": "integer",
+                            "description": "点赞次数，非VIP每日最多10次，VIP每日最多20次",
+                        },
                     },
                     "required": ["action"],
                 },
@@ -191,6 +212,8 @@ class ChatInteractionToolExecutor(ToolExecutor):
     async def execute(self, name: str, args: dict) -> str:
         if name == "get_chat_context":
             return self._get_chat_context()
+        if name == "read_forward_msg":
+            return await self._read_forward_msg(args)
         if name == "send_sticker":
             return await self._send_sticker(args)
         if name == "manage_group":
@@ -208,6 +231,100 @@ class ChatInteractionToolExecutor(ToolExecutor):
         if not context:
             return _json({"ok": False, "error": "当前没有可用的聊天上下文"})
         return _json({"ok": True, "context": context})
+
+    async def _read_forward_msg(self, args: dict[str, Any]) -> str:
+        message_id = str(args.get("message_id") or "").strip()
+        if not message_id:
+            return _json({"ok": False, "error": "缺少 message_id 参数"})
+
+        try:
+            result = await self._adapter.get_forward_msg(message_id)
+        except Exception as exc:
+            return _json({"ok": False, "error": f"获取合并转发消息失败: {exc}"})
+
+        if result is None:
+            return _json({"ok": False, "error": f"无法获取合并转发消息 {message_id}，可能已过期"})
+
+        data = result.get("data", result) if isinstance(result, dict) else {}
+        messages = data.get("messages", []) if isinstance(data, dict) else []
+        if not messages:
+            return _json({"ok": True, "message_id": message_id, "node_count": 0, "content": "(空转发消息)"})
+
+        node_count = len(messages)
+        threshold = self._forward_display_threshold
+        rendered = self._render_forward_nodes(messages, depth=1)
+
+        if node_count < threshold:
+            return _json({
+                "ok": True,
+                "message_id": message_id,
+                "node_count": node_count,
+                "content": rendered,
+            })
+        else:
+            return _json({
+                "ok": True,
+                "message_id": message_id,
+                "node_count": node_count,
+                "display_threshold": threshold,
+                "truncated": True,
+                "content": rendered[:2000],
+                "hint": f"消息过多（{node_count}条），仅显示前2000字符。如需完整内容，可先通过条件筛选后重新请求。",
+            })
+
+    def _render_forward_nodes(self, messages: list, depth: int) -> str:
+        """递归渲染转发消息节点，处理嵌套转发。"""
+        lines: list[str] = []
+        for i, node in enumerate(messages):
+            if not isinstance(node, dict):
+                continue
+            sender = node.get("sender", {})
+            sender_name = ""
+            if isinstance(sender, dict):
+                sender_name = sender.get("nickname") or sender.get("card") or f"QQ:{sender.get('user_id', '未知')}"
+            elif sender:
+                sender_name = str(sender)
+
+            node_msg = node.get("message", [])
+            node_content = self._render_node_message(node_msg, depth)
+            lines.append(f"  [{i + 1}] {sender_name}: {node_content}")
+
+        return "\n".join(lines)
+
+    def _render_node_message(self, segments: list, depth: int) -> str:
+        """渲染单条转发节点内的消息段，递归展开嵌套转发。"""
+        parts: list[str] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            seg_type = str(seg.get("type") or "")
+            seg_data = seg.get("data", {})
+            if not isinstance(seg_data, dict):
+                seg_data = {}
+
+            if seg_type == "text":
+                parts.append(str(seg_data.get("text") or ""))
+            elif seg_type == "image":
+                parts.append("[图片]")
+            elif seg_type == "face":
+                parts.append(f"[表情:{seg_data.get('id', '')}]")
+            elif seg_type == "at":
+                qq = seg_data.get("qq", "")
+                parts.append("@全体成员" if qq == "all" else f"@{seg_data.get('name', qq)}")
+            elif seg_type == "forward" and depth < self._forward_max_nesting:
+                forward_id = seg_data.get("id", "")
+                parts.append(f"[嵌套合并转发:ID={forward_id}，使用 read_forward_msg 查看]")
+            elif seg_type == "forward":
+                parts.append(f"[嵌套合并转发:ID={seg_data.get('id', '')}，已达最大嵌套层级]")
+            elif seg_type == "reply":
+                parts.append(f"[回复:{seg_data.get('id', '')}]")
+            elif seg_type == "record":
+                parts.append("[语音]")
+            elif seg_type == "video":
+                parts.append("[视频]")
+            else:
+                parts.append(f"[{seg_type}]")
+        return "".join(parts)
 
     async def _send_sticker(self, args: dict[str, Any]) -> str:
         if self._emoji_service is None:
@@ -392,8 +509,37 @@ class ChatInteractionToolExecutor(ToolExecutor):
                 "times": int(args.get("times") or 1),
             }
         if action == "poke":
+            group_id = self._detect_group_id_for_poke(args)
+            if group_id is not None:
+                return "group_poke", {
+                    "group_id": group_id,
+                    "user_id": self._require(user_id, "user_id"),
+                }
             return "friend_poke", {"user_id": self._require(user_id, "user_id")}
         raise ValueError(f"未知好友管理动作: {action}")
+
+    @staticmethod
+    def _detect_group_id_for_poke(args: dict[str, Any]) -> int | None:
+        """从 delegate 上下文中检测当前是否为群聊场景，自动提取 group_id。
+
+        优先使用显式传入的 group_id 参数，其次从 _CHAT_INTERACTION_CONTEXT 中
+        查找主Agent提示词中的群号信息。
+        """
+        explicit = args.get("group_id")
+        if explicit not in (None, ""):
+            try:
+                return int(explicit)
+            except (ValueError, TypeError):
+                pass
+
+        ctx = _CHAT_INTERACTION_CONTEXT.get("").strip()
+        if not ctx:
+            return None
+        import re
+        m = re.search(r"群号[：:]\s*(\d+)", ctx)
+        if m:
+            return int(m.group(1))
+        return None
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
@@ -421,12 +567,16 @@ def build_chat_interaction_toolset(
     profile_service: "UserProfileService | None" = None,
     logger: Logger | None = None,
     policy: ToolAccessPolicy | None = None,
+    forward_display_threshold: int = 50,
+    forward_max_nesting: int = 10,
 ) -> Toolset:
     executor = ChatInteractionToolExecutor(
         adapter=adapter,
         emoji_service=emoji_service,
         profile_service=profile_service,
         logger=logger,
+        forward_display_threshold=forward_display_threshold,
+        forward_max_nesting=forward_max_nesting,
     )
     specs = [
         ToolSpec(definition=definition, access_resolver=_default_resolver)
@@ -440,10 +590,11 @@ def _build_system_prompt() -> str:
         "你是聊天互动代理。\n"
         "负责执行聊天互动、群管理、好友管理。\n"
         "群管理动作包括设管理员、禁言、踢人、群名/备注/名片/头衔、请求处理、精华和撤回。\n"
-        "好友管理动作包括备注、分组、删除、请求处理、点赞和戳一戳。\n"
+        "好友管理动作包括备注、分组、删除、请求处理、点赞用户主页（QQ资料卡）和戳一戳。\n"
         "如果任务缺少群号/QQ号或需要确认聊天上下文中的指代信息，先调用 get_chat_context 查看主Agent上下文和消息编号映射。\n"
         "禁止使用Markdown。\n"
         "输出尽可能精简，只返回必要结果。\n"
+        "send_like（点赞用户主页）注意事项：非VIP用户每日最多点赞10次，VIP用户每日最多20次。需要确保点赞次数不超出限制。\n"
         f"{PEER_AGENT_DESCRIPTIONS}\n"
         "任务完成后，只返回简短纯文本结果。"
     )
@@ -459,6 +610,8 @@ class ChatInteractionAgent:
         emoji_service: "EmojiService | None" = None,
         profile_service: "UserProfileService | None" = None,
         logger: Logger | None = None,
+        forward_display_threshold: int = 50,
+        forward_max_nesting: int = 10,
     ) -> None:
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self._toolset = build_chat_interaction_toolset(
@@ -466,6 +619,8 @@ class ChatInteractionAgent:
             emoji_service=emoji_service,
             profile_service=profile_service,
             logger=logger,
+            forward_display_threshold=forward_display_threshold,
+            forward_max_nesting=forward_max_nesting,
         )
         self.tool_definitions = self._toolset.definitions()
         self._agent = Agent(
@@ -501,6 +656,8 @@ def build_chat_interaction_agent(
     emoji_service: "EmojiService | None" = None,
     profile_service: "UserProfileService | None" = None,
     logger: Logger | None = None,
+    forward_display_threshold: int = 50,
+    forward_max_nesting: int = 10,
 ) -> ChatInteractionAgent:
     return ChatInteractionAgent(
         provider=provider,
@@ -508,4 +665,6 @@ def build_chat_interaction_agent(
         emoji_service=emoji_service,
         profile_service=profile_service,
         logger=logger,
+        forward_display_threshold=forward_display_threshold,
+        forward_max_nesting=forward_max_nesting,
     )

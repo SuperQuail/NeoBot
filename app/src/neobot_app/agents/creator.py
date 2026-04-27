@@ -44,18 +44,20 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "creator"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "可以绘图、导入聊天图片、管理图库/表情包列表、修改图库/表情包描述信息,并把图片发送到指定群聊或私聊。"
-    "凡是让Bot把聊天里的图片加入图库/表情包、保存图片、发送图片,都应委托给它。"
-    "如果任务指代“这张图/刚才那张图/回复的图片”,可直接委托它自行读取聊天上下文判断消息。"
+    "绘图与图片资产管理。可AI绘图（支持参考图/垫图/图生图）、从聊天导入图片、"
+    "管理图库（列表/搜索/添加/替换/更新/删除/重命名）、"
+    "管理表情包（列表/搜索/添加/更新/重命名）、发送图片到群聊/私聊。"
+    "涉及图片保存、导入图库/表情包、发送图片的任务均委托它；"
+    "任务中指代聊天图片时，它可通过聊天上下文自行判断。"
 )
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
 PEER_AGENT_DESCRIPTIONS = (
     "同级 sub agent 及其职责：\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注、查看聊天记录、解析用户头像。\n"
+    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
     "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞/戳一戳等）、发送表情包。\n"
-    "- image_parse: 按需求解析图片内容（不保存、不导入、不管理图库/表情包）。\n"
-    "如果收到的任务明显属于其他 agent 的职责（如群管理/好友管理/头像解析/图片内容解析），直接告知主Agent该委托给对应的 agent，不要尝试越权处理。"
+    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
+    "如果收到的任务明显属于其他 agent 的职责（如群管理/好友管理/头像解析/图片内容解析），直接告知主Agent该委托给对应的 agent，不要越权处理。"
 )
 
 TMP_SOURCE = "tmp"
@@ -182,14 +184,37 @@ class CreatorImageService:
         await self._stop_cleanup_task()
 
     async def _cleanup_stale_records(self) -> None:
-        """删除数据库中文件已不存在的记录，更新文件已重命名的记录。"""
+        """删除数据库中文件已不存在的记录，更新文件已重命名的记录，并对各目录内哈希重复的文件去重（保留最旧）。"""
         disk_files: set[str] = set()
+
+        # 逐目录去重：同一目录内哈希相同的文件只保留最旧的
         for directory in (self._tmp_dir, self._gallery_dir):
             if not directory.exists():
                 continue
+            hash_to_files: dict[str, list[Path]] = {}
             for child in directory.iterdir():
-                if child.is_file() and child.suffix.lower() in _IMAGE_EXTENSIONS:
-                    disk_files.add(str(child.resolve()))
+                if not child.is_file() or child.suffix.lower() not in _IMAGE_EXTENSIONS:
+                    continue
+                resolved = str(child.resolve())
+                disk_files.add(resolved)
+                try:
+                    prepared = prepare_local_image(child)
+                    hash_to_files.setdefault(prepared.file_hash, []).append(child)
+                except Exception:
+                    continue
+
+            for file_hash, files in hash_to_files.items():
+                if len(files) <= 1:
+                    continue
+                files.sort(key=lambda f: f.stat().st_mtime)
+                keeper = files[0]
+                for dup in files[1:]:
+                    self._logger.info(
+                        f"图库去重: 保留较旧文件 {keeper.name}，删除重复文件 {dup.name}"
+                    )
+                    dup.unlink(missing_ok=True)
+                    dup.with_suffix(".txt").unlink(missing_ok=True)
+                    disk_files.discard(str(dup.resolve()))
 
         async with self._uow_factory() as uow:
             all_records = await uow.creator_images.list(source=None, limit=99999, offset=0)
@@ -388,7 +413,7 @@ class CreatorImageService:
             return await uow.creator_images.list(source=source, limit=limit, offset=offset)
 
     async def gallery_add(
-        self, *, image_id: str, description: str | None = None
+        self, *, image_id: str, description: str | None = None, name: str | None = None
     ) -> CreatorImageRecord:
         self._ensure_gallery_enabled()
         source = await self._get_existing(image_id)
@@ -399,13 +424,18 @@ class CreatorImageService:
         await self._ensure_gallery_capacity()
         target_id = self._new_image_id(GALLERY_SOURCE)
         target_path = self._copy_to_gallery(source.file_path, target_id)
-        return await self._upsert_record(
+        record = await self._upsert_record(
             target_id,
             source=GALLERY_SOURCE,
             file_path=target_path,
             prompt=source.prompt,
             description=description or source.description,
         )
+        if name:
+            safe_name = _sanitize_filename(name)
+            if safe_name:
+                record = await self.gallery_rename(image_id=target_id, new_name=safe_name)
+        return record
 
     async def gallery_replace(self, *, target_id: str, source_id: str) -> CreatorImageRecord:
         self._ensure_gallery_enabled()
@@ -543,6 +573,7 @@ class CreatorImageService:
         image_index: int = 1,
         target: str = TMP_SOURCE,
         description: str | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         target = target.strip().lower()
         if target not in {TMP_SOURCE, GALLERY_SOURCE, "emoji"}:
@@ -554,7 +585,7 @@ class CreatorImageService:
         if target == "emoji":
             return await self.add_emoji_bytes(
                 image_bytes,
-                file_name=f"chat_{message_id}_{image_index}",
+                file_name=name or f"chat_{message_id}_{image_index}",
                 description=description,
             )
         if target == GALLERY_SOURCE:
@@ -566,6 +597,10 @@ class CreatorImageService:
             prompt=None,
             description=description,
         )
+        if name and target == GALLERY_SOURCE:
+            safe_name = _sanitize_filename(name)
+            if safe_name:
+                record = await self.gallery_rename(image_id=record.image_id, new_name=safe_name)
         return {"target": target, "image": _record_payload(record)}
 
     async def add_emoji_from_image(
@@ -573,6 +608,7 @@ class CreatorImageService:
         *,
         image_id: str,
         description: str | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         record = await self._get_existing(image_id)
         if record is None:
@@ -580,7 +616,7 @@ class CreatorImageService:
         image_bytes = Path(record.file_path).read_bytes()
         return await self.add_emoji_bytes(
             image_bytes,
-            file_name=Path(record.file_path).name,
+            file_name=name or Path(record.file_path).name,
             description=description or record.description,
         )
 
@@ -691,6 +727,15 @@ class CreatorImageService:
         prompt: str | None,
         description: str | None,
     ) -> CreatorImageRecord:
+        file_hash = hashlib.sha256(image_bytes).hexdigest()
+        async with self._uow_factory() as uow:
+            existing = await uow.creator_images.get_by_hash(file_hash)
+            if existing is not None:
+                raise ValueError(
+                    f"该图片与已有图片重复（哈希 {file_hash[:12]}…），"
+                    f"已有文件: {existing.image_id}，不允许重复加入"
+                )
+
         image_id = self._new_image_id(source)
         suffix = self._detect_suffix(image_bytes)
         directory = self._gallery_dir if source == GALLERY_SOURCE else self._tmp_dir
@@ -702,6 +747,7 @@ class CreatorImageService:
             file_path=file_path,
             prompt=prompt,
             description=description,
+            file_hash=file_hash,
         )
 
     async def _load_chat_image_bytes(self, *, message_id: int, image_index: int) -> bytes:
@@ -767,9 +813,11 @@ class CreatorImageService:
         file_path: Path,
         prompt: str | None,
         description: str | None,
+        file_hash: str | None = None,
     ) -> CreatorImageRecord:
-        image_bytes = file_path.read_bytes()
-        file_hash = hashlib.sha256(image_bytes).hexdigest()
+        if file_hash is None:
+            image_bytes = file_path.read_bytes()
+            file_hash = hashlib.sha256(image_bytes).hexdigest()
         mime_type = mimetypes.guess_type(file_path.name)[0] or "image/png"
         width, height = self._read_dimensions(file_path)
         effective_description = await self._resolve_description(
@@ -1190,13 +1238,17 @@ class CreatorToolExecutor(ToolExecutor):
             ),
             _tool_def(
                 "gallery_add",
-                "将临时图片加入图库。",
+                "将临时图片加入图库。必须用 name 参数为图片命名。",
                 {
                     "properties": {
                         "image_id": {"type": "string", "description": "临时图片 ID，可带 tmp: 前缀"},
                         "description": {"type": "string", "description": "可选，图库描述"},
+                        "name": {
+                            "type": "string",
+                            "description": "图片文件名（不含后缀）。必须提供，根据图片内容命名。仅允许字母、数字、下划线和连字符。不确定名称时先查上下文或问主Agent。",
+                        },
                     },
-                    "required": ["image_id"],
+                    "required": ["image_id", "name"],
                 },
             ),
             _tool_def(
@@ -1259,7 +1311,7 @@ class CreatorToolExecutor(ToolExecutor):
             _tool_def("list_references", "列出可作为参考图的图库图片。", {"properties": {}}),
             _tool_def(
                 "import_chat_image",
-                "从聊天消息中导入图片到临时图或图库；表情包导入需配置允许。",
+                "从聊天消息中导入图片到临时图或图库；表情包导入需配置允许。当 target 为 gallery 或 emoji 时，必须用 name 参数为图片命名。",
                 {
                     "properties": {
                         "message_id": {"type": "integer", "description": "真实消息 ID，不是聊天编号"},
@@ -1270,6 +1322,10 @@ class CreatorToolExecutor(ToolExecutor):
                             "description": "导入目标：tmp、gallery，允许时可用 emoji",
                         },
                         "description": {"type": "string", "description": "可选描述"},
+                        "name": {
+                            "type": "string",
+                            "description": "图片文件名（不含后缀）。存入图库/表情包时必须提供。仅允许字母、数字、下划线和连字符。不确定名称时先查上下文或问主Agent。",
+                        },
                     },
                     "required": ["message_id"],
                 },
@@ -1334,13 +1390,17 @@ class CreatorToolExecutor(ToolExecutor):
             tools.append(
                 _tool_def(
                     "emoji_add",
-                    "把已有临时图/图库图片加入表情包。",
+                    "把已有临时图/图库图片加入表情包。必须用 name 参数为表情包命名。",
                     {
                         "properties": {
                             "image_id": {"type": "string", "description": "图片 ID"},
                             "description": {"type": "string", "description": "可选表情包描述"},
+                            "name": {
+                                "type": "string",
+                                "description": "表情包文件名（不含后缀）。必须提供，根据图片内容命名。仅允许字母、数字、下划线和连字符。不确定名称时先查上下文或问主Agent。",
+                            },
                         },
-                        "required": ["image_id"],
+                        "required": ["image_id", "name"],
                     },
                 )
             )
@@ -1471,6 +1531,7 @@ class CreatorToolExecutor(ToolExecutor):
         record = await self._service.gallery_add(
             image_id=str(args.get("image_id") or ""),
             description=self._optional_str(args.get("description")),
+            name=self._optional_str(args.get("name")),
         )
         return _json({"ok": True, "image": self._record_payload(record)})
 
@@ -1524,6 +1585,7 @@ class CreatorToolExecutor(ToolExecutor):
             image_index=int(args.get("image_index") or 1),
             target=str(args.get("target") or TMP_SOURCE),
             description=self._optional_str(args.get("description")),
+            name=self._optional_str(args.get("name")),
         )
         return _json({"ok": True, **result})
 
@@ -1565,6 +1627,7 @@ class CreatorToolExecutor(ToolExecutor):
         result = await self._service.add_emoji_from_image(
             image_id=str(args.get("image_id") or ""),
             description=self._optional_str(args.get("description")),
+            name=self._optional_str(args.get("name")),
         )
         return _json({"ok": True, **result})
 
@@ -1667,11 +1730,14 @@ def _build_system_prompt(config: CreatorAgentConfig) -> str:
         "  - 本地文件：用 'file:<路径>'（如 'file:/data/images/ref.png'）\n"
         "  - 聊天图片：用 'chat:<message_id>' 或 'chat:<message_id>:<image_index>'（index 默认 1）\n"
         "\n"
-        "【图片命名】\n"
-        "将图片加入图库或表情包时，务必使用有意义的文件名：\n"
+        "【图片命名（必须遵守）】\n"
+        "将图片加入图库（gallery_add）或表情包（emoji_add）时，必须通过 name 参数为图片指定有意义的文件名：\n"
         "  - 如果用户指定了名称，使用用户指定的名称\n"
         "  - 如果用户未指定，根据图片内容生成简短有意义的英文名（如 'sunset_ocean'、'cute_white_cat'）\n"
+        "  - 不要使用默认名称或自动生成的名称（如 tmp_xxx、g_xxx、chat_xxx），必须自己命名\n"
         "  - 名称仅含字母、数字、下划线、连字符，不含扩展名，长度不超过 100 字符\n"
+        "  - 不确定用什么名称时，先调用 get_chat_context 查看上下文是否有线索\n"
+        "  - 如果仍无法确定合适名称，向主Agent询问后再操作\n"
         "  - 图片入库后如需改名，可使用 gallery_rename 或 emoji_rename\n"
         "\n"
         "导入聊天图片时使用真实 message_id；不要把聊天编号当作 message_id。\n"

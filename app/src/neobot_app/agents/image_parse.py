@@ -25,18 +25,18 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "image_parse"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "只负责按需求解析图片内容,不保存、不导入、不管理图库或表情包,只有在有人要求你看某张图片,但是你读到的图片信息缺乏指定细节的情况下,才调用该agent,传入指定图片以及对应需求。"
-    "调用时必须明确提供图片 URL、本地路径、base64 或真实 message_id,以及解析需求,只负责解析聊天中的图片。"
-    "头像解析请委托 memory（它会内部调用本agent）；把聊天图片加入图库/表情包请委托 creator。"
+    "图片内容解析。按指定需求解析聊天中的图片内容（需提供图片URL/本地路径/base64/message_id及解析要求）。"
+    "仅负责解析回传结果，不保存、不导入、不管理图库/表情包。"
+    "头像解析委托 memory（它内部调用本agent），图片入库委托 creator。"
 )
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
 PEER_AGENT_DESCRIPTIONS = (
     "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片到群聊/私聊。\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注、查看聊天记录、解析用户头像（头像解析由 memory 负责，不要直接处理头像解析请求）。\n"
+    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
+    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像（头像解析由 memory 负责，不要直接处理）、调整好感度。\n"
     "- chat_interaction: 聊天互动、群管理、好友管理、发送表情包。\n"
-    "你只负责按需求解析图片内容。如果收到的任务是：保存图片、导入图库/表情包 → 告知主Agent委托 creator；头像解析 → 告知主Agent委托 memory；群管理/好友管理 → 告知主Agent委托 chat_interaction。"
+    "你只负责按需求解析图片内容。如果收到的任务是：保存图片/导入图库/表情包 → 告知主Agent委托 creator；头像解析 → 委托 memory；群管理/好友管理 → 委托 chat_interaction。"
 )
 
 DEFAULT_REQUIREMENT = "请简洁描述这张图片的主要内容。"

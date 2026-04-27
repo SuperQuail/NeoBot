@@ -123,7 +123,7 @@ class ImageParseService:
                 await self._analysis.set(
                     file_hash,
                     source="chat_image",
-                    mime_type="image/jpeg",
+                    mime_type=_detect_image_mime(image_bytes),
                     analysis_text=description,
                 )
             except Exception as exc:
@@ -142,7 +142,15 @@ class ImageParseService:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
-                    return resp.content
+                    content = resp.content
+                    if _is_valid_image(content):
+                        return content
+                    self._logger.warning(
+                        "从URL下载的内容不是有效图片",
+                        url=str(url)[:80],
+                        content_type=resp.headers.get("content-type", ""),
+                        content_len=len(content),
+                    )
             except Exception as exc:
                 self._logger.warning("从URL下载图片失败", url=str(url)[:80], error=str(exc))
 
@@ -156,11 +164,23 @@ class ImageParseService:
                     if img_file:
                         if str(img_file).startswith("base64://"):
                             import base64
-                            return base64.b64decode(str(img_file)[9:])
+                            content = base64.b64decode(str(img_file)[9:])
+                            if _is_valid_image(content):
+                                return content
+                            self._logger.warning("get_image base64 内容不是有效图片", file=str(file_name)[:60])
+                            return None
                         async with httpx.AsyncClient(timeout=30.0) as client:
                             resp = await client.get(str(img_file))
                             resp.raise_for_status()
-                            return resp.content
+                            content = resp.content
+                            if _is_valid_image(content):
+                                return content
+                            self._logger.warning(
+                                "get_image URL 内容不是有效图片",
+                                file=str(file_name)[:60],
+                                content_type=resp.headers.get("content-type", ""),
+                                content_len=len(content),
+                            )
             except Exception as exc:
                 self._logger.warning("通过get_image下载失败", file=str(file_name)[:60], error=str(exc))
 
@@ -170,8 +190,9 @@ class ImageParseService:
         """调用视觉模型获取图片描述"""
         import base64
 
+        mime_type = _detect_image_mime(image_bytes)
         base64_data = base64.b64encode(image_bytes).decode("utf-8")
-        image_url = f"data:image/jpeg;base64,{base64_data}"
+        image_url = f"data:{mime_type};base64,{base64_data}"
 
         messages: list[dict] = [
             {
@@ -189,7 +210,19 @@ class ImageParseService:
             text = content.strip() if isinstance(content, str) else str(content)
             return text if text else None
         except Exception as exc:
-            self._logger.error("视觉模型调用失败", error=str(exc))
+            resp_body = ""
+            if hasattr(exc, "response") and hasattr(exc.response, "text"):
+                try:
+                    resp_body = exc.response.text[:500]
+                except Exception:
+                    pass
+            self._logger.error(
+                "视觉模型调用失败",
+                error=str(exc),
+                mime=mime_type,
+                image_bytes_len=len(image_bytes),
+                api_response=resp_body,
+            )
             return None
 
 
@@ -213,6 +246,43 @@ def _segment_data(segment) -> dict:
     if hasattr(raw_data, "model_dump"):
         return raw_data.model_dump(exclude_none=True)
     return {}
+
+
+_VALID_IMAGE_MAGIC = (
+    b"\xff\xd8\xff",       # JPEG
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"RIFF",               # WebP (need further check)
+    b"GIF87a",             # GIF
+    b"GIF89a",             # GIF
+    b"BM",                 # BMP
+)
+
+
+def _is_valid_image(content: bytes) -> bool:
+    """检查字节内容是否是有效的图片格式"""
+    if len(content) < 16:
+        return False
+    for magic in _VALID_IMAGE_MAGIC:
+        if content.startswith(magic):
+            if magic == b"RIFF":
+                return len(content) >= 12 and content[8:12] == b"WEBP"
+            return True
+    return False
+
+
+def _detect_image_mime(image_bytes: bytes) -> str:
+    """通过文件头魔数检测图片 MIME 类型"""
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    return "image/jpeg"
 
 
 def _make_text_segment(text: str):

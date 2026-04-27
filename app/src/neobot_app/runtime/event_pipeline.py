@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
@@ -52,6 +53,10 @@ class EventPipeline:
         self._started = False
         self._warmed_up_friends: set[str] = set()
         self._warmup_lock = asyncio.Lock()
+        self._replying_queues: set[str] = set()
+        self._post_reply_willing: dict[str, list] = {}
+        self._pending_image_willing: dict[str, list] = {}
+        self._image_willing_lock = asyncio.Lock()
 
     def start(self) -> None:
         if self._started:
@@ -115,6 +120,11 @@ class EventPipeline:
         )
         if queue_key:
             await self._maybe_warmup_friend_chat(queue_key)
+
+        # Bot 自己的消息不触发回复
+        if self._is_bot_self(message):
+            return
+
         await self._handle_private_reply(message=message, queue_key=queue_key)
         self._logger.info(f"收到私聊消息: {text}")
 
@@ -216,8 +226,24 @@ class EventPipeline:
             sender_id=str(message.user_id or ""),
             sender_name=_sender_name(message),
         )
-        self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
         self._logger.info(f"收到群消息[{message.group_id or '未知'}]: {text}")
+
+        # Bot 自己的消息不触发回复
+        if self._is_bot_self(message):
+            return
+
+        # 如果当前正在回复中，新消息入 post-reply 队列，不计算意愿
+        if queue_key in self._replying_queues:
+            self._post_reply_willing.setdefault(queue_key, []).append(message)
+            return
+
+        # 如果消息含图片，延迟意愿计算，等图片解析完成后处理
+        if _message_has_images(message):
+            self._pending_image_willing.setdefault(queue_key, []).append(message)
+            asyncio.create_task(self._process_pending_image_willing(queue_key))
+            return
+
+        await self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
 
     async def _record_archive_summary(
         self,
@@ -272,21 +298,36 @@ class EventPipeline:
                 replied_messages.append(data)
         return replied_messages
 
-    def _handle_willing_decision(
+    async def _handle_willing_decision(
         self,
         *,
         message: PrivateMessage | GroupMessage,
         queue: MessageQueue,
         queue_key: str,
-    ) -> None:
+    ) -> bool:
         if self._willing_service is None or not queue_key:
-            return
+            return False
 
         conversation_type = "group" if isinstance(message, GroupMessage) else "private"
         chat_type = "群聊" if conversation_type == "group" else "私聊"
 
         # 被@时直接触发回复，跳过意愿计算
         if self._willing_service.is_at_mentioned(message):
+            # 读取 @ 提及回复延迟配置
+            delay = 5.0
+            if self._config is not None:
+                val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
+                if isinstance(val, (int, float)) and val >= 0:
+                    delay = float(val)
+
+            if delay > 0:
+                self._logger.debug(
+                    "群聊@提及延迟回复等待中",
+                    queue_key=queue_key,
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)
+
             decision = WillingDecision(
                 manager_name="Quail",
                 probability=1.0,
@@ -302,13 +343,10 @@ class EventPipeline:
                 详情="原因: 被@提及，直接触发",
             )
             if self._reply_orchestrator is not None:
-                self._reply_orchestrator.start_reply(
-                    message=message,
-                    queue=queue,
-                    queue_key=queue_key,
-                    decision=decision,
+                return self._start_reply_with_tracking(
+                    message=message, queue=queue, queue_key=queue_key, decision=decision
                 )
-            return
+            return False
 
         try:
             decision = self._willing_service.evaluate(
@@ -323,7 +361,7 @@ class EventPipeline:
                 会话ID=queue_key,
                 错误=str(exc),
             )
-            return
+            return False
 
         detail = " | ".join(decision.reasons)
         self._logger.info(
@@ -336,12 +374,101 @@ class EventPipeline:
         )
 
         if decision.should_reply and self._reply_orchestrator is not None:
-            self._reply_orchestrator.start_reply(
-                message=message,
-                queue=queue,
-                queue_key=queue_key,
-                decision=decision,
+            return self._start_reply_with_tracking(
+                message=message, queue=queue, queue_key=queue_key, decision=decision
             )
+        return False
+
+    def _start_reply_with_tracking(
+        self,
+        *,
+        message: PrivateMessage | GroupMessage,
+        queue: MessageQueue,
+        queue_key: str,
+        decision: WillingDecision,
+    ) -> bool:
+        """发起回复并设置回复状态追踪与完成后回调。"""
+        pre_reply_msg_id = queue.get_last_message_id(queue_key)
+        self._replying_queues.add(queue_key)
+
+        async def on_reply_done() -> None:
+            self._replying_queues.discard(queue_key)
+            await self._process_post_reply_queue(queue_key)
+
+        event = self._reply_orchestrator.start_reply(
+            message=message,
+            queue=queue,
+            queue_key=queue_key,
+            decision=decision,
+            pre_reply_message_id=pre_reply_msg_id,
+            on_reply_done=on_reply_done,
+        )
+        return event is not None
+
+    async def _process_pending_image_willing(self, queue_key: str) -> None:
+        """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
+        if self._image_parse_service is not None:
+            await self._image_parse_service.wait_for_queue(queue_key)
+
+        async with self._image_willing_lock:
+            pending = self._pending_image_willing.pop(queue_key, [])
+            if not pending:
+                return
+
+            for msg in pending:
+                if queue_key in self._replying_queues:
+                    # 已在回复中，剩余消息放入 post-reply 队列
+                    idx = pending.index(msg)
+                    if idx >= 0:
+                        self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
+                    break
+
+                triggered = await self._handle_willing_decision(
+                    message=msg, queue=self._group_queue, queue_key=queue_key
+                )
+                if triggered:
+                    break
+
+    async def _process_post_reply_queue(self, queue_key: str) -> None:
+        """回复结束后依次处理期间收到的新消息。"""
+        pending = self._post_reply_willing.pop(queue_key, [])
+        if not pending:
+            return
+
+        timeout = 60.0
+        if self._config is not None:
+            val = getattr(self._config.chat, "post_reply_message_timeout_seconds", None)
+            if isinstance(val, (int, float)) and val >= 0:
+                timeout = float(val)
+
+        self._logger.info(
+            "开始处理回复后队列",
+            queue_key=queue_key,
+            count=len(pending),
+        )
+
+        for msg in pending:
+            if queue_key in self._replying_queues:
+                self._post_reply_willing.setdefault(queue_key, []).extend(
+                    pending[pending.index(msg):]
+                )
+                return
+
+            if timeout > 0 and self._is_message_stale(msg, timeout):
+                self._logger.debug(
+                    "回复后队列消息超时跳过",
+                    queue_key=queue_key,
+                    msg_time=getattr(msg, "time", None),
+                )
+                continue
+
+            if _message_has_images(msg):
+                self._pending_image_willing.setdefault(queue_key, []).append(msg)
+                await self._process_pending_image_willing(queue_key)
+            else:
+                await self._handle_willing_decision(
+                    message=msg, queue=self._group_queue, queue_key=queue_key
+                )
 
     async def _refresh_profile_for_message(
         self,
@@ -482,6 +609,26 @@ class EventPipeline:
         info = " ".join(details)
         self._logger.info(f"收到请求[{label}] {info}".rstrip())
 
+    def _is_bot_self(self, message) -> bool:
+        """检查消息是否由 Bot 自己发送。"""
+        if self._config is None:
+            return False
+        bot_account = self._config.bot.account
+        if not bot_account:
+            return False
+        msg_user_id = getattr(message, "user_id", None)
+        if msg_user_id is None:
+            return False
+        return int(msg_user_id) == int(bot_account)
+
+    @staticmethod
+    def _is_message_stale(message, timeout_seconds: float) -> bool:
+        """检查消息时间戳是否超过超时秒数。"""
+        msg_time = getattr(message, "time", None)
+        if msg_time is None:
+            return False
+        return time.time() - int(msg_time) > timeout_seconds
+
 
 def _extract_reply_message_ids(message: PrivateMessage | GroupMessage) -> list[int]:
     ids: list[int] = []
@@ -520,3 +667,17 @@ def _safe_int(value: object) -> int | None:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _message_has_images(message: PrivateMessage | GroupMessage) -> bool:
+    """检查消息是否包含图片段（image 或 cardimage）。"""
+    segments = getattr(message, "message", None)
+    if not segments:
+        return False
+    for seg in segments:
+        seg_type = getattr(seg, "type", None)
+        if hasattr(seg_type, "value"):
+            seg_type = seg_type.value
+        if str(seg_type or "") in ("image", "cardimage"):
+            return True
+    return False

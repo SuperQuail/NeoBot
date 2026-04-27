@@ -43,7 +43,7 @@ class Chat:
     group_prompt_template: str = field(
         default=(
             "<当前时间>{current_time}</当前时间>\n"
-            "<群聊>{group_name}[群号:{group_id}]{group_description}\n"
+            "<群聊>{group_name}[群号:{group_id}]{group_description}{group_admin}\n"
             "<群聊档案>\n{group_info}\n</群聊档案>\n"
             "</群聊>\n"
             "<聊天记录>\n{message_list}\n</聊天记录>\n"
@@ -581,12 +581,23 @@ class AgentMemory:
 
 
 @dataclass
+class AgentWillingness:
+    """Willingness Agent 配置。"""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"description": "是否启用 Willingness Agent"},
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
     creator: AgentCreator = field(default_factory=AgentCreator)
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
+    willingness: AgentWillingness = field(default_factory=AgentWillingness)
 
 
 @dataclass
@@ -629,6 +640,10 @@ class EnhancedChat(Chat):
     at_mention_guaranteed_reply: bool = field(
         default=True,
         metadata={"description": "@ 时是否必回"},
+    )
+    at_mention_reply_delay_seconds: float = field(
+        default=5.0,
+        metadata={"description": "@ 提及时的回复延迟秒数；在此期间收集后续群消息后再生成回复"},
     )
     willing_global_coefficient: float = field(
         default=1.0,
@@ -744,6 +759,26 @@ class EnhancedChat(Chat):
     private_chat_reply_delay_seconds: float = field(
         default=5.0,
         metadata={"description": "私聊收到消息后延迟多少秒再触发回复（在此期间收集后续消息）"},
+    )
+    post_reply_message_timeout_seconds: float = field(
+        default=60.0,
+        metadata={"description": "群聊回复期间收集的消息超时秒数；超过此时间的消息不触发回复意愿判断"},
+    )
+    forward_message_display_threshold: int = field(
+        default=50,
+        metadata={"description": "合并转发消息节点数阈值；小于此值直接显示内容，大于等于此值仅显示ID并提供读取工具"},
+    )
+    forward_message_queue_weight: int = field(
+        default=2,
+        metadata={"description": "合并转发消息在队列中的容量权重；一个合并转发消息占用此数量的队列位置"},
+    )
+    forward_message_max_nesting: int = field(
+        default=10,
+        metadata={"description": "合并转发消息最大嵌套层级；支持最多10层转发嵌套"},
+    )
+    wait_cooldown_seconds: int = field(
+        default=60,
+        metadata={"description": "wait 工具调用冷却秒数；同一会话在一次 wait 调用后需等待此秒数才可再次调用"},
     )
 
 

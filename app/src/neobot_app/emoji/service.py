@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -183,6 +184,16 @@ class EmojiService:
             raise ValueError("图片内容为空")
 
         self._emoji_dir.mkdir(parents=True, exist_ok=True)
+
+        file_hash = hashlib.sha256(image_bytes).hexdigest()
+        async with self._uow_factory() as uow:
+            existing = await uow.emojis.get_by_hash(file_hash)
+            if existing is not None:
+                raise ValueError(
+                    f"该图片与已有表情包重复（哈希 {file_hash[:12]}…），"
+                    f"已有文件: {existing.file_name}，不允许重复加入"
+                )
+
         suffix = _detect_image_suffix(image_bytes)
         target_name = _safe_emoji_file_name(file_name, suffix)
         target_path = self._emoji_dir / target_name
@@ -337,8 +348,27 @@ class EmojiService:
         for file_path in image_files:
             try:
                 prepared = prepare_local_image(file_path)
-                hash_to_path[prepared.file_hash] = file_path
-                path_to_hash[file_path] = prepared.file_hash
+                if prepared.file_hash in hash_to_path:
+                    existing = hash_to_path[prepared.file_hash]
+                    # 保留较旧的文件
+                    if file_path.stat().st_mtime < existing.stat().st_mtime:
+                        self._logger.info(
+                            f"表情包去重: 保留较旧文件 {file_path.name}，删除 {existing.name}"
+                        )
+                        existing.unlink(missing_ok=True)
+                        existing.with_suffix(".txt").unlink(missing_ok=True)
+                        hash_to_path[prepared.file_hash] = file_path
+                        path_to_hash[file_path] = prepared.file_hash
+                        path_to_hash.pop(existing, None)
+                    else:
+                        self._logger.info(
+                            f"表情包去重: 保留较旧文件 {existing.name}，删除 {file_path.name}"
+                        )
+                        file_path.unlink(missing_ok=True)
+                        file_path.with_suffix(".txt").unlink(missing_ok=True)
+                else:
+                    hash_to_path[prepared.file_hash] = file_path
+                    path_to_hash[file_path] = prepared.file_hash
             except Exception as exc:
                 self._logger.warning(f"无法读取表情包文件 {file_path.name}: {exc}")
 

@@ -311,3 +311,20 @@ async def get_ai_characters(
     params = {"group_id": group_id, "chat_type": chat_type}
     result = await core.call_api("get_ai_characters", params, timeout)
     return safe_parse_model(result, response.GetAIVoiceResponse)
+
+
+async def get_forward_msg(
+    message_id: str,
+    timeout: float = 5,
+) -> Optional[Dict[str, Any]]:
+    """获取合并转发消息的具体内容。
+
+    OneBot get_forward_msg API 返回的 data 中包含 messages 数组，
+    每个元素为转发的消息节点。
+    """
+    result = await core.call_api("get_forward_msg", {"message_id": message_id}, timeout)
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        return result
+    return None

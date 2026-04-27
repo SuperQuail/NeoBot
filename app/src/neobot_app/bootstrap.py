@@ -71,6 +71,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     )
     poke_weight = getattr(config.chat, "poke_weight", 0.2)
     reaction_weight = getattr(config.chat, "reaction_weight", 0.2)
+    forward_weight = getattr(config.chat, "forward_message_queue_weight", 2)
     bot_account = config.bot.account
     reply_blacklist = set(config.chat.reply_blacklist or [])
     group_message_queue = MessageQueue(
@@ -78,6 +79,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         timestamp_interval_seconds=timestamp_interval_seconds,
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
+        forward_weight=forward_weight,
         bot_account=bot_account,
         reply_blacklist=reply_blacklist,
     )
@@ -86,6 +88,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         timestamp_interval_seconds=timestamp_interval_seconds,
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
+        forward_weight=forward_weight,
         bot_account=bot_account,
         reply_blacklist=reply_blacklist,
     )

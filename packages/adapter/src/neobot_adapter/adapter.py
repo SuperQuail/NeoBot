@@ -382,6 +382,14 @@ class OneBotAdapter:
         result = await self.call_api("get_msg", {"message_id": message_id}, timeout)
         return safe_parse_model(result, response.GetSignalMsgResponse)
 
+    async def get_forward_msg(
+        self,
+        message_id: str,
+        timeout: float = 5.0,
+    ) -> dict[str, Any] | None:
+        """获取合并转发消息的具体内容。"""
+        return await self.call_api("get_forward_msg", {"message_id": message_id}, timeout)
+
     async def send_private_msg(
         self,
         user_id: int,

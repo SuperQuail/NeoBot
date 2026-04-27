@@ -36,9 +36,10 @@ if TYPE_CHECKING:
 # 次级 Agent 文件都应在文件顶部集中声明这部分内容。
 EXPOSED_TO_MAIN_AGENT_NAME = "memory"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "记忆Agent。可以读写好友或群聊的长期记忆档案,查询用户资料和好友备注"
-    "可以查看并解析指定用户头像,也可以将解析的头像信息写入用户资料。"
-    "有人要求你查看某人头像/资料/备注等,委托该agent"
+    "长期记忆与用户档案。可读写群聊/好友的长期记忆档案（增/查/列）、"
+    "查询用户资料与好友备注、解析用户头像并写入用户档案、"
+    "拉取历史聊天记录辅助记忆决策、根据互动质量调整用户好感度。"
+    "涉及记忆/档案/用户资料/头像解析/好感度的任务均委托它。"
 )
 
 _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
@@ -46,10 +47,10 @@ _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
 PEER_AGENT_DESCRIPTIONS = (
     "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片到群聊/私聊。\n"
+    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
     "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞/戳一戳等）、发送表情包。\n"
-    "- image_parse: 按需求解析图片内容（不保存、不导入、不管理图库/表情包）。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要尝试越权处理。"
+    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
+    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
 )
 
 DEFAULT_LIST_LIMIT = 10

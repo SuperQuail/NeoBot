@@ -108,6 +108,12 @@ def build_agent_registry(
                     emoji_service=emoji_service,
                     profile_service=profile_service,
                     logger=active_logger,
+                    forward_display_threshold=getattr(
+                        config.chat, "forward_message_display_threshold", 50,
+                    ),
+                    forward_max_nesting=getattr(
+                        config.chat, "forward_message_max_nesting", 10,
+                    ),
                 ),
             )
 
@@ -126,7 +132,8 @@ def build_agent_registry(
             active_logger.warning(f"无法注册 image_parse agent: {exc}")
 
     # Register willingness control agent
-    if willing_service is not None:
+    willingness_config = config.agent.willingness
+    if willingness_config.enabled and willing_service is not None:
         try:
             provider = factory()
         except Exception as exc:

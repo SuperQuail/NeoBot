@@ -47,6 +47,7 @@ class ReplyEvent:
     reply_to_number: int | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
+    pre_reply_message_id: int | None = None
     error: str | None = None
 
     def transition(self, new_state: ReplyState) -> None:

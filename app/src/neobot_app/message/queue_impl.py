@@ -95,6 +95,7 @@ class MessageQueue:
         cq_fallback_max_length: int = 100,
         poke_weight: float = 0.2,
         reaction_weight: float = 0.2,
+        forward_weight: int = 2,
         bot_account: int | None = None,
         reply_blacklist: set[int] | None = None,
     ) -> None:
@@ -110,6 +111,7 @@ class MessageQueue:
         self.cq_fallback_max_length = cq_fallback_max_length
         self.poke_weight = max(0.0, min(1.0, poke_weight))
         self.reaction_weight = max(0.0, min(1.0, reaction_weight))
+        self.forward_weight = max(1, min(10, forward_weight))
         self.bot_account = bot_account
         self._reply_blacklist = reply_blacklist or set()
         self._queues: Dict[str, Deque[QueueEntry]] = {}
@@ -191,6 +193,19 @@ class MessageQueue:
             return self.reaction_weight
         return 1.0
 
+    def _compute_message_weight(self, message: QueueMessage) -> float:
+        """Compute capacity weight for a message; forward messages consume more."""
+        if message.message:
+            for segment in message.message:
+                seg_type = getattr(segment, "type", None)
+                if isinstance(seg_type, Enum):
+                    seg_type = seg_type.value
+                if str(seg_type) == "forward":
+                    return float(self.forward_weight)
+        if message.raw_message and "[CQ:forward" in str(message.raw_message):
+            return float(self.forward_weight)
+        return 1.0
+
     def _ensure_capacity_for_non_timestamp_entry(self, key: str, entry_weight: float = 1.0) -> None:
         queue = self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
@@ -243,7 +258,8 @@ class MessageQueue:
             resolved_time,
             include_on_empty=include_initial_timestamp,
         )
-        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=1.0)
+        entry_weight = self._compute_message_weight(converted_message)
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight)
 
         self._queues[key].append(
             QueueEntry(
@@ -254,7 +270,7 @@ class MessageQueue:
             )
         )
         self._message_counts[key] += 1
-        self._weighted_counts[key] += 1.0
+        self._weighted_counts[key] += entry_weight
         self._last_message_times[key] = resolved_time
 
         stats.total_messages += 1
@@ -432,6 +448,7 @@ class MessageQueue:
             cq_fallback_max_length=self.cq_fallback_max_length,
             poke_weight=self.poke_weight,
             reaction_weight=self.reaction_weight,
+            forward_weight=self.forward_weight,
             bot_account=self.bot_account,
             reply_blacklist=self._reply_blacklist,
         )
@@ -452,8 +469,21 @@ class MessageQueue:
 
         return cloned
 
-    def set_last_reply_position(self, key: str) -> None:
-        """记录当前队列中最后一条消息的位置（索引），表示'上次回复到'该位置。"""
+    def get_last_message_id(self, key: str) -> int | None:
+        """获取队列中最后一条消息的 message_id，用于记录回复前位置。"""
+        queue = self._queues.get(key)
+        if queue is None or not queue:
+            return None
+        for idx in range(len(queue) - 1, -1, -1):
+            if queue[idx].kind == QueueEntryType.MESSAGE and queue[idx].message is not None:
+                return queue[idx].message.message_id
+        return None
+
+    def set_last_reply_position(self, key: str, before_message_id: int | None = None) -> None:
+        """记录上次回复位置。若提供 before_message_id，直接使用该值。"""
+        if before_message_id is not None:
+            self._last_reply_positions[key] = before_message_id
+            return
         queue = self._queues.get(key)
         if queue is None or not queue:
             return
@@ -575,10 +605,42 @@ class MessageQueue:
 
         diff_text = self._entries_to_text(diff_entries, context_entries=current_entries)
         if diff_text:
-            lines.append(diff_text)
+            has_at_bot = self._should_request_reply(current_entries)
+            if has_at_bot:
+                wrapped = self._wrap_at_in_diff_text(diff_text)
+                lines.append(wrapped)
+            else:
+                lines.append(
+                    f"<这是新的可能要回答的内容>\n{diff_text}\n</这是新的可能要回答的内容>"
+                )
         if self._should_request_reply(current_entries):
             lines.append("<最新消息为@你的内容，请回复这句话>")
         return "\n".join(line for line in lines if line)
+
+    def _wrap_at_in_diff_text(self, diff_text: str) -> str:
+        """In diff text, attempt to wrap the @-bot sentence specifically.
+
+        Falls back to wrapping the entire diff if no @-bot sentence found.
+        """
+        if self.bot_account is None:
+            return f"<这是新的可能要回答的内容>\n{diff_text}\n</这是新的可能要回答的内容>"
+        pattern = rf"(@QQ:{self.bot_account}|@[^(\n]*\(QQ:{self.bot_account}\))"
+        if re.search(pattern, diff_text):
+            lines = diff_text.split("\n")
+            wrapped_lines: list[str] = []
+            for line in lines:
+                if re.search(pattern, line):
+                    wrapped_lines.append(
+                        re.sub(
+                            pattern,
+                            r"<这是新的可能要回答的内容>\1</这是新的可能要回答的内容>",
+                            line,
+                        )
+                    )
+                else:
+                    wrapped_lines.append(line)
+            return "\n".join(wrapped_lines)
+        return f"<这是新的可能要回答的内容>\n{diff_text}\n</这是新的可能要回答的内容>"
 
     def _find_suffix_prefix_overlap(
         self,
@@ -654,14 +716,30 @@ class MessageQueue:
     ) -> str:
         sender_labels = self._build_sender_labels(context_entries or entries)
         lines: list[str] = []
+        all_are_new = separator_after_index is None and all_new_message is not None
         if all_new_message is not None:
             lines.append(all_new_message)
+        if all_are_new and entries:
+            lines.append("<这是新的可能要回答的内容>")
+        new_section_opened = False
         for i, entry in enumerate(entries):
-            line = self._entry_to_text(entry, sender_labels=sender_labels)
-            if line:
-                lines.append(line)
             if separator_after_index is not None and i == separator_after_index:
                 lines.append("<以上是上次对话回复过的内容>")
+                new_section_opened = True
+                continue
+            if new_section_opened and i == separator_after_index + 1:
+                lines.append("<这是新的可能要回答的内容>")
+            line = self._entry_to_text(
+                entry, sender_labels=sender_labels,
+                wrap_at_mention=(
+                    (new_section_opened or all_are_new)
+                    and self.bot_account is not None
+                ),
+            )
+            if line:
+                lines.append(line)
+        if new_section_opened or (all_are_new and entries):
+            lines.append("</这是新的可能要回答的内容>")
         return "\n".join(lines)
 
     def _entry_to_text(
@@ -669,6 +747,7 @@ class MessageQueue:
         entry: QueueEntry,
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        wrap_at_mention: bool = False,
     ) -> str:
         if entry.kind == QueueEntryType.TIMESTAMP:
             return self._format_timestamp(entry.occurred_at)
@@ -677,6 +756,7 @@ class MessageQueue:
                 entry.message,
                 sender_labels=sender_labels,
                 replied_messages=entry.replied_messages,
+                wrap_at_mention=wrap_at_mention,
             )
         if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
             return self._recall_to_text(
@@ -704,12 +784,14 @@ class MessageQueue:
         sender_labels: Optional[Dict[int, str]] = None,
         replied_messages: Optional[List[QueueMessage]] = None,
         reply_number_resolver: Optional[Callable[[int], int]] = None,
+        wrap_at_mention: bool = False,
     ) -> str:
         name = self._message_sender_label(message, sender_labels=sender_labels)
         content = self._render_message_content(
             message,
             replied_messages=replied_messages,
             reply_number_resolver=reply_number_resolver,
+            wrap_at_mention=wrap_at_mention,
         )
         return f"{name}: {content}" if content else f"{name}: [无消息内容]"
 
@@ -740,14 +822,13 @@ class MessageQueue:
 
     @staticmethod
     def _poke_to_text(poke: PokeEntry) -> str:
+        action_desc = _poke_sub_type_text(poke.sub_type)
         if poke.group_id is not None:
             return (
-                f"群戳一戳: 群{poke.group_id}中 QQ:{poke.user_id} 戳了 QQ:{poke.target_id}"
-                f"（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+                f"群{poke.group_id}中 QQ:{poke.user_id} 对 QQ:{poke.target_id} 使用了{action_desc}"
             )
         return (
-            f"私聊戳一戳: QQ:{poke.sender_id} 戳了 QQ:{poke.target_id}"
-            f"（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+            f"QQ:{poke.sender_id} 对 QQ:{poke.target_id} 使用了{action_desc}"
         )
 
     @staticmethod
@@ -853,6 +934,7 @@ class MessageQueue:
         *,
         replied_messages: Optional[List[QueueMessage]] = None,
         reply_number_resolver: Optional[Callable[[int], int]] = None,
+        wrap_at_mention: bool = False,
     ) -> str:
         reply_by_id = {
             reply.message_id: reply
@@ -860,24 +942,66 @@ class MessageQueue:
             if reply.message_id is not None
         }
         if message.message:
-            parts = [
-                self._normalize_inline_text(
+            parts: list[str] = []
+            has_at_bot = False
+            for segment in message.message:
+                seg_text = self._normalize_inline_text(
                     self._segment_to_text(
                         segment,
                         reply_by_id=reply_by_id,
                         reply_number_resolver=reply_number_resolver,
                     )
                 )
-                for segment in message.message
-            ]
+                if wrap_at_mention and self._is_at_bot_segment(segment):
+                    has_at_bot = True
+                    parts.append(
+                        f"<这是新的可能要回答的内容>{seg_text}</这是新的可能要回答的内容>"
+                    )
+                else:
+                    parts.append(seg_text)
+            if has_at_bot:
+                return "".join(parts).strip()
+            # No @-bot found with wrapping enabled, wrap the whole message
+            if wrap_at_mention:
+                text = "".join(parts).strip()
+                return f"<这是新的可能要回答的内容>{text}</这是新的可能要回答的内容>" if text else "[无消息内容]"
             text = "".join(parts).strip()
             return text or "[无消息内容]"
 
         if message.raw_message:
             text = self._normalize_inline_text(self._parse_raw_message(message.raw_message))
+            if wrap_at_mention:
+                text = self._wrap_at_in_raw_message(text, message)
             return text or "[无消息内容]"
 
         return "[无消息内容]"
+
+    def _is_at_bot_segment(self, segment: object) -> bool:
+        """Check if a message segment is an @-mention of the bot."""
+        if self.bot_account is None:
+            return False
+        seg_type = getattr(segment, "type", None)
+        if isinstance(seg_type, Enum):
+            seg_type = seg_type.value
+        if str(seg_type) != "at":
+            return False
+        raw_data = getattr(segment, "data", None)
+        data = self._segment_data_to_dict(raw_data)
+        qq = str(data.get("qq") or "")
+        return qq == str(self.bot_account)
+
+    def _wrap_at_in_raw_message(self, text: str, _message: QueueMessage) -> str:
+        """For raw messages, wrap @-bot mention part with tag."""
+        if self.bot_account is None:
+            return f"<这是新的可能要回答的内容>{text}</这是新的可能要回答的内容>"
+        pattern = rf"(@QQ:{self.bot_account}|@[^(\n]*\(QQ:{self.bot_account}\))"
+        if re.search(pattern, text):
+            return re.sub(
+                pattern,
+                r"<这是新的可能要回答的内容>\1</这是新的可能要回答的内容>",
+                text,
+            )
+        return f"<这是新的可能要回答的内容>{text}</这是新的可能要回答的内容>"
 
     def _segment_to_text(
         self,
@@ -955,10 +1079,13 @@ class MessageQueue:
             "share": lambda d: f"[分享:{d.get('title') or d.get('url') or '未知链接'}]",
             "reply": lambda d: f"[回复:消息ID={d.get('id', '未知')}]",
             "redbag": lambda d: f"[红包:{d.get('title') or '恭喜发财'}]",
-            "poke": lambda d: f"[戳一戳:QQ={d.get('qq', '未知')}（这是QQ的一个互动功能，会让被戳的人手机轻微震动）]",
+            "poke": lambda d: f"[{_poke_sub_type_text(str(d.get('type', 'poke')))}:QQ={d.get('qq', '未知')}]",
             "gift": lambda d: f"[礼物:QQ={d.get('qq', '未知')},ID={d.get('id', '未知')}]",
-            "forward": lambda d: f"[合并转发:ID={d.get('id', '未知')}]",
-            "node": lambda d: f"[转发节点:ID={d.get('id', '未知')},名称={d.get('name', '未知')}]",
+            "forward": lambda d: (
+                f"[合并转发:ID={d.get('id', '未知')}"
+                f"（使用 read_forward_msg 工具查看内容）]"
+            ),
+            "node": lambda d: f"[转发节点:ID={d.get('id', '未知')},发送者={d.get('name', '未知')}]",
             "xml": lambda d: f"[XML:{d.get('data') or 'XML内容'}]",
             "json": lambda d: f"[JSON:{d.get('data') or 'JSON内容'}]",
             "cardimage": lambda d: f"[卡片图片:{d.get('file') or '未知'}]",
@@ -1060,6 +1187,7 @@ class MessageQueue:
             "MessageQueue("
             f"max_size={self.max_size}, "
             f"timestamp_interval_seconds={self.timestamp_interval_seconds}, "
+            f"forward_weight={self.forward_weight}, "
             f"queues={len(self._queues)})"
         )
 
@@ -1071,6 +1199,7 @@ def create_message_queue(
     cq_fallback_max_length: int = 100,
     poke_weight: float = 0.2,
     reaction_weight: float = 0.2,
+    forward_weight: int = 2,
 ) -> MessageQueue:
     return MessageQueue(
         max_size=max_size,
@@ -1078,6 +1207,7 @@ def create_message_queue(
         cq_fallback_max_length=cq_fallback_max_length,
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
+        forward_weight=forward_weight,
     )
 
 
@@ -1086,3 +1216,19 @@ def _safe_int(value: object) -> Optional[int]:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _poke_sub_type_text(sub_type: str) -> str:
+    """将 poke 子类型代码转为中文描述，未知时返回'戳一戳'。"""
+    mapping = {
+        "poke": "戳一戳",
+        "show": "比心",
+        "heartbeat": "心跳",
+        "like": "点赞",
+        "fangdajing": "放大镜",
+        "break_out": "敲一敲",
+        "sixsixsix": "666",
+        "rose": "玫瑰",
+        "heart": "比心",
+    }
+    return mapping.get(str(sub_type).lower(), "戳一戳")

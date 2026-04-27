@@ -14,6 +14,8 @@ class CreatorImageAccess(Protocol):
 
     async def get(self, image_id: str) -> Optional[CreatorImageRecord]: ...
 
+    async def get_by_hash(self, file_hash: str) -> Optional[CreatorImageRecord]: ...
+
     async def set(
         self,
         image_id: str,

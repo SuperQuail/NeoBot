@@ -27,6 +27,14 @@ class SqlAlchemyCreatorImageAccess:
             return None
         return self._to_domain(row)
 
+    async def get_by_hash(self, file_hash: str) -> Optional[CreatorImageRecord]:
+        stmt = select(CreatorImageData).where(CreatorImageData.file_hash == file_hash)
+        result = await self._session.execute(stmt)
+        row = result.scalars().first()
+        if row is None:
+            return None
+        return self._to_domain(row)
+
     async def set(
         self,
         image_id: str,

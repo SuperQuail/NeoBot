@@ -89,7 +89,18 @@ class FriendAdd(Notice):
 
 class PokeSubType(Enum):
     """戳一戳类型枚举类"""
-    poke = "poke" #戳一戳
+    poke = "poke"  # 戳一戳
+    show = "show"  # 比心 / 放大招
+    heartbeat = "heartbeat"  # 心跳
+    like = "like"  # 点赞
+    fangdajing = "fangdajing"  # 放大镜
+    break_out = "break_out"  # 敲一敲
+    sixsixsix = "sixsixsix"  # 666
+    rose = "rose"  # 玫瑰
+    heart = "heart"  # 比心(旧)
+    @classmethod
+    def _missing_(cls, value):
+        return cls.poke  # 未知类型回退到默认的 poke（戳一戳）
 
 class PrivatePoke(Notice):
     """私聊戳一戳"""

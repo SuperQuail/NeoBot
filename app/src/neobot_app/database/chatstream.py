@@ -94,6 +94,7 @@ class ChatStreamManager:
         )
         poke_weight = getattr(bot_cfg.chat, "poke_weight", 0.2)
         reaction_weight = getattr(bot_cfg.chat, "reaction_weight", 0.2)
+        forward_weight = getattr(bot_cfg.chat, "forward_message_queue_weight", 2)
         profile_service = UserProfileService(
             self.adapter,
             self._uow_factory,
@@ -107,6 +108,7 @@ class ChatStreamManager:
                 timestamp_interval_seconds=timestamp_interval_seconds,
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
+                forward_weight=forward_weight,
                 bot_account=bot_cfg.bot.account,
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
@@ -116,6 +118,7 @@ class ChatStreamManager:
                 timestamp_interval_seconds=timestamp_interval_seconds,
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
+                forward_weight=forward_weight,
                 bot_account=bot_cfg.bot.account,
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )

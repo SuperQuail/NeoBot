@@ -58,6 +58,11 @@ class PromptBuilder:
             message_queue,
         )
 
+        group_admin = await self._profile_service.render_group_owner_text(
+            group_id,
+            message_queue,
+        )
+
         # 查询群聊档案记忆（table_name='group_profile', key=群号）
         group_profile = await self._fetch_archive("group_profile", group_id_str) or ""
         group_summary = await self._fetch_archive("group_summary", group_id_str) or ""
@@ -96,6 +101,7 @@ class PromptBuilder:
             group_name=group_name,
             group_id=group_id,
             group_description=group_description,
+            group_admin=group_admin,
             group_info=group_info,
             message_list=message_list,
             member_list=member_list,
@@ -107,6 +113,8 @@ class PromptBuilder:
             memory_list=memory_list,
         )
         prompt = _merge_prompt_fragments(prompt, bot_group_admin_status)
+        if group_admin and "{group_admin}" not in self._config.chat.group_prompt_template:
+            prompt = _merge_prompt_fragments(prompt, group_admin)
         if group_info and "{group_info}" not in self._config.chat.group_prompt_template:
             prompt = _merge_prompt_fragments(prompt, group_info)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.group_prompt_template:
@@ -185,9 +193,8 @@ class PromptBuilder:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
         prompt += (
             "\n<私聊提示>"
-            "\n这是私聊对话。发送回复后，如果对方话没有说完或你认为对方可能还有更多内容，"
-            "请使用 wait 工具等待新消息，不要直接结束对话。"
-            "如果对方消息没有明显的结束意图，你应当持续等待而非结束事件。"
+            "\n这是私聊对话。必须先正常回复对方的消息，回复内容根据聊天内容自然决定。"
+            "\n发送回复后，如果对方明显还有更多内容要说，请使用 wait 工具等待新消息进行后续回复（一般等待10秒即可），不要直接结束对话。"
             "\n</私聊提示>"
         )
         return prompt

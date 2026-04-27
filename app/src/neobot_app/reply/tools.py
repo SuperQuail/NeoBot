@@ -50,6 +50,9 @@ class ReplyToolExecutor(ToolExecutor):
         tts_service: Any = None,
         speak_handler: Any = None,
         chat_context: str | None = None,
+        conv_kind: str = "",
+        conv_id: str = "",
+        wait_cooldown_seconds: int = 60,
         ai_reply_check: bool = False,
         bot_name: str = "Bot",
         long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
@@ -71,12 +74,16 @@ class ReplyToolExecutor(ToolExecutor):
         self._tts_service = tts_service
         self._speak_handler = speak_handler
         self._chat_context = chat_context
+        self._conv_kind = conv_kind
+        self._conv_id = conv_id
         self._ai_reply_check = ai_reply_check
         self._bot_name = bot_name
         self._long_reply_fallback_template = long_reply_fallback_template
         self._long_reply_max_length = long_reply_max_length
         self._long_reply_max_sentence_count = long_reply_max_sentence_count
         self._enable_ai_reply_regenerate = enable_ai_reply_regenerate
+        self._wait_cooldown_seconds = wait_cooldown_seconds
+        self._last_wait_time = 0.0
         self._logger = logger or NullLogger()
 
     def definitions(self) -> list[ToolDefinition]:
@@ -475,8 +482,14 @@ class ReplyToolExecutor(ToolExecutor):
         return "回复已发送"
 
     async def _execute_wait(self, args: dict) -> str:
+        import time
         if self._wait is None:
             return "错误：wait 处理器未配置"
+        now = time.monotonic()
+        elapsed = now - self._last_wait_time
+        if self._last_wait_time > 0 and elapsed < self._wait_cooldown_seconds:
+            remaining = int(self._wait_cooldown_seconds - elapsed)
+            return f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
         seconds = args.get("seconds", 20)
         if seconds is not None:
             try:
@@ -485,6 +498,7 @@ class ReplyToolExecutor(ToolExecutor):
                 return f"错误：seconds 必须为整数，收到 {seconds}"
         else:
             seconds = 20
+        self._last_wait_time = now
         return await self._wait(seconds=seconds)
 
     def _execute_adjust_willingness(self, args: dict) -> str:
@@ -634,6 +648,8 @@ class ReplyToolExecutor(ToolExecutor):
 
     def _build_delegate_context(self) -> str:
         parts: list[str] = []
+        if self._conv_kind and self._conv_id:
+            parts.append(f"[当前会话]\nkind={self._conv_kind}\nid={self._conv_id}")
         if self._chat_context:
             parts.append("[主Agent当前提示词]\n" + self._chat_context)
 
@@ -713,6 +729,9 @@ def build_reply_toolset(
     tts_service: Any = None,
     speak_handler: Any = None,
     chat_context: str | None = None,
+    conv_kind: str = "",
+    conv_id: str = "",
+    wait_cooldown_seconds: int = 60,
     ai_reply_check: bool = False,
     bot_name: str = "Bot",
     long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
@@ -736,6 +755,9 @@ def build_reply_toolset(
         tts_service=tts_service,
         speak_handler=speak_handler,
         chat_context=chat_context,
+        conv_kind=conv_kind,
+        conv_id=conv_id,
+        wait_cooldown_seconds=wait_cooldown_seconds,
         ai_reply_check=ai_reply_check,
         bot_name=bot_name,
         long_reply_fallback_template=long_reply_fallback_template,

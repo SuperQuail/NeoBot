@@ -11,6 +11,7 @@ from neobot_adapter.model.notice import (
     ReceiveOfflineFile, ClientStatusChange, EssenceMessage
 )
 from neobot_adapter.utils.parse import safe_parse_model
+from neobot_app.message.queue_impl import _poke_sub_type_text
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -93,13 +94,15 @@ async def history_message_to_text(
             else:
                 message_str += "红包 [恭喜发财，大吉大利]"
         elif msg_type == "poke":
-            message_str += f"戳一戳 [QQ:{item.data.qq}]"
+            poke_type = getattr(item.data, 'type', '') if item.data else ''
+            action_desc = _poke_sub_type_text(str(poke_type))
+            message_str += f"{action_desc} [QQ:{item.data.qq}]"
         elif msg_type == "gift":
             message_str += f"礼物 [QQ:{item.data.qq}, ID:{item.data.id}]"
         elif msg_type == "forward":
-            message_str += f"合并转发 [ID:{item.data.id}]"
+            message_str += f"合并转发 [ID:{item.data.id}（使用 read_forward_msg 工具查看内容）]"
         elif msg_type == "node":
-            message_str += f"转发节点 [ID:{item.data.id}, 名称:{item.data.name}]"
+            message_str += f"转发节点 [ID:{item.data.id}, 发送者:{item.data.name}]"
         elif msg_type == "xml":
             message_str += f"XML 消息 [{item.data.data or 'XML 内容'}]"
         elif msg_type == "json":
@@ -208,11 +211,13 @@ async def notice_to_text(notice_data: Notice) -> str:
     elif isinstance(notice_data, FriendAdd):
         return f"好友添加: 用户 {notice_data.user_id or '未知'} 添加为好友"
     elif isinstance(notice_data, PrivatePoke):
-        sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
-        return f"私聊戳一戳: 用户 {notice_data.sender_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+        sub_type_raw = getattr(notice_data.sub_type, 'value', '') if notice_data.sub_type else ''
+        action_desc = _poke_sub_type_text(sub_type_raw)
+        return f"私聊{action_desc}: 用户 {notice_data.sender_id or '未知'} 对 {notice_data.target_id or '未知'} 使用了{action_desc}"
     elif isinstance(notice_data, GroupPoke):
-        sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
-        return f"群戳一戳: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 戳了 {notice_data.target_id or '未知'} ({sub_type})（这是QQ的一个互动功能，会让被戳的人手机轻微震动）"
+        sub_type_raw = getattr(notice_data.sub_type, 'value', '') if notice_data.sub_type else ''
+        action_desc = _poke_sub_type_text(sub_type_raw)
+        return f"群{action_desc}: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 对 {notice_data.target_id or '未知'} 使用了{action_desc}"
     elif isinstance(notice_data, GroupLuckyKing):
         sub_type = getattr(notice_data.sub_type, 'value', '未知') if notice_data.sub_type else '未知'
         return f"群红包运气王: 群 {notice_data.group_id or '未知'} 中用户 {notice_data.user_id or '未知'} 成为了用户 {notice_data.target_id or '未知'} 发送的红包运气王 ({sub_type})"
@@ -377,11 +382,20 @@ def _parse_cq_code(cq_string: str) -> str:
             result += f"红包 [{title}]"
         elif cq_type == "poke":
             qq = params.get('qq', '未知')
-            result += f"戳一戳 [QQ:{qq}]"
+            poke_type = params.get('type', '')
+            action_desc = _poke_sub_type_text(poke_type)
+            result += f"{action_desc} [QQ:{qq}]"
         elif cq_type == "gift":
             qq = params.get('qq', '未知')
             gift_id = params.get('id', '未知')
             result += f"礼物 [QQ:{qq}, ID:{gift_id}]"
+        elif cq_type == "forward":
+            msg_id = params.get('id', '未知')
+            result += f"合并转发 [ID:{msg_id}（使用 read_forward_msg 工具查看内容）]"
+        elif cq_type == "node":
+            node_id = params.get('id', '未知')
+            node_name = params.get('name', '未知')
+            result += f"转发节点 [ID:{node_id}, 发送者:{node_name}]"
         else:
             # 未知类型，显示原始 CQ 码信息
             result += f"[CQ:{cq_type}]"

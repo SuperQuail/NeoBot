@@ -109,6 +109,40 @@ class UserProfileService:
             return str(group.group_name)
         return f"群聊{group_id}"
 
+    async def render_group_owner_text(
+        self,
+        group_id: str | int,
+        message_queue: Any | None = None,
+    ) -> str:
+        """获取群主信息文本：'群主：name（QQ：123456）'，从队列或 API 动态查找。"""
+        group_id_int = _safe_int(group_id)
+        members = None
+
+        # 先从消息队列中查找（轻量，无 API 调用）
+        members = self._collect_group_members_from_queue(group_id, message_queue)
+
+        # 队列中找不到则调用 API
+        if not members and group_id_int is not None:
+            try:
+                response = await self._adapter.get_group_member_list(group_id_int)
+                members = response.data if response and response.data else []
+            except Exception:
+                pass
+
+        if members:
+            for member in members:
+                role = _normalize_role(getattr(member, "role", None))
+                if role == "owner":
+                    user_id = getattr(member, "user_id", None)
+                    if user_id is None:
+                        continue
+                    card = getattr(member, "card", None)
+                    nickname = getattr(member, "nickname", None)
+                    name = card or nickname or f"QQ:{user_id}"
+                    return f"群主：{name}（QQ：{user_id}）"
+
+        return ""
+
     async def render_group_member_list(
         self,
         group_id: str | int,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
@@ -27,6 +28,49 @@ if TYPE_CHECKING:
     from neobot_app.willing.models import WillingDecision
     from neobot_app.willing.service import WillingService
     from neobot_app.image import ImageParseService
+
+
+def _msg_id_of(entry) -> int | None:
+    """从 QueueEntry 中提取 message_id，不存在则返回 None。"""
+    from neobot_app.message.queue_impl import QueueEntryType
+
+    if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+        return entry.message.message_id
+    return None
+
+
+def _entry_fingerprint(entry) -> str:
+    """为 QueueEntry 生成去重指纹。
+
+    MESSAGE 条目使用 message_id；非 MESSAGE 条目使用类型+内容哈希。
+    确保 TIMESTAMP / RECALL / REACTION / POKE 等条目也能正确去重。
+    """
+    from neobot_app.message.queue_impl import QueueEntryType
+
+    if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+        mid = entry.message.message_id
+        if mid is not None:
+            return f"msg:{mid}"
+        return f"msg:hash:{hash(str(entry.message.model_dump(mode='json')))}"
+
+    if entry.kind == QueueEntryType.TIMESTAMP:
+        return f"ts:{entry.occurred_at}"
+
+    if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
+        nid = entry.notice.message_id
+        uid = getattr(entry.notice, "user_id", "")
+        oid = getattr(entry.notice, "operator_id", "")
+        return f"recall:{nid}:{uid}:{oid}:{entry.occurred_at}"
+
+    if entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
+        r = entry.reaction
+        return f"reaction:{r.target_message_id}:{r.emoji_id}:{r.operator_user_id}"
+
+    if entry.kind == QueueEntryType.POKE and entry.poke is not None:
+        p = entry.poke
+        return f"poke:{p.sender_id}:{p.target_id}:{p.sub_type}:{entry.occurred_at}"
+
+    return f"unknown:{entry.kind.value}:{hash(str(entry))}"
 
 
 class ReplyOrchestrator:
@@ -76,6 +120,8 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
         decision: WillingDecision,
+        pre_reply_message_id: int | None = None,
+        on_reply_done: Callable[[], Awaitable[None]] | None = None,
     ) -> ReplyEvent | None:
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
@@ -84,6 +130,7 @@ class ReplyOrchestrator:
             message=message,
             willing_decision=decision,
             conversation_ref=conversation_ref,
+            pre_reply_message_id=pre_reply_message_id,
         )
 
         # 按 kind:queue_key 组合键去重，避免群号与 QQ 号相同时互相阻塞
@@ -148,6 +195,8 @@ class ReplyOrchestrator:
         def _cleanup(task: asyncio.Task[None]) -> None:
             self._tasks.discard(task)
             self._active_pipelines.pop(pipeline_key, None)
+            if on_reply_done is not None:
+                asyncio.create_task(on_reply_done())
 
         task = asyncio.create_task(self._run(event, queue, queue_key))
         self._tasks.add(task)
@@ -180,6 +229,13 @@ class ReplyOrchestrator:
             if isinstance(val, int):
                 return val
         return 2
+
+    def _get_wait_cooldown_seconds(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "wait_cooldown_seconds", None)
+            if isinstance(val, int):
+                return val
+        return 60
 
     def _get_sentence_cooldown_seconds(self) -> float:
         if self._config is not None:
@@ -326,7 +382,10 @@ class ReplyOrchestrator:
                 if self._config else True
             )
             if enable_tracking:
-                queue.set_last_reply_position(queue_key)
+                queue.set_last_reply_position(
+                    queue_key,
+                    before_message_id=event.pre_reply_message_id,
+                )
             elapsed = time.monotonic() - started_at
             self._logger.info(
                 "回复事件结束",
@@ -617,6 +676,8 @@ class ReplyOrchestrator:
             await self._adapter.send(event.conversation_ref, [segment])
             return f"语音消息已发送，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
+        conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
+        conv_id = event.conversation_ref.id if event.conversation_ref else ""
         reply_toolset = build_reply_toolset(
             send_reply_handler=send_reply_handler,
             willing_service=self._willing_service,
@@ -631,6 +692,9 @@ class ReplyOrchestrator:
             tts_service=self._tts_service,
             speak_handler=speak_handler,
             chat_context=prompt,
+            conv_kind=conv_kind,
+            conv_id=conv_id,
+            wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
             ai_reply_check=self._get_ai_reply_check(),
             bot_name=self._get_bot_name(),
             long_reply_fallback_template=self._get_long_reply_fallback_template(),
@@ -866,16 +930,37 @@ class ReplyOrchestrator:
         snapshot: MessageQueue,
         queue_key: str,
     ) -> list:
-        """收集源队列中比快照多的新条目，并更新快照"""
+        """收集源队列中比快照新的条目并更新快照。
+
+        使用指纹集合比对，而非位置分割：
+        - 指纹在 snapshot 中已存在 → 不是新条目（即使推送顺序与 message_id 顺序不一致）
+        - 指纹不在 snapshot 中 → 新条目（支持队列驱逐后的安全回退）
+        """
         from collections import deque
         from neobot_app.message.queue_impl import QueueEntryType
 
         source_entries = list(source._queues.get(queue_key, []))
-        snapshot_entries = list(snapshot._queues.get(queue_key, []))
-        snapshot_count = len(snapshot_entries)
-        new_entries = source_entries[snapshot_count:]
+        if not source_entries:
+            return []
 
-        # 将新条目加入快照
+        snapshot_entries = list(snapshot._queues.get(queue_key, []))
+
+        # 收集 snapshot 中所有条目的指纹
+        snapshot_fingerprints: set[str] = set()
+        for entry in snapshot_entries:
+            fp = _entry_fingerprint(entry)
+            if fp:
+                snapshot_fingerprints.add(fp)
+
+        # 在 source 中找出指纹不在 snapshot 中的新条目
+        new_entries: list = []
+        for entry in source_entries:
+            fp = _entry_fingerprint(entry)
+            if fp and fp in snapshot_fingerprints:
+                continue  # 已存在于快照中
+            new_entries.append(entry)
+
+        # 将新条目合并到 snapshot
         if new_entries:
             if queue_key not in snapshot._queues:
                 snapshot._queues[queue_key] = deque()
