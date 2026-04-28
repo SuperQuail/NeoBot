@@ -47,6 +47,7 @@ class SqlAlchemyCreatorImageAccess:
         mime_type: Optional[str] = None,
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
+        image_source: Optional[str] = None,
     ) -> CreatorImageRecord:
         now = datetime.now(timezone.utc)
 
@@ -61,6 +62,7 @@ class SqlAlchemyCreatorImageAccess:
                 mime_type=mime_type,
                 original_width=original_width,
                 original_height=original_height,
+                image_source=image_source,
                 created_at=now,
                 updated_at=now,
                 version=1,
@@ -76,6 +78,7 @@ class SqlAlchemyCreatorImageAccess:
                     "mime_type": mime_type,
                     "original_width": original_width,
                     "original_height": original_height,
+                    "image_source": image_source,
                     "updated_at": now,
                     "version": CreatorImageData.version + 1,
                 },
@@ -95,6 +98,7 @@ class SqlAlchemyCreatorImageAccess:
                     mime_type=mime_type,
                     original_width=original_width,
                     original_height=original_height,
+                    image_source=image_source,
                     created_at=now,
                     updated_at=now,
                     version=1,
@@ -109,6 +113,7 @@ class SqlAlchemyCreatorImageAccess:
                 row.mime_type = mime_type
                 row.original_width = original_width
                 row.original_height = original_height
+                row.image_source = image_source
                 row.updated_at = now
                 row.version += 1
 
@@ -216,6 +221,7 @@ class SqlAlchemyCreatorImageAccess:
             created_at=SqlAlchemyCreatorImageAccess._normalize_datetime(row.created_at),
             updated_at=SqlAlchemyCreatorImageAccess._normalize_datetime(row.updated_at),
             version=row.version,
+            image_source=row.image_source,
         )
 
     @staticmethod

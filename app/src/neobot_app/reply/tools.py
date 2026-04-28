@@ -55,6 +55,7 @@ class ReplyToolExecutor(ToolExecutor):
         conv_id: str = "",
         wait_cooldown_seconds: int = 60,
         ai_reply_check: bool = False,
+        ai_reply_check_lightweight: bool = True,
         bot_name: str = "Bot",
         long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
         long_reply_max_length: int = 300,
@@ -79,6 +80,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._conv_kind = conv_kind
         self._conv_id = conv_id
         self._ai_reply_check = ai_reply_check
+        self._ai_reply_check_lightweight = ai_reply_check_lightweight
         self._bot_name = bot_name
         self._long_reply_fallback_template = long_reply_fallback_template
         self._long_reply_max_length = long_reply_max_length
@@ -479,6 +481,15 @@ class ReplyToolExecutor(ToolExecutor):
             result = self._preview_split(text)
             return self._build_ai_check_prompt(result)
 
+        if (
+            self._ai_reply_check_lightweight
+            and not self._ai_reply_check
+            and not (send_original or ai_check_approved or segments)
+        ):
+            result = self._preview_split(text)
+            if result.fallback_used:
+                return self._build_ai_check_prompt(result)
+
         if self._enable_ai_reply_regenerate and not send_original and not segments:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
@@ -487,6 +498,16 @@ class ReplyToolExecutor(ToolExecutor):
                     f"（字符上限 {self._long_reply_max_length}，"
                     f"分句上限 {self._long_reply_max_sentence_count}）。"
                     f"请精简为更短的版本后重新调用 send_reply。"
+                )
+
+        if self._enable_ai_reply_regenerate and not send_original and ai_check_approved:
+            pre_check = self._preview_split(text)
+            if pre_check.fallback_used:
+                return (
+                    f"回复被拦截：{pre_check.reason}"
+                    f"（字符上限 {self._long_reply_max_length}，"
+                    f"分句上限 {self._long_reply_max_sentence_count}）。"
+                    f"当前切分结果为默认回复，并非你的原意，请精简为更短的版本后重新调用 send_reply。"
                 )
 
         await self._send_reply(
@@ -722,8 +743,7 @@ class ReplyToolExecutor(ToolExecutor):
         segments = [str(item).strip() for item in value if str(item).strip()]
         return segments or None
 
-    @staticmethod
-    def _build_ai_check_prompt(result: ReplyPostProcessResult) -> str:
+    def _build_ai_check_prompt(self, result: ReplyPostProcessResult) -> str:
         lines = [
             "AI回复检查已开启，暂未发送。",
             "请检查切分后的分条回复是否存在严重问题或明显歧义。",
@@ -733,13 +753,27 @@ class ReplyToolExecutor(ToolExecutor):
         for index, message in enumerate(result.messages, start=1):
             lines.append(f"{index}. {message}")
         if result.fallback_used:
-            lines.append(f"注意：已触发默认回复，原因：{result.reason or '未知'}")
-        lines.append(
-            "如果没有严重问题或歧义，请再次调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"
-        )
-        lines.append(
-            "如果切分有问题但仍要发送原文，请调用 send_reply 并设置 send_original=true；如果不应发送，请调用 cancel。"
-        )
+            lines.append(f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。")
+            if self._enable_ai_reply_regenerate:
+                lines.append(
+                    "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
+                    f"{self._long_reply_max_length}字符、不超过"
+                    f"{self._long_reply_max_sentence_count}条），"
+                    "然后直接调用 send_reply 发送新文本，无需设置 ai_check_approved。"
+                )
+            else:
+                lines.append(
+                    "如确认使用当前默认回复，请再次调用 send_reply，传入原 text、"
+                    "segments 为上述切分结果、ai_check_approved=true。"
+                    "如不应发送任何回复，请调用 cancel。"
+                )
+        else:
+            lines.append(
+                "如果没有严重问题或歧义，请再次调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"
+            )
+            lines.append(
+                "如果切分有问题但仍要发送原文，请调用 send_reply 并设置 send_original=true；如果不应发送，请调用 cancel。"
+            )
         return "\n".join(lines)
 
     async def close(self) -> None:
@@ -766,6 +800,7 @@ def build_reply_toolset(
     conv_id: str = "",
     wait_cooldown_seconds: int = 60,
     ai_reply_check: bool = False,
+    ai_reply_check_lightweight: bool = True,
     bot_name: str = "Bot",
     long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
     long_reply_max_length: int = 300,
@@ -793,6 +828,7 @@ def build_reply_toolset(
         conv_id=conv_id,
         wait_cooldown_seconds=wait_cooldown_seconds,
         ai_reply_check=ai_reply_check,
+        ai_reply_check_lightweight=ai_reply_check_lightweight,
         bot_name=bot_name,
         long_reply_fallback_template=long_reply_fallback_template,
         long_reply_max_length=long_reply_max_length,

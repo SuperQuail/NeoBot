@@ -11,10 +11,12 @@ from neobot_app.agents.chat_interaction import (
     build_chat_interaction_toolset,
 )
 from neobot_app.agents.creator import (
+    BackgroundDrawingManager,
     CreatorAgent,
     CreatorAgentConfig,
     CreatorImageService,
     CreatorToolExecutor,
+    DrawTask,
     build_creator_agent,
     build_creator_toolset,
 )
@@ -34,6 +36,7 @@ __all__ = [
     "ArchiveMemoryToolExecutor",
     "build_archive_memory_agent",
     "build_archive_memory_toolset",
+    "BackgroundDrawingManager",
     "ChatInteractionAgent",
     "ChatInteractionToolExecutor",
     "build_chat_interaction_agent",
@@ -42,6 +45,7 @@ __all__ = [
     "CreatorAgentConfig",
     "CreatorImageService",
     "CreatorToolExecutor",
+    "DrawTask",
     "build_creator_agent",
     "build_creator_toolset",
     "ImageParseAgent",

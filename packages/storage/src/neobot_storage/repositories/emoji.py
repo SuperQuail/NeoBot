@@ -47,6 +47,7 @@ class SqlAlchemyEmojiAccess:
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
         analysis_text: Optional[str] = None,
+        image_source: Optional[str] = None,
     ) -> EmojiRecord:
         now = datetime.now(timezone.utc)
 
@@ -59,6 +60,7 @@ class SqlAlchemyEmojiAccess:
                 original_width=original_width,
                 original_height=original_height,
                 analysis_text=analysis_text,
+                image_source=image_source,
                 created_at=now,
                 updated_at=now,
                 version=1,
@@ -72,6 +74,7 @@ class SqlAlchemyEmojiAccess:
                     "original_width": original_width,
                     "original_height": original_height,
                     "analysis_text": analysis_text,
+                    "image_source": image_source,
                     "updated_at": now,
                     "version": EmojiData.version + 1,
                 },
@@ -91,6 +94,7 @@ class SqlAlchemyEmojiAccess:
                 original_width=original_width,
                 original_height=original_height,
                 analysis_text=analysis_text,
+                image_source=image_source,
                 created_at=now,
                 updated_at=now,
                 version=1,
@@ -103,6 +107,7 @@ class SqlAlchemyEmojiAccess:
             row.original_width = original_width
             row.original_height = original_height
             row.analysis_text = analysis_text
+            row.image_source = image_source
             row.updated_at = now
             row.version += 1
 
@@ -213,6 +218,7 @@ class SqlAlchemyEmojiAccess:
             original_height=row.original_height,
             analysis_text=row.analysis_text,
             use_count=row.use_count,
+            image_source=row.image_source,
             created_at=SqlAlchemyEmojiAccess._normalize_datetime(row.created_at),
             updated_at=SqlAlchemyEmojiAccess._normalize_datetime(row.updated_at),
             version=row.version,

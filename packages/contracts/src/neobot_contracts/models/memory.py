@@ -77,6 +77,7 @@ class EmojiRecord:
     created_at: datetime
     updated_at: datetime
     version: int
+    image_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,3 +97,4 @@ class CreatorImageRecord:
     created_at: datetime
     updated_at: datetime
     version: int
+    image_source: str | None = None

@@ -170,6 +170,15 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.emoji"),
     )
 
+    # 创建后台绘图管理器
+    from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
+
+    creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
+    drawing_manager = BackgroundDrawingManager(
+        config=creator_config,
+        logger=logger_factory.get_logger("app.drawing"),
+    )
+
     agent_registry = build_agent_registry(
         config=config,
         archive_memory_service=archive_memory_service,
@@ -180,6 +189,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         vision_provider=vision_provider,
         willing_service=willing_service,
         logger=logger_factory.get_logger("app.agent_registry"),
+        drawing_manager=drawing_manager,
     )
 
     image_parse_service = ImageParseService(
@@ -217,7 +227,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
         logger=logger_factory.get_logger("app.reply"),
+        drawing_manager=drawing_manager,
     )
+    drawing_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,

@@ -28,6 +28,7 @@ class CreatorImageAccess(Protocol):
         mime_type: Optional[str] = None,
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
+        image_source: Optional[str] = None,
     ) -> CreatorImageRecord: ...
 
     async def delete(self, image_id: str) -> bool: ...

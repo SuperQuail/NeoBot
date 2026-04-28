@@ -40,6 +40,7 @@ def build_agent_registry(
     provider_factory: Callable[[], Provider] | None = None,
     model_name: str = "primary_chat_model",
     logger: Logger | None = None,
+    drawing_manager: Any = None,
 ) -> AgentRegistry:
     registry = AgentRegistry()
     active_logger = logger or NullLogger()
@@ -65,6 +66,7 @@ def build_agent_registry(
                         emoji_service=emoji_service,
                         vision_provider=vision_provider,
                         logger=active_logger,
+                        drawing_manager=drawing_manager,
                     ),
                 )
             except Exception as exc:

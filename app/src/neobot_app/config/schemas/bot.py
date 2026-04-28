@@ -276,7 +276,7 @@ def _default_vision_model() -> "ModelRegistration":
     return ModelRegistration(
         description="图像识别模型",
         provider="硅基流动",
-        model_name="Qwen/Qwen2.5-VL-32B-Instruct",
+        model_name="Qwen/Qwen3-VL-8B-Instruct",
         settings=ModelSettings(
             temperature=0.7,
             max_output_tokens=2048,
@@ -502,6 +502,32 @@ class AgentCreatorEmoji:
 
 
 @dataclass
+class AgentCreatorDrawing:
+    """Creator Agent 后台绘图配置。"""
+
+    background_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用后台绘图；关闭则回退到同步阻塞模式"},
+    )
+    cooldown_seconds: int = field(
+        default=60,
+        metadata={"description": "绘图冷却秒数；同一管线上次绘图开始后此时间内不可再次提交"},
+    )
+    notification_retry_seconds: int = field(
+        default=30,
+        metadata={"description": "绘图完成后通知主Agent，若无回应此秒数后重试"},
+    )
+    max_retries: int = field(
+        default=1,
+        metadata={"description": "通知最大重试次数（不含首次）；默认1表示首次通知后重试1次"},
+    )
+    startup_grace_seconds: float = field(
+        default=3.0,
+        metadata={"description": "后台绘图启动宽限期（秒）；此时间内若API报错则立即返回失败并取消冷却"},
+    )
+
+
+@dataclass
 class AgentCreator:
     """Creator Agent 配置。"""
 
@@ -511,6 +537,7 @@ class AgentCreator:
     )
     gallery: AgentCreatorGallery = field(default_factory=AgentCreatorGallery)
     emoji: AgentCreatorEmoji = field(default_factory=AgentCreatorEmoji)
+    drawing: AgentCreatorDrawing = field(default_factory=AgentCreatorDrawing)
 
 
 @dataclass
@@ -696,6 +723,13 @@ class EnhancedChat(Chat):
     ai_reply_check: bool = field(
         default=False,
         metadata={"description": "AI回复检查；开启后 send_reply 会先返回切分结果供主Agent确认"},
+    )
+    ai_reply_check_lightweight: bool = field(
+        default=True,
+        metadata={
+            "description": "AI回复轻量检查；仅在回复触发过长/过多拦截时才提示AI检查切分结果。"
+            "当 ai_reply_check 全量检查开启后，此开关被忽略"
+        },
     )
     long_reply_fallback_template: str = field(
         default="{bot_name}懒得和你说道理，你不配听",

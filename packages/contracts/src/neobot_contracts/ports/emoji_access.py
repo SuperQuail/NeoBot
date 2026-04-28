@@ -26,6 +26,7 @@ class EmojiAccess(Protocol):
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
         analysis_text: Optional[str] = None,
+        image_source: Optional[str] = None,
     ) -> EmojiRecord: ...
 
     async def delete(self, file_hash: str) -> bool: ...

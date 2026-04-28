@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
@@ -91,6 +92,7 @@ class ReplyOrchestrator:
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
         logger: Logger | None = None,
+        drawing_manager: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -108,6 +110,7 @@ class ReplyOrchestrator:
         )
         self._debug_recorder = debug_recorder
         self._logger = logger or NullLogger()
+        self._drawing_manager = drawing_manager
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -122,6 +125,7 @@ class ReplyOrchestrator:
         decision: WillingDecision,
         pre_reply_message_id: int | None = None,
         on_reply_done: Callable[[], Awaitable[None]] | None = None,
+        skip_cooldown: bool = False,
     ) -> ReplyEvent | None:
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
@@ -150,27 +154,28 @@ class ReplyOrchestrator:
             )
             return None
 
-        # 冷却检查：距上次回复结束不足冷却时间则跳过
-        cooldown = self._get_cooldown_seconds()
-        last_time = self._last_reply_time.get(pipeline_key, 0.0)
-        elapsed = time.monotonic() - last_time
-        if elapsed < cooldown:
-            self._logger.debug(
-                "冷却中，跳过创建回复",
-                event_id=event.event_id,
-                pipeline_key=pipeline_key,
-                elapsed=f"{elapsed:.1f}s",
-                cooldown=f"{cooldown}s",
-            )
-            self._record_debug(
-                "skipped_cooldown",
-                event,
-                queue_key=queue_key,
-                pipeline_key=pipeline_key,
-                elapsed_seconds=elapsed,
-                cooldown_seconds=cooldown,
-            )
-            return None
+        # 冷却检查：距上次回复结束不足冷却时间则跳过（后台通知可绕过）
+        if not skip_cooldown:
+            cooldown = self._get_cooldown_seconds()
+            last_time = self._last_reply_time.get(pipeline_key, 0.0)
+            elapsed = time.monotonic() - last_time
+            if elapsed < cooldown:
+                self._logger.debug(
+                    "冷却中，跳过创建回复",
+                    event_id=event.event_id,
+                    pipeline_key=pipeline_key,
+                    elapsed=f"{elapsed:.1f}s",
+                    cooldown=f"{cooldown}s",
+                )
+                self._record_debug(
+                    "skipped_cooldown",
+                    event,
+                    queue_key=queue_key,
+                    pipeline_key=pipeline_key,
+                    elapsed_seconds=elapsed,
+                    cooldown_seconds=cooldown,
+                )
+                return None
 
         self._logger.info(
             "创建回复事件",
@@ -204,6 +209,86 @@ class ReplyOrchestrator:
         task.add_done_callback(_cleanup)
         return event
 
+    def start_background_reply(
+        self, *, kind: str, conversation_id: str, content: str
+    ) -> Any | None:
+        """程序化启动回复管线，用于后台绘图等系统通知。
+
+        当绘图完成但对应聊天流无活跃管线时，由 BackgroundDrawingManager 调用。
+        """
+        from neobot_app.willing.models import WillingDecision
+
+        queue_key = str(conversation_id)
+        pipeline_key = f"{kind}:{queue_key}"
+
+        existing = self._active_pipelines.get(pipeline_key)
+        if existing is not None and not existing.done():
+            self._logger.debug(
+                "后台回复管线已在运行，跳过创建",
+                pipeline_key=pipeline_key,
+            )
+            return None
+
+        queue = (
+            self._group_queue if kind == "group" else self._friend_queue
+        )
+        if queue is None:
+            self._logger.error(
+                "无法启动后台回复：消息队列未配置",
+                kind=kind,
+                conversation_id=conversation_id,
+            )
+            return None
+
+        # 将通知内容推入消息队列作为触发消息
+        from neobot_app.message.queue_impl import QueueEntryType
+
+        @dataclass
+        class _SyntheticSender:
+            card: str = ""
+            nickname: str = "系统"
+
+        @dataclass
+        class _SyntheticMessage:
+            time: int = 0
+            self_id: int = 0
+            post_type: str = "message"
+            message_type: str = kind
+            sub_type: str = "normal"
+            message_id: int = 0
+            user_id: int = 0
+            group_id: int = int(conversation_id) if kind == "group" and conversation_id.isdigit() else 0
+            message: list = field(default_factory=lambda: [{"type": "text", "data": {"text": content}}])
+            raw_message: str = ""
+            font: int = 0
+            sender: Any = field(default_factory=_SyntheticSender)
+            message_seq: int = 0
+            target_id: int = 0
+            temp_source: int = 0
+
+        synthetic_msg = _SyntheticMessage()
+
+        decision = WillingDecision(
+            manager_name="background_drawing",
+            probability=1.0,
+            should_reply=True,
+            reasons=["后台绘图任务完成通知"],
+        )
+
+        self._logger.info(
+            "启动后台回复管线",
+            pipeline_key=pipeline_key,
+            kind=kind,
+            conversation_id=conversation_id,
+        )
+        return self.start_reply(
+            message=synthetic_msg,
+            queue=queue,
+            queue_key=queue_key,
+            decision=decision,
+            skip_cooldown=True,
+        )
+
     async def shutdown(self) -> None:
         for task in list(self._tasks):
             task.cancel()
@@ -212,6 +297,8 @@ class ReplyOrchestrator:
         self._active_pipelines.clear()
         self._last_reply_time.clear()
         self._last_sentence_time.clear()
+        if self._drawing_manager is not None:
+            await self._drawing_manager.shutdown()
         if self._agent_registry is not None:
             await self._agent_registry.close()
         self._logger.info("ReplyOrchestrator 已关闭")
@@ -290,6 +377,16 @@ class ReplyOrchestrator:
         chat = getattr(self._config, "chat", None)
         value = getattr(chat, "ai_reply_check", False)
         return value if isinstance(value, bool) else False
+
+    def _get_ai_reply_check_lightweight(self) -> bool:
+        """轻量检查仅在完整检查关闭时生效。"""
+        if self._get_ai_reply_check():
+            return False
+        if self._config is None:
+            return True
+        chat = getattr(self._config, "chat", None)
+        value = getattr(chat, "ai_reply_check_lightweight", True)
+        return value if isinstance(value, bool) else True
 
     def _get_bot_name(self) -> str:
         if self._config is None:
@@ -710,6 +807,7 @@ class ReplyOrchestrator:
             conv_id=conv_id,
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
             ai_reply_check=self._get_ai_reply_check(),
+            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
             bot_name=self._get_bot_name(),
             long_reply_fallback_template=self._get_long_reply_fallback_template(),
             long_reply_max_length=self._get_long_reply_max_length(),
@@ -737,6 +835,24 @@ class ReplyOrchestrator:
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
+                # 注入后台绘图完成通知
+                if self._drawing_manager is not None:
+                    pipeline_key = f"{conv_kind}:{conv_id}"
+                    notification = await self._drawing_manager.poll_notification(pipeline_key)
+                    if notification:
+                        messages.append({"role": "user", "content": notification})
+                        self._logger.info(
+                            "注入绘图完成通知",
+                            event_id=event.event_id,
+                            pipeline_key=pipeline_key,
+                        )
+                        self._record_debug(
+                            "drawing_notification_injected",
+                            event,
+                            queue_key=queue_key,
+                            notification=notification[:200],
+                        )
+
                 response = await self._provider.chat(messages, tools=tools if tools else None)
                 self._record_debug(
                     "agent_iteration",
@@ -753,7 +869,19 @@ class ReplyOrchestrator:
                         content = response.get("content", "")
                         text = content.strip() if isinstance(content, str) else str(content)
                         if text:
-                            if self._get_ai_reply_check() and not ai_check_prompted:
+                            full_check = self._get_ai_reply_check()
+                            light_check = self._get_ai_reply_check_lightweight()
+                            need_check = full_check
+                            if not need_check and light_check:
+                                pre_check = process_reply_text(
+                                    text,
+                                    bot_name=self._get_bot_name(),
+                                    fallback_template=self._get_long_reply_fallback_template(),
+                                    max_length=self._get_long_reply_max_length(),
+                                    max_sentence_count=self._get_long_reply_max_sentence_count(),
+                                )
+                                need_check = pre_check.fallback_used
+                            if need_check and not ai_check_prompted:
                                 ai_check_prompted = True
                                 check_prompt = self._build_ai_reply_check_prompt(text)
                                 messages.append({"role": "user", "content": check_prompt})
@@ -763,6 +891,7 @@ class ReplyOrchestrator:
                                     queue_key=queue_key,
                                     reply_text=text,
                                     check_prompt=check_prompt,
+                                    check_mode="full" if full_check else "lightweight",
                                 )
                                 continue
                             event.generated_text = text
@@ -1141,11 +1270,27 @@ class ReplyOrchestrator:
         for index, message in enumerate(result.messages, start=1):
             lines.append(f"{index}. {message}")
         if result.fallback_used:
-            lines.append(f"注意：已触发默认回复，原因：{result.reason or '未知'}")
-        lines.append(
-            "如果没有严重问题或歧义，请调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"
-        )
-        lines.append("如果切分有问题但仍要发送原文，请调用 send_reply 并设置 send_original=true；不应发送则调用 cancel。")
+            lines.append(f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。")
+            if self._get_enable_ai_reply_regenerate():
+                lines.append(
+                    "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
+                    f"{self._get_long_reply_max_length()}字符、不超过"
+                    f"{self._get_long_reply_max_sentence_count()}条），"
+                    "然后直接调用 send_reply 发送新文本，无需设置 ai_check_approved。"
+                )
+            else:
+                lines.append(
+                    "如确认使用当前默认回复，请调用 send_reply，传入原 text、"
+                    "segments 为上述切分结果、ai_check_approved=true。"
+                    "如不应发送任何回复，请调用 cancel。"
+                )
+        else:
+            lines.append(
+                "如果没有严重问题或歧义，请调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"
+            )
+            lines.append(
+                "如果切分有问题但仍要发送原文，请调用 send_reply 并设置 send_original=true；不应发送则调用 cancel。"
+            )
         return "\n".join(lines)
 
     # ── 发送回复 ──
@@ -1275,6 +1420,10 @@ class ReplyOrchestrator:
 
         if isinstance(message, GroupMessage):
             return ConversationRef(kind="group", id=queue_key)
+        # 处理合成的后台通知消息（非标准 GroupMessage/PrivateMessage 实例）
+        msg_type = getattr(message, "message_type", "")
+        if msg_type == "group":
+            return ConversationRef(kind="group", id=queue_key)
         return ConversationRef(kind="private", id=queue_key)
 
     @staticmethod
@@ -1293,7 +1442,8 @@ class ReplyOrchestrator:
         if hasattr(message, "user_id") and message.user_id is not None:
             sender_id = str(message.user_id)
 
-        if isinstance(message, GroupMessage):
+        msg_type = getattr(message, "message_type", "")
+        if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
             lines = [
                 "[当前聊天环境]",

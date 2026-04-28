@@ -23,7 +23,11 @@ class EmojiEntry:
     file_name: str
     file_path: Path
     analysis_text: str
+    file_hash: str = ""
     use_count: int = 0
+    image_source: str | None = None
+    created_at: Any = None
+    updated_at: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +159,10 @@ class EmojiService:
             file_path=entry.file_path,
             analysis_text=entry.analysis_text,
             use_count=entry.use_count + 1,
+            file_hash=entry.file_hash,
+            image_source=entry.image_source,
+            created_at=entry.created_at,
+            updated_at=entry.updated_at,
         )
 
     async def start(self) -> None:
@@ -178,6 +186,7 @@ class EmojiService:
         *,
         file_name: str | None = None,
         analysis_text: str | None = None,
+        image_source: str | None = None,
     ) -> EmojiImportResult:
         """Add one image file to the emoji folder and refresh the in-memory index."""
         if not image_bytes:
@@ -217,6 +226,7 @@ class EmojiService:
                     original_width=prepared.original_width,
                     original_height=prepared.original_height,
                     analysis_text=text,
+                    image_source=image_source,
                 )
                 await uow.commit()
 
@@ -271,6 +281,7 @@ class EmojiService:
                 original_width=prepared.original_width,
                 original_height=prepared.original_height,
                 analysis_text=text,
+                image_source=entry.image_source,
             )
             await uow.commit()
 
@@ -278,7 +289,38 @@ class EmojiService:
         refreshed = self.get_entry(number)
         if refreshed is not None:
             return refreshed
-        return EmojiEntry(file_name=entry.file_name, file_path=entry.file_path, analysis_text=text)
+        return EmojiEntry(
+            file_name=entry.file_name,
+            file_path=entry.file_path,
+            analysis_text=text,
+            file_hash=entry.file_hash,
+            image_source=entry.image_source,
+            created_at=entry.created_at,
+            updated_at=entry.updated_at,
+        )
+
+    async def update_emoji_source(self, number: int, image_source: str) -> EmojiRecord | None:
+        """更新表情包的图片来源。"""
+        entry = self.get_entry(number)
+        if entry is None:
+            raise LookupError(f"表情包编号 {number} 不存在")
+        if not entry.file_path.exists():
+            raise LookupError(f"表情包文件不存在: {entry.file_path}")
+
+        prepared = prepare_local_image(entry.file_path)
+        async with self._uow_factory() as uow:
+            result = await uow.emojis.set(
+                prepared.file_hash,
+                file_name=entry.file_name,
+                file_path=str(entry.file_path.relative_to(self._emoji_dir)),
+                mime_type=prepared.mime_type,
+                original_width=prepared.original_width,
+                original_height=prepared.original_height,
+                analysis_text=entry.analysis_text or "",
+                image_source=image_source,
+            )
+            await uow.commit()
+            return result
 
     async def rename_entry(self, number: int, new_name: str) -> EmojiEntry:
         """重命名表情包文件、txt 侧文件并更新数据库。"""
@@ -396,6 +438,7 @@ class EmojiService:
                         original_width=prepared.original_width,
                         original_height=prepared.original_height,
                         analysis_text=txt_text,
+                        image_source="部署者提供",
                     )
                     existing[file_hash] = txt_text
                     continue
@@ -433,6 +476,7 @@ class EmojiService:
                             original_width=prepared.original_width,
                             original_height=prepared.original_height,
                             analysis_text=analysis_text,
+                            image_source="部署者提供",
                         )
                         existing[file_hash] = analysis_text
                     await uow.commit()
@@ -543,11 +587,16 @@ class EmojiService:
                     if file_hash is not None
                     else old_by_name[name][1].analysis_text
                 )
+                old_entry = self._entries.get(num)
                 new_entries[num] = EmojiEntry(
                     file_name=name,
                     file_path=file_path,
                     analysis_text=analysis_text,
                     use_count=entry_use_count,
+                    file_hash=getattr(old_entry, "file_hash", ""),
+                    image_source=getattr(old_entry, "image_source", None),
+                    created_at=getattr(old_entry, "created_at", None),
+                    updated_at=getattr(old_entry, "updated_at", None),
                 )
                 if num > max_existing_number:
                     max_existing_number = num
@@ -555,8 +604,10 @@ class EmojiService:
                 analysis_text = "[待解析]"
                 if file_hash is not None:
                     analysis_text = analysis_map.get(file_hash, "[待解析]")
+                old_entry = None
                 if name in old_by_name:
                     num = old_by_name[name][0]
+                    old_entry = self._entries.get(num)
                 else:
                     max_existing_number += 1
                     num = max_existing_number
@@ -565,6 +616,10 @@ class EmojiService:
                     file_path=file_path,
                     analysis_text=analysis_text,
                     use_count=entry_use_count,
+                    file_hash=getattr(old_entry, "file_hash", ""),
+                    image_source=getattr(old_entry, "image_source", None),
+                    created_at=getattr(old_entry, "created_at", None),
+                    updated_at=getattr(old_entry, "updated_at", None),
                 )
 
         removed = set(self._entries) - set(new_entries)

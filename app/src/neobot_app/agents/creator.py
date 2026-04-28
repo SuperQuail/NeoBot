@@ -9,7 +9,8 @@ from contextvars import ContextVar
 import hashlib
 import json
 import mimetypes
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -41,6 +42,7 @@ from neobot_app.message.image_pipeline import prepare_local_image
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import AgentCreator
     from neobot_app.emoji.service import EmojiService
+    from neobot_contracts.models.memory import EmojiRecord
 
 EXPOSED_TO_MAIN_AGENT_NAME = "creator"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
@@ -49,6 +51,7 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "管理表情包（列表/搜索/添加/更新/重命名）、发送图片到群聊/私聊。"
     "涉及图片保存、导入图库/表情包、发送图片的任务均委托它；"
     "任务中指代聊天图片时，它可通过聊天上下文自行判断。"
+    "绘图任务会加入后台任务中,在完成后会另外通知,你不需要等待它完成,只需要先报告其已经开始即可."
 )
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
@@ -119,6 +122,11 @@ class CreatorAgentConfig:
     emoji_page_size: int = 50
     allow_emoji_add: bool = False
     allow_emoji_delete: bool = False
+    draw_cooldown_seconds: int = 60
+    draw_notification_retry_seconds: int = 30
+    draw_max_retries: int = 1
+    draw_background_enabled: bool = True
+    draw_startup_grace_seconds: float = 3.0
 
     @classmethod
     def from_schema(cls, config: "AgentCreator | None") -> "CreatorAgentConfig":
@@ -126,6 +134,7 @@ class CreatorAgentConfig:
             return cls()
         gallery = getattr(config, "gallery", None)
         emoji = getattr(config, "emoji", None)
+        drawing_cfg = getattr(config, "drawing", None)
         return cls(
             enabled=bool(getattr(config, "enabled", False)),
             gallery_capacity=max(int(getattr(gallery, "capacity", 10) or 0), 0),
@@ -133,7 +142,427 @@ class CreatorAgentConfig:
             emoji_page_size=max(int(getattr(emoji, "page_size", 50) or 1), 1),
             allow_emoji_add=bool(getattr(emoji, "allow_add", False)),
             allow_emoji_delete=bool(getattr(emoji, "allow_delete", False)),
+            draw_cooldown_seconds=int(getattr(drawing_cfg, "cooldown_seconds", 60) or 60),
+            draw_notification_retry_seconds=int(getattr(drawing_cfg, "notification_retry_seconds", 30) or 30),
+            draw_max_retries=int(getattr(drawing_cfg, "max_retries", 1) or 0),
+            draw_background_enabled=bool(getattr(drawing_cfg, "background_enabled", True)),
+            draw_startup_grace_seconds=float(getattr(drawing_cfg, "startup_grace_seconds", 3.0) or 3.0),
         )
+
+
+@dataclass
+class DrawTask:
+    """后台绘图任务记录。"""
+
+    task_id: str
+    pipeline_key: str
+    conversation_kind: str
+    conversation_id: str
+    prompt: str
+    requester: str = ""  # 委托者描述
+    requirements: str = ""  # 绘图要求描述
+    references: list[str] | None = None
+    reference_id: int | None = None
+    negative_prompt: str | None = None
+    image_size: str | None = None
+    seed: int | None = None
+    status: str = "drawing"  # drawing | completed | failed | timeout
+    image_id: str | None = None
+    error: str | None = None
+    record_payload: dict[str, Any] | None = None
+    notification_count: int = 0
+    notified: bool = False
+    created_at: float = field(default_factory=time.monotonic)
+
+
+class BackgroundDrawingManager:
+    """管理后台绘图任务的提交、冷却、通知与重试。"""
+
+    def __init__(
+        self,
+        *,
+        image_service: "CreatorImageService | None" = None,
+        config: CreatorAgentConfig | None = None,
+        logger: Logger | None = None,
+    ) -> None:
+        self._service = image_service
+        self._config = config or CreatorAgentConfig()
+        self._logger = logger or NullLogger()
+        self._tasks: dict[str, DrawTask] = {}
+        self._cooldowns: dict[str, float] = {}  # pipeline_key -> monotonic end time
+        self._notification_queues: dict[str, asyncio.Queue[str]] = {}
+        self._orchestrator: Any = None  # ReplyOrchestrator reference, set after creation
+
+    def set_image_service(self, service: "CreatorImageService") -> None:
+        self._service = service
+
+    def set_orchestrator(self, orchestrator: Any) -> None:
+        self._orchestrator = orchestrator
+
+    @property
+    def background_enabled(self) -> bool:
+        return self._config.draw_background_enabled and self._service is not None
+
+    def _pipeline_key(self, kind: str, conv_id: str) -> str:
+        return f"{kind}:{conv_id}"
+
+    def check_cooldown(self, pipeline_key: str) -> int:
+        """返回冷却剩余秒数，0 表示不在冷却期。"""
+        deadline = self._cooldowns.get(pipeline_key, 0.0)
+        remaining = deadline - time.monotonic()
+        return max(0, int(remaining))
+
+    def _set_cooldown(self, pipeline_key: str) -> None:
+        self._cooldowns[pipeline_key] = time.monotonic() + self._config.draw_cooldown_seconds
+
+    def cancel_cooldown(self, pipeline_key: str) -> None:
+        self._cooldowns.pop(pipeline_key, None)
+
+    def _get_active_task(self, pipeline_key: str) -> DrawTask | None:
+        """获取指定管线的活跃绘图任务（status == drawing）。"""
+        for task in self._tasks.values():
+            if task.pipeline_key == pipeline_key and task.status == "drawing":
+                return task
+        return None
+
+    async def submit(
+        self,
+        *,
+        pipeline_key: str,
+        conversation_kind: str,
+        conversation_id: str,
+        prompt: str,
+        requester: str = "",
+        requirements: str = "",
+        references: list[str] | None = None,
+        reference_id: int | None = None,
+        negative_prompt: str | None = None,
+        image_size: str | None = None,
+        seed: int | None = None,
+    ) -> str:
+        """提交后台绘图任务。返回 JSON 状态字符串。"""
+        if not self.background_enabled:
+            return _json({"ok": False, "error": "后台绘图未启用或服务未配置"})
+
+        # 先检查是否有活跃任务
+        active = self._get_active_task(pipeline_key)
+        if active is not None:
+            task_info = f"委托者: {active.requester}, 绘图要求: {active.requirements}"
+            return _json({
+                "ok": True,
+                "status": "busy",
+                "message": f"已有绘图任务正在进行中，任务信息：{task_info}，请等待任务完成后再试",
+                "existing_task_id": active.task_id,
+            })
+
+        # 无活跃任务但冷却中
+        remaining = self.check_cooldown(pipeline_key)
+        if remaining > 0:
+            return _json({
+                "ok": True,
+                "status": "cooldown",
+                "message": f"绘图冷却中，剩余 {remaining} 秒",
+                "remaining_seconds": remaining,
+            })
+
+        task = DrawTask(
+            task_id=f"draw_{uuid4().hex[:12]}",
+            pipeline_key=pipeline_key,
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
+            prompt=prompt,
+            requester=requester,
+            requirements=requirements,
+            references=references,
+            reference_id=reference_id,
+            negative_prompt=negative_prompt,
+            image_size=image_size,
+            seed=seed,
+        )
+        self._tasks[task.task_id] = task
+        self._set_cooldown(pipeline_key)
+
+        bg_task = asyncio.create_task(self._run_draw(task))
+        bg_task.add_done_callback(lambda _: None)  # prevent "task not awaited" warning
+
+        grace = self._config.draw_startup_grace_seconds
+        await asyncio.sleep(min(grace, 3.0))
+        if task.status == "failed":
+            self.cancel_cooldown(pipeline_key)
+            return _json({"ok": False, "error": task.error or "绘图启动失败"})
+
+        self._logger.info(
+            "后台绘图任务已启动",
+            task_id=task.task_id,
+            pipeline_key=pipeline_key,
+            prompt=prompt[:80],
+        )
+        return _json({
+            "ok": True,
+            "status": "drawing",
+            "task_id": task.task_id,
+            "message": "正在绘图，已加入后台绘图任务",
+        })
+
+    async def _run_draw(self, task: DrawTask) -> None:
+        """后台执行绘图。"""
+        try:
+            references_raw = task.references
+            references: list[str] | None = None
+            if isinstance(references_raw, list):
+                references = [str(r) for r in references_raw]
+            image_source = f"{task.requester}要求{task.requirements}" if task.requester else None
+            record = await self._service.generate_image(
+                prompt=task.prompt,
+                references=references,
+                reference_id=task.reference_id,
+                negative_prompt=task.negative_prompt,
+                image_size=task.image_size,
+                seed=task.seed,
+                image_source=image_source,
+            )
+            task.status = "completed"
+            task.image_id = record.image_id
+            task.record_payload = _record_payload(record)
+            self._logger.info(
+                "后台绘图任务完成",
+                task_id=task.task_id,
+                image_id=record.image_id,
+            )
+            await self._on_completed(task)
+        except Exception as exc:
+            task.status = "failed"
+            task.error = str(exc)
+            self.cancel_cooldown(task.pipeline_key)
+            self._logger.warning(
+                "后台绘图任务失败",
+                task_id=task.task_id,
+                error=str(exc),
+            )
+            await self._on_failed(task)
+
+    async def _on_completed(self, task: DrawTask) -> None:
+        """绘图完成后的通知流程——向主 Agent 提交必须处理的绘图结果。"""
+        if not task.image_id:
+            self._logger.error(
+                "后台绘图完成但 image_id 为空，转为失败处理",
+                task_id=task.task_id,
+            )
+            task.status = "failed"
+            task.error = "绘图完成但未获取到图片ID"
+            await self._on_failed(task)
+            return
+        record_json = _json(task.record_payload) if task.record_payload else "{}"
+        requester_info = (
+            f"{task.requester} - {task.requirements}"
+            if task.requester
+            else ""
+        )
+        notification = (
+            f"<这是新的必须要回答的内容>\n"
+            f"绘图结果通知（图片已生成完毕，不是绘图请求！）\n"
+            f"\n"
+            f"图片ID: {task.image_id}\n"
+            f"来源: tmp（临时图片，可直接发送）\n"
+            f"图片数据: {record_json}\n"
+            f"原始委托: {requester_info}\n"
+            f"\n"
+            f"你必须立即调用 delegate 工具：\n"
+            f'delegate(agent="creator", task="图片 {task.image_id}（来源tmp）已生成完毕。'
+            f'请处理后续操作。如有群聊/好友ID请发送图片，或加入图库。")'
+            f"\n"
+            f"注意：不要再重新绘图！图片已经生成好了，只需委托 creator agent 发送或入库。\n"
+            f"</这是新的必须要回答的内容>"
+        )
+        self._logger.info(
+            "推送绘图完成通知",
+            task_id=task.task_id,
+            pipeline_key=task.pipeline_key,
+            image_id=task.image_id,
+        )
+        await self._push_notification(task, notification)
+
+    async def _on_failed(self, task: DrawTask) -> None:
+        """绘图失败后的通知流程——向主 Agent 提交必须处理的失败结果。"""
+        requester_info = (
+            f"{task.requester} - {task.requirements}"
+            if task.requester
+            else ""
+        )
+        notification = (
+            f"<这是新的必须要回答的内容>\n"
+            f"绘图任务失败通知\n"
+            f"\n"
+            f"任务ID: {task.task_id}\n"
+            f"错误原因: {task.error}\n"
+            f"原始委托: {requester_info}\n"
+            f"\n"
+            f"你必须立即回复用户，告知绘图失败的原因，建议稍后重试。\n"
+            f"</这是新的必须要回答的内容>"
+        )
+        self._logger.info(
+            "推送绘图失败通知",
+            task_id=task.task_id,
+            pipeline_key=task.pipeline_key,
+            error=task.error,
+        )
+        await self._push_notification(task, notification)
+
+    async def _push_notification(self, task: DrawTask, notification: str) -> None:
+        """推送通知到对应管线，若无活跃管线则尝试启动。"""
+        if self._orchestrator is None:
+            self._logger.warning("通知推送失败：orchestrator 为空", task_id=task.task_id)
+            return
+
+        active = getattr(self._orchestrator, "_active_pipelines", {})
+        pipeline_active = task.pipeline_key in active and not active[task.pipeline_key].done()
+        self._logger.info(
+            "准备推送绘图通知",
+            task_id=task.task_id,
+            pipeline_key=task.pipeline_key,
+            pipeline_active=pipeline_active,
+            status=task.status,
+        )
+        if not pipeline_active:
+            # 无活跃管线，尝试启动新管线（通知作为新管线的初始消息）
+            try:
+                result = self._orchestrator.start_background_reply(
+                    kind=task.conversation_kind,
+                    conversation_id=task.conversation_id,
+                    content=notification,
+                )
+                self._logger.info(
+                    "启动后台回复管线",
+                    task_id=task.task_id,
+                    pipeline_key=task.pipeline_key,
+                    success=result is not None,
+                )
+                if result is not None:
+                    # 新管线已启动，通知会作为初始消息处理，不再入队
+                    if not task.notified and task.notification_count == 0:
+                        asyncio.create_task(self._retry_notification(task))
+                    return
+            except Exception as exc:
+                self._logger.warning(
+                    "启动后台回复管线失败",
+                    task_id=task.task_id,
+                    error=str(exc),
+                )
+
+        # 有活跃管线，通知入队等待轮询注入
+        queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
+        await queue.put(notification)
+        self._logger.info(
+            "绘图通知已入队",
+            task_id=task.task_id,
+            pipeline_key=task.pipeline_key,
+        )
+
+        if not task.notified and task.notification_count == 0:
+            asyncio.create_task(self._retry_notification(task))
+
+    async def _retry_notification(self, task: DrawTask) -> None:
+        """通知重试定时器。"""
+        max_attempts = self._config.draw_max_retries + 1
+        while task.notification_count < max_attempts and not task.notified:
+            await asyncio.sleep(self._config.draw_notification_retry_seconds)
+            if task.notified:
+                return
+            task.notification_count += 1
+            if task.notification_count >= max_attempts:
+                break
+            self._logger.info(
+                "绘图通知重试",
+                task_id=task.task_id,
+                attempt=task.notification_count,
+                max_attempts=max_attempts,
+                status=task.status,
+            )
+            if task.status == "failed":
+                retry_msg = (
+                    f"<这是新的必须要回答的内容>\n"
+                    f"绘图任务失败通知（第{task.notification_count}次提醒）\n"
+                    f"\n"
+                    f"任务ID: {task.task_id}\n"
+                    f"错误原因: {task.error}\n"
+                    f"\n"
+                    f"你必须立即回复用户，告知绘图失败的原因，建议稍后重试。\n"
+                    f"</这是新的必须要回答的内容>"
+                )
+            else:
+                record_json = _json(task.record_payload) if task.record_payload else "{}"
+                image_id_text = task.image_id or "未知"
+                retry_msg = (
+                    f"<这是新的必须要回答的内容>\n"
+                    f"绘图结果通知（第{task.notification_count}次提醒，图片已生成完毕！）\n"
+                    f"\n"
+                    f"图片ID: {image_id_text}\n"
+                    f"来源: tmp（临时图片，可直接发送）\n"
+                    f"图片数据: {record_json}\n"
+                    f"\n"
+                    f"你必须立即调用 delegate：\n"
+                    f'delegate(agent="creator", task="图片 {image_id_text}（来源tmp）已生成完毕。'
+                    f'请处理后续操作。如有群聊/好友ID请发送图片，或加入图库。")'
+                    f"\n"
+                    f"注意：不要再重新绘图！\n"
+                    f"</这是新的必须要回答的内容>"
+                )
+            queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
+            await queue.put(retry_msg)
+
+        if not task.notified:
+            task.status = "timeout"
+            self._logger.warning(
+                "绘图通知超时",
+                task_id=task.task_id,
+                attempts=task.notification_count,
+            )
+            if self._orchestrator is not None:
+                active = getattr(self._orchestrator, "_active_pipelines", {})
+                if task.pipeline_key in active and not active[task.pipeline_key].done():
+                    image_id_text = task.image_id or "未知"
+                    timeout_msg = (
+                        f"<这是新的必须要回答的内容>\n"
+                        f"绘图任务超时通知\n"
+                        f"\n"
+                        f"任务ID: {task.task_id}\n"
+                        f"图片ID: {image_id_text}（来源：tmp）\n"
+                        f"图片已保存在临时目录。\n"
+                        f"\n"
+                        f"你必须立即调用 delegate 工具处理此任务"
+                        f"或告知用户可通过 creator agent 查看。\n"
+                        f"</这是新的必须要回答的内容>"
+                    )
+                    queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
+                    await queue.put(timeout_msg)
+
+    async def poll_notification(self, pipeline_key: str) -> str | None:
+        """轮询指定管线是否有待处理通知。返回通知文本或 None。"""
+        queue = self._notification_queues.get(pipeline_key)
+        if queue is None or queue.empty():
+            return None
+        try:
+            notification = queue.get_nowait()
+            for task in self._tasks.values():
+                if task.pipeline_key == pipeline_key and task.status != "drawing":
+                    task.notified = True
+            self._logger.info(
+                "绘图通知已被轮询取出",
+                pipeline_key=pipeline_key,
+                notification_preview=notification[:120],
+            )
+            return notification
+        except asyncio.QueueEmpty:
+            return None
+
+    async def shutdown(self) -> None:
+        """取消所有进行中的后台绘图任务。"""
+        for task in self._tasks.values():
+            if task.status == "drawing":
+                task.status = "timeout"
+                self.cancel_cooldown(task.pipeline_key)
+        self._notification_queues.clear()
+        self._logger.info("BackgroundDrawingManager 已关闭")
 
 class CreatorImageService:
     """Generate, store, and send Creator Agent images."""
@@ -307,6 +736,7 @@ class CreatorImageService:
         negative_prompt: str | None = None,
         image_size: str | None = None,
         seed: int | None = None,
+        image_source: str | None = None,
     ) -> CreatorImageRecord:
         prompt = prompt.strip()
         if not prompt:
@@ -364,6 +794,7 @@ class CreatorImageService:
             source=TMP_SOURCE,
             prompt=prompt,
             description=None,
+            image_source=image_source,
         )
 
     async def list_images(
@@ -430,6 +861,7 @@ class CreatorImageService:
             file_path=target_path,
             prompt=source.prompt,
             description=description or source.description,
+            image_source=source.image_source,
         )
         if name:
             safe_name = _sanitize_filename(name)
@@ -487,6 +919,27 @@ class CreatorImageService:
             Path(record.file_path).unlink(missing_ok=True)
             Path(record.file_path).with_suffix(".txt").unlink(missing_ok=True)
         return deleted
+
+    async def update_image_source(self, image_id: str, image_source: str) -> CreatorImageRecord:
+        """更新图库/暂存区图片的图片来源。"""
+        record = await self._get_existing(image_id)
+        if record is None:
+            raise LookupError(f"图片 {image_id} 不存在")
+        file_path = Path(record.file_path)
+        return await self._upsert_record(
+            record.image_id,
+            source=record.source,
+            file_path=file_path,
+            prompt=record.prompt,
+            description=record.description,
+            image_source=image_source,
+        )
+
+    async def update_emoji_source(self, number: int, image_source: str) -> EmojiRecord | None:
+        """更新表情包的图片来源。"""
+        if self._emoji_service is None:
+            return None
+        return await self._emoji_service.update_emoji_source(number, image_source)
 
     async def gallery_rename(
         self, *, image_id: str, new_name: str
@@ -574,6 +1027,7 @@ class CreatorImageService:
         target: str = TMP_SOURCE,
         description: str | None = None,
         name: str | None = None,
+        image_source: str | None = None,
     ) -> dict[str, Any]:
         target = target.strip().lower()
         if target not in {TMP_SOURCE, GALLERY_SOURCE, "emoji"}:
@@ -596,6 +1050,7 @@ class CreatorImageService:
             source=target,
             prompt=None,
             description=description,
+            image_source=image_source,
         )
         if name and target == GALLERY_SOURCE:
             safe_name = _sanitize_filename(name)
@@ -726,6 +1181,7 @@ class CreatorImageService:
         source: str,
         prompt: str | None,
         description: str | None,
+        image_source: str | None = None,
     ) -> CreatorImageRecord:
         file_hash = hashlib.sha256(image_bytes).hexdigest()
         async with self._uow_factory() as uow:
@@ -748,6 +1204,7 @@ class CreatorImageService:
             prompt=prompt,
             description=description,
             file_hash=file_hash,
+            image_source=image_source,
         )
 
     async def _load_chat_image_bytes(self, *, message_id: int, image_index: int) -> bytes:
@@ -814,6 +1271,7 @@ class CreatorImageService:
         prompt: str | None,
         description: str | None,
         file_hash: str | None = None,
+        image_source: str | None = None,
     ) -> CreatorImageRecord:
         if file_hash is None:
             image_bytes = file_path.read_bytes()
@@ -836,6 +1294,7 @@ class CreatorImageService:
                 mime_type=mime_type,
                 original_width=width,
                 original_height=height,
+                image_source=image_source,
             )
             await uow.commit()
             return record
@@ -913,6 +1372,7 @@ class CreatorImageService:
                     mime_type=prepared.mime_type,
                     original_width=prepared.original_width,
                     original_height=prepared.original_height,
+                    image_source=record.image_source,
                 )
 
             for disk_source, file_path in disk_files:
@@ -944,6 +1404,7 @@ class CreatorImageService:
                     mime_type=prepared.mime_type,
                     original_width=prepared.original_width,
                     original_height=prepared.original_height,
+                    image_source="部署者提供",
                 )
             await uow.commit()
 
@@ -1153,10 +1614,12 @@ class CreatorToolExecutor(ToolExecutor):
         *,
         config: CreatorAgentConfig | None = None,
         logger: Logger | None = None,
+        drawing_manager: BackgroundDrawingManager | None = None,
     ) -> None:
         self._service = service
         self._config = config or CreatorAgentConfig()
         self._logger = logger or NullLogger()
+        self._drawing_manager = drawing_manager
 
     def definitions(self) -> list[ToolDefinition]:
         tools = [
@@ -1417,6 +1880,34 @@ class CreatorToolExecutor(ToolExecutor):
                     },
                 )
             )
+        # 图片来源管理工具
+        tools.append(
+            _tool_def(
+                "update_image_source",
+                "更新图库/暂存区图片的图片来源信息。",
+                {
+                    "properties": {
+                        "image_id": {"type": "string", "description": "图片ID"},
+                        "image_source": {"type": "string", "description": "新的图片来源描述:参考样式:这是xx(群号:xxx)中xx(qq号)因为xxx要我绘制的/因为xxx让我保存的xxx的图"},
+                    },
+                    "required": ["image_id", "image_source"],
+                },
+            )
+        )
+        if self._config.allow_emoji_add or self._config.allow_emoji_delete:
+            tools.append(
+                _tool_def(
+                    "update_emoji_source",
+                    "更新表情包的图片来源信息。",
+                    {
+                        "properties": {
+                            "number": {"type": "integer", "description": "表情包编号"},
+                            "image_source": {"type": "string", "description": "新的图片来源描述,参考样式:这是在xx群(群号:xx)的XXX(QQ号:xx)要求保存的xx发的表情包"},
+                        },
+                        "required": ["number", "image_source"],
+                    },
+                )
+            )
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -1457,9 +1948,45 @@ class CreatorToolExecutor(ToolExecutor):
                 return await self._emoji_delete(args)
             if name == "emoji_rename":
                 return await self._emoji_rename(args)
+            if name == "update_image_source":
+                return await self._update_image_source(args)
+            if name == "update_emoji_source":
+                return await self._update_emoji_source(args)
         except Exception as exc:
             return _json({"ok": False, "error": str(exc)})
         return _json({"ok": False, "error": f"未知工具: {name}"})
+
+    async def _update_image_source(self, args: dict[str, Any]) -> str:
+        image_id = self._normalize_id(args.get("image_id"))
+        if not image_id:
+            return _json({"ok": False, "error": "image_id is required"})
+        image_source = self._optional_str(args.get("image_source"))
+        if not image_source:
+            return _json({"ok": False, "error": "image_source is required"})
+        try:
+            record = await self._service.update_image_source(image_id, image_source)
+            return _json({"ok": True, "image_id": record.image_id, "image_source": record.image_source})
+        except LookupError as exc:
+            return _json({"ok": False, "error": str(exc)})
+
+    async def _update_emoji_source(self, args: dict[str, Any]) -> str:
+        number_raw = args.get("number")
+        if number_raw is None:
+            return _json({"ok": False, "error": "number is required"})
+        try:
+            number = int(number_raw)
+        except (TypeError, ValueError):
+            return _json({"ok": False, "error": f"number must be an integer, got {number_raw}"})
+        image_source = self._optional_str(args.get("image_source"))
+        if not image_source:
+            return _json({"ok": False, "error": "image_source is required"})
+        try:
+            entry = await self._service.update_emoji_source(number, image_source)
+            if entry is None:
+                return _json({"ok": False, "error": f"表情包编号 {number} 不存在"})
+            return _json({"ok": True, "number": number, "image_source": entry.image_source})
+        except LookupError as exc:
+            return _json({"ok": False, "error": str(exc)})
 
     async def close(self) -> None:
         await self._service.close()
@@ -1476,6 +2003,36 @@ class CreatorToolExecutor(ToolExecutor):
         references: list[str] | None = None
         if isinstance(references_raw, list):
             references = [str(r) for r in references_raw]
+
+        # 尝试走后台绘图
+        if (
+            self._drawing_manager is not None
+            and self._drawing_manager.background_enabled
+        ):
+            pipeline_key = self._extract_pipeline_key()
+            if pipeline_key is not None:
+                conv_kind, conv_id = self._extract_conv_info()
+                if conv_kind and conv_id:
+                    requester, requirements = self._extract_delegation_info(
+                        conv_kind=conv_kind,
+                        conv_id=conv_id,
+                        prompt=str(args.get("prompt") or ""),
+                    )
+                    return await self._drawing_manager.submit(
+                        pipeline_key=pipeline_key,
+                        conversation_kind=conv_kind,
+                        conversation_id=conv_id,
+                        prompt=str(args.get("prompt") or ""),
+                        requester=requester,
+                        requirements=requirements,
+                        references=references,
+                        reference_id=self._optional_int(args.get("reference_id")),
+                        negative_prompt=self._optional_str(args.get("negative_prompt")),
+                        image_size=self._optional_str(args.get("image_size")),
+                        seed=int(seed) if seed is not None else None,
+                    )
+
+        # 同步回退
         record = await self._service.generate_image(
             prompt=str(args.get("prompt") or ""),
             references=references,
@@ -1661,10 +2218,52 @@ class CreatorToolExecutor(ToolExecutor):
         return text or None
 
     @staticmethod
+    def _normalize_id(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
     def _optional_int(value: Any) -> int | None:
         if value is None or value == "":
             return None
         return int(value)
+
+    def _extract_pipeline_key(self) -> str | None:
+        """从 _CREATOR_CHAT_CONTEXT 解析 pipeline_key（如 group:123456）。"""
+        context = _CREATOR_CHAT_CONTEXT.get("").strip()
+        if not context:
+            return None
+        kind = None
+        conv_id = None
+        for line in context.split("\n"):
+            line = line.strip()
+            if line.startswith("kind="):
+                kind = line.split("=", 1)[1].strip()
+            elif line.startswith("id="):
+                conv_id = line.split("=", 1)[1].strip()
+        if kind and conv_id:
+            return f"{kind}:{conv_id}"
+        return None
+
+    def _extract_conv_info(self) -> tuple[str | None, str | None]:
+        """从 _CREATOR_CHAT_CONTEXT 解析 (kind, id)。"""
+        key = self._extract_pipeline_key()
+        if key and ":" in key:
+            kind, conv_id = key.split(":", 1)
+            return kind, conv_id
+        return None, None
+
+    def _extract_delegation_info(
+        self, *, conv_kind: str, conv_id: str, prompt: str
+    ) -> tuple[str, str]:
+        """构建绘图委托信息。"""
+        if conv_kind == "group":
+            requester = f"群聊{conv_id}"
+        else:
+            requester = f"好友{conv_id}"
+        requirements = prompt
+        return requester, requirements
 
     def _import_targets(self) -> list[str]:
         targets = [TMP_SOURCE, GALLERY_SOURCE]
@@ -1677,8 +2276,14 @@ def build_creator_toolset(
     config: CreatorAgentConfig | None = None,
     logger: Logger | None = None,
     policy: ToolAccessPolicy | None = None,
+    drawing_manager: BackgroundDrawingManager | None = None,
 ) -> Toolset:
-    executor = CreatorToolExecutor(service=service, config=config or CreatorAgentConfig(), logger=logger)
+    executor = CreatorToolExecutor(
+        service=service,
+        config=config or CreatorAgentConfig(),
+        logger=logger,
+        drawing_manager=drawing_manager,
+    )
     specs = [
         ToolSpec(definition=definition, access_resolver=_default_resolver)
         for definition in executor.definitions()
@@ -1719,6 +2324,22 @@ def _build_system_prompt(config: CreatorAgentConfig) -> str:
         "你是创作者 Agent，负责生成图片、管理图库/表情包、发送图片。\n"
         "执行任务时优先使用工具，不要假装已经生成或发送图片。\n"
         "生成图片后会得到 image_id；发送图片必须使用 gallery_send，并提供 group_id 或 user_id。\n"
+        "\n"
+        "【后台绘图流程】\n"
+        "generate_image 工具会将绘图提交为后台任务，工具会立即返回状态信息。\n"
+        "如果返回 status 为 drawing，说明绘图已加入后台队列，请在回复中告知主Agent绘图已启动、正在后台进行中,并告知其不需要自己等待,任务完成后会通知,告知要求绘图者已经开始绘图任务即可。\n"
+        "绘图完成后主Agent会收到系统通知，届时主Agent会通过 delegate 将结果转发给你处理。\n"
+        "\n"
+        "【处理已完成的绘图任务（重要）】\n"
+        "当主Agent委托你处理一个已完成的绘图时（task 中包含 image_id 和\"来源tmp\"等信息），"
+        "说明图片已经生成完毕并保存在临时区，你不需要再调用 generate_image！\n"
+        "你应该根据 task 中的信息执行以下操作：\n"
+        "  1. 如果 task 中指定了群聊/好友ID，直接调用 gallery_send 发送图片\n"
+        "  2. 如果 task 中要求加入图库，调用 gallery_add\n"
+        "  3. 如果 task 中没有指定具体操作，回复中列出可选操作（发送到群聊/好友、加入图库等）"
+        "并向主Agent询问群号或用户ID\n"
+        "  4. 操作完成后在回复中简要说明结果\n"
+        "不要在此场景下调用 generate_image —— 图片已经生成好了！\n"
         "\n"
         "【参考图片（references）】\n"
         "生成图片时，如果用户要求以某张图片为参考/参考图/垫图/图生图，使用 generate_image 的 references 参数传入参考图。\n"
@@ -1764,13 +2385,19 @@ class CreatorAgent:
         service: CreatorImageService,
         config: CreatorAgentConfig | AgentCreator | None = None,
         logger: Logger | None = None,
+        drawing_manager: BackgroundDrawingManager | None = None,
     ) -> None:
         normalized_config = (
             config if isinstance(config, CreatorAgentConfig) else CreatorAgentConfig.from_schema(config)
         )
         self._service = service
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
-        self._toolset = build_creator_toolset(service=service, config=normalized_config, logger=logger)
+        self._toolset = build_creator_toolset(
+            service=service,
+            config=normalized_config,
+            logger=logger,
+            drawing_manager=drawing_manager,
+        )
         self.tool_definitions = self._toolset.definitions()
         self._agent = Agent(
             provider,
@@ -1814,6 +2441,7 @@ def build_creator_agent(
     emoji_service: "EmojiService | None" = None,
     vision_provider: Provider | None = None,
     logger: Logger | None = None,
+    drawing_manager: BackgroundDrawingManager | None = None,
 ) -> CreatorAgent:
     normalized_config = (
         config if isinstance(config, CreatorAgentConfig) else CreatorAgentConfig.from_schema(config)
@@ -1826,9 +2454,12 @@ def build_creator_agent(
         vision_provider=vision_provider,
         logger=logger,
     )
+    if drawing_manager is not None:
+        drawing_manager.set_image_service(service)
     return CreatorAgent(
         provider=provider,
         service=service,
         config=normalized_config,
         logger=logger,
+        drawing_manager=drawing_manager,
     )
