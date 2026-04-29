@@ -253,7 +253,6 @@ class ReplyOrchestrator:
             return None
 
         # 将通知内容推入消息队列作为触发消息
-        from neobot_app.message.queue_impl import QueueEntryType
 
         @dataclass
         class _SyntheticSender:

@@ -15,7 +15,6 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
-    from neobot_adapter.model.message import GroupMessage, PrivateMessage
     from neobot_chat.providers.base import Provider
     from neobot_memory import ImageAnalysisService
 

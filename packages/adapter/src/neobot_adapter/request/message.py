@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from neobot_adapter.model import response
-from neobot_adapter.receiver.core import AdapterCore
 from neobot_adapter.request._proxy import core_proxy as core
 from neobot_adapter.utils.parse import safe_parse_model
 
