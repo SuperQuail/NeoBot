@@ -4,11 +4,17 @@ import os
 import queue
 import threading
 import time
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, AsyncIterator, Iterator, Optional
 
 import websockets
 
+from neobot_adapter.model.basic import PostMetaEventType, PostType
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
+from neobot_adapter.utils.env import (
+    get_websocket_host,
+    get_websocket_port,
+    get_websocket_url,
+)
 from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.utils.parse import safe_parse_model
 
@@ -163,7 +169,7 @@ class AdapterCore:
                 logger.warning("服务器关闭超时，强制退出")
 
     async def _handle_client(self, websocket):
-        logger.info("框架已连接")
+        logger.info(f"框架已连接")
         async with self._connections_lock:
             self.active_connections.add(websocket)
             self._conn_to_echo[websocket] = set()

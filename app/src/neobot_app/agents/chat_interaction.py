@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -87,6 +88,21 @@ class ChatInteractionToolExecutor(ToolExecutor):
         self._logger = logger or NullLogger()
         self._forward_display_threshold = forward_display_threshold
         self._forward_max_nesting = forward_max_nesting
+
+    def _get_io_timeout_seconds(self) -> float:
+        return 30.0
+
+    async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.call_api(action, params),
+            timeout=self._get_io_timeout_seconds(),
+        )
+
+    async def _send_with_timeout(self, conversation_ref: ConversationRef, segments: list[dict]) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.send(conversation_ref, segments),
+            timeout=self._get_io_timeout_seconds(),
+        )
 
     def definitions(self) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = [
@@ -238,7 +254,10 @@ class ChatInteractionToolExecutor(ToolExecutor):
             return _json({"ok": False, "error": "缺少 message_id 参数"})
 
         try:
-            result = await self._adapter.get_forward_msg(message_id)
+            result = await asyncio.wait_for(
+                self._adapter.get_forward_msg(message_id),
+                timeout=self._get_io_timeout_seconds(),
+            )
         except Exception as exc:
             return _json({"ok": False, "error": f"获取合并转发消息失败: {exc}"})
 
@@ -364,14 +383,14 @@ class ChatInteractionToolExecutor(ToolExecutor):
             file=entry.file_name,
             target=f"{conversation_ref.kind}:{conversation_ref.id}",
         )
-        await self._adapter.send(conversation_ref, segments)
+        await self._send_with_timeout(conversation_ref, segments)
         return f"表情包 #{number} 已发送（{entry.file_name}）"
 
     async def _manage_group(self, args: dict[str, Any]) -> str:
         action = str(args.get("action") or "").strip()
         try:
             api_action, params = self._group_action_params(action, args)
-            result = await self._adapter.call_api(api_action, params)
+            result = await self._call_api_with_timeout(api_action, params)
             if self._api_succeeded(result):
                 return _json({"ok": True, "action": action, "api": api_action, "result": result})
             return _json({"ok": False, "action": action, "api": api_action, "result": result})
@@ -382,7 +401,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         action = str(args.get("action") or "").strip()
         try:
             api_action, params = self._friend_action_params(action, args)
-            result = await self._adapter.call_api(api_action, params)
+            result = await self._call_api_with_timeout(api_action, params)
             succeeded = self._api_succeeded(result)
             if action == "set_remark" and succeeded:
                 await self._sync_friend_remark(params)

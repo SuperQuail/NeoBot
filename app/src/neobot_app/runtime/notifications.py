@@ -46,6 +46,9 @@ class BackgroundNotificationHub:
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
 
+    def _get_callback_timeout_seconds(self) -> float:
+        return 10.0
+
     async def publish(
         self,
         *,
@@ -169,9 +172,27 @@ class BackgroundNotificationHub:
     async def _consume(self, notification: BackgroundNotification) -> None:
         if notification.on_consumed is None:
             return
-        callback_result = notification.on_consumed(notification)
-        if inspect.isawaitable(callback_result):
-            await callback_result
+        try:
+            callback_result = notification.on_consumed(notification)
+            if inspect.isawaitable(callback_result):
+                await asyncio.wait_for(
+                    callback_result,
+                    timeout=self._get_callback_timeout_seconds(),
+                )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "background notification consume callback timed out",
+                source=notification.source,
+                pipeline_key=notification.pipeline_key,
+                timeout_seconds=self._get_callback_timeout_seconds(),
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "background notification consume callback failed",
+                source=notification.source,
+                pipeline_key=notification.pipeline_key,
+                error=str(exc),
+            )
 
 
 def _pop_first_matching(

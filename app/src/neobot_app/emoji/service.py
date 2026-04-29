@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from neobot_contracts.models.memory import EmojiRecord
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.message.image_pipeline import prepare_local_image
@@ -28,8 +26,8 @@ class EmojiEntry:
     file_hash: str = ""
     use_count: int = 0
     image_source: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: Any = None
+    updated_at: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,7 +545,10 @@ class EmojiService:
                             ],
                         }
                     ]
-                    response = await self._vision_provider.chat(messages)
+                    response = await asyncio.wait_for(
+                        self._vision_provider.chat(messages),
+                        timeout=60.0,
+                    )
                     content = response.get("content", "")
                     text = content.strip() if isinstance(content, str) else str(content)
                     result_text = text if text else "[解析失败]"

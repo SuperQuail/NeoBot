@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -43,6 +44,24 @@ class UserProfileService:
         self._config = config
         self._logger = logger or NullLogger()
         self._archive_memory_service = archive_memory_service
+
+    def _get_dependency_timeout_seconds(self) -> float:
+        return 10.0
+
+    async def _adapter_call(self, awaitable: Any, *, action: str, **log_fields: Any) -> Any:
+        try:
+            return await asyncio.wait_for(
+                awaitable,
+                timeout=self._get_dependency_timeout_seconds(),
+            )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "user profile adapter call timed out",
+                action=action,
+                timeout_seconds=self._get_dependency_timeout_seconds(),
+                **log_fields,
+            )
+            raise
 
     async def ensure_user_profile(
         self,
@@ -123,7 +142,11 @@ class UserProfileService:
         # 队列中找不到则调用 API
         if not members and group_id_int is not None:
             try:
-                response = await self._adapter.get_group_member_list(group_id_int)
+                response = await self._adapter_call(
+                    self._adapter.get_group_member_list(group_id_int),
+                    action="get_group_member_list",
+                    group_id=str(group_id),
+                )
                 members = response.data if response and response.data else []
             except Exception:
                 pass
@@ -149,7 +172,11 @@ class UserProfileService:
     ) -> str:
         members = self._collect_group_members_from_queue(group_id, message_queue)
         if members is None:
-            response = await self._adapter.get_group_member_list(int(group_id))
+            response = await self._adapter_call(
+                self._adapter.get_group_member_list(int(group_id)),
+                action="get_group_member_list",
+                group_id=str(group_id),
+            )
             members = response.data if response and response.data else []
 
         lines: list[str] = []
@@ -285,7 +312,12 @@ class UserProfileService:
             getter = getattr(self._adapter, "get_group_member_info", None)
             if getter is not None:
                 try:
-                    response = await getter(group_id_int, bot_account_int)
+                    response = await self._adapter_call(
+                        getter(group_id_int, bot_account_int),
+                        action="get_group_member_info",
+                        group_id=str(group_id),
+                        bot_account=str(bot_account),
+                    )
                     role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
                     if role:
                         return role
@@ -298,7 +330,11 @@ class UserProfileService:
                     )
 
             try:
-                response = await self._adapter.get_group_member_list(group_id_int)
+                response = await self._adapter_call(
+                    self._adapter.get_group_member_list(group_id_int),
+                    action="get_group_member_list",
+                    group_id=str(group_id),
+                )
                 role = _find_member_role(getattr(response, "data", None), bot_account_int)
                 if role:
                     return role
@@ -358,7 +394,11 @@ class UserProfileService:
         current_profile: Any | None = None,
     ) -> Any | None:
         try:
-            response = await self._adapter.get_stranger_info(int(user_id))
+            response = await self._adapter_call(
+                self._adapter.get_stranger_info(int(user_id)),
+                action="get_stranger_info",
+                user_id=user_id,
+            )
         except Exception as exc:
             self._logger.warning("刷新用户信息失败", user_id=user_id, error=str(exc))
             return await self.get_user(user_id)

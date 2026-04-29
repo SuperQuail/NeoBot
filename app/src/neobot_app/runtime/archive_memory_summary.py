@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
 
+from neobot_app.favorability import favorability_to_text
 from neobot_app.time_context import get_current_time_and_lunar_date
 
 if TYPE_CHECKING:
@@ -134,17 +135,20 @@ class ArchiveMemoryAutoSummaryService:
         )
 
         try:
-            response = await self._provider.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You maintain concise long-term archive summaries for a chat bot. "
-                            "Return only the updated summary text."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ]
+            response = await asyncio.wait_for(
+                self._provider.chat(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You maintain concise long-term archive summaries for a chat bot. "
+                                "Return only the updated summary text."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ]
+                ),
+                timeout=60.0,
             )
             new_summary = _extract_response_text(response).strip()
             if not new_summary:
