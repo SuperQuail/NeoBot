@@ -457,7 +457,10 @@ class EventPipeline:
             pre_reply_message_id=pre_reply_msg_id,
             on_reply_done=on_reply_done,
         )
-        return event is not None
+        if event is None:
+            self._replying_queues.discard(queue_key)
+            return False
+        return True
 
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
