@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict
 
 from aiohttp import web
+from neobot_app.time_context import epoch_seconds
 
 
 @dataclass
@@ -97,7 +97,7 @@ class FileServer:
         self._files[filename] = FileMetadata(
             path=str(file_path),
             size=size,
-            created_at=time.time(),
+            created_at=epoch_seconds(),
             expires_at=expires_at,
             token=token,
         )
@@ -108,7 +108,7 @@ class FileServer:
 
     def _calculate_expiration(self, size: int) -> float:
         """根据文件大小计算过期时间"""
-        now = time.time()
+        now = epoch_seconds()
         if size < 1_000_000:
             return now + self._config.small_file_seconds
         elif size < 10_000_000:
@@ -127,7 +127,7 @@ class FileServer:
         token = request.query.get("token")
         if token != meta.token:
             return web.Response(status=403, text="无效的访问令牌")
-        if time.time() > meta.expires_at:
+        if epoch_seconds() > meta.expires_at:
             self._files.pop(filename)
             Path(meta.path).unlink(missing_ok=True)
             self._save_metadata()
@@ -138,7 +138,7 @@ class FileServer:
         """清理过期文件"""
         while self._running:
             await asyncio.sleep(60)
-            now = time.time()
+            now = epoch_seconds()
             expired = [name for name, meta in self._files.items() if meta.expires_at <= now]
             for name in expired:
                 meta = self._files.pop(name)

@@ -17,9 +17,21 @@ class OpenAIProvider(BaseHTTPProvider):
         model: str,
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 120.0,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
         super().__init__(api_key, base_url, timeout)
         self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.extra_body = extra_body or {}
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -49,16 +61,37 @@ class OpenAIProvider(BaseHTTPProvider):
         }
         return tool_call
 
-    async def chat(
-        self, messages: list[Message], tools: list[ToolDefinition] | None = None
-    ) -> Message:
+    def _build_payload(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
         }
+        if stream:
+            payload["stream"] = True
+        self._apply_payload_options(
+            payload,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            extra_body=self.extra_body,
+        )
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        return payload
+
+    async def chat(
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
+    ) -> Message:
+        payload = self._build_payload(messages, tools, stream=False)
 
         resp = await self.client.post("/chat/completions", json=payload)
         resp.raise_for_status()
@@ -92,14 +125,7 @@ class OpenAIProvider(BaseHTTPProvider):
     async def stream(
         self, messages: list[Message], tools: list[ToolDefinition] | None = None
     ) -> AsyncIterator[ChatChunk]:
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+        payload = self._build_payload(messages, tools, stream=True)
 
         content_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}

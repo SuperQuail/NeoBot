@@ -11,8 +11,10 @@ requires-python = ">=3.13"
 dependencies = [
     "Asyncio",
     "aiohttp",
+    "httpx>=0.27.0",
     "loguru",
     "neobot-adapter",
+    "neobot-chat",
     "neobot-contracts",
     "neobot-memory",
     "neobot-storage",
@@ -20,10 +22,12 @@ dependencies = [
     "tomlkit",
     "union",
     "lunarcalendar>=0.0.9",
+    "pillow>=10.0.0",
 ]
 
 [tool.uv.sources]
 neobot-adapter = { workspace = true }
+neobot-chat = { workspace = true }
 neobot-contracts = { workspace = true }
 neobot-memory = { workspace = true }
 neobot-storage = { workspace = true }

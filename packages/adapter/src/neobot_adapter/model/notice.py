@@ -89,7 +89,18 @@ class FriendAdd(Notice):
 
 class PokeSubType(Enum):
     """戳一戳类型枚举类"""
-    poke = "poke" #戳一戳
+    poke = "poke"  # 戳一戳
+    show = "show"  # 比心 / 放大招
+    heartbeat = "heartbeat"  # 心跳
+    like = "like"  # 点赞
+    fangdajing = "fangdajing"  # 放大镜
+    break_out = "break_out"  # 敲一敲
+    sixsixsix = "sixsixsix"  # 666
+    rose = "rose"  # 玫瑰
+    heart = "heart"  # 比心(旧)
+    @classmethod
+    def _missing_(cls, value):
+        return cls.poke  # 未知类型回退到默认的 poke（戳一戳）
 
 class PrivatePoke(Notice):
     """私聊戳一戳"""
@@ -179,3 +190,10 @@ class EssenceMessage(Notice):
     operator_id : Optional[int] = None #操作者 QQ 号
     message_id : Optional[int] = None #消息 ID
     sub_type : Optional[EssentialMessageType] = None #消息类型
+
+class EmojiReaction(Notice):
+    """消息表情回应"""
+    message_id : Optional[int] = None #被回应的消息 ID
+    emoji_id : Optional[int] = None #表情 ID
+    user_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[int] = None #群号（群聊场景）

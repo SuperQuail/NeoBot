@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from neobot_chat.providers.base import BaseHTTPProvider
-from neobot_chat.schema.exceptions import ProviderError, ValidationError
+from neobot_chat.schema.exceptions import ProviderError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
 class DeepSeekOfficalProvider(BaseHTTPProvider):
     """DeepSeek 官方 Chat Completions API"""
 
-    SUPPORTED_MODELS = {"deepseek-chat", "deepseek-reasoner"}
+    _THINKING_MODE_KEY = "__deepseek_thinking_mode__"
+    _REASONING_EFFORT_KEY = "__deepseek_reasoning_effort__"
+    _THINKING_PROBABILITY_KEY = "__deepseek_random_thinking_probability__"
 
     def __init__(
         self,
@@ -22,14 +25,21 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         model: str,
         base_url: str = "https://api.deepseek.com",
         timeout: float = 120.0,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
-        if model not in self.SUPPORTED_MODELS:
-            raise ValidationError(
-                f"Unsupported DeepSeek official model: {model}. "
-                f"Expected one of: {', '.join(sorted(self.SUPPORTED_MODELS))}"
-            )
         super().__init__(api_key, base_url, timeout)
         self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.extra_body = extra_body or {}
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -40,6 +50,92 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
     @property
     def _is_reasoner(self) -> bool:
         return self.model == "deepseek-reasoner"
+
+    @staticmethod
+    def _detect_thinking_format() -> str:
+        """自动检测思考模式参数格式。
+
+        根据当前 Provider 类型返回对应的参数格式：
+        - DeepSeek / OpenAI 兼容 API → ``"openai"``
+        - Anthropic API → ``"anthropic"``
+
+        默认为 ``"openai"`` 格式，子类可重写以适配不同 API。
+        """
+        return "openai"
+
+    def _resolve_extra_body(self) -> tuple[dict[str, Any], str, str | None, float]:
+        extra_body = dict(self.extra_body)
+
+        thinking_mode = self._normalize_thinking_mode(
+            extra_body.pop(
+                self._THINKING_MODE_KEY,
+                extra_body.pop(
+                    "deepseek_thinking_mode",
+                    True if self._is_reasoner else False,
+                ),
+            )
+        )
+
+        reasoning_effort_raw = extra_body.pop(
+            self._REASONING_EFFORT_KEY,
+            extra_body.pop("deepseek_reasoning_effort", extra_body.pop("reasoning_effort", None)),
+        )
+        reasoning_effort = (
+            str(reasoning_effort_raw).strip().casefold()
+            if reasoning_effort_raw is not None
+            else None
+        )
+        reasoning_effort = self._normalize_reasoning_effort(reasoning_effort)
+
+        probability_raw = extra_body.pop(
+            self._THINKING_PROBABILITY_KEY,
+            extra_body.pop("deepseek_random_thinking_probability", 0.6),
+        )
+        try:
+            thinking_probability = float(probability_raw)
+        except (TypeError, ValueError):
+            thinking_probability = 0.6
+        thinking_probability = max(0.0, min(1.0, thinking_probability))
+
+        extra_body.pop("thinking", None)
+        return extra_body, thinking_mode, reasoning_effort, thinking_probability
+
+    def _build_thinking_payload(self) -> tuple[dict[str, str], str | None, dict[str, Any]]:
+        extra_body, thinking_mode, reasoning_effort, thinking_probability = (
+            self._resolve_extra_body()
+        )
+
+        enabled = thinking_mode == "true"
+        if thinking_mode == "random":
+            enabled = random.random() < thinking_probability
+
+        thinking_payload = {"type": "enabled" if enabled else "disabled"}
+        effective_reasoning_effort = reasoning_effort if enabled else None
+        return thinking_payload, effective_reasoning_effort, extra_body
+
+    @staticmethod
+    def _normalize_thinking_mode(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        normalized = str(value).strip().casefold()
+        if normalized in {"true", "1", "yes", "on", "enabled", "enable"}:
+            return "true"
+        if normalized == "random":
+            return "random"
+        return "false"
+
+    @staticmethod
+    def _normalize_reasoning_effort(value: str | None) -> str | None:
+        """标准化思考强度值，兼容 low/medium→high, xhigh→max 映射。"""
+        if value is None:
+            return None
+        if value in {"low", "medium"}:
+            return "high"
+        if value == "xhigh":
+            return "max"
+        if value in {"high", "max"}:
+            return value
+        return None
 
     @staticmethod
     def _build_tool_call(
@@ -103,7 +199,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                 payload["tool_calls"] = message["tool_calls"]
 
             reasoning_content = self._get_reasoning_content(message)
-            if self._is_reasoner and reasoning_content:
+            if reasoning_content:
                 payload["reasoning_content"] = reasoning_content
 
             serialized.append(payload)
@@ -138,7 +234,24 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        payload["thinking"] = {"type": "enabled" if self._is_reasoner else "disabled"}
+        thinking_payload, reasoning_effort, extra_body = self._build_thinking_payload()
+        payload["thinking"] = thinking_payload
+
+        if reasoning_effort is not None:
+            fmt = self._detect_thinking_format()
+            if fmt == "anthropic":
+                payload["output_config"] = {"effort": reasoning_effort}
+            else:
+                payload["reasoning_effort"] = reasoning_effort
+        self._apply_payload_options(
+            payload,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            extra_body=extra_body,
+        )
         return payload
 
     def _parse_message(self, raw_message: dict[str, Any]) -> Message:

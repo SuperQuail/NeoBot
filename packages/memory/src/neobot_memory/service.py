@@ -31,7 +31,7 @@ class MemoryService:
             created_at=self._clock.now(),
         )
         await self._repository.save(record)
-        self._logger.debug("memory saved", conversation_id=conversation_id, speaker_id=speaker_id)
+        self._logger.debug("短期记忆已保存", conversation_id=conversation_id, speaker_id=speaker_id)
 
     async def recall(
         self, conversation_id: str, query: str, limit: int = 5

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol, runtime_checkable
+
+from neobot_contracts.time_context import now_utc
 
 
 @runtime_checkable
@@ -17,4 +19,4 @@ class SystemClock:
     """系统时钟默认实现"""
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return now_utc()

@@ -19,10 +19,16 @@ class AnthropicProvider(BaseHTTPProvider):
         base_url: str = "https://api.anthropic.com",
         max_tokens: int = 4096,
         timeout: float = 120.0,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
         super().__init__(api_key, base_url, timeout)
         self.model = model
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.extra_body = extra_body or {}
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -108,6 +114,12 @@ class AnthropicProvider(BaseHTTPProvider):
             "max_tokens": self.max_tokens,
             "messages": converted_messages,
         }
+        self._apply_payload_options(
+            payload,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            extra_body=self.extra_body,
+        )
         if system:
             payload["system"] = system
         if tools:
@@ -171,6 +183,12 @@ class AnthropicProvider(BaseHTTPProvider):
             "messages": converted_messages,
             "stream": True,
         }
+        self._apply_payload_options(
+            payload,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            extra_body=self.extra_body,
+        )
         if system:
             payload["system"] = system
         if tools:

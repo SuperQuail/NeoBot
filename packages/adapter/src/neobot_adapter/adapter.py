@@ -181,9 +181,18 @@ class _EventNamespace:
 
 
 class OneBotAdapter:
-    def __init__(self, *, max_queue_size: int = 1000, logger: Optional[Logger] = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_queue_size: int = 1000,
+        logger: Optional[Logger] = None,
+        packet_callback: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> None:
         self._logger: Logger = logger if logger is not None else NullLogger()
-        self._core = AdapterCore(max_queue_size=max_queue_size)
+        self._core = AdapterCore(
+            max_queue_size=max_queue_size,
+            packet_callback=packet_callback,
+        )
         self._dispatcher = EventDispatcher(self._logger)
         self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._stopping = asyncio.Event()
@@ -304,6 +313,33 @@ class OneBotAdapter:
         result = await self.call_api("get_group_list", {"no_cache": no_cache}, timeout)
         return safe_parse_model(result, response.GetGroupListResponse)
 
+    async def get_group_member_list(
+        self,
+        group_id: int,
+        no_cache: bool = False,
+        timeout: float = 5.0,
+    ) -> response.GetGroupMemberListResponse:
+        result = await self.call_api(
+            "get_group_member_list",
+            {"group_id": group_id, "no_cache": no_cache},
+            timeout,
+        )
+        return safe_parse_model(result, response.GetGroupMemberListResponse)
+
+    async def get_group_member_info(
+        self,
+        group_id: int,
+        user_id: int,
+        no_cache: bool = False,
+        timeout: float = 5.0,
+    ) -> response.GetGroupMemberInfoResponse:
+        result = await self.call_api(
+            "get_group_member_info",
+            {"group_id": group_id, "user_id": user_id, "no_cache": no_cache},
+            timeout,
+        )
+        return safe_parse_model(result, response.GetGroupMemberInfoResponse)
+
     async def get_friend_msg_history(
         self,
         user_id: int,
@@ -337,6 +373,22 @@ class OneBotAdapter:
         }
         result = await self.call_api("get_group_msg_history", params, timeout)
         return safe_parse_model(result, response.GetHistoryMsgListResponse)
+
+    async def get_msg(
+        self,
+        message_id: int,
+        timeout: float = 5.0,
+    ) -> response.GetSignalMsgResponse:
+        result = await self.call_api("get_msg", {"message_id": message_id}, timeout)
+        return safe_parse_model(result, response.GetSignalMsgResponse)
+
+    async def get_forward_msg(
+        self,
+        message_id: str,
+        timeout: float = 5.0,
+    ) -> dict[str, Any] | None:
+        """获取合并转发消息的具体内容。"""
+        return await self.call_api("get_forward_msg", {"message_id": message_id}, timeout)
 
     async def send_private_msg(
         self,

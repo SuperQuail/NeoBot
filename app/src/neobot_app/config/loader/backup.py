@@ -1,10 +1,10 @@
 """配置文件备份工具"""
 
-import datetime
 import re
 import shutil
 from pathlib import Path
 
+from neobot_app.time_context import filename_timestamp
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger("config_backup")
@@ -16,7 +16,7 @@ def backup_config(file_path: Path, backup_dir: Path, max_backups: int = 15) -> N
         logger.info(f"配置文件不存在，无需备份: {file_path}")
         return
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = filename_timestamp()
     backup_name = f"config_{timestamp}.toml"
     backup_path = backup_dir / backup_name
 

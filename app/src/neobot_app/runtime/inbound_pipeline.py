@@ -1,20 +1,12 @@
-"""InboundPipeline — 消息入站处理管线
-
-IncomingMessage
-  -> MessagePersistence（持久化到 storage）
-  -> MemoryRecall（召回相关记忆）
-  -> ReplyDecision（概率判断是否回复）
-  -> ChatCompletion（调用 chat 生成回复）
-  -> OutboundDispatch（通过 Adapter 发送）
-"""
+"""Inbound pipeline for normalized incoming messages."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from neobot_adapter.mapping import map_to_incoming_message
 from neobot_contracts.models import IncomingMessage
 from neobot_contracts.ports.logging import Logger, NullLogger
-
 from neobot_memory import MemoryService
 
 if TYPE_CHECKING:
@@ -22,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class InboundPipeline:
-    """统一的消息入站处理管线"""
+    """Normalize inbound messages and persist short-term memory."""
 
     def __init__(
         self,
@@ -35,22 +27,26 @@ class InboundPipeline:
         self._logger = logger or NullLogger()
 
     async def handle(self, message: IncomingMessage) -> None:
-        """处理一条入站消息"""
         self._logger.info(
-            f"收到消息 [{message.conversation.kind}:{message.conversation.id}] "
-            f"{message.sender_name}: {message.text[:80]}"
+            "收到入站消息",
+            conversation_kind=message.conversation.kind,
+            conversation_id=message.conversation.id,
+            sender_id=message.sender_id,
+            sender_name=message.sender_name,
+            preview=message.text[:80],
         )
 
-        # 1. 记忆存储
-        if self._memory:
-            try:
-                await self._memory.remember(
-                    conversation_id=f"{message.conversation.kind}:{message.conversation.id}",
-                    speaker_id=message.sender_id,
-                    content=message.text,
-                )
-            except Exception as exc:
-                self._logger.error(f"记忆存储失败: {exc}")
+        if self._memory is None:
+            return
 
-        # 2. TODO: 回复决策 + Chat 生成 + 发送
-        # 这些步骤将在 chat 服务完善后实现
+        try:
+            await self._memory.remember(
+                conversation_id=f"{message.conversation.kind}:{message.conversation.id}",
+                speaker_id=message.sender_id,
+                content=message.text,
+            )
+        except Exception as exc:
+            self._logger.error("记忆存储失败", error=str(exc))
+
+    async def handle_raw_event(self, raw_event: dict[str, Any]) -> None:
+        await self.handle(map_to_incoming_message(raw_event))

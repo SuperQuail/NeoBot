@@ -4,7 +4,7 @@ import os
 import queue
 import threading
 import time
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, Callable, AsyncIterator, Iterator, Optional
 
 import websockets
 
@@ -39,7 +39,10 @@ class AdapterCore:
     """
 
     def __init__(
-        self, max_queue_size: int = 1000, heartbeat_timeout_multiplier: float = 2.0
+        self,
+        max_queue_size: int = 1000,
+        heartbeat_timeout_multiplier: float = 2.0,
+        packet_callback: Callable[[dict[str, Any]], None] | None = None,
     ):
         """初始化适配器核心
 
@@ -62,6 +65,7 @@ class AdapterCore:
         self._heartbeat_interval: float = 0.0  # 心跳间隔（秒）
         self._heartbeat_timeout_multiplier: float = heartbeat_timeout_multiplier
         self._heartbeat_checker_task: Optional[asyncio.Task] = None
+        self._packet_callback = packet_callback
 
     def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
         """等待直到有框架连接建立
@@ -119,8 +123,7 @@ class AdapterCore:
             self.thread.join(timeout=5)
             if self.thread.is_alive():
                 logger.warning("接收器停止超时，后台线程仍未退出")
-            else:
-                self.thread = None
+            self.thread = None
 
     def get_message(self, block: bool = True, timeout: Optional[float] = None):
         try:
@@ -141,11 +144,29 @@ class AdapterCore:
         host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
         port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
         # 监听指定路径 /onebot
-        async with websockets.serve(self._handle_client, host, port):
-            logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
+        server = await websockets.serve(self._handle_client, host, port)
+        logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
+        try:
             # 等待停止信号
             while not self._stop_event.is_set():
                 await asyncio.sleep(1)
+        finally:
+            # 关闭服务器（不再接受新连接）
+            server.close()
+            # 显式关闭所有活跃连接，避免 wait_closed 无限等待
+            for ws in list(self.active_connections):
+                try:
+                    ws.close_timeout = 1
+                    await asyncio.wait_for(
+                        ws.close(1011, "Server shutting down"), timeout=2,
+                    )
+                except Exception:
+                    pass
+            # 等待 handler 清理（最多 2 秒）
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=2)
+            except (asyncio.TimeoutError, Exception):
+                logger.warning("服务器关闭超时，强制退出")
 
     async def _handle_client(self, websocket):
         logger.info(f"框架已连接")
@@ -158,6 +179,11 @@ class AdapterCore:
         try:
             async for message in websocket:
                 data = json.loads(message)
+                if self._packet_callback is not None:
+                    try:
+                        self._packet_callback(data)
+                    except Exception as exc:
+                        logger.error(f"调试收包回调失败: {exc}")
                 # 区分响应和事件
                 if "echo" in data:
                     echo = data["echo"]
@@ -276,14 +302,11 @@ class AdapterCore:
             logger.info(f"收到API响应: {response.get('status')}")
             # 根据 OneBot 协议规范，响应有 status 字段
             if response.get("status") == "ok":
-                # 返回完整的响应数据，包括 data、retcode、message 等
-                # 注意：即使 data 为 None 或空字典，也表示调用成功
                 return response
-            else:
-                logger.warning(
-                    f"API调用失败: {response.get('retcode')} - {response.get('message')}"
-                )
-                return None
+            retcode = response.get("retcode")
+            message = response.get("message") or response.get("wording") or ""
+            logger.warning(f"API调用失败: {retcode} - {message}")
+            return response
         except asyncio.TimeoutError:
             logger.error(f"API 调用超时: {action}")
             return None

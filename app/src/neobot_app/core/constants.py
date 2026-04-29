@@ -1,6 +1,7 @@
 """常量定义"""
 
 from importlib.metadata import version, PackageNotFoundError
+from pathlib import Path
 
 from neobot_app.core.paths import get_data_dir, get_env_file
 
@@ -26,6 +27,9 @@ DATA_DIR = get_data_dir()
 ENV_FILE = get_env_file()
 CONFIG_FILE = DATA_DIR / "config.toml"
 CONFIG_BACKUP_DIR = DATA_DIR / "config_backup"
+
+# 源数据目录（存放模板/教程文档，启动时同步到 DATA_DIR）
+SRC_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 # 确保目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)

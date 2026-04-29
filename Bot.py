@@ -1,5 +1,6 @@
 import asyncio
 import signal
+import sys
 
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
 from neobot_contracts.models import ConversationRef
@@ -33,7 +34,12 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, _request_stop)
         except NotImplementedError:
-            pass
+            # Windows: add_signal_handler 不支持 SIGINT，改用 signal.signal
+            if sig == signal.SIGINT:
+                signal.signal(
+                    signal.SIGINT,
+                    lambda _signum, _frame: loop.call_soon_threadsafe(_request_stop),
+                )
 
     await application.run_forever()
 
@@ -43,5 +49,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except ConnectionTimeoutError as exc:
         print(f"错误: {exc}")
+    except KeyboardInterrupt:
+        sys.exit(0)
 
 

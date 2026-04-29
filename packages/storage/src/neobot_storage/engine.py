@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Union
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine as _create
 
@@ -13,6 +14,12 @@ def create_engine(db_url: str, **kwargs) -> AsyncEngine:
     For SQLite, pass a URL like ``sqlite+aiosqlite:///path/to/db.sqlite3``.
     """
     return _create(db_url, **kwargs)
+
+
+def sqlite_url(path: Union[str, Path]) -> str:
+    """Build a normalized sqlite+aiosqlite URL from a filesystem path."""
+    resolved = Path(path).expanduser().resolve()
+    return f"sqlite+aiosqlite:///{resolved.as_posix()}"
 
 
 def run_migrations(db_url: str) -> None:
