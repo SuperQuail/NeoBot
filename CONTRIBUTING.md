@@ -36,16 +36,9 @@ uv sync --all-packages
 
 # 进行开发...
 
-# 否则直接提交
+# 提交修改
 git add .
 git commit -m "feat: 添加新功能描述"
-```
-
-提交信息遵循 [约定式提交](https://www.conventionalcommits.org/zh-hans/)：
-```
-<type>(<scope>): <subject>
-
-<body>
 ```
 
 ### 4. 推送并创建 PR
