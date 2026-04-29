@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from neobot_contracts.models.memory import EmojiRecord
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.message.image_pipeline import prepare_local_image
@@ -26,8 +28,8 @@ class EmojiEntry:
     file_hash: str = ""
     use_count: int = 0
     image_source: str | None = None
-    created_at: Any = None
-    updated_at: Any = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
