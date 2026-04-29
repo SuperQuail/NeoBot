@@ -1,6 +1,6 @@
 [project]
 name = "neobot-storage"
-version = "0.3.0"
+version = "1.0.0-alpha.3"
 description = "Storage layer for NeoBot — SQLAlchemy + Alembic"
 readme = "README.md"
 authors = [
