@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -154,6 +155,12 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
         self._compaction_provider = compaction_provider
         self._image_parse_provider = image_parse_provider
         self._logger = logger or NullLogger()
+
+    def _get_io_timeout_seconds(self) -> float:
+        return 30.0
+
+    def _get_model_timeout_seconds(self) -> float:
+        return 60.0
 
     def definitions(self) -> list[ToolDefinition]:
         user_info_item_schema = {
@@ -462,11 +469,14 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
             f"档案表: {table_name}\n键: {key}\n原档案:\n{value}"
         )
         try:
-            response = await self._compaction_provider.chat(
-                [
-                    {"role": "system", "content": "你负责压缩长期记忆档案，只输出档案正文。"},
-                    {"role": "user", "content": prompt},
-                ]
+            response = await asyncio.wait_for(
+                self._compaction_provider.chat(
+                    [
+                        {"role": "system", "content": "你负责压缩长期记忆档案，只输出档案正文。"},
+                        {"role": "user", "content": prompt},
+                    ]
+                ),
+                timeout=self._get_model_timeout_seconds(),
             )
         except Exception as exc:
             self._logger.warning(
@@ -617,7 +627,10 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
 
     async def _fetch_avatar_url(self, *, user_id: str, group_id: str | None) -> str | None:
         params = {"user_id": int(user_id), "group_id": int(group_id) if group_id else None}
-        result = await self._adapter.call_api("get_qq_avatar", params)
+        result = await asyncio.wait_for(
+            self._adapter.call_api("get_qq_avatar", params),
+            timeout=self._get_io_timeout_seconds(),
+        )
         data = result.get("data") if isinstance(result, dict) else None
         url = data.get("url") if isinstance(data, dict) else None
         return str(url).strip() if url else None
@@ -637,18 +650,24 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
         count = min(max(1, int(args.get("count") or 20)), 50)
         reverse_order = bool(args.get("reverse_order", False))
         if conversation_kind == "group":
-            response = await self._adapter.get_group_msg_history(
-                int(conversation_id),
-                message_seq=message_seq,
-                count=count,
-                reverse_order=reverse_order,
+            response = await asyncio.wait_for(
+                self._adapter.get_group_msg_history(
+                    int(conversation_id),
+                    message_seq=message_seq,
+                    count=count,
+                    reverse_order=reverse_order,
+                ),
+                timeout=self._get_io_timeout_seconds(),
             )
         else:
-            response = await self._adapter.get_friend_msg_history(
-                int(conversation_id),
-                message_seq=message_seq,
-                count=count,
-                reverse_order=reverse_order,
+            response = await asyncio.wait_for(
+                self._adapter.get_friend_msg_history(
+                    int(conversation_id),
+                    message_seq=message_seq,
+                    count=count,
+                    reverse_order=reverse_order,
+                ),
+                timeout=self._get_io_timeout_seconds(),
             )
 
         data = getattr(response, "data", None)

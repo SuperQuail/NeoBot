@@ -545,7 +545,10 @@ class EmojiService:
                             ],
                         }
                     ]
-                    response = await self._vision_provider.chat(messages)
+                    response = await asyncio.wait_for(
+                        self._vision_provider.chat(messages),
+                        timeout=60.0,
+                    )
                     content = response.get("content", "")
                     text = content.strip() if isinstance(content, str) else str(content)
                     result_text = text if text else "[解析失败]"

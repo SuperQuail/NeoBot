@@ -747,6 +747,24 @@ class CreatorImageService:
     async def stop(self) -> None:
         await self._stop_cleanup_task()
 
+    def _get_io_timeout_seconds(self) -> float:
+        return 30.0
+
+    def _get_vision_timeout_seconds(self) -> float:
+        return 60.0
+
+    async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.call_api(action, params),
+            timeout=self._get_io_timeout_seconds(),
+        )
+
+    async def _send_with_timeout(self, conversation_ref: ConversationRef, segments: list[dict[str, Any]]) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.send(conversation_ref, segments),
+            timeout=self._get_io_timeout_seconds(),
+        )
+
     async def _cleanup_stale_records(self) -> None:
         """删除数据库中文件已不存在的记录，更新文件已重命名的记录，并对各目录内哈希重复的文件去重（保留最旧）。"""
         disk_files: set[str] = set()
@@ -1199,7 +1217,7 @@ class CreatorImageService:
         segments: list[dict[str, Any]] = [
             {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
         ]
-        await self._adapter.send(conversation_ref, segments)
+        await self._send_with_timeout(conversation_ref, segments)
 
     async def import_chat_image(
         self,
@@ -1393,7 +1411,7 @@ class CreatorImageService:
     async def _load_chat_image_bytes(self, *, message_id: int, image_index: int) -> bytes:
         if image_index <= 0:
             raise ValueError("image_index 必须大于 0")
-        result = await self._adapter.call_api("get_msg", {"message_id": message_id})
+        result = await self._call_api_with_timeout("get_msg", {"message_id": message_id})
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, dict):
             raise LookupError(f"无法读取消息 {message_id}")
@@ -1420,7 +1438,7 @@ class CreatorImageService:
         file_name = data.get("file")
         if not isinstance(file_name, str) or not file_name.strip():
             raise LookupError("图片段缺少 url/file")
-        result = await self._adapter.call_api("get_image", {"file": file_name})
+        result = await self._call_api_with_timeout("get_image", {"file": file_name})
         img_data = result.get("data") if isinstance(result, dict) else None
         if isinstance(img_data, dict):
             img_ref = img_data.get("file") or img_data.get("url")
@@ -1627,7 +1645,10 @@ class CreatorImageService:
                     ],
                 }
             ]
-            response = await self._vision_provider.chat(messages)
+            response = await asyncio.wait_for(
+                self._vision_provider.chat(messages),
+                timeout=self._get_vision_timeout_seconds(),
+            )
             content = response.get("content", "")
             text = content.strip() if isinstance(content, str) else str(content).strip()
             return text or "[解析失败]"

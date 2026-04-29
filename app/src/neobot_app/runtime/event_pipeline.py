@@ -139,18 +139,105 @@ class EventPipeline:
         if self._archive_summary_service is not None:
             await self._archive_summary_service.flush_all()
 
+    def _has_active_reply_pipeline(self, kind: str, queue_key: str) -> bool:
+        if self._reply_orchestrator is None:
+            return False
+        active = getattr(self._reply_orchestrator, "_active_pipelines", {})
+        task = active.get(f"{kind}:{queue_key}") if isinstance(active, dict) else None
+        return task is not None and not task.done()
+
+    def _get_group_agent_silent_timeout_seconds(self) -> float:
+        if self._config is not None:
+            value = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
+            if isinstance(value, (int, float)):
+                return max(0.0, float(value))
+        return 60.0
+
+    def _get_dependency_timeout_seconds(self) -> float:
+        return 10.0
+
+    async def _handle_inbound_raw_event(self, event: Dict[str, Any]) -> None:
+        if self._inbound_pipeline is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._inbound_pipeline.handle_raw_event(event),
+                timeout=self._get_dependency_timeout_seconds(),
+            )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "inbound pipeline timed out",
+                timeout_seconds=self._get_dependency_timeout_seconds(),
+                event_type=event.get("post_type"),
+                message_type=event.get("message_type"),
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "inbound pipeline failed",
+                error=str(exc),
+                event_type=event.get("post_type"),
+                message_type=event.get("message_type"),
+            )
+
+    def _schedule_archive_summary(
+        self,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        message_text: str,
+        sender_id: str | None = None,
+        sender_name: str | None = None,
+    ) -> None:
+        if self._archive_summary_service is None or not conversation_id:
+            return
+
+        async def _run() -> None:
+            await asyncio.wait_for(
+                self._record_archive_summary(
+                    conversation_kind=conversation_kind,
+                    conversation_id=conversation_id,
+                    message_text=message_text,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                ),
+                timeout=180.0,
+            )
+
+        task = asyncio.create_task(_run())
+
+        def _done(done_task: asyncio.Task[None]) -> None:
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "archive auto summary background task timed out",
+                    conversation_kind=conversation_kind,
+                    conversation_id=conversation_id,
+                    timeout_seconds=180.0,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "archive auto summary background task failed",
+                    conversation_kind=conversation_kind,
+                    conversation_id=conversation_id,
+                    error=str(exc),
+                )
+
+        task.add_done_callback(_done)
+
     async def _handle_private_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, PrivateMessage)
         queue_key = str(message.user_id or "")
-        if self._inbound_pipeline is not None:
-            await self._inbound_pipeline.handle_raw_event(event)
+        await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
         self._friend_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
-        await self._record_archive_summary(
+        self._schedule_archive_summary(
             conversation_kind="private",
             conversation_id=queue_key,
             message_text=text,
@@ -181,10 +268,13 @@ class EventPipeline:
             count = getattr(self._config.chat, "private_chat_warmup_history_count", 100)
             self._logger.info(f"私聊动态预热开始", user_id=user_id, history_count=count)
             try:
-                result = await self.adapter.get_friend_msg_history(
-                    user_id=int(user_id),
-                    count=count,
-                    reverse_order=False,
+                result = await asyncio.wait_for(
+                    self.adapter.get_friend_msg_history(
+                        user_id=int(user_id),
+                        count=count,
+                        reverse_order=False,
+                    ),
+                    timeout=self._get_dependency_timeout_seconds(),
                 )
                 if result and result.data and result.data.messages:
                     for msg in result.data.messages:
@@ -203,6 +293,12 @@ class EventPipeline:
                         user_id=user_id,
                         message_count=len(result.data.messages),
                     )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "private chat warmup timed out",
+                    user_id=user_id,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
             except Exception as exc:
                 self._logger.warning(
                     f"私聊动态预热失败",
@@ -250,15 +346,14 @@ class EventPipeline:
     async def _handle_group_message(self, event: Dict[str, Any]) -> None:
         message = safe_parse_model(event, GroupMessage)
         queue_key = str(message.group_id or "")
-        if self._inbound_pipeline is not None:
-            await self._inbound_pipeline.handle_raw_event(event)
+        await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._group_queue, queue_key)
         self._group_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
-        await self._record_archive_summary(
+        self._schedule_archive_summary(
             conversation_kind="group",
             conversation_id=queue_key,
             message_text=text,
@@ -273,13 +368,34 @@ class EventPipeline:
 
         # 如果当前正在回复中，新消息入 post-reply 队列，不计算意愿
         if queue_key in self._replying_queues:
-            self._post_reply_willing.setdefault(queue_key, []).append(message)
-            return
+            if self._has_active_reply_pipeline("group", queue_key):
+                self._post_reply_willing.setdefault(queue_key, []).append(message)
+                return
+            self._logger.warning(
+                "stale replying queue state cleared",
+                queue_key=queue_key,
+                kind="group",
+            )
+            self._replying_queues.discard(queue_key)
 
         # 如果消息含图片，延迟意愿计算，等图片解析完成后处理
         if _message_has_images(message):
             self._pending_image_willing.setdefault(queue_key, []).append(message)
-            asyncio.create_task(self._process_pending_image_willing(queue_key))
+            task = asyncio.create_task(self._process_pending_image_willing(queue_key))
+
+            def _done(done_task: asyncio.Task[None]) -> None:
+                try:
+                    done_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    self._logger.warning(
+                        "pending image willingness task failed",
+                        queue_key=queue_key,
+                        error=str(exc),
+                    )
+
+            task.add_done_callback(_done)
             return
 
         await self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
@@ -324,7 +440,18 @@ class EventPipeline:
                 replied_messages.append(existing)
                 continue
             try:
-                response = await self.adapter.get_msg(message_id)
+                response = await asyncio.wait_for(
+                    self.adapter.get_msg(message_id),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "fetch replied message timed out",
+                    message_id=message_id,
+                    queue_key=queue_key,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
+                continue
             except Exception as exc:
                 self._logger.debug(
                     "failed to fetch replied message",
@@ -465,7 +592,10 @@ class EventPipeline:
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
         if self._image_parse_service is not None:
-            await self._image_parse_service.wait_for_queue(queue_key)
+            await self._image_parse_service.wait_for_queue(
+                queue_key,
+                timeout=self._get_group_agent_silent_timeout_seconds(),
+            )
 
         async with self._image_willing_lock:
             pending = self._pending_image_willing.pop(queue_key, [])
@@ -473,6 +603,16 @@ class EventPipeline:
                 return
 
             for msg in pending:
+                if (
+                    queue_key in self._replying_queues
+                    and not self._has_active_reply_pipeline("group", queue_key)
+                ):
+                    self._logger.warning(
+                        "stale replying queue state cleared",
+                        queue_key=queue_key,
+                        kind="group",
+                    )
+                    self._replying_queues.discard(queue_key)
                 if queue_key in self._replying_queues:
                     # 已在回复中，剩余消息放入 post-reply 队列
                     idx = pending.index(msg)
@@ -505,6 +645,16 @@ class EventPipeline:
         )
 
         for msg in pending:
+            if (
+                queue_key in self._replying_queues
+                and not self._has_active_reply_pipeline("group", queue_key)
+            ):
+                self._logger.warning(
+                    "stale replying queue state cleared",
+                    queue_key=queue_key,
+                    kind="group",
+                )
+                self._replying_queues.discard(queue_key)
             if queue_key in self._replying_queues:
                 self._post_reply_willing.setdefault(queue_key, []).extend(
                     pending[pending.index(msg):]
@@ -542,9 +692,18 @@ class EventPipeline:
                 observed_fields["sex"] = getattr(message.sender.sex, "value", message.sender.sex)
 
         try:
-            await self._profile_service.ensure_user_profile(
-                str(message.user_id),
-                observed_fields=observed_fields,
+            await asyncio.wait_for(
+                self._profile_service.ensure_user_profile(
+                    str(message.user_id),
+                    observed_fields=observed_fields,
+                ),
+                timeout=self._get_dependency_timeout_seconds(),
+            )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "refresh user profile timed out",
+                user_id=message.user_id,
+                timeout_seconds=self._get_dependency_timeout_seconds(),
             )
         except Exception as exc:
             self._logger.warning(
@@ -606,9 +765,18 @@ class EventPipeline:
         operator_name = f"QQ:{user_id}" if user_id is not None else "未知用户"
         if user_id is not None and self._profile_service is not None:
             try:
-                profile = await self._profile_service.get_user(str(user_id))
+                profile = await asyncio.wait_for(
+                    self._profile_service.get_user(str(user_id)),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
                 if profile is not None and getattr(profile, "nick_name", None):
                     operator_name = profile.nick_name
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "reaction profile lookup timed out",
+                    user_id=user_id,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
             except Exception:
                 pass
 
@@ -687,7 +855,10 @@ class EventPipeline:
         # 1. Try database first
         if self._profile_service is not None:
             try:
-                profile = await self._profile_service.get_user(str(user_id))
+                profile = await asyncio.wait_for(
+                    self._profile_service.get_user(str(user_id)),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
                 if profile is not None:
                     remark = getattr(profile, "remark", None)
                     nick_name = getattr(profile, "nick_name", None)
@@ -695,22 +866,47 @@ class EventPipeline:
                         return str(remark)
                     if nick_name:
                         return str(nick_name)
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "resolve name profile lookup timed out",
+                    user_id=user_id,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
             except Exception:
                 pass
 
         # 2. API fallback
         if group_id is not None:
             try:
-                resp = await self._adapter.get_group_member_info(group_id, user_id)
+                resp = await asyncio.wait_for(
+                    self._adapter.get_group_member_info(group_id, user_id),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
                 if resp and resp.data:
                     return resp.data.card or resp.data.nickname or resp.data.card_or_nickname or f"QQ:{user_id}"
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "resolve group member name timed out",
+                    group_id=group_id,
+                    user_id=user_id,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
             except Exception:
                 pass
         else:
             try:
-                resp = await self._adapter.get_stranger_info(user_id)
+                resp = await asyncio.wait_for(
+                    self._adapter.get_stranger_info(user_id),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
                 if resp and resp.data:
                     return resp.data.nickname or f"QQ:{user_id}"
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "resolve stranger name timed out",
+                    user_id=user_id,
+                    timeout_seconds=self._get_dependency_timeout_seconds(),
+                )
             except Exception:
                 pass
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -79,6 +80,12 @@ class ImageParseAgent:
         self._adapter = adapter
         self._logger = logger or NullLogger()
 
+    def _get_model_timeout_seconds(self) -> float:
+        return 60.0
+
+    def _get_io_timeout_seconds(self) -> float:
+        return 30.0
+
     async def invoke(self, state: State) -> State:
         messages = list(state.get("messages", []))
         task = self._last_user_text(messages)
@@ -121,7 +128,10 @@ class ImageParseAgent:
                 ],
             }
         ]
-        response = await self._provider.chat(messages)
+        response = await asyncio.wait_for(
+            self._provider.chat(messages),
+            timeout=self._get_model_timeout_seconds(),
+        )
         content = response.get("content", "")
         text = content.strip() if isinstance(content, str) else str(content).strip()
         return text or "图片解析完成，但模型未返回文本。"
@@ -227,7 +237,10 @@ class ImageParseAgent:
             raise RuntimeError("未配置聊天适配器，无法按 message_id 读取聊天图片")
         if image_index <= 0:
             raise ValueError("image_index 必须大于 0")
-        result = await self._adapter.call_api("get_msg", {"message_id": message_id})
+        result = await asyncio.wait_for(
+            self._adapter.call_api("get_msg", {"message_id": message_id}),
+            timeout=self._get_io_timeout_seconds(),
+        )
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, dict):
             raise LookupError(f"无法读取消息 {message_id}")
@@ -276,7 +289,10 @@ class ImageParseAgent:
         if path.exists() and path.is_file():
             return self._local_image_data_url(str(path))
         if self._adapter is not None:
-            result = await self._adapter.call_api("get_image", {"file": ref})
+            result = await asyncio.wait_for(
+                self._adapter.call_api("get_image", {"file": ref}),
+                timeout=self._get_io_timeout_seconds(),
+            )
             data = result.get("data") if isinstance(result, dict) else None
             if isinstance(data, dict):
                 img_ref = data.get("file") or data.get("url")

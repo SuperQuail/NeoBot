@@ -69,11 +69,29 @@ class ImageParseService:
         self._pending.setdefault(queue_key, set()).add(task)
         task.add_done_callback(lambda t: self._pending.get(queue_key, set()).discard(t))
 
-    async def wait_for_queue(self, queue_key: str) -> None:
+    async def wait_for_queue(self, queue_key: str, timeout: float | None = None) -> None:
         """等待指定队列的所有待处理图片解析完成"""
         tasks = self._pending.pop(queue_key, set())
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                if timeout is not None and timeout > 0:
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=timeout,
+                    )
+                else:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.TimeoutError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._logger.warning(
+                    "image parse wait timed out",
+                    queue_key=queue_key,
+                    timeout_seconds=timeout,
+                    task_count=len(tasks),
+                )
 
     async def _parse_and_replace(self, message, indices: list[int]) -> None:
         segments = getattr(message, "message", None)
@@ -164,7 +182,7 @@ class ImageParseService:
         if file_name:
             try:
                 from neobot_adapter.request.message import get_image
-                result = await get_image(str(file_name))
+                result = await asyncio.wait_for(get_image(str(file_name)), timeout=30.0)
                 img_data = result.get("data", {})
                 if isinstance(img_data, dict):
                     img_file = img_data.get("file") or img_data.get("url")
@@ -212,10 +230,21 @@ class ImageParseService:
         ]
 
         try:
-            response = await self._vision_provider.chat(messages)
+            response = await asyncio.wait_for(
+                self._vision_provider.chat(messages),
+                timeout=60.0,
+            )
             content = response.get("content", "")
             text = content.strip() if isinstance(content, str) else str(content)
             return text if text else None
+        except asyncio.TimeoutError:
+            self._logger.error(
+                "vision model call timed out",
+                mime=mime_type,
+                image_bytes_len=len(image_bytes),
+                timeout_seconds=60.0,
+            )
+            return None
         except Exception as exc:
             resp_body = ""
             if hasattr(exc, "response") and hasattr(exc.response, "text"):

@@ -146,6 +146,9 @@ class ReplyOrchestrator:
         # 按 kind:queue_key 组合键去重，避免群号与 QQ 号相同时互相阻塞
         pipeline_key = f"{conversation_ref.kind}:{queue_key}"
         existing = self._active_pipelines.get(pipeline_key)
+        if existing is not None and existing.done():
+            self._active_pipelines.pop(pipeline_key, None)
+            existing = None
         if existing is not None and not existing.done():
             self._logger.debug(
                 "回复管线已在运行，跳过创建",
@@ -205,9 +208,25 @@ class ReplyOrchestrator:
 
         def _cleanup(task: asyncio.Task[None]) -> None:
             self._tasks.discard(task)
-            self._active_pipelines.pop(pipeline_key, None)
+            if self._active_pipelines.get(pipeline_key) is task:
+                self._active_pipelines.pop(pipeline_key, None)
             if on_reply_done is not None:
-                asyncio.create_task(on_reply_done())
+                callback_task = asyncio.create_task(on_reply_done())
+
+                def _callback_done(done_task: asyncio.Task[None]) -> None:
+                    try:
+                        done_task.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        self._logger.warning(
+                            "reply done callback failed",
+                            event_id=event.event_id,
+                            pipeline_key=pipeline_key,
+                            error=str(exc),
+                        )
+
+                callback_task.add_done_callback(_callback_done)
 
         task = asyncio.create_task(self._run(event, queue, queue_key))
         self._tasks.add(task)
@@ -234,6 +253,9 @@ class ReplyOrchestrator:
         pipeline_key = f"{kind}:{queue_key}"
 
         existing = self._active_pipelines.get(pipeline_key)
+        if existing is not None and existing.done():
+            self._active_pipelines.pop(pipeline_key, None)
+            existing = None
         if existing is not None and not existing.done():
             self._logger.debug(
                 "后台回复管线已在运行，跳过创建",
@@ -376,6 +398,34 @@ class ReplyOrchestrator:
                 return max(0.0, float(val))
         return 60.0
 
+    def _get_io_timeout_seconds(self) -> float:
+        return 30.0
+
+    def _get_dependency_timeout_seconds(self) -> float:
+        return 10.0
+
+    def _get_prompt_timeout_seconds(self) -> float:
+        return 30.0
+
+    def _get_model_response_timeout_seconds(self, event: ReplyEvent) -> float:
+        if event.conversation_ref is not None and event.conversation_ref.kind == "group":
+            timeout = self._get_group_agent_silent_timeout_seconds()
+            if timeout > 0:
+                return timeout
+        return 120.0
+
+    async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.send(conversation_ref, payload),
+            timeout=self._get_io_timeout_seconds(),
+        )
+
+    async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
+        return await asyncio.wait_for(
+            self._adapter.call_api(action, params),
+            timeout=self._get_io_timeout_seconds(),
+        )
+
     def _get_private_chat_max_tokens(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "private_chat_max_tokens", None)
@@ -462,7 +512,7 @@ class ReplyOrchestrator:
         if event.conversation_ref is None:
             return
         try:
-            await self._adapter.send(event.conversation_ref, self._provider_error_message)
+            await self._send_with_timeout(event.conversation_ref, self._provider_error_message)
         except Exception as send_exc:
             self._logger.error(
                 "Provider unavailable notice failed",
@@ -600,7 +650,7 @@ class ReplyOrchestrator:
             "data": {"file": f"file:///{entry.file_path.as_posix()}"},
         }]
         try:
-            await self._adapter.send(event.conversation_ref, segments)
+            await self._send_with_timeout(event.conversation_ref, segments)
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
             self._logger.debug(
@@ -751,7 +801,7 @@ class ReplyOrchestrator:
                 "type": "image",
                 "data": {"file": f"file:///{entry.file_path.as_posix()}"},
             })
-            await self._adapter.send(event.conversation_ref, segments)
+            await self._send_with_timeout(event.conversation_ref, segments)
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
 
@@ -780,7 +830,10 @@ class ReplyOrchestrator:
             if msg_id is None:
                 return f"错误：消息编号 {message_number} 不存在于当前上下文中"
 
-            await set_msg_emoji_like(message_id=msg_id, emoji_id=emoji_id)
+            await asyncio.wait_for(
+                set_msg_emoji_like(message_id=msg_id, emoji_id=emoji_id),
+                timeout=self._get_io_timeout_seconds(),
+            )
 
             # 获取操作者名称（bot 自身）
             bot_name = getattr(self._config.bot, "nick_name", "Bot") if self._config else "Bot"
@@ -814,21 +867,30 @@ class ReplyOrchestrator:
         async def speak_handler(text: str) -> str:
             if self._tts_service is None:
                 return "错误：TTS 服务未配置"
-            segment = await self._tts_service.synthesize_segment(text)
-            await self._adapter.send(event.conversation_ref, [segment])
+            segment = await asyncio.wait_for(
+                self._tts_service.synthesize_segment(text),
+                timeout=self._get_io_timeout_seconds(),
+            )
+            await self._send_with_timeout(event.conversation_ref, [segment])
             return f"语音消息已发送，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
         async def poke_user_handler(user_id: int) -> str:
             if conv_kind == "group":
-                result = await self._adapter.call_api("group_poke", {
-                    "group_id": int(conv_id),
-                    "user_id": user_id,
-                })
+                result = await self._call_api_with_timeout(
+                    "group_poke",
+                    {
+                        "group_id": int(conv_id),
+                        "user_id": user_id,
+                    },
+                )
                 return f"已在群{conv_id}中戳一戳 QQ:{user_id}" if self._api_succeeded(result) else f"群戳一戳失败: {result}"
             else:
-                result = await self._adapter.call_api("friend_poke", {
-                    "user_id": user_id,
-                })
+                result = await self._call_api_with_timeout(
+                    "friend_poke",
+                    {
+                        "user_id": user_id,
+                    },
+                )
                 return f"已戳一戳好友 QQ:{user_id}" if self._api_succeeded(result) else f"好友戳一戳失败: {result}"
 
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
@@ -928,74 +990,51 @@ class ReplyOrchestrator:
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
-                if self._notification_hub is not None:
-                    pipeline_key = f"{conv_kind}:{conv_id}"
-                    notification = await self._notification_hub.poll(pipeline_key)
-                    if notification:
-                        messages.append({"role": "user", "content": notification.content})
-                        self._logger.info(
-                            "注入后台通知",
-                            event_id=event.event_id,
-                            pipeline_key=pipeline_key,
-                            source=notification.source,
-                        )
-                        self._record_debug(
-                            "background_notification_injected",
-                            event,
-                            queue_key=queue_key,
-                            source=notification.source,
-                            notification=notification.content[:200],
-                        )
-                else:
-                    # Backward-compatible path for managers not yet migrated to the hub.
-                    if self._drawing_manager is not None:
-                        pipeline_key = f"{conv_kind}:{conv_id}"
-                        notification = await self._drawing_manager.poll_notification(pipeline_key)
-                        if notification:
-                            messages.append({"role": "user", "content": notification})
-                            self._logger.info(
-                                "注入绘图完成通知",
-                                event_id=event.event_id,
-                                pipeline_key=pipeline_key,
-                            )
-                            self._record_debug(
-                                "drawing_notification_injected",
-                                event,
-                                queue_key=queue_key,
-                                notification=notification[:200],
-                            )
-
-                    if self._scheduled_task_manager is not None:
-                        pipeline_key = f"{conv_kind}:{conv_id}"
-                        notification = await self._scheduled_task_manager.poll_notification(pipeline_key)
-                        if notification:
-                            messages.append({"role": "user", "content": notification})
-                            self._logger.info(
-                                "注入定时任务提醒",
-                                event_id=event.event_id,
-                                pipeline_key=pipeline_key,
-                            )
-                            self._record_debug(
-                                "scheduled_task_notification_injected",
-                                event,
-                                queue_key=queue_key,
-                                notification=notification[:200],
-                            )
+                pipeline_key = f"{conv_kind}:{conv_id}"
+                notification_text = await self._poll_background_notifications(pipeline_key)
+                if notification_text:
+                    messages.append({"role": "user", "content": notification_text})
+                    self._logger.info(
+                        "注入后台通知",
+                        event_id=event.event_id,
+                        pipeline_key=pipeline_key,
+                    )
+                    self._record_debug(
+                        "background_notification_injected",
+                        event,
+                        queue_key=queue_key,
+                        notification=notification_text[:200],
+                    )
 
                 remaining = silent_remaining()
                 if remaining is not None and remaining <= 0:
                     cancel_for_silence("before_model")
                     return
                 try:
-                    if remaining is None:
-                        response = await self._provider.chat(messages, tools=tools if tools else None)
-                    else:
-                        response = await asyncio.wait_for(
-                            self._provider.chat(messages, tools=tools if tools else None),
-                            timeout=remaining,
-                        )
+                    model_timeout = (
+                        max(0.1, remaining)
+                        if remaining is not None
+                        else self._get_model_response_timeout_seconds(event)
+                    )
+                    response = await asyncio.wait_for(
+                        self._provider.chat(messages, tools=tools if tools else None),
+                        timeout=model_timeout,
+                    )
                 except asyncio.TimeoutError:
-                    cancel_for_silence("model")
+                    if remaining is not None:
+                        cancel_for_silence("model")
+                        return
+                    event.error = "AI response timed out"
+                    try:
+                        event.transition(ReplyState.CANCELLED)
+                    except RuntimeError:
+                        pass
+                    self._logger.warning(
+                        "agent mode model call timed out",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        timeout_seconds=self._get_model_response_timeout_seconds(event),
+                    )
                     return
                 reset_silent_deadline()
                 self._record_debug(
@@ -1082,17 +1121,30 @@ class ReplyOrchestrator:
                     reset_silent_deadline(wait_extra_seconds)
                     try:
                         remaining = silent_remaining()
-                        if remaining is None:
-                            result = await reply_toolset.executor.execute(name, args)
-                        else:
-                            result = await asyncio.wait_for(
-                                reply_toolset.executor.execute(name, args),
-                                timeout=max(0.1, remaining),
+                        tool_timeout = (
+                            max(0.1, remaining)
+                            if remaining is not None
+                            else max(
+                                self._get_model_response_timeout_seconds(event),
+                                wait_extra_seconds + self._get_dependency_timeout_seconds(),
                             )
+                        )
+                        result = await asyncio.wait_for(
+                            reply_toolset.executor.execute(name, args),
+                            timeout=tool_timeout,
+                        )
                         tool_error = None
                     except asyncio.TimeoutError:
-                        cancel_for_silence(f"tool:{name}")
-                        return
+                        if remaining is not None:
+                            cancel_for_silence(f"tool:{name}")
+                            return
+                        tool_error = f"TimeoutError: tool {name} timed out"
+                        self._logger.warning(
+                            "agent tool timed out",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                            tool=name,
+                        )
                     except Exception as tool_exc:
                         result = None
                         tool_error = f"{type(tool_exc).__name__}: {tool_exc}"
@@ -1298,22 +1350,38 @@ class ReplyOrchestrator:
 
     async def _poll_background_notifications(self, pipeline_key: str) -> str | None:
         """轮询所有后台通知源，返回通知文本或 None。"""
-        if self._notification_hub is not None:
-            notification = await self._notification_hub.poll(pipeline_key)
-            if notification:
-                return notification.content
-            return None
+        try:
+            if self._notification_hub is not None:
+                notification = await asyncio.wait_for(
+                    self._notification_hub.poll(pipeline_key),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+                if notification:
+                    return notification.content
+                return None
 
-        # 向后兼容：未迁移到统一通知中心的后台管理器
-        if self._drawing_manager is not None:
-            notification = await self._drawing_manager.poll_notification(pipeline_key)
-            if notification:
-                return notification
+            # 向后兼容：未迁移到统一通知中心的后台管理器
+            if self._drawing_manager is not None:
+                notification = await asyncio.wait_for(
+                    self._drawing_manager.poll_notification(pipeline_key),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+                if notification:
+                    return notification
 
-        if self._scheduled_task_manager is not None:
-            notification = await self._scheduled_task_manager.poll_notification(pipeline_key)
-            if notification:
-                return notification
+            if self._scheduled_task_manager is not None:
+                notification = await asyncio.wait_for(
+                    self._scheduled_task_manager.poll_notification(pipeline_key),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+                if notification:
+                    return notification
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "background notification poll timed out",
+                pipeline_key=pipeline_key,
+                timeout_seconds=self._get_dependency_timeout_seconds(),
+            )
 
         return None
 
@@ -1418,27 +1486,57 @@ class ReplyOrchestrator:
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
-            await self._image_parse_service.wait_for_queue(queue_key)
+            image_wait_timeout = None
+            if event.conversation_ref is not None and event.conversation_ref.kind == "group":
+                image_wait_timeout = self._get_group_agent_silent_timeout_seconds()
+            await self._image_parse_service.wait_for_queue(
+                queue_key,
+                timeout=image_wait_timeout,
+            )
 
         event.transition(ReplyState.BUILDING_PROMPT)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
         if event.conversation_ref.kind == "group":
-            return await self._prompt_builder.build_group_chat_prompt(
-                group_id=int(queue_key),
-                message_queue=queue,
-                numbering=numbering,
-                last_reply_message_id=last_reply_message_id,
-                all_new=all_new,
+            try:
+                return await asyncio.wait_for(
+                    self._prompt_builder.build_group_chat_prompt(
+                        group_id=int(queue_key),
+                        message_queue=queue,
+                        numbering=numbering,
+                        last_reply_message_id=last_reply_message_id,
+                        all_new=all_new,
+                    ),
+                    timeout=self._get_prompt_timeout_seconds(),
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "group prompt build timed out",
+                    event_id=event.event_id,
+                    queue_key=queue_key,
+                    timeout_seconds=self._get_prompt_timeout_seconds(),
+                )
+                raise
+        try:
+            return await asyncio.wait_for(
+                self._prompt_builder.build_friend_chat_prompt(
+                    user_id=int(queue_key),
+                    message_queue=queue,
+                    numbering=numbering,
+                    last_reply_message_id=last_reply_message_id,
+                    all_new=all_new,
+                ),
+                timeout=self._get_prompt_timeout_seconds(),
             )
-        return await self._prompt_builder.build_friend_chat_prompt(
-            user_id=int(queue_key),
-            message_queue=queue,
-            numbering=numbering,
-            last_reply_message_id=last_reply_message_id,
-            all_new=all_new,
-        )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "private prompt build timed out",
+                event_id=event.event_id,
+                queue_key=queue_key,
+                timeout_seconds=self._get_prompt_timeout_seconds(),
+            )
+            raise
 
     # ── LLM 生成 ──
 
@@ -1472,7 +1570,20 @@ class ReplyOrchestrator:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": prompt},
         ]
-        response = await self._provider.chat(messages)
+        timeout = self._get_model_response_timeout_seconds(event)
+        try:
+            response = await asyncio.wait_for(
+                self._provider.chat(messages),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            event.error = f"AI response timed out after {timeout:.0f}s"
+            self._logger.warning(
+                "common mode model call timed out",
+                event_id=event.event_id,
+                timeout_seconds=timeout,
+            )
+            raise
         content = response.get("content", "")
         text = content.strip() if isinstance(content, str) else str(content)
         event.generated_text = text
@@ -1563,7 +1674,7 @@ class ReplyOrchestrator:
                 mention_user_ids=mention_user_ids if index == 0 else None,
             )
             formatted_messages.append(formatted)
-            send_results.append(await self._adapter.send(event.conversation_ref, formatted))
+            send_results.append(await self._send_with_timeout(event.conversation_ref, formatted))
 
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 

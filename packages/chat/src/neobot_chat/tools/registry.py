@@ -11,6 +11,7 @@ class AgentRegistry:
     def __init__(self):
         self._agents: dict[str, AgentLike] = {}
         self._sessions: dict[str, list[dict]] = {}
+        self.delegate_timeout_seconds = 120.0
 
     def register(self, name: str, agent: AgentLike) -> None:
         self._agents[name] = agent
@@ -68,8 +69,14 @@ class AgentRegistry:
                 )
                 for t in tasks
             ]
-            results = await asyncio.gather(*coros)
-            return "\n\n".join(f"{t['agent']}: {r}" for t, r in zip(tasks, results))
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            rendered: list[str] = []
+            for t, result in zip(tasks, results):
+                if isinstance(result, Exception):
+                    rendered.append(f"{t['agent']}: Agent failed: {type(result).__name__}: {result}")
+                else:
+                    rendered.append(f"{t['agent']}: {result}")
+            return "\n\n".join(rendered)
 
         if not agent or not task:
             return "Missing agent or task parameter"
@@ -84,12 +91,18 @@ class AgentRegistry:
             messages.append({"role": "assistant", "content": previous_response.strip()})
         messages.append({"role": "user", "content": task})
 
-        result = await agent_obj.invoke(
-            {
-                "messages": messages,
-                "_delegate_context": context.strip() if context else "",
-            }
-        )
+        try:
+            result = await asyncio.wait_for(
+                agent_obj.invoke(
+                    {
+                        "messages": messages,
+                        "_delegate_context": context.strip() if context else "",
+                    }
+                ),
+                timeout=self.delegate_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return f"Agent '{agent}' timed out after {self.delegate_timeout_seconds:.0f}s"
         content = result["messages"][-1].get("content")
         result_text = content if isinstance(content, str) else str(content)
         if session_key:
