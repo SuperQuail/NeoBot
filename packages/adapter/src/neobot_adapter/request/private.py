@@ -1,7 +1,6 @@
 """好友/私聊相关 API"""
 
-from neobot_adapter.receiver.core import AdapterCore
-from typing import Optional, Dict, Any
+from typing import Optional
 from neobot_adapter.model import response
 from neobot_adapter.request._proxy import core_proxy as core
 from neobot_adapter.utils.parse import safe_parse_model

@@ -11,7 +11,7 @@ from neobot_adapter.model.response import (
     FriendData,
     GroupData,
 )
-from neobot_adapter.model.message import PrivateMessage, GroupMessage
+from neobot_adapter.model.message import GroupMessage
 
 from neobot_app.message.queue import MessageQueue
 from neobot_app.user_profiles import UserProfileService

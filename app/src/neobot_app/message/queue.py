@@ -6,14 +6,13 @@
 """
 
 from collections import deque
-from typing import Dict, Deque, Any, Optional, Union, List, Iterator, TypeVar, Generic
+from typing import Dict, Deque, Optional, Union, List, Iterator, TypeVar
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from neobot_adapter.model.response import GetSignalMsgResponse, GetSignalMsgData
-from neobot_adapter.model.message import PrivateMessage, GroupMessage, MessageTypeEnum
-from neobot_adapter.model.basic import PostMessageSubType, PostMessageMessagesender
+from neobot_adapter.model.message import PrivateMessage, GroupMessage
 from neobot_adapter.utils.parse import safe_parse_model
 
 T = TypeVar('T', bound=Union[PrivateMessage, GroupMessage])

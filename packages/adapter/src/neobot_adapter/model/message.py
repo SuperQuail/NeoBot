@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Optional, Union, List, Literal, ClassVar
 
-from neobot_adapter.model.basic import PostMessageType, PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
+from neobot_adapter.model.basic import PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
 from pydantic import BaseModel
 from neobot_adapter.model.gengeral import General
 

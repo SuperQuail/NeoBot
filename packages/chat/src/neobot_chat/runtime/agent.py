@@ -14,7 +14,6 @@ from neobot_chat.schema.types import (
     OnEvent,
     State,
     ToolAccessAction,
-    ToolAccessPolicy,
     ToolAccessRule,
     ToolCall,
     ToolDefinition,

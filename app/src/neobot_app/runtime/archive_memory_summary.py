@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
 
-from neobot_app.favorability import favorability_to_text
 from neobot_app.time_context import get_current_time_and_lunar_date
 
 if TYPE_CHECKING:

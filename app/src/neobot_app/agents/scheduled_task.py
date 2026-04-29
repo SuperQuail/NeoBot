@@ -7,7 +7,7 @@ import re
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 

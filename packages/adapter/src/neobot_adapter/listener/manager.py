@@ -5,9 +5,8 @@
 """
 import asyncio
 import threading
-import queue
-from typing import Dict, List, Callable, Any, Optional, Set
-from dataclasses import dataclass, field
+from typing import Dict, List, Callable, Any, Optional
+from dataclasses import dataclass
 from enum import Enum
 import time
 import functools
