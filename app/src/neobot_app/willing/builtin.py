@@ -15,17 +15,8 @@ class QuailWillingManager(BaseWillingManager):
     def evaluate(self, context: WillingContext) -> WillingDecision:
         reasons: list[str] = [f"基础概率={context.base_probability:.3f}"]
 
-        if context.at_guaranteed_reply and context.mentioned_bot:
-            reasons.append("被@提及，强制回复")
-            return WillingDecision(
-                manager_name=self.name,
-                probability=1.0,
-                should_reply=True,
-                reasons=tuple(reasons),
-            )
-
         if not context.is_allowed:
-            reasons.append(f"已屏蔽: {context.block_reason}")
+            reasons.append(f"blocked: {context.block_reason}")
             return WillingDecision(
                 manager_name=self.name,
                 probability=0.0,
@@ -35,11 +26,20 @@ class QuailWillingManager(BaseWillingManager):
 
         blocked = self._is_runtime_blocked(context)
         if blocked:
-            reasons.append("已屏蔽: 运行时黑名单")
+            reasons.append("runtime_blacklist: blocked")
             return WillingDecision(
                 manager_name=self.name,
                 probability=0.0,
                 should_reply=False,
+                reasons=tuple(reasons),
+            )
+
+        if context.at_guaranteed_reply and context.mentioned_bot:
+            reasons.append("at_guaranteed_reply: mentioned_bot")
+            return WillingDecision(
+                manager_name=self.name,
+                probability=1.0,
+                should_reply=True,
                 reasons=tuple(reasons),
             )
 
@@ -59,6 +59,18 @@ class QuailWillingManager(BaseWillingManager):
             probability *= runtime_conv_coeff
             if runtime_conv_coeff != 1.0:
                 reasons.append(f"运行时会话系数={runtime_conv_coeff:.3f}")
+            runtime_user_coeff = runtime.user_global_coefficients.get(
+                context.sender_id, 1.0
+            )
+            probability *= runtime_user_coeff
+            if runtime_user_coeff != 1.0:
+                reasons.append(f"运行时用户全局系数={runtime_user_coeff:.3f}")
+            runtime_conv_user_coeff = runtime.conversation_user_coefficients.get(
+                context.conversation_id, {}
+            ).get(context.sender_id, 1.0)
+            probability *= runtime_conv_user_coeff
+            if runtime_conv_user_coeff != 1.0:
+                reasons.append(f"运行时会话用户系数={runtime_conv_user_coeff:.3f}")
 
         if context.is_official_bot:
             probability *= context.official_bot_coefficient
@@ -66,15 +78,15 @@ class QuailWillingManager(BaseWillingManager):
 
         if context.is_direct_message:
             probability += 0.12
-            reasons.append("私聊加成=+0.120")
+            reasons.append("direct_message_bonus=+0.120")
 
         if context.mentioned_bot:
             probability += 0.30
-            reasons.append("被@加成=+0.300")
+            reasons.append("mentioned_bot_bonus=+0.300")
 
         if context.called_bot_name:
             probability += 0.20
-            reasons.append("被叫名字加成=+0.200")
+            reasons.append("called_bot_name_bonus=+0.200")
 
         if context.replied_to_message:
             probability += 0.15
@@ -87,7 +99,7 @@ class QuailWillingManager(BaseWillingManager):
         if context.matched_keywords:
             keyword_bonus = min(0.08 * len(context.matched_keywords), 0.24)
             probability += keyword_bonus
-            reasons.append(f"关键词加成=+{keyword_bonus:.3f}")
+            reasons.append(f"keywords_bonus=+{keyword_bonus:.3f}")
 
         observed_count = len(context.observed_messages_text)
         if observed_count > 0:

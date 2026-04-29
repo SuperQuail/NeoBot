@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
+from neobot_app.time_context import now_utc
 
 if TYPE_CHECKING:
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
@@ -45,10 +46,11 @@ class ReplyEvent:
     send_response: object | None = None
     message_number_map: dict[int, int] = field(default_factory=dict)
     reply_to_number: int | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=now_utc)
     completed_at: datetime | None = None
     pre_reply_message_id: int | None = None
     error: str | None = None
+    background_content: str | None = None
 
     def transition(self, new_state: ReplyState) -> None:
         allowed = _VALID_TRANSITIONS.get(self.state, set())
@@ -58,7 +60,7 @@ class ReplyEvent:
             )
         self.state = new_state
         if new_state in (ReplyState.COMPLETED, ReplyState.FAILED, ReplyState.CANCELLED):
-            self.completed_at = datetime.now(timezone.utc)
+            self.completed_at = now_utc()
 
     @property
     def is_terminal(self) -> bool:

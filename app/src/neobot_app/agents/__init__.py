@@ -30,6 +30,13 @@ from neobot_app.agents.willingness import (
     build_willingness_control_agent,
     build_willingness_control_toolset,
 )
+from neobot_app.agents.scheduled_task import (
+    ScheduledTaskAgent,
+    ScheduledTaskAgentConfig,
+    ScheduledTaskToolExecutor,
+    build_scheduled_task_agent,
+    build_scheduled_task_toolset,
+)
 
 __all__ = [
     "ArchiveMemoryAgent",
@@ -54,4 +61,9 @@ __all__ = [
     "WillingnessControlToolExecutor",
     "build_willingness_control_agent",
     "build_willingness_control_toolset",
+    "ScheduledTaskAgent",
+    "ScheduledTaskAgentConfig",
+    "ScheduledTaskToolExecutor",
+    "build_scheduled_task_agent",
+    "build_scheduled_task_toolset",
 ]

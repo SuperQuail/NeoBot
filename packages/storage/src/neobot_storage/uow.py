@@ -13,6 +13,7 @@ from neobot_storage.repositories.archive import SqlAlchemyArchiveMemoryAccess
 from neobot_storage.repositories.creator_image import SqlAlchemyCreatorImageAccess
 from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
 from neobot_storage.repositories.emoji import SqlAlchemyEmojiAccess
+from neobot_storage.repositories.scheduled_task import SqlAlchemyScheduledTaskAccess
 
 
 class SqlAlchemyUnitOfWork:
@@ -30,6 +31,7 @@ class SqlAlchemyUnitOfWork:
         self.images = SqlAlchemyImageAnalysisAccess(self._session)
         self.emojis = SqlAlchemyEmojiAccess(self._session)
         self.creator_images = SqlAlchemyCreatorImageAccess(self._session)
+        self.scheduled_tasks = SqlAlchemyScheduledTaskAccess(self._session)
         return self
 
     async def __aexit__(self, *exc: object) -> None:

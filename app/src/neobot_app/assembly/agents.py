@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -16,6 +16,7 @@ from neobot_app.agents import (
     build_chat_interaction_agent,
     build_creator_agent,
     build_image_parse_agent,
+    build_scheduled_task_agent,
     build_willingness_control_agent,
 )
 from neobot_app.config.schemas.bot import BotConfig
@@ -25,6 +26,29 @@ if TYPE_CHECKING:
     from neobot_app.emoji.service import EmojiService
     from neobot_app.user_profiles import UserProfileService
     from neobot_app.willing.service import WillingService
+
+
+AGENT_MODEL_NAMES: dict[int, str] = {
+    0: "primary_chat_model",
+    1: "agent_model_1",
+    2: "agent_model_2",
+    3: "agent_model_3",
+}
+
+
+def resolve_agent_model_name(
+    config: BotConfig,
+    agent_name: str,
+    *,
+    default_index: int,
+) -> str:
+    routing = getattr(config, "agent_model", None)
+    raw_index = getattr(routing, agent_name, default_index)
+    try:
+        index = int(raw_index)
+    except (TypeError, ValueError):
+        index = default_index
+    return AGENT_MODEL_NAMES.get(index, AGENT_MODEL_NAMES[default_index])
 
 
 def build_agent_registry(
@@ -37,7 +61,7 @@ def build_agent_registry(
     profile_service: "UserProfileService | None" = None,
     vision_provider: "Provider | None" = None,
     willing_service: "WillingService | None" = None,
-    provider_factory: Callable[[], Provider] | None = None,
+    provider_factory: Callable[..., Provider] | None = None,
     model_name: str = "primary_chat_model",
     logger: Logger | None = None,
     drawing_manager: Any = None,
@@ -45,13 +69,24 @@ def build_agent_registry(
     registry = AgentRegistry()
     active_logger = logger or NullLogger()
 
-    factory = provider_factory or (lambda: create_provider(model_name))
+    def factory(agent_name: str) -> Provider:
+        if provider_factory is not None:
+            try:
+                return provider_factory(agent_name)
+            except TypeError:
+                return provider_factory()
+        resolved_model_name = (
+            model_name
+            if model_name != "primary_chat_model"
+            else resolve_agent_model_name(config, agent_name, default_index=1)
+        )
+        return create_provider(resolved_model_name)
 
     # Register creator agent
     creator_config = config.agent.creator
     if creator_config.enabled and adapter is not None and uow_factory is not None:
         try:
-            provider = factory()
+            provider = factory("creator")
         except Exception as exc:
             active_logger.warning(f"无法创建 creator agent provider: {exc}")
         else:
@@ -77,7 +112,7 @@ def build_agent_registry(
     favorability_config = config.agent.memory.favorability
     if archive_memory_service is not None:
         try:
-            provider = factory()
+            provider = factory("memory")
         except Exception as exc:
             active_logger.warning(f"无法创建 memory agent provider: {exc}")
         else:
@@ -98,7 +133,7 @@ def build_agent_registry(
     # Register chat_interaction agent
     if adapter is not None:
         try:
-            provider = factory()
+            provider = factory("chat_interaction")
         except Exception as exc:
             active_logger.warning(f"无法创建 chat interaction agent provider: {exc}")
         else:
@@ -137,7 +172,7 @@ def build_agent_registry(
     willingness_config = config.agent.willingness
     if willingness_config.enabled and willing_service is not None:
         try:
-            provider = factory()
+            provider = factory("willingness")
         except Exception as exc:
             active_logger.warning(f"无法创建 willingness control agent provider: {exc}")
         else:
@@ -146,6 +181,28 @@ def build_agent_registry(
                 build_willingness_control_agent(
                     provider,
                     willing_service=willing_service,
+                    logger=active_logger,
+                ),
+            )
+
+    # Register scheduled task agent
+    scheduled_task_config = getattr(config, "scheduled_task", None)
+    if (
+        scheduled_task_config is not None
+        and getattr(scheduled_task_config, "enabled", True)
+        and uow_factory is not None
+    ):
+        try:
+            provider = factory("scheduled_task")
+        except Exception as exc:
+            active_logger.warning(f"无法创建 scheduled task agent provider: {exc}")
+        else:
+            registry.register(
+                "scheduled_task",
+                build_scheduled_task_agent(
+                    provider,
+                    uow_factory=uow_factory,
+                    config=scheduled_task_config,
                     logger=active_logger,
                 ),
             )

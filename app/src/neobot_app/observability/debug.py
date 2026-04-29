@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.event import ReplyEvent
+from neobot_app.time_context import now_utc, to_utc
 
 
 def _to_jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
+        return to_utc(value).isoformat()
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Enum):
@@ -62,7 +63,7 @@ class DebugRecorder:
         self._write_jsonl(
             "packets.jsonl",
             {
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "recorded_at": now_utc().isoformat(),
                 "packet": _to_jsonable(packet),
             },
         )
@@ -75,7 +76,7 @@ class DebugRecorder:
     ) -> None:
         self._logger.debug("记录回复事件", stage=stage, event_id=event.event_id)
         payload = {
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": now_utc().isoformat(),
             "stage": stage,
             "event": self._serialize_reply_event(event),
         }
@@ -135,7 +136,7 @@ class DebugRecorder:
         try:
             dt = datetime.fromisoformat(str(created_at))
         except (ValueError, TypeError):
-            dt = datetime.now(timezone.utc)
+            dt = now_utc()
         short_id = str(event.get("event_id", ""))[-6:]
         return f"{dt.year}-{dt.month}-{dt.day}-{dt.hour:02d}-{dt.minute:02d}-{short_id}"
 

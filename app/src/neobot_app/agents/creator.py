@@ -38,6 +38,7 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 from neobot_app.core import DATA_DIR
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import AgentCreator
@@ -172,7 +173,7 @@ class DrawTask:
     record_payload: dict[str, Any] | None = None
     notification_count: int = 0
     notified: bool = False
-    created_at: float = field(default_factory=time.monotonic)
+    created_at: float = field(default_factory=monotonic_seconds)
 
 
 class BackgroundDrawingManager:
@@ -184,6 +185,7 @@ class BackgroundDrawingManager:
         image_service: "CreatorImageService | None" = None,
         config: CreatorAgentConfig | None = None,
         logger: Logger | None = None,
+        notification_hub: Any = None,
     ) -> None:
         self._service = image_service
         self._config = config or CreatorAgentConfig()
@@ -192,12 +194,18 @@ class BackgroundDrawingManager:
         self._cooldowns: dict[str, float] = {}  # pipeline_key -> monotonic end time
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None  # ReplyOrchestrator reference, set after creation
+        self._notification_hub = notification_hub
 
     def set_image_service(self, service: "CreatorImageService") -> None:
         self._service = service
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
+        if self._notification_hub is not None:
+            self._notification_hub.set_orchestrator(orchestrator)
+
+    def set_notification_hub(self, hub: Any) -> None:
+        self._notification_hub = hub
 
     @property
     def background_enabled(self) -> bool:
@@ -209,11 +217,11 @@ class BackgroundDrawingManager:
     def check_cooldown(self, pipeline_key: str) -> int:
         """返回冷却剩余秒数，0 表示不在冷却期。"""
         deadline = self._cooldowns.get(pipeline_key, 0.0)
-        remaining = deadline - time.monotonic()
+        remaining = deadline - monotonic_seconds()
         return max(0, int(remaining))
 
     def _set_cooldown(self, pipeline_key: str) -> None:
-        self._cooldowns[pipeline_key] = time.monotonic() + self._config.draw_cooldown_seconds
+        self._cooldowns[pipeline_key] = monotonic_seconds() + self._config.draw_cooldown_seconds
 
     def cancel_cooldown(self, pipeline_key: str) -> None:
         self._cooldowns.pop(pipeline_key, None)
@@ -224,6 +232,69 @@ class BackgroundDrawingManager:
             if task.pipeline_key == pipeline_key and task.status == "drawing":
                 return task
         return None
+
+    def get_pipeline_status(self, pipeline_key: str) -> dict[str, Any]:
+        """查询指定管线的后台绘图状态（供主 Agent 工具调用）。"""
+        cooldown_remaining = self.check_cooldown(pipeline_key)
+        active = self._get_active_task(pipeline_key)
+        recent: list[dict[str, Any]] = []
+        for task in self._tasks.values():
+            if task.pipeline_key == pipeline_key and task.status != "drawing":
+                recent.append({
+                    "task_id": task.task_id,
+                    "status": task.status,
+                    "image_id": task.image_id,
+                    "error": task.error,
+                    "created_at": task.created_at,
+                })
+        return {
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "has_active_task": active is not None,
+            "active_task": {
+                "task_id": active.task_id,
+                "status": active.status,
+                "created_at": active.created_at,
+            } if active else None,
+            "recent_tasks": recent[-5:],
+        }
+
+    def get_last_draw_info(self, pipeline_key: str) -> dict[str, Any]:
+        """查询指定管线上一次绘图任务的详细信息（供工具调用）。
+
+        返回最近一个已完成/失败/超时的绘图任务记录，包括开始时间、
+        完成时间（通过 created_at 推算）、绘图信息或错误信息。
+        若该管线从未提交过绘图任务则返回空状态。
+        """
+        best: DrawTask | None = None
+        for task in self._tasks.values():
+            if task.pipeline_key != pipeline_key:
+                continue
+            if task.status == "drawing":
+                continue
+            if best is None or task.created_at > best.created_at:
+                best = task
+
+        if best is None:
+            return {"found": False, "message": "当前聊天流暂无已完成的绘图记录"}
+
+        info: dict[str, Any] = {
+            "found": True,
+            "task_id": best.task_id,
+            "status": best.status,
+            "created_at": best.created_at,
+            "prompt": best.prompt,
+            "image_id": best.image_id,
+            "record_payload": best.record_payload,
+            "requester": best.requester or None,
+            "requirements": best.requirements or None,
+        }
+        if best.status == "failed":
+            info["error"] = best.error or "未知错误"
+        if best.image_id:
+            info["image_id"] = best.image_id
+        if best.record_payload:
+            info["record_payload"] = best.record_payload
+        return info
 
     async def submit(
         self,
@@ -389,15 +460,17 @@ class BackgroundDrawingManager:
             if task.requester
             else ""
         )
+        error_text = task.error or "未知错误（可能是 API 超时或网络异常）"
         notification = (
             f"<这是新的必须要回答的内容>\n"
             f"绘图任务失败通知\n"
             f"\n"
             f"任务ID: {task.task_id}\n"
-            f"错误原因: {task.error}\n"
+            f"错误原因: {error_text}\n"
             f"原始委托: {requester_info}\n"
             f"\n"
-            f"你必须立即回复用户，告知绘图失败的原因，建议稍后重试。\n"
+            f"你必须立即先发送消息告知用户绘图失败和失败原因，然后询问用户是否要重试。\n"
+            f"不要在未询问用户的情况下自动重新提交绘图。\n"
             f"</这是新的必须要回答的内容>"
         )
         self._logger.info(
@@ -410,6 +483,18 @@ class BackgroundDrawingManager:
 
     async def _push_notification(self, task: DrawTask, notification: str) -> None:
         """推送通知到对应管线，若无活跃管线则尝试启动。"""
+        if self._notification_hub is not None:
+            started = await self._publish_hub_notification(task, notification)
+            self._logger.info(
+                "绘图通知已交给统一通知中心",
+                task_id=task.task_id,
+                pipeline_key=task.pipeline_key,
+                started_pipeline=started,
+            )
+            if not started and not task.notified and task.notification_count == 0:
+                asyncio.create_task(self._retry_notification(task))
+            return
+
         if self._orchestrator is None:
             self._logger.warning("通知推送失败：orchestrator 为空", task_id=task.task_id)
             return
@@ -439,8 +524,7 @@ class BackgroundDrawingManager:
                 )
                 if result is not None:
                     # 新管线已启动，通知会作为初始消息处理，不再入队
-                    if not task.notified and task.notification_count == 0:
-                        asyncio.create_task(self._retry_notification(task))
+                    task.notified = True
                     return
             except Exception as exc:
                 self._logger.warning(
@@ -479,14 +563,16 @@ class BackgroundDrawingManager:
                 status=task.status,
             )
             if task.status == "failed":
+                error_text = task.error or "未知错误（可能是 API 超时或网络异常）"
                 retry_msg = (
                     f"<这是新的必须要回答的内容>\n"
                     f"绘图任务失败通知（第{task.notification_count}次提醒）\n"
                     f"\n"
                     f"任务ID: {task.task_id}\n"
-                    f"错误原因: {task.error}\n"
+                    f"错误原因: {error_text}\n"
                     f"\n"
-                    f"你必须立即回复用户，告知绘图失败的原因，建议稍后重试。\n"
+                    f"你必须立即先发送消息告知用户绘图失败和失败原因，然后询问用户是否要重试。\n"
+                    f"不要在未询问用户的情况下自动重新提交绘图。\n"
                     f"</这是新的必须要回答的内容>"
                 )
             else:
@@ -507,8 +593,17 @@ class BackgroundDrawingManager:
                     f"注意：不要再重新绘图！\n"
                     f"</这是新的必须要回答的内容>"
                 )
-            queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
-            await queue.put(retry_msg)
+            if self._notification_hub is not None:
+                status = self._notification_hub.get_pipeline_status(task.pipeline_key)
+                pending = status.get("background_notifications_by_source", {}).get("drawing", 0)
+                if pending:
+                    continue
+                await self._publish_hub_notification(task, retry_msg)
+            else:
+                queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
+                if not queue.empty():
+                    continue
+                await queue.put(retry_msg)
 
         if not task.notified:
             task.status = "timeout"
@@ -517,7 +612,22 @@ class BackgroundDrawingManager:
                 task_id=task.task_id,
                 attempts=task.notification_count,
             )
-            if self._orchestrator is not None:
+            if self._notification_hub is not None:
+                image_id_text = task.image_id or "未知"
+                timeout_msg = (
+                    f"<这是新的必须要回答的内容>\n"
+                    f"绘图任务超时通知\n"
+                    f"\n"
+                    f"任务ID: {task.task_id}\n"
+                    f"图片ID: {image_id_text}（来源：tmp）\n"
+                    f"图片已保存在临时目录。\n"
+                    f"\n"
+                    f"你必须立即调用 delegate 工具处理此任务，"
+                    f"或告知用户可通过 creator agent 查看。\n"
+                    f"</这是新的必须要回答的内容>"
+                )
+                await self._publish_hub_notification(task, timeout_msg)
+            elif self._orchestrator is not None:
                 active = getattr(self._orchestrator, "_active_pipelines", {})
                 if task.pipeline_key in active and not active[task.pipeline_key].done():
                     image_id_text = task.image_id or "未知"
@@ -538,6 +648,12 @@ class BackgroundDrawingManager:
 
     async def poll_notification(self, pipeline_key: str) -> str | None:
         """轮询指定管线是否有待处理通知。返回通知文本或 None。"""
+        if self._notification_hub is not None:
+            notification = await self._notification_hub.poll(pipeline_key, source="drawing")
+            if notification is None:
+                return None
+            return notification.content
+
         queue = self._notification_queues.get(pipeline_key)
         if queue is None or queue.empty():
             return None
@@ -564,10 +680,29 @@ class BackgroundDrawingManager:
         self._notification_queues.clear()
         self._logger.info("BackgroundDrawingManager 已关闭")
 
+    def _mark_notified(self, pipeline_key: str) -> None:
+        for task in self._tasks.values():
+            if task.pipeline_key == pipeline_key and task.status != "drawing":
+                task.notified = True
+
+    async def _publish_hub_notification(self, task: DrawTask, notification: str) -> bool:
+        started = await self._notification_hub.publish(
+            source="drawing",
+            kind=task.conversation_kind,
+            conversation_id=task.conversation_id,
+            content=notification,
+            manager_name="background_drawing",
+            reasons=["drawing task notification"],
+            metadata={"task_id": task.task_id, "status": task.status},
+            on_consumed=lambda _notification: self._mark_notified(task.pipeline_key),
+        )
+        return bool(started)
+
 class CreatorImageService:
     """Generate, store, and send Creator Agent images."""
 
-    _CLEANUP_INTERVAL_SECONDS = 300
+    _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+    _TMP_MAX_AGE_SECONDS = 12 * 60 * 60
 
     def __init__(
         self,
@@ -676,6 +811,7 @@ class CreatorImageService:
             try:
                 await asyncio.sleep(self._CLEANUP_INTERVAL_SECONDS)
                 await self._cleanup_stale_records()
+                await self._cleanup_expired_tmp_files()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -725,6 +861,52 @@ class CreatorImageService:
                 "creator 临时文件已清理",
                 deleted_files=deleted_count,
                 deleted_records=db_deleted,
+            )
+
+    async def _cleanup_expired_tmp_files(self) -> None:
+        """删除超过保留时间的临时绘图文件及对应记录。"""
+        cutoff = time.time() - self._TMP_MAX_AGE_SECONDS
+        expired_ids: list[str] = []
+        deleted_files = 0
+
+        async with self._uow_factory() as uow:
+            records = await uow.creator_images.list(source=TMP_SOURCE, limit=99999, offset=0)
+            for record in records:
+                path = Path(record.file_path)
+                try:
+                    mtime = path.stat().st_mtime if path.exists() else 0.0
+                except OSError:
+                    mtime = 0.0
+                if mtime > cutoff:
+                    continue
+                if path.exists():
+                    try:
+                        path.unlink()
+                        deleted_files += 1
+                    except OSError as exc:
+                        self._logger.warning(
+                            "删除过期临时图片失败",
+                            image_id=record.image_id,
+                            path=str(path),
+                            error=str(exc),
+                        )
+                        continue
+                try:
+                    path.with_suffix(".txt").unlink(missing_ok=True)
+                except OSError:
+                    pass
+                expired_ids.append(record.image_id)
+
+            for image_id in expired_ids:
+                await uow.creator_images.delete(image_id)
+            await uow.commit()
+
+        if expired_ids or deleted_files:
+            self._logger.info(
+                "creator 过期临时图片已清理",
+                deleted_files=deleted_files,
+                deleted_records=len(expired_ids),
+                max_age_hours=self._TMP_MAX_AGE_SECONDS // 3600,
             )
 
     async def generate_image(
@@ -1184,13 +1366,14 @@ class CreatorImageService:
         image_source: str | None = None,
     ) -> CreatorImageRecord:
         file_hash = hashlib.sha256(image_bytes).hexdigest()
-        async with self._uow_factory() as uow:
-            existing = await uow.creator_images.get_by_hash(file_hash)
-            if existing is not None:
-                raise ValueError(
-                    f"该图片与已有图片重复（哈希 {file_hash[:12]}…），"
-                    f"已有文件: {existing.image_id}，不允许重复加入"
-                )
+        if source != TMP_SOURCE:
+            async with self._uow_factory() as uow:
+                existing = await uow.creator_images.get_by_hash(file_hash)
+                if existing is not None:
+                    raise ValueError(
+                        f"该图片与已有图片重复（哈希 {file_hash[:12]}…），"
+                        f"已有文件: {existing.image_id}，不允许重复加入"
+                    )
 
         image_id = self._new_image_id(source)
         suffix = self._detect_suffix(image_bytes)
@@ -1631,10 +1814,11 @@ class CreatorToolExecutor(ToolExecutor):
             _tool_def(
                 "generate_image",
                 "根据提示词调用生图模型生成图片，生成结果会保存为临时图片。"
-                "可通过 references 提供参考图片（图生图/垫图），支持多张混合来源。",
+                "可通过 references 提供参考图片（图生图/垫图），支持多张混合来源。"
+                "不带参数调用时可查询当前聊天流的绘图状态：空闲/占用中/冷却中。",
                 {
                     "properties": {
-                        "prompt": {"type": "string", "description": "要生成的图片内容"},
+                        "prompt": {"type": "string", "description": "要生成的图片内容。不填则查询当前绘图状态。"},
                         "references": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -1652,8 +1836,15 @@ class CreatorToolExecutor(ToolExecutor):
                         "image_size": {"type": "string", "description": "可选，例如 512x512 或 1024x1024"},
                         "seed": {"type": "integer", "description": "可选，随机种子"},
                     },
-                    "required": ["prompt"],
+                    "required": [],
                 },
+            ),
+            _tool_def(
+                "check_last_drawing",
+                "查看当前聊天流上一次绘图任务的详细记录。"
+                "包括：任务ID、状态（完成/失败/超时）、图片ID、提示词、错误信息等。"
+                "用于查看上次绘图的结果，确认图片是否生成成功。",
+                {"properties": {}, "required": []},
             ),
             _tool_def(
                 "gallery_list",
@@ -1916,6 +2107,8 @@ class CreatorToolExecutor(ToolExecutor):
                 return self._get_chat_context()
             if name == "generate_image":
                 return await self._generate_image(args)
+            if name == "check_last_drawing":
+                return await self._check_last_drawing(args)
             if name == "gallery_list":
                 return await self._gallery_list(args)
             if name == "gallery_search":
@@ -1998,11 +2191,42 @@ class CreatorToolExecutor(ToolExecutor):
         return _json({"ok": True, "context": context})
 
     async def _generate_image(self, args: dict[str, Any]) -> str:
+        prompt = str(args.get("prompt") or "").strip()
         seed = args.get("seed")
         references_raw = args.get("references")
         references: list[str] | None = None
         if isinstance(references_raw, list):
             references = [str(r) for r in references_raw]
+
+        # 无 prompt → 检查模式：查询当前绘图状态
+        if not prompt:
+            if self._drawing_manager is None:
+                return _json({"ok": True, "status": "unavailable", "message": "后台绘图未配置，无法查询状态"})
+            pipeline_key = self._extract_pipeline_key()
+            if pipeline_key is None:
+                return _json({"ok": True, "status": "unknown", "message": "无法确定当前聊天流，请通过主Agent的 check_background_tasks 工具查询"})
+            status = self._drawing_manager.get_pipeline_status(pipeline_key)
+            active = status.get("active_task")
+            cooldown = status.get("cooldown_remaining_seconds", 0)
+            if active is not None:
+                return _json({
+                    "ok": True,
+                    "status": "busy",
+                    "message": f"当前聊天流已有绘图任务进行中（task_id: {active['task_id']}），请等待完成后再提交新任务。",
+                    "active_task": active,
+                })
+            if cooldown > 0:
+                return _json({
+                    "ok": True,
+                    "status": "cooldown",
+                    "message": f"绘图工具冷却中，剩余 {cooldown} 秒。请告知主Agent让请求者等待，主Agent不需要等待。",
+                    "cooldown_remaining_seconds": cooldown,
+                })
+            return _json({
+                "ok": True,
+                "status": "idle",
+                "message": "空闲，可使用。当前无进行中的绘图任务，可以提交新的绘图请求。",
+            })
 
         # 尝试走后台绘图
         if (
@@ -2016,13 +2240,13 @@ class CreatorToolExecutor(ToolExecutor):
                     requester, requirements = self._extract_delegation_info(
                         conv_kind=conv_kind,
                         conv_id=conv_id,
-                        prompt=str(args.get("prompt") or ""),
+                        prompt=prompt,
                     )
                     return await self._drawing_manager.submit(
                         pipeline_key=pipeline_key,
                         conversation_kind=conv_kind,
                         conversation_id=conv_id,
-                        prompt=str(args.get("prompt") or ""),
+                        prompt=prompt,
                         requester=requester,
                         requirements=requirements,
                         references=references,
@@ -2034,7 +2258,7 @@ class CreatorToolExecutor(ToolExecutor):
 
         # 同步回退
         record = await self._service.generate_image(
-            prompt=str(args.get("prompt") or ""),
+            prompt=prompt,
             references=references,
             reference_id=self._optional_int(args.get("reference_id")),
             negative_prompt=self._optional_str(args.get("negative_prompt")),
@@ -2042,6 +2266,16 @@ class CreatorToolExecutor(ToolExecutor):
             seed=int(seed) if seed is not None else None,
         )
         return _json({"ok": True, "image": self._record_payload(record)})
+
+    async def _check_last_drawing(self, args: dict[str, Any]) -> str:
+        """查询当前聊天流上一次绘图任务的详细记录。"""
+        if self._drawing_manager is None:
+            return _json({"ok": False, "error": "后台绘图未配置"})
+        pipeline_key = self._extract_pipeline_key()
+        if pipeline_key is None:
+            return _json({"ok": False, "error": "无法确定当前聊天流"})
+        info = self._drawing_manager.get_last_draw_info(pipeline_key)
+        return _json({"ok": True, "pipeline_key": pipeline_key, **info})
 
     async def _gallery_list(self, args: dict[str, Any]) -> str:
         source = self._optional_str(args.get("source"))

@@ -7,6 +7,7 @@ from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
 from neobot_storage.repositories.memory import SqlAlchemyMemoryRepository
 from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
+from neobot_storage.repositories.scheduled_task import SqlAlchemyScheduledTaskAccess
 
 __all__ = [
     "SqlAlchemyArchiveMemoryAccess",
@@ -16,4 +17,5 @@ __all__ = [
     "SqlAlchemyMemoryRepository",
     "SqlAlchemyMessageRepository",
     "SqlAlchemyProfileRepository",
+    "SqlAlchemyScheduledTaskAccess",
 ]

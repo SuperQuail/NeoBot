@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models.memory import ArchiveMemory
 from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
+from neobot_contracts.time_context import now_utc, to_utc
 
 from neobot_storage.models import ArchiveMemoryData
 
@@ -37,7 +38,7 @@ class SqlAlchemyArchiveMemoryAccess:
 
     async def set(self, table_name: str, key: str, value: str, tags: list[str]) -> ArchiveMemory:
         """Create or update archive memory entry."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         serialized_tags = self._tags_to_string(tags)
 
         if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
@@ -199,9 +200,7 @@ class SqlAlchemyArchiveMemoryAccess:
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
         """Always expose archive timestamps as UTC-aware datetimes."""
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return to_utc(value)
 
 
 # Type check: ensure class implements the protocol

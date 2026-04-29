@@ -1,5 +1,6 @@
 from neobot_app.config.schemas.bot import (
     Agent,
+    AgentModelRouting,
     AgentCreator,
     AgentCreatorEmoji,
     AgentCreatorGallery,
@@ -19,6 +20,7 @@ from neobot_app.config.schemas.env import ApiPlatformConfig, EnvConfig
 
 __all__ = [
     "Agent",
+    "AgentModelRouting",
     "AgentCreator",
     "AgentCreatorEmoji",
     "AgentCreatorGallery",

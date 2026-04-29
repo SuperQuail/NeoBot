@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import delete as sql_delete, func, or_, select
@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models.memory import CreatorImageRecord
+from neobot_contracts.time_context import now_utc, to_utc
 from neobot_contracts.ports.creator_image_access import CreatorImageAccess
 
 from neobot_storage.models import CreatorImageData
@@ -49,7 +50,7 @@ class SqlAlchemyCreatorImageAccess:
         original_height: Optional[int] = None,
         image_source: Optional[str] = None,
     ) -> CreatorImageRecord:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
             stmt = sqlite_insert(CreatorImageData).values(
@@ -139,7 +140,7 @@ class SqlAlchemyCreatorImageAccess:
         if row is None:
             raise LookupError(f"creator image not found for image_id={image_id}")
         row.file_path = new_file_path
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = now_utc()
         row.version += 1
         await self._session.flush()
         return self._to_domain(row)
@@ -226,9 +227,7 @@ class SqlAlchemyCreatorImageAccess:
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return to_utc(value)
 
 
 _: CreatorImageAccess = SqlAlchemyCreatorImageAccess  # type: ignore

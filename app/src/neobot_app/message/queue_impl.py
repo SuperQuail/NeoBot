@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import deque
 import copy
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 import json
 import re
@@ -15,6 +14,7 @@ from neobot_adapter.model.message import GroupMessage, PrivateMessage
 from neobot_adapter.model.notice import GroupMessageDelete, PrivateMessageDelete
 from neobot_adapter.model.response import GetSignalMsgData, GetSignalMsgResponse
 from neobot_adapter.utils.parse import safe_parse_model
+from neobot_app.time_context import epoch_seconds_int, from_epoch_seconds
 
 MessageType = Union[PrivateMessage, GroupMessage, GetSignalMsgResponse, GetSignalMsgData]
 QueueMessage = Union[PrivateMessage, GroupMessage]
@@ -165,7 +165,7 @@ class MessageQueue:
         value = getattr(candidate, "time", None)
         if isinstance(value, int):
             return value
-        return int(datetime.now().timestamp())
+        return epoch_seconds_int()
 
     def _append_timestamp_if_needed(
         self,
@@ -779,7 +779,7 @@ class MessageQueue:
     def _format_timestamp(timestamp: Optional[int]) -> str:
         if timestamp is None:
             return "未知时间"
-        dt = datetime.fromtimestamp(timestamp)
+        dt = from_epoch_seconds(timestamp)
         return f"{dt.year}-{dt.month}-{dt.day}-{dt.hour}:{dt.minute:02d}"
 
     def _message_to_text(

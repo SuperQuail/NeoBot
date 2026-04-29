@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import func, or_, select, update
@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models.memory import EmojiRecord
+from neobot_contracts.time_context import now_utc, to_utc
 from neobot_contracts.ports.emoji_access import EmojiAccess
 
 from neobot_storage.models import EmojiData
@@ -49,7 +50,7 @@ class SqlAlchemyEmojiAccess:
         analysis_text: Optional[str] = None,
         image_source: Optional[str] = None,
     ) -> EmojiRecord:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
             stmt = sqlite_insert(EmojiData).values(
@@ -130,7 +131,7 @@ class SqlAlchemyEmojiAccess:
             raise LookupError(f"emoji not found for hash={file_hash}")
         row.file_name = new_file_name
         row.file_path = new_file_path
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = now_utc()
         row.version += 1
         await self._session.flush()
         return self._to_domain(row)
@@ -226,9 +227,7 @@ class SqlAlchemyEmojiAccess:
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return to_utc(value)
 
 
 _: EmojiAccess = SqlAlchemyEmojiAccess  # type: ignore

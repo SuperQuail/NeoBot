@@ -1,13 +1,13 @@
-"""Defaults — 开箱即用的默认实现"""
+﻿"""Defaults — 开箱即用的默认实现"""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from neobot_contracts.models import ConversationRef, MemoryRecord
 from neobot_contracts.models.memory import ArchiveMemory, ImageAnalysis
 from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
+from neobot_contracts.time_context import now_utc
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 from neobot_contracts.ports.clock import SystemClock as SystemClock  # re-export
 from neobot_contracts.ports.logging import NullLogger as NullLogger  # re-export
@@ -66,13 +66,13 @@ class InMemoryArchiveMemoryAccess:
                 value=value,
                 tags=tags.copy(),  # 创建副本避免外部修改
                 created_at=existing.created_at,  # 保留原始创建时间
-                updated_at=datetime.now(timezone.utc),
+                updated_at=now_utc(),
                 version=existing.version + 1,
             )
         else:
             # 创建新条目
             self._id_counter += 1
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             updated = ArchiveMemory(
                 id=self._id_counter,
                 table_name=table_name,
@@ -187,12 +187,12 @@ class InMemoryImageAnalysisAccess:
                 processed_height=processed_height if processed_height is not None else existing.processed_height,
                 analysis_text=analysis_text if analysis_text is not None else existing.analysis_text,
                 created_at=existing.created_at,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=now_utc(),
                 version=existing.version + 1,
             )
         else:
             self._id_counter += 1
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             updated = ImageAnalysis(
                 id=self._id_counter,
                 file_hash=file_hash,

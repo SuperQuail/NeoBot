@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -37,6 +37,7 @@ class NeoBotApplication(Generic[T]):
         expiration_config: ExpirationConfig | None = None,
         tts_service: "TTSService | None" = None,
         bot_detector: Any = None,
+        scheduled_task_manager: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -53,6 +54,7 @@ class NeoBotApplication(Generic[T]):
         if self.tts_service is not None:
             self.tts_service.bind_file_server(self.file_server)
         self._bot_detector = bot_detector
+        self._scheduled_task_manager = scheduled_task_manager
 
     async def start(self) -> None:
         if self._started:
@@ -83,6 +85,8 @@ class NeoBotApplication(Generic[T]):
             await self._emoji_service.start()
             self._logger.info("表情包服务启动完成")
         self.event_pipeline.start()
+        if self._scheduled_task_manager is not None:
+            await self._scheduled_task_manager.start()
         self._started = True
 
     async def run_forever(self) -> None:
@@ -106,6 +110,8 @@ class NeoBotApplication(Generic[T]):
         await self.event_pipeline.flush_pending_summaries()
         if self._reply_orchestrator is not None:
             await self._reply_orchestrator.shutdown()
+        elif self._scheduled_task_manager is not None:
+            await self._scheduled_task_manager.shutdown()
         if self._emoji_service is not None:
             await self._emoji_service.stop()
         await self.adapter.stop()

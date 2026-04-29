@@ -12,6 +12,7 @@ from neobot_chat.tools import AgentRegistry
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
+from neobot_app.time_context import monotonic_seconds
 
 
 def _default_resolver(
@@ -50,6 +51,9 @@ class ReplyToolExecutor(ToolExecutor):
         tts_service: Any = None,
         speak_handler: Any = None,
         poke_user_handler: Any = None,
+        drawing_manager: Any = None,
+        scheduled_task_manager: Any = None,
+        notification_hub: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -76,6 +80,9 @@ class ReplyToolExecutor(ToolExecutor):
         self._tts_service = tts_service
         self._speak_handler = speak_handler
         self._poke_user = poke_user_handler
+        self._drawing_manager = drawing_manager
+        self._scheduled_task_manager = scheduled_task_manager
+        self._notification_hub = notification_hub
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -189,17 +196,16 @@ class ReplyToolExecutor(ToolExecutor):
                                 "action": {
                                     "type": "string",
                                     "enum": [
-                                        "set_global",
                                         "set_conversation",
                                         "remove_conversation",
                                         "add_blacklist",
                                         "remove_blacklist",
                                     ],
-                                    "description": "调整动作。",
+                                    "description": "调整动作。仅允许作用于当前会话。",
                                 },
                                 "conv_id": {
                                     "type": "string",
-                                    "description": "会话级操作对应的会话 ID。",
+                                    "description": "可选，会话 ID；不填时使用当前会话。若提供，必须等于当前会话 ID。",
                                 },
                                 "value": {
                                     "type": "number",
@@ -351,7 +357,11 @@ class ReplyToolExecutor(ToolExecutor):
                         "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
                         "即使用户只说“这张图/刚才那张图/加到表情包”也直接委托 creator，不要先委托 image_parse。"
                         "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
-                        "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。",
+                        "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。"
+                        "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
+                        "如果有人提出生日想要的祝福、庆祝场合或禁忌，委托 scheduled_task 记录或更新生日任务，不要只写入普通记忆。"
+                        "绘图失败时必须先发消息告知失败原因，再询问用户是否重试，不要自行立刻重试。"
+                        "创建早安、生日祝福、普通提醒等定时任务时，默认使用一次性通知；一次性通知不是 once 一次性任务，循环任务也可以每个周期只通知一次。",
                         {
                             "properties": {
                                 "agent": {
@@ -400,6 +410,56 @@ class ReplyToolExecutor(ToolExecutor):
                     ),
                 ]
             )
+        if (
+            self._drawing_manager is not None
+            or self._scheduled_task_manager is not None
+            or self._notification_hub is not None
+        ):
+            tools.append(
+                _tool_def(
+                    "check_background_tasks",
+                    "查询当前聊天流的后台任务状态（可扩展，当前支持绘图任务）。"
+                    "返回：后台任务列表及各任务的状态、进行中/冷却/最近完成/失败等信息。"
+                    "在决定是否调用 generate_image 之前，必须优先调用此工具检查是否有正在进行的后台任务，避免重复提交。",
+                    {
+                        "properties": {},
+                        "required": [],
+                    },
+                )
+            )
+        if self._drawing_manager is not None:
+            tools.append(
+                _tool_def(
+                    "check_last_drawing",
+                    "查看当前聊天流上一次绘图任务的详细记录。"
+                    "包括：任务ID、状态（完成/失败/超时）、图片ID、提示词、错误信息等。"
+                    "用于确认上一次绘图是否成功、查看生成的图片ID或失败原因。",
+                    {
+                        "properties": {},
+                        "required": [],
+                    },
+                )
+            )
+        if self._scheduled_task_manager is not None:
+            tools.append(
+                _tool_def(
+                    "mark_scheduled_task_complete",
+                    "标记指定 UUID 的定时任务已完成。定时任务提醒会提供任务 UUID；"
+                    "当你已经完成该提醒对应的事项，或用户明确表示该事项已完成时调用。"
+                    "如果提醒内容注明任务配置为一次性通知且系统已自动完成当前触发窗口，发送提醒后不要再调用本工具。"
+                    "对于持续通知的提醒任务和生日祝福任务，只要已经发送提醒或祝福消息，就应调用本工具标记完成；"
+                    "对于持续提醒类任务，如果已经提醒三到五次仍然没有用户反馈，发送最后一次自然提醒后也应调用本工具结束本次任务。",
+                    {
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "定时任务提醒中提供的 UUID。",
+                            },
+                        },
+                        "required": ["task_id"],
+                    },
+                )
+            )
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -431,6 +491,12 @@ class ReplyToolExecutor(ToolExecutor):
             return self._execute_list_agents(args)
         if name == "delegate":
             return await self._execute_delegate(args)
+        if name == "check_background_tasks":
+            return await self._execute_check_background_tasks(args)
+        if name == "check_last_drawing":
+            return await self._execute_check_last_drawing(args)
+        if name == "mark_scheduled_task_complete":
+            return await self._execute_mark_scheduled_task_complete(args)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -524,10 +590,9 @@ class ReplyToolExecutor(ToolExecutor):
         return "回复已发送"
 
     async def _execute_wait(self, args: dict) -> str:
-        import time
         if self._wait is None:
             return "错误：wait 处理器未配置"
-        now = time.monotonic()
+        now = monotonic_seconds()
         elapsed = now - self._last_wait_time
         if self._last_wait_time > 0 and elapsed < self._wait_cooldown_seconds:
             remaining = int(self._wait_cooldown_seconds - elapsed)
@@ -548,33 +613,30 @@ class ReplyToolExecutor(ToolExecutor):
             return "错误：回复意愿服务未配置"
         action = str(args.get("action") or "")
         if action == "set_global":
-            value = args.get("value")
-            if value is None:
-                return "错误：set_global 需要提供 value 参数"
-            return self._willing.set_runtime_global_coefficient(float(value))
+            return "错误：主回复工具不允许修改全局回复意愿；请仅调整当前会话"
+        current_conv_id = str(self._conv_id or "").strip()
+        requested_conv_id = str(args.get("conv_id") or current_conv_id).strip()
+        if action in {
+            "set_conversation",
+            "remove_conversation",
+            "add_blacklist",
+            "remove_blacklist",
+        }:
+            if not current_conv_id:
+                return "错误：无法确定当前会话 ID"
+            if requested_conv_id != current_conv_id:
+                return "错误：只能调整当前会话的回复意愿"
         if action == "set_conversation":
-            conv_id = str(args.get("conv_id") or "")
             value = args.get("value")
-            if not conv_id:
-                return "错误：set_conversation 需要提供 conv_id 参数"
             if value is None:
                 return "错误：set_conversation 需要提供 value 参数"
-            return self._willing.set_runtime_conversation_coefficient(conv_id, float(value))
+            return self._willing.set_runtime_conversation_coefficient(current_conv_id, float(value))
         if action == "remove_conversation":
-            conv_id = str(args.get("conv_id") or "")
-            if not conv_id:
-                return "错误：remove_conversation 需要提供 conv_id 参数"
-            return self._willing.remove_runtime_conversation_coefficient(conv_id)
+            return self._willing.remove_runtime_conversation_coefficient(current_conv_id)
         if action == "add_blacklist":
-            conv_id = str(args.get("conv_id") or "")
-            if not conv_id:
-                return "错误：add_blacklist 需要提供 conv_id 参数"
-            return self._willing.add_runtime_blacklist(conv_id)
+            return self._willing.add_runtime_blacklist(current_conv_id)
         if action == "remove_blacklist":
-            conv_id = str(args.get("conv_id") or "")
-            if not conv_id:
-                return "错误：remove_blacklist 需要提供 conv_id 参数"
-            return self._willing.remove_runtime_blacklist(conv_id)
+            return self._willing.remove_runtime_blacklist(current_conv_id)
         return f"错误：未知操作 {action}"
 
     def _execute_get_willingness_config(self) -> str:
@@ -725,6 +787,63 @@ class ReplyToolExecutor(ToolExecutor):
             lines.append(f"消息编号 {number} -> message_id {message_id}")
         return "\n".join(lines)
 
+    async def _execute_check_background_tasks(self, args: dict) -> str:
+        """查询当前聊天流的后台任务状态（可扩展，当前返回绘图任务）。"""
+        if (
+            self._drawing_manager is None
+            and self._scheduled_task_manager is None
+            and self._notification_hub is None
+        ):
+            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+        pipeline_key = f"{self._conv_kind}:{self._conv_id}"
+        if not self._conv_kind or not self._conv_id:
+            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+        status: dict[str, Any] = {}
+        if self._drawing_manager is not None:
+            status.update(self._drawing_manager.get_pipeline_status(pipeline_key))
+        if self._scheduled_task_manager is not None:
+            status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
+        if self._notification_hub is not None:
+            status.update(self._notification_hub.get_pipeline_status(pipeline_key))
+        self._logger.info(
+            "主Agent查询后台任务状态",
+            pipeline_key=pipeline_key,
+            has_active=status.get("has_active_task"),
+            cooldown=status.get("cooldown_remaining_seconds"),
+        )
+        return json.dumps({"ok": True, "pipeline_key": pipeline_key, **status}, ensure_ascii=False)
+
+    async def _execute_mark_scheduled_task_complete(self, args: dict) -> str:
+        if self._scheduled_task_manager is None:
+            return json.dumps({"ok": False, "error": "定时任务系统未配置"}, ensure_ascii=False)
+        task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return json.dumps({"ok": False, "error": "task_id 不能为空"}, ensure_ascii=False)
+        result = await self._scheduled_task_manager.mark_completed(task_id)
+        self._logger.info(
+            "主Agent标记定时任务完成",
+            task_id=task_id,
+            ok=result.get("ok"),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    async def _execute_check_last_drawing(self, args: dict) -> str:
+        """查询当前聊天流上一次绘图任务的详细记录。"""
+        if self._drawing_manager is None:
+            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+        pipeline_key = f"{self._conv_kind}:{self._conv_id}"
+        if not self._conv_kind or not self._conv_id:
+            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+        info = self._drawing_manager.get_last_draw_info(pipeline_key)
+        if info.get("found"):
+            self._logger.info(
+                "主Agent查询上一次绘图记录",
+                pipeline_key=pipeline_key,
+                task_id=info.get("task_id"),
+                status=info.get("status"),
+            )
+        return json.dumps({"ok": True, "pipeline_key": pipeline_key, **info}, ensure_ascii=False)
+
     def _preview_split(self, text: str) -> ReplyPostProcessResult:
         return process_reply_text(
             text,
@@ -795,6 +914,9 @@ def build_reply_toolset(
     tts_service: Any = None,
     speak_handler: Any = None,
     poke_user_handler: Any = None,
+    drawing_manager: Any = None,
+    scheduled_task_manager: Any = None,
+    notification_hub: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -823,6 +945,9 @@ def build_reply_toolset(
         tts_service=tts_service,
         speak_handler=speak_handler,
         poke_user_handler=poke_user_handler,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        notification_hub=notification_hub,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

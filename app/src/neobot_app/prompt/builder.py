@@ -7,7 +7,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.prompt.keyword_reaction import KeywordReactionBuilder
 from neobot_app.user_profiles import UserProfileService
-from neobot_app.utils.time import get_current_time_and_lunar_date
+from neobot_app.time_context import get_current_time_and_lunar_date
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering

@@ -18,6 +18,8 @@ class RuntimeWillingConfig:
 
     global_coefficient: float = 1.0
     conversation_coefficients: dict[str, float] = field(default_factory=dict)
+    user_global_coefficients: dict[str, float] = field(default_factory=dict)
+    conversation_user_coefficients: dict[str, dict[str, float]] = field(default_factory=dict)
     blacklisted_conversations: set[str] = field(default_factory=set)
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models.memory import ImageAnalysis
+from neobot_contracts.time_context import now_utc, to_utc
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 
 from neobot_storage.models import ImageAnalysisData
@@ -41,7 +42,7 @@ class SqlAlchemyImageAnalysisAccess:
         processed_height: Optional[int] = None,
         analysis_text: Optional[str] = None,
     ) -> ImageAnalysis:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
             stmt = sqlite_insert(ImageAnalysisData).values(
@@ -178,9 +179,7 @@ class SqlAlchemyImageAnalysisAccess:
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return to_utc(value)
 
 
 _: ImageAnalysisAccess = SqlAlchemyImageAnalysisAccess  # type: ignore

@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "willingness"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "回复意愿控制。仅可调整当前会话的运行时回复意愿：设置/移除当前会话的回复系数（0.0~1.0）、"
-    "管理当前会话的临时黑名单（禁言/恢复）。不允许修改全局系数或其他会话。"
+    "回复意愿控制。可调整运行时回复意愿：当前会话的回复系数（0.0~1.0）、"
+    "指定会话内指定用户的回复系数、指定用户的全局回复系数，以及当前会话临时黑名单。"
     "所有调整仅存于内存，重启后重置为默认值。"
 )
 
@@ -85,12 +85,12 @@ class WillingnessControlToolExecutor(ToolExecutor):
         return [
             _tool_def(
                 "get_willingness_status",
-                "查看当前运行时回复意愿设置，包括当前会话系数、全局系数和临时黑名单。",
+                "查看当前运行时回复意愿设置，包括全局、会话、用户全局、会话用户系数和临时黑名单。",
                 {"properties": {}, "required": []},
             ),
             _tool_def(
                 "set_session_coefficient",
-                "设置当前会话的运行时回复概率系数（0.0~1.0）。仅允许修改当前会话，不可修改其他会话。",
+                "设置当前会话的运行时回复概率系数（0.0~1.0）。",
                 {
                     "properties": {
                         "value": {
@@ -105,6 +105,74 @@ class WillingnessControlToolExecutor(ToolExecutor):
                 "remove_session_coefficient",
                 "移除当前会话的运行时回复概率系数，恢复默认行为。",
                 {"properties": {}, "required": []},
+            ),
+            _tool_def(
+                "set_session_user_coefficient",
+                "设置指定聊天流中指定用户的运行时回复概率系数（0.0~1.0）。conv_id 不填时使用当前会话。",
+                {
+                    "properties": {
+                        "user_id": {
+                            "type": "string",
+                            "description": "目标用户 QQ 号。",
+                        },
+                        "value": {
+                            "type": "number",
+                            "description": "回复概率系数，范围 0.0~1.0。会与会话系数、用户全局系数相乘。",
+                        },
+                        "conv_id": {
+                            "type": "string",
+                            "description": "可选，目标聊天流 ID。可填群号/好友QQ，也可填 group:123456 这种形式；不填则为当前会话。",
+                        },
+                    },
+                    "required": ["user_id", "value"],
+                },
+            ),
+            _tool_def(
+                "remove_session_user_coefficient",
+                "移除指定聊天流中指定用户的运行时回复概率系数。conv_id 不填时使用当前会话。",
+                {
+                    "properties": {
+                        "user_id": {
+                            "type": "string",
+                            "description": "目标用户 QQ 号。",
+                        },
+                        "conv_id": {
+                            "type": "string",
+                            "description": "可选，目标聊天流 ID。可填群号/好友QQ，也可填 group:123456 这种形式；不填则为当前会话。",
+                        },
+                    },
+                    "required": ["user_id"],
+                },
+            ),
+            _tool_def(
+                "set_user_global_coefficient",
+                "设置指定用户的全局运行时回复概率系数（0.0~1.0），影响该用户在所有聊天流中的普通意愿计算。",
+                {
+                    "properties": {
+                        "user_id": {
+                            "type": "string",
+                            "description": "目标用户 QQ 号。",
+                        },
+                        "value": {
+                            "type": "number",
+                            "description": "回复概率系数，范围 0.0~1.0。会与会话系数、会话用户系数相乘。",
+                        },
+                    },
+                    "required": ["user_id", "value"],
+                },
+            ),
+            _tool_def(
+                "remove_user_global_coefficient",
+                "移除指定用户的全局运行时回复概率系数，恢复默认行为。",
+                {
+                    "properties": {
+                        "user_id": {
+                            "type": "string",
+                            "description": "目标用户 QQ 号。",
+                        },
+                    },
+                    "required": ["user_id"],
+                },
             ),
             _tool_def(
                 "add_session_blacklist",
@@ -126,6 +194,9 @@ class WillingnessControlToolExecutor(ToolExecutor):
     def _get_conv_id(self) -> str:
         return _CONV_ID.get()
 
+    def _get_target_conv_id(self, args: dict) -> str:
+        return str(args.get("conv_id") or self._get_conv_id() or "").strip()
+
     async def execute(self, name: str, args: dict) -> str:
         if name == "get_willingness_status":
             return self._willing.get_runtime_config_summary()
@@ -140,6 +211,38 @@ class WillingnessControlToolExecutor(ToolExecutor):
             if not conv_id:
                 return "错误：无法确定当前会话 ID"
             return self._willing.remove_runtime_conversation_coefficient(conv_id)
+        if name == "set_session_user_coefficient":
+            conv_id = self._get_target_conv_id(args)
+            user_id = str(args.get("user_id") or "").strip()
+            if not conv_id:
+                return "错误：无法确定目标会话 ID"
+            if not user_id:
+                return "错误：user_id 不能为空"
+            value = float(args.get("value", 1.0))
+            return self._willing.set_runtime_conversation_user_coefficient(
+                conv_id,
+                user_id,
+                value,
+            )
+        if name == "remove_session_user_coefficient":
+            conv_id = self._get_target_conv_id(args)
+            user_id = str(args.get("user_id") or "").strip()
+            if not conv_id:
+                return "错误：无法确定目标会话 ID"
+            if not user_id:
+                return "错误：user_id 不能为空"
+            return self._willing.remove_runtime_conversation_user_coefficient(conv_id, user_id)
+        if name == "set_user_global_coefficient":
+            user_id = str(args.get("user_id") or "").strip()
+            if not user_id:
+                return "错误：user_id 不能为空"
+            value = float(args.get("value", 1.0))
+            return self._willing.set_runtime_user_global_coefficient(user_id, value)
+        if name == "remove_user_global_coefficient":
+            user_id = str(args.get("user_id") or "").strip()
+            if not user_id:
+                return "错误：user_id 不能为空"
+            return self._willing.remove_runtime_user_global_coefficient(user_id)
         if name == "add_session_blacklist":
             conv_id = self._get_conv_id()
             if not conv_id:
@@ -180,21 +283,29 @@ def build_willingness_control_toolset(
 def _build_system_prompt() -> str:
     return (
         "你是回复意愿控制代理。"
-        "只能操作当前会话（群聊或私聊）的回复意愿，不允许修改全局系数或其他会话的配置。\n"
-        "先通过 get_chat_context 查看当前会话信息，确认操作目标。\n"
+        "负责调整运行时回复意愿参数，不修改配置文件。\n"
+        "先通过 get_chat_context 查看当前会话信息、聊天记录和用户 QQ，确认操作目标。\n"
         "你有以下工具可用：\n"
         "- get_willingness_status: 查看当前回复意愿设置\n"
         "- set_session_coefficient: 设置当前会话的回复概率系数（0.0~1.0）\n"
         "- remove_session_coefficient: 移除当前会话的回复系数，恢复默认\n"
+        "- set_session_user_coefficient: 设置某个聊天流中某个用户的回复概率系数（可指定 conv_id；不填为当前会话）\n"
+        "- remove_session_user_coefficient: 移除某个聊天流中某个用户的回复概率系数\n"
+        "- set_user_global_coefficient: 设置某个用户的全局回复概率系数，影响所有聊天流\n"
+        "- remove_user_global_coefficient: 移除某个用户的全局回复概率系数\n"
         "- add_session_blacklist: 将当前会话加入临时黑名单\n"
         "- remove_session_blacklist: 将当前会话从临时黑名单移除\n"
         "- get_chat_context: 读取主Agent的聊天上下文\n\n"
         "调整策略指引：\n"
         "1. 当Bot在当前会话中过于活跃、频繁插话、或被要求闭嘴时，降低系数或加入黑名单。\n"
-        "2. 当用户明确表示希望Bot回复或积极参与时，适当提高系数。\n"
-        "3. 所有调整仅存在于内存中，重启Bot后自动重置，无需担心永久性影响。\n"
-        "4. 调整前先查看当前状态，避免无意义的重复设置。\n"
-        "5. 默认会话系数为 1.0，值越小回复概率越低。\n\n"
+        "2. 当只针对某个人调整时，优先使用用户相关工具；只影响当前群/聊天流时使用 session_user，全局影响该用户时使用 user_global。\n"
+        "3. 当用户明确表示希望Bot回复或积极参与时，适当提高对应系数。\n"
+        "4. conv_id 可使用 get_chat_context 里 [当前会话] 的 id；如果任务明确给出其他群号/好友QQ，也可指定该 ID。\n"
+        "5. 系数按层叠相乘：配置系数、运行时全局系数、会话系数、用户全局系数、会话用户系数。\n"
+        "6. 设置为 0.0 表示普通意愿计算中完全不想回复；但当前会话黑名单才是硬性禁用整个会话。\n"
+        "7. 所有调整仅存在于内存中，重启Bot后自动重置，无需担心永久性影响。\n"
+        "8. 调整前先查看当前状态，避免无意义的重复设置。\n"
+        "9. 默认所有系数为 1.0，值越小回复概率越低。\n\n"
         "注意：你修改的是运行时参数，系统配置中的默认值不会改变。\n"
         f"{PEER_AGENT_DESCRIPTIONS}\n"
         "任务完成后，只返回简短纯文本结果（说明做了什么调整即可）。"

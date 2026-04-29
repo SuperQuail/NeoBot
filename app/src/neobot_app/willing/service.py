@@ -72,6 +72,16 @@ class WillingService:
         )
         return self._manager.evaluate(context)
 
+    def block_reason_for_message(self, *, message: ChatMessage, queue_key: str) -> str:
+        """返回当前会话的硬性屏蔽原因；空字符串表示未屏蔽。"""
+        conversation_type = "group" if isinstance(message, GroupMessage) else "private"
+        allowed, block_reason = self._is_conversation_allowed(conversation_type, queue_key)
+        if not allowed:
+            return block_reason
+        if queue_key in self._runtime_config.blacklisted_conversations:
+            return "runtime_blacklisted"
+        return ""
+
     # ── Part B 运行时系数调整（供 AI 工具调用） ──
 
     def set_runtime_global_coefficient(self, value: float) -> str:
@@ -80,25 +90,76 @@ class WillingService:
         return f"全局回复系数已设为 {self._runtime_config.global_coefficient:.3f}"
 
     def set_runtime_conversation_coefficient(self, conv_id: str, value: float) -> str:
-        conv_id = str(conv_id).strip()
-        self._runtime_config.conversation_coefficients[conv_id] = clamp_probability(value)
-        self._logger.info("runtime conversation coefficient updated", conv_id=conv_id, value=value)
-        return f"会话 {conv_id} 的回复系数已设为 {clamp_probability(value):.3f}"
+        conv_id = self._normalize_conversation_id(conv_id)
+        coefficient = clamp_probability(value)
+        self._runtime_config.conversation_coefficients[conv_id] = coefficient
+        self._logger.info("runtime conversation coefficient updated", conv_id=conv_id, value=coefficient)
+        return f"会话 {conv_id} 的回复系数已设为 {coefficient:.3f}"
+
+    def set_runtime_user_global_coefficient(self, user_id: str, value: float) -> str:
+        user_id = self._normalize_user_id(user_id)
+        coefficient = clamp_probability(value)
+        self._runtime_config.user_global_coefficients[user_id] = coefficient
+        self._logger.info("runtime user global coefficient updated", user_id=user_id, value=coefficient)
+        return f"用户 {user_id} 的全局回复系数已设为 {coefficient:.3f}"
+
+    def remove_runtime_user_global_coefficient(self, user_id: str) -> str:
+        user_id = self._normalize_user_id(user_id)
+        removed = self._runtime_config.user_global_coefficients.pop(user_id, None)
+        if removed is not None:
+            self._logger.info("runtime user global coefficient removed", user_id=user_id)
+            return f"已移除用户 {user_id} 的全局回复系数（原值 {removed:.3f}）"
+        return f"用户 {user_id} 没有全局回复系数"
+
+    def set_runtime_conversation_user_coefficient(
+        self,
+        conv_id: str,
+        user_id: str,
+        value: float,
+    ) -> str:
+        conv_id = self._normalize_conversation_id(conv_id)
+        user_id = self._normalize_user_id(user_id)
+        coefficient = clamp_probability(value)
+        per_conv = self._runtime_config.conversation_user_coefficients.setdefault(conv_id, {})
+        per_conv[user_id] = coefficient
+        self._logger.info(
+            "runtime conversation user coefficient updated",
+            conv_id=conv_id,
+            user_id=user_id,
+            value=coefficient,
+        )
+        return f"会话 {conv_id} 中用户 {user_id} 的回复系数已设为 {coefficient:.3f}"
+
+    def remove_runtime_conversation_user_coefficient(self, conv_id: str, user_id: str) -> str:
+        conv_id = self._normalize_conversation_id(conv_id)
+        user_id = self._normalize_user_id(user_id)
+        per_conv = self._runtime_config.conversation_user_coefficients.get(conv_id)
+        if not per_conv or user_id not in per_conv:
+            return f"会话 {conv_id} 中用户 {user_id} 没有回复系数"
+        removed = per_conv.pop(user_id)
+        if not per_conv:
+            self._runtime_config.conversation_user_coefficients.pop(conv_id, None)
+        self._logger.info(
+            "runtime conversation user coefficient removed",
+            conv_id=conv_id,
+            user_id=user_id,
+        )
+        return f"已移除会话 {conv_id} 中用户 {user_id} 的回复系数（原值 {removed:.3f}）"
 
     def add_runtime_blacklist(self, conv_id: str) -> str:
-        conv_id = str(conv_id).strip()
+        conv_id = self._normalize_conversation_id(conv_id)
         self._runtime_config.blacklisted_conversations.add(conv_id)
         self._logger.info("runtime blacklist added", conv_id=conv_id)
         return f"已将 {conv_id} 加入临时黑名单"
 
     def remove_runtime_blacklist(self, conv_id: str) -> str:
-        conv_id = str(conv_id).strip()
+        conv_id = self._normalize_conversation_id(conv_id)
         self._runtime_config.blacklisted_conversations.discard(conv_id)
         self._logger.info("runtime blacklist removed", conv_id=conv_id)
         return f"已将 {conv_id} 从临时黑名单移除"
 
     def remove_runtime_conversation_coefficient(self, conv_id: str) -> str:
-        conv_id = str(conv_id).strip()
+        conv_id = self._normalize_conversation_id(conv_id)
         removed = self._runtime_config.conversation_coefficients.pop(conv_id, None)
         if removed is not None:
             self._logger.info("runtime conversation coefficient removed", conv_id=conv_id)
@@ -111,6 +172,15 @@ class WillingService:
         if rt.conversation_coefficients:
             items = ", ".join(f"{k}={v:.3f}" for k, v in rt.conversation_coefficients.items())
             parts.append(f"会话系数: {items}")
+        if rt.user_global_coefficients:
+            items = ", ".join(f"{k}={v:.3f}" for k, v in rt.user_global_coefficients.items())
+            parts.append(f"用户全局系数: {items}")
+        if rt.conversation_user_coefficients:
+            items = []
+            for conv_id, users in rt.conversation_user_coefficients.items():
+                for user_id, value in users.items():
+                    items.append(f"{conv_id}/{user_id}={value:.3f}")
+            parts.append(f"会话用户系数: {', '.join(items)}")
         if rt.blacklisted_conversations:
             parts.append(f"临时黑名单: {', '.join(sorted(rt.blacklisted_conversations))}")
         return "\n".join(parts)
@@ -309,6 +379,23 @@ class WillingService:
         if not use_black_list and not in_list:
             return False, white_list_reason
         return True, ""
+
+    @staticmethod
+    def _normalize_conversation_id(conv_id: str) -> str:
+        value = str(conv_id or "").strip()
+        if ":" in value:
+            _, value = value.split(":", 1)
+            value = value.strip()
+        if not value:
+            raise ValueError("会话 ID 不能为空")
+        return value
+
+    @staticmethod
+    def _normalize_user_id(user_id: str) -> str:
+        value = str(user_id or "").strip()
+        if not value:
+            raise ValueError("用户 ID 不能为空")
+        return value
 
     def _base_probability(self, conversation_type: str) -> float:
         if conversation_type == "group":

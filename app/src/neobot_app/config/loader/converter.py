@@ -116,7 +116,8 @@ def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
     if is_dataclass(expected_type):
         if isinstance(value, dict):
             try:
-                return True, dict_to_dataclass(value, expected_type)
+                actual_type = _resolve_nested_type_from_default(expected_type, value)
+                return True, dict_to_dataclass(value, actual_type)
             except Exception:
                 return False, value
         elif is_dataclass(type(value)):

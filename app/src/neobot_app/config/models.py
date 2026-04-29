@@ -5,6 +5,8 @@ from neobot_app.config.schemas.bot import (
     BotConfig,
     Chat,
     DeepSeekModelSettings,
+    AgentModelRouting,
+    HuoShanTTS,
     KeyWordRule,
     ModelPricing,
     ModelRegistration,
@@ -22,6 +24,7 @@ __all__ = [
     "BotConfig",
     "Chat",
     "ApiPlatformConfig",
+    "AgentModelRouting",
     "DeepSeekModelSettings",
     "EnvConfig",
     "KeyWordRule",
@@ -33,4 +36,5 @@ __all__ = [
     "Plugins",
     "TTS",
     "TTSReferenceVoice",
+    "HuoShanTTS",
 ]

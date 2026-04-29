@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.favorability import favorability_to_text
+from neobot_app.time_context import now_utc, to_utc
 
 
 def _sex_to_text(value: object) -> str | None:
@@ -23,9 +24,7 @@ def _sex_to_text(value: object) -> str | None:
 def _normalize_datetime(value: object) -> datetime | None:
     if not isinstance(value, datetime):
         return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+    return to_utc(value)
 
 
 class UserProfileService:
@@ -323,7 +322,7 @@ class UserProfileService:
             return True
 
         interval_days = max(1, int(getattr(self._config.chat, "user_info_update_interval_days", 7)))
-        return datetime.now(timezone.utc) - fetched_at >= timedelta(days=interval_days)
+        return now_utc() - fetched_at >= timedelta(days=interval_days)
 
     async def _merge_observed_fields(
         self,
@@ -370,7 +369,7 @@ class UserProfileService:
             observed_fields=observed_fields,
             current_profile=current_profile,
         )
-        fields["fetched_at"] = datetime.now(timezone.utc)
+        fields["fetched_at"] = now_utc()
 
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id, **fields)

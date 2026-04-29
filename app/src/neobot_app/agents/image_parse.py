@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "image_parse"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "图片内容解析。按指定需求解析聊天中的图片内容（需提供图片URL/本地路径/base64/message_id及解析要求）。"
+    "图片内容解析。按指定需求解析聊天中的图片内容；可使用主Agent传入的聊天上下文和消息编号映射自动定位“这张图/刚才那张图”。"
     "仅负责解析回传结果，不保存、不导入、不管理图库/表情包。"
+    "如果上下文仍不足以确定图片，会要求主Agent向用户询问更明确的图片或消息编号。"
     "头像解析委托 memory（它内部调用本agent），图片入库委托 creator。"
 )
 
@@ -53,6 +54,13 @@ class ImageParseRequest:
     message_id: int | None = None
     message_number: int | None = None
     image_index: int = 1
+
+
+@dataclass(frozen=True)
+class ContextImageCandidate:
+    message_number: int
+    message_id: int | None
+    line: str
 
 
 class ImageParseAgent:
@@ -137,14 +145,30 @@ class ImageParseAgent:
                 image_index=request.image_index,
             )
 
-        # 尝试从 delegate_context 中提取第一个可用的图片信息
-        if delegate_context and not any([request.image_url, request.image_path, request.image_base64, request.message_id, request.message_number]):
+        if request.message_number is not None:
             raise ValueError(
-                "缺少图片参数。请提供以下之一：image_url、image_path、image_base64、message_id 或 message_number。"
-                "可调用 get_chat_context 获取当前聊天上下文和消息编号映射。"
-                "如需要解析头像，请委托 memory agent。"
-                "如需要将图片加入图库/表情包，请委托 creator agent。"
+                f"上下文中无法将消息编号 {request.message_number} 转换为真实 message_id。"
+                "请主Agent确认消息编号映射是否包含该消息，或向用户询问要解析哪条图片消息。"
             )
+
+        if delegate_context and not any([
+            request.image_url,
+            request.image_path,
+            request.image_base64,
+            request.message_id,
+            request.message_number,
+        ]):
+            candidate = self._infer_image_candidate_from_context(task, delegate_context)
+            if candidate is not None:
+                if candidate.message_id is None:
+                    raise ValueError(
+                        f"已在上下文中找到图片消息编号 {candidate.message_number}，但缺少真实 message_id 映射。"
+                        "请主Agent补充该消息编号对应的 message_id。"
+                    )
+                return await self._chat_image_data_url(
+                    message_id=candidate.message_id,
+                    image_index=request.image_index,
+                )
 
         raise ValueError(
             "缺少图片参数。请提供以下之一：image_url、image_path、image_base64、message_id 或 message_number。"
@@ -182,6 +206,8 @@ class ImageParseAgent:
             message_id = self._extract_labeled_int(head, ("message_id", "真实 message_id", "消息ID", "消息id"))
         if message_number is None:
             message_number = self._extract_labeled_int(head, ("message_number", "消息编号"))
+        if message_number is None:
+            message_number = self._extract_message_number_phrase(head)
         if image_index == 1:
             image_index = self._extract_labeled_int(head, ("image_index", "图片序号")) or self._extract_image_index(head) or 1
 
@@ -362,14 +388,31 @@ class ImageParseAgent:
         return int(match.group(1)) if match else None
 
     @staticmethod
+    def _extract_message_number_phrase(text: str) -> int | None:
+        patterns = (
+            r"消息\s*(\d+)",
+            r"编号\s*(\d+)",
+            r"第\s*(\d+)\s*(?:条|个)?\s*消息",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return int(match.group(1))
+        return None
+
+    @staticmethod
     def _message_id_from_context(task: str, message_number: int) -> int | None:
-        pattern = rf"消息编号\s*{message_number}\s*->\s*message_id\s*(\d+)"
+        pattern = rf"消息编号\s*{message_number}\s*->\s*message_id\s*=?\s*(\d+)"
         match = re.search(pattern, task)
         return int(match.group(1)) if match else None
 
     @staticmethod
     def _message_id_from_delegate_context(delegate_context: str, message_number: int) -> int | None:
         """从主Agent传入的 _delegate_context 中按消息编号查找真实 message_id。"""
+        mapping = ImageParseAgent._message_number_mapping_from_context(delegate_context)
+        if message_number in mapping:
+            return mapping[message_number]
+
         try:
             ctx = json.loads(delegate_context)
         except (json.JSONDecodeError, TypeError):
@@ -391,6 +434,68 @@ class ImageParseAgent:
         return None
 
     @staticmethod
+    def _message_number_mapping_from_context(context: str) -> dict[int, int]:
+        mapping: dict[int, int] = {}
+        pattern = r"消息编号\s*(\d+)\s*->\s*message_id\s*=?\s*(\d+)"
+        for match in re.finditer(pattern, context):
+            mapping[int(match.group(1))] = int(match.group(2))
+        return mapping
+
+    @staticmethod
+    def _context_image_candidates(delegate_context: str) -> list[ContextImageCandidate]:
+        mapping = ImageParseAgent._message_number_mapping_from_context(delegate_context)
+        candidates: list[ContextImageCandidate] = []
+        for line in delegate_context.splitlines():
+            if not ImageParseAgent._line_has_image_marker(line):
+                continue
+            match = re.match(r"\s*(\d+)\s*[:：]", line)
+            if not match:
+                continue
+            number = int(match.group(1))
+            candidates.append(
+                ContextImageCandidate(
+                    message_number=number,
+                    message_id=mapping.get(number),
+                    line=line.strip(),
+                )
+            )
+        return candidates
+
+    @staticmethod
+    def _line_has_image_marker(line: str) -> bool:
+        return any(marker in line for marker in ("[图片", "[卡片图片", "[CQ:image", "[CQ:cardimage"))
+
+    @staticmethod
+    def _infer_image_candidate_from_context(
+        task: str,
+        delegate_context: str,
+    ) -> ContextImageCandidate | None:
+        candidates = ImageParseAgent._context_image_candidates(delegate_context)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+
+        text = task.strip()
+        latest_markers = (
+            "这张",
+            "这个图",
+            "这图",
+            "刚才",
+            "刚刚",
+            "上一张",
+            "上面",
+            "最后",
+            "最新",
+            "图片",
+            "图里",
+            "图中",
+        )
+        if any(marker in text for marker in latest_markers):
+            return candidates[-1]
+        return None
+
+    @staticmethod
     def _missing_image_response(task: str, delegate_context: str, exc: Exception) -> str:
         """当缺少图片信息时，返回友好的引导消息而不是直接报错。"""
         error_msg = str(exc)
@@ -399,30 +504,33 @@ class ImageParseAgent:
         if not isinstance(exc, ValueError):
             return f"图片解析失败：{error_msg}"
 
+        context_hint = ""
+        if delegate_context:
+            candidates = ImageParseAgent._context_image_candidates(delegate_context)
+            if candidates:
+                context_hint = "\n当前上下文中可见的图片消息：\n" + "\n".join(
+                    f"- 消息编号 {item.message_number}"
+                    f"{f' -> message_id {item.message_id}' if item.message_id is not None else '（缺少 message_id 映射）'}"
+                    f": {item.line[:80]}"
+                    for item in candidates
+                )
+                if len(candidates) > 1:
+                    context_hint += (
+                        "\n请主Agent向用户询问要解析哪一张图片，或重新委托时明确传入 message_number/message_id。"
+                    )
+            else:
+                context_hint = "\n我已查看主Agent上下文，但没有找到可解析的图片消息。请主Agent向用户询问需要解析哪张图片，或让用户发送/指定图片。"
+
         hint = (
-            "图片解析失败。请提供图片信息：\n"
+            "图片解析失败。"
+            f"{context_hint}\n\n"
+            "重新委托时请提供图片信息之一：\n"
             "- image_url: 图片链接（http/https/data URL）\n"
             "- image_path: 本地图片路径\n"
             "- image_base64: 图片 base64 编码\n"
             "- message_id: 聊天消息的真实 message_id\n"
             "- message_number: 聊天消息编号（需配合上下文中的消息编号映射使用）\n\n"
         )
-        # 如果有 delegate_context，尝试提取消息编号映射帮助排查
-        if delegate_context:
-            try:
-                ctx = json.loads(delegate_context)
-            except (json.JSONDecodeError, TypeError):
-                pass
-            else:
-                messages = ctx.get("messages") if isinstance(ctx, dict) else None
-                if isinstance(messages, list) and messages:
-                    hint += "当前可用的消息编号映射：\n"
-                    for msg in messages:
-                        if isinstance(msg, dict):
-                            mn = msg.get("message_number", "?")
-                            mid = msg.get("message_id", "?")
-                            text = str(msg.get("text") or msg.get("raw_message") or "")[:60]
-                            hint += f"  消息编号 {mn} → message_id {mid}（{text}...）\n"
         hint += (
             "\n注意：头像解析请委托 memory agent；图库/表情包管理请委托 creator agent；"
             "聊天互动/群管理/好友管理请委托 chat_interaction agent。"

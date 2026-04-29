@@ -8,6 +8,7 @@ from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
 from neobot_contracts.ports.creator_image_access import CreatorImageAccess
 from neobot_contracts.ports.emoji_access import EmojiAccess
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
+from neobot_contracts.ports.scheduled_task_access import ScheduledTaskAccess
 from neobot_contracts.ports.repository import MemoryRepository, MessageRepository, ProfileRepository
 
 
@@ -22,6 +23,7 @@ class UnitOfWork(Protocol):
     images: ImageAnalysisAccess
     emojis: EmojiAccess
     creator_images: CreatorImageAccess
+    scheduled_tasks: ScheduledTaskAccess
 
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...

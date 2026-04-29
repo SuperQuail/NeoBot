@@ -161,3 +161,49 @@ class CreatorImageData(Base):
         Index("ix_creator_images_source_updated_at", "source", "updated_at"),
         Index("ix_creator_images_file_hash", "file_hash"),
     )
+
+
+class ScheduledTaskData(Base):
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_uuid: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recurrence: Mapped[str] = mapped_column(String, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bindings_json: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    completed_window_keys_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    state: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("ix_scheduled_tasks_state_start_at", "state", "start_at"),
+        Index("ix_scheduled_tasks_recurrence_state", "recurrence", "state"),
+    )
+
+
+class CompletedScheduledTaskData(Base):
+    __tablename__ = "completed_scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_uuid: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recurrence: Mapped[str] = mapped_column(String, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bindings_json: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completion_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    archived_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    __table_args__ = (
+        Index("ix_completed_scheduled_tasks_completed_at", "completed_at"),
+        Index("ix_completed_scheduled_tasks_task_uuid", "task_uuid"),
+    )

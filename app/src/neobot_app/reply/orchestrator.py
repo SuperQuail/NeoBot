@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -14,6 +13,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -93,6 +93,8 @@ class ReplyOrchestrator:
         debug_recorder: DebugRecorder | None = None,
         logger: Logger | None = None,
         drawing_manager: Any = None,
+        scheduled_task_manager: Any = None,
+        notification_hub: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -111,6 +113,8 @@ class ReplyOrchestrator:
         self._debug_recorder = debug_recorder
         self._logger = logger or NullLogger()
         self._drawing_manager = drawing_manager
+        self._scheduled_task_manager = scheduled_task_manager
+        self._notification_hub = notification_hub
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -126,6 +130,7 @@ class ReplyOrchestrator:
         pre_reply_message_id: int | None = None,
         on_reply_done: Callable[[], Awaitable[None]] | None = None,
         skip_cooldown: bool = False,
+        background_content: str | None = None,
     ) -> ReplyEvent | None:
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
@@ -135,6 +140,7 @@ class ReplyOrchestrator:
             willing_decision=decision,
             conversation_ref=conversation_ref,
             pre_reply_message_id=pre_reply_message_id,
+            background_content=background_content,
         )
 
         # 按 kind:queue_key 组合键去重，避免群号与 QQ 号相同时互相阻塞
@@ -158,7 +164,7 @@ class ReplyOrchestrator:
         if not skip_cooldown:
             cooldown = self._get_cooldown_seconds()
             last_time = self._last_reply_time.get(pipeline_key, 0.0)
-            elapsed = time.monotonic() - last_time
+            elapsed = monotonic_seconds() - last_time
             if elapsed < cooldown:
                 self._logger.debug(
                     "冷却中，跳过创建回复",
@@ -210,7 +216,13 @@ class ReplyOrchestrator:
         return event
 
     def start_background_reply(
-        self, *, kind: str, conversation_id: str, content: str
+        self,
+        *,
+        kind: str,
+        conversation_id: str,
+        content: str,
+        manager_name: str = "background_drawing",
+        reasons: list[str] | None = None,
     ) -> Any | None:
         """程序化启动回复管线，用于后台绘图等系统通知。
 
@@ -269,10 +281,10 @@ class ReplyOrchestrator:
         synthetic_msg = _SyntheticMessage()
 
         decision = WillingDecision(
-            manager_name="background_drawing",
+            manager_name=manager_name,
             probability=1.0,
             should_reply=True,
-            reasons=["后台绘图任务完成通知"],
+            reasons=reasons or ["后台绘图任务完成通知"],
         )
 
         self._logger.info(
@@ -287,6 +299,7 @@ class ReplyOrchestrator:
             queue_key=queue_key,
             decision=decision,
             skip_cooldown=True,
+            background_content=content,
         )
 
     async def shutdown(self) -> None:
@@ -299,6 +312,10 @@ class ReplyOrchestrator:
         self._last_sentence_time.clear()
         if self._drawing_manager is not None:
             await self._drawing_manager.shutdown()
+        if self._scheduled_task_manager is not None:
+            await self._scheduled_task_manager.shutdown()
+        if self._notification_hub is not None:
+            self._notification_hub.clear()
         if self._agent_registry is not None:
             await self._agent_registry.close()
         self._logger.info("ReplyOrchestrator 已关闭")
@@ -351,6 +368,13 @@ class ReplyOrchestrator:
             if isinstance(val, int) and val > 0:
                 return val
         return 300
+
+    def _get_group_agent_silent_timeout_seconds(self) -> float:
+        if self._config is not None:
+            val = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
+            if isinstance(val, (int, float)):
+                return max(0.0, float(val))
+        return 60.0
 
     def _get_private_chat_max_tokens(self) -> int:
         if self._config is not None:
@@ -463,7 +487,7 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
     ) -> None:
-        started_at = time.monotonic()
+        started_at = monotonic_seconds()
         try:
             if event.mode == "agent":
                 await self._run_agent_mode(event, queue, queue_key)
@@ -472,7 +496,7 @@ class ReplyOrchestrator:
             # 记录完成时间用于冷却
             if event.conversation_ref is not None:
                 pipeline_key = f"{event.conversation_ref.kind}:{queue_key}"
-                self._last_reply_time[pipeline_key] = time.monotonic()
+                self._last_reply_time[pipeline_key] = monotonic_seconds()
             # 记录上次回复位置
             enable_tracking = (
                 getattr(getattr(self._config, "chat", None), "enable_last_reply_tracking", True)
@@ -483,7 +507,7 @@ class ReplyOrchestrator:
                     queue_key,
                     before_message_id=event.pre_reply_message_id,
                 )
-            elapsed = time.monotonic() - started_at
+            elapsed = monotonic_seconds() - started_at
             self._logger.info(
                 "回复事件结束",
                 event_id=event.event_id,
@@ -540,8 +564,16 @@ class ReplyOrchestrator:
         queue_key: str,
         event: ReplyEvent | None = None,
     ) -> None:
-        """按配置概率随机发送一张表情包到当前会话。"""
+        """按配置概率随机发送一张表情包到当前会话。
+
+        后台通知（绘图完成、定时任务等）触发的管线不适用——没有用户交互上下文。
+        """
         import random
+
+        if event is not None and event.willing_decision is not None:
+            mgr = event.willing_decision.manager_name
+            if mgr in ("background_drawing", "scheduled_task"):
+                return
 
         prob = getattr(
             self._config.chat, "random_sticker_probability", 0.1
@@ -646,6 +678,19 @@ class ReplyOrchestrator:
         # 3. 准备消息列表
         event.transition(ReplyState.GENERATING)
         messages: list[dict] = [{"role": "system", "content": prompt}]
+        if event.background_content:
+            messages.append({"role": "user", "content": event.background_content})
+            self._logger.info(
+                "注入后台通知（新管线初始消息）",
+                event_id=event.event_id,
+                queue_key=queue_key,
+            )
+            self._record_debug(
+                "background_notification_injected_initial",
+                event,
+                queue_key=queue_key,
+                notification=event.background_content[:200],
+            )
 
         # 4. 构建工具集
         reply_sent = False
@@ -802,6 +847,9 @@ class ReplyOrchestrator:
             tts_service=self._tts_service,
             speak_handler=speak_handler,
             poke_user_handler=poke_user_handler,
+            drawing_manager=self._drawing_manager,
+            scheduled_task_manager=self._scheduled_task_manager,
+            notification_hub=self._notification_hub,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
@@ -825,6 +873,51 @@ class ReplyOrchestrator:
             event.conversation_ref is not None
             and event.conversation_ref.kind == "private"
         )
+        is_group = (
+            event.conversation_ref is not None
+            and event.conversation_ref.kind == "group"
+        )
+        silent_timeout = self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
+        silent_deadline = (
+            monotonic_seconds() + silent_timeout
+            if silent_timeout > 0
+            else 0.0
+        )
+
+        def reset_silent_deadline(extra_seconds: float = 0.0) -> None:
+            nonlocal silent_deadline
+            if silent_timeout <= 0:
+                return
+            silent_deadline = monotonic_seconds() + silent_timeout + max(0.0, extra_seconds)
+
+        def silent_remaining() -> float | None:
+            if silent_timeout <= 0:
+                return None
+            return silent_deadline - monotonic_seconds()
+
+        def cancel_for_silence(phase: str) -> None:
+            event.error = (
+                f"群聊 agent 管线静默超过 {silent_timeout:.0f} 秒，"
+                f"已强制关闭（阶段：{phase}）"
+            )
+            try:
+                event.transition(ReplyState.CANCELLED)
+            except RuntimeError:
+                pass
+            self._logger.warning(
+                "群聊 agent 管线静默超时，强制关闭",
+                event_id=event.event_id,
+                queue_key=queue_key,
+                phase=phase,
+                timeout_seconds=silent_timeout,
+            )
+            self._record_debug(
+                "group_agent_silent_timeout",
+                event,
+                queue_key=queue_key,
+                phase=phase,
+                timeout_seconds=silent_timeout,
+            )
 
         while True:
             reply_sent = False
@@ -835,25 +928,76 @@ class ReplyOrchestrator:
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
-                # 注入后台绘图完成通知
-                if self._drawing_manager is not None:
+                if self._notification_hub is not None:
                     pipeline_key = f"{conv_kind}:{conv_id}"
-                    notification = await self._drawing_manager.poll_notification(pipeline_key)
+                    notification = await self._notification_hub.poll(pipeline_key)
                     if notification:
-                        messages.append({"role": "user", "content": notification})
+                        messages.append({"role": "user", "content": notification.content})
                         self._logger.info(
-                            "注入绘图完成通知",
+                            "注入后台通知",
                             event_id=event.event_id,
                             pipeline_key=pipeline_key,
+                            source=notification.source,
                         )
                         self._record_debug(
-                            "drawing_notification_injected",
+                            "background_notification_injected",
                             event,
                             queue_key=queue_key,
-                            notification=notification[:200],
+                            source=notification.source,
+                            notification=notification.content[:200],
                         )
+                else:
+                    # Backward-compatible path for managers not yet migrated to the hub.
+                    if self._drawing_manager is not None:
+                        pipeline_key = f"{conv_kind}:{conv_id}"
+                        notification = await self._drawing_manager.poll_notification(pipeline_key)
+                        if notification:
+                            messages.append({"role": "user", "content": notification})
+                            self._logger.info(
+                                "注入绘图完成通知",
+                                event_id=event.event_id,
+                                pipeline_key=pipeline_key,
+                            )
+                            self._record_debug(
+                                "drawing_notification_injected",
+                                event,
+                                queue_key=queue_key,
+                                notification=notification[:200],
+                            )
 
-                response = await self._provider.chat(messages, tools=tools if tools else None)
+                    if self._scheduled_task_manager is not None:
+                        pipeline_key = f"{conv_kind}:{conv_id}"
+                        notification = await self._scheduled_task_manager.poll_notification(pipeline_key)
+                        if notification:
+                            messages.append({"role": "user", "content": notification})
+                            self._logger.info(
+                                "注入定时任务提醒",
+                                event_id=event.event_id,
+                                pipeline_key=pipeline_key,
+                            )
+                            self._record_debug(
+                                "scheduled_task_notification_injected",
+                                event,
+                                queue_key=queue_key,
+                                notification=notification[:200],
+                            )
+
+                remaining = silent_remaining()
+                if remaining is not None and remaining <= 0:
+                    cancel_for_silence("before_model")
+                    return
+                try:
+                    if remaining is None:
+                        response = await self._provider.chat(messages, tools=tools if tools else None)
+                    else:
+                        response = await asyncio.wait_for(
+                            self._provider.chat(messages, tools=tools if tools else None),
+                            timeout=remaining,
+                        )
+                except asyncio.TimeoutError:
+                    cancel_for_silence("model")
+                    return
+                reset_silent_deadline()
                 self._record_debug(
                     "agent_iteration",
                     event,
@@ -925,9 +1069,30 @@ class ReplyOrchestrator:
                         tool_name=name,
                         tool_args=args,
                     )
+                    wait_extra_seconds = 0.0
+                    if name == "wait":
+                        raw_seconds = args.get("seconds", 20)
+                        try:
+                            parsed_seconds = int(raw_seconds)
+                        except (ValueError, TypeError):
+                            parsed_seconds = 20
+                        wait_extra_seconds = float(
+                            max(1, min(parsed_seconds, self._get_max_wait_seconds()))
+                        )
+                    reset_silent_deadline(wait_extra_seconds)
                     try:
-                        result = await reply_toolset.executor.execute(name, args)
+                        remaining = silent_remaining()
+                        if remaining is None:
+                            result = await reply_toolset.executor.execute(name, args)
+                        else:
+                            result = await asyncio.wait_for(
+                                reply_toolset.executor.execute(name, args),
+                                timeout=max(0.1, remaining),
+                            )
                         tool_error = None
+                    except asyncio.TimeoutError:
+                        cancel_for_silence(f"tool:{name}")
+                        return
                     except Exception as tool_exc:
                         result = None
                         tool_error = f"{type(tool_exc).__name__}: {tool_exc}"
@@ -1020,16 +1185,16 @@ class ReplyOrchestrator:
                 )
                 break
 
-            # 私聊挂起，等待新消息
+            # 私聊挂起，等待新消息或后台通知
             self._logger.debug(
-                "私聊会话挂起等待新消息",
+                "私聊会话挂起等待新消息或通知",
                 event_id=event.event_id,
                 queue_key=queue_key,
             )
-            new_entries = await self._suspend_private_chat(
+            new_entries, notification_text = await self._suspend_private_chat(
                 queue, queue_copy, queue_key
             )
-            if not new_entries:
+            if not new_entries and not notification_text:
                 self._logger.debug(
                     "私聊挂起超时，结束会话",
                     event_id=event.event_id,
@@ -1037,29 +1202,45 @@ class ReplyOrchestrator:
                 )
                 break
 
-            # 注入新消息，继续下一轮 agent 循环
-            new_text = numbering.apply_new(
-                new_entries,
-                queue_copy,
-                context_entries=list(queue_copy._queues.get(queue_key, [])),
-                previous_entries=[],
-            )
-            if new_text:
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"[收到新消息]\n{new_text}\n\n"
-                        "这是私聊对话。如果对方话没有说完或可能还有更多内容，"
-                        "请使用 wait 等待更多消息，不要直接结束对话。"
-                        "如果对话已自然结束或对方明确表示结束，可以不再回复。"
-                    ),
-                })
+            # 注入后台通知（视作新消息，结束挂起状态）
+            if notification_text:
+                messages.append({"role": "user", "content": notification_text})
+                self._logger.info(
+                    "注入后台通知（挂起期间）",
+                    event_id=event.event_id,
+                    queue_key=queue_key,
+                )
                 self._record_debug(
-                    "private_chat_new_messages_injected",
+                    "background_notification_injected_during_suspend",
                     event,
                     queue_key=queue_key,
-                    injected_text=new_text,
+                    notification=notification_text[:200],
                 )
+
+            # 注入新消息，继续下一轮 agent 循环
+            if new_entries:
+                new_text = numbering.apply_new(
+                    new_entries,
+                    queue_copy,
+                    context_entries=list(queue_copy._queues.get(queue_key, [])),
+                    previous_entries=[],
+                )
+                if new_text:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[收到新消息]\n{new_text}\n\n"
+                            "这是私聊对话。如果对方话没有说完或可能还有更多内容，"
+                            "请使用 wait 等待更多消息，不要直接结束对话。"
+                            "如果对话已自然结束或对方明确表示结束，可以不再回复。"
+                        ),
+                    })
+                    self._record_debug(
+                        "private_chat_new_messages_injected",
+                        event,
+                        queue_key=queue_key,
+                        injected_text=new_text,
+                    )
 
         if event.state == ReplyState.GENERATING and not event.is_terminal:
             try:
@@ -1115,18 +1296,44 @@ class ReplyOrchestrator:
             if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
         ]
 
+    async def _poll_background_notifications(self, pipeline_key: str) -> str | None:
+        """轮询所有后台通知源，返回通知文本或 None。"""
+        if self._notification_hub is not None:
+            notification = await self._notification_hub.poll(pipeline_key)
+            if notification:
+                return notification.content
+            return None
+
+        # 向后兼容：未迁移到统一通知中心的后台管理器
+        if self._drawing_manager is not None:
+            notification = await self._drawing_manager.poll_notification(pipeline_key)
+            if notification:
+                return notification
+
+        if self._scheduled_task_manager is not None:
+            notification = await self._scheduled_task_manager.poll_notification(pipeline_key)
+            if notification:
+                return notification
+
+        return None
+
     async def _suspend_private_chat(
         self,
         source: MessageQueue,
         snapshot: MessageQueue,
         queue_key: str,
-    ) -> list:
-        """挂起等待私聊新消息，首条消息后额外收集一段时间。返回新消息条目列表。"""
+    ) -> tuple[list, str | None]:
+        """挂起等待私聊新消息或后台通知。
+
+        首条消息后额外收集一段时间；后台通知会立即中断挂起。
+        返回 (新消息条目列表, 通知文本或None)。
+        """
         suspend_secs = self._get_private_chat_suspend_wait_seconds()
         collect_secs = self._get_private_chat_new_message_collect_seconds()
-        deadline = time.monotonic() + suspend_secs
+        deadline = monotonic_seconds() + suspend_secs
         first_new_time = 0.0
         all_new_entries: list = []
+        notification_text: str | None = None
 
         self._logger.debug(
             "私聊挂起循环开始轮询",
@@ -1134,7 +1341,9 @@ class ReplyOrchestrator:
             suspend_secs=suspend_secs,
             collect_secs=collect_secs,
         )
-        while time.monotonic() < deadline:
+        pipeline_key = f"private:{queue_key}"
+
+        while monotonic_seconds() < deadline:
             await asyncio.sleep(1.0)
             current_new: list = []
             try:
@@ -1148,15 +1357,27 @@ class ReplyOrchestrator:
                 continue
             if current_new:
                 if not all_new_entries:
-                    first_new_time = time.monotonic()
+                    first_new_time = monotonic_seconds()
                     self._logger.debug(
                         "私聊挂起检测到首条新消息",
                         queue_key=queue_key,
                         count=len(current_new),
                     )
                 all_new_entries.extend(current_new)
+
+            # 轮询后台通知，有通知立即中断挂起
+            if notification_text is None:
+                notification_text = await self._poll_background_notifications(pipeline_key)
+
+            if notification_text:
+                self._logger.debug(
+                    "私聊挂起检测到后台通知，结束挂起",
+                    queue_key=queue_key,
+                )
+                break
+
             if all_new_entries:
-                elapsed_since_first = time.monotonic() - first_new_time
+                elapsed_since_first = monotonic_seconds() - first_new_time
                 if elapsed_since_first >= collect_secs:
                     self._logger.debug(
                         "私聊挂起收集窗口结束",
@@ -1172,12 +1393,17 @@ class ReplyOrchestrator:
                 queue_key=queue_key,
                 count=len(all_new_entries),
             )
-        else:
+        elif notification_text:
             self._logger.debug(
-                "私聊挂起超时未收到新消息",
+                "私聊挂起收到后台通知",
                 queue_key=queue_key,
             )
-        return all_new_entries
+        else:
+            self._logger.debug(
+                "私聊挂起超时未收到新消息或通知",
+                queue_key=queue_key,
+            )
+        return all_new_entries, notification_text
 
     # ── Prompt 构建 ──
 
@@ -1326,7 +1552,7 @@ class ReplyOrchestrator:
                 else:
                     cooldown = self._get_private_chat_sentence_cooldown_seconds()
                 last_time = self._last_sentence_time.get(pipeline_key, 0.0)
-                elapsed = time.monotonic() - last_time
+                elapsed = monotonic_seconds() - last_time
                 if elapsed < cooldown:
                     await asyncio.sleep(cooldown - elapsed)
 
@@ -1339,7 +1565,7 @@ class ReplyOrchestrator:
             formatted_messages.append(formatted)
             send_results.append(await self._adapter.send(event.conversation_ref, formatted))
 
-            self._last_sentence_time[pipeline_key] = time.monotonic()
+            self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
         # 私聊连续会话：回到 GENERATING 等待下一轮；群聊/普通：直接完成

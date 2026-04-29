@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
+from io import BytesIO
 from typing import TYPE_CHECKING
 
 import httpx
+from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -96,6 +99,10 @@ class ImageParseService:
         image_bytes = await self._download_image(segment)
         if image_bytes is None:
             return "[图片解析失败]"
+
+        image_bytes = _resize_image_if_too_small(image_bytes, logger=self._logger)
+        if image_bytes is None:
+            return "[图片:特殊尺寸无法解析]"
 
         file_hash = hashlib.md5(image_bytes).hexdigest()
 
@@ -246,6 +253,50 @@ def _segment_data(segment) -> dict:
     if hasattr(raw_data, "model_dump"):
         return raw_data.model_dump(exclude_none=True)
     return {}
+
+
+_MIN_IMAGE_DIMENSION = 29       # Qwen VL models require width and height > 28
+_MAX_IMAGE_PIXELS = 1024 * 1024
+
+
+def _resize_image_if_too_small(image_bytes: bytes, logger: Logger | None = None) -> bytes | None:
+    """若图片任一边未超过 28 则等比放大；放大后超最大像素则返回 None。"""
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+    except Exception:
+        return image_bytes  # 无法解析则原样返回，让 API 自行判断
+
+    w, h = img.size
+    if w >= _MIN_IMAGE_DIMENSION and h >= _MIN_IMAGE_DIMENSION:
+        return image_bytes
+
+    scale = _MIN_IMAGE_DIMENSION / min(w, h)
+    new_w = max(1, math.ceil(w * scale))
+    new_h = max(1, math.ceil(h * scale))
+
+    if new_w * new_h > _MAX_IMAGE_PIXELS:
+        if logger:
+            logger.warning(
+                "图片尺寸过小且放大后将超过最大像素限制",
+                original=f"{w}x{h}",
+                scaled=f"{new_w}x{new_h}",
+                max_pixels=_MAX_IMAGE_PIXELS,
+            )
+        return None
+
+    if logger:
+        logger.debug("图片尺寸过小，已等比放大", original=f"{w}x{h}", scaled=f"{new_w}x{new_h}")
+
+    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    save_format = img.format or "PNG"
+    if save_format == "JPEG" and resized.mode not in ("RGB", "L"):
+        resized = resized.convert("RGB")
+
+    out = BytesIO()
+    resized.save(out, format=save_format)
+    return out.getvalue()
 
 
 _VALID_IMAGE_MAGIC = (

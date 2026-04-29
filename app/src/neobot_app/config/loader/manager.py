@@ -151,6 +151,11 @@ class Config:
             provider_name = getattr(model_config, "provider", "").strip()
             model_name = getattr(model_config, "model_name", "").strip()
             description = getattr(model_config, "description", model_field.name).strip()
+            if (
+                model_field.name == "primary_chat_model"
+                and "模型编号0" not in description
+            ):
+                description = f"{description}（Agent模型编号0）"
             if not provider_name:
                 raise ValueError(f"模型 {model_field.name} 缺少 provider 配置")
             if not model_name:

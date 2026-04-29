@@ -79,6 +79,27 @@ class EnvConfig:
             ],
         },
     )
+    huoshan_api_key: str = field(
+        default="",
+        metadata={
+            "env_key": "HuoShan_APIKey",
+            "description": "火山引擎 TTS Access Token（旧版控制台），在火山引擎语音技术控制台获取",
+            "comment_lines": [
+                "火山引擎语音技术控制台显示的 Access Token，对应 HTTP Header 中的 X-Api-Access-Key",
+                "新版控制台可将 Access Token 填入此字段作为 X-Api-Key 使用",
+            ],
+        },
+    )
+    huoshan_app_id: str = field(
+        default="",
+        metadata={
+            "env_key": "HuoShan_AppId",
+            "description": "火山引擎 TTS App ID（旧版控制台），配合 Access Token 使用",
+            "comment_lines": [
+                "旧版控制台需要同时填写 App ID 和 Access Token，新版控制台只需 Access Token",
+            ],
+        },
+    )
 
     @staticmethod
     def _get_env_value(env_key: str) -> Optional[str]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
@@ -18,6 +17,7 @@ from neobot_app.message.queue import MessageQueue
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
+from neobot_app.time_context import epoch_seconds
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
 from neobot_app.willing.models import WillingDecision
@@ -352,6 +352,21 @@ class EventPipeline:
 
         # 被@时直接触发回复，跳过意愿计算
         if self._willing_service.is_at_mentioned(message):
+            block_reason = self._willing_service.block_reason_for_message(
+                message=message,
+                queue_key=queue_key,
+            )
+            if block_reason:
+                self._logger.info(
+                    "回复意愿",
+                    会话类型=chat_type,
+                    会话ID=queue_key,
+                    概率="0.000",
+                    决策="不回复",
+                    详情=f"原因: 已屏蔽: {block_reason}",
+                )
+                return False
+
             # 读取 @ 提及回复延迟配置
             delay = 5.0
             if self._config is not None:
@@ -730,7 +745,7 @@ class EventPipeline:
         msg_time = getattr(message, "time", None)
         if msg_time is None:
             return False
-        return time.time() - int(msg_time) > timeout_seconds
+        return epoch_seconds() - int(msg_time) > timeout_seconds
 
 
 def _extract_reply_message_ids(message: PrivateMessage | GroupMessage) -> list[int]:

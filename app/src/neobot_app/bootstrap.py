@@ -9,8 +9,9 @@ from neobot_memory import MemoryService
 from neobot_memory.defaults import InMemoryMemoryRepository
 from neobot_storage import run_migrations, sqlite_url
 
-from neobot_app.audio import TTSService
-from neobot_app.assembly.agents import build_agent_registry
+from neobot_app.audio import TTSService, VolcengineTTSService
+from neobot_app.config.schemas.env import EnvConfig
+from neobot_app.assembly.agents import build_agent_registry, resolve_agent_model_name
 from neobot_app.bot_detect import BotDetector
 from neobot_app.assembly.memory import (
     build_archive_memory_service,
@@ -34,6 +35,8 @@ from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummarySe
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
+from neobot_app.runtime.notifications import BackgroundNotificationHub
+from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
 
@@ -41,6 +44,62 @@ from neobot_app.willing import WillingService
 def _load_config() -> BotConfigSchema:
     load_env()
     return Config.load(CONFIG_FILE, BotConfigSchema)
+
+
+def _create_tts_service(*, config: BotConfigSchema, logger_factory) -> TTSService | VolcengineTTSService | None:
+    """根据配置创建对应的 TTS 服务实例。"""
+    if not config.tts.enabled:
+        return None
+
+    provider = config.tts.tts_provider.strip().casefold()
+    tts_logger = logger_factory.get_logger("app.tts")
+
+    if provider == "volcengine":
+        api_config = EnvConfig.get_api_platform_config("HuoShan")
+        api_key = api_config.api_key
+        if not api_key:
+            tts_logger.error(
+                "火山引擎 TTS 缺少 HuoShan_APIKey 环境变量，TTS 已禁用"
+            )
+            return None
+        app_id = EnvConfig._get_env_value("HuoShan_AppId") or ""
+        tts_logger.info(
+            f"TTS 提供商: 火山引擎 (Volcengine) - {'旧版控制台鉴权' if app_id else '新版控制台鉴权'}"
+        )
+        return VolcengineTTSService(
+            config=config.tts,
+            api_key=api_key,
+            app_id=app_id,
+            logger=tts_logger,
+        )
+
+    # 默认使用硅基流动
+    if provider != "siliconflow":
+        tts_logger.warning(
+            f"未知的 tts_provider '{provider}'，回退到硅基流动 TTS"
+        )
+    tts_logger.info("TTS 提供商: 硅基流动 (SiliconFlow)")
+    return TTSService(
+        config=config.tts,
+        logger=tts_logger,
+    )
+
+
+def _create_optional_agent_provider(
+    *,
+    config: BotConfigSchema,
+    agent_name: str,
+    fallback_provider,
+    provider_logger,
+):
+    model_name = resolve_agent_model_name(config, agent_name, default_index=1)
+    try:
+        return create_provider(model_name)
+    except Exception as exc:
+        provider_logger.warning(
+            f"无法创建 {agent_name} provider({model_name})，回退到主回复 provider: {exc}"
+        )
+        return fallback_provider
 
 
 def create_application() -> NeoBotApplication[OneBotAdapter]:
@@ -134,10 +193,11 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     provider_logger = logger_factory.get_logger("app.provider")
     provider = None
+    main_model_name = resolve_agent_model_name(config, "main_agent", default_index=0)
     try:
-        provider = create_provider("primary_chat_model")
+        provider = create_provider(main_model_name)
     except Exception as exc:
-        provider_logger.error(f"无法创建主对话 chat provider: {exc}")
+        provider_logger.error(f"无法创建主对话 chat provider({main_model_name}): {exc}")
 
     provider_error_message = None
     if provider is None:
@@ -173,10 +233,27 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
 
+    notification_hub = BackgroundNotificationHub(
+        logger=logger_factory.get_logger("app.background_notifications"),
+    )
+
     creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
     drawing_manager = BackgroundDrawingManager(
         config=creator_config,
         logger=logger_factory.get_logger("app.drawing"),
+        notification_hub=notification_hub,
+    )
+
+    scheduled_task_config = ScheduledTaskConfig.from_schema(config.scheduled_task)
+    scheduled_task_manager = (
+        ScheduledTaskManager(
+            uow_factory=uow_factory,
+            config=scheduled_task_config,
+            logger=logger_factory.get_logger("app.scheduled_task"),
+            notification_hub=notification_hub,
+        )
+        if scheduled_task_config.enabled
+        else None
     )
 
     agent_registry = build_agent_registry(
@@ -201,15 +278,20 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     archive_summary_service = ArchiveMemoryAutoSummaryService(
         archive_memory_service=archive_memory_service,
-        provider=provider,
+        provider=_create_optional_agent_provider(
+            config=config,
+            agent_name="archive_summary",
+            fallback_provider=provider,
+            provider_logger=provider_logger,
+        ),
         config=config,
         agent_registry=agent_registry,
         logger=logger_factory.get_logger("app.archive_summary"),
     )
 
-    tts_service = TTSService(
-        config=config.tts,
-        logger=logger_factory.get_logger("app.tts"),
+    tts_service = _create_tts_service(
+        config=config,
+        logger_factory=logger_factory,
     )
 
     reply_orchestrator = ReplyOrchestrator(
@@ -228,8 +310,13 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         debug_recorder=debug_recorder,
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        notification_hub=notification_hub,
     )
+    notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
+    if scheduled_task_manager is not None:
+        scheduled_task_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -263,4 +350,5 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         file_server_host=config.file_server.host,
         file_server_public_url=config.file_server.public_url,
         bot_detector=bot_detector,
+        scheduled_task_manager=scheduled_task_manager,
     )
