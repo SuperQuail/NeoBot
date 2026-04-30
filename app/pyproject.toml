@@ -17,6 +17,7 @@ dependencies = [
     "neobot-chat",
     "neobot-contracts",
     "neobot-memory",
+    "neobot-modloader",
     "neobot-storage",
     "python-dotenv>=1.2.2",
     "tomlkit",
@@ -30,6 +31,7 @@ neobot-adapter = { workspace = true }
 neobot-chat = { workspace = true }
 neobot-contracts = { workspace = true }
 neobot-memory = { workspace = true }
+neobot-modloader = { workspace = true }
 neobot-storage = { workspace = true }
 
 [build-system]

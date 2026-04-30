@@ -16,6 +16,14 @@ class AgentRegistry:
     def register(self, name: str, agent: AgentLike) -> None:
         self._agents[name] = agent
 
+    def unregister(self, name: str) -> AgentLike | None:
+        agent = self._agents.pop(name, None)
+        prefix = f"{name}:"
+        for session_key in list(self._sessions):
+            if session_key.startswith(prefix):
+                self._sessions.pop(session_key, None)
+        return agent
+
     @property
     def names(self) -> list[str]:
         return list(self._agents)

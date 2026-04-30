@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from neobot_adapter import OneBotAdapter
 from neobot_chat import create_provider
+from neobot_modloader import PluginRuntime
 from neobot_contracts.ports.clock import SystemClock
 from neobot_memory import MemoryService
 from neobot_memory.defaults import InMemoryMemoryRepository
@@ -36,6 +39,7 @@ from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
 from neobot_app.runtime.notifications import BackgroundNotificationHub
+from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
@@ -157,6 +161,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         packet_callback=debug_recorder.record_packet if debug_recorder is not None else None,
     )
 
+    plugin_runtime = None
+    reply_block_registry = ReplyBlockRegistry()
+
     bot_detector = BotDetector(adapter)
 
     memory = MemoryService(
@@ -269,6 +276,20 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         drawing_manager=drawing_manager,
     )
 
+    if config.plugins.enabled:
+        plugin_dir = Path(config.plugins.dir)
+        if not plugin_dir.is_absolute():
+            plugin_dir = DATA_DIR / plugin_dir
+        plugin_runtime = PluginRuntime(
+            plugin_dir=plugin_dir,
+            data_dir=DATA_DIR / "plugins_data",
+            adapter=adapter,
+            logger_factory=logger_factory,
+            agent_registry=agent_registry,
+            record_ai_reply_block=reply_block_registry.block_event,
+        )
+        plugin_runtime.load_all()
+
     image_parse_service = ImageParseService(
         vision_provider=vision_provider,
         image_analysis_service=image_analysis_service,
@@ -312,6 +333,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         notification_hub=notification_hub,
+        reply_block_registry=reply_block_registry,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
@@ -336,6 +358,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         archive_summary_service=archive_summary_service,
         config=config,
         logger=logger_factory.get_logger("app.event_pipeline"),
+        reply_block_registry=reply_block_registry,
     )
 
     return NeoBotApplication(
@@ -351,4 +374,5 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         file_server_public_url=config.file_server.public_url,
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
+        plugin_runtime=plugin_runtime,
     )

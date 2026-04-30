@@ -95,6 +95,7 @@ class ReplyOrchestrator:
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
         notification_hub: Any = None,
+        reply_block_registry: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -115,6 +116,7 @@ class ReplyOrchestrator:
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
         self._notification_hub = notification_hub
+        self._reply_block_registry = reply_block_registry
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -1348,6 +1350,21 @@ class ReplyOrchestrator:
             if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
         ]
 
+    def _consume_ai_reply_blocked_entries(self, entries: list) -> list:
+        if self._reply_block_registry is None:
+            return entries
+        consume = getattr(self._reply_block_registry, "consume_message", None)
+        if not callable(consume):
+            return entries
+        kept = []
+        for entry in entries:
+            message = getattr(entry, "message", None)
+            if message is not None and consume(message):
+                self._logger.info("插件监听器已阻止挂起期间私聊消息触发 AI 回复")
+                continue
+            kept.append(entry)
+        return kept
+
     async def _poll_background_notifications(self, pipeline_key: str) -> str | None:
         """轮询所有后台通知源，返回通知文本或 None。"""
         try:
@@ -1423,6 +1440,8 @@ class ReplyOrchestrator:
                     error=str(exc),
                 )
                 continue
+            if current_new:
+                current_new = self._consume_ai_reply_blocked_entries(current_new)
             if current_new:
                 if not all_new_entries:
                     first_new_time = monotonic_seconds()

@@ -38,6 +38,7 @@ class NeoBotApplication(Generic[T]):
         tts_service: "TTSService | None" = None,
         bot_detector: Any = None,
         scheduled_task_manager: Any = None,
+        plugin_runtime: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -55,6 +56,7 @@ class NeoBotApplication(Generic[T]):
             self.tts_service.bind_file_server(self.file_server)
         self._bot_detector = bot_detector
         self._scheduled_task_manager = scheduled_task_manager
+        self._plugin_runtime = plugin_runtime
 
     async def start(self) -> None:
         if self._started:
@@ -65,9 +67,14 @@ class NeoBotApplication(Generic[T]):
         if self.tts_service is not None:
             await self.tts_service.initialize()
         self._logger.info("文件服务器启动完成")
+        if self._plugin_runtime is not None:
+            await self._plugin_runtime.load_registered()
+            self._logger.info("插件加载完成")
         await self.adapter.start()
         connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
         if not connected:
+            if self._plugin_runtime is not None:
+                await self._plugin_runtime.stop_all()
             await self.file_server.stop()
             if self.tts_service is not None:
                 await self.tts_service.close()
@@ -79,6 +86,9 @@ class NeoBotApplication(Generic[T]):
         if self._bot_detector is not None:
             await self._bot_detector.refresh()
             self._logger.info("官方Bot检测范围已加载")
+        if self._plugin_runtime is not None:
+            await self._plugin_runtime.start_all()
+            self._logger.info("插件系统启动完成")
         await self.chat_stream.initialize()
         self._logger.info("NeoBot聊天流初始化完成")
         if self._emoji_service is not None:
@@ -108,6 +118,8 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event.set()
         self.event_pipeline.stop()
         await self.event_pipeline.flush_pending_summaries()
+        if self._plugin_runtime is not None:
+            await self._plugin_runtime.stop_all()
         if self._reply_orchestrator is not None:
             await self._reply_orchestrator.shutdown()
         elif self._scheduled_task_manager is not None:
