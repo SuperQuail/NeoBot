@@ -76,6 +76,7 @@ class EventPipeline:
         archive_summary_service: ArchiveMemoryAutoSummaryService | None = None,
         config: BotConfig | None = None,
         logger: Logger | None = None,
+        reply_block_registry: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -88,6 +89,7 @@ class EventPipeline:
         self._archive_summary_service = archive_summary_service
         self._config = config
         self._logger = logger or NullLogger()
+        self._reply_block_registry = reply_block_registry
         self._subscriptions: List[Subscription] = []
         self._started = False
         self._warmed_up_friends: set[str] = set()
@@ -251,6 +253,10 @@ class EventPipeline:
         if self._is_bot_self(message):
             return
 
+        if self._consume_ai_reply_block(message):
+            self._logger.info("插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key)
+            return
+
         await self._handle_private_reply(message=message, queue_key=queue_key)
         self._logger.info(f"收到私聊消息: {text}")
 
@@ -364,6 +370,10 @@ class EventPipeline:
 
         # Bot 自己的消息不触发回复
         if self._is_bot_self(message):
+            return
+
+        if self._consume_ai_reply_block(message):
+            self._logger.info("插件监听器已阻止本条群消息触发 AI 回复", queue_key=queue_key)
             return
 
         # 如果当前正在回复中，新消息入 post-reply 队列，不计算意愿
@@ -925,6 +935,14 @@ class EventPipeline:
 
         info = " ".join(details)
         self._logger.info(f"收到请求[{label}] {info}".rstrip())
+
+    def _consume_ai_reply_block(self, message: PrivateMessage | GroupMessage) -> bool:
+        if self._reply_block_registry is None:
+            return False
+        consume = getattr(self._reply_block_registry, "consume_message", None)
+        if not callable(consume):
+            return False
+        return bool(consume(message))
 
     def _is_bot_self(self, message) -> bool:
         """检查消息是否由 Bot 自己发送。"""
