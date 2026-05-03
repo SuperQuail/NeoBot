@@ -6,6 +6,7 @@ from typing import Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_modloader.context import PluginContext
+from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.loader import FilesystemPluginLoader, LoadedPlugin, PluginLoadError
 from neobot_modloader.manager import DefaultPluginManager
 
@@ -22,6 +23,7 @@ class PluginRuntime:
         manager: DefaultPluginManager | None = None,
         logger: Logger | None = None,
         agent_registry: Any | None = None,
+        hook_bus: PluginHookBus | None = None,
         record_ai_reply_block: Any | None = None,
     ) -> None:
         self.plugin_dir = plugin_dir.resolve()
@@ -31,6 +33,10 @@ class PluginRuntime:
         self.agent_registry = agent_registry
         self.record_ai_reply_block = record_ai_reply_block
         self.logger = logger or self._get_logger("modloader.runtime")
+        self.hook_bus = hook_bus or PluginHookBus(
+            logger=self._get_logger("modloader.hooks"),
+            record_ai_reply_block=record_ai_reply_block,
+        )
         self.loader = loader or FilesystemPluginLoader(
             logger=self._get_logger("modloader.loader")
         )
@@ -74,6 +80,7 @@ class PluginRuntime:
             config=loaded.config,
             logger=logger,
             adapter=self.adapter,
+            hook_bus=self.hook_bus,
             record_subscription=lambda subscription, name=loaded.name: self.manager.record_subscription(
                 name, subscription
             ),
@@ -81,7 +88,6 @@ class PluginRuntime:
             record_agent_registration=lambda registered_name, agent, name=loaded.name: self.manager.record_agent_registration(
                 name, registered_name, agent
             ),
-            record_ai_reply_block=self.record_ai_reply_block,
         )
         try:
             self.manager.register(loaded.plugin, context)

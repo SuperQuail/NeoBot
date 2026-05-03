@@ -6,7 +6,7 @@ from pathlib import Path
 
 from neobot_adapter import OneBotAdapter
 from neobot_chat import create_provider
-from neobot_modloader import PluginRuntime
+from neobot_modloader import PluginHookBus, PluginRuntime
 from neobot_contracts.ports.clock import SystemClock
 from neobot_memory import MemoryService
 from neobot_memory.defaults import InMemoryMemoryRepository
@@ -36,9 +36,15 @@ from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 from neobot_app.runtime.application import NeoBotApplication
+from neobot_app.runtime.event_ingress import EventIngress
 from neobot_app.runtime.event_pipeline import EventPipeline
+from neobot_app.runtime.event_router import EventRouter
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
+from neobot_app.runtime.lifecycle_handler import LifecycleHandler
+from neobot_app.runtime.message_pipeline import MessagePipeline
+from neobot_app.runtime.notice_handler import NoticeHandler
 from neobot_app.runtime.notifications import BackgroundNotificationHub
+from neobot_app.runtime.onebot_request_handler import OneBotRequestHandler
 from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
 from neobot_app.user_profiles import UserProfileService
@@ -163,6 +169,10 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     plugin_runtime = None
     reply_block_registry = ReplyBlockRegistry()
+    hook_bus = PluginHookBus(
+        logger=logger_factory.get_logger("modloader.hooks"),
+        record_ai_reply_block=reply_block_registry.block_event,
+    )
 
     bot_detector = BotDetector(adapter)
 
@@ -286,6 +296,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
             adapter=adapter,
             logger_factory=logger_factory,
             agent_registry=agent_registry,
+            hook_bus=hook_bus,
             record_ai_reply_block=reply_block_registry.block_event,
         )
         plugin_runtime.load_all()
@@ -346,7 +357,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.inbound_pipeline"),
     )
 
-    event_pipeline = EventPipeline(
+    legacy_event_pipeline = EventPipeline(
         adapter=adapter,
         group_message_queue=group_message_queue,
         friend_message_queue=friend_message_queue,
@@ -360,11 +371,32 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.event_pipeline"),
         reply_block_registry=reply_block_registry,
     )
+    message_pipeline = MessagePipeline(
+        legacy_pipeline=legacy_event_pipeline,
+        logger=logger_factory.get_logger("app.message_pipeline"),
+    )
+    notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)
+    request_handler = OneBotRequestHandler(logger=logger_factory.get_logger("app.onebot_request"))
+    lifecycle_handler = LifecycleHandler(logger=logger_factory.get_logger("app.lifecycle"))
+    event_router = EventRouter(
+        message_pipeline=message_pipeline,
+        notice_handler=notice_handler,
+        request_handler=request_handler,
+        lifecycle_handler=lifecycle_handler,
+        logger=logger_factory.get_logger("app.event_router"),
+    )
+    event_ingress = EventIngress(
+        event_source=adapter,
+        hook_bus=hook_bus,
+        router=event_router,
+        logger=logger_factory.get_logger("app.event_ingress"),
+    )
 
     return NeoBotApplication(
         adapter=adapter,
         chat_stream=chat_stream,
-        event_pipeline=event_pipeline,
+        event_ingress=event_ingress,
+        message_pipeline=message_pipeline,
         reply_orchestrator=reply_orchestrator,
         emoji_service=emoji_service,
         tts_service=tts_service,

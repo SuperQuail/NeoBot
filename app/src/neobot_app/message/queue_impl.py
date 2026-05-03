@@ -412,6 +412,16 @@ class MessageQueue:
     def get_all_keys(self) -> List[str]:
         return list(self._queues.keys())
 
+    def entries(self, key: str) -> list[QueueEntry]:
+        return list(self._queues.get(key, ()))
+
+    def append_entries(self, key: str, entries: list[QueueEntry]) -> None:
+        if not entries:
+            return
+        if key not in self._queues:
+            self._queues[key] = deque()
+        self._queues[key].extend(entries)
+
     def clear(self, key: Optional[str] = None) -> None:
         if key is None:
             self._queues.clear()
@@ -582,8 +592,8 @@ class MessageQueue:
         return False
 
     def diff_to_text(self, previous: "MessageQueue", key: str) -> str:
-        current_entries = list(self._queues.get(key, ()))
-        previous_entries = list(previous._queues.get(key, ()))
+        current_entries = self.entries(key)
+        previous_entries = previous.entries(key)
         if not current_entries:
             return ""
         if not previous_entries:
