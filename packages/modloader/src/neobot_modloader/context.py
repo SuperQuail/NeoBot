@@ -118,10 +118,10 @@ class PluginContext:
         config: Mapping[str, Any] | None,
         logger: Logger | None,
         adapter: Any,
-        record_subscription: Any,
+        hook_bus: Any | None = None,
+        record_subscription: Any | None = None,
         agent_registry: Any | None = None,
         record_agent_registration: Any | None = None,
-        record_ai_reply_block: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -135,11 +135,12 @@ class PluginContext:
             registry=agent_registry,
             record_registration=record_agent_registration,
         )
+        from neobot_modloader.hooks import PluginHookBus
+
         self.on = PluginEventBus(
-            adapter=adapter,
+            hook_bus=hook_bus or PluginHookBus(logger=self._logger),
             logger=self._logger,
-            record_subscription=record_subscription,
-            record_ai_reply_block=record_ai_reply_block,
+            record_subscription=record_subscription or (lambda _subscription: None),
         )
 
     @property

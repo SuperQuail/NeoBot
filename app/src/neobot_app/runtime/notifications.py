@@ -135,10 +135,7 @@ class BackgroundNotificationHub:
         if self._orchestrator is None:
             return False
 
-        active = getattr(self._orchestrator, "_active_pipelines", {})
-        active_reply = active.get(notification.pipeline_key)
-        pipeline_active = active_reply is not None and not active_reply.done()
-        if pipeline_active:
+        if self._orchestrator.is_pipeline_key_active(notification.pipeline_key):
             return False
 
         try:

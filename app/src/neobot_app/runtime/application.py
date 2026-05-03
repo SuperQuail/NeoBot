@@ -7,7 +7,6 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.reply import ReplyOrchestrator
-from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.core.file_server import FileServer, ExpirationConfig
 from neobot_app.core.paths import get_data_dir
 
@@ -27,7 +26,8 @@ class NeoBotApplication(Generic[T]):
         self,
         adapter: T,
         chat_stream: ChatStreamManager,
-        event_pipeline: EventPipeline,
+        event_ingress: Any,
+        message_pipeline: Any = None,
         reply_orchestrator: ReplyOrchestrator | None = None,
         emoji_service: "EmojiService | None" = None,
         logger: Logger | None = None,
@@ -42,7 +42,8 @@ class NeoBotApplication(Generic[T]):
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
-        self.event_pipeline = event_pipeline
+        self.event_ingress = event_ingress
+        self._message_pipeline = message_pipeline
         self._reply_orchestrator = reply_orchestrator
         self._emoji_service = emoji_service
         self._logger = logger or NullLogger()
@@ -94,7 +95,7 @@ class NeoBotApplication(Generic[T]):
         if self._emoji_service is not None:
             await self._emoji_service.start()
             self._logger.info("表情包服务启动完成")
-        self.event_pipeline.start()
+        self.event_ingress.start()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.start()
         self._started = True
@@ -116,8 +117,9 @@ class NeoBotApplication(Generic[T]):
         if not self._started:
             return
         self._shutdown_event.set()
-        self.event_pipeline.stop()
-        await self.event_pipeline.flush_pending_summaries()
+        self.event_ingress.stop()
+        if self._message_pipeline is not None:
+            await self._message_pipeline.flush_pending_summaries()
         if self._plugin_runtime is not None:
             await self._plugin_runtime.stop_all()
         if self._reply_orchestrator is not None:
