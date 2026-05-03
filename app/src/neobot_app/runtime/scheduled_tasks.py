@@ -329,10 +329,7 @@ class ScheduledTaskManager:
             return True
 
         if self._orchestrator is not None:
-            active = getattr(self._orchestrator, "_active_pipelines", {})
-            active_reply = active.get(pipeline_key)
-            pipeline_active = active_reply is not None and not active_reply.done()
-            if not pipeline_active:
+            if not self._orchestrator.is_pipeline_key_active(pipeline_key):
                 try:
                     result = self._orchestrator.start_background_reply(
                         kind=binding.kind,

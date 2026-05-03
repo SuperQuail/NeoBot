@@ -1,33 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from functools import wraps
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-Rule = Callable[[dict[str, Any]], bool | Awaitable[bool]]
+from neobot_modloader.hooks import PluginHookBus, Rule
+
 EventHandler = Callable[..., Any]
 SubscriptionRecorder = Callable[[Any], None]
-ReplyBlockRecorder = Callable[[Any], None]
 
 
 class PluginEventBus:
     def __init__(
         self,
         *,
-        adapter: Any,
+        hook_bus: PluginHookBus,
         logger: Logger | None = None,
         record_subscription: SubscriptionRecorder | None = None,
-        record_ai_reply_block: ReplyBlockRecorder | None = None,
     ) -> None:
-        self._adapter = adapter
+        self._hook_bus = hook_bus
         self._logger = logger or NullLogger()
         self._record_subscription = record_subscription or (lambda _subscription: None)
-        self._record_ai_reply_block = record_ai_reply_block
 
     def message(
         self,
@@ -39,6 +35,7 @@ class PluginEventBus:
         priority: int = 0,
         timeout: float | None = None,
         block: bool = False,
+        block_ai_reply: bool = False,
         regex: str | re.Pattern[str] | None = None,
         keywords: str | Sequence[str] | None = None,
         contains: str | Sequence[str] | None = None,
@@ -55,10 +52,10 @@ class PluginEventBus:
             not_contains=not_contains,
         )
         return self._decorator(
-            event_type="message",
+            post_type="message",
             timeout=timeout,
             block=block,
-            post_type=None,
+            block_ai_reply=block_ai_reply,
             message_type=message_type,
             notice_type=None,
             request_type=None,
@@ -77,12 +74,13 @@ class PluginEventBus:
         priority: int = 0,
         timeout: float | None = None,
         block: bool = False,
+        block_ai_reply: bool = False,
     ) -> Callable[[EventHandler], EventHandler]:
         return self._decorator(
-            event_type="notice",
+            post_type="notice",
             timeout=timeout,
             block=block,
-            post_type=None,
+            block_ai_reply=block_ai_reply,
             message_type=None,
             notice_type=notice_type,
             request_type=None,
@@ -101,12 +99,13 @@ class PluginEventBus:
         priority: int = 0,
         timeout: float | None = None,
         block: bool = False,
+        block_ai_reply: bool = False,
     ) -> Callable[[EventHandler], EventHandler]:
         return self._decorator(
-            event_type="request",
+            post_type="request",
             timeout=timeout,
             block=block,
-            post_type=None,
+            block_ai_reply=block_ai_reply,
             message_type=None,
             notice_type=None,
             request_type=request_type,
@@ -125,12 +124,13 @@ class PluginEventBus:
         priority: int = 0,
         timeout: float | None = None,
         block: bool = False,
+        block_ai_reply: bool = False,
     ) -> Callable[[EventHandler], EventHandler]:
         return self._decorator(
-            event_type="meta_event",
+            post_type="meta_event",
             timeout=timeout,
             block=block,
-            post_type=None,
+            block_ai_reply=block_ai_reply,
             message_type=None,
             notice_type=None,
             request_type=None,
@@ -153,12 +153,13 @@ class PluginEventBus:
         priority: int = 0,
         timeout: float | None = None,
         block: bool = False,
+        block_ai_reply: bool = False,
     ) -> Callable[[EventHandler], EventHandler]:
         return self._decorator(
-            event_type=post_type,
+            post_type=post_type,
             timeout=timeout,
             block=block,
-            post_type=post_type,
+            block_ai_reply=block_ai_reply,
             message_type=message_type,
             notice_type=notice_type,
             request_type=request_type,
@@ -171,10 +172,10 @@ class PluginEventBus:
     def _decorator(
         self,
         *,
-        event_type: str | None,
+        post_type: str | None,
         timeout: float | None,
         block: bool,
-        post_type: str | None,
+        block_ai_reply: bool,
         message_type: str | None,
         notice_type: str | None,
         request_type: str | None,
@@ -184,53 +185,25 @@ class PluginEventBus:
         priority: int,
     ) -> Callable[[EventHandler], EventHandler]:
         def register(handler: EventHandler) -> EventHandler:
-            wrapped = self._wrap_handler(handler, timeout=timeout, block=block)
-            filters = {
-                "message_type": message_type,
-                "notice_type": notice_type,
-                "request_type": request_type,
-                "meta_event_type": meta_event_type,
-                "sub_type": sub_type,
-                "rule": rule,
-                "priority": priority,
-            }
-            if post_type is not None:
-                filters["post_type"] = post_type
-            subscription = self._adapter.subscribe(event_type, wrapped, **filters)
+            subscription = self._hook_bus.subscribe(
+                handler,
+                post_type=post_type,
+                message_type=message_type,
+                notice_type=notice_type,
+                request_type=request_type,
+                meta_event_type=meta_event_type,
+                sub_type=sub_type,
+                rule=rule,
+                priority=priority,
+                timeout=timeout,
+                block=block,
+                block_ai_reply=block_ai_reply,
+                logger=self._logger,
+            )
             self._record_subscription(subscription)
             return handler
 
         return register
-
-    def _wrap_handler(self, handler: EventHandler, *, timeout: float | None, block: bool) -> EventHandler:
-        @wraps(handler)
-        async def wrapped(event: Any) -> Any:
-            try:
-                call = self._call_handler(handler, event)
-                if timeout is None:
-                    result = await call
-                else:
-                    result = await asyncio.wait_for(call, timeout=timeout)
-            except TimeoutError:
-                self._logger.warning(
-                    f"插件事件处理超时: {handler.__module__}.{handler.__qualname__}"
-                )
-                return None
-            except Exception as exc:
-                self._logger.exception(
-                    f"插件事件处理失败 ({handler.__module__}.{handler.__qualname__}): {exc}"
-                )
-                return None
-            if block and self._record_ai_reply_block is not None:
-                self._record_ai_reply_block(event)
-            return result
-
-        return wrapped
-
-    async def _call_handler(self, handler: EventHandler, event: Any) -> Any:
-        if inspect.iscoroutinefunction(handler):
-            return await handler(event)
-        return await asyncio.to_thread(handler, event)
 
 
 def _build_message_rule(

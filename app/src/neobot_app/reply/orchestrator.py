@@ -236,6 +236,21 @@ class ReplyOrchestrator:
         task.add_done_callback(_cleanup)
         return event
 
+    def is_pipeline_active(self, kind: str, conversation_id: str) -> bool:
+        pipeline_key = f"{kind}:{conversation_id}"
+        task = self._active_pipelines.get(pipeline_key)
+        if task is not None and task.done():
+            self._active_pipelines.pop(pipeline_key, None)
+            return False
+        return task is not None
+
+    def is_pipeline_key_active(self, pipeline_key: str) -> bool:
+        task = self._active_pipelines.get(pipeline_key)
+        if task is not None and task.done():
+            self._active_pipelines.pop(pipeline_key, None)
+            return False
+        return task is not None
+
     def start_background_reply(
         self,
         *,
@@ -811,13 +826,13 @@ class ReplyOrchestrator:
             max_wait = self._get_max_wait_seconds()
             wait_time = max(1, min(seconds, max_wait))
             await asyncio.sleep(wait_time)
-            previous_entries = list(queue_copy._queues.get(queue_key, []))
+            previous_entries = queue_copy.entries(queue_key)
             new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
             if new_entries:
                 new_text = numbering.apply_new(
                     new_entries,
                     queue_copy,
-                    context_entries=list(queue_copy._queues.get(queue_key, [])),
+                    context_entries=queue_copy.entries(queue_key),
                     previous_entries=previous_entries,
                 )
                 if new_text:
@@ -1197,13 +1212,13 @@ class ReplyOrchestrator:
                     break
 
                 # 注入此期间的新消息
-                previous_entries = list(queue_copy._queues.get(queue_key, []))
+                previous_entries = queue_copy.entries(queue_key)
                 new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
                 if new_entries:
                     new_text = numbering.apply_new(
                         new_entries,
                         queue_copy,
-                        context_entries=list(queue_copy._queues.get(queue_key, [])),
+                        context_entries=queue_copy.entries(queue_key),
                         previous_entries=previous_entries,
                     )
                     if new_text:
@@ -1276,7 +1291,7 @@ class ReplyOrchestrator:
                 new_text = numbering.apply_new(
                     new_entries,
                     queue_copy,
-                    context_entries=list(queue_copy._queues.get(queue_key, [])),
+                    context_entries=queue_copy.entries(queue_key),
                     previous_entries=[],
                 )
                 if new_text:
@@ -1314,14 +1329,13 @@ class ReplyOrchestrator:
         - 指纹在 snapshot 中已存在 → 不是新条目（即使推送顺序与 message_id 顺序不一致）
         - 指纹不在 snapshot 中 → 新条目（支持队列驱逐后的安全回退）
         """
-        from collections import deque
         from neobot_app.message.queue_impl import QueueEntryType
 
-        source_entries = list(source._queues.get(queue_key, []))
+        source_entries = source.entries(queue_key)
         if not source_entries:
             return []
 
-        snapshot_entries = list(snapshot._queues.get(queue_key, []))
+        snapshot_entries = snapshot.entries(queue_key)
 
         # 收集 snapshot 中所有条目的指纹
         snapshot_fingerprints: set[str] = set()
@@ -1338,12 +1352,7 @@ class ReplyOrchestrator:
                 continue  # 已存在于快照中
             new_entries.append(entry)
 
-        # 将新条目合并到 snapshot
-        if new_entries:
-            if queue_key not in snapshot._queues:
-                snapshot._queues[queue_key] = deque()
-            for entry in new_entries:
-                snapshot._queues[queue_key].append(entry)
+        snapshot.append_entries(queue_key, new_entries)
 
         return [
             entry for entry in new_entries

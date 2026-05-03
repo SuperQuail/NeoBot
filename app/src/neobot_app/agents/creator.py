@@ -499,8 +499,7 @@ class BackgroundDrawingManager:
             self._logger.warning("通知推送失败：orchestrator 为空", task_id=task.task_id)
             return
 
-        active = getattr(self._orchestrator, "_active_pipelines", {})
-        pipeline_active = task.pipeline_key in active and not active[task.pipeline_key].done()
+        pipeline_active = self._orchestrator.is_pipeline_key_active(task.pipeline_key)
         self._logger.info(
             "准备推送绘图通知",
             task_id=task.task_id,
@@ -628,8 +627,7 @@ class BackgroundDrawingManager:
                 )
                 await self._publish_hub_notification(task, timeout_msg)
             elif self._orchestrator is not None:
-                active = getattr(self._orchestrator, "_active_pipelines", {})
-                if task.pipeline_key in active and not active[task.pipeline_key].done():
+                if self._orchestrator.is_pipeline_key_active(task.pipeline_key):
                     image_id_text = task.image_id or "未知"
                     timeout_msg = (
                         f"<这是新的必须要回答的内容>\n"

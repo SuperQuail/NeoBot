@@ -144,9 +144,10 @@ class EventPipeline:
     def _has_active_reply_pipeline(self, kind: str, queue_key: str) -> bool:
         if self._reply_orchestrator is None:
             return False
-        active = getattr(self._reply_orchestrator, "_active_pipelines", {})
-        task = active.get(f"{kind}:{queue_key}") if isinstance(active, dict) else None
-        return task is not None and not task.done()
+        is_active = getattr(self._reply_orchestrator, "is_pipeline_active", None)
+        if callable(is_active):
+            return bool(is_active(kind, queue_key))
+        return False
 
     def _get_group_agent_silent_timeout_seconds(self) -> float:
         if self._config is not None:
@@ -229,7 +230,12 @@ class EventPipeline:
 
         task.add_done_callback(_done)
 
-    async def _handle_private_message(self, event: Dict[str, Any]) -> None:
+    async def handle_private_message_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        skip_ai_reply: bool = False,
+    ) -> None:
         message = safe_parse_model(event, PrivateMessage)
         queue_key = str(message.user_id or "")
         await self._handle_inbound_raw_event(event)
@@ -253,12 +259,16 @@ class EventPipeline:
         if self._is_bot_self(message):
             return
 
-        if self._consume_ai_reply_block(message):
+        ai_reply_blocked = self._consume_ai_reply_block(message)
+        if skip_ai_reply or ai_reply_blocked:
             self._logger.info("插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key)
             return
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
         self._logger.info(f"收到私聊消息: {text}")
+
+    async def _handle_private_message(self, event: Dict[str, Any]) -> None:
+        await self.handle_private_message_event(event)
 
     async def _maybe_warmup_friend_chat(self, user_id: str) -> None:
         if self._config is None:
@@ -349,7 +359,12 @@ class EventPipeline:
             decision=decision,
         )
 
-    async def _handle_group_message(self, event: Dict[str, Any]) -> None:
+    async def handle_group_message_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        skip_ai_reply: bool = False,
+    ) -> None:
         message = safe_parse_model(event, GroupMessage)
         queue_key = str(message.group_id or "")
         await self._handle_inbound_raw_event(event)
@@ -372,7 +387,8 @@ class EventPipeline:
         if self._is_bot_self(message):
             return
 
-        if self._consume_ai_reply_block(message):
+        ai_reply_blocked = self._consume_ai_reply_block(message)
+        if skip_ai_reply or ai_reply_blocked:
             self._logger.info("插件监听器已阻止本条群消息触发 AI 回复", queue_key=queue_key)
             return
 
@@ -409,6 +425,9 @@ class EventPipeline:
             return
 
         await self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
+
+    async def _handle_group_message(self, event: Dict[str, Any]) -> None:
+        await self.handle_group_message_event(event)
 
     async def _record_archive_summary(
         self,

@@ -26,7 +26,7 @@ class MessageNumbering:
     ) -> str:
         """Number all messages in one queue and render them as text."""
         lines: list[str] = []
-        entries = list(queue._queues.get(queue_key, []))
+        entries = queue.entries(queue_key)
         sender_labels = queue._build_sender_labels(entries)
 
         found_last_reply = False
