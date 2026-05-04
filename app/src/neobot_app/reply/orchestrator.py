@@ -13,6 +13,12 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.statistics.tracker import (
+    CURRENT_USAGE_MODULE,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_CONVERSATION_ID,
+    get_usage_tracker,
+)
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -21,7 +27,7 @@ if TYPE_CHECKING:
     from neobot_chat import AgentRegistry
     from neobot_chat.providers.base import Provider
     from neobot_app.config.schemas.bot import BotConfig
-    from neobot_app.emoji.service import EmojiService
+    from neobot_app.emoji.service import EmojiEntry, EmojiService
     from neobot_app.observability.debug import DebugRecorder
     from neobot_app.message.numbering import MessageNumbering
     from neobot_app.message.queue import MessageQueue
@@ -94,7 +100,9 @@ class ReplyOrchestrator:
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
         notification_hub: Any = None,
+        markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
     ) -> None:
         self._adapter = adapter
@@ -115,7 +123,9 @@ class ReplyOrchestrator:
         self._logger = logger or NullLogger()
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
+        self._problem_solver_manager = problem_solver_manager
         self._notification_hub = notification_hub
+        self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
@@ -727,7 +737,9 @@ class ReplyOrchestrator:
                 prompt += (
                     "\n\n<可用的表情包>\n"
                     f"{emoji_text}\n"
-                    "发送表情包时请使用 send_emoji 工具，参数 number 为表情包编号。\n"
+                    "发送表情包时：\n"
+                    "- 同时发送文字回复和表情包：使用 send_reply 工具，通过 images 参数指定表情包编号列表（先逐一发送图片，再发送切分后的文字）\n"
+                    "- 仅发送表情包（无独立文字回复）：使用 send_emoji 工具，参数 number 为表情包编号\n"
                     "表情包按使用次数从少到多排列（使用次数均衡器），优先使用不常用的表情包。\n"
                     f"{search_hint}\n"
                     "</可用的表情包>"
@@ -780,6 +792,8 @@ class ReplyOrchestrator:
             mention: list[int] | None = None,
             segments: list[str] | None = None,
             send_original: bool = False,
+            images: list[int] | None = None,
+            merge_text_with_image: bool = False,
         ) -> None:
             nonlocal reply_sent
             reply_sent = True
@@ -794,6 +808,8 @@ class ReplyOrchestrator:
                     mention_user_ids=mention,
                     segments=segments,
                     send_original=send_original,
+                    images=images,
+                    merge_text_with_image=merge_text_with_image,
                 )
             else:
                 await self._send_reply(
@@ -802,6 +818,8 @@ class ReplyOrchestrator:
                     mention_user_ids=mention,
                     segments=segments,
                     send_original=send_original,
+                    images=images,
+                    merge_text_with_image=merge_text_with_image,
                 )
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
@@ -910,6 +928,33 @@ class ReplyOrchestrator:
                 )
                 return f"已戳一戳好友 QQ:{user_id}" if self._api_succeeded(result) else f"好友戳一戳失败: {result}"
 
+        async def send_long_reply_handler(
+            image_path: str,
+            caption: str = "",
+            reply_to: int | None = None,
+            mention: list[int] | None = None,
+        ) -> None:
+            nonlocal reply_sent
+            reply_sent = True
+            conv_ref = event.conversation_ref
+            path = image_path
+            # 解析消息编号 -> 实际 message_id
+            reply_to_message_id = None
+            if reply_to is not None:
+                reply_to_message_id = numbering.get_message_id(reply_to)
+            # 发送说明文字（如果有）
+            if caption.strip():
+                caption_segs = self._build_reply_segments(
+                    text=caption.strip(),
+                    conversation_kind=conv_ref.kind if conv_ref else "",
+                    reply_to_message_id=reply_to_message_id,
+                    mention_user_ids=mention,
+                )
+                await self._send_with_timeout(conv_ref, caption_segs)
+            # 发送图片（不附带引用，图片单独发送）
+            img_seg = [{"type": "image", "data": {"file": f"file:///{path}"}}]
+            await self._send_with_timeout(conv_ref, img_seg)
+
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
         reply_toolset = build_reply_toolset(
@@ -928,7 +973,10 @@ class ReplyOrchestrator:
             poke_user_handler=poke_user_handler,
             drawing_manager=self._drawing_manager,
             scheduled_task_manager=self._scheduled_task_manager,
+            problem_solver_manager=self._problem_solver_manager,
             notification_hub=self._notification_hub,
+            markdown_image_converter=self._markdown_image_converter,
+            send_long_reply_handler=send_long_reply_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
@@ -1054,6 +1102,22 @@ class ReplyOrchestrator:
                     )
                     return
                 reset_silent_deadline()
+
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict) and hasattr(self._provider, "model"):
+                    try:
+                        conv_ref = event.conversation_ref
+                        await get_usage_tracker().record(
+                            module="reply_agent",
+                            model_name=self._provider.model,
+                            input_tokens=usage["input_tokens"],
+                            output_tokens=usage["output_tokens"],
+                            conversation_kind=conv_ref.kind if conv_ref else "",
+                            conversation_id=conv_ref.id if conv_ref else "",
+                        )
+                    except Exception:
+                        pass
+
                 self._record_debug(
                     "agent_iteration",
                     event,
@@ -1613,6 +1677,22 @@ class ReplyOrchestrator:
             )
             raise
         content = response.get("content", "")
+
+        usage = (response.get("extensions") or {}).get("usage")
+        if isinstance(usage, dict) and hasattr(self._provider, "model"):
+            try:
+                conv_ref = event.conversation_ref
+                await get_usage_tracker().record(
+                    module="reply_common",
+                    model_name=self._provider.model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    conversation_kind=conv_ref.kind if conv_ref else "",
+                    conversation_id=conv_ref.id if conv_ref else "",
+                )
+            except Exception:
+                pass
+
         text = content.strip() if isinstance(content, str) else str(content)
         event.generated_text = text
         self._record_debug("reply_generated", event, reply_text=text, response=response)
@@ -1668,19 +1748,80 @@ class ReplyOrchestrator:
         mention_user_ids: list[int] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
+        images: list[int] | None = None,
+        merge_text_with_image: bool = False,
     ) -> None:
         event.transition(ReplyState.SENDING)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
+        send_results: list[object] = []
+        formatted_messages: list[list[dict]] = []
+
+        # Phase B: 文字与第一张图片合并发送（不切分文字）
+        if images and merge_text_with_image:
+            image_entries = self._resolve_image_entries(images)
+            if image_entries:
+                first_img = image_entries[0]
+                merged = self._build_reply_segments(
+                    text=text,
+                    conversation_kind=event.conversation_ref.kind,
+                    reply_to_message_id=reply_to_message_id,
+                    mention_user_ids=mention_user_ids,
+                )
+                merged.append({
+                    "type": "image",
+                    "data": {"file": f"file:///{first_img.file_path.as_posix()}"},
+                })
+                formatted_messages.append(merged)
+                send_results.append(await self._send_with_timeout(event.conversation_ref, merged))
+                if self._emoji_service:
+                    await self._emoji_service.record_usage(images[0])
+                # 发送剩余图片
+                for i, entry in enumerate(image_entries[1:], start=1):
+                    img_seg = [{
+                        "type": "image",
+                        "data": {"file": f"file:///{entry.file_path.as_posix()}"},
+                    }]
+                    formatted_messages.append(img_seg)
+                    send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                    if self._emoji_service:
+                        await self._emoji_service.record_usage(images[i])
+            event.send_response = send_results[0] if len(send_results) == 1 else send_results
+            if event.conversation_ref.kind == "private":
+                event.transition(ReplyState.GENERATING)
+            else:
+                event.transition(ReplyState.COMPLETED)
+            self._record_debug(
+                "reply_sent",
+                event,
+                formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        # Phase A: 先逐一发送图片
+        if images:
+            for image_number in images:
+                if self._emoji_service is None:
+                    continue
+                entry = self._emoji_service.get_entry(image_number)
+                if entry is None:
+                    continue
+                img_seg = [{
+                    "type": "image",
+                    "data": {"file": f"file:///{entry.file_path.as_posix()}"},
+                }]
+                formatted_messages.append(img_seg)
+                send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                await self._emoji_service.record_usage(image_number)
+
+        # Phase C: 发送文字（切分后逐条发送）
         reply_messages = self._build_reply_messages(
             text,
             segments=segments,
             send_original=send_original,
         )
-        send_results: list[object] = []
-        formatted_messages: list[list[dict]] = []
-
         is_group = event.conversation_ref.kind == "group"
         pipeline_key = f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
 
@@ -1707,7 +1848,6 @@ class ReplyOrchestrator:
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
-        # 私聊连续会话：回到 GENERATING 等待下一轮；群聊/普通：直接完成
         if event.conversation_ref is not None and event.conversation_ref.kind == "private":
             event.transition(ReplyState.GENERATING)
         else:
@@ -1762,6 +1902,17 @@ class ReplyOrchestrator:
 
         segments.append({"type": "text", "data": {"text": text}})
         return segments
+
+    def _resolve_image_entries(self, image_numbers: list[int]) -> list[Any]:
+        """将表情包编号列表解析为 EmojiEntry 列表，跳过无效编号。"""
+        if self._emoji_service is None:
+            return []
+        entries: list[Any] = []
+        for number in image_numbers:
+            entry = self._emoji_service.get_entry(number)
+            if entry is not None:
+                entries.append(entry)
+        return entries
 
     # ── 工具方法 ──
 

@@ -53,7 +53,10 @@ class ReplyToolExecutor(ToolExecutor):
         poke_user_handler: Any = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
         notification_hub: Any = None,
+        markdown_image_converter: Any = None,
+        send_long_reply_handler: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -82,7 +85,10 @@ class ReplyToolExecutor(ToolExecutor):
         self._poke_user = poke_user_handler
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
+        self._problem_solver_manager = problem_solver_manager
         self._notification_hub = notification_hub
+        self._markdown_image_converter = markdown_image_converter
+        self._send_long_reply = send_long_reply_handler
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -134,7 +140,9 @@ class ReplyToolExecutor(ToolExecutor):
         tools.append(
             _tool_def(
                 "send_reply",
-                "向当前会话发送回复，可自由组合消息段（@、引用回复、文本）。调用后本轮回复视为完成。",
+                "向当前会话发送回复，可附带表情包图片。发送图片时先逐一发送图片再发送切分后的文字；"
+                "若设置 merge_text_with_image=true 则文字与第一张图片合并且不切分。"
+                "调用后本轮回复视为完成。",
                 {
                     "properties": {
                         "text": {
@@ -155,19 +163,61 @@ class ReplyToolExecutor(ToolExecutor):
                             "items": {"type": "string"},
                             "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。",
                         },
+                        "images": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "可选，要发送的表情包编号列表。发送时先逐一发送图片（每条消息一张图片），再发送切分后的文字。若同时设置 merge_text_with_image=true，文字会与第一张图片合并为一条消息且文字不再切分。",
+                        },
+                        "merge_text_with_image": {
+                            "type": "boolean",
+                            "description": "可选，是否将文字与第一张图片合并发送，此时文字不切分。默认为 false。仅在提供了 images 参数时生效。",
+                        },
                         "ai_check_approved": {
                             "type": "boolean",
                             "description": "AI回复检查开启时，确认切分结果没有严重问题或歧义后设为 true。",
                         },
                         "send_original": {
                             "type": "boolean",
-                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分。",
+                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分。对于 @ 和引用消息也适用，设置为 true 后不会切分文字。",
                         },
                     },
                     "required": ["text"],
                 },
             ),
         )
+        if self._markdown_image_converter is not None:
+            tools.append(
+                _tool_def(
+                    "send_long_reply",
+                    "当回复内容过长无法通过 send_reply 正常发送时调用。"
+                    "将长文本以 Markdown 格式提供，系统会自动将其转换为图片发送。"
+                    "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
+                    "解题结果通知中也应使用此工具发送 Markdown 解答。"
+                    "调用后本轮回复视为完成。",
+                    {
+                        "properties": {
+                            "markdown": {
+                                "type": "string",
+                                "description": "Markdown 格式的回复内容。支持标题、列表、代码块、表格等标准 Markdown 语法。",
+                            },
+                            "reply_to": {
+                                "type": "integer",
+                                "description": "可选，要引用回复的消息编号。",
+                            },
+                            "mention": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。",
+                            },
+                            "caption": {
+                                "type": "string",
+                                "description": "可选，随图片一起发送的简短说明文字。",
+                            },
+                        },
+                        "required": ["markdown"],
+                    },
+                ),
+            )
         if self._wait is not None:
             tools.append(
                 _tool_def(
@@ -226,8 +276,10 @@ class ReplyToolExecutor(ToolExecutor):
             tools.append(
                 _tool_def(
                     "send_emoji",
-                    "向当前会话发送一个表情包图片。提示词中的表情包按使用次数从少到多排列（使用次数均衡器），"
-                    "优先展示不常用的。当表情包数量过多时提示词中只显示配置值指定的数量，可使用 search_custom_emoji 搜索。",
+                    "向当前会话发送一个表情包图片（可附带可选文字）。"
+                    "仅用于只发送表情包而不发送独立文字回复的场景。"
+                    "若需要同时发送文字回复和表情包，请使用 send_reply 工具并通过 images 参数指定表情包编号。"
+                    "提示词中的表情包按使用次数从少到多排列（使用次数均衡器），优先展示不常用的。",
                     {
                         "properties": {
                             "number": {
@@ -361,6 +413,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
                         "如果有人提出生日想要的祝福、庆祝场合或禁忌，委托 scheduled_task 记录或更新生日任务，不要只写入普通记忆。"
                         "绘图失败时必须先发消息告知失败原因，再询问用户是否重试，不要自行立刻重试。"
+                        "涉及复杂数学、编程算法、科学计算、逻辑推理等需要深度思考的问题时，必须委托 problem_solver 处理。"
                         "创建早安、生日祝福、普通提醒等定时任务时，默认使用一次性通知；一次性通知不是 once 一次性任务，循环任务也可以每个周期只通知一次。",
                         {
                             "properties": {
@@ -497,6 +550,8 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_check_last_drawing(args)
         if name == "mark_scheduled_task_complete":
             return await self._execute_mark_scheduled_task_complete(args)
+        if name == "send_long_reply":
+            return await self._execute_send_long_reply(args)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -529,6 +584,16 @@ class ReplyToolExecutor(ToolExecutor):
         segments = self._normalize_segments(args.get("segments"))
         send_original = bool(args.get("send_original") is True)
         ai_check_approved = bool(args.get("ai_check_approved") is True)
+        merge_text_with_image = bool(args.get("merge_text_with_image") is True)
+        raw_images = args.get("images")
+        images: list[int] | None = None
+        if raw_images is not None:
+            if not isinstance(raw_images, list):
+                return f"错误：images 必须为列表，收到 {type(raw_images).__name__}"
+            try:
+                images = [int(n) for n in raw_images]
+            except (ValueError, TypeError):
+                return f"错误：images 必须为整数列表，收到 {raw_images}"
         reply_to = args.get("reply_to")
         if reply_to is not None:
             try:
@@ -556,7 +621,7 @@ class ReplyToolExecutor(ToolExecutor):
             if result.fallback_used:
                 return self._build_ai_check_prompt(result)
 
-        if self._enable_ai_reply_regenerate and not send_original and not segments:
+        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and not segments:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -566,7 +631,7 @@ class ReplyToolExecutor(ToolExecutor):
                     f"请精简为更短的版本后重新调用 send_reply。"
                 )
 
-        if self._enable_ai_reply_regenerate and not send_original and ai_check_approved:
+        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and ai_check_approved:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -582,11 +647,15 @@ class ReplyToolExecutor(ToolExecutor):
             mention=mention,
             segments=segments,
             send_original=send_original,
+            images=images,
+            merge_text_with_image=merge_text_with_image,
         )
         if segments:
             return f"回复已发送，共 {len(segments)} 条"
         if send_original:
             return "回复原文已发送"
+        if images:
+            return f"回复已发送（{len(images)} 张图片 + 文字）"
         return "回复已发送"
 
     async def _execute_wait(self, args: dict) -> str:
@@ -792,6 +861,7 @@ class ReplyToolExecutor(ToolExecutor):
         if (
             self._drawing_manager is None
             and self._scheduled_task_manager is None
+            and self._problem_solver_manager is None
             and self._notification_hub is None
         ):
             return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
@@ -803,6 +873,8 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._drawing_manager.get_pipeline_status(pipeline_key))
         if self._scheduled_task_manager is not None:
             status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
+        if self._problem_solver_manager is not None:
+            status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
         self._logger.info(
@@ -826,6 +898,47 @@ class ReplyToolExecutor(ToolExecutor):
             ok=result.get("ok"),
         )
         return json.dumps(result, ensure_ascii=False)
+
+    async def _execute_send_long_reply(self, args: dict) -> str:
+        if self._markdown_image_converter is None:
+            return json.dumps({"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False)
+        markdown = str(args.get("markdown") or "").strip()
+        if not markdown:
+            return json.dumps({"ok": False, "error": "markdown 内容不能为空"}, ensure_ascii=False)
+        reply_to = args.get("reply_to")
+        if reply_to is not None:
+            try:
+                reply_to = int(reply_to)
+            except (ValueError, TypeError):
+                return json.dumps({"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"}, ensure_ascii=False)
+        raw_mention = args.get("mention")
+        mention: list[int] | None = None
+        if raw_mention:
+            try:
+                mention = [int(qq) for qq in raw_mention]
+            except (ValueError, TypeError):
+                return json.dumps({"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False)
+        caption = str(args.get("caption") or "").strip()
+        try:
+            image_path = await self._markdown_image_converter.convert(markdown)
+        except Exception as exc:
+            self._logger.error(f"Markdown 转图片失败: {exc}")
+            return json.dumps({"ok": False, "error": f"Markdown 转图片失败：{exc}"}, ensure_ascii=False)
+        # 调用 orchestrator 提供的 handler 实际发送图片
+        if self._send_long_reply is not None:
+            await self._send_long_reply(
+                image_path=str(image_path),
+                caption=caption,
+                reply_to=reply_to,
+                mention=mention,
+            )
+        return json.dumps({
+            "ok": True,
+            "status": "sent",
+            "image_path": str(image_path),
+            "caption": caption or None,
+            "message": "Markdown 已转为图片并发送",
+        }, ensure_ascii=False)
 
     async def _execute_check_last_drawing(self, args: dict) -> str:
         """查询当前聊天流上一次绘图任务的详细记录。"""
@@ -916,7 +1029,10 @@ def build_reply_toolset(
     poke_user_handler: Any = None,
     drawing_manager: Any = None,
     scheduled_task_manager: Any = None,
+    problem_solver_manager: Any = None,
     notification_hub: Any = None,
+    markdown_image_converter: Any = None,
+    send_long_reply_handler: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -947,7 +1063,10 @@ def build_reply_toolset(
         poke_user_handler=poke_user_handler,
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
         notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
+        send_long_reply_handler=send_long_reply_handler,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

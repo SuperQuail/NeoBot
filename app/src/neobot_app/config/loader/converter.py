@@ -275,6 +275,7 @@ def dataclass_to_toml(
         doc.add(tomlkit.comment("所有除了键值的内容（包括注释）都会在重新执行程序时丢失"))
         doc.add(tomlkit.comment("如需更改配置项/注释,请修改neobot_app/config/schemas/bot.py文件"))
         doc.add(tomlkit.comment("格式损坏的文件会被覆盖,data/config_backup下会存储最多十五个备份,如果意外损坏导致文件被覆盖,可自行提取备份"))
+        doc.add(tomlkit.comment("\n长回复功能需要手动playwright install与python -m playwright install chromium,程序会尝试自动安装,但是建议手动安装"))
         doc.add(tomlkit.nl())
     else:
         doc = tomlkit.table()

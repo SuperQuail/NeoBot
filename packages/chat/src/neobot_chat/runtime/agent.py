@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -47,6 +47,7 @@ class Agent:
         system_prompt: str | None = None,
         on_event: OnEvent | None = None,
         tool_guard: ToolGuard | None = None,
+        on_model_usage: Callable[..., Any] | None = None,
         logger: Logger = NullLogger(),
     ):
         self._logger = logger
@@ -55,6 +56,7 @@ class Agent:
         self.allowed_commands = list(allowed_commands or [])
         self.allowed_paths = self._build_allowed_paths(skills)
         self.tool_guard = tool_guard
+        self._on_model_usage = on_model_usage
 
         builtin_toolset = build_builtin_toolset(
             agent_registry=agent_registry,
@@ -85,6 +87,18 @@ class Agent:
             tool_calls = response.get("tool_calls")
             self._emit_response(response, tool_calls)
 
+            if self._on_model_usage is not None:
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict):
+                    try:
+                        await self._on_model_usage(
+                            model_name=getattr(self.provider, "model", ""),
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
+                    except Exception:
+                        pass
+
             if not tool_calls:
                 break
             await self._run_tools(tool_calls, messages)
@@ -114,6 +128,18 @@ class Agent:
 
             tool_calls = response.get("tool_calls")
             self._emit_response(response, tool_calls)
+
+            if self._on_model_usage is not None:
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict):
+                    try:
+                        await self._on_model_usage(
+                            model_name=getattr(self.provider, "model", ""),
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
+                    except Exception:
+                        pass
 
             if not tool_calls:
                 break

@@ -19,6 +19,7 @@ from neobot_chat.schema.types import ChatChunk, State
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.statistics.tracker import CURRENT_USAGE_MODULE, get_usage_tracker
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -90,6 +91,7 @@ class ImageParseAgent:
         messages = list(state.get("messages", []))
         task = self._last_user_text(messages)
         delegate_context = str(state.get("_delegate_context") or "")
+        tm = CURRENT_USAGE_MODULE.set("agent:image_parse")
         try:
             request = self._parse_request(task)
             image_url = await self._resolve_image_url(request, task, delegate_context)
@@ -100,6 +102,8 @@ class ImageParseAgent:
         except Exception as exc:
             self._logger.warning("图片解析 Agent 执行失败", error=str(exc))
             result = self._missing_image_response(task, delegate_context, exc)
+        finally:
+            CURRENT_USAGE_MODULE.reset(tm)
         messages.append({"role": "assistant", "content": result})
         return {**state, "messages": messages}
 
@@ -132,6 +136,19 @@ class ImageParseAgent:
             self._provider.chat(messages),
             timeout=self._get_model_timeout_seconds(),
         )
+
+        usage = (response.get("extensions") or {}).get("usage")
+        if isinstance(usage, dict) and hasattr(self._provider, "model"):
+            try:
+                await get_usage_tracker().record(
+                    module=CURRENT_USAGE_MODULE.get("agent:image_parse"),
+                    model_name=self._provider.model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                )
+            except Exception:
+                pass
+
         content = response.get("content", "")
         text = content.strip() if isinstance(content, str) else str(content).strip()
         return text or "图片解析完成，但模型未返回文本。"

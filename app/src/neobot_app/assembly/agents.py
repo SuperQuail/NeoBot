@@ -16,6 +16,7 @@ from neobot_app.agents import (
     build_chat_interaction_agent,
     build_creator_agent,
     build_image_parse_agent,
+    build_problem_solver_agent,
     build_scheduled_task_agent,
     build_willingness_control_agent,
 )
@@ -65,6 +66,7 @@ def build_agent_registry(
     model_name: str = "primary_chat_model",
     logger: Logger | None = None,
     drawing_manager: Any = None,
+    problem_solver_manager: Any = None,
 ) -> AgentRegistry:
     registry = AgentRegistry()
     active_logger = logger or NullLogger()
@@ -206,5 +208,29 @@ def build_agent_registry(
                     logger=active_logger,
                 ),
             )
+
+    # Register problem_solver agent
+    problem_solver_config = getattr(config.agent, "problem_solver", None)
+    if (
+        problem_solver_config is not None
+        and getattr(problem_solver_config, "enabled", True)
+    ):
+        try:
+            provider = factory("problem_solver")
+        except Exception as exc:
+            active_logger.warning(f"无法创建 problem solver agent provider: {exc}")
+        else:
+            try:
+                registry.register(
+                    "problem_solver",
+                    build_problem_solver_agent(
+                        provider,
+                        config=problem_solver_config,
+                        logger=active_logger,
+                        manager=problem_solver_manager,
+                    ),
+                )
+            except Exception as exc:
+                active_logger.warning(f"无法注册 problem solver agent: {exc}")
 
     return registry

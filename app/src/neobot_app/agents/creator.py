@@ -38,6 +38,12 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 from neobot_app.core import DATA_DIR
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -115,6 +121,14 @@ def _sanitize_filename(name: str) -> str:
     return cleaned[:100] or "unnamed"
 
 
+class ImageGenerationError(Exception):
+    """绘图 API 错误，携带完整错误信息包供 agent 诊断。"""
+
+    def __init__(self, error_info: dict[str, Any]) -> None:
+        self.error_info = error_info
+        super().__init__(json.dumps(error_info, ensure_ascii=False))
+
+
 @dataclass(frozen=True)
 class CreatorAgentConfig:
     enabled: bool = False
@@ -128,6 +142,7 @@ class CreatorAgentConfig:
     draw_max_retries: int = 1
     draw_background_enabled: bool = True
     draw_startup_grace_seconds: float = 3.0
+    draw_max_tasks_per_pipeline: int = 20
 
     @classmethod
     def from_schema(cls, config: "AgentCreator | None") -> "CreatorAgentConfig":
@@ -148,6 +163,7 @@ class CreatorAgentConfig:
             draw_max_retries=int(getattr(drawing_cfg, "max_retries", 1) or 0),
             draw_background_enabled=bool(getattr(drawing_cfg, "background_enabled", True)),
             draw_startup_grace_seconds=float(getattr(drawing_cfg, "startup_grace_seconds", 3.0) or 3.0),
+            draw_max_tasks_per_pipeline=int(getattr(drawing_cfg, "max_tasks_per_pipeline", 20) or 20),
         )
 
 
@@ -232,6 +248,35 @@ class BackgroundDrawingManager:
             if task.pipeline_key == pipeline_key and task.status == "drawing":
                 return task
         return None
+
+    def _enforce_task_limit(self, pipeline_key: str) -> None:
+        """确保每个管线不超过最大任务数，超出时销毁最旧的非活跃任务。"""
+        limit = self._config.draw_max_tasks_per_pipeline
+        if limit <= 0:
+            return
+        pipeline_tasks = [
+            t for t in self._tasks.values()
+            if t.pipeline_key == pipeline_key
+        ]
+        if len(pipeline_tasks) <= limit:
+            return
+        # 按创建时间升序，优先移除旧任务；活跃任务（drawing）不删除
+        pipeline_tasks.sort(key=lambda t: t.created_at)
+        removed = 0
+        for task in pipeline_tasks:
+            if len(pipeline_tasks) - removed <= limit:
+                break
+            if task.status == "drawing":
+                continue
+            self._tasks.pop(task.task_id, None)
+            removed += 1
+            self._logger.info(
+                "后台绘图任务超出上限已自动销毁",
+                task_id=task.task_id,
+                pipeline_key=pipeline_key,
+                status=task.status,
+                limit=limit,
+            )
 
     def get_pipeline_status(self, pipeline_key: str) -> dict[str, Any]:
         """查询指定管线的后台绘图状态（供主 Agent 工具调用）。"""
@@ -351,6 +396,7 @@ class BackgroundDrawingManager:
             seed=seed,
         )
         self._tasks[task.task_id] = task
+        self._enforce_task_limit(pipeline_key)
         self._set_cooldown(pipeline_key)
 
         bg_task = asyncio.create_task(self._run_draw(task))
@@ -403,14 +449,29 @@ class BackgroundDrawingManager:
             await self._on_completed(task)
         except Exception as exc:
             task.status = "failed"
-            task.error = str(exc)
+            task.error = self._serialize_draw_error(exc)
             self.cancel_cooldown(task.pipeline_key)
             self._logger.warning(
                 "后台绘图任务失败",
                 task_id=task.task_id,
-                error=str(exc),
+                error=task.error,
             )
             await self._on_failed(task)
+
+    @staticmethod
+    def _serialize_draw_error(exc: Exception) -> str:
+        """将绘图异常序列化为完整的错误信息 JSON，供 agent 诊断。"""
+        if isinstance(exc, ImageGenerationError):
+            return str(exc)
+        error_info: dict[str, Any] = {
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if isinstance(exc, httpx.HTTPStatusError):
+            error_info["status_code"] = exc.response.status_code
+            error_info["response_body"] = exc.response.text
+            error_info["request_url"] = str(exc.request.url)
+        return json.dumps(error_info, ensure_ascii=False)
 
     async def _on_completed(self, task: DrawTask) -> None:
         """绘图完成后的通知流程——向主 Agent 提交必须处理的绘图结果。"""
@@ -971,22 +1032,32 @@ class CreatorImageService:
         response = await self._client.post("/images/generations", json=payload)
         try:
             response.raise_for_status()
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
             self._logger.error(
                 "生图接口返回错误状态码",
                 status=response.status_code,
                 body=response.text[:500],
             )
-            raise
+            raise ImageGenerationError({
+                "error_type": "HTTPStatusError",
+                "status_code": exc.response.status_code,
+                "response_body": exc.response.text,
+                "request_url": str(exc.request.url),
+            }) from exc
         try:
             image_bytes = await self._extract_image_bytes(response.json())
-        except ValueError:
+        except ValueError as exc:
             self._logger.error(
                 "生图接口返回数据解析失败",
                 status=response.status_code,
                 body=response.text[:500],
             )
-            raise
+            raise ImageGenerationError({
+                "error_type": "ValueError",
+                "message": str(exc),
+                "status_code": response.status_code,
+                "response_body": response.text,
+            }) from exc
         return await self._save_image_bytes(
             image_bytes,
             source=TMP_SOURCE,
@@ -2652,11 +2723,23 @@ class CreatorAgent:
             drawing_manager=drawing_manager,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
             description=self.description,
             system_prompt=_build_system_prompt(normalized_config),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
@@ -2668,18 +2751,22 @@ class CreatorAgent:
 
     async def invoke(self, state: State) -> State:
         token = _CREATOR_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:creator")
         try:
             return await self._agent.invoke(state)
         finally:
             _CREATOR_CHAT_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _CREATOR_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:creator")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
         finally:
             _CREATOR_CHAT_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:
         await self._agent.close()

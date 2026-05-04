@@ -33,6 +33,8 @@ from neobot_app.message.queue import MessageQueue
 from neobot_app.observability.debug import DebugRecorder
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
 from neobot_app.prompt.builder import PromptBuilder
+from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
+from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 from neobot_app.runtime.application import NeoBotApplication
@@ -132,6 +134,18 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     db_url = sqlite_url(DATA_DIR / "neobot.db")
     run_migrations(db_url)
     _engine, uow_factory = build_storage(db_url)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    usage_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    usage_tracker = UsageTracker(
+        usage_session_factory,
+        logger=logger_factory.get_logger("app.usage"),
+    )
+    initialize_usage_tracker(usage_tracker)
+    report_service = UsageReportService(
+        usage_session_factory,
+        logger=logger_factory.get_logger("app.usage_report"),
+    )
 
     timestamp_interval_seconds = getattr(
         config.chat,
@@ -249,9 +263,19 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
+    from neobot_app.agents.problem_solver import (
+        ProblemSolverManager,
+        ProblemSolverAgentConfig,
+    )
+    from neobot_app.reply.markdown_image import MarkdownImageConverter
 
     notification_hub = BackgroundNotificationHub(
         logger=logger_factory.get_logger("app.background_notifications"),
+    )
+
+    markdown_image_converter = MarkdownImageConverter(
+        output_dir=DATA_DIR / "markdown_images",
+        logger=logger_factory.get_logger("app.markdown_image"),
     )
 
     creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
@@ -273,6 +297,20 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         else None
     )
 
+    problem_solver_config = ProblemSolverAgentConfig.from_schema(
+        getattr(config.agent, "problem_solver", None)
+    )
+    problem_solver_manager = (
+        ProblemSolverManager(
+            config=problem_solver_config,
+            logger=logger_factory.get_logger("app.problem_solver"),
+            notification_hub=notification_hub,
+            markdown_image_converter=markdown_image_converter,
+        )
+        if problem_solver_config.enabled
+        else None
+    )
+
     agent_registry = build_agent_registry(
         config=config,
         archive_memory_service=archive_memory_service,
@@ -284,6 +322,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         willing_service=willing_service,
         logger=logger_factory.get_logger("app.agent_registry"),
         drawing_manager=drawing_manager,
+        problem_solver_manager=problem_solver_manager,
     )
 
     if config.plugins.enabled:
@@ -343,13 +382,17 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
         notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
     if scheduled_task_manager is not None:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
+    if problem_solver_manager is not None:
+        problem_solver_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -406,5 +449,8 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         file_server_public_url=config.file_server.public_url,
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
+        markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
+        report_service=report_service,
     )

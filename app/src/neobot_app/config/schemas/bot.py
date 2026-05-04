@@ -711,6 +711,10 @@ class AgentCreatorDrawing:
         default=3.0,
         metadata={"description": "后台绘图启动宽限期（秒）；此时间内若API报错则立即返回失败并取消冷却"},
     )
+    max_tasks_per_pipeline: int = field(
+        default=20,
+        metadata={"description": "每个聊天流最多保留的后台绘图任务数；超出后自动销毁最旧的非活跃任务"},
+    )
 
 
 @dataclass
@@ -804,6 +808,48 @@ class AgentWillingness:
 
 
 @dataclass
+class AgentProblemSolver:
+    """Problem Solver Agent 配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用解题 Agent"},
+    )
+    model: str = field(
+        default="agent_model_1",
+        metadata={"description": "解题 Agent 使用的模型名称"},
+    )
+    timeout_seconds: float = field(
+        default=600.0,
+        metadata={"description": "解题超时时间（秒），默认 10 分钟"},
+    )
+    max_tokens: int = field(
+        default=20480,
+        metadata={"description": "最大输出 Token 数，默认 20K"},
+    )
+    notification_retry_seconds: int = field(
+        default=30,
+        metadata={"description": "解题完成后通知重试间隔（秒）"},
+    )
+    max_retries: int = field(
+        default=1,
+        metadata={"description": "通知最大重试次数（不含首次）"},
+    )
+    startup_grace_seconds: float = field(
+        default=3.0,
+        metadata={"description": "后台解题启动宽限期（秒）"},
+    )
+    max_tasks_per_pipeline: int = field(
+        default=5,
+        metadata={"description": "每个聊天流最多保留的后台解题任务数"},
+    )
+    reasoning_effort: str = field(
+        default="max",
+        metadata={"description": "推理强度：high 或 max"},
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -811,6 +857,7 @@ class Agent:
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
+    problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
 
 
 @dataclass

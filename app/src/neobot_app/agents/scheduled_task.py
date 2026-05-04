@@ -27,6 +27,12 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.models.scheduled_task import ScheduledTaskRecurrence, ScheduledTaskState
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
 from neobot_app.time_context import combine_local, today_local, to_local
 
 if TYPE_CHECKING:
@@ -585,11 +591,23 @@ class ScheduledTaskAgent:
             logger=logger,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
             description=self.description,
             system_prompt=_build_system_prompt(normalized),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
@@ -599,12 +617,14 @@ class ScheduledTaskAgent:
         tk = _CONV_KIND.set(kind)
         ti = _CONV_ID.set(conv_id)
         tc = _SCHEDULED_CONTEXT.set(delegate_context)
+        tm = CURRENT_USAGE_MODULE.set("agent:scheduled_task")
         try:
             return await self._agent.invoke(_inject_delegate_context(state, delegate_context))
         finally:
             _SCHEDULED_CONTEXT.reset(tc)
             _CONV_ID.reset(ti)
             _CONV_KIND.reset(tk)
+            CURRENT_USAGE_MODULE.reset(tm)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         delegate_context = str(state.get("_delegate_context") or "")
@@ -612,6 +632,7 @@ class ScheduledTaskAgent:
         tk = _CONV_KIND.set(kind)
         ti = _CONV_ID.set(conv_id)
         tc = _SCHEDULED_CONTEXT.set(delegate_context)
+        tm = CURRENT_USAGE_MODULE.set("agent:scheduled_task")
         try:
             async for chunk in self._agent.stream_invoke(_inject_delegate_context(state, delegate_context)):
                 yield chunk
@@ -619,6 +640,7 @@ class ScheduledTaskAgent:
             _SCHEDULED_CONTEXT.reset(tc)
             _CONV_ID.reset(ti)
             _CONV_KIND.reset(tk)
+            CURRENT_USAGE_MODULE.reset(tm)
 
     async def close(self) -> None:
         await self._agent.close()

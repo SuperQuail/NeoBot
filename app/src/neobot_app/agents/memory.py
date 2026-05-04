@@ -26,6 +26,12 @@ from neobot_memory import ArchiveMemoryService
 
 from neobot_app.agents.image_parse import ImageParseAgent
 from neobot_app.favorability import clamp_favorability, favorability_to_text
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -486,6 +492,19 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
                 error=str(exc),
             )
             return ""
+
+        usage = (response.get("extensions") or {}).get("usage")
+        if isinstance(usage, dict) and hasattr(self._compaction_provider, "model"):
+            try:
+                await get_usage_tracker().record(
+                    module="memory_compaction",
+                    model_name=self._compaction_provider.model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                )
+            except Exception:
+                pass
+
         return self._extract_response_text(response).strip()
 
     async def _read_archive(self, args: dict[str, Any]) -> str:
@@ -1061,6 +1080,17 @@ class ArchiveMemoryAgent:
             logger=logger,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
@@ -1072,23 +1102,28 @@ class ArchiveMemoryAgent:
                 has_history=adapter is not None,
                 has_favorability=has_favorability,
             ),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
     async def invoke(self, state: State) -> State:
         token = _MEMORY_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:memory")
         try:
             return await self._agent.invoke(state)
         finally:
             _MEMORY_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _MEMORY_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:memory")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
         finally:
             _MEMORY_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:
         await self._agent.close()
