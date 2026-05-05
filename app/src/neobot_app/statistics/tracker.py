@@ -78,7 +78,7 @@ class UsageTracker:
             provider_name=provider_name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=cost,
+            cost_cny=cost,
             conversation_kind=conversation_kind or None,
             conversation_id=conversation_id or None,
             created_at=_dt.datetime.now(_dt.timezone.utc),
@@ -95,7 +95,7 @@ class UsageTracker:
             model=model_name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost=f"${cost:.6f}",
+            cost=f"¥{cost:.6f}",
         )
 
 

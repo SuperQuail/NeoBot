@@ -59,7 +59,7 @@ class UsageReportService:
         total_calls = len(records)
         total_input = sum(r.input_tokens for r in records)
         total_output = sum(r.output_tokens for r in records)
-        total_cost = sum(r.cost_usd for r in records)
+        total_cost = sum(r.cost_cny for r in records)
 
         by_module: dict[str, dict] = defaultdict(
             lambda: {"calls": 0, "input": 0, "output": 0, "cost": 0.0}
@@ -69,7 +69,7 @@ class UsageReportService:
             g["calls"] += 1
             g["input"] += r.input_tokens
             g["output"] += r.output_tokens
-            g["cost"] += r.cost_usd
+            g["cost"] += r.cost_cny
 
         by_model: dict[tuple, dict] = defaultdict(
             lambda: {"calls": 0, "input": 0, "output": 0, "cost": 0.0}
@@ -80,7 +80,7 @@ class UsageReportService:
             g["calls"] += 1
             g["input"] += r.input_tokens
             g["output"] += r.output_tokens
-            g["cost"] += r.cost_usd
+            g["cost"] += r.cost_cny
 
         by_conv: dict[str, dict] = defaultdict(
             lambda: {"calls": 0, "input": 0, "output": 0, "cost": 0.0}
@@ -91,7 +91,7 @@ class UsageReportService:
             g["calls"] += 1
             g["input"] += r.input_tokens
             g["output"] += r.output_tokens
-            g["cost"] += r.cost_usd
+            g["cost"] += r.cost_cny
 
         lines = []
         lines.append(f"# 模型调用费用统计报告 - {label}")
@@ -103,42 +103,42 @@ class UsageReportService:
         lines.append(f"- 总调用次数: {total_calls}")
         lines.append(f"- 总输入 Token: {total_input:,}")
         lines.append(f"- 总输出 Token: {total_output:,}")
-        lines.append(f"- 总费用: ${total_cost:.6f}")
+        lines.append(f"- 总费用: ¥{total_cost:.6f}")
         lines.append("")
 
         lines.append("## 按模块统计")
         lines.append("")
-        lines.append("| 模块 | 调用次数 | 输入 Token | 输出 Token | 费用(USD) |")
+        lines.append("| 模块 | 调用次数 | 输入 Token | 输出 Token | 费用(CNY) |")
         lines.append("|------|---------|-----------|-----------|----------|")
         for module in sorted(by_module):
             g = by_module[module]
             lines.append(
                 f"| {module} | {g['calls']} | {g['input']:,} | "
-                f"{g['output']:,} | ${g['cost']:.6f} |"
+                f"{g['output']:,} | ¥{g['cost']:.6f} |"
             )
         lines.append("")
 
         lines.append("## 按模型统计")
         lines.append("")
-        lines.append("| 模型 | 提供商 | 调用次数 | 输入 Token | 输出 Token | 费用(USD) |")
+        lines.append("| 模型 | 提供商 | 调用次数 | 输入 Token | 输出 Token | 费用(CNY) |")
         lines.append("|------|--------|---------|-----------|-----------|----------|")
         for (model, provider) in sorted(by_model):
             g = by_model[(model, provider)]
             lines.append(
                 f"| {model} | {provider} | {g['calls']} | {g['input']:,} | "
-                f"{g['output']:,} | ${g['cost']:.6f} |"
+                f"{g['output']:,} | ¥{g['cost']:.6f} |"
             )
         lines.append("")
 
         lines.append("## 按会话类型统计")
         lines.append("")
-        lines.append("| 会话类型 | 调用次数 | 输入 Token | 输出 Token | 费用(USD) |")
+        lines.append("| 会话类型 | 调用次数 | 输入 Token | 输出 Token | 费用(CNY) |")
         lines.append("|---------|---------|-----------|-----------|----------|")
         for kind in sorted(by_conv):
             g = by_conv[kind]
             lines.append(
                 f"| {kind} | {g['calls']} | {g['input']:,} | "
-                f"{g['output']:,} | ${g['cost']:.6f} |"
+                f"{g['output']:,} | ¥{g['cost']:.6f} |"
             )
         lines.append("")
 
