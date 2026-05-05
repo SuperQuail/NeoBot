@@ -101,6 +101,7 @@ class ReplyOrchestrator:
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
         problem_solver_manager: Any = None,
+        cross_chat_manager: Any = None,
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
@@ -124,6 +125,7 @@ class ReplyOrchestrator:
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
         self._problem_solver_manager = problem_solver_manager
+        self._cross_chat_manager = cross_chat_manager
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
@@ -363,6 +365,8 @@ class ReplyOrchestrator:
             await self._drawing_manager.shutdown()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.shutdown()
+        if self._cross_chat_manager is not None:
+            await self._cross_chat_manager.shutdown()
         if self._notification_hub is not None:
             self._notification_hub.clear()
         if self._agent_registry is not None:
@@ -907,7 +911,15 @@ class ReplyOrchestrator:
                 timeout=self._get_io_timeout_seconds(),
             )
             await self._send_with_timeout(event.conversation_ref, [segment])
-            return f"语音消息已发送，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
+            # 记录 bot 自身发送的语音消息到队列
+            self._push_self_sent_message(
+                queue=queue,
+                queue_copy=queue_copy,
+                queue_key=queue_key,
+                conv_ref=event.conversation_ref,
+                text=f"[语音消息:{text}]",
+            )
+            return f"已发送语音消息，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
         async def poke_user_handler(user_id: int) -> str:
             if conv_kind == "group":
@@ -933,6 +945,7 @@ class ReplyOrchestrator:
             caption: str = "",
             reply_to: int | None = None,
             mention: list[int] | None = None,
+            markdown: str = "",
         ) -> None:
             nonlocal reply_sent
             reply_sent = True
@@ -954,6 +967,15 @@ class ReplyOrchestrator:
             # 发送图片（不附带引用，图片单独发送）
             img_seg = [{"type": "image", "data": {"file": f"file:///{path}"}}]
             await self._send_with_timeout(conv_ref, img_seg)
+            # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
+            if markdown.strip():
+                self._push_self_sent_message(
+                    queue=queue,
+                    queue_copy=queue_copy,
+                    queue_key=queue_key,
+                    conv_ref=conv_ref,
+                    text=f"[图片信息:md内容{markdown.strip()}]",
+                )
 
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
@@ -974,6 +996,7 @@ class ReplyOrchestrator:
             drawing_manager=self._drawing_manager,
             scheduled_task_manager=self._scheduled_task_manager,
             problem_solver_manager=self._problem_solver_manager,
+            cross_chat_manager=self._cross_chat_manager,
             notification_hub=self._notification_hub,
             markdown_image_converter=self._markdown_image_converter,
             send_long_reply_handler=send_long_reply_handler,
@@ -1858,6 +1881,61 @@ class ReplyOrchestrator:
             formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
             reply_to_message_id=reply_to_message_id,
         )
+
+    def _push_self_sent_message(
+        self,
+        queue: Any,
+        queue_copy: Any,
+        queue_key: str,
+        conv_ref: ConversationRef,
+        text: str,
+    ) -> None:
+        """将 bot 自身发送的消息记录到消息队列，供后续上下文感知。"""
+        import time
+        from neobot_adapter.model.basic import PostMessageMessagesender
+        from neobot_adapter.model.message import (
+            GroupMessage,
+            MessageSegment,
+            MessageTypeEnum,
+            PrivateMessage,
+        )
+
+        bot_qq = 0
+        bot_name = self._get_bot_name()
+        if self._config is not None:
+            bot_cfg = getattr(self._config, "bot", None)
+            if bot_cfg is not None:
+                account = getattr(bot_cfg, "account", 0)
+                if account:
+                    bot_qq = int(account)
+
+        synthetic_msg_id = -int(time.time() * 1_000_000)
+
+        message_segments = [MessageSegment(type="text", data={"text": text})]
+        sender = PostMessageMessagesender(user_id=bot_qq, nickname=bot_name)
+
+        if conv_ref.kind == "group":
+            msg = GroupMessage(
+                message_type=MessageTypeEnum.group,
+                message_id=synthetic_msg_id,
+                user_id=bot_qq,
+                message=message_segments,
+                raw_message=text,
+                group_id=int(conv_ref.id) if conv_ref.id else 0,
+                sender=sender,
+            )
+        else:
+            msg = PrivateMessage(
+                message_type=MessageTypeEnum.private,
+                message_id=synthetic_msg_id,
+                user_id=bot_qq,
+                message=message_segments,
+                raw_message=text,
+                sender=sender,
+            )
+
+        queue.push(queue_key, msg)
+        queue_copy.push(queue_key, msg)
 
     def _build_reply_messages(
         self,

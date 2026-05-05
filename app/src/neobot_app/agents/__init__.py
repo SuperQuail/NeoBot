@@ -46,6 +46,15 @@ from neobot_app.agents.problem_solver import (
     build_problem_solver_agent,
     build_problem_solver_toolset,
 )
+from neobot_app.agents.cross_chat import (
+    CrossChatAgent,
+    CrossChatAgentConfig,
+    CrossChatManager,
+    CrossChatTask,
+    CrossChatToolExecutor,
+    build_cross_chat_agent,
+    build_cross_chat_toolset,
+)
 
 __all__ = [
     "ArchiveMemoryAgent",
@@ -82,4 +91,11 @@ __all__ = [
     "SolveTask",
     "build_problem_solver_agent",
     "build_problem_solver_toolset",
+    "CrossChatAgent",
+    "CrossChatAgentConfig",
+    "CrossChatManager",
+    "CrossChatTask",
+    "CrossChatToolExecutor",
+    "build_cross_chat_agent",
+    "build_cross_chat_toolset",
 ]

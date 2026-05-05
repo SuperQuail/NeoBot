@@ -15,6 +15,7 @@ from neobot_app.agents import (
     build_archive_memory_agent,
     build_chat_interaction_agent,
     build_creator_agent,
+    build_cross_chat_agent,
     build_image_parse_agent,
     build_problem_solver_agent,
     build_scheduled_task_agent,
@@ -67,6 +68,9 @@ def build_agent_registry(
     logger: Logger | None = None,
     drawing_manager: Any = None,
     problem_solver_manager: Any = None,
+    cross_chat_manager: Any = None,
+    group_message_queue: Any = None,
+    friend_message_queue: Any = None,
 ) -> AgentRegistry:
     registry = AgentRegistry()
     active_logger = logger or NullLogger()
@@ -232,5 +236,34 @@ def build_agent_registry(
                 )
             except Exception as exc:
                 active_logger.warning(f"无法注册 problem solver agent: {exc}")
+
+    # Register cross_chat agent
+    cross_chat_config = getattr(config.agent, "cross_chat", None)
+    if (
+        cross_chat_config is not None
+        and getattr(cross_chat_config, "enabled", True)
+        and adapter is not None
+    ):
+        try:
+            provider = factory("cross_chat")
+        except Exception as exc:
+            active_logger.warning(f"无法创建 cross_chat agent provider: {exc}")
+        else:
+            try:
+                registry.register(
+                    "cross_chat",
+                    build_cross_chat_agent(
+                        provider,
+                        config=cross_chat_config,
+                        logger=active_logger,
+                        manager=cross_chat_manager,
+                        adapter=adapter,
+                        group_message_queue=group_message_queue,
+                        friend_message_queue=friend_message_queue,
+                        bot_config=config,
+                    ),
+                )
+            except Exception as exc:
+                active_logger.warning(f"无法注册 cross_chat agent: {exc}")
 
     return registry

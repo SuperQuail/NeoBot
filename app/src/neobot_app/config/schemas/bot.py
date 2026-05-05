@@ -464,6 +464,10 @@ class AgentModelRouting:
         default=1,
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
+    cross_chat: int = field(
+        default=1,
+        metadata={"description": "cross_chat Agent 使用的模型编号，0-3"},
+    )
 
 
 @dataclass
@@ -850,6 +854,48 @@ class AgentProblemSolver:
 
 
 @dataclass
+class AgentCrossChat:
+    """Cross-Chat Agent 配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用跨聊天通信 Agent"},
+    )
+    model: str = field(
+        default="agent_model_1",
+        metadata={"description": "cross_chat Agent 使用的模型名称"},
+    )
+    timeout_seconds: float = field(
+        default=600.0,
+        metadata={"description": "cross_chat 任务超时时间（秒），默认 10 分钟"},
+    )
+    max_iterations: int = field(
+        default=20,
+        metadata={"description": "最大工具调用循环次数"},
+    )
+    notification_retry_seconds: int = field(
+        default=30,
+        metadata={"description": "通知重试间隔（秒）"},
+    )
+    max_retries: int = field(
+        default=1,
+        metadata={"description": "通知最大重试次数（不含首次）"},
+    )
+    startup_grace_seconds: float = field(
+        default=3.0,
+        metadata={"description": "后台任务启动宽限期（秒）"},
+    )
+    max_tasks_per_pipeline: int = field(
+        default=5,
+        metadata={"description": "每个聊天流最多保留的后台通信任务数"},
+    )
+    max_history_fetch_multiplier: int = field(
+        default=2,
+        metadata={"description": "拉取历史消息时的倍数因子，相对于观察窗口"},
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -858,6 +904,7 @@ class Agent:
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
+    cross_chat: AgentCrossChat = field(default_factory=AgentCrossChat)
 
 
 @dataclass

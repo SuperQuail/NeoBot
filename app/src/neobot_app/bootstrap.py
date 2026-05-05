@@ -263,6 +263,10 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
+    from neobot_app.agents.cross_chat import (
+        CrossChatManager,
+        CrossChatAgentConfig,
+    )
     from neobot_app.agents.problem_solver import (
         ProblemSolverManager,
         ProblemSolverAgentConfig,
@@ -311,6 +315,23 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         else None
     )
 
+    cross_chat_config = CrossChatAgentConfig.from_schema(
+        getattr(config.agent, "cross_chat", None)
+    )
+    cross_chat_manager = (
+        CrossChatManager(
+            config=cross_chat_config,
+            logger=logger_factory.get_logger("app.cross_chat"),
+            notification_hub=notification_hub,
+            adapter=adapter,
+            group_message_queue=group_message_queue,
+            friend_message_queue=friend_message_queue,
+            bot_config=config,
+        )
+        if cross_chat_config.enabled
+        else None
+    )
+
     agent_registry = build_agent_registry(
         config=config,
         archive_memory_service=archive_memory_service,
@@ -323,6 +344,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.agent_registry"),
         drawing_manager=drawing_manager,
         problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
+        group_message_queue=group_message_queue,
+        friend_message_queue=friend_message_queue,
     )
 
     if config.plugins.enabled:
@@ -383,6 +407,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
@@ -393,6 +418,8 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
+    if cross_chat_manager is not None:
+        cross_chat_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -450,6 +477,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
         markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
         report_service=report_service,

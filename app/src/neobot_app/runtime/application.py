@@ -39,6 +39,7 @@ class NeoBotApplication(Generic[T]):
         bot_detector: Any = None,
         scheduled_task_manager: Any = None,
         problem_solver_manager: Any = None,
+        cross_chat_manager: Any = None,
         markdown_image_converter: Any = None,
         plugin_runtime: Any = None,
         report_service: Any = None,
@@ -61,6 +62,7 @@ class NeoBotApplication(Generic[T]):
         self._bot_detector = bot_detector
         self._scheduled_task_manager = scheduled_task_manager
         self._problem_solver_manager = problem_solver_manager
+        self._cross_chat_manager = cross_chat_manager
         self._markdown_image_converter = markdown_image_converter
         self._plugin_runtime = plugin_runtime
         self._report_service = report_service

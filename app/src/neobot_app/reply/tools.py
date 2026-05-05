@@ -57,6 +57,7 @@ class ReplyToolExecutor(ToolExecutor):
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
+        cross_chat_manager: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -89,6 +90,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
+        self._cross_chat_manager = cross_chat_manager
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -651,12 +653,16 @@ class ReplyToolExecutor(ToolExecutor):
             merge_text_with_image=merge_text_with_image,
         )
         if segments:
-            return f"回复已发送，共 {len(segments)} 条"
+            seg_text = "\n---\n".join(segments)
+            return f"已发送 {len(segments)} 条消息：\n{seg_text}"
         if send_original:
-            return "回复原文已发送"
+            display = text.strip()
+            return f"已发送原文：{display[:300]}{'...' if len(display) > 300 else ''}"
+        preview = self._preview_split(text)
+        preview_text = "\n---\n".join(preview.messages)
         if images:
-            return f"回复已发送（{len(images)} 张图片 + 文字）"
-        return "回复已发送"
+            return f"已发送（{len(images)} 张图片 + {len(preview.messages)} 条文字）：\n{preview_text}"
+        return f"已发送 {len(preview.messages)} 条消息：\n{preview_text}"
 
     async def _execute_wait(self, args: dict) -> str:
         if self._wait is None:
@@ -721,14 +727,16 @@ class ReplyToolExecutor(ToolExecutor):
             number = int(args.get("number", -1))
         except (ValueError, TypeError):
             return "错误：number 必须为整数"
+        emoji_entry = None
         if self._emoji is not None:
-            entry = self._emoji.get_entry(number)
-            if entry is None:
+            emoji_entry = self._emoji.get_entry(number)
+            if emoji_entry is None:
                 total = self._emoji.emoji_count
                 return f"错误：表情包编号 {number} 不存在，当前共 {total} 个表情包"
         text = str(args.get("text") or "")
         await handler(number=number, text=text)
-        return f"表情包 #{number} 已发送"
+        entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
+        return f"已发送表情包 {entry_name}"
 
     def _execute_search_custom_emoji(self, args: dict) -> str:
         if self._emoji is None:
@@ -862,6 +870,7 @@ class ReplyToolExecutor(ToolExecutor):
             self._drawing_manager is None
             and self._scheduled_task_manager is None
             and self._problem_solver_manager is None
+            and self._cross_chat_manager is None
             and self._notification_hub is None
         ):
             return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
@@ -875,6 +884,8 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
         if self._problem_solver_manager is not None:
             status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
+        if self._cross_chat_manager is not None:
+            status.update(self._cross_chat_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
         self._logger.info(
@@ -931,13 +942,14 @@ class ReplyToolExecutor(ToolExecutor):
                 caption=caption,
                 reply_to=reply_to,
                 mention=mention,
+                markdown=markdown,
             )
         return json.dumps({
             "ok": True,
             "status": "sent",
             "image_path": str(image_path),
             "caption": caption or None,
-            "message": "Markdown 已转为图片并发送",
+            "message": f"已发送Markdown图片，md内容：{markdown[:300]}{'...' if len(markdown) > 300 else ''}",
         }, ensure_ascii=False)
 
     async def _execute_check_last_drawing(self, args: dict) -> str:
@@ -1033,6 +1045,7 @@ def build_reply_toolset(
     notification_hub: Any = None,
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
+    cross_chat_manager: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -1067,6 +1080,7 @@ def build_reply_toolset(
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
+        cross_chat_manager=cross_chat_manager,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,
