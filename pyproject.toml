@@ -7,6 +7,9 @@ authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
 ]
+dependencies = [
+    "pillowmd>=0.7.3",
+]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true

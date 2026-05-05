@@ -24,9 +24,7 @@ dependencies = [
     "union",
     "lunarcalendar>=0.0.9",
     "pillow>=10.0.0",
-    "markdown>=3.7",
-    "pygments>=2.18",
-    "playwright>=1.48",
+    "pillowmd>=0.7.3",
 ]
 
 [tool.uv.sources]
