@@ -44,19 +44,28 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "cross_chat"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "跨聊天/跨群通信。将当前聊天中的信息或指令传达给另一个聊天（群或私聊）。"
+    "跨聊天/跨群通信与信息查询。将当前聊天中的信息或指令传达给另一个聊天（群或私聊），"
+    "或查询其他聊天的聊天记录并将信息回报给主 Agent。"
     "支持两种调用模式：fire_and_forget（提交后立即返回，后台执行通信任务，不阻塞回复链路）"
     "和 wait（等待通信任务完成并返回结果）。"
     "支持两种通知模式：no_response（目标聊天独立处理，不需要回应）"
     "和 response（目标聊天处理完成后回传结果给源聊天）。"
-    "当需要向其他聊天传递消息、询问意见、转达信息时，必须委托本 agent。"
+    "支持信息查询模式：获取指定聊天的聊天记录、了解其他聊天的讨论内容，"
+    "使用 [mode: wait] 并在 task 中描述要查询的信息，"
+    "示例 task：'[mode: wait] 获取群123456最近在聊什么，告诉我主要内容'。"
+    "当用户明确要求向其他聊天传递消息、询问意见、转达信息、了解其他聊天动态时，必须委托本 agent。"
     "在 task 中使用 [mode: fire_and_forget] 或 [mode: wait] 指定调用模式，"
     "使用 [notify: no_response] 或 [notify: response] 指定通知模式。"
     "示例 task：'[mode: fire_and_forget] [notify: no_response] 告知群123456：本群用户789说hello'"
+    "注意：收到跨聊天消息通知或回复时，应直接使用 send_reply 转达，"
+    "绝对不要再次委托本 agent 处理这些通知和回复。"
 )
 
 _CROSS_CHAT_CONTEXT: ContextVar[str] = ContextVar("cross_chat_context", default="")
 _CROSS_CHAT_RESULT: ContextVar[str] = ContextVar("cross_chat_result", default="")
+_CROSS_CHAT_TARGET_KIND: ContextVar[str] = ContextVar("cross_chat_target_kind", default="")
+_CROSS_CHAT_TARGET_ID: ContextVar[str] = ContextVar("cross_chat_target_id", default="")
+_CROSS_CHAT_REPORT_MODE: ContextVar[bool] = ContextVar("cross_chat_report_mode", default=False)
 
 
 def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
@@ -292,12 +301,36 @@ class CrossChatManager:
             task.result_message = result
             task.status = "completed"
 
-            self._logger.info(
-                "后台跨聊天通信任务完成",
-                task_id=task.task_id,
-                result_length=len(result),
-            )
-            await self._send_notification_to_target(task)
+            is_report = _CROSS_CHAT_REPORT_MODE.get(False)
+
+            if is_report:
+                self._logger.info(
+                    "后台跨聊天信息查询任务完成",
+                    task_id=task.task_id,
+                    result_length=len(result),
+                )
+            else:
+                # 从 send_to_chat 工具调用中获取跨聊天 Agent 确定的实际目标
+                parsed_kind = _CROSS_CHAT_TARGET_KIND.get("")
+                parsed_id = _CROSS_CHAT_TARGET_ID.get("")
+                if parsed_kind:
+                    task.target_kind = parsed_kind
+                if parsed_id:
+                    task.target_id = parsed_id
+
+                # 校验目标信息完整性
+                if not task.target_kind or not task.target_id:
+                    raise RuntimeError(
+                        f"跨聊天通信目标不完整：kind={task.target_kind!r} id={task.target_id!r}"
+                    )
+
+                self._logger.info(
+                    "后台跨聊天通信任务完成",
+                    task_id=task.task_id,
+                    target=f"{task.target_kind}:{task.target_id}",
+                    result_length=len(result),
+                )
+                await self._send_notification_to_target(task)
 
         except asyncio.TimeoutError:
             task.status = "timeout"
@@ -313,38 +346,18 @@ class CrossChatManager:
             )
 
     async def _send_notification_to_target(self, task: CrossChatTask) -> None:
-        source_label = f"{task.source_kind} {task.source_id}"
         target_label = f"{task.target_kind} {task.target_id}"
 
-        notification = (
-            "<这是新的必须要回答的内容>\n"
-            f"跨聊天消息通知\n\n"
-            f"来源：{source_label}\n"
-            f"传达内容：{task.result_message}\n"
-        )
-        if task.notification_mode == "response":
-            notification += (
-                f"\n任务ID：{task.task_id}\n"
-                "此消息需要回复。处理完成后，请使用 delegate 工具委托 cross_chat agent，"
-                f"task 格式为：'[respond to task_id={task.task_id}] 你的回复内容'。\n"
-            )
-        notification += (
-            "\n请自然地将此消息融入对话中，告知聊天对象。"
-            "注意：这是来自其他聊天的跨聊天通信，请以合适的方式转达。\n"
-            "</这是新的必须要回答的内容>"
-        )
+        notification = self._build_notification_text(task)
 
         if self._notification_hub is not None:
-            started = await self._publish_hub_notification(task, notification)
+            await self._publish_hub_notification(task, notification)
             self._logger.info(
                 "跨聊天通知已交给统一通知中心",
                 task_id=task.task_id,
                 target=target_label,
-                started_pipeline=started,
                 notification_mode=task.notification_mode,
             )
-            if not started and not task.notified and task.notification_count == 0:
-                asyncio.create_task(self._retry_notification(task))
             return
 
         self._logger.warning("通知推送失败：notification_hub 为空", task_id=task.task_id)
@@ -377,30 +390,33 @@ class CrossChatManager:
         except Exception:
             return False
 
-    async def _retry_notification(self, task: CrossChatTask) -> None:
-        max_attempts = self._config.max_retries + 1
-        while task.notification_count < max_attempts and not task.notified:
-            await asyncio.sleep(self._config.notification_retry_seconds)
-            if task.notified:
-                break
-            task.notification_count += 1
-            if task.notified:
-                break
-            self._logger.info(
-                "跨聊天通知重试",
-                task_id=task.task_id,
-                attempt=task.notification_count,
-                max_attempts=max_attempts,
-            )
-            retry_text = (
+    def _build_notification_text(self, task: CrossChatTask) -> str:
+        source_label = f"{task.source_kind} {task.source_id}"
+
+        if task.notification_mode == "response":
+            return (
                 "<这是新的必须要回答的内容>\n"
-                f"跨聊天消息（重试）\n"
+                f"跨聊天消息通知（需要回复）\n\n"
+                f"来源：{source_label}\n"
+                f"传达内容：{task.result_message}\n\n"
                 f"任务ID：{task.task_id}\n"
-                f"传达内容：{task.result_message}\n"
+                "此消息需要回复。处理完成后，请使用 delegate 工具委托 cross_chat agent，"
+                f"task 格式为：'[respond to task_id={task.task_id}] 你的回复内容'。\n"
+                "注意：仅用于发送回复时使用上述 delegate 格式，"
+                "转达消息本身请直接使用 send_reply，不要另外创建新的跨聊天任务。\n"
                 "</这是新的必须要回答的内容>"
             )
-            if self._notification_hub is not None:
-                await self._publish_hub_notification(task, retry_text)
+        return (
+            "<这是新的必须要回答的内容>\n"
+            f"跨聊天消息通知\n\n"
+            f"来源：{source_label}\n"
+            f"传达内容：{task.result_message}\n\n"
+            "请将此消息自然地向当前聊天成员转达。"
+            "这是来自其他聊天的消息，你只需作为传话人使用 send_reply 转述即可。"
+            "严禁委托 cross_chat 或创建新的跨聊天任务来处理此消息"
+            "（此消息本身就是跨聊天通信的结果，不需要再次跨聊天）。\n"
+            "</这是新的必须要回答的内容>"
+        )
 
     def register_response(self, task_id: str, response_content: str) -> None:
         """Register a response from a target chat, unblocking any waiters."""
@@ -436,7 +452,9 @@ class CrossChatManager:
             f"你之前委托的跨聊天通信任务（{task_id}）收到了回复。\n"
             f"目标：{target_label}\n"
             f"回复内容：{response_content}\n\n"
-            "请自然地将此回复告知用户。\n"
+            "请直接使用 send_reply 将此回复告知用户。"
+            "严禁委托 cross_chat 或创建新的跨聊天任务来处理此回复"
+            "（这是已有跨聊天任务的回复，不需要再次跨聊天）。\n"
             "</这是新的必须要回答的内容>"
         )
 
@@ -552,6 +570,24 @@ class CrossChatToolExecutor(ToolExecutor):
                     "required": ["target_kind", "target_id", "message"],
                 },
             ),
+            _tool_def(
+                "report_back",
+                "将查询到的信息回报给主 Agent（不发送给其他聊天）。"
+                "当任务只是查询信息（如获取聊天记录、了解讨论内容）"
+                "而不需要向目标聊天传达消息时使用。"
+                "report 内容应包含从聊天记录中提取的关键信息和分析结果。"
+                "调用后任务视为完成。",
+                {
+                    "properties": {
+                        "report": {
+                            "type": "string",
+                            "description": "回报给主 Agent 的信息内容，包含查询到的聊天记录摘要、"
+                            "讨论主题、关键信息等。",
+                        },
+                    },
+                    "required": ["report"],
+                },
+            ),
         ]
 
     async def execute(self, name: str, args: dict) -> str:
@@ -561,6 +597,8 @@ class CrossChatToolExecutor(ToolExecutor):
             return await self._execute_fetch_chat_messages(args)
         if name == "send_to_chat":
             return self._execute_send_to_chat(args)
+        if name == "report_back":
+            return self._execute_report_back(args)
         return f"未知工具: {name}"
 
     async def _execute_get_chat_context(self, args: dict) -> str:
@@ -663,6 +701,9 @@ class CrossChatToolExecutor(ToolExecutor):
             return "错误：message 不能为空"
 
         _CROSS_CHAT_RESULT.set(message)
+        _CROSS_CHAT_TARGET_KIND.set(target_kind)
+        _CROSS_CHAT_TARGET_ID.set(target_id)
+        _CROSS_CHAT_REPORT_MODE.set(False)
         return _json({
             "ok": True,
             "status": "submitted",
@@ -670,16 +711,37 @@ class CrossChatToolExecutor(ToolExecutor):
             "message_preview": message[:200],
         })
 
+    def _execute_report_back(self, args: dict) -> str:
+        report = str(args.get("report") or "").strip()
+
+        if not report:
+            return "错误：report 不能为空"
+
+        _CROSS_CHAT_RESULT.set(report)
+        _CROSS_CHAT_REPORT_MODE.set(True)
+        return _json({
+            "ok": True,
+            "status": "reported",
+            "report_preview": report[:200],
+        })
+
 
 def _build_system_prompt(config: CrossChatAgentConfig | None) -> str:
     cfg = config or CrossChatAgentConfig()
     return (
-        "你是跨聊天通信 Agent (cross_chat)，负责在不同聊天（群聊/私聊）之间传递信息。\n\n"
-        "工作流程：\n"
+        "你是跨聊天通信 Agent (cross_chat)，负责在不同聊天（群聊/私聊）之间传递信息，"
+        "以及查询其他聊天的记录并回报。\n\n"
+        "工作模式：\n\n"
+        "A) 跨聊天通信模式（发送消息到目标聊天）：\n"
         "1. 使用 get_chat_context 获取源聊天的上下文，了解当前正在讨论什么\n"
         "2. 如需了解目标聊天的近期对话以判断传达时机，使用 fetch_chat_messages 拉取目标聊天消息\n"
         "3. 结合源聊天上下文和目标聊天上下文，确定要传达的内容和方式\n"
         "4. 使用 send_to_chat 提交你要传达给目标聊天的消息\n\n"
+        "B) 信息查询模式（获取聊天记录回报主 Agent）：\n"
+        "1. 使用 fetch_chat_messages 拉取指定聊天的消息记录\n"
+        "2. 分析聊天记录，提取关键信息：讨论主题、重要消息、用户动态等\n"
+        "3. 使用 report_back 将分析结果回报给主 Agent\n"
+        "4. 如果同时需要了解源聊天上下文，可使用 get_chat_context\n\n"
         "通信原则：\n"
         "- 准确转达源聊天的核心信息，不添油加醋，不歪曲原意\n"
         "- 考虑目标聊天的上下文，判断传达时机是否合适\n"
@@ -687,8 +749,14 @@ def _build_system_prompt(config: CrossChatAgentConfig | None) -> str:
         "- 传达格式应自然，像是有人在替别人传话，包含必要的背景信息\n"
         "- 如果源聊天信息不足以确定要传达什么，使用 get_chat_context 获取更多上下文\n"
         "- fetch_chat_messages 最多可拉取 2 倍观察窗口的历史消息，如仍不足应基于已有信息判断\n\n"
+        "查询回报原则：\n"
+        "- 根据任务描述判断是通信模式还是查询模式：涉及查询、了解、查看聊天的使用查询模式\n"
+        "- 查询回报时应提取关键信息，结构化地呈现，让主 Agent 可以直接使用\n"
+        "- 如果查询不到有效信息，在 report 中如实说明\n\n"
         "格式要求：\n"
-        "- 必须使用 send_to_chat 提交最终要传达的消息\n"
+        "- 通信模式必须使用 send_to_chat 提交最终要传达的消息\n"
+        "- 查询模式必须使用 report_back 提交回报内容\n"
+        "- 一个任务中只能使用 send_to_chat 或 report_back 之一，不能两者都使用\n"
         "- send_to_chat 的 message 参数应为自然语言，描述要向目标聊天传达的内容\n"
         f"- 超时时间: {cfg.timeout_seconds} 秒\n"
     )
@@ -888,9 +956,16 @@ class CrossChatAgent:
 
             result = _CROSS_CHAT_RESULT.get("")
             final_messages = list(result_state.get("messages", []))
+            is_report = _CROSS_CHAT_REPORT_MODE.get(False)
 
-            if result and self._manager is not None:
-                target_kind, target_id = self._parse_target_from_result(result)
+            if result and is_report:
+                final_messages.append({
+                    "role": "assistant",
+                    "content": result,
+                })
+            elif result and self._manager is not None:
+                target_kind = _CROSS_CHAT_TARGET_KIND.get("")
+                target_id = _CROSS_CHAT_TARGET_ID.get("")
                 task = CrossChatTask(
                     task_id=f"xchat_{uuid4().hex[:12]}",
                     pipeline_key=f"{source_kind}:{source_id}",
@@ -969,15 +1044,6 @@ class CrossChatAgent:
         if m:
             return m.group(1), m.group(2)
         return "group", ""
-
-    @staticmethod
-    def _parse_target_from_result(result: str) -> tuple[str, str]:
-        import re
-        m = re.search(r"target_kind[:\s]*(\w+)", result, re.IGNORECASE)
-        target_kind = m.group(1) if m else ""
-        m = re.search(r"target_id[:\s]*(\S+)", result, re.IGNORECASE)
-        target_id = m.group(1) if m else ""
-        return target_kind, target_id
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token_ctx = _CROSS_CHAT_CONTEXT.set(

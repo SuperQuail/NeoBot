@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 EXPOSED_TO_MAIN_AGENT_NAME = "image_parse"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "图片内容解析。按指定需求解析聊天中的图片内容；可使用主Agent传入的聊天上下文和消息编号映射自动定位“这张图/刚才那张图”。"
+    "支持 image_path（本地图片路径）、image_url（HTTP/data/file URL）、image_base64（base64编码）。"
     "仅负责解析回传结果，不保存、不导入、不管理图库/表情包。"
     "如果上下文仍不足以确定图片，会要求主Agent向用户询问更明确的图片或消息编号。"
     "头像解析委托 memory（它内部调用本agent），图片入库委托 creator。"
@@ -215,7 +216,11 @@ class ImageParseAgent:
             "解析需求",
         )
         if not requirement:
-            requirement = head.strip() or DEFAULT_REQUIREMENT
+            requirement = self._extract_labeled_value(
+                head, ("requirement", "request", "prompt", "需求", "解析需求")
+            )
+        if not requirement:
+            requirement = self._clean_requirement_text(head) or DEFAULT_REQUIREMENT
 
         image_url = self._first_text(data, "image_url", "url")
         image_path = self._first_text(data, "image_path", "path", "file_path")
@@ -237,6 +242,9 @@ class ImageParseAgent:
             message_number = self._extract_message_number_phrase(head)
         if image_index == 1:
             image_index = self._extract_labeled_int(head, ("image_index", "图片序号")) or self._extract_image_index(head) or 1
+
+        if not any([image_url, image_path, image_base64, message_id is not None, message_number is not None]):
+            image_path = self._extract_filesystem_path(head)
 
         return ImageParseRequest(
             requirement=requirement,
@@ -291,10 +299,11 @@ class ImageParseAgent:
             return ref
         if ref.startswith("base64://"):
             return self._normalize_base64_image_url(ref[9:], mime_type)
-        if ref.startswith("file:///"):
-            return self._local_image_data_url(ref[8:])
         if ref.startswith("file://"):
-            return self._local_image_data_url(ref[7:])
+            local_ref = ref[7:]  # strip 'file://'
+            if local_ref.startswith("//"):
+                local_ref = local_ref[2:]  # strip authority '//' (e.g. file:///home/...)
+            return self._local_image_data_url(local_ref)
         if ref.startswith(("http://", "https://")):
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
                 response = await client.get(ref)
@@ -317,9 +326,15 @@ class ImageParseAgent:
                     return await self._image_ref_to_data_url(img_ref, mime_type)
         raise LookupError("无法读取图片内容")
 
-    def _local_image_data_url(self, image_path: str) -> str:
-        prepared = prepare_local_image(image_path)
-        return self._bytes_data_url(prepared.image_bytes, prepared.mime_type)
+    @staticmethod
+    def _local_image_data_url(image_path: str) -> str:
+        path = image_path.strip()
+        if path.startswith("file://"):
+            path = path[7:]  # strip 'file://'
+            if path.startswith("//"):
+                path = path[2:]  # strip authority '//'
+        prepared = prepare_local_image(path)
+        return ImageParseAgent._bytes_data_url(prepared.image_bytes, prepared.mime_type)
 
     @staticmethod
     def _bytes_data_url(image_bytes: bytes, mime_type: str | None) -> str:
@@ -431,6 +446,37 @@ class ImageParseAgent:
             match = re.search(pattern, text)
             if match:
                 return int(match.group(1))
+        return None
+
+    _PARAM_LABELS = (
+        "image_path", "image_url", "image_base64", "message_id",
+        "message_number", "image_index", "mime_type", "mime",
+        "requirement", "request", "prompt", "需求", "解析需求",
+        "path", "file_path", "url", "base64", "b64", "本地路径",
+    )
+
+    _PARAM_LINE_RE = re.compile(
+        r"^\s*(?:" + "|".join(re.escape(l) for l in _PARAM_LABELS) + r")\s*[:=：].*$",
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    _FILESYSTEM_PATH_RE = re.compile(
+        r"(?:[A-Za-z]:[\\/][^\s<>:|?*]+|/(?:[^\s<>:|?*]+/)*[^\s<>:|?*]+|~/[^\s<>:|?*]+)"
+    )
+
+    @staticmethod
+    def _clean_requirement_text(text: str) -> str:
+        return ImageParseAgent._PARAM_LINE_RE.sub("", text).strip()
+
+    @staticmethod
+    def _extract_filesystem_path(text: str) -> str | None:
+        match = ImageParseAgent._FILESYSTEM_PATH_RE.search(text)
+        if not match:
+            return None
+        candidate = match.group(0).strip()
+        path = Path(candidate).expanduser()
+        if path.exists() and path.is_file():
+            return candidate
         return None
 
     @staticmethod
