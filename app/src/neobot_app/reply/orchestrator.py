@@ -771,10 +771,12 @@ class ReplyOrchestrator:
         messages: list[dict] = [{"role": "system", "content": prompt}]
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
+            _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
+            _bg_id = event.conversation_ref.id if event.conversation_ref else ""
             self._logger.info(
                 "[CROSS_CHAT_DIAG] orchestrator 注入后台通知（新管线初始消息）",
                 event_id=event.event_id,
-                pipeline_key=f"{conv_kind}:{conv_id}",
+                pipeline_key=f"{_bg_kind}:{_bg_id}",
                 notification_preview=event.background_content[:120],
             )
             self._record_debug(

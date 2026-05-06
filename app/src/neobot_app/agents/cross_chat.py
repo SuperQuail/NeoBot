@@ -445,7 +445,7 @@ class CrossChatManager:
             return False
 
     def _build_notification_text(self, task: CrossChatTask) -> str:
-        source_label = f"{task.source_kind} {task.source_id}"
+        source_label = self._build_source_label(task)
 
         if task.notification_mode == "response":
             return (
@@ -471,6 +471,70 @@ class CrossChatManager:
             "（此消息本身就是跨聊天通信的结果，不需要再次跨聊天）。\n"
             "</这是新的必须要回答的内容>"
         )
+
+    def _build_source_label(self, task: CrossChatTask) -> str:
+        """从 delegate_context 中解析中文可读的来源标签。
+
+        delegate_context 格式示例：
+          [当前聊天环境]
+          会话类型：群聊
+          群号：123456
+          消息发送者：唐天（QQ：789）
+
+          或私聊：
+          [当前聊天环境]
+          会话类型：私聊
+          聊天对象：唐天（QQ：789）
+        """
+        import re
+
+        ctx = task.delegate_context or ""
+
+        # 解析会话类型
+        chat_type = ""
+        m = re.search(r"会话类型：(\S+)", ctx)
+        if m:
+            ct = m.group(1)
+            chat_type = "群聊" if "群" in ct else "私聊"
+
+        # 解析群号 / QQ号
+        chat_id = ""
+        m = re.search(r"群号：(\d+)", ctx)
+        if m:
+            chat_id = m.group(1)
+        if not chat_id:
+            m = re.search(r"聊天对象：.*QQ：(\d+)", ctx)
+            if m:
+                chat_id = m.group(1)
+        if not chat_id:
+            chat_id = task.source_id
+
+        # 解析发送者 / 聊天对象
+        sender_info = ""
+        m = re.search(r"消息发送者：(.+)", ctx)
+        if m:
+            sender_info = m.group(1).strip()
+        else:
+            m = re.search(r"聊天对象：(.+)", ctx)
+            if m:
+                sender_info = m.group(1).strip()
+
+        # 构建中文标签
+        parts: list[str] = []
+        if chat_type == "群聊":
+            parts.append(f"群聊（群号：{chat_id}）")
+        elif chat_type == "私聊":
+            parts.append(f"QQ私聊（QQ号：{chat_id}）")
+        else:
+            # fallback: 兼容旧格式 [当前会话] kind=xxx id=xxx
+            kind_map = {"group": "群聊", "private": "私聊"}
+            kind_cn = kind_map.get(task.source_kind, task.source_kind)
+            parts.append(f"{kind_cn}（ID：{task.source_id}）")
+
+        if sender_info:
+            parts.append(f"发言人：{sender_info}")
+
+        return "，".join(parts)
 
     def register_response(self, task_id: str, response_content: str) -> None:
         """Register a response from a target chat, unblocking any waiters."""
@@ -499,12 +563,13 @@ class CrossChatManager:
             self._logger.warning("send_response_to_source: 任务不存在", task_id=task_id)
             return False
 
-        target_label = f"{task.target_kind} {task.target_id}"
+        kind_cn = "群聊" if task.target_kind == "group" else "私聊"
+        id_label = "群号" if task.target_kind == "group" else "QQ号"
+        target_label = f"{kind_cn}（{id_label}：{task.target_id}）"
         notification = (
             "<这是新的必须要回答的内容>\n"
             f"跨聊天回复通知\n\n"
-            f"你之前委托的跨聊天通信任务（{task_id}）收到了回复。\n"
-            f"目标：{target_label}\n"
+            f"你之前委托的跨聊天通信任务（{task_id}）收到了来自 {target_label} 的回复。\n"
             f"回复内容：{response_content}\n\n"
             "请直接使用 send_reply 将此回复告知用户。"
             "严禁委托 cross_chat 或创建新的跨聊天任务来处理此回复"
