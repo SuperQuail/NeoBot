@@ -32,5 +32,9 @@ CONFIG_BACKUP_DIR = DATA_DIR / "config_backup"
 SRC_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 # 确保目录存在
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-CONFIG_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+for dir_path in (DATA_DIR, CONFIG_BACKUP_DIR):
+    if dir_path.is_file():
+        raise FileExistsError(
+            f"无法创建目录 '{dir_path}'：该路径已作为文件存在，请手动删除该文件后重试。"
+        )
+    dir_path.mkdir(parents=True, exist_ok=True)

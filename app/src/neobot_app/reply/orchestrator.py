@@ -19,6 +19,7 @@ from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     get_usage_tracker,
 )
+from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -280,6 +281,13 @@ class ReplyOrchestrator:
 
         queue_key = str(conversation_id)
         pipeline_key = f"{kind}:{queue_key}"
+
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] orchestrator.start_background_reply() 被调用",
+            pipeline_key=pipeline_key,
+            manager_name=manager_name,
+            content_preview=content[:120],
+        )
 
         existing = self._active_pipelines.get(pipeline_key)
         if existing is not None and existing.done():
@@ -764,9 +772,10 @@ class ReplyOrchestrator:
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             self._logger.info(
-                "注入后台通知（新管线初始消息）",
+                "[CROSS_CHAT_DIAG] orchestrator 注入后台通知（新管线初始消息）",
                 event_id=event.event_id,
-                queue_key=queue_key,
+                pipeline_key=f"{conv_kind}:{conv_id}",
+                notification_preview=event.background_content[:120],
             )
             self._record_debug(
                 "background_notification_injected_initial",
@@ -1069,6 +1078,8 @@ class ReplyOrchestrator:
                 timeout_seconds=silent_timeout,
             )
 
+        _heartbeat_token = SILENT_HEARTBEAT.set(reset_silent_deadline)
+
         while True:
             reply_sent = False
             cancelled = False
@@ -1083,9 +1094,11 @@ class ReplyOrchestrator:
                 if notification_text:
                     messages.append({"role": "user", "content": notification_text})
                     self._logger.info(
-                        "注入后台通知",
+                        "[CROSS_CHAT_DIAG] orchestrator 注入通知到消息列表",
                         event_id=event.event_id,
                         pipeline_key=pipeline_key,
+                        iteration=iteration,
+                        notification_preview=notification_text[:120],
                     )
                     self._record_debug(
                         "background_notification_injected",
@@ -1398,6 +1411,8 @@ class ReplyOrchestrator:
                         injected_text=new_text,
                     )
 
+        SILENT_HEARTBEAT.reset(_heartbeat_token)
+
         if event.state == ReplyState.GENERATING and not event.is_terminal:
             try:
                 event.transition(ReplyState.COMPLETED)
@@ -1470,6 +1485,12 @@ class ReplyOrchestrator:
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if notification:
+                    self._logger.info(
+                        "[CROSS_CHAT_DIAG] orchestrator._poll_background_notifications 轮询到通知",
+                        pipeline_key=pipeline_key,
+                        source=notification.source,
+                        preview=notification.content[:120],
+                    )
                     return notification.content
                 return None
 

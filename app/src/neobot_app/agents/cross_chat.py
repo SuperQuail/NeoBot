@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import traceback
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -87,6 +89,21 @@ def _default_resolver(
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _safe_call_stack(skip: int = 1, max_frames: int = 10) -> str:
+    """Return a safe call-stack summary string, resilient to ReadError on Windows."""
+    frames: list[str] = []
+    try:
+        for f in traceback.extract_stack()[: -skip][-max_frames:]:
+            try:
+                fname = f.filename.split(os.sep)[-1] if os.sep in f.filename else f.filename.split("/")[-1]
+                frames.append(f"{fname}:{f.lineno}/{f.name}")
+            except Exception:
+                frames.append("<?>:?")
+    except Exception:
+        pass
+    return " <- ".join(reversed(frames)) if frames else "(unavailable)"
 
 
 class CrossChatAgentConfig:
@@ -251,6 +268,16 @@ class CrossChatManager:
         self._tasks[task.task_id] = task
         self._enforce_task_limit(task.pipeline_key)
 
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] submit() 创建后台任务",
+            task_id=task.task_id,
+            pipeline_key=task.pipeline_key,
+            target=f"{task.target_kind}:{task.target_id}",
+            call_mode=task.call_mode,
+            notification_mode=task.notification_mode,
+            call_stack=_safe_call_stack(skip=1, max_frames=8),
+        )
+
         bg = asyncio.create_task(self._run_cross_chat(task))
         bg.add_done_callback(lambda _: None)
 
@@ -275,6 +302,11 @@ class CrossChatManager:
         })
 
     async def _run_cross_chat(self, task: CrossChatTask) -> None:
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] _run_cross_chat() 开始执行",
+            task_id=task.task_id,
+            is_report=_CROSS_CHAT_REPORT_MODE.get(False),
+        )
         try:
             state: State = {
                 "messages": [{"role": "user", "content": task.instruction}],
@@ -305,7 +337,7 @@ class CrossChatManager:
 
             if is_report:
                 self._logger.info(
-                    "后台跨聊天信息查询任务完成",
+                    "[CROSS_CHAT_DIAG] _run_cross_chat() 查询模式完成，跳过通知",
                     task_id=task.task_id,
                     result_length=len(result),
                 )
@@ -325,10 +357,10 @@ class CrossChatManager:
                     )
 
                 self._logger.info(
-                    "后台跨聊天通信任务完成",
+                    "[CROSS_CHAT_DIAG] _run_cross_chat() 即将调用 _send_notification_to_target",
                     task_id=task.task_id,
                     target=f"{task.target_kind}:{task.target_id}",
-                    result_length=len(result),
+                    notification_count_before=task.notification_count,
                 )
                 await self._send_notification_to_target(task)
 
@@ -348,15 +380,26 @@ class CrossChatManager:
     async def _send_notification_to_target(self, task: CrossChatTask) -> None:
         target_label = f"{task.target_kind} {task.target_id}"
 
+        task.notification_count += 1
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] _send_notification_to_target() 被调用",
+            task_id=task.task_id,
+            notification_count=task.notification_count,
+            target=target_label,
+            notification_mode=task.notification_mode,
+            already_notified=task.notified,
+            call_stack=_safe_call_stack(skip=1, max_frames=10),
+        )
+
         notification = self._build_notification_text(task)
 
         if self._notification_hub is not None:
             await self._publish_hub_notification(task, notification)
             self._logger.info(
-                "跨聊天通知已交给统一通知中心",
+                "[CROSS_CHAT_DIAG] _send_notification_to_target() publish 完成",
                 task_id=task.task_id,
                 target=target_label,
-                notification_mode=task.notification_mode,
+                notification_count=task.notification_count,
             )
             return
 
@@ -370,7 +413,18 @@ class CrossChatManager:
 
         def _on_consumed(n: Any) -> None:
             task.notified = True
+            self._logger.info(
+                "[CROSS_CHAT_DIAG] 通知 on_consumed 回调触发",
+                task_id=task.task_id,
+            )
 
+        pipeline_key = self._pipeline_key(task.target_kind, task.target_id)
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] _publish_hub_notification() 即将调用 hub.publish()",
+            task_id=task.task_id,
+            pipeline_key=pipeline_key,
+            notification_preview=notification[:120],
+        )
         try:
             return await self._notification_hub.publish(
                 source="cross_chat",
@@ -801,6 +855,7 @@ class CrossChatAgent:
         toolset: Toolset | None = None,
     ) -> None:
         cfg = config or CrossChatAgentConfig()
+        self._logger = logger or NullLogger()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self._manager = manager
         self._config = cfg
@@ -871,6 +926,16 @@ class CrossChatAgent:
         instruction = str(last_msg) if last_msg else ""
 
         clean_instr, call_mode, notif_mode, target_kind, target_id = self._parse_modes(instruction)
+
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] CrossChatAgent.invoke() 入口",
+            call_mode=call_mode,
+            notif_mode=notif_mode,
+            target_kind=target_kind,
+            target_id=target_id,
+            instruction_preview=clean_instr[:120] if clean_instr else "(empty)",
+            is_response="respond to task_id=" in instruction.lower(),
+        )
 
         if "respond to task_id=" in instruction.lower():
             return await self._handle_response(state, instruction)
@@ -1088,5 +1153,5 @@ def build_cross_chat_agent(
         provider=provider, config=cfg, logger=logger, manager=manager, toolset=toolset,
     )
     if manager is not None:
-        manager.set_agent(agent)
+        manager.set_agent(agent._agent)
     return agent

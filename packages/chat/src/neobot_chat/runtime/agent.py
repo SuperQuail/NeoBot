@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import AsyncIterator, Callable
+from contextvars import ContextVar
 from pathlib import Path
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+
+SILENT_HEARTBEAT: ContextVar[Callable[[], None] | None] = ContextVar(
+    "silent_heartbeat", default=None
+)
 
 from neobot_chat.providers.base import Provider
 from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
@@ -78,10 +83,13 @@ class Agent:
 
     async def invoke(self, state: State) -> State:
         state, tools, messages = self._prepare(state)
+        heartbeat = SILENT_HEARTBEAT.get()
 
         for i in range(self.max_iterations):
             self._emit("llm_start", {"iteration": i})
             response = await self.provider.chat(messages, tools=tools)
+            if heartbeat:
+                heartbeat()
             messages.append(response)
 
             tool_calls = response.get("tool_calls")
@@ -101,12 +109,13 @@ class Agent:
 
             if not tool_calls:
                 break
-            await self._run_tools(tool_calls, messages)
+            await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
 
         return {**state, "messages": messages}
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         state, tools, messages = self._prepare(state)
+        heartbeat = SILENT_HEARTBEAT.get()
 
         for i in range(self.max_iterations):
             self._emit("llm_start", {"iteration": i, "stream": True})
@@ -124,6 +133,8 @@ class Agent:
 
             if response is None:
                 break
+            if heartbeat:
+                heartbeat()
             messages.append(response)
 
             tool_calls = response.get("tool_calls")
@@ -143,7 +154,7 @@ class Agent:
 
             if not tool_calls:
                 break
-            await self._run_tools(tool_calls, messages)
+            await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
 
         yield ChatChunk(state={**state, "messages": messages})
 
@@ -249,7 +260,12 @@ class Agent:
             result = await result
         return bool(result)
 
-    async def _run_tools(self, tool_calls: list[ToolCall], messages: list[Message]) -> None:
+    async def _run_tools(
+        self,
+        tool_calls: list[ToolCall],
+        messages: list[Message],
+        heartbeat: Callable[[], None] | None = None,
+    ) -> None:
         for call in tool_calls:
             name = call["function"]["name"]
             raw = call["function"]["arguments"]
@@ -265,6 +281,8 @@ class Agent:
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 continue
 
+            if heartbeat:
+                heartbeat()
             self._emit("tool_start", {"name": name, "args": args})
             try:
                 result = await self.toolset.executor.execute(name, args)

@@ -31,6 +31,8 @@ def get_data_dir() -> Path:
         exe_dir = Path(sys.executable).parent
         data_dir = exe_dir / "data"
         try:
+            if data_dir.is_file():
+                raise FileExistsError(f"'{data_dir}' 已作为文件存在")
             data_dir.mkdir(parents=True, exist_ok=True)
             test_file = data_dir / ".write_test"
             test_file.touch()
