@@ -27,11 +27,14 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "image_parse"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "图片内容解析。按指定需求解析聊天中的图片内容；可使用主Agent传入的聊天上下文和消息编号映射自动定位“这张图/刚才那张图”。"
+    "图片内容解析。按指定需求解析聊天中的图片内容；可使用主Agent传入的聊天上下文和消息编号映射自动定位这张图/刚才那张图。"
     "支持 image_path（本地图片路径）、image_url（HTTP/data/file URL）、image_base64（base64编码）。"
     "仅负责解析回传结果，不保存、不导入、不管理图库/表情包。"
     "如果上下文仍不足以确定图片，会要求主Agent向用户询问更明确的图片或消息编号。"
     "头像解析委托 memory（它内部调用本agent），图片入库委托 creator。"
+)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "图片内容解析，仅解析不管理，头像委托memory、入库委托creator"
 )
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent

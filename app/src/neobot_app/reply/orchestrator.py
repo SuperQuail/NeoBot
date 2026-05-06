@@ -106,6 +106,7 @@ class ReplyOrchestrator:
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
+        tool_package_manager: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -130,6 +131,7 @@ class ReplyOrchestrator:
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
+        self._tool_package_manager = tool_package_manager
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -908,8 +910,8 @@ class ReplyOrchestrator:
 
             results = search_emoji(keyword)
             if not results:
-                return f"未找到与“{keyword}”相关的QQ表情"
-            lines = [f"搜索“{keyword}”的结果："]
+                return f"未找到与「{keyword}」相关的QQ表情"
+            lines = [f"搜索「{keyword}」的结果："]
             for item in results:
                 lines.append(f"  ID {item['id']}: {item['name']} ({item['hint']})")
             return "\n".join(lines)
@@ -997,6 +999,7 @@ class ReplyOrchestrator:
             send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
             agent_registry=self._agent_registry,
+            tool_package_manager=self._tool_package_manager,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
             search_emoji_handler=search_emoji_handler,

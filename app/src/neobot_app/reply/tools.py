@@ -44,6 +44,7 @@ class ReplyToolExecutor(ToolExecutor):
         send_emoji_handler: Any = None,
         emoji_service: Any = None,
         agent_registry: AgentRegistry | None = None,
+        tool_package_manager: Any = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
         search_emoji_handler: Any = None,
@@ -77,6 +78,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
         self._agent_registry = agent_registry
+        self._tool_package_manager = tool_package_manager
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler
         self._search_emoji = search_emoji_handler
@@ -191,10 +193,11 @@ class ReplyToolExecutor(ToolExecutor):
             tools.append(
                 _tool_def(
                     "send_long_reply",
-                    "当回复内容过长无法通过 send_reply 正常发送时调用。"
-                    "将长文本以 Markdown 格式提供，系统会自动将其转换为图片发送。"
+                    "发送 Markdown 格式的长回复。这是唯一允许使用 Markdown 格式的发送方式。"
+                    "将 Markdown 内容提供后，系统会自动将其转换为图片发送。"
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
-                    "解题结果通知中也应使用此工具发送 Markdown 解答。"
+                    "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
+                    "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
                     "调用后本轮回复视为完成。",
                     {
                         "properties": {
@@ -345,7 +348,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "properties": {
                             "keyword": {
                                 "type": "string",
-                                "description": "搜索关键词，如“猪”、“赞”、“笑哭”等。",
+                                "description": "搜索关键词，如「猪」、「赞」、「笑哭」等。",
                             },
                         },
                         "required": ["keyword"],
@@ -390,13 +393,14 @@ class ReplyToolExecutor(ToolExecutor):
                 [
                     _tool_def(
                         "list_agents",
-                        "列出可用的子代理，或查看某个子代理的简介。",
+                        "列出可用的子代理及其完整描述，或查看某个子代理的详细说明。"
+                        "不指定 agent 时列出全部子代理的完整描述；指定 agent 时显示该子代理的详细功能说明。",
                         {
                             "properties": {
                                 "agent": {
                                     "type": "string",
                                     "enum": self._agent_registry.names,
-                                    "description": "可选，子代理名称。",
+                                    "description": "可选，子代理名称。不填则列出全部子代理。",
                                 },
                             },
                             "required": [],
@@ -409,7 +413,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "需要同一个子代理持续处理时传同一个 session_id。"
                         "子代理可按需通过自己的工具读取当前聊天上下文。"
                         "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
-                        "即使用户只说“这张图/刚才那张图/加到表情包”也直接委托 creator，不要先委托 image_parse。"
+                        "即使用户只说「这张图/刚才那张图/加到表情包」也直接委托 creator，不要先委托 image_parse。"
                         "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
                         "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。"
                         "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
@@ -464,6 +468,24 @@ class ReplyToolExecutor(ToolExecutor):
                         },
                     ),
                 ]
+            )
+        if self._tool_package_manager is not None:
+            tools.append(
+                _tool_def(
+                    "list_tools",
+                    "列出工具包信息。无参时列出全部工具包（含锁定状态和简短描述）；"
+                    "指定 package_id 时显示该工具包的详细功能说明和包含的工具列表。"
+                    "请在需要了解有哪些工具包可用、或者需要查看某个工具包的能力范围时使用。",
+                    {
+                        "properties": {
+                            "package_id": {
+                                "type": "string",
+                                "description": "可选，工具包 ID。不填则列出全部工具包。",
+                            },
+                        },
+                        "required": [],
+                    },
+                )
             )
         if (
             self._drawing_manager is not None
@@ -544,6 +566,8 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_poke_user(args)
         if name == "list_agents":
             return self._execute_list_agents(args)
+        if name == "list_tools":
+            return self._execute_list_tools(args)
         if name == "delegate":
             return await self._execute_delegate(args)
         if name == "check_background_tasks":
@@ -812,6 +836,12 @@ class ReplyToolExecutor(ToolExecutor):
             return self._agent_registry.list_agents()
         return self._agent_registry.list_agents(str(agent))
 
+    def _execute_list_tools(self, args: dict) -> str:
+        if self._tool_package_manager is None:
+            return "无工具包管理器"
+        pkg_id = args.get("package_id")
+        return self._tool_package_manager.list_packages(str(pkg_id) if pkg_id else None)
+
     async def _execute_delegate(self, args: dict) -> str:
         if self._agent_registry is None:
             return "No agents available"
@@ -1032,6 +1062,7 @@ def build_reply_toolset(
     send_emoji_handler: Any = None,
     emoji_service: Any = None,
     agent_registry: AgentRegistry | None = None,
+    tool_package_manager: Any = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
     search_emoji_handler: Any = None,
@@ -1067,6 +1098,7 @@ def build_reply_toolset(
         send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
         agent_registry=agent_registry,
+        tool_package_manager=tool_package_manager,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
         search_emoji_handler=search_emoji_handler,

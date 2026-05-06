@@ -219,6 +219,10 @@ def build_web_search_package(
     return ToolPackage(
         id="web_search",
         name="联网搜索工具包",
+        short_description=(
+            f"多引擎搜索（Bing/DuckDuckGo）+ 网页读取，最多{max_rounds}轮，"
+            f"支持百科/社区/新闻/官方/视频/学术多模式研究"
+        ),
         description=(
             f"联网搜索与网页读取。支持多搜索引擎（Bing、DuckDuckGo）、"
             f"多模式研究搜索（百科/社区/新闻/官方/视频/学术）、"

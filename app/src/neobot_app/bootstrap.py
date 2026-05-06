@@ -34,6 +34,7 @@ from neobot_app.observability.debug import DebugRecorder
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
+from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
 from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
@@ -389,6 +390,17 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger_factory=logger_factory,
     )
 
+    # 构建工具包管理器
+    web_search_cfg = getattr(config, "web_search", None)
+    tool_package_manager = ToolPackageManager()
+    ws_package = build_web_search_package(
+        enabled=getattr(web_search_cfg, "enabled", True) if web_search_cfg else False,
+        max_rounds=getattr(web_search_cfg, "max_search_rounds", 5) if web_search_cfg else 5,
+        preview_pages_limit=getattr(web_search_cfg, "preview_pages_limit", 30) if web_search_cfg else 30,
+    )
+    if ws_package is not None:
+        tool_package_manager = ToolPackageManager([ws_package])
+
     reply_orchestrator = ReplyOrchestrator(
         adapter=adapter,
         prompt_builder=prompt_builder,
@@ -411,6 +423,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
+        tool_package_manager=tool_package_manager,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)

@@ -225,6 +225,14 @@ def build_agent_registry(
             active_logger.warning(f"无法创建 problem solver agent provider: {exc}")
         else:
             try:
+                web_search_cfg = getattr(config, "web_search", None)
+                web_search_kwargs: dict = {}
+                if web_search_cfg is not None and getattr(web_search_cfg, "enabled", True):
+                    web_search_kwargs = {
+                        "engines": ["bing", "duckduckgo"],
+                        "max_rounds": getattr(web_search_cfg, "max_search_rounds", 5),
+                        "preview_pages_limit": getattr(web_search_cfg, "preview_pages_limit", 30),
+                    }
                 registry.register(
                     "problem_solver",
                     build_problem_solver_agent(
@@ -232,6 +240,7 @@ def build_agent_registry(
                         config=problem_solver_config,
                         logger=active_logger,
                         manager=problem_solver_manager,
+                        web_search_config=web_search_kwargs if web_search_kwargs else None,
                     ),
                 )
             except Exception as exc:

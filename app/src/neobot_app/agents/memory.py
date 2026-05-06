@@ -48,6 +48,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "拉取历史聊天记录辅助记忆决策、根据互动质量调整用户好感度。"
     "涉及记忆/档案/用户资料/头像解析/好感度的任务均委托它。"
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "长期记忆档案与用户资料（增/查记忆、用户资料、头像解析、好感度）"
+)
 
 _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
 

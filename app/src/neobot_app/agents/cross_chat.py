@@ -62,6 +62,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "注意：收到跨聊天消息通知或回复时，应直接使用 send_reply 转达，"
     "绝对不要再次委托本 agent 处理这些通知和回复。"
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "跨聊天通信与信息查询，传递消息到其他群/私聊或查询其他聊天记录"
+)
 
 _CROSS_CHAT_CONTEXT: ContextVar[str] = ContextVar("cross_chat_context", default="")
 _CROSS_CHAT_RESULT: ContextVar[str] = ContextVar("cross_chat_result", default="")

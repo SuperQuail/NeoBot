@@ -35,16 +35,24 @@ from neobot_app.statistics.tracker import (
     get_usage_tracker,
 )
 from neobot_app.time_context import monotonic_seconds
+from neobot_app.toolpackage.web_search_package import WebSearchExecutor
 
 if TYPE_CHECKING:
     pass
 
 EXPOSED_TO_MAIN_AGENT_NAME = "problem_solver"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "复杂问题解题。处理需要深度推理的数学、编程算法、科学计算、"
-    "逻辑推理等问题。解题为后台任务，提交后立即返回状态，"
+    "复杂问题解题。仅在问题非常复杂、需要长时间深度推理时才使用本 agent。"
+    "适用场景：高难度数学证明与计算、复杂编程算法设计与实现、"
+    "深度科学推理与计算、需要多步骤推演的逻辑问题。"
+    "本 agent 具备联网搜索能力，可自行查找资料辅助解题。"
+    "解题为后台任务，提交后立即返回状态，"
     "完成后会通过通知告知主Agent，届时主Agent可调用 send_long_reply 发送解题结果图片。"
-    "涉及复杂推理问题时必须委托本 agent，不要自行处理。"
+    "注意：简单问答、常识性问题、日常聊天等不应委托本 agent，"
+    "主Agent 应自行处理简单问题。只有确认问题需要深度推理时才使用。"
+)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用，具备联网搜索能力"
 )
 
 PEER_AGENT_DESCRIPTIONS = (
@@ -505,14 +513,21 @@ class ProblemSolverManager:
 
 
 class ProblemSolverToolExecutor(ToolExecutor):
-    """解题 Agent 的工具执行器。"""
+    """解题 Agent 的工具执行器，包含联网搜索能力。"""
 
     def __init__(
         self,
         *,
         logger: Logger | None = None,
+        web_search_config: dict | None = None,
     ) -> None:
         self._logger = logger or NullLogger()
+        ws = web_search_config or {}
+        self._search = WebSearchExecutor(
+            engines=ws.get("engines"),
+            max_rounds=ws.get("max_rounds", 5),
+            preview_pages_limit=ws.get("preview_pages_limit", 30),
+        )
 
     def definitions(self) -> list[ToolDefinition]:
         return [
@@ -520,6 +535,49 @@ class ProblemSolverToolExecutor(ToolExecutor):
                 "get_chat_context",
                 "读取主Agent本轮看到的聊天上下文和消息编号映射，"
                 "用于理解问题背景和对话环境。",
+                {"properties": {}, "required": []},
+            ),
+            _tool_def(
+                "search",
+                "联网搜索，返回带编号的搜索结果列表。"
+                "支持普通关键词搜索，也可指定 mode 进行智能多模式研究搜索"
+                "（encyclopedia 百科类 / community 社区类 / news 新闻类 / official 官方类 / video 视频类 / academic 学术类）。",
+                {
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "搜索关键词或研究主题",
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "单次搜索返回的结果数量，默认 10",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "研究模式（可选）",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            _tool_def(
+                "read_page",
+                "读取指定编号的搜索结果页面完整内容，返回页面正文。"
+                "已读取的页面会自动在后续搜索中去重。",
+                {
+                    "properties": {
+                        "indices": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "要读取的结果编号列表，如 [0, 1, 3]",
+                        },
+                    },
+                    "required": ["indices"],
+                },
+            ),
+            _tool_def(
+                "search_status",
+                "查看当前搜索会话状态，包括已完成轮次、已读/未读结果统计。",
                 {"properties": {}, "required": []},
             ),
             _tool_def(
@@ -545,6 +603,12 @@ class ProblemSolverToolExecutor(ToolExecutor):
             if not context:
                 return "无聊天上下文可用（可能未通过主Agent委托调用）"
             return context
+        if name == "search":
+            return await self._search.execute("search", args)
+        if name == "read_page":
+            return await self._search.execute("read", args)
+        if name == "search_status":
+            return await self._search.execute("status", args)
         if name == "submit_solution":
             solution = str(args.get("solution") or "").strip()
             if not solution:
@@ -557,12 +621,19 @@ class ProblemSolverToolExecutor(ToolExecutor):
 def _build_system_prompt(config: ProblemSolverAgentConfig | None) -> str:
     cfg = config or ProblemSolverAgentConfig()
     return (
-        "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n"
-        "收到问题后，请：\n"
+        "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
+        "工作流程：\n"
         "1. 先用 get_chat_context 获取问题背景（如果问题来自聊天群/私聊）\n"
         "2. 仔细分析问题，逐步推理，不要跳步\n"
-        "3. 给出完整、清晰的解答过程，使用 Markdown 格式\n"
-        "4. 使用 submit_solution 工具提交最终解答\n\n"
+        "3. 如果问题涉及实时信息、数据查询或需要查阅资料，使用 search 联网搜索，"
+        "通过 read_page 读取有价值的页面获取详细信息\n"
+        "4. 给出完整、清晰的解答过程，使用 Markdown 格式\n"
+        "5. 使用 submit_solution 工具提交最终解答\n\n"
+        "搜索使用提示：\n"
+        "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
+        "- search 支持 mode 参数进行多角度搜索，如 mode=\"encyclopedia\" 查百科类信息\n"
+        "- 搜索后先浏览摘要，只对有价值的结果使用 read_page 读取全文\n"
+        "- 每次解题任务开始时搜索会话自动重置\n\n"
         "交互规则：\n"
         "- 如果缺少关键信息无法解答，通过 submit_solution 返回说明，指出缺失什么信息\n"
         "- 如果问题不属于你的能力范围，直接声明无法处理\n\n"
@@ -580,8 +651,12 @@ def build_problem_solver_toolset(
     config: ProblemSolverAgentConfig | None = None,
     logger: Logger | None = None,
     policy: ToolAccessPolicy | None = None,
+    web_search_config: dict | None = None,
 ) -> Toolset:
-    executor = ProblemSolverToolExecutor(logger=logger)
+    executor = ProblemSolverToolExecutor(
+        logger=logger,
+        web_search_config=web_search_config,
+    )
     specs = [
         ToolSpec(definition=d, access_resolver=_default_resolver)
         for d in executor.definitions()
@@ -598,10 +673,15 @@ class ProblemSolverAgent:
         *,
         config: ProblemSolverAgentConfig | None = None,
         logger: Logger | None = None,
+        web_search_config: dict | None = None,
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
-        self._toolset = build_problem_solver_toolset(config=cfg, logger=logger)
+        self._toolset = build_problem_solver_toolset(
+            config=cfg,
+            logger=logger,
+            web_search_config=web_search_config,
+        )
         self.tool_definitions = self._toolset.definitions()
 
         async def _record_usage(model_name, input_tokens, output_tokens):
@@ -654,13 +734,27 @@ def build_problem_solver_agent(
     config: ProblemSolverAgentConfig | Any = None,
     logger: Logger | None = None,
     manager: ProblemSolverManager | None = None,
+    web_search_config: dict | None = None,
 ) -> ProblemSolverAgent:
-    """构建解题 Agent 并关联到 Manager。"""
+    """构建解题 Agent 并关联到 Manager。
+
+    Args:
+        provider: LLM provider
+        config: 解题 Agent 配置
+        logger: 日志记录器
+        manager: 后台任务管理器
+        web_search_config: 联网搜索配置字典，包含 engines, max_rounds, preview_pages_limit
+    """
     cfg = (
         config if isinstance(config, ProblemSolverAgentConfig)
         else ProblemSolverAgentConfig.from_schema(config)
     )
-    agent = ProblemSolverAgent(provider=provider, config=cfg, logger=logger)
+    agent = ProblemSolverAgent(
+        provider=provider,
+        config=cfg,
+        logger=logger,
+        web_search_config=web_search_config,
+    )
     if manager is not None:
         manager.set_agent(agent)
     return agent

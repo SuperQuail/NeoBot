@@ -16,7 +16,8 @@ class ToolPackage:
     Attributes:
         id: 工具包 ASCII 标识符，用于工具名前缀，如 "web_search"
         name: 工具包显示名称，如 "联网搜索工具包"
-        description: 工具包功能描述，用于解锁时展示
+        short_description: 简短描述，直接展示在提示词中
+        description: 完整功能描述，通过 list_tools 查看
         tools: 包内工具的定义列表（使用原始工具名）
         executor: 工具执行函数 (tool_name, args) -> result_str
         locked: 初始锁定状态，默认 True
@@ -24,6 +25,7 @@ class ToolPackage:
 
     id: str
     name: str
+    short_description: str
     description: str
     tools: list[ToolDefinition]
     executor: ToolExecutorFn
@@ -80,9 +82,34 @@ class ToolPackageManager:
 
         return result
 
+    def list_packages(self, package_id: str | None = None) -> str:
+        """列出工具包信息。无参时列出全部（含锁定状态和简短描述），指定 ID 时显示详细信息。"""
+        if not self._packages:
+            return "无可用工具包"
+
+        if package_id is not None:
+            pkg = self._packages.get(package_id)
+            if pkg is None:
+                return f"未找到工具包 '{package_id}'。可用 ID：{', '.join(self._packages)}"
+            status = "已解锁" if not pkg.locked else "已关闭"
+            tool_names = [t["function"]["name"] for t in pkg.tools]
+            return (
+                f"工具包: {pkg.name} (ID: {package_id})\n"
+                f"状态: {status}\n"
+                f"描述: {pkg.description}\n"
+                f"包含工具: {', '.join(tool_names)}"
+            )
+
+        lines = ["工具包列表："]
+        for p in self._packages.values():
+            status = "[已解锁]" if not p.locked else "[关闭]"
+            lines.append(f"  - `{p.id}` ({p.name}) {status}: {p.short_description}")
+        lines.append("使用 list_tools <工具包ID> 查看指定工具包的详细信息。")
+        return "\n".join(lines)
+
     def _build_unlock_def(self, locked: list[ToolPackage]) -> ToolDefinition:
         pkg_list = "\n".join(
-            f"  - `{p.id}` ({p.name}): {p.description}" for p in locked
+            f"  - `{p.id}` ({p.name}): {p.short_description}" for p in locked
         )
         return {
             "type": "function",
@@ -93,6 +120,7 @@ class ToolPackageManager:
                     f"解锁后的工具名称格式为: 工具包ID__工具名 (如 web_search__search)。\n"
                     f"当前可解锁的工具包：\n{pkg_list}\n"
                     f"请根据任务需求选择合适的工具包解锁。"
+                    f"如需查看工具包详细功能，使用 list_tools 工具。"
                 ),
                 "parameters": {
                     "type": "object",

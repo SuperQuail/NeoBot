@@ -44,6 +44,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "定时任务管理。可创建、查询、修改、删除定时提醒任务，支持一次性、每日、每周、每月、每年重复，"
     "可绑定一个或多个聊天流；也提供生日专用记录工具。有人提出生日、生日祝福偏好、庆祝方式变更时应委托它先记录或更新。"
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "定时提醒与生日管理（一次性/重复/生日记录）"
+)
 
 _SCHEDULED_CONTEXT: ContextVar[str] = ContextVar("scheduled_task_context", default="")
 _CONV_KIND: ContextVar[str] = ContextVar("scheduled_task_conv_kind", default="")
@@ -686,13 +689,13 @@ def _build_system_prompt(config: ScheduledTaskAgentConfig) -> str:
         "创建任务前必须确认时间窗口：start_at 是提醒窗口开始，end_at 是窗口结束，end_at 必须晚于 start_at。\n"
         f"如果用户只给了触发时间、没有给结束时间，使用默认窗口 {config.default_window_seconds} 秒生成 end_at；不要只因为缺少结束时间而追问。\n"
         "重复方式：once 仅一次；daily 每日；weekly 每周；monthly 每月；yearly 每年。\n"
-        "通知策略：one_shot_notification=true 表示“一次性通知”，即每个触发窗口只通知一次并自动完成本窗口；"
-        "one_shot_notification=false 表示“持续通知”，会在窗口内按冷却反复提醒直到主Agent标记完成。"
-        "注意“一次性通知”不是 recurrence=once 的“一次性任务”；daily/yearly 等循环任务也可以使用一次性通知。\n"
+        "通知策略：one_shot_notification=true 表示「一次性通知」，即每个触发窗口只通知一次并自动完成本窗口；"
+        "one_shot_notification=false 表示「持续通知」，会在窗口内按冷却反复提醒直到主Agent标记完成。"
+        "注意「一次性通知」不是 recurrence=once 的「一次性任务」；daily/yearly 等循环任务也可以使用一次性通知。\n"
         f"新建任务默认 one_shot_notification={'true' if config.default_one_shot_notification else 'false'}。"
         "普通提醒、早安、生日祝福等通常应使用一次性通知；只有用户明确要求持续催促/反复提醒，才设置为持续通知。\n"
         "任务必须绑定至少一个聊天流。用户没有指定聊天流时，默认绑定当前聊天流；用户指定多个群/私聊时，全部写入 bindings。\n"
-        "如果用户说“这个群”“私聊我”“当前群”等上下文指代，优先使用委托上下文里的当前会话 kind/id。\n"
+        "如果用户说「这个群」「私聊我」「当前群」等上下文指代，优先使用委托上下文里的当前会话 kind/id。\n"
         "不要为了检查重复任务数量上限而先调用 list_scheduled_tasks；create_scheduled_task/create_birthday_task 会在达到上限时返回错误。\n"
         f"重复任务上限为 {config.max_repeating_tasks} 个，达到上限错误时不要继续创建重复任务。\n"
         "生日信息必须使用 create_birthday_task，并准确记录：是谁的生日、在哪个私聊或群聊庆祝、对方希望的庆祝方式。\n"
@@ -709,7 +712,7 @@ def _inject_delegate_context(state: State, delegate_context: str) -> State:
     if not delegate_context.strip():
         return state
     context_prompt = (
-        "委托上下文如下。解析聊天流绑定、当前私聊/群聊、用户提到的“这里/当前群/私聊我”等指代时必须参考它：\n"
+        "委托上下文如下。解析聊天流绑定、当前私聊/群聊、用户提到的「这里/当前群/私聊我」等指代时必须参考它：\n"
         f"{delegate_context.strip()}"
     )
     messages = list(state.get("messages", []))

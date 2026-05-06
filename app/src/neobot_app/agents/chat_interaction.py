@@ -42,6 +42,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "戳一戳请使用主Agent的 poke_user 工具。"
     "需提供目标群号/QQ号；修改好友备注用 manage_friend(set_remark)，修改群名片用 manage_group(set_card)。"
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "聊天互动与社交管理（群管理/好友管理/表情包/合并转发）"
+)
 
 _CHAT_INTERACTION_CONTEXT: ContextVar[str] = ContextVar("chat_interaction_context", default="")
 

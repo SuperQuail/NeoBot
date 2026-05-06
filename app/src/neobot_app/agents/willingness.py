@@ -37,6 +37,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "指定会话内指定用户的回复系数、指定用户的全局回复系数，以及当前会话临时黑名单。"
     "所有调整仅存于内存，重启后重置为默认值。"
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "调整运行时回复意愿系数（会话级别/用户级别/黑名单）"
+)
 
 _WILLINGNESS_CONTEXT: ContextVar[str] = ContextVar("willingness_context", default="")
 _CONV_KIND: ContextVar[str] = ContextVar("willingness_conv_kind", default="")

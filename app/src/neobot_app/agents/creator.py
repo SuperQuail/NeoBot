@@ -60,6 +60,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "任务中指代聊天图片时，它可通过聊天上下文自行判断。"
     "绘图任务会加入后台任务中,在完成后会另外通知,你不需要等待它完成,只需要先报告其已经开始即可."
 )
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "AI绘图与图片资产管理（图库/表情包/图片发送）"
+)
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
 PEER_AGENT_DESCRIPTIONS = (
