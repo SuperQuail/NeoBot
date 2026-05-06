@@ -14,6 +14,7 @@ from neobot_app.config.schemas.bot import (
     Models,
     TTS,
     TTSReferenceVoice,
+    WebSearchConfig,
     Willing,
 )
 from neobot_app.config.schemas.env import ApiPlatformConfig, EnvConfig
@@ -36,5 +37,6 @@ __all__ = [
     "Models",
     "TTS",
     "TTSReferenceVoice",
+    "WebSearchConfig",
     "Willing",
 ]

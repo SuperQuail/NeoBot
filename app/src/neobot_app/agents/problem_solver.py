@@ -90,7 +90,6 @@ class ProblemSolverAgentConfig:
         self,
         *,
         enabled: bool = True,
-        model_name: str = "agent_model_1",
         timeout_seconds: float = 600.0,
         max_tokens: int = 20480,
         notification_retry_seconds: int = 30,
@@ -100,7 +99,6 @@ class ProblemSolverAgentConfig:
         reasoning_effort: str = "max",
     ) -> None:
         self.enabled = enabled
-        self.model_name = model_name
         self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
         self.notification_retry_seconds = notification_retry_seconds
@@ -115,7 +113,6 @@ class ProblemSolverAgentConfig:
             return cls()
         return cls(
             enabled=bool(getattr(config, "enabled", True)),
-            model_name=str(getattr(config, "model", "agent_model_1")),
             timeout_seconds=float(getattr(config, "timeout_seconds", 600) or 600),
             max_tokens=int(getattr(config, "max_tokens", 20480) or 20480),
             notification_retry_seconds=int(getattr(config, "notification_retry_seconds", 30) or 30),

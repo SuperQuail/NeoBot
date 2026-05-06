@@ -813,15 +813,14 @@ class AgentWillingness:
 
 @dataclass
 class AgentProblemSolver:
-    """Problem Solver Agent 配置。"""
+    """Problem Solver Agent 配置。
+
+    模型路由由 agent_model.problem_solver 编号控制，无需在子 agent 配置中指定模型名。
+    """
 
     enabled: bool = field(
         default=True,
         metadata={"description": "是否启用解题 Agent"},
-    )
-    model: str = field(
-        default="agent_model_1",
-        metadata={"description": "解题 Agent 使用的模型名称"},
     )
     timeout_seconds: float = field(
         default=600.0,
@@ -855,15 +854,14 @@ class AgentProblemSolver:
 
 @dataclass
 class AgentCrossChat:
-    """Cross-Chat Agent 配置。"""
+    """Cross-Chat Agent 配置。
+
+    模型路由由 agent_model.cross_chat 编号控制，无需在子 agent 配置中指定模型名。
+    """
 
     enabled: bool = field(
         default=True,
         metadata={"description": "是否启用跨聊天通信 Agent"},
-    )
-    model: str = field(
-        default="agent_model_1",
-        metadata={"description": "cross_chat Agent 使用的模型名称"},
     )
     timeout_seconds: float = field(
         default=600.0,
@@ -908,6 +906,24 @@ class Agent:
 
 
 @dataclass
+class WebSearchConfig:
+    """联网搜索工具包配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用联网搜索工具包；关闭后搜索工具不会注册"},
+    )
+    preview_pages_limit: int = field(
+        default=30,
+        metadata={"description": "单次搜索预览页面数量上限，默认 30"},
+    )
+    max_search_rounds: int = field(
+        default=5,
+        metadata={"description": "单次会话最多搜索轮次，默认 5"},
+    )
+
+
+@dataclass
 class BotConfig:
     """机器人主配置。"""
 
@@ -924,6 +940,7 @@ class BotConfig:
     debug: Debug = field(default_factory=Debug)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
+    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
 
 
 @dataclass

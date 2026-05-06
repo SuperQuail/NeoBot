@@ -113,7 +113,6 @@ class CrossChatAgentConfig:
         self,
         *,
         enabled: bool = True,
-        model_name: str = "agent_model_1",
         timeout_seconds: float = 600.0,
         max_iterations: int = 20,
         notification_retry_seconds: int = 30,
@@ -123,7 +122,6 @@ class CrossChatAgentConfig:
         max_history_fetch_multiplier: int = 2,
     ) -> None:
         self.enabled = enabled
-        self.model_name = model_name
         self.timeout_seconds = timeout_seconds
         self.max_iterations = max_iterations
         self.notification_retry_seconds = notification_retry_seconds
@@ -138,7 +136,6 @@ class CrossChatAgentConfig:
             return cls()
         return cls(
             enabled=bool(getattr(config, "enabled", True)),
-            model_name=str(getattr(config, "model", "agent_model_1")),
             timeout_seconds=float(getattr(config, "timeout_seconds", 600) or 600),
             max_iterations=int(getattr(config, "max_iterations", 20) or 20),
             notification_retry_seconds=int(getattr(config, "notification_retry_seconds", 30) or 30),
