@@ -45,14 +45,14 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "复杂问题解题。仅在问题非常复杂、需要长时间深度推理时才使用本 agent。"
     "适用场景：高难度数学证明与计算、复杂编程算法设计与实现、"
     "深度科学推理与计算、需要多步骤推演的逻辑问题。"
-    "本 agent 具备联网搜索能力，可自行查找资料辅助解题。"
     "解题为后台任务，提交后立即返回状态，"
     "完成后会通过通知告知主Agent，届时主Agent可调用 send_long_reply 发送解题结果图片。"
-    "注意：简单问答、常识性问题、日常聊天等不应委托本 agent，"
-    "主Agent 应自行处理简单问题。只有确认问题需要深度推理时才使用。"
+    "注意：简单问答、常识性问题、日常聊天、普通信息查询/搜索等不应委托本 agent。"
+    "简单搜索查询请使用联网搜索工具包(先 unlock web_search)自行完成。"
+    "只有确认问题需要深度推理（非简单搜索能解决）时才使用本 agent。"
 )
 EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
-    "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用，具备联网搜索能力"
+    "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
 )
 
 PEER_AGENT_DESCRIPTIONS = (
@@ -175,6 +175,11 @@ class ProblemSolverManager:
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
+        if self._notification_hub is not None:
+            self._notification_hub.set_orchestrator(orchestrator)
+
+    def set_notification_hub(self, hub: Any) -> None:
+        self._notification_hub = hub
 
     def set_markdown_converter(self, converter: Any) -> None:
         self._markdown_image_converter = converter
@@ -232,9 +237,20 @@ class ProblemSolverManager:
             "solver_active_task": {
                 "task_id": active.task_id,
                 "status": active.status,
+                "question": (active.question or "")[:200],
             } if active else None,
             "solver_recent_tasks": recent[-5:],
         }
+
+    async def poll_notification(self, pipeline_key: str) -> str | None:
+        """轮询本地通知队列（向后兼容；通知中心已接管时通常不使用）。"""
+        queue = self._notification_queues.get(pipeline_key)
+        if queue is None or queue.empty():
+            return None
+        try:
+            return queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
     async def submit(
         self,
@@ -298,7 +314,7 @@ class ProblemSolverManager:
                 "_delegate_context": task.delegate_context,
             }
             result_state = await asyncio.wait_for(
-                self._agent.invoke(state),
+                self._agent._invoke_direct(state),
                 timeout=self._config.timeout_seconds,
             )
 
@@ -356,20 +372,30 @@ class ProblemSolverManager:
 
     async def _on_completed(self, task: SolveTask) -> None:
         question_preview = task.question[:200]
-        image_info = (
-            f"\n图片路径: {task.image_path}\n"
-            f"解答已自动转为图片保存，你必须调用 send_long_reply 工具发送。"
-            if task.image_path else
-            f"\n注意：markdown 转图片失败，解答仅保留文本（{len(task.markdown_solution or '')} 字符）。"
-        )
+        solution = task.markdown_solution or ""
+        if task.image_path:
+            image_info = (
+                f"解答图片已预渲染：{task.image_path}\n"
+                f"请直接调用 send_long_reply(image_path=\"{task.image_path}\", "
+                f"caption=\"解题结果\") 发送，无需重新渲染。"
+            )
+        else:
+            image_info = (
+                "注意：图片预渲染失败。请用 send_long_reply(markdown=\"...\") 发送下方 Markdown 文本，"
+                "系统会实时渲染。"
+            )
         notification = (
             "<这是新的必须要回答的内容>\n"
             f"解题任务完成通知\n\n"
             f"任务ID: {task.task_id}\n"
             f"原始问题: {question_preview}\n"
-            f"解答Markdown长度: {len(task.markdown_solution or '')} 字符\n"
             f"{image_info}\n\n"
-            "请立即将解答结果发送给用户。如果解答有图片，使用 send_long_reply 工具发送。\n"
+            f"--- 解答内容开始 ---\n"
+            f"{solution}\n"
+            f"--- 解答内容结束 ---\n\n"
+            "请立即将解答结果发送给用户。"
+            "如有图片路径则用 send_long_reply(image_path=...) 直接发送预渲染图片，"
+            "否则用 send_long_reply(markdown=...) 发送。\n"
             "注意：这不是一个新的解题请求，而是已完成的结果通知。\n"
             "</这是新的必须要回答的内容>"
         )
@@ -466,7 +492,12 @@ class ProblemSolverManager:
                 },
                 on_consumed=_on_consumed,
             )
-        except Exception:
+        except Exception as exc:
+            self._logger.warning(
+                "解题通知发布到通知中心失败",
+                task_id=task.task_id,
+                error=str(exc),
+            )
             return False
 
     async def _retry_notification(self, task: SolveTask) -> None:
@@ -529,6 +560,10 @@ class ProblemSolverToolExecutor(ToolExecutor):
             preview_pages_limit=ws.get("preview_pages_limit", 30),
         )
 
+    def reset_search(self) -> None:
+        """复位搜索会话计数器，每次解题任务启动时调用。"""
+        self._search.reset()
+
     def definitions(self) -> list[ToolDefinition]:
         return [
             _tool_def(
@@ -539,9 +574,11 @@ class ProblemSolverToolExecutor(ToolExecutor):
             ),
             _tool_def(
                 "search",
-                "联网搜索，返回带编号的搜索结果列表。"
-                "支持普通关键词搜索，也可指定 mode 进行智能多模式研究搜索"
-                "（encyclopedia 百科类 / community 社区类 / news 新闻类 / official 官方类 / video 视频类 / academic 学术类）。",
+                "联网搜索。强烈建议使用 mode 参数进行多角度研究搜索，"
+                "一次 mode 搜索会从多个变体查询并合并去重，比多次普通关键词搜索高效得多。"
+                "可用 mode：encyclopedia（百科/百度百科/wiki）、community（知乎/贴吧/论坛/NGA）、"
+                "news（新闻/资讯）、official（官网）、video（bilibili/评测）、academic（论文/研究）。"
+                "不填 mode 仅做普通关键词搜索。查百科资料用 mode='encyclopedia' 远优于搜索 'xxx 百度百科'。",
                 {
                     "properties": {
                         "query": {
@@ -554,7 +591,10 @@ class ProblemSolverToolExecutor(ToolExecutor):
                         },
                         "mode": {
                             "type": "string",
-                            "description": "研究模式（可选）",
+                            "description": (
+                                "研究模式（强烈推荐）：encyclopedia（百科类）、community（社区类）、"
+                                "news（新闻类）、official（官方类）、video（视频类）、academic（学术类）"
+                            ),
                         },
                     },
                     "required": ["query"],
@@ -665,7 +705,11 @@ def build_problem_solver_toolset(
 
 
 class ProblemSolverAgent:
-    """LLM-backed agent dedicated to complex problem solving."""
+    """LLM-backed agent dedicated to complex problem solving.
+
+    invoke() → 提交后台解题任务，立即返回
+    _invoke_direct() → 直接执行解题（供后台任务使用）
+    """
 
     def __init__(
         self,
@@ -674,9 +718,11 @@ class ProblemSolverAgent:
         config: ProblemSolverAgentConfig | None = None,
         logger: Logger | None = None,
         web_search_config: dict | None = None,
+        manager: ProblemSolverManager | None = None,
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
+        self._manager = manager
         self._toolset = build_problem_solver_toolset(
             config=cfg,
             logger=logger,
@@ -706,6 +752,52 @@ class ProblemSolverAgent:
         )
 
     async def invoke(self, state: State) -> State:
+        """主 Agent 委托入口：提交后台解题任务并立即返回。"""
+        if self._manager is None:
+            return {
+                "messages": [{"role": "assistant", "content": "错误：解题后台管理器未配置"}],
+            }
+
+        messages = state.get("messages", [])
+        question = messages[-1]["content"] if messages else ""
+        question_str = str(question) if question else ""
+
+        delegate_context = str(state.get("_delegate_context") or "")
+
+        # 从 delegate context 解析会话信息
+        conv_kind, conv_id = self._parse_conv_from_context(delegate_context)
+        if not conv_kind or not conv_id:
+            return {
+                "messages": [{"role": "assistant", "content": "错误：无法确定当前会话信息，请重试"}],
+            }
+
+        pipeline_key = f"{conv_kind}:{conv_id}"
+        result_json = await self._manager.submit(
+            pipeline_key=pipeline_key,
+            conversation_kind=conv_kind,
+            conversation_id=conv_id,
+            question=question_str,
+            delegate_context=delegate_context,
+        )
+        return {
+            "messages": [{"role": "assistant", "content": result_json}],
+        }
+
+    @staticmethod
+    def _parse_conv_from_context(context: str) -> tuple[str, str]:
+        """从委托上下文解析当前会话 kind 和 id。"""
+        import re
+        m = re.search(r"\[当前会话\]\s*\nkind=(\w+)\s*\nid=(\S+)", context)
+        if m:
+            return m.group(1), m.group(2)
+        m = re.search(r"kind=(\w+)\s*\nid=(\S+)", context)
+        if m:
+            return m.group(1), m.group(2)
+        return "", ""
+
+    async def _invoke_direct(self, state: State) -> State:
+        """内部直接执行解题（供 ProblemSolverManager 后台任务使用）。"""
+        self._toolset.executor.reset_search()
         token = _SOLVER_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
         token_m = CURRENT_USAGE_MODULE.set("agent:problem_solver")
         try:
@@ -754,6 +846,7 @@ def build_problem_solver_agent(
         config=cfg,
         logger=logger,
         web_search_config=web_search_config,
+        manager=manager,
     )
     if manager is not None:
         manager.set_agent(agent)

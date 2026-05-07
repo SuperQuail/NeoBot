@@ -915,11 +915,15 @@ class WebSearchConfig:
     )
     preview_pages_limit: int = field(
         default=30,
-        metadata={"description": "单次搜索预览页面数量上限，默认 30"},
+        metadata={"description": "单次搜索返回结果总数上限（含主查询+所有变体），默认 30"},
     )
     max_search_rounds: int = field(
         default=5,
         metadata={"description": "单次会话最多搜索轮次，默认 5"},
+    )
+    variant_result_limit: int = field(
+        default=6,
+        metadata={"description": "研究模式中每个变体查询返回的最大结果数，默认 6"},
     )
 
 

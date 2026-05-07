@@ -776,6 +776,7 @@ class CreatorImageService:
         model_name: str = "creator_image_model",
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
+        markdown_dir: Path | None = None,
         logger: Logger | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -788,6 +789,7 @@ class CreatorImageService:
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
         self._gallery_dir = self._base_dir / "gallery"
+        self._markdown_dir = markdown_dir
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._gallery_dir.mkdir(parents=True, exist_ok=True)
         timeout = self._model.settings.timeout_seconds
@@ -1290,6 +1292,52 @@ class CreatorImageService:
             {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
         ]
         await self._send_with_timeout(conversation_ref, segments)
+
+    async def send_image_by_path(
+        self,
+        file_path: str,
+        *,
+        group_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """直接通过文件路径发送图片（无需数据库记录）。"""
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"图片文件不存在: {path}")
+        group_id = (group_id or "").strip()
+        user_id = (user_id or "").strip()
+        if group_id:
+            conversation_ref = ConversationRef(kind="group", id=group_id)
+        elif user_id:
+            conversation_ref = ConversationRef(kind="private", id=user_id)
+        else:
+            raise ValueError("未指定 group_id 或 user_id")
+        segments: list[dict[str, Any]] = [
+            {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
+        ]
+        await self._send_with_timeout(conversation_ref, segments)
+
+    def list_markdown_images(self) -> list[dict[str, Any]]:
+        """列出 markdown_images 目录中的图片文件。"""
+        if self._markdown_dir is None or not self._markdown_dir.exists():
+            return []
+        result: list[dict[str, Any]] = []
+        for child in sorted(self._markdown_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+                continue
+            try:
+                stat = child.stat()
+            except OSError:
+                stat = None
+            result.append({
+                "filename": child.name,
+                "path": str(child),
+                "size": stat.st_size if stat else 0,
+                "mtime": stat.st_mtime if stat else 0,
+            })
+        return result
 
     async def import_chat_image(
         self,
@@ -2044,16 +2092,24 @@ class CreatorToolExecutor(ToolExecutor):
             ),
             _tool_def(
                 "gallery_send",
-                "发送图片到指定群聊/私聊，只发送图片不附带文字。必须提供 group_id 或 user_id。",
+                "发送图片到指定群聊/私聊，只发送图片不附带文字。必须提供 group_id 或 user_id。"
+                "可通过 image_id 发送图库/临时图片，也可通过 file_path 直接发送任意路径的图片文件"
+                "（如 markdown 渲染结果、解题图片等）。",
                 {
                     "properties": {
-                        "image_id": {"type": "string", "description": "图片 ID"},
+                        "image_id": {"type": "string", "description": "图片 ID（file_path 为空时必填）"},
+                        "file_path": {"type": "string", "description": "可选，直接发送指定路径的图片文件。用于发送 markdown 渲染图片等非图库文件"},
                         "source": {"type": "string", "description": "可选，tmp 或 gallery"},
                         "group_id": {"type": "string", "description": "目标群号"},
                         "user_id": {"type": "string", "description": "目标 QQ 号"},
                     },
-                    "required": ["image_id"],
+                    "required": [],
                 },
+            ),
+            _tool_def(
+                "list_markdown_images",
+                "列出 markdown 渲染生成的图片文件（解题结果等）。返回文件名、路径、大小和修改时间。",
+                {"properties": {}},
             ),
             _tool_def("list_references", "列出可作为参考图的图库图片。", {"properties": {}}),
             _tool_def(
@@ -2218,6 +2274,8 @@ class CreatorToolExecutor(ToolExecutor):
                 return await self._gallery_rename(args)
             if name == "gallery_send":
                 return await self._gallery_send(args)
+            if name == "list_markdown_images":
+                return self._execute_list_markdown_images()
             if name == "list_references":
                 return await self._list_references()
             if name == "import_chat_image":
@@ -2370,6 +2428,10 @@ class CreatorToolExecutor(ToolExecutor):
         info = self._drawing_manager.get_last_draw_info(pipeline_key)
         return _json({"ok": True, "pipeline_key": pipeline_key, **info})
 
+    def _execute_list_markdown_images(self) -> str:
+        images = self._service.list_markdown_images()
+        return _json({"ok": True, "markdown_images": images, "total": len(images)})
+
     async def _gallery_list(self, args: dict[str, Any]) -> str:
         source = self._optional_str(args.get("source"))
         offset = int(args.get("offset", 0) or 0)
@@ -2446,13 +2508,25 @@ class CreatorToolExecutor(ToolExecutor):
 
     async def _gallery_send(self, args: dict[str, Any]) -> str:
         image_id = str(args.get("image_id") or "")
-        await self._service.send_image(
-            image_id=image_id,
-            source=self._optional_str(args.get("source")),
-            group_id=self._optional_str(args.get("group_id")),
-            user_id=self._optional_str(args.get("user_id")),
-        )
-        return _json({"ok": True, "sent": True, "image_id": image_id})
+        file_path = self._optional_str(args.get("file_path"))
+        group_id = self._optional_str(args.get("group_id"))
+        user_id = self._optional_str(args.get("user_id"))
+
+        if file_path:
+            await self._service.send_image_by_path(
+                file_path=file_path,
+                group_id=group_id,
+                user_id=user_id,
+            )
+            return _json({"ok": True, "sent": True, "file_path": file_path})
+        else:
+            await self._service.send_image(
+                image_id=image_id,
+                source=self._optional_str(args.get("source")),
+                group_id=group_id,
+                user_id=user_id,
+            )
+            return _json({"ok": True, "sent": True, "image_id": image_id})
 
     async def _list_references(self) -> str:
         # 获取全部图库图片作为参考图（不受分页限制）
@@ -2695,6 +2769,12 @@ def _build_system_prompt(config: CreatorAgentConfig) -> str:
         "如果用户要求重命名图库图片或表情包，使用 gallery_rename 或 emoji_rename。\n"
         "gallery_send 只发送图片本身，不要附加任何文字或 @ 消息。\n"
         "当你需要更多信息（如群号）才能完成任务时，直接向主 Agent 提问，不要猜测或编造。\n"
+        "\n"
+        "【Markdown 图片管理】\n"
+        "markdown_images 文件夹存放解题 agent 渲染的图片结果（如解题过程、报告等）。\n"
+        "使用 list_markdown_images 查看该文件夹中的图片，使用 gallery_send(file_path=\"...\") 发送。\n"
+        "这些图片是临时文件，会被自动清理（24h 过期 / 程序关闭时删除）。\n"
+        "不要将这些图片加入图库或表情包（除非用户明确要求保存）。\n"
         f"{gallery_text}\n"
         f"{emoji_text}\n"
         f"{pagination_text}\n"
@@ -2783,6 +2863,7 @@ def build_creator_agent(
     config: CreatorAgentConfig | AgentCreator | None = None,
     emoji_service: "EmojiService | None" = None,
     vision_provider: Provider | None = None,
+    markdown_dir: Path | None = None,
     logger: Logger | None = None,
     drawing_manager: BackgroundDrawingManager | None = None,
 ) -> CreatorAgent:
@@ -2795,6 +2876,7 @@ def build_creator_agent(
         config=normalized_config,
         emoji_service=emoji_service,
         vision_provider=vision_provider,
+        markdown_dir=markdown_dir,
         logger=logger,
     )
     if drawing_manager is not None:

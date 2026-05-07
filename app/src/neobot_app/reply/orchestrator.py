@@ -718,6 +718,10 @@ class ReplyOrchestrator:
         from neobot_app.message.numbering import MessageNumbering
         from neobot_app.reply.tools import build_reply_toolset
 
+        # 复位工具包会话状态（搜索计数器等），确保新任务从零开始
+        if self._tool_package_manager is not None:
+            self._tool_package_manager.reset_sessions()
+
         # 随机触发表情包发送
         await self._maybe_trigger_sticker(queue, queue_key, event)
 
@@ -1030,6 +1034,9 @@ class ReplyOrchestrator:
 
         tools = reply_toolset.definitions()
 
+        # 工具包管理器存在时，工具列表需动态获取（unlock 后新工具立即可用）
+        _use_dynamic_tools = self._tool_package_manager is not None
+
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = 12
         ai_check_prompted = False
@@ -1093,6 +1100,10 @@ class ReplyOrchestrator:
             for iteration in range(max_iterations):
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
+
+                # 工具包管理器存在时每次迭代刷新工具列表，确保 unlock 后新工具立即可用
+                if _use_dynamic_tools:
+                    tools = reply_toolset.executor.definitions()
 
                 pipeline_key = f"{conv_kind}:{conv_id}"
                 notification_text = await self._poll_background_notifications(pipeline_key)
@@ -1511,6 +1522,14 @@ class ReplyOrchestrator:
             if self._scheduled_task_manager is not None:
                 notification = await asyncio.wait_for(
                     self._scheduled_task_manager.poll_notification(pipeline_key),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+                if notification:
+                    return notification
+
+            if self._problem_solver_manager is not None:
+                notification = await asyncio.wait_for(
+                    self._problem_solver_manager.poll_notification(pipeline_key),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if notification:

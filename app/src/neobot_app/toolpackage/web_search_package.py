@@ -16,7 +16,12 @@ def _build_search_tool() -> ToolDefinition:
             "name": "search",
             "description": (
                 "执行联网搜索，返回带编号的搜索结果列表。"
-                "支持普通关键词搜索和智能研究模式（百科、社区、新闻、官方、视频、学术等多角度查询变体）。"
+                "强烈建议使用 mode 参数进行多角度研究搜索，一次搜索会从多个变体查询并合并结果，"
+                "比多次普通关键词搜索高效得多。"
+                "可用 mode：encyclopedia（百科/百度百科/wiki）、community（知乎/贴吧/论坛/NGA）、"
+                "news（新闻/资讯）、official（官网）、video（bilibili/评测）、academic（论文/研究）。"
+                "不填 mode 则仅做普通关键词搜索，适合简单快速查询。"
+                "如需查百科资料，使用 mode='encyclopedia' 比搜索 'xxx 百度百科' 效果好得多。"
             ),
             "parameters": {
                 "type": "object",
@@ -32,9 +37,11 @@ def _build_search_tool() -> ToolDefinition:
                     "mode": {
                         "type": "string",
                         "description": (
-                            "研究模式（可选）：encyclopedia（百科类）、community（社区类）、"
-                            "news（新闻类）、official（官方类）、video（视频类）、"
-                            "academic（学术类）。不填则使用普通关键词搜索"
+                            "研究模式（强烈推荐用于资料收集）：encyclopedia（百科类，查百度百科/wiki等）、"
+                            "community（社区类，查知乎/贴吧/论坛/NGA）、"
+                            "news（新闻类）、official（官方类，查官网）、"
+                            "video（视频类）、academic（学术类）。"
+                            "不填则仅做普通关键词搜索，易返回低相关度结果"
                         ),
                     },
                 },
@@ -90,10 +97,12 @@ class WebSearchExecutor:
         engines: list[str] | None = None,
         max_rounds: int = 5,
         preview_pages_limit: int = 30,
+        variant_result_limit: int = 6,
     ) -> None:
         self._engines = engines or ["bing", "duckduckgo"]
         self._max_rounds = max_rounds
         self._preview_pages_limit = preview_pages_limit
+        self._variant_result_limit = variant_result_limit
         self._session: SearchSession | None = None
 
     def _get_session(self) -> SearchSession:
@@ -129,7 +138,13 @@ class WebSearchExecutor:
 
         if mode and mode != "raw":
             try:
-                resp = await session.research(query, modes=mode, num_results=num_results)
+                resp = await session.research(
+                    query,
+                    modes=mode,
+                    num_results=num_results,
+                    variant_result_limit=self._variant_result_limit,
+                    total_result_limit=self._preview_pages_limit,
+                )
             except Exception as e:
                 return f"[错误] 研究搜索失败: {e}"
         else:
@@ -189,6 +204,7 @@ def build_web_search_package(
     engines: list[str] | None = None,
     max_rounds: int = 5,
     preview_pages_limit: int = 30,
+    variant_result_limit: int = 6,
 ) -> ToolPackage | None:
     """构建联网搜索工具包。
 
@@ -196,7 +212,8 @@ def build_web_search_package(
         enabled: 是否启用该工具包。为 False 时返回 None，不会注册。
         engines: 搜索引擎列表，默认 ["bing", "duckduckgo"]
         max_rounds: 最大搜索轮次，默认 5
-        preview_pages_limit: 单次搜索预览页面数上限，默认 30
+        preview_pages_limit: 单次搜索返回结果总数上限，默认 30
+        variant_result_limit: 研究模式每个变体查询的最大返回结果数，默认 6
 
     Returns:
         ToolPackage 实例，或 None（当 enabled=False）
@@ -208,6 +225,7 @@ def build_web_search_package(
         engines=engines,
         max_rounds=max_rounds,
         preview_pages_limit=preview_pages_limit,
+        variant_result_limit=variant_result_limit,
     )
 
     tools = [
@@ -230,5 +248,6 @@ def build_web_search_package(
         ),
         tools=tools,
         executor=executor.execute,
+        reset_handler=executor.reset,
         locked=True,
     )

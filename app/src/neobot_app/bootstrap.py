@@ -397,6 +397,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         enabled=getattr(web_search_cfg, "enabled", True) if web_search_cfg else False,
         max_rounds=getattr(web_search_cfg, "max_search_rounds", 5) if web_search_cfg else 5,
         preview_pages_limit=getattr(web_search_cfg, "preview_pages_limit", 30) if web_search_cfg else 30,
+        variant_result_limit=getattr(web_search_cfg, "variant_result_limit", 6) if web_search_cfg else 6,
     )
     if ws_package is not None:
         tool_package_manager = ToolPackageManager([ws_package])

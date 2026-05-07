@@ -160,8 +160,19 @@ class SearchSession:
         modes: list[str] | str | None = None,
         variants: list[str] | None = None,
         num_results: int = 10,
+        variant_result_limit: int = 6,
+        total_result_limit: int = 30,
     ) -> SearchResponse:
-        """智能研究模式：从多个角度自动生成查询变体，合并去重，仅计 1 轮。"""
+        """智能研究模式：从多个角度自动生成查询变体，合并去重，仅计 1 轮。
+
+        Args:
+            topic: 研究主题
+            modes: 查询模式
+            variants: 手动覆盖变体列表
+            num_results: 主查询返回结果数
+            variant_result_limit: 每个变体查询的最大返回结果数
+            total_result_limit: 合并后总结果数上限
+        """
         import asyncio
 
         if variants is None:
@@ -185,8 +196,10 @@ class SearchSession:
         async def _query(q: str, n: int) -> SearchResponse:
             return await self._execute_search(q, n)
 
+        # 每个变体使用统一的 variant_result_limit
+        variant_n = max(1, min(variant_result_limit, num_results))
         primary_future = _query(topic, num_results)
-        variant_futures = [_query(v, max(6, num_results // 2)) for v in variants]
+        variant_futures = [_query(v, variant_n) for v in variants]
 
         primary = await primary_future
         variant_responses = await asyncio.gather(*variant_futures)
@@ -207,8 +220,10 @@ class SearchSession:
         primary.results = self._rerank_by_diversity(primary.results)
         self._reindex_results(primary.results)
 
-        if len(primary.results) > self.MAX_RESULTS_PER_SEARCH:
-            primary.results = primary.results[: self.MAX_RESULTS_PER_SEARCH]
+        # 总结果数受 total_result_limit 限制
+        cap = max(1, total_result_limit)
+        if len(primary.results) > cap:
+            primary.results = primary.results[:cap]
 
         primary.total_estimated = len(primary.results)
         primary.query = topic

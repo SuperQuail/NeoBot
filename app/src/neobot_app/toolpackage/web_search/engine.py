@@ -113,7 +113,10 @@ class DuckDuckGoSearchEngine(BaseSearchEngine):
     async def search(self, query: str, num_results: int = 10) -> SearchResponse:
         t0 = time.perf_counter()
         try:
-            from duckduckgo_search import DDGS
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS  # 旧版兼容
 
             loop = __import__("asyncio").get_event_loop()
             results_raw = await loop.run_in_executor(

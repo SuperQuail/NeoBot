@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 ToolDefinition = dict[str, Any]
 ToolExecutorFn = Callable[[str, dict[str, Any]], Awaitable[str]]
+ResetHandlerFn = Callable[[], None]
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ToolPackage:
         description: 完整功能描述，通过 list_tools 查看
         tools: 包内工具的定义列表（使用原始工具名）
         executor: 工具执行函数 (tool_name, args) -> result_str
+        reset_handler: 可选，复位内部状态的回调（如重置搜索会话计数器）
         locked: 初始锁定状态，默认 True
     """
 
@@ -29,6 +31,7 @@ class ToolPackage:
     description: str
     tools: list[ToolDefinition]
     executor: ToolExecutorFn
+    reset_handler: ResetHandlerFn | None = None
     locked: bool = True
 
 
@@ -53,6 +56,17 @@ class ToolPackageManager:
     @property
     def unlocked_packages(self) -> list[ToolPackage]:
         return [p for p in self._packages.values() if not p.locked]
+
+    def reset_sessions(self) -> None:
+        """复位所有工具包状态，在新会话启动时调用。
+
+        重锁全部工具包并复位内部会话状态（搜索计数器等），
+        确保每个新会话从零开始，解锁状态不会跨会话泄漏。
+        """
+        for pkg in self._packages.values():
+            pkg.locked = True
+            if pkg.reset_handler is not None:
+                pkg.reset_handler()
 
     def make_tool_name(self, package_id: str, tool_name: str) -> str:
         return f"{package_id}{self.SEPARATOR}{tool_name}"

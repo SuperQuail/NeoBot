@@ -269,7 +269,13 @@ class Agent:
         for call in tool_calls:
             name = call["function"]["name"]
             raw = call["function"]["arguments"]
-            args = parse_tool_args(raw)
+            try:
+                args = parse_tool_args(raw)
+            except Exception as exc:
+                result = f"Error: 工具参数 JSON 解析失败: {exc}"
+                self._emit("error", {"name": name, "error": result})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                continue
             action = self._decide_tool_action(name, args)
 
             if action == "ask" and not await self._ask_tool_guard(name, args):

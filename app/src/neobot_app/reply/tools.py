@@ -194,7 +194,9 @@ class ReplyToolExecutor(ToolExecutor):
                 _tool_def(
                     "send_long_reply",
                     "发送 Markdown 格式的长回复。这是唯一允许使用 Markdown 格式的发送方式。"
-                    "将 Markdown 内容提供后，系统会自动将其转换为图片发送。"
+                    "提供 markdown 内容时，系统自动将其转为图片发送。"
+                    "如果已有预渲染的图片文件，可提供 image_path 直接发送，"
+                    "此时 markdown 仅用于日志记录（仍建议提供以便追溯）。"
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
                     "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
@@ -203,7 +205,11 @@ class ReplyToolExecutor(ToolExecutor):
                         "properties": {
                             "markdown": {
                                 "type": "string",
-                                "description": "Markdown 格式的回复内容。支持标题、列表、代码块、表格等标准 Markdown 语法。",
+                                "description": "Markdown 格式的回复内容（image_path 为空时必填）。支持标题、列表、代码块、表格等标准 Markdown 语法。",
+                            },
+                            "image_path": {
+                                "type": "string",
+                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。解题任务完成通知中会包含此路径。",
                             },
                             "reply_to": {
                                 "type": "integer",
@@ -219,7 +225,7 @@ class ReplyToolExecutor(ToolExecutor):
                                 "description": "可选，随图片一起发送的简短说明文字。",
                             },
                         },
-                        "required": ["markdown"],
+                        "required": [],
                     },
                 ),
             )
@@ -412,6 +418,11 @@ class ReplyToolExecutor(ToolExecutor):
                         "在 previous_response 中传入其上次回复，并在 task 中给出答复；"
                         "需要同一个子代理持续处理时传同一个 session_id。"
                         "子代理可按需通过自己的工具读取当前聊天上下文。"
+                        "重要：仅做单一信息查询（查天气/查事实/查定义），不需要分析整理或写长文时，"
+                        "使用 list_tools 查看可用工具包，用 unlock 解锁 web_search 工具包自行搜索即可，不要委托 agent。"
+                        "但如果任务涉及研究收集+分析整理+撰写输出（如写报告/写markdown/综合评测），"
+                        "即使包含搜索步骤也是复杂任务，必须委托 problem_solver 处理。"
+                        "判断标准：只需回答一句话的事实查询→自行搜索；需要组织材料并产出结构化内容→委托 problem_solver。"
                         "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
                         "即使用户只说「这张图/刚才那张图/加到表情包」也直接委托 creator，不要先委托 image_parse。"
                         "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
@@ -470,12 +481,15 @@ class ReplyToolExecutor(ToolExecutor):
                 ]
             )
         if self._tool_package_manager is not None:
+            # 合并工具包管理器动态生成的工具（unlock / relock / 已解锁包的工具）
+            tools.extend(self._tool_package_manager.definitions())
             tools.append(
                 _tool_def(
                     "list_tools",
                     "列出工具包信息。无参时列出全部工具包（含锁定状态和简短描述）；"
                     "指定 package_id 时显示该工具包的详细功能说明和包含的工具列表。"
-                    "请在需要了解有哪些工具包可用、或者需要查看某个工具包的能力范围时使用。",
+                    "请在需要了解有哪些工具包可用时使用。"
+                    "使用 unlock <工具包ID> 解锁需要的工具包后即可使用其中的工具。",
                     {
                         "properties": {
                             "package_id": {
@@ -578,6 +592,10 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
+        if self._tool_package_manager is not None:
+            parsed = self._tool_package_manager.parse_tool_name(name)
+            if parsed is not None or name in ("unlock", "relock"):
+                return await self._tool_package_manager.execute(name, args)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -943,9 +961,16 @@ class ReplyToolExecutor(ToolExecutor):
     async def _execute_send_long_reply(self, args: dict) -> str:
         if self._markdown_image_converter is None:
             return json.dumps({"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False)
+
         markdown = str(args.get("markdown") or "").strip()
-        if not markdown:
-            return json.dumps({"ok": False, "error": "markdown 内容不能为空"}, ensure_ascii=False)
+        pre_rendered = str(args.get("image_path") or "").strip()
+
+        if not markdown and not pre_rendered:
+            return json.dumps(
+                {"ok": False, "error": "markdown 和 image_path 至少需要提供一个"},
+                ensure_ascii=False,
+            )
+
         reply_to = args.get("reply_to")
         if reply_to is not None:
             try:
@@ -960,15 +985,20 @@ class ReplyToolExecutor(ToolExecutor):
             except (ValueError, TypeError):
                 return json.dumps({"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False)
         caption = str(args.get("caption") or "").strip()
-        try:
-            image_path = await self._markdown_image_converter.convert(markdown)
-        except Exception as exc:
-            self._logger.error(f"Markdown 转图片失败: {exc}")
-            return json.dumps({"ok": False, "error": f"Markdown 转图片失败：{exc}"}, ensure_ascii=False)
+
+        if pre_rendered:
+            image_path = pre_rendered
+        else:
+            try:
+                image_path = str(await self._markdown_image_converter.convert(markdown))
+            except Exception as exc:
+                self._logger.error(f"Markdown 转图片失败: {exc}")
+                return json.dumps({"ok": False, "error": f"Markdown 转图片失败：{exc}"}, ensure_ascii=False)
+
         # 调用 orchestrator 提供的 handler 实际发送图片
         if self._send_long_reply is not None:
             await self._send_long_reply(
-                image_path=str(image_path),
+                image_path=image_path,
                 caption=caption,
                 reply_to=reply_to,
                 mention=mention,
@@ -977,9 +1007,9 @@ class ReplyToolExecutor(ToolExecutor):
         return json.dumps({
             "ok": True,
             "status": "sent",
-            "image_path": str(image_path),
+            "image_path": image_path,
             "caption": caption or None,
-            "message": f"已发送Markdown图片，md内容：{markdown[:300]}{'...' if len(markdown) > 300 else ''}",
+            "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
         }, ensure_ascii=False)
 
     async def _execute_check_last_drawing(self, args: dict) -> str:

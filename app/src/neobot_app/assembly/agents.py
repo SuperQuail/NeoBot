@@ -22,6 +22,7 @@ from neobot_app.agents import (
     build_willingness_control_agent,
 )
 from neobot_app.config.schemas.bot import BotConfig
+from neobot_app.core import DATA_DIR
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -106,6 +107,7 @@ def build_agent_registry(
                         config=creator_config,
                         emoji_service=emoji_service,
                         vision_provider=vision_provider,
+                        markdown_dir=DATA_DIR / "markdown_images",
                         logger=active_logger,
                         drawing_manager=drawing_manager,
                     ),
@@ -232,6 +234,7 @@ def build_agent_registry(
                         "engines": ["bing", "duckduckgo"],
                         "max_rounds": getattr(web_search_cfg, "max_search_rounds", 5),
                         "preview_pages_limit": getattr(web_search_cfg, "preview_pages_limit", 30),
+                        "variant_result_limit": getattr(web_search_cfg, "variant_result_limit", 6),
                     }
                 registry.register(
                     "problem_solver",
