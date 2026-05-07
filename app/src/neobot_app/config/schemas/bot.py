@@ -1127,6 +1127,16 @@ class EnhancedChat(Chat):
         default=60,
         metadata={"description": "wait 工具调用冷却秒数；同一会话在一次 wait 调用后需等待此秒数才可再次调用"},
     )
+    group_chat_reply_lifespan: int = field(
+        default=5,
+        metadata={
+            "description": "群聊回复管线寿命；每次回复-1，归零则销毁管线。设为0禁用寿命机制，回复结束后立即销毁管线"
+        },
+    )
+    group_chat_suspend_wait_seconds: int = field(
+        default=3600,
+        metadata={"description": "群聊回复后挂起等待秒数；超时无新消息则结束会话，默认3600秒（1小时）"},
+    )
 
 
 @dataclass

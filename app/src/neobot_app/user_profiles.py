@@ -198,6 +198,27 @@ class UserProfileService:
                 lines.append(rendered)
         return "\n".join(lines)
 
+    async def render_specific_members(
+        self,
+        user_ids: list[str | int],
+    ) -> str:
+        """为指定的用户ID列表渲染群成员档案文本，用于挂起恢复时补充新成员档案。"""
+        lines: list[str] = []
+        for index, user_id in enumerate(user_ids, start=1):
+            profile = await self.ensure_user_profile(str(user_id))
+            archive_text = await self._fetch_user_archive(str(user_id))
+            member = SimpleNamespace(
+                user_id=int(user_id),
+                nickname=getattr(profile, "nick_name", None),
+                card=None,
+                sex=getattr(profile, "sex", None),
+                role=None,
+            )
+            rendered = self._format_group_member_line(index, member, profile, archive_text=archive_text)
+            if rendered:
+                lines.append(rendered)
+        return "\n".join(lines)
+
     async def render_bot_group_admin_status(
         self,
         group_id: str | int,

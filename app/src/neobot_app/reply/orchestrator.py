@@ -540,6 +540,27 @@ class ReplyOrchestrator:
         value = getattr(chat, "enable_ai_reply_regenerate_on_length_limit", True)
         return bool(value)
 
+    def _get_group_chat_reply_lifespan(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "group_chat_reply_lifespan", None)
+            if isinstance(val, int) and val >= 0:
+                return val
+        return 5
+
+    def _get_group_chat_suspend_wait_seconds(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "group_chat_suspend_wait_seconds", None)
+            if isinstance(val, int) and val > 0:
+                return val
+        return 3600
+
+    def _get_at_mention_reply_delay_seconds(self) -> float:
+        if self._config is not None:
+            val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
+            if isinstance(val, (int, float)) and val >= 0:
+                return float(val)
+        return 5.0
+
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         if self._debug_recorder is None:
             return
@@ -1048,6 +1069,18 @@ class ReplyOrchestrator:
             event.conversation_ref is not None
             and event.conversation_ref.kind == "group"
         )
+        group_lifespan = self._get_group_chat_reply_lifespan() if is_group else 0
+
+        # 记录已渲染的群成员用户ID，用于挂起恢复时补充新成员档案
+        rendered_user_ids: set[str] = set()
+        if is_group:
+            from neobot_app.message.queue_impl import QueueEntryType as _QET
+            for entry in queue_copy.entries(queue_key):
+                if entry.kind == _QET.MESSAGE and entry.message is not None:
+                    uid = getattr(entry.message, "user_id", None)
+                    if uid is not None:
+                        rendered_user_ids.add(str(uid))
+
         silent_timeout = self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
         silent_deadline = (
             monotonic_seconds() + silent_timeout
@@ -1352,11 +1385,93 @@ class ReplyOrchestrator:
             # 保存编号映射（每轮更新）
             event.message_number_map = numbering.mapping
 
-            # 不回复或取消 → 结束
-            if not reply_sent or cancelled:
+            # 未回复且非取消 → 异常，结束
+            if not reply_sent and not cancelled:
                 break
 
-            # 非私聊 → 结束
+            # ── 群聊寿命机制 ──
+            if is_group:
+                if group_lifespan > 0:
+                    group_lifespan -= 1
+                    action = "cancel消耗寿命" if cancelled else "回复消耗寿命"
+                    self._logger.info(
+                        f"群聊回复管线{action}",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        remaining_lifespan=group_lifespan,
+                        cancelled=cancelled,
+                    )
+                    if group_lifespan <= 0:
+                        self._logger.info(
+                            "群聊回复管线寿命归零，结束管线",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        break
+
+                    # 群聊挂起，等待新消息或后台通知
+                    self._logger.debug(
+                        "群聊管线挂起等待新消息或通知",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        remaining_lifespan=group_lifespan,
+                    )
+                    new_entries, notification_text = await self._suspend_group_chat(
+                        queue, queue_copy, queue_key
+                    )
+                    if not new_entries and not notification_text:
+                        self._logger.debug(
+                            "群聊挂起超时，结束管线",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        break
+
+                    # 注入后台通知
+                    if notification_text:
+                        messages.append({"role": "user", "content": notification_text})
+                        self._logger.info(
+                            "注入后台通知（群聊挂起期间）",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        self._record_debug(
+                            "background_notification_injected_during_group_suspend",
+                            event,
+                            queue_key=queue_key,
+                            notification=notification_text[:200],
+                        )
+
+                    # 构建增量提示并注入（仅新消息+新成员档案）
+                    if new_entries:
+                        resume_content = await self._build_group_chat_resume_content(
+                            new_entries, queue_key, rendered_user_ids, numbering, queue_copy
+                        )
+                        # 更新已渲染用户ID集合
+                        from neobot_app.message.queue_impl import QueueEntryType as _QET2
+                        for entry in new_entries:
+                            if entry.kind == _QET2.MESSAGE and entry.message is not None:
+                                uid = getattr(entry.message, "user_id", None)
+                                if uid is not None:
+                                    rendered_user_ids.add(str(uid))
+                        if resume_content:
+                            messages.append({"role": "user", "content": resume_content})
+                            self._record_debug(
+                                "group_chat_resume_content_injected",
+                                event,
+                                queue_key=queue_key,
+                                injected_text=resume_content,
+                            )
+
+                    # 重置事件状态，允许下一轮回复
+                    event.state = ReplyState.GENERATING
+                    event.completed_at = None
+                    continue  # 继续外层 while 循环，重新进入 agent 回复流程
+
+                # 寿命为 0（禁用寿命机制），正常结束管线
+                break
+
+            # 非私聊 → 结束（兜底）
             if not is_private:
                 break
 
@@ -1632,6 +1747,252 @@ class ReplyOrchestrator:
                 queue_key=queue_key,
             )
         return all_new_entries, notification_text
+
+    async def _suspend_group_chat(
+        self,
+        source: MessageQueue,
+        snapshot: MessageQueue,
+        queue_key: str,
+    ) -> tuple[list, str | None]:
+        """挂起等待群聊新消息或后台通知。
+
+        新消息需通过回复意愿判断（@提及或概率命中）才结束挂起。
+        - @提及：等待 at_mention_reply_delay_seconds 收集上下文后结束挂起
+        - 普通意愿命中：立即结束挂起
+        - 后台通知：立即中断挂起
+        返回 (新消息条目列表, 通知文本或None)；返回空列表且无通知表示超时。
+        """
+        from neobot_app.message.queue_impl import QueueEntryType as _QET
+
+        suspend_secs = self._get_group_chat_suspend_wait_seconds()
+        at_delay = self._get_at_mention_reply_delay_seconds()
+        deadline = monotonic_seconds() + suspend_secs
+        all_new_entries: list = []
+        notification_text: str | None = None
+        has_willing = False
+        at_mention_deadline = 0.0
+
+        self._logger.debug(
+            "群聊挂起循环开始轮询",
+            queue_key=queue_key,
+            suspend_secs=suspend_secs,
+            at_delay=at_delay,
+        )
+        pipeline_key = f"group:{queue_key}"
+
+        def _has_at_mention(entries: list) -> bool:
+            """检查条目列表中是否有@提及消息。"""
+            if self._willing_service is None:
+                return False
+            for entry in entries:
+                if entry.kind != _QET.MESSAGE or entry.message is None:
+                    continue
+                if self._willing_service.is_at_mentioned(entry.message):
+                    return True
+            return False
+
+        def _check_willing(entries: list) -> bool:
+            """检查条目列表中是否有任何消息通过回复意愿判断。"""
+            if self._willing_service is None:
+                for entry in entries:
+                    if entry.kind == _QET.MESSAGE and entry.message is not None:
+                        return True
+                return False
+            for entry in entries:
+                if entry.kind != _QET.MESSAGE or entry.message is None:
+                    continue
+                message = entry.message
+                sender_id = getattr(message, "user_id", "?")
+                if self._willing_service.is_at_mentioned(message):
+                    block_reason = self._willing_service.block_reason_for_message(
+                        message=message, queue_key=queue_key
+                    )
+                    if block_reason:
+                        self._logger.info(
+                            "群聊挂起@提及消息被屏蔽",
+                            queue_key=queue_key,
+                            sender_id=str(sender_id),
+                            reason=block_reason,
+                        )
+                        continue
+                    self._logger.info(
+                        "群聊挂起@提及消息，启动收集窗口",
+                        queue_key=queue_key,
+                        sender_id=str(sender_id),
+                        delay_seconds=at_delay,
+                    )
+                    return True
+                try:
+                    decision = self._willing_service.evaluate(
+                        message=message, queue=source, queue_key=queue_key
+                    )
+                    self._logger.info(
+                        "群聊挂起新消息意愿判断",
+                        queue_key=queue_key,
+                        sender_id=str(sender_id),
+                        probability=f"{decision.probability:.3f}",
+                        should_reply=decision.should_reply,
+                        reasons=list(decision.reasons),
+                    )
+                    if decision.should_reply:
+                        return True
+                except Exception as exc:
+                    self._logger.info(
+                        "群聊挂起意愿判断异常，跳过该消息",
+                        queue_key=queue_key,
+                        sender_id=str(sender_id),
+                        error=str(exc),
+                    )
+            return False
+
+        while monotonic_seconds() < deadline:
+            await asyncio.sleep(1.0)
+            current_new: list = []
+            try:
+                current_new = self._collect_new_entries(source, snapshot, queue_key)
+            except Exception as exc:
+                self._logger.debug(
+                    "群聊挂起收集新消息异常",
+                    queue_key=queue_key,
+                    error=str(exc),
+                )
+                continue
+            if current_new:
+                current_new = self._consume_ai_reply_blocked_entries(current_new)
+            if current_new:
+                all_new_entries.extend(current_new)
+                if not has_willing:
+                    if _check_willing(current_new):
+                        has_willing = True
+                        if _has_at_mention(current_new):
+                            # @提及：启动延迟收集窗口，不立即break
+                            at_mention_deadline = monotonic_seconds() + at_delay
+                        else:
+                            # 普通意愿命中：立即结束
+                            self._logger.debug(
+                                "群聊挂起普通意愿命中，立即结束挂起",
+                                queue_key=queue_key,
+                                count=len(all_new_entries),
+                            )
+                            break
+
+            # 轮询后台通知，有通知立即中断挂起
+            if notification_text is None:
+                notification_text = await self._poll_background_notifications(pipeline_key)
+
+            if notification_text:
+                self._logger.debug(
+                    "群聊挂起检测到后台通知，结束挂起",
+                    queue_key=queue_key,
+                )
+                break
+
+            # @提及延迟窗口到期
+            if at_mention_deadline > 0 and monotonic_seconds() >= at_mention_deadline:
+                self._logger.debug(
+                    "群聊挂起@提及收集窗口到期",
+                    queue_key=queue_key,
+                    total_new=len(all_new_entries),
+                )
+                break
+
+        if all_new_entries:
+            self._logger.debug(
+                "群聊挂起收集到新消息",
+                queue_key=queue_key,
+                count=len(all_new_entries),
+            )
+        elif notification_text:
+            self._logger.debug(
+                "群聊挂起收到后台通知",
+                queue_key=queue_key,
+            )
+        else:
+            self._logger.debug(
+                "群聊挂起超时未收到新消息或通知",
+                queue_key=queue_key,
+            )
+
+        # 通知存在 → 总是返回（通知本身就是触发理由）
+        if notification_text:
+            return all_new_entries, notification_text
+
+        # 有意愿消息 → 返回
+        if has_willing:
+            return all_new_entries, None
+
+        # 超时且无意愿消息 → 不触发回复
+        self._logger.debug(
+            "群聊挂起超时，未收到有意愿消息或通知",
+            queue_key=queue_key,
+            collected_count=len(all_new_entries),
+        )
+        return [], None
+
+    async def _build_group_chat_resume_content(
+        self,
+        new_entries: list,
+        queue_key: str,
+        rendered_user_ids: set[str],
+        numbering: Any,
+        queue_copy: MessageQueue,
+    ) -> str:
+        """为群聊挂起恢复构建增量提示文本：仅包含新消息和新成员档案。"""
+        from neobot_app.message.queue_impl import QueueEntryType
+
+        # 收集新消息中的用户ID
+        new_user_ids: list[str] = []
+        seen: set[str] = set()
+        for entry in new_entries:
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                uid = getattr(entry.message, "user_id", None)
+                if uid is not None:
+                    uid_str = str(uid)
+                    if uid_str not in seen:
+                        seen.add(uid_str)
+                        if uid_str not in rendered_user_ids:
+                            new_user_ids.append(uid_str)
+
+        parts: list[str] = []
+
+        # 新消息文本
+        if numbering is not None:
+            previous_entries = queue_copy.entries(queue_key)
+            # 先回退快照以获取未包含新条目的状态
+            new_text = numbering.apply_new(
+                new_entries,
+                queue_copy,
+                context_entries=queue_copy.entries(queue_key),
+                previous_entries=[],
+            )
+            if new_text:
+                parts.append(f"[收到新消息]\n{new_text}")
+        else:
+            new_text_lines: list[str] = []
+            for entry in new_entries:
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                    text = getattr(entry.message, "raw_message", "") or str(entry.message)
+                    sender = getattr(entry.message, "sender", None)
+                    sender_name = getattr(sender, "nickname", None) or getattr(entry.message, "user_id", "?")
+                    new_text_lines.append(f"{sender_name}: {text}")
+            if new_text_lines:
+                parts.append(f"[收到新消息]\n" + "\n".join(new_text_lines))
+
+        # 新成员档案
+        if new_user_ids and self._prompt_builder is not None:
+            profile_service = getattr(self._prompt_builder, "_profile_service", None)
+            if profile_service is not None:
+                new_member_text = await profile_service.render_specific_members(new_user_ids)
+                if new_member_text:
+                    parts.append(f"[新出现的群友档案]\n{new_member_text}")
+
+        if not parts:
+            return ""
+
+        parts.append(
+            "这是群聊对话。请根据新消息决定是否需要回复。"
+        )
+        return "\n\n".join(parts)
 
     # ── Prompt 构建 ──
 
