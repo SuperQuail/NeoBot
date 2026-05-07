@@ -381,6 +381,8 @@ class ReplyOrchestrator:
             self._notification_hub.clear()
         if self._agent_registry is not None:
             await self._agent_registry.close()
+        if self._provider is not None:
+            await self._provider.close()
         self._logger.info("ReplyOrchestrator 已关闭")
 
     def _resolve_mode(self) -> str:
@@ -1463,6 +1465,8 @@ class ReplyOrchestrator:
                                 injected_text=resume_content,
                             )
 
+                    # 重置静默超时计时器，避免挂起耗时触发超时保护
+                    reset_silent_deadline()
                     # 重置事件状态，允许下一轮回复
                     event.state = ReplyState.GENERATING
                     event.completed_at = None
@@ -1748,6 +1752,65 @@ class ReplyOrchestrator:
             )
         return all_new_entries, notification_text
 
+    def _evaluate_single_message_willing(
+        self,
+        *,
+        message: Any,
+        queue: Any,
+        queue_key: str,
+    ) -> bool:
+        """评估单条消息的回复意愿，与正常回复流程使用完全相同的判断逻辑。
+
+        返回 True 表示应该回复。
+        """
+        if self._willing_service is None:
+            return True
+
+        sender_id = str(getattr(message, "user_id", "?"))
+
+        # @提及 → 检查屏蔽后直接通过
+        if self._willing_service.is_at_mentioned(message):
+            block_reason = self._willing_service.block_reason_for_message(
+                message=message, queue_key=queue_key
+            )
+            if block_reason:
+                self._logger.info(
+                    "挂起意愿判断：@提及消息被屏蔽",
+                    queue_key=queue_key,
+                    sender_id=sender_id,
+                    reason=block_reason,
+                )
+                return False
+            self._logger.info(
+                "挂起意愿判断：@提及，直接触发回复",
+                queue_key=queue_key,
+                sender_id=sender_id,
+            )
+            return True
+
+        # 正常意愿评估
+        try:
+            decision = self._willing_service.evaluate(
+                message=message, queue=queue, queue_key=queue_key
+            )
+            self._logger.info(
+                "挂起意愿判断",
+                queue_key=queue_key,
+                sender_id=sender_id,
+                probability=f"{decision.probability:.3f}",
+                should_reply=decision.should_reply,
+                reasons=list(decision.reasons),
+            )
+            return decision.should_reply
+        except Exception as exc:
+            self._logger.info(
+                "挂起意愿判断异常，跳过",
+                queue_key=queue_key,
+                sender_id=sender_id,
+                error=str(exc),
+            )
+            return False
+
     async def _suspend_group_chat(
         self,
         source: MessageQueue,
@@ -1792,57 +1855,17 @@ class ReplyOrchestrator:
             return False
 
         def _check_willing(entries: list) -> bool:
-            """检查条目列表中是否有任何消息通过回复意愿判断。"""
-            if self._willing_service is None:
-                for entry in entries:
-                    if entry.kind == _QET.MESSAGE and entry.message is not None:
-                        return True
-                return False
+            """检查条目列表中是否有任何消息通过回复意愿判断。
+
+            复用 _evaluate_single_message_willing，与正常回复流程使用同一套判断逻辑。
+            """
             for entry in entries:
                 if entry.kind != _QET.MESSAGE or entry.message is None:
                     continue
-                message = entry.message
-                sender_id = getattr(message, "user_id", "?")
-                if self._willing_service.is_at_mentioned(message):
-                    block_reason = self._willing_service.block_reason_for_message(
-                        message=message, queue_key=queue_key
-                    )
-                    if block_reason:
-                        self._logger.info(
-                            "群聊挂起@提及消息被屏蔽",
-                            queue_key=queue_key,
-                            sender_id=str(sender_id),
-                            reason=block_reason,
-                        )
-                        continue
-                    self._logger.info(
-                        "群聊挂起@提及消息，启动收集窗口",
-                        queue_key=queue_key,
-                        sender_id=str(sender_id),
-                        delay_seconds=at_delay,
-                    )
+                if self._evaluate_single_message_willing(
+                    message=entry.message, queue=source, queue_key=queue_key,
+                ):
                     return True
-                try:
-                    decision = self._willing_service.evaluate(
-                        message=message, queue=source, queue_key=queue_key
-                    )
-                    self._logger.info(
-                        "群聊挂起新消息意愿判断",
-                        queue_key=queue_key,
-                        sender_id=str(sender_id),
-                        probability=f"{decision.probability:.3f}",
-                        should_reply=decision.should_reply,
-                        reasons=list(decision.reasons),
-                    )
-                    if decision.should_reply:
-                        return True
-                except Exception as exc:
-                    self._logger.info(
-                        "群聊挂起意愿判断异常，跳过该消息",
-                        queue_key=queue_key,
-                        sender_id=str(sender_id),
-                        error=str(exc),
-                    )
             return False
 
         while monotonic_seconds() < deadline:

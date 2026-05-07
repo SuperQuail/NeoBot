@@ -43,6 +43,9 @@ class NeoBotApplication(Generic[T]):
         markdown_image_converter: Any = None,
         plugin_runtime: Any = None,
         report_service: Any = None,
+        engine: Any = None,
+        vision_provider: Any = None,
+        archive_summary_service: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -67,6 +70,9 @@ class NeoBotApplication(Generic[T]):
         self._plugin_runtime = plugin_runtime
         self._report_service = report_service
         self._report_task: asyncio.Task | None = None
+        self._engine = engine
+        self._vision_provider = vision_provider
+        self._archive_summary_service = archive_summary_service
 
     async def start(self) -> None:
         if self._started:
@@ -139,6 +145,8 @@ class NeoBotApplication(Generic[T]):
         self.event_ingress.stop()
         if self._message_pipeline is not None:
             await self._message_pipeline.flush_pending_summaries()
+        if self._archive_summary_service is not None:
+            await self._archive_summary_service.close()
         if self._plugin_runtime is not None:
             await self._plugin_runtime.stop_all()
         if self._reply_orchestrator is not None:
@@ -151,10 +159,14 @@ class NeoBotApplication(Generic[T]):
             await self._markdown_image_converter.stop()
         if self._emoji_service is not None:
             await self._emoji_service.stop()
+        if self._vision_provider is not None:
+            await self._vision_provider.close()
         await self.adapter.stop()
         if self.tts_service is not None:
             await self.tts_service.close()
         await self.file_server.stop()
+        if self._engine is not None:
+            await self._engine.dispose()
         self._started = False
         self._logger.info("NeoBot已停止")
 

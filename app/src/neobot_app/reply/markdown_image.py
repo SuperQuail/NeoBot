@@ -81,6 +81,7 @@ class MarkdownImageConverter:
 
         output_path = self._output_dir / f"{filename}.png"
         result.image.save(str(output_path), "PNG")
+        result.image.close()
         self._logger.info("Markdown 转图片完成", path=str(output_path))
         return output_path
 

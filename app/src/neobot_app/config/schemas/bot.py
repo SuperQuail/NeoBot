@@ -767,11 +767,11 @@ class AgentMemoryArchive:
         metadata={"description": "允许访问的档案表名列表；留空表示不限制"},
     )
     auto_compact_chars: int = field(
-        default=500,
+        default=200,
         metadata={"description": "单条档案超过此字符数时触发一次 AI 自动精简；0表示禁用"},
     )
     max_chars: int = field(
-        default=600,
+        default=300,
         metadata={"description": "单条档案最大字符数；超过后截断写入"},
     )
 
@@ -795,10 +795,31 @@ class AgentMemoryFavorability:
 
 
 @dataclass
+class AgentMemoryItemArchive:
+    """物品/事件关键词档案配置。
+
+    允许 Agent 以关键词为键建立独立数据表，记录对特定物品、事件或话题的
+    长期信息档案。该表与 user_profile / group_profile 共用同一套
+    auto_compact_chars / max_chars 长度控制（由 AgentMemoryArchive 配置）。
+    自动记忆总结系统也会同步向该表写入。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用物品/事件关键词档案"},
+    )
+    table_name: str = field(
+        default="item_archive",
+        metadata={"description": "物品/事件档案表名；Agent 使用此表名存储和检索关键词档案"},
+    )
+
+
+@dataclass
 class AgentMemory:
     trigger: AgentMemoryTrigger = field(default_factory=AgentMemoryTrigger)
     archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
     favorability: AgentMemoryFavorability = field(default_factory=AgentMemoryFavorability)
+    item_archive: AgentMemoryItemArchive = field(default_factory=AgentMemoryItemArchive)
 
 
 @dataclass

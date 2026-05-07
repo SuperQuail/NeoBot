@@ -382,6 +382,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         ),
         config=config,
         agent_registry=agent_registry,
+        item_archive_config=getattr(
+            getattr(getattr(config, "agent", None), "memory", None), "item_archive", None
+        ),
         logger=logger_factory.get_logger("app.archive_summary"),
     )
 
@@ -495,4 +498,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
         report_service=report_service,
+        engine=_engine,
+        vision_provider=vision_provider,
+        archive_summary_service=archive_summary_service,
     )

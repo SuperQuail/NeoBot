@@ -118,6 +118,7 @@ def build_agent_registry(
     # Register memory agent
     archive_config = config.agent.memory.archive
     favorability_config = config.agent.memory.favorability
+    item_archive_config = config.agent.memory.item_archive
     if archive_memory_service is not None:
         try:
             provider = factory("memory")
@@ -131,6 +132,7 @@ def build_agent_registry(
                     archive_memory_service,
                     config=archive_config,
                     favorability_config=favorability_config,
+                    item_archive_config=item_archive_config,
                     profile_service=profile_service,
                     adapter=adapter,
                     image_parse_provider=vision_provider,

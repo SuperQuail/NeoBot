@@ -106,12 +106,15 @@ class ArchiveMemoryAgentConfig:
     favorability_max_change: int = 5
     favorability_min: int = -1000
     favorability_max: int = 1000
+    item_archive_enabled: bool = True
+    item_archive_table: str = "item_archive"
 
     @classmethod
     def from_schema(
         cls,
         config: "AgentMemoryArchive | None" = None,
         favorability_config: "AgentMemoryFavorability | None" = None,
+        item_archive_config: "AgentMemoryItemArchive | None" = None,
     ) -> "ArchiveMemoryAgentConfig":
         base = cls()
         if config is not None:
@@ -126,6 +129,8 @@ class ArchiveMemoryAgentConfig:
                 favorability_max_change=base.favorability_max_change,
                 favorability_min=base.favorability_min,
                 favorability_max=base.favorability_max,
+                item_archive_enabled=base.item_archive_enabled,
+                item_archive_table=base.item_archive_table,
             )
         if favorability_config is not None:
             base = cls(
@@ -139,6 +144,20 @@ class ArchiveMemoryAgentConfig:
                 ),
                 favorability_min=int(getattr(favorability_config, "min_value", -1000) or -1000),
                 favorability_max=int(getattr(favorability_config, "max_value", 1000) or 1000),
+                item_archive_enabled=base.item_archive_enabled,
+                item_archive_table=base.item_archive_table,
+            )
+        if item_archive_config is not None:
+            base = cls(
+                allow_delete=base.allow_delete,
+                allowed_tables=base.allowed_tables,
+                auto_compact_chars=base.auto_compact_chars,
+                max_chars=base.max_chars,
+                favorability_max_change=base.favorability_max_change,
+                favorability_min=base.favorability_min,
+                favorability_max=base.favorability_max,
+                item_archive_enabled=bool(item_archive_config.enabled),
+                item_archive_table=str(item_archive_config.table_name).strip() or "item_archive",
             )
         return base
 
@@ -960,6 +979,7 @@ def build_archive_memory_toolset(
     *,
     config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
     favorability_config: "AgentMemoryFavorability | None" = None,
+    item_archive_config: "AgentMemoryItemArchive | None" = None,
     profile_service: "UserProfileService | None" = None,
     adapter: "OneBotAdapter | None" = None,
     compaction_provider: Provider | None = None,
@@ -970,7 +990,11 @@ def build_archive_memory_toolset(
     normalized = (
         config
         if isinstance(config, ArchiveMemoryAgentConfig)
-        else ArchiveMemoryAgentConfig.from_schema(config, favorability_config=favorability_config)
+        else ArchiveMemoryAgentConfig.from_schema(
+            config,
+            favorability_config=favorability_config,
+            item_archive_config=item_archive_config,
+        )
     )
     executor = ArchiveMemoryToolExecutor(
         archive_memory_service,
@@ -1021,6 +1045,21 @@ def _build_system_prompt(
         if has_favorability
         else ""
     )
+    item_archive_rule = ""
+    if config.item_archive_enabled:
+        item_archive_rule = (
+            f"物品/事件档案表（{config.item_archive_table}）：\n"
+            "这是一个独立的关键词档案数据表，用于记录对特定物品、事件、话题或概念的长期信息档案。\n"
+            "使用方式：\n"
+            "- key：使用一个或多个关键词（用下划线连接，如\"天气\"或\"天气_北京\"），作为该物品/事件的唯一标识。\n"
+            "- value：记录对该物品/事件的已知信息、属性、历史、关联人物等，保持紧凑。\n"
+            "- tags：可附带额外标签辅助检索。\n"
+            "适用场景：\n"
+            "- 群聊中反复讨论的某个物品（如某款游戏、某个工具）、事件（如某次日食、某次聚会）或话题（如某个梗）。\n"
+            "- 聊天中明确提及需要记住的关于某事物的信息。\n"
+            "- 自动总结时识别到值得记录的物品/事件信息。\n"
+            "写入前先读取已有档案，合并后再写回完整内容。\n"
+        )
     return (
         "你是记忆Agent。\n"
         "只处理长期记忆相关任务，优先调用工具，不要空谈。\n"
@@ -1036,6 +1075,7 @@ def _build_system_prompt(
         f"{user_info_rule}"
         f"{avatar_rule}"
         f"{history_rule}"
+        f"{item_archive_rule}"
         "read_archive 支持批量读取；需要一次查看多条时，优先使用 items 批量传入。\n"
         "list_archive 默认一次只看10条；如果还要继续看，使用 next_offset 作为新的 offset，并传入这次还想多看几条 limit。\n"
         "常用表约定：user_profile 表示用户档案，key 通常是 QQ 号；group_profile 表示群档案，key 通常是群号；group_summary 表示群摘要，key 通常是群号。\n"
@@ -1059,6 +1099,7 @@ class ArchiveMemoryAgent:
         *,
         config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
         favorability_config: "AgentMemoryFavorability | None" = None,
+        item_archive_config: "AgentMemoryItemArchive | None" = None,
         profile_service: "UserProfileService | None" = None,
         adapter: "OneBotAdapter | None" = None,
         image_parse_provider: Provider | None = None,
@@ -1067,7 +1108,11 @@ class ArchiveMemoryAgent:
         normalized = (
             config
             if isinstance(config, ArchiveMemoryAgentConfig)
-            else ArchiveMemoryAgentConfig.from_schema(config, favorability_config=favorability_config)
+            else ArchiveMemoryAgentConfig.from_schema(
+                config,
+                favorability_config=favorability_config,
+                item_archive_config=item_archive_config,
+            )
         )
         has_favorability = (
             profile_service is not None and normalized.favorability_max_change > 0
@@ -1138,6 +1183,7 @@ def build_archive_memory_agent(
     *,
     config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
     favorability_config: "AgentMemoryFavorability | None" = None,
+    item_archive_config: "AgentMemoryItemArchive | None" = None,
     profile_service: "UserProfileService | None" = None,
     adapter: "OneBotAdapter | None" = None,
     image_parse_provider: Provider | None = None,
@@ -1148,6 +1194,7 @@ def build_archive_memory_agent(
         archive_memory_service,
         config=config,
         favorability_config=favorability_config,
+        item_archive_config=item_archive_config,
         profile_service=profile_service,
         adapter=adapter,
         image_parse_provider=image_parse_provider,

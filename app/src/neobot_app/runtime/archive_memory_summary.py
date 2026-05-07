@@ -13,7 +13,7 @@ from neobot_app.favorability import favorability_to_text
 from neobot_app.time_context import get_current_time_and_lunar_date
 
 if TYPE_CHECKING:
-    from neobot_app.config.schemas.bot import BotConfig
+    from neobot_app.config.schemas.bot import AgentMemoryItemArchive, BotConfig
     from neobot_chat.providers.base import Provider
     from neobot_chat.tools.registry import AgentRegistry
 
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 COUNTER_TABLE = "memory_counter"
 GROUP_SUMMARY_TABLE = "group_summary"
 PRIVATE_SUMMARY_TABLE = "private_summary"
+ITEM_ARCHIVE_TABLE = "item_archive"
 SUMMARY_TAGS = ["auto_summary"]
 MAX_STORED_MESSAGE_CHARS = 800
 
@@ -35,6 +36,7 @@ class ArchiveMemoryAutoSummaryService:
         provider: "Provider | None",
         config: "BotConfig",
         agent_registry: "AgentRegistry | None" = None,
+        item_archive_config: "AgentMemoryItemArchive | None" = None,
         logger: Logger | None = None,
     ) -> None:
         self._archive = archive_memory_service
@@ -47,6 +49,10 @@ class ArchiveMemoryAutoSummaryService:
         self._favorability_max_change: int = int(getattr(fav_cfg, "max_change_per_summary", 5) or 5)
         self._favorability_min: int = int(getattr(fav_cfg, "min_value", -1000) or -1000)
         self._favorability_max: int = int(getattr(fav_cfg, "max_value", 1000) or 1000)
+        self._item_archive_enabled: bool = bool(item_archive_config.enabled) if item_archive_config else True
+        self._item_archive_table: str = (
+            str(item_archive_config.table_name).strip() or ITEM_ARCHIVE_TABLE
+        ) if item_archive_config else ITEM_ARCHIVE_TABLE
 
     async def record_message(
         self,
@@ -278,6 +284,10 @@ class ArchiveMemoryAutoSummaryService:
                 flushed_count=flushed,
             )
 
+    async def close(self) -> None:
+        if self._provider is not None:
+            await self._provider.close()
+
     async def _delegate_memory_agent_and_reset(
         self,
         *,
@@ -334,8 +344,8 @@ class ArchiveMemoryAutoSummaryService:
     def _summary_table_for(conversation_kind: str) -> str:
         return GROUP_SUMMARY_TABLE if conversation_kind == "group" else PRIVATE_SUMMARY_TABLE
 
-    @staticmethod
     def _build_summary_prompt(
+        self,
         *,
         conversation_kind: str,
         conversation_id: str,
@@ -350,13 +360,24 @@ class ArchiveMemoryAutoSummaryService:
         )
         old = old_summary or "(none)"
         recent = "\n".join(f"- {_format_counter_message(message)}" for message in messages)
+        item_instruction = ""
+        if self._item_archive_enabled:
+            item_instruction = (
+                f"\nAdditionally, identify any items, events, or topics discussed that are worth "
+                f"recording in the '{self._item_archive_table}' archive. "
+                f"For each item, use descriptive keywords as the key (joined with underscores, "
+                f"e.g. 'game_原神' or 'event_2026春游'), and write a compact summary of what was "
+                f"learned or discussed about that item/event. "
+                f"Merge with any existing entry for the same key.\n"
+            )
         return (
             f"Summary time: {current_time}\n"
             f"Conversation: {kind_label}\n"
             f"The messages below were generated shortly before this summary time.\n"
             "Update the existing archive summary with stable facts, recurring preferences, "
             "important decisions, relationships, and topic changes from the recent messages. "
-            "Keep it compact. Do not include trivial small talk unless it changes the long-term context.\n\n"
+            "Keep it compact. Do not include trivial small talk unless it changes the long-term context."
+            f"{item_instruction}\n\n"
             f"Existing summary:\n{old}\n\n"
             f"Recent messages:\n{recent}\n\n"
             "Updated summary:"
@@ -379,6 +400,15 @@ class ArchiveMemoryAutoSummaryService:
                 f"每次变更上限 ±{self._favorability_max_change}，范围 {self._favorability_min}~{self._favorability_max}。\n"
                 f"使用 update_favorability 工具执行变更，不要遗漏任何值得调整的用户。\n"
             )
+        item_instruction = ""
+        if self._item_archive_enabled:
+            item_instruction = (
+                f"最后，检查聊天中是否讨论了值得记录的物品、事件或话题，"
+                f"如果有，在 {self._item_archive_table} 表中记录：\n"
+                f"用关键词（下划线连接，如\"游戏_原神\"或\"事件_2026春游\"）作为 key，"
+                f"先 read_archive 检查已有档案，再 save_archive 合并写入。\n"
+                f"只记录确实有实质信息的内容，不要记录琐碎的提及。\n"
+            )
         if conversation_kind == "group":
             conversation_label = f"群聊(群号:{conversation_id})"
             workflow = (
@@ -388,6 +418,7 @@ class ArchiveMemoryAutoSummaryService:
                 "3. 没有需要记录的新信息时允许不写。\n"
                 f"4. {fav_instruction}"
                 "5. 最后读取并更新 group_profile，只记录对群的新稳定信息，不记录具体事件。\n"
+                f"6. {item_instruction}"
             )
         else:
             conversation_label = f"私聊(QQ号:{conversation_id})"
@@ -395,6 +426,7 @@ class ArchiveMemoryAutoSummaryService:
                 "这是自动触发的好友聊天记忆处理。请读取该好友现有 user_profile 档案，"
                 "只记录好友新的稳定信息或明确要求记住的内容，不记录具体聊天事件；没有新信息时允许不写。\n"
                 f"{fav_instruction}"
+                f"{item_instruction}"
             )
         return (
             f"当前时间(记忆总结时间): {current_time}\n"
