@@ -1067,6 +1067,10 @@ class EnhancedChat(Chat):
         default=True,
         metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置并在提示词中显示"},
     )
+    archive_fetch_window: int = field(
+        default=20,
+        metadata={"description": "档案获取窗口；只对消息队列中最新的此数量消息的发送者获取个人档案，戳一戳等同0.2条消息"},
+    )
     poke_weight: float = field(
         default=0.2,
         metadata={"description": "戳一戳事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个戳一戳等同1条消息）"},

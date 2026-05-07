@@ -451,6 +451,83 @@ class MessageQueue:
             if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
                 yield entry.message
 
+    def iterate_entries_from_newest_weighted(
+        self, key: str, max_weight: float,
+    ) -> Iterator[QueueEntry]:
+        """Iterate non-timestamp entries from newest, weighted.
+
+        Walks the queue from newest to oldest, accumulating the capacity-style
+        weight of each non-timestamp entry (1.0 for normal messages,
+        forward_weight for forwards, poke_weight for pokes,
+        reaction_weight for reactions).  Stops when the accumulated weight
+        meets or exceeds *max_weight*.
+
+        The first entry is always included regardless of weight.
+        """
+        queue = self._queues.get(key)
+        if queue is None:
+            return
+        accumulated = 0.0
+        first = True
+        for entry in reversed(queue):
+            if entry.kind == QueueEntryType.TIMESTAMP:
+                continue
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                weight = self._compute_message_weight(entry.message)
+            elif entry.kind == QueueEntryType.POKE:
+                weight = self.poke_weight
+            elif entry.kind == QueueEntryType.REACTION:
+                weight = self.reaction_weight
+            else:
+                weight = 1.0
+
+            if not first and accumulated + weight > max_weight:
+                return
+            first = False
+            accumulated += weight
+            yield entry
+
+    def get_recent_sender_ids(
+        self, key: str, max_weight: float,
+    ) -> list[int]:
+        """Return unique sender user_ids from the most recent entries.
+
+        Walks entries from newest to oldest, respecting weighted counting
+        (pokes = 0.2, etc.), and collects sender IDs from MESSAGE, POKE,
+        and REACTION entries.
+        """
+        seen: set[int] = set()
+        result: list[int] = []
+        for entry in self.iterate_entries_from_newest_weighted(key, max_weight):
+            user_id: int | None = None
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                user_id = entry.message.user_id
+            elif entry.kind == QueueEntryType.POKE and entry.poke is not None:
+                user_id = entry.poke.user_id
+            elif entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
+                user_id = entry.reaction.operator_user_id
+            if user_id is not None and user_id not in seen:
+                seen.add(user_id)
+                result.append(user_id)
+        return result
+
+    def get_recent_messages(
+        self, key: str, max_weight: float,
+    ) -> list[QueueMessage]:
+        """Return the most recent *messages* respecting weighted counting.
+
+        Only entries of kind MESSAGE are included in the returned list.
+        Pokes and reactions contribute their weight to the window but are
+        not part of the output (use ``get_recent_sender_ids`` to collect
+        their senders).
+        """
+        result: list[QueueMessage] = []
+        for entry in self.iterate_entries_from_newest_weighted(key, max_weight):
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                result.append(entry.message)
+        result.reverse()
+        return result
+
     def get_stats(self, key: str) -> Optional[QueueStats]:
         return self._stats.get(key)
 

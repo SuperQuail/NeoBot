@@ -169,8 +169,12 @@ class UserProfileService:
         self,
         group_id: str | int,
         message_queue: Any | None = None,
+        *,
+        archive_fetch_window: int | None = None,
     ) -> str:
-        members = self._collect_group_members_from_queue(group_id, message_queue)
+        members = self._collect_group_members_from_queue(
+            group_id, message_queue, window=archive_fetch_window,
+        )
         if members is None:
             response = await self._adapter_call(
                 self._adapter.get_group_member_list(int(group_id)),
@@ -243,19 +247,79 @@ class UserProfileService:
     def _collect_group_members_from_queue(
         group_id: str | int,
         message_queue: Any | None,
+        *,
+        window: int | None = None,
     ) -> list[Any] | None:
         if message_queue is None:
             return None
 
         queue_key = str(group_id)
+
+        # When a window is configured, only scan the newest N messages
+        # (by weighted count: pokes = 0.2, etc.) instead of the full queue.
+        if window is not None:
+            recent_messages = getattr(message_queue, "get_recent_messages", None)
+            recent_sender_ids_method = getattr(message_queue, "get_recent_sender_ids", None)
+            if recent_messages is not None and recent_sender_ids_method is not None:
+                messages = recent_messages(queue_key, float(window))
+                sender_ids = recent_sender_ids_method(queue_key, float(window))
+
+                members_by_user: dict[str, dict[str, Any]] = {}
+                ordered_user_ids: list[str] = []
+
+                # Build member entries from recent messages (richest sender info)
+                for message in messages:
+                    user_id = getattr(message, "user_id", None)
+                    if user_id is None:
+                        continue
+                    user_id_str = str(user_id)
+                    existing = members_by_user.get(user_id_str)
+                    sender = getattr(message, "sender", None)
+
+                    if existing is None:
+                        members_by_user[user_id_str] = {
+                            "user_id": user_id,
+                            "nickname": getattr(sender, "nickname", None) if sender else None,
+                            "card": getattr(sender, "card", None) if sender else None,
+                            "sex": getattr(sender, "sex", None) if sender else None,
+                            "role": getattr(sender, "role", None) if sender else None,
+                        }
+                        ordered_user_ids.append(user_id_str)
+                    else:
+                        # Enrich existing entry with any missing sender fields
+                        if sender is not None:
+                            for field in ("nickname", "card", "sex", "role"):
+                                val = getattr(sender, field, None)
+                                if val is not None and existing.get(field) is None:
+                                    existing[field] = val
+
+                # Add poke/reaction senders not already covered
+                for user_id in sender_ids:
+                    user_id_str = str(user_id)
+                    if user_id_str not in members_by_user:
+                        members_by_user[user_id_str] = {
+                            "user_id": user_id,
+                            "nickname": None,
+                            "card": None,
+                            "sex": None,
+                            "role": None,
+                        }
+                        ordered_user_ids.append(user_id_str)
+
+                return [
+                    SimpleNamespace(**members_by_user[uid])
+                    for uid in ordered_user_ids
+                ]
+
+        # Fallback: scan the full queue (current behaviour)
         try:
-            messages = list(message_queue[queue_key])
+            entries = list(message_queue[queue_key])
         except Exception:
             return None
 
         members_by_user: dict[str, dict[str, Any]] = {}
         ordered_user_ids: list[str] = []
-        for message in messages:
+        for message in entries:
             user_id = getattr(message, "user_id", None)
             if user_id is None:
                 continue

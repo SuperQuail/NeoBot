@@ -48,9 +48,11 @@ class PromptBuilder:
         group_name = await self._profile_service.get_group_name(group_id_str)
         group_description_map = self._config.chat.group_description or {}
         group_description = group_description_map.get(group_id_str, "")
+        archive_fetch_window = getattr(self._config.chat, "archive_fetch_window", None)
         member_list = await self._profile_service.render_group_member_list(
             group_id,
             message_queue,
+            archive_fetch_window=archive_fetch_window,
         )
         bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
             group_id,
