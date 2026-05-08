@@ -52,7 +52,7 @@ class Chat:
             "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
             "{bot_data}\n"
             "</你是谁>\n"
-            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),不要使用markdown,和正常聊天一样,回复短句即可.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.</回复要求>\n"
+            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.</回复要求>\n"
             "<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>\n"
             "<回复样例>\n回复1:好哦\n回复2:我这就去看看\n注意,短句分开回复,而不是以整段回复\n** 严格禁止使用()来描述你的行为和思考,不要发送这样的内容 **</回复样例>\n"
             "<你的印象>\n"
@@ -99,7 +99,7 @@ class Chat:
             "你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
             "{bot_data}\n"
             "</你是谁>"
-            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),不要使用markdown,和正常聊天一样,回复短句即可.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.</回复要求>\n"
+            "<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.</回复要求>\n"
             "<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>\n"
             "<回复样例>\n回复1:好哦\n回复2:我这就去看看\n注意,短句分开回复,而不是以整段回复\n</回复样例>\n"
             "<工具与agent指南>当你使用工具/agent时,确认你使用的工具是否是正确职能的工具/agent,如果agent询问你问题,你需要回复agent帮助其完成任务,如果你缺失信息,需要先发送消息询问,注意:群友看不到agent发给你的消息,你应该先把agent的话转述,然后再询问需要的额外信息,最后再调用wait等待群友告诉你信息</工具与agent指南>\n"
@@ -166,6 +166,10 @@ class ModelPricing:
     output_price_per_mtokens: float = field(
         default=0.0,
         metadata={"description": "输出价格，单位为每百万Tokens"},
+    )
+    cache_hit_price_per_mtokens: float = field(
+        default=0.0,
+        metadata={"description": "缓存命中价格，单位为每百万Tokens"},
     )
     billing_metric: str = field(
         default="",
@@ -464,6 +468,10 @@ class AgentModelRouting:
         default=1,
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
+    cross_chat: int = field(
+        default=1,
+        metadata={"description": "cross_chat Agent 使用的模型编号，0-3"},
+    )
 
 
 @dataclass
@@ -711,6 +719,10 @@ class AgentCreatorDrawing:
         default=3.0,
         metadata={"description": "后台绘图启动宽限期（秒）；此时间内若API报错则立即返回失败并取消冷却"},
     )
+    max_tasks_per_pipeline: int = field(
+        default=20,
+        metadata={"description": "每个聊天流最多保留的后台绘图任务数；超出后自动销毁最旧的非活跃任务"},
+    )
 
 
 @dataclass
@@ -739,11 +751,11 @@ class AgentSystem:
 @dataclass
 class AgentMemoryTrigger:
     group_interval: int = field(
-        default=50,
+        default=100,
         metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
     )
     private_interval: int = field(
-        default=50,
+        default=100,
         metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
     )
 
@@ -759,11 +771,11 @@ class AgentMemoryArchive:
         metadata={"description": "允许访问的档案表名列表；留空表示不限制"},
     )
     auto_compact_chars: int = field(
-        default=500,
+        default=200,
         metadata={"description": "单条档案超过此字符数时触发一次 AI 自动精简；0表示禁用"},
     )
     max_chars: int = field(
-        default=600,
+        default=300,
         metadata={"description": "单条档案最大字符数；超过后截断写入"},
     )
 
@@ -787,10 +799,31 @@ class AgentMemoryFavorability:
 
 
 @dataclass
+class AgentMemoryItemArchive:
+    """物品/事件关键词档案配置。
+
+    允许 Agent 以关键词为键建立独立数据表，记录对特定物品、事件或话题的
+    长期信息档案。该表与 user_profile / group_profile 共用同一套
+    auto_compact_chars / max_chars 长度控制（由 AgentMemoryArchive 配置）。
+    自动记忆总结系统也会同步向该表写入。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用物品/事件关键词档案"},
+    )
+    table_name: str = field(
+        default="item_archive",
+        metadata={"description": "物品/事件档案表名；Agent 使用此表名存储和检索关键词档案"},
+    )
+
+
+@dataclass
 class AgentMemory:
     trigger: AgentMemoryTrigger = field(default_factory=AgentMemoryTrigger)
     archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
     favorability: AgentMemoryFavorability = field(default_factory=AgentMemoryFavorability)
+    item_archive: AgentMemoryItemArchive = field(default_factory=AgentMemoryItemArchive)
 
 
 @dataclass
@@ -804,6 +837,88 @@ class AgentWillingness:
 
 
 @dataclass
+class AgentProblemSolver:
+    """Problem Solver Agent 配置。
+
+    模型路由由 agent_model.problem_solver 编号控制，无需在子 agent 配置中指定模型名。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用解题 Agent"},
+    )
+    timeout_seconds: float = field(
+        default=600.0,
+        metadata={"description": "解题超时时间（秒），默认 10 分钟"},
+    )
+    max_tokens: int = field(
+        default=20480,
+        metadata={"description": "最大输出 Token 数，默认 20K"},
+    )
+    notification_retry_seconds: int = field(
+        default=30,
+        metadata={"description": "解题完成后通知重试间隔（秒）"},
+    )
+    max_retries: int = field(
+        default=1,
+        metadata={"description": "通知最大重试次数（不含首次）"},
+    )
+    startup_grace_seconds: float = field(
+        default=3.0,
+        metadata={"description": "后台解题启动宽限期（秒）"},
+    )
+    max_tasks_per_pipeline: int = field(
+        default=5,
+        metadata={"description": "每个聊天流最多保留的后台解题任务数"},
+    )
+    reasoning_effort: str = field(
+        default="max",
+        metadata={"description": "推理强度：high 或 max"},
+    )
+
+
+@dataclass
+class AgentCrossChat:
+    """Cross-Chat Agent 配置。
+
+    模型路由由 agent_model.cross_chat 编号控制，无需在子 agent 配置中指定模型名。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用跨聊天通信 Agent"},
+    )
+    timeout_seconds: float = field(
+        default=600.0,
+        metadata={"description": "cross_chat 任务超时时间（秒），默认 10 分钟"},
+    )
+    max_iterations: int = field(
+        default=20,
+        metadata={"description": "最大工具调用循环次数"},
+    )
+    notification_retry_seconds: int = field(
+        default=30,
+        metadata={"description": "通知重试间隔（秒）"},
+    )
+    max_retries: int = field(
+        default=1,
+        metadata={"description": "通知最大重试次数（不含首次）"},
+    )
+    startup_grace_seconds: float = field(
+        default=3.0,
+        metadata={"description": "后台任务启动宽限期（秒）"},
+    )
+    max_tasks_per_pipeline: int = field(
+        default=5,
+        metadata={"description": "每个聊天流最多保留的后台通信任务数"},
+    )
+    max_history_fetch_multiplier: int = field(
+        default=2,
+        metadata={"description": "拉取历史消息时的倍数因子，相对于观察窗口"},
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -811,6 +926,30 @@ class Agent:
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
+    problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
+    cross_chat: AgentCrossChat = field(default_factory=AgentCrossChat)
+
+
+@dataclass
+class WebSearchConfig:
+    """联网搜索工具包配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用联网搜索工具包；关闭后搜索工具不会注册"},
+    )
+    preview_pages_limit: int = field(
+        default=30,
+        metadata={"description": "单次搜索返回结果总数上限（含主查询+所有变体），默认 30"},
+    )
+    max_search_rounds: int = field(
+        default=5,
+        metadata={"description": "单次会话最多搜索轮次，默认 5"},
+    )
+    variant_result_limit: int = field(
+        default=6,
+        metadata={"description": "研究模式中每个变体查询返回的最大结果数，默认 6"},
+    )
 
 
 @dataclass
@@ -830,6 +969,7 @@ class BotConfig:
     debug: Debug = field(default_factory=Debug)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
+    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
 
 
 @dataclass
@@ -952,6 +1092,10 @@ class EnhancedChat(Chat):
         default=True,
         metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置并在提示词中显示"},
     )
+    archive_fetch_window: int = field(
+        default=20,
+        metadata={"description": "档案获取窗口；只对消息队列中最新的此数量消息的发送者获取个人档案，戳一戳等同0.2条消息"},
+    )
     poke_weight: float = field(
         default=0.2,
         metadata={"description": "戳一戳事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个戳一戳等同1条消息）"},
@@ -1007,6 +1151,32 @@ class EnhancedChat(Chat):
     wait_cooldown_seconds: int = field(
         default=60,
         metadata={"description": "wait 工具调用冷却秒数；同一会话在一次 wait 调用后需等待此秒数才可再次调用"},
+    )
+    group_chat_reply_lifespan: int = field(
+        default=5,
+        metadata={
+            "description": "群聊回复管线寿命；每次回复-1，归零则销毁管线。设为0禁用寿命机制，回复结束后立即销毁管线"
+        },
+    )
+    group_chat_suspend_wait_seconds: int = field(
+        default=3600,
+        metadata={"description": "群聊回复后挂起等待秒数；超时无新消息则结束会话，默认3600秒（1小时）"},
+    )
+    enable_balance_check: bool = field(
+        default=False,
+        metadata={"description": "是否启用DeepSeek余额检查与低余额预警；仅在主模型使用DeepSeek且配置了管理员账户时生效"},
+    )
+    balance_threshold: float = field(
+        default=1.0,
+        metadata={"description": "余额预警阈值（CNY），低于此值时发送私聊通知；默认1.0"},
+    )
+    admin_accounts: List[str] = field(
+        default_factory=list,
+        metadata={"description": "管理员QQ号列表，用于接收余额不足等系统通知"},
+    )
+    balance_check_cooldown_seconds: int = field(
+        default=300,
+        metadata={"description": "余额检查冷却秒数；每次检查后至少间隔此秒数才会再次查询；默认300秒"},
     )
 
 

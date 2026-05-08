@@ -21,6 +21,13 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
+
 if TYPE_CHECKING:
     from neobot_app.willing.service import WillingService
 
@@ -29,6 +36,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "回复意愿控制。可调整运行时回复意愿：当前会话的回复系数（0.0~1.0）、"
     "指定会话内指定用户的回复系数、指定用户的全局回复系数，以及当前会话临时黑名单。"
     "所有调整仅存于内存，重启后重置为默认值。"
+)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "调整运行时回复意愿系数（会话级别/用户级别/黑名单）"
 )
 
 _WILLINGNESS_CONTEXT: ContextVar[str] = ContextVar("willingness_context", default="")
@@ -327,11 +337,23 @@ class WillingnessControlAgent:
             logger=logger,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
             description=self.description,
             system_prompt=_build_system_prompt(),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
@@ -341,12 +363,14 @@ class WillingnessControlAgent:
         tk = _CONV_KIND.set(kind)
         ti = _CONV_ID.set(conv_id)
         tw = _WILLINGNESS_CONTEXT.set(delegate_context)
+        tm = CURRENT_USAGE_MODULE.set("agent:willingness")
         try:
             return await self._agent.invoke(state)
         finally:
             _WILLINGNESS_CONTEXT.reset(tw)
             _CONV_ID.reset(ti)
             _CONV_KIND.reset(tk)
+            CURRENT_USAGE_MODULE.reset(tm)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         delegate_context = str(state.get("_delegate_context") or "")
@@ -354,6 +378,7 @@ class WillingnessControlAgent:
         tk = _CONV_KIND.set(kind)
         ti = _CONV_ID.set(conv_id)
         tw = _WILLINGNESS_CONTEXT.set(delegate_context)
+        tm = CURRENT_USAGE_MODULE.set("agent:willingness")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
@@ -361,6 +386,7 @@ class WillingnessControlAgent:
             _WILLINGNESS_CONTEXT.reset(tw)
             _CONV_ID.reset(ti)
             _CONV_KIND.reset(tk)
+            CURRENT_USAGE_MODULE.reset(tm)
 
     async def close(self) -> None:
         await self._agent.close()

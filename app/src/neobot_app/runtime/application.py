@@ -38,7 +38,14 @@ class NeoBotApplication(Generic[T]):
         tts_service: "TTSService | None" = None,
         bot_detector: Any = None,
         scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
+        cross_chat_manager: Any = None,
+        markdown_image_converter: Any = None,
         plugin_runtime: Any = None,
+        report_service: Any = None,
+        engine: Any = None,
+        vision_provider: Any = None,
+        archive_summary_service: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -57,7 +64,15 @@ class NeoBotApplication(Generic[T]):
             self.tts_service.bind_file_server(self.file_server)
         self._bot_detector = bot_detector
         self._scheduled_task_manager = scheduled_task_manager
+        self._problem_solver_manager = problem_solver_manager
+        self._cross_chat_manager = cross_chat_manager
+        self._markdown_image_converter = markdown_image_converter
         self._plugin_runtime = plugin_runtime
+        self._report_service = report_service
+        self._report_task: asyncio.Task | None = None
+        self._engine = engine
+        self._vision_provider = vision_provider
+        self._archive_summary_service = archive_summary_service
 
     async def start(self) -> None:
         if self._started:
@@ -98,6 +113,10 @@ class NeoBotApplication(Generic[T]):
         self.event_ingress.start()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.start()
+        if self._markdown_image_converter is not None:
+            await self._markdown_image_converter.start()
+        if self._report_service is not None:
+            self._report_task = asyncio.create_task(self._run_report_loop())
         self._started = True
 
     async def run_forever(self) -> None:
@@ -117,20 +136,47 @@ class NeoBotApplication(Generic[T]):
         if not self._started:
             return
         self._shutdown_event.set()
+        if self._report_task is not None:
+            self._report_task.cancel()
+            try:
+                await self._report_task
+            except asyncio.CancelledError:
+                pass
         self.event_ingress.stop()
         if self._message_pipeline is not None:
             await self._message_pipeline.flush_pending_summaries()
+        if self._archive_summary_service is not None:
+            await self._archive_summary_service.close()
         if self._plugin_runtime is not None:
             await self._plugin_runtime.stop_all()
         if self._reply_orchestrator is not None:
             await self._reply_orchestrator.shutdown()
         elif self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.shutdown()
+        if self._problem_solver_manager is not None:
+            await self._problem_solver_manager.shutdown()
+        if self._markdown_image_converter is not None:
+            await self._markdown_image_converter.stop()
         if self._emoji_service is not None:
             await self._emoji_service.stop()
+        if self._vision_provider is not None:
+            await self._vision_provider.close()
         await self.adapter.stop()
         if self.tts_service is not None:
             await self.tts_service.close()
         await self.file_server.stop()
+        if self._engine is not None:
+            await self._engine.dispose()
         self._started = False
         self._logger.info("NeoBot已停止")
+
+    async def _run_report_loop(self) -> None:
+        while True:
+            try:
+                await self._report_service.generate_all_reports()
+                await asyncio.sleep(1800)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self._logger.warning("report generation failed", error=str(exc))
+                await asyncio.sleep(60)

@@ -601,8 +601,19 @@ class EventPipeline:
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
         self._replying_queues.add(queue_key)
 
+        # 群聊寿命机制：寿命>0时，回复后队列由管线挂起循环处理，
+        # 管线结束时直接丢弃_避免唤起新回复管线
+        _use_lifespan = False
+        if isinstance(message, GroupMessage) and self._config is not None:
+            lifespan = getattr(self._config.chat, "group_chat_reply_lifespan", 0)
+            _use_lifespan = isinstance(lifespan, int) and lifespan > 0
+
         async def on_reply_done() -> None:
             self._replying_queues.discard(queue_key)
+            if _use_lifespan:
+                # 寿命机制下不处理回复后队列：消息已在挂起循环中处理
+                self._post_reply_willing.pop(queue_key, None)
+                return
             await self._process_post_reply_queue(queue_key)
 
         event = self._reply_orchestrator.start_reply(

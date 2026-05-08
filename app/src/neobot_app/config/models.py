@@ -1,6 +1,8 @@
 """配置模型 — 统一导出"""
 
 from neobot_app.config.schemas.bot import (
+    AgentCrossChat,
+    AgentProblemSolver,
     Bot,
     BotConfig,
     Chat,
@@ -16,10 +18,13 @@ from neobot_app.config.schemas.bot import (
     Plugins,
     TTS,
     TTSReferenceVoice,
+    WebSearchConfig,
 )
 from neobot_app.config.schemas.env import ApiPlatformConfig, EnvConfig
 
 __all__ = [
+    "AgentCrossChat",
+    "AgentProblemSolver",
     "Bot",
     "BotConfig",
     "Chat",
@@ -36,5 +41,6 @@ __all__ = [
     "Plugins",
     "TTS",
     "TTSReferenceVoice",
+    "WebSearchConfig",
     "HuoShanTTS",
 ]

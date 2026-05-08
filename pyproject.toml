@@ -1,11 +1,14 @@
 [project]
 name = "neobot"
-version = "1.0.0-alpha.5"
+version = "1.0.0-alpha.6"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
 authors = [
     { name = "wsrsq", email = "wsrsq001@163.com" },
     { name = "tangtian", email = "a14b@126.com" },
+]
+dependencies = [
+    "pillowmd>=0.7.3",
 ]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -22,5 +25,6 @@ dev = [
     "mypy>=1.19.1",
     "prompt-toolkit>=3.0.0",
     "pyinstaller>=6.19.0",
+    "pytest>=9.0.3",
     "ruff>=0.15.5",
 ]

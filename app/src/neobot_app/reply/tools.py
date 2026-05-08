@@ -44,6 +44,7 @@ class ReplyToolExecutor(ToolExecutor):
         send_emoji_handler: Any = None,
         emoji_service: Any = None,
         agent_registry: AgentRegistry | None = None,
+        tool_package_manager: Any = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
         search_emoji_handler: Any = None,
@@ -53,7 +54,11 @@ class ReplyToolExecutor(ToolExecutor):
         poke_user_handler: Any = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
         notification_hub: Any = None,
+        markdown_image_converter: Any = None,
+        send_long_reply_handler: Any = None,
+        cross_chat_manager: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -73,6 +78,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
         self._agent_registry = agent_registry
+        self._tool_package_manager = tool_package_manager
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler
         self._search_emoji = search_emoji_handler
@@ -82,7 +88,11 @@ class ReplyToolExecutor(ToolExecutor):
         self._poke_user = poke_user_handler
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
+        self._problem_solver_manager = problem_solver_manager
         self._notification_hub = notification_hub
+        self._markdown_image_converter = markdown_image_converter
+        self._send_long_reply = send_long_reply_handler
+        self._cross_chat_manager = cross_chat_manager
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -134,7 +144,9 @@ class ReplyToolExecutor(ToolExecutor):
         tools.append(
             _tool_def(
                 "send_reply",
-                "向当前会话发送回复，可自由组合消息段（@、引用回复、文本）。调用后本轮回复视为完成。",
+                "向当前会话发送回复，可附带表情包图片。发送图片时先逐一发送图片再发送切分后的文字；"
+                "若设置 merge_text_with_image=true 则文字与第一张图片合并且不切分。"
+                "调用后本轮回复视为完成。",
                 {
                     "properties": {
                         "text": {
@@ -155,19 +167,68 @@ class ReplyToolExecutor(ToolExecutor):
                             "items": {"type": "string"},
                             "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。",
                         },
+                        "images": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "可选，要发送的表情包编号列表。发送时先逐一发送图片（每条消息一张图片），再发送切分后的文字。若同时设置 merge_text_with_image=true，文字会与第一张图片合并为一条消息且文字不再切分。",
+                        },
+                        "merge_text_with_image": {
+                            "type": "boolean",
+                            "description": "可选，是否将文字与第一张图片合并发送，此时文字不切分。默认为 false。仅在提供了 images 参数时生效。",
+                        },
                         "ai_check_approved": {
                             "type": "boolean",
                             "description": "AI回复检查开启时，确认切分结果没有严重问题或歧义后设为 true。",
                         },
                         "send_original": {
                             "type": "boolean",
-                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分。",
+                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分。对于 @ 和引用消息也适用，设置为 true 后不会切分文字。",
                         },
                     },
                     "required": ["text"],
                 },
             ),
         )
+        if self._markdown_image_converter is not None:
+            tools.append(
+                _tool_def(
+                    "send_long_reply",
+                    "发送 Markdown 格式的长回复。这是唯一允许使用 Markdown 格式的发送方式。"
+                    "提供 markdown 内容时，系统自动将其转为图片发送。"
+                    "如果已有预渲染的图片文件，可提供 image_path 直接发送，"
+                    "此时 markdown 仅用于日志记录（仍建议提供以便追溯）。"
+                    "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
+                    "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
+                    "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
+                    "调用后本轮回复视为完成。",
+                    {
+                        "properties": {
+                            "markdown": {
+                                "type": "string",
+                                "description": "Markdown 格式的回复内容（image_path 为空时必填）。支持标题、列表、代码块、表格等标准 Markdown 语法。",
+                            },
+                            "image_path": {
+                                "type": "string",
+                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。解题任务完成通知中会包含此路径。",
+                            },
+                            "reply_to": {
+                                "type": "integer",
+                                "description": "可选，要引用回复的消息编号。",
+                            },
+                            "mention": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。",
+                            },
+                            "caption": {
+                                "type": "string",
+                                "description": "可选，随图片一起发送的简短说明文字。",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+            )
         if self._wait is not None:
             tools.append(
                 _tool_def(
@@ -226,8 +287,10 @@ class ReplyToolExecutor(ToolExecutor):
             tools.append(
                 _tool_def(
                     "send_emoji",
-                    "向当前会话发送一个表情包图片。提示词中的表情包按使用次数从少到多排列（使用次数均衡器），"
-                    "优先展示不常用的。当表情包数量过多时提示词中只显示配置值指定的数量，可使用 search_custom_emoji 搜索。",
+                    "向当前会话发送一个表情包图片（可附带可选文字）。"
+                    "仅用于只发送表情包而不发送独立文字回复的场景。"
+                    "若需要同时发送文字回复和表情包，请使用 send_reply 工具并通过 images 参数指定表情包编号。"
+                    "提示词中的表情包按使用次数从少到多排列（使用次数均衡器），优先展示不常用的。",
                     {
                         "properties": {
                             "number": {
@@ -291,7 +354,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "properties": {
                             "keyword": {
                                 "type": "string",
-                                "description": "搜索关键词，如“猪”、“赞”、“笑哭”等。",
+                                "description": "搜索关键词，如「猪」、「赞」、「笑哭」等。",
                             },
                         },
                         "required": ["keyword"],
@@ -336,13 +399,14 @@ class ReplyToolExecutor(ToolExecutor):
                 [
                     _tool_def(
                         "list_agents",
-                        "列出可用的子代理，或查看某个子代理的简介。",
+                        "列出可用的子代理及其完整描述，或查看某个子代理的详细说明。"
+                        "不指定 agent 时列出全部子代理的完整描述；指定 agent 时显示该子代理的详细功能说明。",
                         {
                             "properties": {
                                 "agent": {
                                     "type": "string",
                                     "enum": self._agent_registry.names,
-                                    "description": "可选，子代理名称。",
+                                    "description": "可选，子代理名称。不填则列出全部子代理。",
                                 },
                             },
                             "required": [],
@@ -354,13 +418,19 @@ class ReplyToolExecutor(ToolExecutor):
                         "在 previous_response 中传入其上次回复，并在 task 中给出答复；"
                         "需要同一个子代理持续处理时传同一个 session_id。"
                         "子代理可按需通过自己的工具读取当前聊天上下文。"
+                        "重要：仅做单一信息查询（查天气/查事实/查定义），不需要分析整理或写长文时，"
+                        "使用 list_tools 查看可用工具包，用 unlock 解锁 web_search 工具包自行搜索即可，不要委托 agent。"
+                        "但如果任务涉及研究收集+分析整理+撰写输出（如写报告/写markdown/综合评测），"
+                        "即使包含搜索步骤也是复杂任务，必须委托 problem_solver 处理。"
+                        "判断标准：只需回答一句话的事实查询→自行搜索；需要组织材料并产出结构化内容→委托 problem_solver。"
                         "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
-                        "即使用户只说“这张图/刚才那张图/加到表情包”也直接委托 creator，不要先委托 image_parse。"
+                        "即使用户只说「这张图/刚才那张图/加到表情包」也直接委托 creator，不要先委托 image_parse。"
                         "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
                         "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。"
                         "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
                         "如果有人提出生日想要的祝福、庆祝场合或禁忌，委托 scheduled_task 记录或更新生日任务，不要只写入普通记忆。"
                         "绘图失败时必须先发消息告知失败原因，再询问用户是否重试，不要自行立刻重试。"
+                        "涉及复杂数学、编程算法、科学计算、逻辑推理等需要深度思考的问题时，必须委托 problem_solver 处理。"
                         "创建早安、生日祝福、普通提醒等定时任务时，默认使用一次性通知；一次性通知不是 once 一次性任务，循环任务也可以每个周期只通知一次。",
                         {
                             "properties": {
@@ -409,6 +479,27 @@ class ReplyToolExecutor(ToolExecutor):
                         },
                     ),
                 ]
+            )
+        if self._tool_package_manager is not None:
+            # 合并工具包管理器动态生成的工具（unlock / relock / 已解锁包的工具）
+            tools.extend(self._tool_package_manager.definitions())
+            tools.append(
+                _tool_def(
+                    "list_tools",
+                    "列出工具包信息。无参时列出全部工具包（含锁定状态和简短描述）；"
+                    "指定 package_id 时显示该工具包的详细功能说明和包含的工具列表。"
+                    "请在需要了解有哪些工具包可用时使用。"
+                    "使用 unlock <工具包ID> 解锁需要的工具包后即可使用其中的工具。",
+                    {
+                        "properties": {
+                            "package_id": {
+                                "type": "string",
+                                "description": "可选，工具包 ID。不填则列出全部工具包。",
+                            },
+                        },
+                        "required": [],
+                    },
+                )
             )
         if (
             self._drawing_manager is not None
@@ -489,6 +580,8 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_poke_user(args)
         if name == "list_agents":
             return self._execute_list_agents(args)
+        if name == "list_tools":
+            return self._execute_list_tools(args)
         if name == "delegate":
             return await self._execute_delegate(args)
         if name == "check_background_tasks":
@@ -497,6 +590,12 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_check_last_drawing(args)
         if name == "mark_scheduled_task_complete":
             return await self._execute_mark_scheduled_task_complete(args)
+        if name == "send_long_reply":
+            return await self._execute_send_long_reply(args)
+        if self._tool_package_manager is not None:
+            parsed = self._tool_package_manager.parse_tool_name(name)
+            if parsed is not None or name in ("unlock", "relock"):
+                return await self._tool_package_manager.execute(name, args)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -529,6 +628,16 @@ class ReplyToolExecutor(ToolExecutor):
         segments = self._normalize_segments(args.get("segments"))
         send_original = bool(args.get("send_original") is True)
         ai_check_approved = bool(args.get("ai_check_approved") is True)
+        merge_text_with_image = bool(args.get("merge_text_with_image") is True)
+        raw_images = args.get("images")
+        images: list[int] | None = None
+        if raw_images is not None:
+            if not isinstance(raw_images, list):
+                return f"错误：images 必须为列表，收到 {type(raw_images).__name__}"
+            try:
+                images = [int(n) for n in raw_images]
+            except (ValueError, TypeError):
+                return f"错误：images 必须为整数列表，收到 {raw_images}"
         reply_to = args.get("reply_to")
         if reply_to is not None:
             try:
@@ -556,7 +665,7 @@ class ReplyToolExecutor(ToolExecutor):
             if result.fallback_used:
                 return self._build_ai_check_prompt(result)
 
-        if self._enable_ai_reply_regenerate and not send_original and not segments:
+        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and not segments:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -566,7 +675,7 @@ class ReplyToolExecutor(ToolExecutor):
                     f"请精简为更短的版本后重新调用 send_reply。"
                 )
 
-        if self._enable_ai_reply_regenerate and not send_original and ai_check_approved:
+        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and ai_check_approved:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -582,12 +691,20 @@ class ReplyToolExecutor(ToolExecutor):
             mention=mention,
             segments=segments,
             send_original=send_original,
+            images=images,
+            merge_text_with_image=merge_text_with_image,
         )
         if segments:
-            return f"回复已发送，共 {len(segments)} 条"
+            seg_text = "\n---\n".join(segments)
+            return f"已发送 {len(segments)} 条消息：\n{seg_text}"
         if send_original:
-            return "回复原文已发送"
-        return "回复已发送"
+            display = text.strip()
+            return f"已发送原文：{display[:300]}{'...' if len(display) > 300 else ''}"
+        preview = self._preview_split(text)
+        preview_text = "\n---\n".join(preview.messages)
+        if images:
+            return f"已发送（{len(images)} 张图片 + {len(preview.messages)} 条文字）：\n{preview_text}"
+        return f"已发送 {len(preview.messages)} 条消息：\n{preview_text}"
 
     async def _execute_wait(self, args: dict) -> str:
         if self._wait is None:
@@ -652,14 +769,16 @@ class ReplyToolExecutor(ToolExecutor):
             number = int(args.get("number", -1))
         except (ValueError, TypeError):
             return "错误：number 必须为整数"
+        emoji_entry = None
         if self._emoji is not None:
-            entry = self._emoji.get_entry(number)
-            if entry is None:
+            emoji_entry = self._emoji.get_entry(number)
+            if emoji_entry is None:
                 total = self._emoji.emoji_count
                 return f"错误：表情包编号 {number} 不存在，当前共 {total} 个表情包"
         text = str(args.get("text") or "")
         await handler(number=number, text=text)
-        return f"表情包 #{number} 已发送"
+        entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
+        return f"已发送表情包 {entry_name}"
 
     def _execute_search_custom_emoji(self, args: dict) -> str:
         if self._emoji is None:
@@ -735,6 +854,12 @@ class ReplyToolExecutor(ToolExecutor):
             return self._agent_registry.list_agents()
         return self._agent_registry.list_agents(str(agent))
 
+    def _execute_list_tools(self, args: dict) -> str:
+        if self._tool_package_manager is None:
+            return "无工具包管理器"
+        pkg_id = args.get("package_id")
+        return self._tool_package_manager.list_packages(str(pkg_id) if pkg_id else None)
+
     async def _execute_delegate(self, args: dict) -> str:
         if self._agent_registry is None:
             return "No agents available"
@@ -792,6 +917,8 @@ class ReplyToolExecutor(ToolExecutor):
         if (
             self._drawing_manager is None
             and self._scheduled_task_manager is None
+            and self._problem_solver_manager is None
+            and self._cross_chat_manager is None
             and self._notification_hub is None
         ):
             return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
@@ -803,6 +930,10 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._drawing_manager.get_pipeline_status(pipeline_key))
         if self._scheduled_task_manager is not None:
             status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
+        if self._problem_solver_manager is not None:
+            status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
+        if self._cross_chat_manager is not None:
+            status.update(self._cross_chat_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
         self._logger.info(
@@ -826,6 +957,60 @@ class ReplyToolExecutor(ToolExecutor):
             ok=result.get("ok"),
         )
         return json.dumps(result, ensure_ascii=False)
+
+    async def _execute_send_long_reply(self, args: dict) -> str:
+        if self._markdown_image_converter is None:
+            return json.dumps({"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False)
+
+        markdown = str(args.get("markdown") or "").strip()
+        pre_rendered = str(args.get("image_path") or "").strip()
+
+        if not markdown and not pre_rendered:
+            return json.dumps(
+                {"ok": False, "error": "markdown 和 image_path 至少需要提供一个"},
+                ensure_ascii=False,
+            )
+
+        reply_to = args.get("reply_to")
+        if reply_to is not None:
+            try:
+                reply_to = int(reply_to)
+            except (ValueError, TypeError):
+                return json.dumps({"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"}, ensure_ascii=False)
+        raw_mention = args.get("mention")
+        mention: list[int] | None = None
+        if raw_mention:
+            try:
+                mention = [int(qq) for qq in raw_mention]
+            except (ValueError, TypeError):
+                return json.dumps({"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False)
+        caption = str(args.get("caption") or "").strip()
+
+        if pre_rendered:
+            image_path = pre_rendered
+        else:
+            try:
+                image_path = str(await self._markdown_image_converter.convert(markdown))
+            except Exception as exc:
+                self._logger.error(f"Markdown 转图片失败: {exc}")
+                return json.dumps({"ok": False, "error": f"Markdown 转图片失败：{exc}"}, ensure_ascii=False)
+
+        # 调用 orchestrator 提供的 handler 实际发送图片
+        if self._send_long_reply is not None:
+            await self._send_long_reply(
+                image_path=image_path,
+                caption=caption,
+                reply_to=reply_to,
+                mention=mention,
+                markdown=markdown,
+            )
+        return json.dumps({
+            "ok": True,
+            "status": "sent",
+            "image_path": image_path,
+            "caption": caption or None,
+            "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
+        }, ensure_ascii=False)
 
     async def _execute_check_last_drawing(self, args: dict) -> str:
         """查询当前聊天流上一次绘图任务的详细记录。"""
@@ -907,6 +1092,7 @@ def build_reply_toolset(
     send_emoji_handler: Any = None,
     emoji_service: Any = None,
     agent_registry: AgentRegistry | None = None,
+    tool_package_manager: Any = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
     search_emoji_handler: Any = None,
@@ -916,7 +1102,11 @@ def build_reply_toolset(
     poke_user_handler: Any = None,
     drawing_manager: Any = None,
     scheduled_task_manager: Any = None,
+    problem_solver_manager: Any = None,
     notification_hub: Any = None,
+    markdown_image_converter: Any = None,
+    send_long_reply_handler: Any = None,
+    cross_chat_manager: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -938,6 +1128,7 @@ def build_reply_toolset(
         send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
         agent_registry=agent_registry,
+        tool_package_manager=tool_package_manager,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
         search_emoji_handler=search_emoji_handler,
@@ -947,7 +1138,11 @@ def build_reply_toolset(
         poke_user_handler=poke_user_handler,
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
         notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
+        send_long_reply_handler=send_long_reply_handler,
+        cross_chat_manager=cross_chat_manager,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

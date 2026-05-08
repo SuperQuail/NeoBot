@@ -180,6 +180,9 @@ class Config:
                 output_price_per_mtokens=getattr(
                     pricing_config, "output_price_per_mtokens", 0.0
                 ),
+                cache_hit_price_per_mtokens=getattr(
+                    pricing_config, "cache_hit_price_per_mtokens", 0.0
+                ),
                 billing_metric=getattr(pricing_config, "billing_metric", ""),
             )
             settings = ModelSettings(

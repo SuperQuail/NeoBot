@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextvars import ContextVar
 from pathlib import Path
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+
+SILENT_HEARTBEAT: ContextVar[Callable[[], None] | None] = ContextVar(
+    "silent_heartbeat", default=None
+)
 
 from neobot_chat.providers.base import Provider
 from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
@@ -47,6 +52,7 @@ class Agent:
         system_prompt: str | None = None,
         on_event: OnEvent | None = None,
         tool_guard: ToolGuard | None = None,
+        on_model_usage: Callable[..., Any] | None = None,
         logger: Logger = NullLogger(),
     ):
         self._logger = logger
@@ -55,6 +61,7 @@ class Agent:
         self.allowed_commands = list(allowed_commands or [])
         self.allowed_paths = self._build_allowed_paths(skills)
         self.tool_guard = tool_guard
+        self._on_model_usage = on_model_usage
 
         builtin_toolset = build_builtin_toolset(
             agent_registry=agent_registry,
@@ -76,23 +83,39 @@ class Agent:
 
     async def invoke(self, state: State) -> State:
         state, tools, messages = self._prepare(state)
+        heartbeat = SILENT_HEARTBEAT.get()
 
         for i in range(self.max_iterations):
             self._emit("llm_start", {"iteration": i})
             response = await self.provider.chat(messages, tools=tools)
+            if heartbeat:
+                heartbeat()
             messages.append(response)
 
             tool_calls = response.get("tool_calls")
             self._emit_response(response, tool_calls)
 
+            if self._on_model_usage is not None:
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict):
+                    try:
+                        await self._on_model_usage(
+                            model_name=getattr(self.provider, "model", ""),
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
+                    except Exception:
+                        pass
+
             if not tool_calls:
                 break
-            await self._run_tools(tool_calls, messages)
+            await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
 
         return {**state, "messages": messages}
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         state, tools, messages = self._prepare(state)
+        heartbeat = SILENT_HEARTBEAT.get()
 
         for i in range(self.max_iterations):
             self._emit("llm_start", {"iteration": i, "stream": True})
@@ -110,14 +133,28 @@ class Agent:
 
             if response is None:
                 break
+            if heartbeat:
+                heartbeat()
             messages.append(response)
 
             tool_calls = response.get("tool_calls")
             self._emit_response(response, tool_calls)
 
+            if self._on_model_usage is not None:
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict):
+                    try:
+                        await self._on_model_usage(
+                            model_name=getattr(self.provider, "model", ""),
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
+                    except Exception:
+                        pass
+
             if not tool_calls:
                 break
-            await self._run_tools(tool_calls, messages)
+            await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
 
         yield ChatChunk(state={**state, "messages": messages})
 
@@ -223,11 +260,22 @@ class Agent:
             result = await result
         return bool(result)
 
-    async def _run_tools(self, tool_calls: list[ToolCall], messages: list[Message]) -> None:
+    async def _run_tools(
+        self,
+        tool_calls: list[ToolCall],
+        messages: list[Message],
+        heartbeat: Callable[[], None] | None = None,
+    ) -> None:
         for call in tool_calls:
             name = call["function"]["name"]
             raw = call["function"]["arguments"]
-            args = parse_tool_args(raw)
+            try:
+                args = parse_tool_args(raw)
+            except Exception as exc:
+                result = f"Error: 工具参数 JSON 解析失败: {exc}"
+                self._emit("error", {"name": name, "error": result})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                continue
             action = self._decide_tool_action(name, args)
 
             if action == "ask" and not await self._ask_tool_guard(name, args):
@@ -239,6 +287,8 @@ class Agent:
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 continue
 
+            if heartbeat:
+                heartbeat()
             self._emit("tool_start", {"name": name, "args": args})
             try:
                 result = await self.toolset.executor.execute(name, args)

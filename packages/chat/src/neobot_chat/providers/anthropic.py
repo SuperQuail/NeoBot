@@ -127,7 +127,19 @@ class AnthropicProvider(BaseHTTPProvider):
 
         resp = await self.client.post("/v1/messages", json=payload)
         resp.raise_for_status()
-        return self._parse_response(resp.json())
+        data = resp.json()
+        result = self._parse_response(data)
+
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            extensions = dict(result.get("extensions") or {})
+            extensions["usage"] = {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+            }
+            result["extensions"] = extensions
+
+        return result
 
     @staticmethod
     def _parse_response(data: dict) -> Message:

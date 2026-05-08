@@ -118,6 +118,15 @@ class OpenAIProvider(BaseHTTPProvider):
         if tool_calls:
             result["tool_calls"] = tool_calls
 
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            extensions = dict(result.get("extensions") or {})
+            extensions["usage"] = {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            }
+            result["extensions"] = extensions
+
         return result
 
     # ── 流式 API ──

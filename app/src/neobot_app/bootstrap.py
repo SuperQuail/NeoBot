@@ -33,6 +33,10 @@ from neobot_app.message.queue import MessageQueue
 from neobot_app.observability.debug import DebugRecorder
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
 from neobot_app.prompt.builder import PromptBuilder
+from neobot_app.statistics.balance import BalanceChecker
+from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
+from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
+from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 from neobot_app.runtime.application import NeoBotApplication
@@ -132,6 +136,18 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     db_url = sqlite_url(DATA_DIR / "neobot.db")
     run_migrations(db_url)
     _engine, uow_factory = build_storage(db_url)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    usage_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    usage_tracker = UsageTracker(
+        usage_session_factory,
+        logger=logger_factory.get_logger("app.usage"),
+    )
+    initialize_usage_tracker(usage_tracker)
+    report_service = UsageReportService(
+        usage_session_factory,
+        logger=logger_factory.get_logger("app.usage_report"),
+    )
 
     timestamp_interval_seconds = getattr(
         config.chat,
@@ -249,9 +265,23 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
+    from neobot_app.agents.cross_chat import (
+        CrossChatManager,
+        CrossChatAgentConfig,
+    )
+    from neobot_app.agents.problem_solver import (
+        ProblemSolverManager,
+        ProblemSolverAgentConfig,
+    )
+    from neobot_app.reply.markdown_image import MarkdownImageConverter
 
     notification_hub = BackgroundNotificationHub(
         logger=logger_factory.get_logger("app.background_notifications"),
+    )
+
+    markdown_image_converter = MarkdownImageConverter(
+        output_dir=DATA_DIR / "markdown_images",
+        logger=logger_factory.get_logger("app.markdown_image"),
     )
 
     creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
@@ -273,6 +303,37 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         else None
     )
 
+    problem_solver_config = ProblemSolverAgentConfig.from_schema(
+        getattr(config.agent, "problem_solver", None)
+    )
+    problem_solver_manager = (
+        ProblemSolverManager(
+            config=problem_solver_config,
+            logger=logger_factory.get_logger("app.problem_solver"),
+            notification_hub=notification_hub,
+            markdown_image_converter=markdown_image_converter,
+        )
+        if problem_solver_config.enabled
+        else None
+    )
+
+    cross_chat_config = CrossChatAgentConfig.from_schema(
+        getattr(config.agent, "cross_chat", None)
+    )
+    cross_chat_manager = (
+        CrossChatManager(
+            config=cross_chat_config,
+            logger=logger_factory.get_logger("app.cross_chat"),
+            notification_hub=notification_hub,
+            adapter=adapter,
+            group_message_queue=group_message_queue,
+            friend_message_queue=friend_message_queue,
+            bot_config=config,
+        )
+        if cross_chat_config.enabled
+        else None
+    )
+
     agent_registry = build_agent_registry(
         config=config,
         archive_memory_service=archive_memory_service,
@@ -284,6 +345,10 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         willing_service=willing_service,
         logger=logger_factory.get_logger("app.agent_registry"),
         drawing_manager=drawing_manager,
+        problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
+        group_message_queue=group_message_queue,
+        friend_message_queue=friend_message_queue,
     )
 
     if config.plugins.enabled:
@@ -318,6 +383,9 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         ),
         config=config,
         agent_registry=agent_registry,
+        item_archive_config=getattr(
+            getattr(getattr(config, "agent", None), "memory", None), "item_archive", None
+        ),
         logger=logger_factory.get_logger("app.archive_summary"),
     )
 
@@ -325,6 +393,46 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         config=config,
         logger_factory=logger_factory,
     )
+
+    # 构建工具包管理器
+    web_search_cfg = getattr(config, "web_search", None)
+    tool_package_manager = ToolPackageManager()
+    ws_package = build_web_search_package(
+        enabled=getattr(web_search_cfg, "enabled", True) if web_search_cfg else False,
+        max_rounds=getattr(web_search_cfg, "max_search_rounds", 5) if web_search_cfg else 5,
+        preview_pages_limit=getattr(web_search_cfg, "preview_pages_limit", 30) if web_search_cfg else 30,
+        variant_result_limit=getattr(web_search_cfg, "variant_result_limit", 6) if web_search_cfg else 6,
+    )
+    if ws_package is not None:
+        tool_package_manager = ToolPackageManager([ws_package])
+
+    chat_cfg = config.chat
+    balance_checker = None
+    if getattr(chat_cfg, "enable_balance_check", False):
+        primary_provider = getattr(
+            getattr(config.models, "primary_chat_model", None), "provider", ""
+        )
+        if primary_provider.strip().casefold() in {"deepseek", "deepseek_offical", "deepseek_official"}:
+            ds_config = EnvConfig.get_api_platform_config("DeepSeek")
+            if ds_config.api_key and getattr(chat_cfg, "admin_accounts", None):
+                balance_checker = BalanceChecker(
+                    api_key=ds_config.api_key,
+                    base_url=ds_config.url or "https://api.deepseek.com",
+                    notification_hub=notification_hub,
+                    admin_accounts=list(chat_cfg.admin_accounts),
+                    balance_threshold=getattr(chat_cfg, "balance_threshold", 1.0),
+                    cooldown_seconds=getattr(chat_cfg, "balance_check_cooldown_seconds", 300),
+                    logger=logger_factory.get_logger("app.balance"),
+                )
+                provider_logger.info("余额检查已启用")
+            else:
+                provider_logger.warning(
+                    "余额检查已启用但缺少 DeepSeek API Key 或管理员账户，自动禁用"
+                )
+        else:
+            provider_logger.info(
+                "主模型非 DeepSeek，余额检查自动禁用"
+            )
 
     reply_orchestrator = ReplyOrchestrator(
         adapter=adapter,
@@ -343,13 +451,22 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
         notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
+        tool_package_manager=tool_package_manager,
+        balance_checker=balance_checker,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
     if scheduled_task_manager is not None:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
+    if problem_solver_manager is not None:
+        problem_solver_manager.set_orchestrator(reply_orchestrator)
+    if cross_chat_manager is not None:
+        cross_chat_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -406,5 +523,12 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         file_server_public_url=config.file_server.public_url,
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
+        cross_chat_manager=cross_chat_manager,
+        markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
+        report_service=report_service,
+        engine=_engine,
+        vision_provider=vision_provider,
+        archive_summary_service=archive_summary_service,
     )

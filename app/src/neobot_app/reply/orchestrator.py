@@ -13,6 +13,13 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.statistics.tracker import (
+    CURRENT_USAGE_MODULE,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_CONVERSATION_ID,
+    get_usage_tracker,
+)
+from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -21,7 +28,7 @@ if TYPE_CHECKING:
     from neobot_chat import AgentRegistry
     from neobot_chat.providers.base import Provider
     from neobot_app.config.schemas.bot import BotConfig
-    from neobot_app.emoji.service import EmojiService
+    from neobot_app.emoji.service import EmojiEntry, EmojiService
     from neobot_app.observability.debug import DebugRecorder
     from neobot_app.message.numbering import MessageNumbering
     from neobot_app.message.queue import MessageQueue
@@ -94,8 +101,13 @@ class ReplyOrchestrator:
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
+        cross_chat_manager: Any = None,
         notification_hub: Any = None,
+        markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
+        tool_package_manager: Any = None,
+        balance_checker: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -115,8 +127,13 @@ class ReplyOrchestrator:
         self._logger = logger or NullLogger()
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
+        self._problem_solver_manager = problem_solver_manager
+        self._cross_chat_manager = cross_chat_manager
         self._notification_hub = notification_hub
+        self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
+        self._tool_package_manager = tool_package_manager
+        self._balance_checker = balance_checker
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -269,6 +286,13 @@ class ReplyOrchestrator:
         queue_key = str(conversation_id)
         pipeline_key = f"{kind}:{queue_key}"
 
+        self._logger.info(
+            "[CROSS_CHAT_DIAG] orchestrator.start_background_reply() 被调用",
+            pipeline_key=pipeline_key,
+            manager_name=manager_name,
+            content_preview=content[:120],
+        )
+
         existing = self._active_pipelines.get(pipeline_key)
         if existing is not None and existing.done():
             self._active_pipelines.pop(pipeline_key, None)
@@ -353,10 +377,14 @@ class ReplyOrchestrator:
             await self._drawing_manager.shutdown()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.shutdown()
+        if self._cross_chat_manager is not None:
+            await self._cross_chat_manager.shutdown()
         if self._notification_hub is not None:
             self._notification_hub.clear()
         if self._agent_registry is not None:
             await self._agent_registry.close()
+        if self._provider is not None:
+            await self._provider.close()
         self._logger.info("ReplyOrchestrator 已关闭")
 
     def _resolve_mode(self) -> str:
@@ -515,6 +543,27 @@ class ReplyOrchestrator:
         chat = getattr(self._config, "chat", None)
         value = getattr(chat, "enable_ai_reply_regenerate_on_length_limit", True)
         return bool(value)
+
+    def _get_group_chat_reply_lifespan(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "group_chat_reply_lifespan", None)
+            if isinstance(val, int) and val >= 0:
+                return val
+        return 5
+
+    def _get_group_chat_suspend_wait_seconds(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "group_chat_suspend_wait_seconds", None)
+            if isinstance(val, int) and val > 0:
+                return val
+        return 3600
+
+    def _get_at_mention_reply_delay_seconds(self) -> float:
+        if self._config is not None:
+            val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
+            if isinstance(val, (int, float)) and val >= 0:
+                return float(val)
+        return 5.0
 
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         if self._debug_recorder is None:
@@ -694,6 +743,10 @@ class ReplyOrchestrator:
         from neobot_app.message.numbering import MessageNumbering
         from neobot_app.reply.tools import build_reply_toolset
 
+        # 复位工具包会话状态（搜索计数器等），确保新任务从零开始
+        if self._tool_package_manager is not None:
+            self._tool_package_manager.reset_sessions()
+
         # 随机触发表情包发送
         await self._maybe_trigger_sticker(queue, queue_key, event)
 
@@ -727,7 +780,9 @@ class ReplyOrchestrator:
                 prompt += (
                     "\n\n<可用的表情包>\n"
                     f"{emoji_text}\n"
-                    "发送表情包时请使用 send_emoji 工具，参数 number 为表情包编号。\n"
+                    "发送表情包时：\n"
+                    "- 同时发送文字回复和表情包：使用 send_reply 工具，通过 images 参数指定表情包编号列表（先逐一发送图片，再发送切分后的文字）\n"
+                    "- 仅发送表情包（无独立文字回复）：使用 send_emoji 工具，参数 number 为表情包编号\n"
                     "表情包按使用次数从少到多排列（使用次数均衡器），优先使用不常用的表情包。\n"
                     f"{search_hint}\n"
                     "</可用的表情包>"
@@ -747,10 +802,13 @@ class ReplyOrchestrator:
         messages: list[dict] = [{"role": "system", "content": prompt}]
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
+            _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
+            _bg_id = event.conversation_ref.id if event.conversation_ref else ""
             self._logger.info(
-                "注入后台通知（新管线初始消息）",
+                "[CROSS_CHAT_DIAG] orchestrator 注入后台通知（新管线初始消息）",
                 event_id=event.event_id,
-                queue_key=queue_key,
+                pipeline_key=f"{_bg_kind}:{_bg_id}",
+                notification_preview=event.background_content[:120],
             )
             self._record_debug(
                 "background_notification_injected_initial",
@@ -780,6 +838,8 @@ class ReplyOrchestrator:
             mention: list[int] | None = None,
             segments: list[str] | None = None,
             send_original: bool = False,
+            images: list[int] | None = None,
+            merge_text_with_image: bool = False,
         ) -> None:
             nonlocal reply_sent
             reply_sent = True
@@ -794,6 +854,8 @@ class ReplyOrchestrator:
                     mention_user_ids=mention,
                     segments=segments,
                     send_original=send_original,
+                    images=images,
+                    merge_text_with_image=merge_text_with_image,
                 )
             else:
                 await self._send_reply(
@@ -802,6 +864,8 @@ class ReplyOrchestrator:
                     mention_user_ids=mention,
                     segments=segments,
                     send_original=send_original,
+                    images=images,
+                    merge_text_with_image=merge_text_with_image,
                 )
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
@@ -875,8 +939,8 @@ class ReplyOrchestrator:
 
             results = search_emoji(keyword)
             if not results:
-                return f"未找到与“{keyword}”相关的QQ表情"
-            lines = [f"搜索“{keyword}”的结果："]
+                return f"未找到与「{keyword}」相关的QQ表情"
+            lines = [f"搜索「{keyword}」的结果："]
             for item in results:
                 lines.append(f"  ID {item['id']}: {item['name']} ({item['hint']})")
             return "\n".join(lines)
@@ -889,7 +953,15 @@ class ReplyOrchestrator:
                 timeout=self._get_io_timeout_seconds(),
             )
             await self._send_with_timeout(event.conversation_ref, [segment])
-            return f"语音消息已发送，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
+            # 记录 bot 自身发送的语音消息到队列
+            self._push_self_sent_message(
+                queue=queue,
+                queue_copy=queue_copy,
+                queue_key=queue_key,
+                conv_ref=event.conversation_ref,
+                text=f"[语音消息:{text}]",
+            )
+            return f"已发送语音消息，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
         async def poke_user_handler(user_id: int) -> str:
             if conv_kind == "group":
@@ -910,6 +982,43 @@ class ReplyOrchestrator:
                 )
                 return f"已戳一戳好友 QQ:{user_id}" if self._api_succeeded(result) else f"好友戳一戳失败: {result}"
 
+        async def send_long_reply_handler(
+            image_path: str,
+            caption: str = "",
+            reply_to: int | None = None,
+            mention: list[int] | None = None,
+            markdown: str = "",
+        ) -> None:
+            nonlocal reply_sent
+            reply_sent = True
+            conv_ref = event.conversation_ref
+            path = image_path
+            # 解析消息编号 -> 实际 message_id
+            reply_to_message_id = None
+            if reply_to is not None:
+                reply_to_message_id = numbering.get_message_id(reply_to)
+            # 发送说明文字（如果有）
+            if caption.strip():
+                caption_segs = self._build_reply_segments(
+                    text=caption.strip(),
+                    conversation_kind=conv_ref.kind if conv_ref else "",
+                    reply_to_message_id=reply_to_message_id,
+                    mention_user_ids=mention,
+                )
+                await self._send_with_timeout(conv_ref, caption_segs)
+            # 发送图片（不附带引用，图片单独发送）
+            img_seg = [{"type": "image", "data": {"file": f"file:///{path}"}}]
+            await self._send_with_timeout(conv_ref, img_seg)
+            # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
+            if markdown.strip():
+                self._push_self_sent_message(
+                    queue=queue,
+                    queue_copy=queue_copy,
+                    queue_key=queue_key,
+                    conv_ref=conv_ref,
+                    text=f"[图片信息:md内容{markdown.strip()}]",
+                )
+
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
         reply_toolset = build_reply_toolset(
@@ -919,6 +1028,7 @@ class ReplyOrchestrator:
             send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
             agent_registry=self._agent_registry,
+            tool_package_manager=self._tool_package_manager,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
             search_emoji_handler=search_emoji_handler,
@@ -928,7 +1038,11 @@ class ReplyOrchestrator:
             poke_user_handler=poke_user_handler,
             drawing_manager=self._drawing_manager,
             scheduled_task_manager=self._scheduled_task_manager,
+            problem_solver_manager=self._problem_solver_manager,
+            cross_chat_manager=self._cross_chat_manager,
             notification_hub=self._notification_hub,
+            markdown_image_converter=self._markdown_image_converter,
+            send_long_reply_handler=send_long_reply_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
@@ -945,6 +1059,9 @@ class ReplyOrchestrator:
 
         tools = reply_toolset.definitions()
 
+        # 工具包管理器存在时，工具列表需动态获取（unlock 后新工具立即可用）
+        _use_dynamic_tools = self._tool_package_manager is not None
+
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = 12
         ai_check_prompted = False
@@ -956,6 +1073,18 @@ class ReplyOrchestrator:
             event.conversation_ref is not None
             and event.conversation_ref.kind == "group"
         )
+        group_lifespan = self._get_group_chat_reply_lifespan() if is_group else 0
+
+        # 记录已渲染的群成员用户ID，用于挂起恢复时补充新成员档案
+        rendered_user_ids: set[str] = set()
+        if is_group:
+            from neobot_app.message.queue_impl import QueueEntryType as _QET
+            for entry in queue_copy.entries(queue_key):
+                if entry.kind == _QET.MESSAGE and entry.message is not None:
+                    uid = getattr(entry.message, "user_id", None)
+                    if uid is not None:
+                        rendered_user_ids.add(str(uid))
+
         silent_timeout = self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
         silent_deadline = (
             monotonic_seconds() + silent_timeout
@@ -998,6 +1127,8 @@ class ReplyOrchestrator:
                 timeout_seconds=silent_timeout,
             )
 
+        _heartbeat_token = SILENT_HEARTBEAT.set(reset_silent_deadline)
+
         while True:
             reply_sent = False
             cancelled = False
@@ -1007,14 +1138,20 @@ class ReplyOrchestrator:
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
+                # 工具包管理器存在时每次迭代刷新工具列表，确保 unlock 后新工具立即可用
+                if _use_dynamic_tools:
+                    tools = reply_toolset.executor.definitions()
+
                 pipeline_key = f"{conv_kind}:{conv_id}"
                 notification_text = await self._poll_background_notifications(pipeline_key)
                 if notification_text:
                     messages.append({"role": "user", "content": notification_text})
                     self._logger.info(
-                        "注入后台通知",
+                        "[CROSS_CHAT_DIAG] orchestrator 注入通知到消息列表",
                         event_id=event.event_id,
                         pipeline_key=pipeline_key,
+                        iteration=iteration,
+                        notification_preview=notification_text[:120],
                     )
                     self._record_debug(
                         "background_notification_injected",
@@ -1054,6 +1191,26 @@ class ReplyOrchestrator:
                     )
                     return
                 reset_silent_deadline()
+
+                usage = (response.get("extensions") or {}).get("usage")
+                if isinstance(usage, dict) and hasattr(self._provider, "model"):
+                    try:
+                        conv_ref = event.conversation_ref
+                        await get_usage_tracker().record(
+                            module="reply_agent",
+                            model_name=self._provider.model,
+                            input_tokens=usage["input_tokens"],
+                            output_tokens=usage["output_tokens"],
+                            cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                            cache_miss_tokens=usage.get("cache_miss_tokens", 0),
+                            conversation_kind=conv_ref.kind if conv_ref else "",
+                            conversation_id=conv_ref.id if conv_ref else "",
+                        )
+                        if self._balance_checker is not None:
+                            await self._balance_checker.check_and_notify()
+                    except Exception:
+                        pass
+
                 self._record_debug(
                     "agent_iteration",
                     event,
@@ -1236,11 +1393,95 @@ class ReplyOrchestrator:
             # 保存编号映射（每轮更新）
             event.message_number_map = numbering.mapping
 
-            # 不回复或取消 → 结束
-            if not reply_sent or cancelled:
+            # 未回复且非取消 → 异常，结束
+            if not reply_sent and not cancelled:
                 break
 
-            # 非私聊 → 结束
+            # ── 群聊寿命机制 ──
+            if is_group:
+                if group_lifespan > 0:
+                    group_lifespan -= 1
+                    action = "cancel消耗寿命" if cancelled else "回复消耗寿命"
+                    self._logger.info(
+                        f"群聊回复管线{action}",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        remaining_lifespan=group_lifespan,
+                        cancelled=cancelled,
+                    )
+                    if group_lifespan <= 0:
+                        self._logger.info(
+                            "群聊回复管线寿命归零，结束管线",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        break
+
+                    # 群聊挂起，等待新消息或后台通知
+                    self._logger.debug(
+                        "群聊管线挂起等待新消息或通知",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        remaining_lifespan=group_lifespan,
+                    )
+                    new_entries, notification_text = await self._suspend_group_chat(
+                        queue, queue_copy, queue_key
+                    )
+                    if not new_entries and not notification_text:
+                        self._logger.debug(
+                            "群聊挂起超时，结束管线",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        break
+
+                    # 注入后台通知
+                    if notification_text:
+                        messages.append({"role": "user", "content": notification_text})
+                        self._logger.info(
+                            "注入后台通知（群聊挂起期间）",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+                        self._record_debug(
+                            "background_notification_injected_during_group_suspend",
+                            event,
+                            queue_key=queue_key,
+                            notification=notification_text[:200],
+                        )
+
+                    # 构建增量提示并注入（仅新消息+新成员档案）
+                    if new_entries:
+                        resume_content = await self._build_group_chat_resume_content(
+                            new_entries, queue_key, rendered_user_ids, numbering, queue_copy
+                        )
+                        # 更新已渲染用户ID集合
+                        from neobot_app.message.queue_impl import QueueEntryType as _QET2
+                        for entry in new_entries:
+                            if entry.kind == _QET2.MESSAGE and entry.message is not None:
+                                uid = getattr(entry.message, "user_id", None)
+                                if uid is not None:
+                                    rendered_user_ids.add(str(uid))
+                        if resume_content:
+                            messages.append({"role": "user", "content": resume_content})
+                            self._record_debug(
+                                "group_chat_resume_content_injected",
+                                event,
+                                queue_key=queue_key,
+                                injected_text=resume_content,
+                            )
+
+                    # 重置静默超时计时器，避免挂起耗时触发超时保护
+                    reset_silent_deadline()
+                    # 重置事件状态，允许下一轮回复
+                    event.state = ReplyState.GENERATING
+                    event.completed_at = None
+                    continue  # 继续外层 while 循环，重新进入 agent 回复流程
+
+                # 寿命为 0（禁用寿命机制），正常结束管线
+                break
+
+            # 非私聊 → 结束（兜底）
             if not is_private:
                 break
 
@@ -1310,6 +1551,8 @@ class ReplyOrchestrator:
                         queue_key=queue_key,
                         injected_text=new_text,
                     )
+
+        SILENT_HEARTBEAT.reset(_heartbeat_token)
 
         if event.state == ReplyState.GENERATING and not event.is_terminal:
             try:
@@ -1383,6 +1626,12 @@ class ReplyOrchestrator:
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if notification:
+                    self._logger.info(
+                        "[CROSS_CHAT_DIAG] orchestrator._poll_background_notifications 轮询到通知",
+                        pipeline_key=pipeline_key,
+                        source=notification.source,
+                        preview=notification.content[:120],
+                    )
                     return notification.content
                 return None
 
@@ -1398,6 +1647,14 @@ class ReplyOrchestrator:
             if self._scheduled_task_manager is not None:
                 notification = await asyncio.wait_for(
                     self._scheduled_task_manager.poll_notification(pipeline_key),
+                    timeout=self._get_dependency_timeout_seconds(),
+                )
+                if notification:
+                    return notification
+
+            if self._problem_solver_manager is not None:
+                notification = await asyncio.wait_for(
+                    self._problem_solver_manager.poll_notification(pipeline_key),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if notification:
@@ -1500,6 +1757,271 @@ class ReplyOrchestrator:
                 queue_key=queue_key,
             )
         return all_new_entries, notification_text
+
+    def _evaluate_single_message_willing(
+        self,
+        *,
+        message: Any,
+        queue: Any,
+        queue_key: str,
+    ) -> bool:
+        """评估单条消息的回复意愿，与正常回复流程使用完全相同的判断逻辑。
+
+        返回 True 表示应该回复。
+        """
+        if self._willing_service is None:
+            return True
+
+        sender_id = str(getattr(message, "user_id", "?"))
+
+        # @提及 → 检查屏蔽后直接通过
+        if self._willing_service.is_at_mentioned(message):
+            block_reason = self._willing_service.block_reason_for_message(
+                message=message, queue_key=queue_key
+            )
+            if block_reason:
+                self._logger.info(
+                    "挂起意愿判断：@提及消息被屏蔽",
+                    queue_key=queue_key,
+                    sender_id=sender_id,
+                    reason=block_reason,
+                )
+                return False
+            self._logger.info(
+                "挂起意愿判断：@提及，直接触发回复",
+                queue_key=queue_key,
+                sender_id=sender_id,
+            )
+            return True
+
+        # 正常意愿评估
+        try:
+            decision = self._willing_service.evaluate(
+                message=message, queue=queue, queue_key=queue_key
+            )
+            self._logger.info(
+                "挂起意愿判断",
+                queue_key=queue_key,
+                sender_id=sender_id,
+                probability=f"{decision.probability:.3f}",
+                should_reply=decision.should_reply,
+                reasons=list(decision.reasons),
+            )
+            return decision.should_reply
+        except Exception as exc:
+            self._logger.info(
+                "挂起意愿判断异常，跳过",
+                queue_key=queue_key,
+                sender_id=sender_id,
+                error=str(exc),
+            )
+            return False
+
+    async def _suspend_group_chat(
+        self,
+        source: MessageQueue,
+        snapshot: MessageQueue,
+        queue_key: str,
+    ) -> tuple[list, str | None]:
+        """挂起等待群聊新消息或后台通知。
+
+        新消息需通过回复意愿判断（@提及或概率命中）才结束挂起。
+        - @提及：等待 at_mention_reply_delay_seconds 收集上下文后结束挂起
+        - 普通意愿命中：立即结束挂起
+        - 后台通知：立即中断挂起
+        返回 (新消息条目列表, 通知文本或None)；返回空列表且无通知表示超时。
+        """
+        from neobot_app.message.queue_impl import QueueEntryType as _QET
+
+        suspend_secs = self._get_group_chat_suspend_wait_seconds()
+        at_delay = self._get_at_mention_reply_delay_seconds()
+        deadline = monotonic_seconds() + suspend_secs
+        all_new_entries: list = []
+        notification_text: str | None = None
+        has_willing = False
+        at_mention_deadline = 0.0
+
+        self._logger.debug(
+            "群聊挂起循环开始轮询",
+            queue_key=queue_key,
+            suspend_secs=suspend_secs,
+            at_delay=at_delay,
+        )
+        pipeline_key = f"group:{queue_key}"
+
+        def _has_at_mention(entries: list) -> bool:
+            """检查条目列表中是否有@提及消息。"""
+            if self._willing_service is None:
+                return False
+            for entry in entries:
+                if entry.kind != _QET.MESSAGE or entry.message is None:
+                    continue
+                if self._willing_service.is_at_mentioned(entry.message):
+                    return True
+            return False
+
+        def _check_willing(entries: list) -> bool:
+            """检查条目列表中是否有任何消息通过回复意愿判断。
+
+            复用 _evaluate_single_message_willing，与正常回复流程使用同一套判断逻辑。
+            """
+            for entry in entries:
+                if entry.kind != _QET.MESSAGE or entry.message is None:
+                    continue
+                if self._evaluate_single_message_willing(
+                    message=entry.message, queue=source, queue_key=queue_key,
+                ):
+                    return True
+            return False
+
+        while monotonic_seconds() < deadline:
+            await asyncio.sleep(1.0)
+            current_new: list = []
+            try:
+                current_new = self._collect_new_entries(source, snapshot, queue_key)
+            except Exception as exc:
+                self._logger.debug(
+                    "群聊挂起收集新消息异常",
+                    queue_key=queue_key,
+                    error=str(exc),
+                )
+                continue
+            if current_new:
+                current_new = self._consume_ai_reply_blocked_entries(current_new)
+            if current_new:
+                all_new_entries.extend(current_new)
+                if not has_willing:
+                    if _check_willing(current_new):
+                        has_willing = True
+                        if _has_at_mention(current_new):
+                            # @提及：启动延迟收集窗口，不立即break
+                            at_mention_deadline = monotonic_seconds() + at_delay
+                        else:
+                            # 普通意愿命中：立即结束
+                            self._logger.debug(
+                                "群聊挂起普通意愿命中，立即结束挂起",
+                                queue_key=queue_key,
+                                count=len(all_new_entries),
+                            )
+                            break
+
+            # 轮询后台通知，有通知立即中断挂起
+            if notification_text is None:
+                notification_text = await self._poll_background_notifications(pipeline_key)
+
+            if notification_text:
+                self._logger.debug(
+                    "群聊挂起检测到后台通知，结束挂起",
+                    queue_key=queue_key,
+                )
+                break
+
+            # @提及延迟窗口到期
+            if at_mention_deadline > 0 and monotonic_seconds() >= at_mention_deadline:
+                self._logger.debug(
+                    "群聊挂起@提及收集窗口到期",
+                    queue_key=queue_key,
+                    total_new=len(all_new_entries),
+                )
+                break
+
+        if all_new_entries:
+            self._logger.debug(
+                "群聊挂起收集到新消息",
+                queue_key=queue_key,
+                count=len(all_new_entries),
+            )
+        elif notification_text:
+            self._logger.debug(
+                "群聊挂起收到后台通知",
+                queue_key=queue_key,
+            )
+        else:
+            self._logger.debug(
+                "群聊挂起超时未收到新消息或通知",
+                queue_key=queue_key,
+            )
+
+        # 通知存在 → 总是返回（通知本身就是触发理由）
+        if notification_text:
+            return all_new_entries, notification_text
+
+        # 有意愿消息 → 返回
+        if has_willing:
+            return all_new_entries, None
+
+        # 超时且无意愿消息 → 不触发回复
+        self._logger.debug(
+            "群聊挂起超时，未收到有意愿消息或通知",
+            queue_key=queue_key,
+            collected_count=len(all_new_entries),
+        )
+        return [], None
+
+    async def _build_group_chat_resume_content(
+        self,
+        new_entries: list,
+        queue_key: str,
+        rendered_user_ids: set[str],
+        numbering: Any,
+        queue_copy: MessageQueue,
+    ) -> str:
+        """为群聊挂起恢复构建增量提示文本：仅包含新消息和新成员档案。"""
+        from neobot_app.message.queue_impl import QueueEntryType
+
+        # 收集新消息中的用户ID
+        new_user_ids: list[str] = []
+        seen: set[str] = set()
+        for entry in new_entries:
+            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                uid = getattr(entry.message, "user_id", None)
+                if uid is not None:
+                    uid_str = str(uid)
+                    if uid_str not in seen:
+                        seen.add(uid_str)
+                        if uid_str not in rendered_user_ids:
+                            new_user_ids.append(uid_str)
+
+        parts: list[str] = []
+
+        # 新消息文本
+        if numbering is not None:
+            previous_entries = queue_copy.entries(queue_key)
+            # 先回退快照以获取未包含新条目的状态
+            new_text = numbering.apply_new(
+                new_entries,
+                queue_copy,
+                context_entries=queue_copy.entries(queue_key),
+                previous_entries=[],
+            )
+            if new_text:
+                parts.append(f"[收到新消息]\n{new_text}")
+        else:
+            new_text_lines: list[str] = []
+            for entry in new_entries:
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                    text = getattr(entry.message, "raw_message", "") or str(entry.message)
+                    sender = getattr(entry.message, "sender", None)
+                    sender_name = getattr(sender, "nickname", None) or getattr(entry.message, "user_id", "?")
+                    new_text_lines.append(f"{sender_name}: {text}")
+            if new_text_lines:
+                parts.append(f"[收到新消息]\n" + "\n".join(new_text_lines))
+
+        # 新成员档案
+        if new_user_ids and self._prompt_builder is not None:
+            profile_service = getattr(self._prompt_builder, "_profile_service", None)
+            if profile_service is not None:
+                new_member_text = await profile_service.render_specific_members(new_user_ids)
+                if new_member_text:
+                    parts.append(f"[新出现的群友档案]\n{new_member_text}")
+
+        if not parts:
+            return ""
+
+        parts.append(
+            "这是群聊对话。请根据新消息决定是否需要回复。"
+        )
+        return "\n\n".join(parts)
 
     # ── Prompt 构建 ──
 
@@ -1613,6 +2135,26 @@ class ReplyOrchestrator:
             )
             raise
         content = response.get("content", "")
+
+        usage = (response.get("extensions") or {}).get("usage")
+        if isinstance(usage, dict) and hasattr(self._provider, "model"):
+            try:
+                conv_ref = event.conversation_ref
+                await get_usage_tracker().record(
+                    module="reply_common",
+                    model_name=self._provider.model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                    cache_miss_tokens=usage.get("cache_miss_tokens", 0),
+                    conversation_kind=conv_ref.kind if conv_ref else "",
+                    conversation_id=conv_ref.id if conv_ref else "",
+                )
+                if self._balance_checker is not None:
+                    await self._balance_checker.check_and_notify()
+            except Exception:
+                pass
+
         text = content.strip() if isinstance(content, str) else str(content)
         event.generated_text = text
         self._record_debug("reply_generated", event, reply_text=text, response=response)
@@ -1668,19 +2210,80 @@ class ReplyOrchestrator:
         mention_user_ids: list[int] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
+        images: list[int] | None = None,
+        merge_text_with_image: bool = False,
     ) -> None:
         event.transition(ReplyState.SENDING)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
+        send_results: list[object] = []
+        formatted_messages: list[list[dict]] = []
+
+        # Phase B: 文字与第一张图片合并发送（不切分文字）
+        if images and merge_text_with_image:
+            image_entries = self._resolve_image_entries(images)
+            if image_entries:
+                first_img = image_entries[0]
+                merged = self._build_reply_segments(
+                    text=text,
+                    conversation_kind=event.conversation_ref.kind,
+                    reply_to_message_id=reply_to_message_id,
+                    mention_user_ids=mention_user_ids,
+                )
+                merged.append({
+                    "type": "image",
+                    "data": {"file": f"file:///{first_img.file_path.as_posix()}"},
+                })
+                formatted_messages.append(merged)
+                send_results.append(await self._send_with_timeout(event.conversation_ref, merged))
+                if self._emoji_service:
+                    await self._emoji_service.record_usage(images[0])
+                # 发送剩余图片
+                for i, entry in enumerate(image_entries[1:], start=1):
+                    img_seg = [{
+                        "type": "image",
+                        "data": {"file": f"file:///{entry.file_path.as_posix()}"},
+                    }]
+                    formatted_messages.append(img_seg)
+                    send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                    if self._emoji_service:
+                        await self._emoji_service.record_usage(images[i])
+            event.send_response = send_results[0] if len(send_results) == 1 else send_results
+            if event.conversation_ref.kind == "private":
+                event.transition(ReplyState.GENERATING)
+            else:
+                event.transition(ReplyState.COMPLETED)
+            self._record_debug(
+                "reply_sent",
+                event,
+                formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        # Phase A: 先逐一发送图片
+        if images:
+            for image_number in images:
+                if self._emoji_service is None:
+                    continue
+                entry = self._emoji_service.get_entry(image_number)
+                if entry is None:
+                    continue
+                img_seg = [{
+                    "type": "image",
+                    "data": {"file": f"file:///{entry.file_path.as_posix()}"},
+                }]
+                formatted_messages.append(img_seg)
+                send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                await self._emoji_service.record_usage(image_number)
+
+        # Phase C: 发送文字（切分后逐条发送）
         reply_messages = self._build_reply_messages(
             text,
             segments=segments,
             send_original=send_original,
         )
-        send_results: list[object] = []
-        formatted_messages: list[list[dict]] = []
-
         is_group = event.conversation_ref.kind == "group"
         pipeline_key = f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
 
@@ -1707,7 +2310,6 @@ class ReplyOrchestrator:
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
-        # 私聊连续会话：回到 GENERATING 等待下一轮；群聊/普通：直接完成
         if event.conversation_ref is not None and event.conversation_ref.kind == "private":
             event.transition(ReplyState.GENERATING)
         else:
@@ -1718,6 +2320,61 @@ class ReplyOrchestrator:
             formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
             reply_to_message_id=reply_to_message_id,
         )
+
+    def _push_self_sent_message(
+        self,
+        queue: Any,
+        queue_copy: Any,
+        queue_key: str,
+        conv_ref: ConversationRef,
+        text: str,
+    ) -> None:
+        """将 bot 自身发送的消息记录到消息队列，供后续上下文感知。"""
+        import time
+        from neobot_adapter.model.basic import PostMessageMessagesender
+        from neobot_adapter.model.message import (
+            GroupMessage,
+            MessageSegment,
+            MessageTypeEnum,
+            PrivateMessage,
+        )
+
+        bot_qq = 0
+        bot_name = self._get_bot_name()
+        if self._config is not None:
+            bot_cfg = getattr(self._config, "bot", None)
+            if bot_cfg is not None:
+                account = getattr(bot_cfg, "account", 0)
+                if account:
+                    bot_qq = int(account)
+
+        synthetic_msg_id = -int(time.time() * 1_000_000)
+
+        message_segments = [MessageSegment(type="text", data={"text": text})]
+        sender = PostMessageMessagesender(user_id=bot_qq, nickname=bot_name)
+
+        if conv_ref.kind == "group":
+            msg = GroupMessage(
+                message_type=MessageTypeEnum.group,
+                message_id=synthetic_msg_id,
+                user_id=bot_qq,
+                message=message_segments,
+                raw_message=text,
+                group_id=int(conv_ref.id) if conv_ref.id else 0,
+                sender=sender,
+            )
+        else:
+            msg = PrivateMessage(
+                message_type=MessageTypeEnum.private,
+                message_id=synthetic_msg_id,
+                user_id=bot_qq,
+                message=message_segments,
+                raw_message=text,
+                sender=sender,
+            )
+
+        queue.push(queue_key, msg)
+        queue_copy.push(queue_key, msg)
 
     def _build_reply_messages(
         self,
@@ -1762,6 +2419,17 @@ class ReplyOrchestrator:
 
         segments.append({"type": "text", "data": {"text": text}})
         return segments
+
+    def _resolve_image_entries(self, image_numbers: list[int]) -> list[Any]:
+        """将表情包编号列表解析为 EmojiEntry 列表，跳过无效编号。"""
+        if self._emoji_service is None:
+            return []
+        entries: list[Any] = []
+        for number in image_numbers:
+            entry = self._emoji_service.get_entry(number)
+            if entry is not None:
+                entries.append(entry)
+        return entries
 
     # ── 工具方法 ──
 

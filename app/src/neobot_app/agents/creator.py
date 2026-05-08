@@ -38,6 +38,12 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 from neobot_app.core import DATA_DIR
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -53,6 +59,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "涉及图片保存、导入图库/表情包、发送图片的任务均委托它；"
     "任务中指代聊天图片时，它可通过聊天上下文自行判断。"
     "绘图任务会加入后台任务中,在完成后会另外通知,你不需要等待它完成,只需要先报告其已经开始即可."
+)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "AI绘图与图片资产管理（图库/表情包/图片发送）"
 )
 
 # 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
@@ -115,6 +124,14 @@ def _sanitize_filename(name: str) -> str:
     return cleaned[:100] or "unnamed"
 
 
+class ImageGenerationError(Exception):
+    """绘图 API 错误，携带完整错误信息包供 agent 诊断。"""
+
+    def __init__(self, error_info: dict[str, Any]) -> None:
+        self.error_info = error_info
+        super().__init__(json.dumps(error_info, ensure_ascii=False))
+
+
 @dataclass(frozen=True)
 class CreatorAgentConfig:
     enabled: bool = False
@@ -128,6 +145,7 @@ class CreatorAgentConfig:
     draw_max_retries: int = 1
     draw_background_enabled: bool = True
     draw_startup_grace_seconds: float = 3.0
+    draw_max_tasks_per_pipeline: int = 20
 
     @classmethod
     def from_schema(cls, config: "AgentCreator | None") -> "CreatorAgentConfig":
@@ -148,6 +166,7 @@ class CreatorAgentConfig:
             draw_max_retries=int(getattr(drawing_cfg, "max_retries", 1) or 0),
             draw_background_enabled=bool(getattr(drawing_cfg, "background_enabled", True)),
             draw_startup_grace_seconds=float(getattr(drawing_cfg, "startup_grace_seconds", 3.0) or 3.0),
+            draw_max_tasks_per_pipeline=int(getattr(drawing_cfg, "max_tasks_per_pipeline", 20) or 20),
         )
 
 
@@ -232,6 +251,35 @@ class BackgroundDrawingManager:
             if task.pipeline_key == pipeline_key and task.status == "drawing":
                 return task
         return None
+
+    def _enforce_task_limit(self, pipeline_key: str) -> None:
+        """确保每个管线不超过最大任务数，超出时销毁最旧的非活跃任务。"""
+        limit = self._config.draw_max_tasks_per_pipeline
+        if limit <= 0:
+            return
+        pipeline_tasks = [
+            t for t in self._tasks.values()
+            if t.pipeline_key == pipeline_key
+        ]
+        if len(pipeline_tasks) <= limit:
+            return
+        # 按创建时间升序，优先移除旧任务；活跃任务（drawing）不删除
+        pipeline_tasks.sort(key=lambda t: t.created_at)
+        removed = 0
+        for task in pipeline_tasks:
+            if len(pipeline_tasks) - removed <= limit:
+                break
+            if task.status == "drawing":
+                continue
+            self._tasks.pop(task.task_id, None)
+            removed += 1
+            self._logger.info(
+                "后台绘图任务超出上限已自动销毁",
+                task_id=task.task_id,
+                pipeline_key=pipeline_key,
+                status=task.status,
+                limit=limit,
+            )
 
     def get_pipeline_status(self, pipeline_key: str) -> dict[str, Any]:
         """查询指定管线的后台绘图状态（供主 Agent 工具调用）。"""
@@ -351,6 +399,7 @@ class BackgroundDrawingManager:
             seed=seed,
         )
         self._tasks[task.task_id] = task
+        self._enforce_task_limit(pipeline_key)
         self._set_cooldown(pipeline_key)
 
         bg_task = asyncio.create_task(self._run_draw(task))
@@ -403,14 +452,29 @@ class BackgroundDrawingManager:
             await self._on_completed(task)
         except Exception as exc:
             task.status = "failed"
-            task.error = str(exc)
+            task.error = self._serialize_draw_error(exc)
             self.cancel_cooldown(task.pipeline_key)
             self._logger.warning(
                 "后台绘图任务失败",
                 task_id=task.task_id,
-                error=str(exc),
+                error=task.error,
             )
             await self._on_failed(task)
+
+    @staticmethod
+    def _serialize_draw_error(exc: Exception) -> str:
+        """将绘图异常序列化为完整的错误信息 JSON，供 agent 诊断。"""
+        if isinstance(exc, ImageGenerationError):
+            return str(exc)
+        error_info: dict[str, Any] = {
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if isinstance(exc, httpx.HTTPStatusError):
+            error_info["status_code"] = exc.response.status_code
+            error_info["response_body"] = exc.response.text
+            error_info["request_url"] = str(exc.request.url)
+        return json.dumps(error_info, ensure_ascii=False)
 
     async def _on_completed(self, task: DrawTask) -> None:
         """绘图完成后的通知流程——向主 Agent 提交必须处理的绘图结果。"""
@@ -712,6 +776,7 @@ class CreatorImageService:
         model_name: str = "creator_image_model",
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
+        markdown_dir: Path | None = None,
         logger: Logger | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -724,6 +789,7 @@ class CreatorImageService:
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
         self._gallery_dir = self._base_dir / "gallery"
+        self._markdown_dir = markdown_dir
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._gallery_dir.mkdir(parents=True, exist_ok=True)
         timeout = self._model.settings.timeout_seconds
@@ -971,22 +1037,32 @@ class CreatorImageService:
         response = await self._client.post("/images/generations", json=payload)
         try:
             response.raise_for_status()
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
             self._logger.error(
                 "生图接口返回错误状态码",
                 status=response.status_code,
                 body=response.text[:500],
             )
-            raise
+            raise ImageGenerationError({
+                "error_type": "HTTPStatusError",
+                "status_code": exc.response.status_code,
+                "response_body": exc.response.text,
+                "request_url": str(exc.request.url),
+            }) from exc
         try:
             image_bytes = await self._extract_image_bytes(response.json())
-        except ValueError:
+        except ValueError as exc:
             self._logger.error(
                 "生图接口返回数据解析失败",
                 status=response.status_code,
                 body=response.text[:500],
             )
-            raise
+            raise ImageGenerationError({
+                "error_type": "ValueError",
+                "message": str(exc),
+                "status_code": response.status_code,
+                "response_body": response.text,
+            }) from exc
         return await self._save_image_bytes(
             image_bytes,
             source=TMP_SOURCE,
@@ -1216,6 +1292,52 @@ class CreatorImageService:
             {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
         ]
         await self._send_with_timeout(conversation_ref, segments)
+
+    async def send_image_by_path(
+        self,
+        file_path: str,
+        *,
+        group_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """直接通过文件路径发送图片（无需数据库记录）。"""
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"图片文件不存在: {path}")
+        group_id = (group_id or "").strip()
+        user_id = (user_id or "").strip()
+        if group_id:
+            conversation_ref = ConversationRef(kind="group", id=group_id)
+        elif user_id:
+            conversation_ref = ConversationRef(kind="private", id=user_id)
+        else:
+            raise ValueError("未指定 group_id 或 user_id")
+        segments: list[dict[str, Any]] = [
+            {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
+        ]
+        await self._send_with_timeout(conversation_ref, segments)
+
+    def list_markdown_images(self) -> list[dict[str, Any]]:
+        """列出 markdown_images 目录中的图片文件。"""
+        if self._markdown_dir is None or not self._markdown_dir.exists():
+            return []
+        result: list[dict[str, Any]] = []
+        for child in sorted(self._markdown_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+                continue
+            try:
+                stat = child.stat()
+            except OSError:
+                stat = None
+            result.append({
+                "filename": child.name,
+                "path": str(child),
+                "size": stat.st_size if stat else 0,
+                "mtime": stat.st_mtime if stat else 0,
+            })
+        return result
 
     async def import_chat_image(
         self,
@@ -1970,16 +2092,24 @@ class CreatorToolExecutor(ToolExecutor):
             ),
             _tool_def(
                 "gallery_send",
-                "发送图片到指定群聊/私聊，只发送图片不附带文字。必须提供 group_id 或 user_id。",
+                "发送图片到指定群聊/私聊，只发送图片不附带文字。必须提供 group_id 或 user_id。"
+                "可通过 image_id 发送图库/临时图片，也可通过 file_path 直接发送任意路径的图片文件"
+                "（如 markdown 渲染结果、解题图片等）。",
                 {
                     "properties": {
-                        "image_id": {"type": "string", "description": "图片 ID"},
+                        "image_id": {"type": "string", "description": "图片 ID（file_path 为空时必填）"},
+                        "file_path": {"type": "string", "description": "可选，直接发送指定路径的图片文件。用于发送 markdown 渲染图片等非图库文件"},
                         "source": {"type": "string", "description": "可选，tmp 或 gallery"},
                         "group_id": {"type": "string", "description": "目标群号"},
                         "user_id": {"type": "string", "description": "目标 QQ 号"},
                     },
-                    "required": ["image_id"],
+                    "required": [],
                 },
+            ),
+            _tool_def(
+                "list_markdown_images",
+                "列出 markdown 渲染生成的图片文件（解题结果等）。返回文件名、路径、大小和修改时间。",
+                {"properties": {}},
             ),
             _tool_def("list_references", "列出可作为参考图的图库图片。", {"properties": {}}),
             _tool_def(
@@ -2144,6 +2274,8 @@ class CreatorToolExecutor(ToolExecutor):
                 return await self._gallery_rename(args)
             if name == "gallery_send":
                 return await self._gallery_send(args)
+            if name == "list_markdown_images":
+                return self._execute_list_markdown_images()
             if name == "list_references":
                 return await self._list_references()
             if name == "import_chat_image":
@@ -2296,6 +2428,10 @@ class CreatorToolExecutor(ToolExecutor):
         info = self._drawing_manager.get_last_draw_info(pipeline_key)
         return _json({"ok": True, "pipeline_key": pipeline_key, **info})
 
+    def _execute_list_markdown_images(self) -> str:
+        images = self._service.list_markdown_images()
+        return _json({"ok": True, "markdown_images": images, "total": len(images)})
+
     async def _gallery_list(self, args: dict[str, Any]) -> str:
         source = self._optional_str(args.get("source"))
         offset = int(args.get("offset", 0) or 0)
@@ -2372,13 +2508,25 @@ class CreatorToolExecutor(ToolExecutor):
 
     async def _gallery_send(self, args: dict[str, Any]) -> str:
         image_id = str(args.get("image_id") or "")
-        await self._service.send_image(
-            image_id=image_id,
-            source=self._optional_str(args.get("source")),
-            group_id=self._optional_str(args.get("group_id")),
-            user_id=self._optional_str(args.get("user_id")),
-        )
-        return _json({"ok": True, "sent": True, "image_id": image_id})
+        file_path = self._optional_str(args.get("file_path"))
+        group_id = self._optional_str(args.get("group_id"))
+        user_id = self._optional_str(args.get("user_id"))
+
+        if file_path:
+            await self._service.send_image_by_path(
+                file_path=file_path,
+                group_id=group_id,
+                user_id=user_id,
+            )
+            return _json({"ok": True, "sent": True, "file_path": file_path})
+        else:
+            await self._service.send_image(
+                image_id=image_id,
+                source=self._optional_str(args.get("source")),
+                group_id=group_id,
+                user_id=user_id,
+            )
+            return _json({"ok": True, "sent": True, "image_id": image_id})
 
     async def _list_references(self) -> str:
         # 获取全部图库图片作为参考图（不受分页限制）
@@ -2621,6 +2769,12 @@ def _build_system_prompt(config: CreatorAgentConfig) -> str:
         "如果用户要求重命名图库图片或表情包，使用 gallery_rename 或 emoji_rename。\n"
         "gallery_send 只发送图片本身，不要附加任何文字或 @ 消息。\n"
         "当你需要更多信息（如群号）才能完成任务时，直接向主 Agent 提问，不要猜测或编造。\n"
+        "\n"
+        "【Markdown 图片管理】\n"
+        "markdown_images 文件夹存放解题 agent 渲染的图片结果（如解题过程、报告等）。\n"
+        "使用 list_markdown_images 查看该文件夹中的图片，使用 gallery_send(file_path=\"...\") 发送。\n"
+        "这些图片是临时文件，会被自动清理（24h 过期 / 程序关闭时删除）。\n"
+        "不要将这些图片加入图库或表情包（除非用户明确要求保存）。\n"
         f"{gallery_text}\n"
         f"{emoji_text}\n"
         f"{pagination_text}\n"
@@ -2652,11 +2806,23 @@ class CreatorAgent:
             drawing_manager=drawing_manager,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
             description=self.description,
             system_prompt=_build_system_prompt(normalized_config),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
@@ -2668,18 +2834,22 @@ class CreatorAgent:
 
     async def invoke(self, state: State) -> State:
         token = _CREATOR_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:creator")
         try:
             return await self._agent.invoke(state)
         finally:
             _CREATOR_CHAT_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _CREATOR_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:creator")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
         finally:
             _CREATOR_CHAT_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:
         await self._agent.close()
@@ -2693,6 +2863,7 @@ def build_creator_agent(
     config: CreatorAgentConfig | AgentCreator | None = None,
     emoji_service: "EmojiService | None" = None,
     vision_provider: Provider | None = None,
+    markdown_dir: Path | None = None,
     logger: Logger | None = None,
     drawing_manager: BackgroundDrawingManager | None = None,
 ) -> CreatorAgent:
@@ -2705,6 +2876,7 @@ def build_creator_agent(
         config=normalized_config,
         emoji_service=emoji_service,
         vision_provider=vision_provider,
+        markdown_dir=markdown_dir,
         logger=logger,
     )
     if drawing_manager is not None:

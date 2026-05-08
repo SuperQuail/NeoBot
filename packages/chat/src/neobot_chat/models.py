@@ -18,6 +18,7 @@ class ModelPricing:
 
     input_price_per_mtokens: float = 0.0
     output_price_per_mtokens: float = 0.0
+    cache_hit_price_per_mtokens: float = 0.0
     billing_metric: str = ""
 
 

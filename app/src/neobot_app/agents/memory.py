@@ -26,6 +26,12 @@ from neobot_memory import ArchiveMemoryService
 
 from neobot_app.agents.image_parse import ImageParseAgent
 from neobot_app.favorability import clamp_favorability, favorability_to_text
+from neobot_app.statistics.tracker import (
+    CURRENT_CONVERSATION_ID,
+    CURRENT_CONVERSATION_KIND,
+    CURRENT_USAGE_MODULE,
+    get_usage_tracker,
+)
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -41,6 +47,9 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "查询用户资料与好友备注、解析用户头像并写入用户档案、"
     "拉取历史聊天记录辅助记忆决策、根据互动质量调整用户好感度。"
     "涉及记忆/档案/用户资料/头像解析/好感度的任务均委托它。"
+)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
+    "长期记忆档案与用户资料（增/查记忆、用户资料、头像解析、好感度）"
 )
 
 _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
@@ -97,12 +106,15 @@ class ArchiveMemoryAgentConfig:
     favorability_max_change: int = 5
     favorability_min: int = -1000
     favorability_max: int = 1000
+    item_archive_enabled: bool = True
+    item_archive_table: str = "item_archive"
 
     @classmethod
     def from_schema(
         cls,
         config: "AgentMemoryArchive | None" = None,
         favorability_config: "AgentMemoryFavorability | None" = None,
+        item_archive_config: "AgentMemoryItemArchive | None" = None,
     ) -> "ArchiveMemoryAgentConfig":
         base = cls()
         if config is not None:
@@ -117,6 +129,8 @@ class ArchiveMemoryAgentConfig:
                 favorability_max_change=base.favorability_max_change,
                 favorability_min=base.favorability_min,
                 favorability_max=base.favorability_max,
+                item_archive_enabled=base.item_archive_enabled,
+                item_archive_table=base.item_archive_table,
             )
         if favorability_config is not None:
             base = cls(
@@ -130,6 +144,20 @@ class ArchiveMemoryAgentConfig:
                 ),
                 favorability_min=int(getattr(favorability_config, "min_value", -1000) or -1000),
                 favorability_max=int(getattr(favorability_config, "max_value", 1000) or 1000),
+                item_archive_enabled=base.item_archive_enabled,
+                item_archive_table=base.item_archive_table,
+            )
+        if item_archive_config is not None:
+            base = cls(
+                allow_delete=base.allow_delete,
+                allowed_tables=base.allowed_tables,
+                auto_compact_chars=base.auto_compact_chars,
+                max_chars=base.max_chars,
+                favorability_max_change=base.favorability_max_change,
+                favorability_min=base.favorability_min,
+                favorability_max=base.favorability_max,
+                item_archive_enabled=bool(item_archive_config.enabled),
+                item_archive_table=str(item_archive_config.table_name).strip() or "item_archive",
             )
         return base
 
@@ -486,6 +514,19 @@ class ArchiveMemoryToolExecutor(ToolExecutor):
                 error=str(exc),
             )
             return ""
+
+        usage = (response.get("extensions") or {}).get("usage")
+        if isinstance(usage, dict) and hasattr(self._compaction_provider, "model"):
+            try:
+                await get_usage_tracker().record(
+                    module="memory_compaction",
+                    model_name=self._compaction_provider.model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                )
+            except Exception:
+                pass
+
         return self._extract_response_text(response).strip()
 
     async def _read_archive(self, args: dict[str, Any]) -> str:
@@ -938,6 +979,7 @@ def build_archive_memory_toolset(
     *,
     config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
     favorability_config: "AgentMemoryFavorability | None" = None,
+    item_archive_config: "AgentMemoryItemArchive | None" = None,
     profile_service: "UserProfileService | None" = None,
     adapter: "OneBotAdapter | None" = None,
     compaction_provider: Provider | None = None,
@@ -948,7 +990,11 @@ def build_archive_memory_toolset(
     normalized = (
         config
         if isinstance(config, ArchiveMemoryAgentConfig)
-        else ArchiveMemoryAgentConfig.from_schema(config, favorability_config=favorability_config)
+        else ArchiveMemoryAgentConfig.from_schema(
+            config,
+            favorability_config=favorability_config,
+            item_archive_config=item_archive_config,
+        )
     )
     executor = ArchiveMemoryToolExecutor(
         archive_memory_service,
@@ -999,6 +1045,21 @@ def _build_system_prompt(
         if has_favorability
         else ""
     )
+    item_archive_rule = ""
+    if config.item_archive_enabled:
+        item_archive_rule = (
+            f"物品/事件档案表（{config.item_archive_table}）：\n"
+            "这是一个独立的关键词档案数据表，用于记录对特定物品、事件、话题或概念的长期信息档案。\n"
+            "使用方式：\n"
+            "- key：使用一个或多个关键词（用下划线连接，如\"天气\"或\"天气_北京\"），作为该物品/事件的唯一标识。\n"
+            "- value：记录对该物品/事件的已知信息、属性、历史、关联人物等，保持紧凑。\n"
+            "- tags：可附带额外标签辅助检索。\n"
+            "适用场景：\n"
+            "- 群聊中反复讨论的某个物品（如某款游戏、某个工具）、事件（如某次日食、某次聚会）或话题（如某个梗）。\n"
+            "- 聊天中明确提及需要记住的关于某事物的信息。\n"
+            "- 自动总结时识别到值得记录的物品/事件信息。\n"
+            "写入前先读取已有档案，合并后再写回完整内容。\n"
+        )
     return (
         "你是记忆Agent。\n"
         "只处理长期记忆相关任务，优先调用工具，不要空谈。\n"
@@ -1014,6 +1075,7 @@ def _build_system_prompt(
         f"{user_info_rule}"
         f"{avatar_rule}"
         f"{history_rule}"
+        f"{item_archive_rule}"
         "read_archive 支持批量读取；需要一次查看多条时，优先使用 items 批量传入。\n"
         "list_archive 默认一次只看10条；如果还要继续看，使用 next_offset 作为新的 offset，并传入这次还想多看几条 limit。\n"
         "常用表约定：user_profile 表示用户档案，key 通常是 QQ 号；group_profile 表示群档案，key 通常是群号；group_summary 表示群摘要，key 通常是群号。\n"
@@ -1037,6 +1099,7 @@ class ArchiveMemoryAgent:
         *,
         config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
         favorability_config: "AgentMemoryFavorability | None" = None,
+        item_archive_config: "AgentMemoryItemArchive | None" = None,
         profile_service: "UserProfileService | None" = None,
         adapter: "OneBotAdapter | None" = None,
         image_parse_provider: Provider | None = None,
@@ -1045,7 +1108,11 @@ class ArchiveMemoryAgent:
         normalized = (
             config
             if isinstance(config, ArchiveMemoryAgentConfig)
-            else ArchiveMemoryAgentConfig.from_schema(config, favorability_config=favorability_config)
+            else ArchiveMemoryAgentConfig.from_schema(
+                config,
+                favorability_config=favorability_config,
+                item_archive_config=item_archive_config,
+            )
         )
         has_favorability = (
             profile_service is not None and normalized.favorability_max_change > 0
@@ -1061,6 +1128,17 @@ class ArchiveMemoryAgent:
             logger=logger,
         )
         self.tool_definitions = self._toolset.definitions()
+
+        async def _record_usage(model_name, input_tokens, output_tokens):
+            await get_usage_tracker().record(
+                module=CURRENT_USAGE_MODULE.get(""),
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                conversation_kind=CURRENT_CONVERSATION_KIND.get(""),
+                conversation_id=CURRENT_CONVERSATION_ID.get(""),
+            )
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
@@ -1072,23 +1150,28 @@ class ArchiveMemoryAgent:
                 has_history=adapter is not None,
                 has_favorability=has_favorability,
             ),
+            on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
 
     async def invoke(self, state: State) -> State:
         token = _MEMORY_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:memory")
         try:
             return await self._agent.invoke(state)
         finally:
             _MEMORY_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _MEMORY_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_m = CURRENT_USAGE_MODULE.set("agent:memory")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
         finally:
             _MEMORY_CONTEXT.reset(token)
+            CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:
         await self._agent.close()
@@ -1100,6 +1183,7 @@ def build_archive_memory_agent(
     *,
     config: ArchiveMemoryAgentConfig | AgentMemoryArchive | None = None,
     favorability_config: "AgentMemoryFavorability | None" = None,
+    item_archive_config: "AgentMemoryItemArchive | None" = None,
     profile_service: "UserProfileService | None" = None,
     adapter: "OneBotAdapter | None" = None,
     image_parse_provider: Provider | None = None,
@@ -1110,6 +1194,7 @@ def build_archive_memory_agent(
         archive_memory_service,
         config=config,
         favorability_config=favorability_config,
+        item_archive_config=item_archive_config,
         profile_service=profile_service,
         adapter=adapter,
         image_parse_provider=image_parse_provider,

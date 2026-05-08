@@ -37,6 +37,24 @@ from neobot_app.agents.scheduled_task import (
     build_scheduled_task_agent,
     build_scheduled_task_toolset,
 )
+from neobot_app.agents.problem_solver import (
+    ProblemSolverAgent,
+    ProblemSolverAgentConfig,
+    ProblemSolverManager,
+    ProblemSolverToolExecutor,
+    SolveTask,
+    build_problem_solver_agent,
+    build_problem_solver_toolset,
+)
+from neobot_app.agents.cross_chat import (
+    CrossChatAgent,
+    CrossChatAgentConfig,
+    CrossChatManager,
+    CrossChatTask,
+    CrossChatToolExecutor,
+    build_cross_chat_agent,
+    build_cross_chat_toolset,
+)
 
 __all__ = [
     "ArchiveMemoryAgent",
@@ -66,4 +84,18 @@ __all__ = [
     "ScheduledTaskToolExecutor",
     "build_scheduled_task_agent",
     "build_scheduled_task_toolset",
+    "ProblemSolverAgent",
+    "ProblemSolverAgentConfig",
+    "ProblemSolverManager",
+    "ProblemSolverToolExecutor",
+    "SolveTask",
+    "build_problem_solver_agent",
+    "build_problem_solver_toolset",
+    "CrossChatAgent",
+    "CrossChatAgentConfig",
+    "CrossChatManager",
+    "CrossChatTask",
+    "CrossChatToolExecutor",
+    "build_cross_chat_agent",
+    "build_cross_chat_toolset",
 ]
