@@ -218,6 +218,8 @@ class ModelUsageRecord(Base):
     provider_name: Mapped[str] = mapped_column(String, nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_hit_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_miss_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     conversation_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)

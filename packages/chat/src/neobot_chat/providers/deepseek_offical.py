@@ -296,7 +296,12 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             extensions["usage"] = {
                 "input_tokens": usage.get("prompt_tokens", 0),
                 "output_tokens": usage.get("completion_tokens", 0),
+                "cache_hit_tokens": usage.get("prompt_cache_hit_tokens", 0),
+                "cache_miss_tokens": usage.get("prompt_cache_miss_tokens", 0),
             }
+            completion_tokens_details = usage.get("completion_tokens_details")
+            if isinstance(completion_tokens_details, dict):
+                extensions["usage"]["completion_tokens_details"] = completion_tokens_details
             result["extensions"] = extensions
 
         return result
@@ -307,6 +312,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}
+        stream_usage: dict[str, Any] | None = None
 
         async with self.client.stream(
             "POST",
@@ -323,6 +329,17 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
 
                 data = json.loads(data_str)
                 choices = data.get("choices", [])
+                usage_data = data.get("usage")
+                if isinstance(usage_data, dict):
+                    stream_usage = {
+                        "input_tokens": usage_data.get("prompt_tokens", 0),
+                        "output_tokens": usage_data.get("completion_tokens", 0),
+                        "cache_hit_tokens": usage_data.get("prompt_cache_hit_tokens", 0),
+                        "cache_miss_tokens": usage_data.get("prompt_cache_miss_tokens", 0),
+                    }
+                    completion_tokens_details = usage_data.get("completion_tokens_details")
+                    if isinstance(completion_tokens_details, dict):
+                        stream_usage["completion_tokens_details"] = completion_tokens_details
                 if not choices:
                     continue
                 delta = choices[0].get("delta", {})
@@ -366,7 +383,17 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             self._set_reasoning_content(message, "".join(reasoning_parts))
         if tool_calls_map:
             message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+        if stream_usage is not None:
+            extensions = dict(message.get("extensions") or {})
+            extensions["usage"] = stream_usage
+            message["extensions"] = extensions
         yield ChatChunk(message=message)
+
+    async def get_balance(self) -> dict[str, Any]:
+        """查询 DeepSeek 账户余额。"""
+        resp = await self.client.get("/user/balance")
+        await self._raise_for_status_with_body(resp)
+        return resp.json()
 
 
 DeepSeekOfficialProvider = DeepSeekOfficalProvider

@@ -167,6 +167,10 @@ class ModelPricing:
         default=0.0,
         metadata={"description": "输出价格，单位为每百万Tokens"},
     )
+    cache_hit_price_per_mtokens: float = field(
+        default=0.0,
+        metadata={"description": "缓存命中价格，单位为每百万Tokens"},
+    )
     billing_metric: str = field(
         default="",
         metadata={"description": "非Token计费模型的平台计费标识"},
@@ -1157,6 +1161,22 @@ class EnhancedChat(Chat):
     group_chat_suspend_wait_seconds: int = field(
         default=3600,
         metadata={"description": "群聊回复后挂起等待秒数；超时无新消息则结束会话，默认3600秒（1小时）"},
+    )
+    enable_balance_check: bool = field(
+        default=False,
+        metadata={"description": "是否启用DeepSeek余额检查与低余额预警；仅在主模型使用DeepSeek且配置了管理员账户时生效"},
+    )
+    balance_threshold: float = field(
+        default=1.0,
+        metadata={"description": "余额预警阈值（CNY），低于此值时发送私聊通知；默认1.0"},
+    )
+    admin_accounts: List[str] = field(
+        default_factory=list,
+        metadata={"description": "管理员QQ号列表，用于接收余额不足等系统通知"},
+    )
+    balance_check_cooldown_seconds: int = field(
+        default=300,
+        metadata={"description": "余额检查冷却秒数；每次检查后至少间隔此秒数才会再次查询；默认300秒"},
     )
 
 

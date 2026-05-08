@@ -107,6 +107,7 @@ class ReplyOrchestrator:
         markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
         tool_package_manager: Any = None,
+        balance_checker: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -132,6 +133,7 @@ class ReplyOrchestrator:
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
         self._tool_package_manager = tool_package_manager
+        self._balance_checker = balance_checker
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -1199,9 +1201,13 @@ class ReplyOrchestrator:
                             model_name=self._provider.model,
                             input_tokens=usage["input_tokens"],
                             output_tokens=usage["output_tokens"],
+                            cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                            cache_miss_tokens=usage.get("cache_miss_tokens", 0),
                             conversation_kind=conv_ref.kind if conv_ref else "",
                             conversation_id=conv_ref.id if conv_ref else "",
                         )
+                        if self._balance_checker is not None:
+                            await self._balance_checker.check_and_notify()
                     except Exception:
                         pass
 
@@ -2139,9 +2145,13 @@ class ReplyOrchestrator:
                     model_name=self._provider.model,
                     input_tokens=usage["input_tokens"],
                     output_tokens=usage["output_tokens"],
+                    cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                    cache_miss_tokens=usage.get("cache_miss_tokens", 0),
                     conversation_kind=conv_ref.kind if conv_ref else "",
                     conversation_id=conv_ref.id if conv_ref else "",
                 )
+                if self._balance_checker is not None:
+                    await self._balance_checker.check_and_notify()
             except Exception:
                 pass
 

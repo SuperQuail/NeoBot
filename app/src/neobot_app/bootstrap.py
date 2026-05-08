@@ -33,6 +33,7 @@ from neobot_app.message.queue import MessageQueue
 from neobot_app.observability.debug import DebugRecorder
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
 from neobot_app.prompt.builder import PromptBuilder
+from neobot_app.statistics.balance import BalanceChecker
 from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
 from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
 from neobot_app.statistics.reporter import UsageReportService
@@ -405,6 +406,34 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
     if ws_package is not None:
         tool_package_manager = ToolPackageManager([ws_package])
 
+    chat_cfg = config.chat
+    balance_checker = None
+    if getattr(chat_cfg, "enable_balance_check", False):
+        primary_provider = getattr(
+            getattr(config.models, "primary_chat_model", None), "provider", ""
+        )
+        if primary_provider.strip().casefold() in {"deepseek", "deepseek_offical", "deepseek_official"}:
+            ds_config = EnvConfig.get_api_platform_config("DeepSeek")
+            if ds_config.api_key and getattr(chat_cfg, "admin_accounts", None):
+                balance_checker = BalanceChecker(
+                    api_key=ds_config.api_key,
+                    base_url=ds_config.url or "https://api.deepseek.com",
+                    notification_hub=notification_hub,
+                    admin_accounts=list(chat_cfg.admin_accounts),
+                    balance_threshold=getattr(chat_cfg, "balance_threshold", 1.0),
+                    cooldown_seconds=getattr(chat_cfg, "balance_check_cooldown_seconds", 300),
+                    logger=logger_factory.get_logger("app.balance"),
+                )
+                provider_logger.info("余额检查已启用")
+            else:
+                provider_logger.warning(
+                    "余额检查已启用但缺少 DeepSeek API Key 或管理员账户，自动禁用"
+                )
+        else:
+            provider_logger.info(
+                "主模型非 DeepSeek，余额检查自动禁用"
+            )
+
     reply_orchestrator = ReplyOrchestrator(
         adapter=adapter,
         prompt_builder=prompt_builder,
@@ -428,6 +457,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
         tool_package_manager=tool_package_manager,
+        balance_checker=balance_checker,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)

@@ -48,6 +48,8 @@ class UsageTracker:
         model_name: str,
         input_tokens: int,
         output_tokens: int,
+        cache_hit_tokens: int = 0,
+        cache_miss_tokens: int = 0,
         conversation_kind: str = "",
         conversation_id: str = "",
     ) -> None:
@@ -65,8 +67,11 @@ class UsageTracker:
             return
 
         provider_name, pricing = info
+
+        effective_cache_miss = cache_miss_tokens if cache_miss_tokens > 0 else input_tokens
         cost = (
-            input_tokens * pricing.input_price_per_mtokens
+            cache_hit_tokens * pricing.cache_hit_price_per_mtokens
+            + effective_cache_miss * pricing.input_price_per_mtokens
             + output_tokens * pricing.output_price_per_mtokens
         ) / 1_000_000.0
 
@@ -78,6 +83,8 @@ class UsageTracker:
             provider_name=provider_name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
             cost_cny=cost,
             conversation_kind=conversation_kind or None,
             conversation_id=conversation_id or None,
@@ -95,6 +102,8 @@ class UsageTracker:
             model=model_name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
             cost=f"¥{cost:.6f}",
         )
 
