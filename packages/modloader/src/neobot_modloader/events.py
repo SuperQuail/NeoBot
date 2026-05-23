@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -139,6 +139,35 @@ class PluginEventBus:
             rule=rule,
             priority=priority,
         )
+
+    def runtime(
+        self,
+        *,
+        kind: str | None = None,
+        stage: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        priority: int = 0,
+        timeout: float | None = None,
+    ) -> Callable[[EventHandler], EventHandler]:
+        def register(handler: EventHandler) -> EventHandler:
+            subscribe_runtime = getattr(self._hook_bus, "subscribe_runtime", None)
+            if not callable(subscribe_runtime):
+                raise RuntimeError("Runtime interception bus is not available")
+            subscription = subscribe_runtime(
+                handler,
+                kind=kind,
+                stage=stage,
+                source=source,
+                target=target,
+                priority=priority,
+                timeout=timeout,
+                logger=self._logger,
+            )
+            self._record_subscription(subscription)
+            return handler
+
+        return register
 
     def event(
         self,

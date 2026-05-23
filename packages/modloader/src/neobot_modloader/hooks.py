@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
+import io
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,6 +12,8 @@ from typing import Any, get_type_hints
 from pydantic import BaseModel
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.output import NullOutput, OutputPort
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 Rule = Callable[[dict[str, Any]], bool | Awaitable[bool]]
 EventHandler = Callable[..., Any]
@@ -66,16 +70,42 @@ class HookRegistration:
         return event
 
 
+@dataclass(slots=True)
+class RuntimeInterceptorRegistration:
+    handler: EventHandler
+    kind: str | None = None
+    stage: str | None = None
+    source: str | None = None
+    target: str | None = None
+    priority: int = 0
+    timeout: float | None = None
+    logger: Logger = field(default_factory=NullLogger)
+
+    def matches(self, envelope: RuntimeEnvelope) -> bool:
+        if self.kind and envelope.kind != self.kind:
+            return False
+        if self.stage and envelope.stage != self.stage:
+            return False
+        if self.source and envelope.source != self.source:
+            return False
+        if self.target and envelope.target != self.target:
+            return False
+        return True
+
+
 class PluginHookBus:
     def __init__(
         self,
         *,
         logger: Logger | None = None,
         record_ai_reply_block: ReplyBlockRecorder | None = None,
+        output: OutputPort | None = None,
     ) -> None:
         self._logger = logger or NullLogger()
         self._record_ai_reply_block = record_ai_reply_block
+        self._output = output or NullOutput()
         self._hooks: list[HookRegistration] = []
+        self._interceptors: list[RuntimeInterceptorRegistration] = []
         self._lock = threading.RLock()
 
     def subscribe(
@@ -121,10 +151,64 @@ class PluginHookBus:
 
         return HookSubscription(_unsubscribe)
 
+    def subscribe_runtime(
+        self,
+        handler: EventHandler,
+        *,
+        kind: str | None = None,
+        stage: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        priority: int = 0,
+        timeout: float | None = None,
+        logger: Logger | None = None,
+    ) -> HookSubscription:
+        registration = RuntimeInterceptorRegistration(
+            handler=handler,
+            kind=kind,
+            stage=stage,
+            source=source,
+            target=target,
+            priority=priority,
+            timeout=timeout,
+            logger=logger or self._logger,
+        )
+        with self._lock:
+            self._interceptors.append(registration)
+            self._interceptors.sort(key=lambda item: item.priority, reverse=True)
+
+        def _unsubscribe() -> None:
+            with self._lock:
+                self._interceptors = [item for item in self._interceptors if item is not registration]
+
+        return HookSubscription(_unsubscribe)
+
     async def dispatch(self, ctx: Any) -> None:
         event = getattr(ctx, "raw_event", None)
         if not isinstance(event, dict):
             return
+
+        envelope = RuntimeEnvelope(
+            kind="inbound_event",
+            stage=str(event.get("post_type") or "raw"),
+            source="adapter",
+            payload={"event": event},
+            context={"legacy_context": ctx},
+        )
+        envelope = await self.dispatch_envelope(envelope)
+        updated_event = envelope.payload.get("event")
+        if isinstance(updated_event, dict):
+            event = updated_event
+            try:
+                ctx.raw_event = event
+            except Exception:
+                pass
+        if envelope.consumed:
+            consume = getattr(ctx, "consume", None)
+            if callable(consume):
+                consume()
+            return
+
         with self._lock:
             hooks = [hook for hook in self._hooks if hook.matches(event)]
 
@@ -164,13 +248,29 @@ class PluginHookBus:
                     consume()
                 break
 
+    async def dispatch_envelope(self, envelope: RuntimeEnvelope) -> RuntimeEnvelope:
+        with self._lock:
+            interceptors = [item for item in self._interceptors if item.matches(envelope)]
+
+        for interceptor in interceptors:
+            if envelope.consumed:
+                break
+            result = await self._call_interceptor(interceptor, envelope)
+            if isinstance(result, RuntimeEnvelope):
+                envelope = result
+            elif isinstance(result, dict):
+                envelope.payload.update(result)
+        return envelope
+
     async def _call_hook(self, hook: HookRegistration, event: Any) -> bool:
+        source = f"plugin_hook.{hook.handler.__module__}.{hook.handler.__qualname__}"
         try:
-            call = _call_handler(hook.handler, event)
-            if hook.timeout is None:
-                await call
-            else:
-                await asyncio.wait_for(call, timeout=hook.timeout)
+            with _capture_output(self._output, source=source):
+                call = _call_handler(hook.handler, event)
+                if hook.timeout is None:
+                    await call
+                else:
+                    await asyncio.wait_for(call, timeout=hook.timeout)
             return True
         except TimeoutError:
             hook.logger.warning(f"插件事件处理超时: {hook.handler.__module__}.{hook.handler.__qualname__}")
@@ -178,6 +278,39 @@ class PluginHookBus:
         except Exception as exc:
             hook.logger.exception(f"插件事件处理失败 ({hook.handler.__module__}.{hook.handler.__qualname__}): {exc}")
             return False
+
+    async def _call_interceptor(self, interceptor: RuntimeInterceptorRegistration, envelope: RuntimeEnvelope) -> Any:
+        source = f"runtime_interceptor.{interceptor.handler.__module__}.{interceptor.handler.__qualname__}"
+        try:
+            with _capture_output(self._output, source=source, target=envelope.target):
+                call = _call_handler(interceptor.handler, envelope)
+                if interceptor.timeout is None:
+                    return await call
+                return await asyncio.wait_for(call, timeout=interceptor.timeout)
+        except TimeoutError:
+            interceptor.logger.warning(
+                f"插件拦截器处理超时: {interceptor.handler.__module__}.{interceptor.handler.__qualname__}"
+            )
+            return None
+        except Exception as exc:
+            interceptor.logger.exception(
+                f"插件拦截器处理失败 ({interceptor.handler.__module__}.{interceptor.handler.__qualname__}): {exc}"
+            )
+            return None
+
+
+@contextlib.contextmanager
+def _capture_output(output: OutputPort, *, source: str, target: str | None = None):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        yield
+    stdout_text = stdout.getvalue().strip()
+    stderr_text = stderr.getvalue().strip()
+    if stdout_text:
+        output.write(stdout_text, source=source, target=target)
+    if stderr_text:
+        output.error(stderr_text, source=source, target=target)
 
 
 def _extract_event_model(handler: EventHandler) -> type[BaseModel] | None:

@@ -8,6 +8,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.output import CapturingOutput
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 from neobot_modloader.context import PluginContext
 
 
@@ -73,6 +75,9 @@ class PluginContextTest(unittest.IsolatedAsyncioTestCase):
         adapter: FakeAdapter | None = None,
         agent_registry: FakeRegistry | None = None,
         record_agent_registration: Any | None = None,
+        plugin_registry: Any | None = None,
+        output: Any | None = None,
+        hook_bus: Any | None = None,
     ) -> PluginContext:
         return PluginContext(
             plugin_name="test",
@@ -81,9 +86,12 @@ class PluginContextTest(unittest.IsolatedAsyncioTestCase):
             config={"reply": "pong"},
             logger=None,
             adapter=adapter or FakeAdapter(),
+            hook_bus=hook_bus,
             record_subscription=lambda _subscription: None,
             agent_registry=agent_registry,
             record_agent_registration=record_agent_registration,
+            plugin_registry=plugin_registry,
+            output=output,
         )
 
     async def test_send_methods_delegate_to_adapter(self) -> None:
@@ -166,6 +174,29 @@ class PluginContextTest(unittest.IsolatedAsyncioTestCase):
                 ctx.agents.list_agents("echo"),
                 "Agent plugin:test:echo: Echo agent",
             )
+
+    async def test_runtime_intercept_and_output_are_exposed(self) -> None:
+        from neobot_modloader.hooks import PluginHookBus
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = CapturingOutput()
+            hook_bus = PluginHookBus(output=output)
+            ctx = self.make_context(Path(temp), output=output, hook_bus=hook_bus, plugin_registry={"x": object()})
+            seen: list[str] = []
+
+            @ctx.intercept.subscribe(kind="reply_lifecycle", stage="model.call.before")
+            async def intercept(envelope: RuntimeEnvelope) -> None:
+                seen.append(envelope.stage)
+
+            direct_subscription = ctx.intercept.subscribe(lambda envelope: seen.append("direct"), kind="output")
+
+            ctx.output.write("hello", source="test")
+            await hook_bus.dispatch_envelope(RuntimeEnvelope(kind="reply_lifecycle", stage="model.call.before"))
+
+            self.assertIs(ctx.plugins["x"].__class__, object)
+            self.assertEqual(seen, ["model.call.before"])
+            self.assertTrue(getattr(direct_subscription, "unsubscribe", None))
+            self.assertEqual(output.messages[0].text, "hello")
 
     def test_agent_registrar_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -54,6 +54,7 @@ class Agent:
         tool_guard: ToolGuard | None = None,
         on_model_usage: Callable[..., Any] | None = None,
         logger: Logger = NullLogger(),
+        output: Any | None = None,
     ):
         self._logger = logger
         self.provider = provider
@@ -69,6 +70,7 @@ class Agent:
             command_timeout=command_timeout,
             allowed_paths=[skill.path.parent for skill in skills.skills.values()] if skills else None,
             allowed_commands=allowed_commands,
+            output=output,
         )
         self.toolset = Toolset.merge([builtin_toolset, toolset])
         self._tool_specs = {spec.name: spec for spec in self.toolset.specs}

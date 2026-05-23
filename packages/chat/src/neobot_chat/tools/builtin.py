@@ -84,13 +84,15 @@ class BuiltinTools(ToolExecutor):
         command_timeout: int = 30,
         allowed_paths: list[Path] | None = None,
         allowed_commands: list[str] | None = None,
+        output: Any | None = None,
     ):
         self.agent_registry = agent_registry or AgentRegistry()
         self.cwd = Path(cwd or os.getcwd()).resolve()
         self.command_timeout = command_timeout
         self.allowed_paths = [self.cwd] + (allowed_paths or [])
         self.allowed_commands = list(allowed_commands or [])
-        self._shell = PersistentShell(self.cwd, command_timeout)
+        self.output = output
+        self._shell = PersistentShell(self.cwd, command_timeout, output=output)
         self._dispatch: dict[str, Any] = {
             "read_file": self._read_file,
             "write_file": self._write_file,
@@ -190,7 +192,18 @@ class BuiltinTools(ToolExecutor):
         handler = self._dispatch.get(name)
         if handler is None:
             raise ToolError(f"Unknown tool: {name}")
-        return await handler(**args)
+        result = await handler(**args)
+        if name != "execute_command":
+            self._write_output(result, tool=name)
+        return result
+
+    def _write_output(self, text: str, *, tool: str) -> None:
+        write = getattr(self.output, "write", None)
+        error = getattr(self.output, "error", None)
+        if str(text).startswith("Error") and callable(error):
+            error(str(text), source="tool.builtin", tool=tool)
+        elif callable(write):
+            write(str(text), source="tool.builtin", channel="stdout", tool=tool)
 
     def _resolve_path(self, path: str) -> Path:
         candidate = Path(path).expanduser()
@@ -249,14 +262,20 @@ class BuiltinTools(ToolExecutor):
             out = stdout.decode("utf-8", errors="replace")
             if stderr:
                 out += "\n" + stderr.decode("utf-8", errors="replace")
-            return out.strip() or "(no output)"
+            result = out.strip() or "(no output)"
+            self._write_output(result, tool="execute_command")
+            return result
         except asyncio.TimeoutError:
             if proc and proc.returncode is None:
                 proc.kill()
                 await proc.wait()
-            return f"Error: Command timed out after {timeout}s"
+            result = f"Error: Command timed out after {timeout}s"
+            self._write_output(result, tool="execute_command")
+            return result
         except Exception as exc:
-            return f"Error executing command: {exc}"
+            result = f"Error executing command: {exc}"
+            self._write_output(result, tool="execute_command")
+            return result
 
     async def close(self) -> None:
         await self._shell.close()
@@ -276,6 +295,7 @@ def build_builtin_toolset(
     allowed_paths: list[Path] | None = None,
     allowed_commands: list[str] | None = None,
     policy: ToolAccessPolicy | None = None,
+    output: Any | None = None,
 ) -> Toolset:
     executor = BuiltinTools(
         agent_registry=agent_registry,
@@ -283,6 +303,7 @@ def build_builtin_toolset(
         command_timeout=command_timeout,
         allowed_paths=allowed_paths,
         allowed_commands=allowed_commands,
+        output=output,
     )
     definitions = executor.definitions()
     resolvers = {

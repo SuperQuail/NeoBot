@@ -6,7 +6,7 @@ from pathlib import Path
 
 from neobot_adapter import OneBotAdapter
 from neobot_chat import create_provider
-from neobot_modloader import PluginHookBus, PluginRuntime
+from neobot_modloader import PluginHookBus, PluginHostFacade, PluginRuntime
 from neobot_contracts.ports.clock import SystemClock
 from neobot_memory import MemoryService
 from neobot_memory.defaults import InMemoryMemoryRepository
@@ -23,6 +23,7 @@ from neobot_app.assembly.memory import (
 from neobot_app.assembly.storage import build_storage
 from neobot_app.config.loader.env import load_env
 from neobot_app.config.loader.manager import Config
+from neobot_app.config.proxy import ConfigProxy
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.core import CONFIG_FILE, DATA_DIR, SRC_DATA_DIR
 from neobot_app.utils.data_sync import sync_data_files
@@ -31,7 +32,12 @@ from neobot_app.emoji.service import EmojiService
 from neobot_app.image import ImageParseService
 from neobot_app.message.queue import MessageQueue
 from neobot_app.observability.debug import DebugRecorder
-from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
+from neobot_app.observability.logging import (
+    LoguruLoggerFactory,
+    configure_loguru,
+    set_runtime_event_dispatcher,
+)
+from neobot_app.observability.output import RuntimeOutput
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.statistics.balance import BalanceChecker
 from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
@@ -117,10 +123,10 @@ def _create_optional_agent_provider(
 
 
 def create_application() -> NeoBotApplication[OneBotAdapter]:
-    configure_loguru(DATA_DIR / "logs")
+    configure_loguru(DATA_DIR / "logs", runtime_events=True)
     logger_factory = LoguruLoggerFactory()
     clock = SystemClock()
-    config = _load_config()
+    config = ConfigProxy(_load_config())
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
 
@@ -185,10 +191,26 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
 
     plugin_runtime = None
     reply_block_registry = ReplyBlockRegistry()
+    runtime_output = RuntimeOutput(logger=logger_factory.get_logger("app.output"))
     hook_bus = PluginHookBus(
         logger=logger_factory.get_logger("modloader.hooks"),
         record_ai_reply_block=reply_block_registry.block_event,
+        output=runtime_output,
     )
+    runtime_output.set_runtime_events(hook_bus)
+    set_runtime_event_dispatcher(hook_bus.dispatch_envelope)
+
+    host_facade = PluginHostFacade(events=hook_bus, output=runtime_output)
+
+    # 注册动态配置重载命令
+    async def _reload_config(**kwargs: Any) -> dict[str, Any]:
+        new_config = _load_config()
+        config.reload(new_config)
+        sync_data_files(SRC_DATA_DIR, DATA_DIR)
+        await host_facade.lifecycle.fire("config.changed")
+        return {"status": "ok", "message": "配置已重载，所有服务下次访问配置时将看到新值"}
+
+    host_facade.commands.register("config.reload", "重新加载配置文件并通知所有已订阅 lifecycle 的插件", _reload_config)
 
     bot_detector = BotDetector(adapter)
 
@@ -363,6 +385,8 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
             agent_registry=agent_registry,
             hook_bus=hook_bus,
             record_ai_reply_block=reply_block_registry.block_event,
+            output=runtime_output,
+            host=host_facade,
         )
         plugin_runtime.load_all()
 
@@ -458,6 +482,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         reply_block_registry=reply_block_registry,
         tool_package_manager=tool_package_manager,
         balance_checker=balance_checker,
+        runtime_events=hook_bus,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)

@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import platform
 from pathlib import Path
+from typing import Any
 
 
 class PersistentShell:
     """持久化 Shell 进程，保持工作目录和环境变量状态"""
 
-    def __init__(self, cwd: Path, timeout: int = 30):
+    def __init__(self, cwd: Path, timeout: int = 30, output: Any | None = None):
         self.cwd = cwd
         self.timeout = timeout
+        self.output = output
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._is_windows = platform.system() == "Windows"
@@ -62,14 +64,28 @@ class PersistentShell:
                         break
                     output_lines.append(decoded)
 
-                return "\n".join(output_lines) or "(no output)"
+                result = "\n".join(output_lines) or "(no output)"
+                self._write_output(result, channel="stdout", command=command)
+                return result
 
             except asyncio.TimeoutError:
                 await self.close()
-                return f"Error: Command timed out after {self.timeout}s"
+                result = f"Error: Command timed out after {self.timeout}s"
+                self._write_output(result, channel="stderr", command=command)
+                return result
             except Exception as e:
                 await self.close()
-                return f"Error: {type(e).__name__}: {e}"
+                result = f"Error: {type(e).__name__}: {e}"
+                self._write_output(result, channel="stderr", command=command)
+                return result
+
+    def _write_output(self, text: str, *, channel: str, command: str) -> None:
+        write = getattr(self.output, "write", None)
+        error = getattr(self.output, "error", None)
+        if channel == "stderr" and callable(error):
+            error(text, source="tool.shell", command=command)
+        elif callable(write):
+            write(text, source="tool.shell", channel=channel, command=command)
 
     async def close(self) -> None:
         """关闭 shell 进程"""

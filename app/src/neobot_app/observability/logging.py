@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,9 +10,44 @@ from typing import Any
 import loguru
 
 from neobot_contracts.ports.logging import Logger
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
+
+_runtime_event_dispatcher: Any = None
 
 
-def configure_loguru(log_dir: Path | None = None) -> None:
+def set_runtime_event_dispatcher(dispatcher: Any) -> None:
+    global _runtime_event_dispatcher
+    _runtime_event_dispatcher = dispatcher
+
+
+def _loguru_runtime_sink(message: Any) -> None:
+    """loguru sink: 将每条日志转成 RuntimeEnvelope 推入事件总线。"""
+    dispatch = _runtime_event_dispatcher
+    if dispatch is None:
+        return
+    record = message.record
+    envelope = RuntimeEnvelope(
+        kind="log",
+        stage=record["level"].name.lower(),
+        source=str(record["extra"].get("module_name", "")),
+        payload={
+            "message": record["message"],
+            "level": record["level"].name,
+            "time": str(record["time"]),
+            "module": str(record["extra"].get("module_name", "")),
+            "file": record["file"].name,
+            "line": record["line"],
+            "function": record["function"],
+        },
+    )
+    try:
+        loop = asyncio.get_running_loop()
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(dispatch(envelope)))
+    except RuntimeError:
+        pass
+
+
+def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = False) -> None:
     """配置 Loguru 输出格式。
 
     移除默认 handler，注册 stderr 和可选的文件 handler。
@@ -45,6 +81,12 @@ def configure_loguru(log_dir: Path | None = None) -> None:
             encoding="utf-8",
             backtrace=True,
             diagnose=True,
+        )
+
+    if runtime_events:
+        loguru.logger.add(
+            _loguru_runtime_sink,
+            level="DEBUG",
         )
 
 

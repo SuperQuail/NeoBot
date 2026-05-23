@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
@@ -108,6 +109,7 @@ class ReplyOrchestrator:
         reply_block_registry: Any = None,
         tool_package_manager: Any = None,
         balance_checker: Any = None,
+        runtime_events: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -134,6 +136,7 @@ class ReplyOrchestrator:
         self._reply_block_registry = reply_block_registry
         self._tool_package_manager = tool_package_manager
         self._balance_checker = balance_checker
+        self._runtime_events = runtime_events
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -460,10 +463,35 @@ class ReplyOrchestrator:
         return 120.0
 
     async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
-        return await asyncio.wait_for(
-            self._adapter.send(conversation_ref, payload),
+        envelope = RuntimeEnvelope(
+            kind="reply_lifecycle",
+            stage="message.send.before",
+            source="app.reply",
+            target=f"{conversation_ref.kind}:{conversation_ref.id}",
+            payload={"conversation_ref": conversation_ref, "message": payload},
+            context={},
+        )
+        dispatch = getattr(self._runtime_events, "dispatch_envelope", None)
+        if callable(dispatch):
+            envelope = await dispatch(envelope)
+        if envelope.consumed:
+            return envelope.result
+        send_payload = envelope.payload.get("message", payload)
+        result = await asyncio.wait_for(
+            self._adapter.send(conversation_ref, send_payload),
             timeout=self._get_io_timeout_seconds(),
         )
+        after = RuntimeEnvelope(
+            kind="reply_lifecycle",
+            stage="message.send.after",
+            source="app.reply",
+            target=f"{conversation_ref.kind}:{conversation_ref.id}",
+            payload={"conversation_ref": conversation_ref, "message": send_payload, "result": result},
+            context={},
+        )
+        if callable(dispatch):
+            await dispatch(after)
+        return result
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await asyncio.wait_for(
@@ -570,6 +598,28 @@ class ReplyOrchestrator:
             return
         self._debug_recorder.record_reply_event(stage, event, **extra)
 
+    async def _emit_runtime_event(self, stage: str, event: ReplyEvent, **payload: object) -> RuntimeEnvelope:
+        envelope = RuntimeEnvelope(
+            kind="reply_lifecycle",
+            stage=stage,
+            source="app.reply",
+            target=(
+                f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
+                if event.conversation_ref is not None
+                else None
+            ),
+            payload={"reply_event": event, **payload},
+            context={
+                "event_id": event.event_id,
+                "mode": event.mode,
+                "state": event.state.name,
+            },
+        )
+        dispatch = getattr(self._runtime_events, "dispatch_envelope", None)
+        if callable(dispatch):
+            return await dispatch(envelope)
+        return envelope
+
     async def _handle_runtime_failure(self, event: ReplyEvent, exc: Exception) -> None:
         if not isinstance(exc, RuntimeError):
             return
@@ -603,8 +653,15 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
     ) -> None:
+        await self._emit_runtime_event("reply.decide.before", event, queue_key=queue_key)
         started_at = monotonic_seconds()
         try:
+            start_envelope = await self._emit_runtime_event("reply.decide.after", event, queue_key=queue_key)
+            if start_envelope.consumed:
+                event.error = "reply lifecycle consumed before run"
+                event.transition(ReplyState.CANCELLED)
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
+                return
             if event.mode == "agent":
                 await self._run_agent_mode(event, queue, queue_key)
             else:
@@ -633,10 +690,12 @@ class ReplyOrchestrator:
                 reply_preview=event.generated_text[:80] if event.generated_text else "",
             )
             self._record_debug("completed", event, queue_key=queue_key)
+            await self._emit_runtime_event("reply.complete", event, queue_key=queue_key, duration_seconds=elapsed)
         except asyncio.CancelledError:
             event.error = "cancelled"
             self._logger.warning("回复事件被取消", event_id=event.event_id)
             self._record_debug("cancelled", event, queue_key=queue_key)
+            await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
             raise
         except Exception as exc:
             try:
@@ -651,6 +710,7 @@ class ReplyOrchestrator:
                 error=event.error,
             )
             self._record_debug("failed", event, queue_key=queue_key)
+            await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
             await self._handle_runtime_failure(event, exc)
 
     # ── Common 模式 ──
@@ -1170,10 +1230,33 @@ class ReplyOrchestrator:
                         if remaining is not None
                         else self._get_model_response_timeout_seconds(event)
                     )
-                    response = await asyncio.wait_for(
-                        self._provider.chat(messages, tools=tools if tools else None),
-                        timeout=model_timeout,
+                    before_model = await self._emit_runtime_event(
+                        "model.call.before",
+                        event,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        messages=messages,
+                        tools=tools if tools else None,
+                        timeout_seconds=model_timeout,
                     )
+                    if before_model.consumed and isinstance(before_model.result, dict):
+                        response = before_model.result
+                    else:
+                        messages = before_model.payload.get("messages", messages)
+                        tools = before_model.payload.get("tools", tools)
+                        response = await asyncio.wait_for(
+                            self._provider.chat(messages, tools=tools if tools else None),
+                            timeout=model_timeout,
+                        )
+                    after_model = await self._emit_runtime_event(
+                        "model.call.after",
+                        event,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        messages=messages,
+                        response=response,
+                    )
+                    response = after_model.payload.get("response", response)
                 except asyncio.TimeoutError:
                     if remaining is not None:
                         cancel_for_silence("model")
@@ -1303,10 +1386,34 @@ class ReplyOrchestrator:
                                 wait_extra_seconds + self._get_dependency_timeout_seconds(),
                             )
                         )
-                        result = await asyncio.wait_for(
-                            reply_toolset.executor.execute(name, args),
-                            timeout=tool_timeout,
+                        before_tool = await self._emit_runtime_event(
+                            "tool.call.before",
+                            event,
+                            queue_key=queue_key,
+                            iteration=iteration + 1,
+                            tool_name=name,
+                            tool_args=args,
+                            timeout_seconds=tool_timeout,
                         )
+                        if before_tool.consumed:
+                            result = before_tool.result
+                        else:
+                            name = str(before_tool.payload.get("tool_name", name))
+                            args = before_tool.payload.get("tool_args", args)
+                            result = await asyncio.wait_for(
+                                reply_toolset.executor.execute(name, args),
+                                timeout=tool_timeout,
+                            )
+                        after_tool = await self._emit_runtime_event(
+                            "tool.call.after",
+                            event,
+                            queue_key=queue_key,
+                            iteration=iteration + 1,
+                            tool_name=name,
+                            tool_args=args,
+                            tool_result=result,
+                        )
+                        result = after_tool.payload.get("tool_result", result)
                         tool_error = None
                     except asyncio.TimeoutError:
                         if remaining is not None:
@@ -1327,6 +1434,15 @@ class ReplyOrchestrator:
                             event_id=event.event_id,
                             tool=name,
                             error=tool_error,
+                        )
+                        await self._emit_runtime_event(
+                            "tool.call.after",
+                            event,
+                            queue_key=queue_key,
+                            iteration=iteration + 1,
+                            tool_name=name,
+                            tool_args=args,
+                            tool_error=tool_error,
                         )
                     if tool_error is not None:
                         messages.append({
@@ -2044,13 +2160,16 @@ class ReplyOrchestrator:
                 timeout=image_wait_timeout,
             )
 
+        before_prompt = await self._emit_runtime_event("prompt.build.before", event, queue_key=queue_key)
+        if before_prompt.consumed:
+            return str(before_prompt.result or before_prompt.payload.get("prompt", ""))
         event.transition(ReplyState.BUILDING_PROMPT)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
         if event.conversation_ref.kind == "group":
             try:
-                return await asyncio.wait_for(
+                prompt = await asyncio.wait_for(
                     self._prompt_builder.build_group_chat_prompt(
                         group_id=int(queue_key),
                         message_queue=queue,
@@ -2060,6 +2179,8 @@ class ReplyOrchestrator:
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
+                after_prompt = await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
+                return str(after_prompt.payload.get("prompt", prompt))
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "group prompt build timed out",
@@ -2069,7 +2190,7 @@ class ReplyOrchestrator:
                 )
                 raise
         try:
-            return await asyncio.wait_for(
+            prompt = await asyncio.wait_for(
                 self._prompt_builder.build_friend_chat_prompt(
                     user_id=int(queue_key),
                     message_queue=queue,
@@ -2079,6 +2200,8 @@ class ReplyOrchestrator:
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
+            await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
+            return prompt
         except asyncio.TimeoutError:
             self._logger.warning(
                 "private prompt build timed out",
@@ -2121,19 +2244,26 @@ class ReplyOrchestrator:
             {"role": "system", "content": prompt},
         ]
         timeout = self._get_model_response_timeout_seconds(event)
-        try:
-            response = await asyncio.wait_for(
-                self._provider.chat(messages),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            event.error = f"AI response timed out after {timeout:.0f}s"
-            self._logger.warning(
-                "common mode model call timed out",
-                event_id=event.event_id,
-                timeout_seconds=timeout,
-            )
-            raise
+        before_model = await self._emit_runtime_event("model.call.before", event, messages=messages, timeout_seconds=timeout)
+        if before_model.consumed and isinstance(before_model.result, dict):
+            response = before_model.result
+        else:
+            messages = before_model.payload.get("messages", messages)
+            try:
+                response = await asyncio.wait_for(
+                    self._provider.chat(messages),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                event.error = f"AI response timed out after {timeout:.0f}s"
+                self._logger.warning(
+                    "common mode model call timed out",
+                    event_id=event.event_id,
+                    timeout_seconds=timeout,
+                )
+                raise
+        after_model = await self._emit_runtime_event("model.call.after", event, messages=messages, response=response)
+        response = after_model.payload.get("response", response)
         content = response.get("content", "")
 
         usage = (response.get("extensions") or {}).get("usage")
@@ -2213,6 +2343,38 @@ class ReplyOrchestrator:
         images: list[int] | None = None,
         merge_text_with_image: bool = False,
     ) -> None:
+        before_postprocess = await self._emit_runtime_event(
+            "reply.postprocess.before",
+            event,
+            text=text,
+            segments=segments,
+            send_original=send_original,
+            images=images,
+        )
+        text = str(before_postprocess.payload.get("text", text))
+        segments = before_postprocess.payload.get("segments", segments)
+        send_original = bool(before_postprocess.payload.get("send_original", send_original))
+        images = before_postprocess.payload.get("images", images)
+        before_send = await self._emit_runtime_event(
+            "reply.send.before",
+            event,
+            text=text,
+            segments=segments,
+            send_original=send_original,
+            images=images,
+            reply_to_message_id=reply_to_message_id,
+            mention_user_ids=mention_user_ids,
+        )
+        if before_send.consumed:
+            event.send_response = before_send.result
+            event.transition(ReplyState.COMPLETED)
+            return
+        text = str(before_send.payload.get("text", text))
+        segments = before_send.payload.get("segments", segments)
+        send_original = bool(before_send.payload.get("send_original", send_original))
+        images = before_send.payload.get("images", images)
+        reply_to_message_id = before_send.payload.get("reply_to_message_id", reply_to_message_id)
+        mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
         event.transition(ReplyState.SENDING)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
@@ -2284,6 +2446,15 @@ class ReplyOrchestrator:
             segments=segments,
             send_original=send_original,
         )
+        after_postprocess = await self._emit_runtime_event(
+            "reply.postprocess.after",
+            event,
+            text=text,
+            reply_messages=reply_messages,
+            segments=segments,
+            send_original=send_original,
+        )
+        reply_messages = list(after_postprocess.payload.get("reply_messages", reply_messages))
         is_group = event.conversation_ref.kind == "group"
         pipeline_key = f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
 
@@ -2319,6 +2490,13 @@ class ReplyOrchestrator:
             event,
             formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
             reply_to_message_id=reply_to_message_id,
+        )
+        await self._emit_runtime_event(
+            "reply.send.after",
+            event,
+            reply_to_message_id=reply_to_message_id,
+            formatted_messages=formatted_messages,
+            send_results=send_results,
         )
 
     def _push_self_sent_message(
