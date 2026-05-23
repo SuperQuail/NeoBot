@@ -90,6 +90,7 @@ enabled = true
 priority = 10
 min_neobot_version = "1.0.0-alpha.7"
 dependencies = ["base_plugin"]
+python_dependencies = ["requests>=2", "pydantic"]
 
 [config]
 reply = "pong"
@@ -107,9 +108,40 @@ Supported fields:
 | `priority` | int | `0` | Higher priority plugins are considered earlier when ordering independent plugins. |
 | `min_neobot_version` | string | unset | Minimum compatible NeoBot version, currently recorded for metadata. |
 | `dependencies` | string list | `[]` | Required plugin names. Missing or cyclic dependencies produce load errors. |
+| `python_dependencies` | string list | `[]` | PyPI requirement specifiers needed by this plugin. Alias: `pypi_dependencies` or `requirements`. |
 | `[config]` | table | `{}` | Plugin-specific configuration exposed as `ctx.config`. |
 
 Dependency order always takes precedence over priority.
+
+## PyPI dependencies
+
+Plugins may declare Python package requirements in `plugin.toml`:
+
+```toml
+python_dependencies = ["requests>=2", "httpx"]
+```
+
+The runtime can discover missing packages without importing plugin code:
+
+```python
+for plugin in runtime.discover_all():
+    if getattr(plugin, "missing_python_dependencies", None):
+        print(plugin.name, plugin.missing_python_dependencies)
+```
+
+Automatic installation is interactive and only runs after explicit opt-in:
+
+```python
+runtime.load_all(auto_install_dependencies=True)
+```
+
+When missing packages are found, NeoBot prompts the operator with a `y/N` confirmation before running:
+
+```text
+python -m pip install <requirements...>
+```
+
+If installation is declined or fails, plugins with missing PyPI dependencies are skipped.
 
 ## Plugin context
 
@@ -259,6 +291,17 @@ def setup(ctx):
 ```
 
 Plugins registered through the tracked host facade are cleaned up automatically when the plugin stops or fails during load/start.
+
+## Hot reload
+
+The runtime supports manual hot reload for development and operator tooling:
+
+```python
+await runtime.reload_plugin("hello")
+await runtime.reload_all()
+```
+
+Reloading stops the old plugin, cleans tracked subscriptions, agents and host registrations, removes cached user plugin modules, imports the plugin code again, then loads and starts the new plugin instance. File watching is intentionally left to the application layer.
 
 ## Plugin registry and capabilities
 

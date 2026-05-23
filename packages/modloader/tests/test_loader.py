@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from neobot_modloader.loader import FilesystemPluginLoader, LoadedPlugin, PluginLoadError
+from neobot_modloader.loader import DiscoveredPlugin, FilesystemPluginLoader, LoadedPlugin, PluginLoadError
 from neobot_modloader.plugin import FunctionPlugin
 
 
@@ -76,6 +76,42 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             self.assertEqual(result.author, "NeoBot")
             self.assertEqual(result.priority, 5)
             self.assertEqual(result.min_neobot_version, "1.0.0")
+
+    def test_reads_python_dependencies_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "deps"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"deps\"\npython_dependencies = [\"requests>=2\"]\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, LoadedPlugin)
+            assert isinstance(result, LoadedPlugin)
+            self.assertEqual(result.python_dependencies, ("requests>=2",))
+
+    def test_discover_all_reads_metadata_without_importing_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "discover"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"discover\"\ndescription = \"d\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text("raise RuntimeError('should not import')\n", encoding="utf-8")
+
+            result = FilesystemPluginLoader().discover_all(root)[0]
+
+            self.assertIsInstance(result, DiscoveredPlugin)
+            assert isinstance(result, DiscoveredPlugin)
+            self.assertEqual(result.name, "discover")
+            self.assertEqual(result.description, "d")
+            self.assertEqual(result.missing_python_dependencies, ("package-that-should-not-exist-xyz",))
 
     def test_package_plugin_supports_relative_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
