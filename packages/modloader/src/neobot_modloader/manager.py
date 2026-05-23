@@ -130,6 +130,19 @@ class DefaultPluginManager:
         record = self._records.get(name)
         return record.plugin if record is not None else None
 
+    async def remove_plugin(self, name: str) -> PluginRecord | None:
+        lock = self._plugin_locks.get(name)
+        if lock is None:
+            return None
+        async with lock:
+            record = self._records.get(name)
+            if record is None:
+                return None
+            await self._stop_plugin_locked(name)
+            self._records.pop(name, None)
+            self._plugin_locks.pop(name, None)
+            return record
+
     def get_state(self, name: str) -> PluginState:
         record = self._records.get(name)
         return record.state if record is not None else PluginState.UNLOADED

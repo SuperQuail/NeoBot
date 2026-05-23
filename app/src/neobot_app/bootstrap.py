@@ -387,6 +387,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
             record_ai_reply_block=reply_block_registry.block_event,
             output=runtime_output,
             host=host_facade,
+            auto_install_dependencies=True,
         )
         plugin_runtime.load_all()
 
