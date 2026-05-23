@@ -52,6 +52,31 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             self.assertEqual(result.version, "0.2.0")
             self.assertEqual(result.config, {"reply": "pong"})
 
+    def test_loads_manifest_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "meta"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"meta\"\n"
+                "version = \"1.2.3\"\n"
+                "description = \"Metadata plugin\"\n"
+                "author = \"NeoBot\"\n"
+                "priority = 5\n"
+                "min_neobot_version = \"1.0.0\"\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, LoadedPlugin)
+            assert isinstance(result, LoadedPlugin)
+            self.assertEqual(result.description, "Metadata plugin")
+            self.assertEqual(result.author, "NeoBot")
+            self.assertEqual(result.priority, 5)
+            self.assertEqual(result.min_neobot_version, "1.0.0")
+
     def test_package_plugin_supports_relative_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -105,6 +130,121 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
             result = FilesystemPluginLoader().load_all(root)[0]
             self.assertIsInstance(result, PluginLoadError)
+
+    def test_rejects_manifest_name_with_colon_or_space(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for dirname, plugin_name in (("colon", "bad:name"), ("space", "bad name")):
+                package = root / dirname
+                package.mkdir()
+                (package / "plugin.toml").write_text(f"name = {plugin_name!r}\n", encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertEqual(len(results), 2)
+            self.assertTrue(all(isinstance(result, PluginLoadError) for result in results))
+
+    def test_disabled_package_plugin_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "disabled"
+            package.mkdir()
+            (package / "plugin.toml").write_text("enabled = false\n", encoding="utf-8")
+            (package / "__init__.py").write_text("raise RuntimeError('should not load')\n", encoding="utf-8")
+
+            self.assertEqual(FilesystemPluginLoader().load_all(root), [])
+
+    def test_dependencies_are_loaded_before_dependants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, manifest in (
+                ("app", "name = \"app\"\npriority = 100\ndependencies = [\"base\"]\n"),
+                ("base", "name = \"base\"\npriority = 0\n"),
+            ):
+                package = root / name
+                package.mkdir()
+                (package / "plugin.toml").write_text(manifest, encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertEqual([result.name for result in results if isinstance(result, LoadedPlugin)], ["base", "app"])
+
+    def test_independent_plugins_are_ordered_by_priority_then_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, priority in (("low", 0), ("high_b", 10), ("high_a", 10)):
+                package = root / name
+                package.mkdir()
+                (package / "plugin.toml").write_text(f"name = \"{name}\"\npriority = {priority}\n", encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertEqual(
+                [result.name for result in results if isinstance(result, LoadedPlugin)],
+                ["high_a", "high_b", "low"],
+            )
+
+    def test_duplicate_plugin_names_return_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for dirname in ("first", "second"):
+                package = root / dirname
+                package.mkdir()
+                (package / "plugin.toml").write_text("name = \"same\"\n", encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertEqual(sum(isinstance(result, LoadedPlugin) for result in results), 1)
+            self.assertEqual(sum(isinstance(result, PluginLoadError) for result in results), 1)
+
+    def test_rejects_invalid_manifest_field_types(self) -> None:
+        cases = {
+            "bad_enabled": "enabled = \"yes\"\n",
+            "bad_priority": "priority = \"high\"\n",
+            "bad_dependencies": "dependencies = \"base\"\n",
+            "bad_dependency_name": "dependencies = [\"bad:name\"]\n",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for dirname, manifest in cases.items():
+                package = root / dirname
+                package.mkdir()
+                (package / "plugin.toml").write_text(manifest, encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertEqual(len(results), len(cases))
+            self.assertTrue(all(isinstance(result, PluginLoadError) for result in results))
+
+    def test_missing_dependency_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "app"
+            package.mkdir()
+            (package / "plugin.toml").write_text("dependencies = [\"missing\"]\n", encoding="utf-8")
+            (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, PluginLoadError)
+
+    def test_cyclic_dependency_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, dependency in (("a", "b"), ("b", "a")):
+                package = root / name
+                package.mkdir()
+                (package / "plugin.toml").write_text(f"name = \"{name}\"\ndependencies = [\"{dependency}\"]\n", encoding="utf-8")
+                (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+
+            results = FilesystemPluginLoader().load_all(root)
+
+            self.assertTrue(any(isinstance(result, PluginLoadError) for result in results))
 
 
 if __name__ == "__main__":

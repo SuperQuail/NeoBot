@@ -4,9 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.output import NullOutput, OutputPort
 
 from neobot_modloader.context import PluginContext
 from neobot_modloader.hooks import PluginHookBus
+from neobot_modloader.host import TrackedPluginHostFacade
 from neobot_modloader.loader import FilesystemPluginLoader, LoadedPlugin, PluginLoadError
 from neobot_modloader.manager import DefaultPluginManager
 
@@ -25,6 +27,8 @@ class PluginRuntime:
         agent_registry: Any | None = None,
         hook_bus: PluginHookBus | None = None,
         record_ai_reply_block: Any | None = None,
+        output: OutputPort | None = None,
+        host: Any | None = None,
     ) -> None:
         self.plugin_dir = plugin_dir.resolve()
         self.data_dir = data_dir.resolve()
@@ -32,11 +36,14 @@ class PluginRuntime:
         self.logger_factory = logger_factory
         self.agent_registry = agent_registry
         self.record_ai_reply_block = record_ai_reply_block
+        self.output = output or NullOutput()
         self.logger = logger or self._get_logger("modloader.runtime")
         self.hook_bus = hook_bus or PluginHookBus(
             logger=self._get_logger("modloader.hooks"),
             record_ai_reply_block=record_ai_reply_block,
+            output=self.output,
         )
+        self.host = host
         self.loader = loader or FilesystemPluginLoader(
             logger=self._get_logger("modloader.loader")
         )
@@ -65,7 +72,6 @@ class PluginRuntime:
         await self.manager.load_all()
 
     async def start_all(self) -> None:
-        await self.manager.load_all()
         await self.manager.start_all()
 
     async def stop_all(self) -> None:
@@ -73,6 +79,14 @@ class PluginRuntime:
 
     def _register(self, loaded: LoadedPlugin) -> None:
         logger = self._get_logger(f"plugin.{loaded.name}")
+        tracked_host = (
+            TrackedPluginHostFacade(
+                self.host,
+                lambda cleanup, name=loaded.name: self.manager.record_cleanup(name, cleanup),
+            )
+            if self.host is not None
+            else None
+        )
         context = PluginContext(
             plugin_name=loaded.name,
             plugin_dir=loaded.plugin_dir,
@@ -88,6 +102,9 @@ class PluginRuntime:
             record_agent_registration=lambda registered_name, agent, name=loaded.name: self.manager.record_agent_registration(
                 name, registered_name, agent
             ),
+            plugin_registry=self.manager.registry_view,
+            output=self.output,
+            host=tracked_host,
         )
         try:
             self.manager.register(loaded.plugin, context)

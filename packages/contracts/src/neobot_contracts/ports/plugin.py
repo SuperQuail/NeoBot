@@ -7,14 +7,19 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.output import OutputPort
+from neobot_contracts.ports.runtime_event import RuntimeInterceptionRegistry
 
 
 class PluginState(Enum):
     """插件状态"""
 
     UNLOADED = "unloaded"
+    LOADING = "loading"
     LOADED = "loaded"
+    STARTING = "starting"
     RUNNING = "running"
+    STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
 
@@ -31,6 +36,49 @@ class PluginAgentRegistrar(Protocol):
     def snapshot(self) -> list[dict[str, str]]: ...
 
     def list_agents(self, name: str | None = None) -> str: ...
+
+
+@runtime_checkable
+class PluginCapability(Protocol):
+    """插件显式导出的能力接口"""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+
+@runtime_checkable
+class PluginHandle(Protocol):
+    """受限插件句柄，不暴露插件实例"""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    @property
+    def state(self) -> PluginState: ...
+
+    @property
+    def capabilities(self) -> tuple[str, ...]: ...
+
+    async def call(self, capability: str, payload: Mapping[str, Any] | None = None) -> Any: ...
+
+
+@runtime_checkable
+class PluginRegistry(Protocol):
+    """插件查询接口"""
+
+    def names(self) -> list[str]: ...
+
+    def has(self, name: str) -> bool: ...
+
+    def get(self, name: str) -> PluginHandle | None: ...
+
+    def list(self) -> list[PluginHandle]: ...
 
 
 @runtime_checkable
@@ -57,6 +105,15 @@ class PluginContext(Protocol):
 
     @property
     def agents(self) -> PluginAgentRegistrar: ...
+
+    @property
+    def plugins(self) -> PluginRegistry: ...
+
+    @property
+    def intercept(self) -> RuntimeInterceptionRegistry: ...
+
+    @property
+    def output(self) -> OutputPort: ...
 
     async def send_private(self, user_id: int, message: str | list[dict[str, Any]]) -> Any: ...
 

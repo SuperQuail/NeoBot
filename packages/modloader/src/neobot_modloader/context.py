@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from neobot_adapter.model.response import SendMsgResponse
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.output import NullOutput, OutputPort
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 from neobot_modloader.events import PluginEventBus
 
@@ -108,6 +110,64 @@ class PluginAgentRegistrar:
             raise TypeError(f"Plugin agent is missing required attributes: {', '.join(missing)}")
 
 
+class PluginInterceptionRegistry:
+    def __init__(
+        self,
+        *,
+        plugin_name: str,
+        hook_bus: Any,
+        logger: Logger,
+        record_subscription: Any,
+    ) -> None:
+        self._plugin_name = plugin_name
+        self._hook_bus = hook_bus
+        self._logger = logger
+        self._record_subscription = record_subscription
+
+    def subscribe(
+        self,
+        handler: Any | None = None,
+        *,
+        kind: str | None = None,
+        stage: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        priority: int = 0,
+        timeout: float | None = None,
+    ) -> Any:
+        def subscribe_actual(actual_handler: Any) -> Any:
+            subscribe_runtime = getattr(self._hook_bus, "subscribe_runtime", None)
+            if not callable(subscribe_runtime):
+                raise RuntimeError("Runtime interception bus is not available")
+            subscription = subscribe_runtime(
+                actual_handler,
+                kind=kind,
+                stage=stage,
+                source=source,
+                target=target,
+                priority=priority,
+                timeout=timeout,
+                logger=self._logger,
+            )
+            self._record_subscription(subscription)
+            return subscription
+
+        if handler is None:
+            def decorate(actual_handler: Any) -> Any:
+                subscribe_actual(actual_handler)
+                return actual_handler
+
+            return decorate
+        return subscribe_actual(handler)
+
+    async def dispatch_envelope(self, envelope: RuntimeEnvelope) -> RuntimeEnvelope:
+        envelope.source = envelope.source or f"plugin:{self._plugin_name}"
+        dispatch_envelope = getattr(self._hook_bus, "dispatch_envelope", None)
+        if not callable(dispatch_envelope):
+            return envelope
+        return await dispatch_envelope(envelope)
+
+
 class PluginContext:
     def __init__(
         self,
@@ -122,6 +182,9 @@ class PluginContext:
         record_subscription: Any | None = None,
         agent_registry: Any | None = None,
         record_agent_registration: Any | None = None,
+        plugin_registry: Any | None = None,
+        output: OutputPort | None = None,
+        host: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -129,6 +192,9 @@ class PluginContext:
         self._config = dict(config or {})
         self._logger = logger or NullLogger()
         self._adapter = adapter
+        self._plugins = plugin_registry
+        self._output = output or NullOutput()
+        self._host = host
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self.agents = PluginAgentRegistrar(
             plugin_name=plugin_name,
@@ -137,10 +203,18 @@ class PluginContext:
         )
         from neobot_modloader.hooks import PluginHookBus
 
+        effective_hook_bus = hook_bus or PluginHookBus(logger=self._logger, output=self._output)
+        effective_record_subscription = record_subscription or (lambda _subscription: None)
         self.on = PluginEventBus(
-            hook_bus=hook_bus or PluginHookBus(logger=self._logger),
+            hook_bus=effective_hook_bus,
             logger=self._logger,
-            record_subscription=record_subscription or (lambda _subscription: None),
+            record_subscription=effective_record_subscription,
+        )
+        self.intercept = PluginInterceptionRegistry(
+            plugin_name=plugin_name,
+            hook_bus=effective_hook_bus,
+            logger=self._logger,
+            record_subscription=effective_record_subscription,
         )
 
     @property
@@ -162,6 +236,18 @@ class PluginContext:
     @property
     def logger(self) -> Logger:
         return self._logger
+
+    @property
+    def plugin_host(self) -> Any:
+        return self._host
+
+    @property
+    def plugins(self) -> Any:
+        return self._plugins
+
+    @property
+    def output(self) -> OutputPort:
+        return self._output
 
     async def send_private(self, user_id: int, message: MessagePayload) -> SendMsgResponse:
         return await self._adapter.send_private_msg(user_id, message)
