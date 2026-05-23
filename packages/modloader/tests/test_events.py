@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from neobot_contracts.ports.output import CapturingOutput
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 from neobot_modloader.events import PluginEventBus
 from neobot_modloader.hooks import PluginHookBus
 
@@ -201,6 +203,28 @@ class PluginEventBusTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked, [])
         self.assertEqual(len(logger.exceptions), 1)
         self.assertEqual(len(logger.warnings), 1)
+
+    async def test_runtime_interceptor_mutates_envelope_and_captures_prints(self) -> None:
+        output = CapturingOutput()
+        hook_bus = PluginHookBus(output=output)
+        bus = PluginEventBus(hook_bus=hook_bus)
+        seen: list[str] = []
+
+        @bus.runtime(kind="reply_lifecycle", stage="model.call.before", priority=10)
+        async def first(envelope: RuntimeEnvelope) -> None:
+            print("captured output")
+            envelope.payload["tag"] = "set"
+            seen.append("first")
+
+        @bus.runtime(kind="reply_lifecycle", priority=0)
+        async def second(envelope: RuntimeEnvelope) -> None:
+            seen.append(str(envelope.payload.get("tag")))
+
+        result = await hook_bus.dispatch_envelope(RuntimeEnvelope(kind="reply_lifecycle", stage="model.call.before"))
+
+        self.assertEqual(seen, ["first", "set"])
+        self.assertEqual(result.payload["tag"], "set")
+        self.assertEqual(output.messages[0].text, "captured output")
 
     def test_group_and_private_are_mutually_exclusive(self) -> None:
         bus, _ = self.make_bus()
