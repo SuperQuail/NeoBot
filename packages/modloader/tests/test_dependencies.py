@@ -37,6 +37,7 @@ class PythonDependencyInstallerTest(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args[-1], "requests>=2")
         self.assertIn("pip", args)
+        self.assertEqual(result.command, tuple(args))
 
     def test_failed_install_returns_error_result(self) -> None:
         installer = PythonDependencyInstaller(input_func=lambda prompt: "yes")
@@ -46,6 +47,30 @@ class PythonDependencyInstallerTest(unittest.TestCase):
         self.assertFalse(result.installed)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, "boom")
+
+    def test_uses_uv_pip_when_python_has_no_pip(self) -> None:
+        installer = PythonDependencyInstaller(input_func=lambda prompt: "y")
+        completed = subprocess.CompletedProcess(["uv"], 0, stdout="ok", stderr="")
+
+        with patch.object(installer, "_running_under_uv", return_value=False), patch.object(
+            installer, "_python_has_pip", return_value=False
+        ), patch("shutil.which", return_value="uv"), patch("subprocess.run", return_value=completed) as run:
+            result = installer.confirm_and_install(["pyfiglet"])
+
+        self.assertTrue(result.installed)
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
+
+    def test_prefers_uv_pip_inside_uv_environment(self) -> None:
+        installer = PythonDependencyInstaller(input_func=lambda prompt: "y")
+        completed = subprocess.CompletedProcess(["uv"], 0, stdout="ok", stderr="")
+
+        with patch.object(installer, "_running_under_uv", return_value=True), patch.object(
+            installer, "_python_has_pip", return_value=True
+        ), patch("shutil.which", return_value="uv"), patch("subprocess.run", return_value=completed) as run:
+            result = installer.confirm_and_install(["pyfiglet"])
+
+        self.assertTrue(result.installed)
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
 
 
 if __name__ == "__main__":

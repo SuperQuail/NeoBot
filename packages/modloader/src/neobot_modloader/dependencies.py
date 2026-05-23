@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ class PythonDependencyInstallResult:
     returncode: int | None = None
     stdout: str = ""
     stderr: str = ""
+    command: tuple[str, ...] = ()
 
 
 class PythonDependencyInstaller:
@@ -35,8 +38,9 @@ class PythonDependencyInstaller:
             self._logger.info("用户取消安装插件 PyPI 依赖")
             return PythonDependencyInstallResult(requirements=unique, installed=False)
 
-        command = [sys.executable, "-m", "pip", "install", *unique]
+        command = self._install_command(unique)
         self._logger.info(f"正在安装插件 PyPI 依赖: {' '.join(unique)}")
+        self._logger.info(f"安装命令: {' '.join(command)}")
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             self._logger.error(f"插件 PyPI 依赖安装失败: {completed.stderr}")
@@ -46,6 +50,7 @@ class PythonDependencyInstaller:
                 returncode=completed.returncode,
                 stdout=completed.stdout,
                 stderr=completed.stderr,
+                command=tuple(command),
             )
         return PythonDependencyInstallResult(
             requirements=unique,
@@ -53,4 +58,26 @@ class PythonDependencyInstaller:
             returncode=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            command=tuple(command),
         )
+
+    def _install_command(self, requirements: tuple[str, ...]) -> list[str]:
+        if self._running_under_uv() and shutil.which("uv") is not None:
+            return ["uv", "pip", "install", *requirements]
+        if self._python_has_pip():
+            return [sys.executable, "-m", "pip", "install", *requirements]
+        if shutil.which("uv") is not None:
+            return ["uv", "pip", "install", *requirements]
+        return [sys.executable, "-m", "pip", "install", *requirements]
+
+    def _running_under_uv(self) -> bool:
+        executable = os.path.basename(sys.executable).casefold()
+        return "UV" in os.environ or "uv" in os.environ.get("VIRTUAL_ENV", "").casefold() or executable.startswith("uv")
+
+    def _python_has_pip(self) -> bool:
+        return subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode == 0
