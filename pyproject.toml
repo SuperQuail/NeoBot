@@ -20,11 +20,16 @@ members = [
     "app",
 ]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["app/tests", "packages/modloader/tests"]
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
     "prompt-toolkit>=3.0.0",
     "pyinstaller>=6.19.0",
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.26.0",
     "ruff>=0.15.5",
 ]

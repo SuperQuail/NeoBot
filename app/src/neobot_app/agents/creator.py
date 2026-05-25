@@ -38,6 +38,7 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 from neobot_app.core import DATA_DIR
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.utils.media_sender import send_image as _media_send_image
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     CURRENT_CONVERSATION_KIND,
@@ -48,6 +49,7 @@ from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import AgentCreator
+    from neobot_app.core.file_server import FileServer
     from neobot_app.emoji.service import EmojiService
     from neobot_contracts.models.memory import EmojiRecord
 
@@ -777,6 +779,7 @@ class CreatorImageService:
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
         markdown_dir: Path | None = None,
+        file_server: "FileServer | None" = None,
         logger: Logger | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -785,6 +788,7 @@ class CreatorImageService:
         self._logger = logger or NullLogger()
         self._emoji_service = emoji_service
         self._vision_provider = vision_provider
+        self._file_server = file_server
         self._model = get_registered_model(model_name)
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
@@ -1288,10 +1292,12 @@ class CreatorImageService:
         else:
             raise ValueError("未指定 group_id 或 user_id，无法确定发送目标")
 
-        segments: list[dict[str, Any]] = [
-            {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
-        ]
-        await self._send_with_timeout(conversation_ref, segments)
+        if self._file_server is None:
+            raise RuntimeError("file_server not initialized")
+        await asyncio.wait_for(
+            _media_send_image(self._file_server, self._adapter, conversation_ref, path),
+            timeout=self._get_io_timeout_seconds(),
+        )
 
     async def send_image_by_path(
         self,
@@ -1312,10 +1318,12 @@ class CreatorImageService:
             conversation_ref = ConversationRef(kind="private", id=user_id)
         else:
             raise ValueError("未指定 group_id 或 user_id")
-        segments: list[dict[str, Any]] = [
-            {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}},
-        ]
-        await self._send_with_timeout(conversation_ref, segments)
+        if self._file_server is None:
+            raise RuntimeError("file_server not initialized")
+        await asyncio.wait_for(
+            _media_send_image(self._file_server, self._adapter, conversation_ref, path),
+            timeout=self._get_io_timeout_seconds(),
+        )
 
     def list_markdown_images(self) -> list[dict[str, Any]]:
         """列出 markdown_images 目录中的图片文件。"""
@@ -2791,6 +2799,7 @@ class CreatorAgent:
         *,
         service: CreatorImageService,
         config: CreatorAgentConfig | AgentCreator | None = None,
+        file_server: "FileServer | None" = None,
         logger: Logger | None = None,
         drawing_manager: BackgroundDrawingManager | None = None,
     ) -> None:
@@ -2798,6 +2807,7 @@ class CreatorAgent:
             config if isinstance(config, CreatorAgentConfig) else CreatorAgentConfig.from_schema(config)
         )
         self._service = service
+        self._file_server = file_server
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self._toolset = build_creator_toolset(
             service=service,
@@ -2864,6 +2874,7 @@ def build_creator_agent(
     emoji_service: "EmojiService | None" = None,
     vision_provider: Provider | None = None,
     markdown_dir: Path | None = None,
+    file_server: "FileServer | None" = None,
     logger: Logger | None = None,
     drawing_manager: BackgroundDrawingManager | None = None,
 ) -> CreatorAgent:
@@ -2877,6 +2888,7 @@ def build_creator_agent(
         emoji_service=emoji_service,
         vision_provider=vision_provider,
         markdown_dir=markdown_dir,
+        file_server=file_server,
         logger=logger,
     )
     if drawing_manager is not None:
@@ -2885,6 +2897,7 @@ def build_creator_agent(
         provider=provider,
         service=service,
         config=normalized_config,
+        file_server=file_server,
         logger=logger,
         drawing_manager=drawing_manager,
     )

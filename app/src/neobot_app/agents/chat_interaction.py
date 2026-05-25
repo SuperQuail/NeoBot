@@ -24,9 +24,11 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
+    from neobot_app.core.file_server import FileServer
     from neobot_app.emoji.service import EmojiService
     from neobot_app.user_profiles import UserProfileService
 
+from neobot_app.utils.media_sender import prepare_image_segment
 from neobot_contracts.models import ConversationRef
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
@@ -90,6 +92,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         logger: Logger | None = None,
         forward_display_threshold: int = 50,
         forward_max_nesting: int = 10,
+        file_server: FileServer | None = None,
     ) -> None:
         self._adapter = adapter
         self._emoji_service = emoji_service
@@ -97,6 +100,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         self._logger = logger or NullLogger()
         self._forward_display_threshold = forward_display_threshold
         self._forward_max_nesting = forward_max_nesting
+        self._file_server = file_server
 
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
@@ -373,10 +377,7 @@ class ChatInteractionToolExecutor(ToolExecutor):
         segments: list[dict] = []
         if text.strip():
             segments.append({"type": "text", "data": {"text": text.strip()}})
-        segments.append({
-            "type": "image",
-            "data": {"file": f"file:///{entry.file_path.as_posix()}"},
-        })
+        segments.append(prepare_image_segment(self._file_server, entry.file_path))
 
         group_id = str(args.get("group_id") or "")
         user_id = str(args.get("user_id") or "")
@@ -566,6 +567,7 @@ def build_chat_interaction_toolset(
     policy: ToolAccessPolicy | None = None,
     forward_display_threshold: int = 50,
     forward_max_nesting: int = 10,
+    file_server: FileServer | None = None,
 ) -> Toolset:
     executor = ChatInteractionToolExecutor(
         adapter=adapter,
@@ -574,6 +576,7 @@ def build_chat_interaction_toolset(
         logger=logger,
         forward_display_threshold=forward_display_threshold,
         forward_max_nesting=forward_max_nesting,
+        file_server=file_server,
     )
     specs = [
         ToolSpec(definition=definition, access_resolver=_default_resolver)
@@ -609,6 +612,7 @@ class ChatInteractionAgent:
         logger: Logger | None = None,
         forward_display_threshold: int = 50,
         forward_max_nesting: int = 10,
+        file_server: FileServer | None = None,
     ) -> None:
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self._toolset = build_chat_interaction_toolset(
@@ -618,6 +622,7 @@ class ChatInteractionAgent:
             logger=logger,
             forward_display_threshold=forward_display_threshold,
             forward_max_nesting=forward_max_nesting,
+            file_server=file_server,
         )
         self.tool_definitions = self._toolset.definitions()
 
@@ -671,6 +676,7 @@ def build_chat_interaction_agent(
     logger: Logger | None = None,
     forward_display_threshold: int = 50,
     forward_max_nesting: int = 10,
+    file_server: FileServer | None = None,
 ) -> ChatInteractionAgent:
     return ChatInteractionAgent(
         provider=provider,
@@ -680,4 +686,5 @@ def build_chat_interaction_agent(
         logger=logger,
         forward_display_threshold=forward_display_threshold,
         forward_max_nesting=forward_max_nesting,
+        file_server=file_server,
     )

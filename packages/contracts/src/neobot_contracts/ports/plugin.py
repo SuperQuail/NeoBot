@@ -121,6 +121,22 @@ class PluginContext(Protocol):
 
     async def send(self, conversation: ConversationRef, message: str | list[dict[str, Any]]) -> Any: ...
 
+    async def send_image(
+        self,
+        conversation: ConversationRef,
+        *,
+        path: Path | None = None,
+        data: bytes | None = None,
+        filename: str | None = None,
+    ) -> Any: ...
+
+    async def send_audio(
+        self,
+        conversation: ConversationRef,
+        *,
+        path: Path,
+    ) -> Any: ...
+
     async def reply(self, event: dict[str, Any] | Any, message: str | list[dict[str, Any]]) -> Any: ...
 
     def message_text(self, event: dict[str, Any] | Any) -> str: ...
