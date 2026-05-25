@@ -45,6 +45,7 @@ from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
 from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
+from neobot_app.core.file_server import FileServer
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.event_ingress import EventIngress
 from neobot_app.runtime.event_pipeline import EventPipeline
@@ -356,6 +357,14 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         else None
     )
 
+    file_server = FileServer(
+        DATA_DIR,
+        port=config.file_server.port,
+        host=config.file_server.host,
+        public_url=config.file_server.public_url,
+        enabled=config.file_server.enabled,
+    )
+
     agent_registry = build_agent_registry(
         config=config,
         archive_memory_service=archive_memory_service,
@@ -371,6 +380,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         cross_chat_manager=cross_chat_manager,
         group_message_queue=group_message_queue,
         friend_message_queue=friend_message_queue,
+        file_server=file_server,
     )
 
     if config.plugins.enabled:
@@ -484,6 +494,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         tool_package_manager=tool_package_manager,
         balance_checker=balance_checker,
         runtime_events=hook_bus,
+        file_server=file_server,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
@@ -544,9 +555,7 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         emoji_service=emoji_service,
         tts_service=tts_service,
         logger=logger_factory.get_logger("app.runtime"),
-        file_server_port=config.file_server.port,
-        file_server_host=config.file_server.host,
-        file_server_public_url=config.file_server.public_url,
+        file_server=file_server,
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,

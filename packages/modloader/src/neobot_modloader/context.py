@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -185,6 +186,7 @@ class PluginContext:
         plugin_registry: Any | None = None,
         output: OutputPort | None = None,
         host: Any | None = None,
+        file_server: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -192,6 +194,7 @@ class PluginContext:
         self._config = dict(config or {})
         self._logger = logger or NullLogger()
         self._adapter = adapter
+        self._file_server = file_server
         self._plugins = plugin_registry
         self._output = output or NullOutput()
         self._host = host
@@ -261,6 +264,56 @@ class PluginContext:
         message: MessagePayload,
     ) -> SendMsgResponse:
         return await self._adapter.send(conversation, message)
+
+    async def send_image(
+        self,
+        conversation: ConversationRef,
+        *,
+        path: Path | None = None,
+        data: bytes | None = None,
+        filename: str | None = None,
+    ) -> SendMsgResponse:
+        if path is not None:
+            from neobot_app.utils.media_sender import send_image as _send_image
+
+            return await _send_image(self._file_server, self._adapter, conversation, path)
+        if data is not None:
+            if self._file_server is None:
+                raise RuntimeError("FileServer not configured")
+            if not filename:
+                raise ValueError("filename is required when sending raw data")
+            if len(data) > 30_000_000:
+                raise ValueError(f"Image data exceeds 30MB limit: {len(data)} bytes")
+
+            suffix = Path(filename).suffix
+            unique_name = f"{uuid4().hex}{suffix}"
+            cache_dir = self._data_dir / ".media_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            temp_path = cache_dir / unique_name
+
+            try:
+                temp_path.write_bytes(data)
+                from neobot_app.utils.media_sender import send_image as _send_image
+
+                result = await _send_image(self._file_server, self._adapter, conversation, temp_path)
+                self._logger.info("临时图片已发送: %s", filename)
+                return result
+            except Exception:
+                self._logger.exception("发送二进制图片失败")
+                raise
+            finally:
+                temp_path.unlink(missing_ok=True)
+        raise ValueError("Must provide path or data+filename")
+
+    async def send_audio(
+        self,
+        conversation: ConversationRef,
+        *,
+        path: Path,
+    ) -> SendMsgResponse:
+        from neobot_app.utils.media_sender import send_audio as _send_audio
+
+        return await _send_audio(self._file_server, self._adapter, conversation, Path(path))
 
     async def reply(self, event: dict[str, Any] | BaseModel, message: MessagePayload) -> SendMsgResponse:
         return await self.send(self.conversation_from_event(event), message)

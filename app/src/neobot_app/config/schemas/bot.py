@@ -619,6 +619,7 @@ class FileServer:
         default=None,
         metadata={"description": "访问地址"},
     )
+    enabled: bool = field(default=True, metadata={"description": "是否启用文件服务器"})
 
 
 @dataclass

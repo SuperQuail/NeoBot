@@ -26,6 +26,7 @@ from neobot_app.core import DATA_DIR
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
+    from neobot_app.core.file_server import FileServer
     from neobot_app.emoji.service import EmojiService
     from neobot_app.user_profiles import UserProfileService
     from neobot_app.willing.service import WillingService
@@ -63,6 +64,7 @@ def build_agent_registry(
     emoji_service: "EmojiService | None" = None,
     profile_service: "UserProfileService | None" = None,
     vision_provider: "Provider | None" = None,
+    file_server: "FileServer | None" = None,
     willing_service: "WillingService | None" = None,
     provider_factory: Callable[..., Provider] | None = None,
     model_name: str = "primary_chat_model",
@@ -108,6 +110,7 @@ def build_agent_registry(
                         emoji_service=emoji_service,
                         vision_provider=vision_provider,
                         markdown_dir=DATA_DIR / "markdown_images",
+                        file_server=file_server,
                         logger=active_logger,
                         drawing_manager=drawing_manager,
                     ),
@@ -161,6 +164,7 @@ def build_agent_registry(
                     forward_max_nesting=getattr(
                         config.chat, "forward_message_max_nesting", 10,
                     ),
+                    file_server=file_server,
                 ),
             )
 

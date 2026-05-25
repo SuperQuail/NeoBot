@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -42,9 +43,11 @@ class FileServer:
         host: str = "127.0.0.1",
         expiration_config: ExpirationConfig | None = None,
         public_url: str | None = None,
+        enabled: bool = True,
     ) -> None:
         self._data_dir = data_dir
         self._tmp_dir = data_dir / "tmp"
+        self._enabled = enabled
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._port = port
         self._host = host
@@ -60,6 +63,9 @@ class FileServer:
 
     async def start(self) -> None:
         """启动文件服务器"""
+        if not self._enabled:
+            logging.warning("已跳过 HTTP 文件服务器启动（配置要求走本地路径）")
+            return
         if self._running:
             return
         self._app = web.Application()

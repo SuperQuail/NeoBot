@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, TYPE_CHECKING
 
+from neobot_app.utils.media_sender import prepare_audio_segment, prepare_image_segment
+
 if TYPE_CHECKING:
     from neobot_app.core.file_server import FileServer
 
@@ -16,8 +18,7 @@ def create_text_segment(text: str) -> Dict[str, Any]:
 
 def create_image_segment(file_server: FileServer, file_path: Path) -> Dict[str, Any]:
     """创建图片消息段"""
-    url = file_server.register_file(file_path)
-    return {"type": "image", "data": {"file": url}}
+    return prepare_image_segment(file_server, file_path)
 
 
 def create_video_segment(
@@ -32,5 +33,4 @@ def create_video_segment(
 
 def create_audio_segment(file_server: FileServer, file_path: Path) -> Dict[str, Any]:
     """创建语音消息段"""
-    url = file_server.register_file(file_path)
-    return {"type": "record", "data": {"file": url}}
+    return prepare_audio_segment(file_server, file_path)
