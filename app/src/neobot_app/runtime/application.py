@@ -34,6 +34,7 @@ class NeoBotApplication(Generic[T]):
         file_server_port: int = 8765,
         file_server_host: str = "127.0.0.1",
         file_server_public_url: str | None = None,
+        file_server_enabled: bool = True,
         expiration_config: ExpirationConfig | None = None,
         tts_service: "TTSService | None" = None,
         bot_detector: Any = None,
@@ -46,6 +47,7 @@ class NeoBotApplication(Generic[T]):
         engine: Any = None,
         vision_provider: Any = None,
         archive_summary_service: Any = None,
+        file_server: FileServer | None = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -56,9 +58,13 @@ class NeoBotApplication(Generic[T]):
         self._logger = logger or NullLogger()
         self._shutdown_event = asyncio.Event()
         self._started = False
-        self.file_server = FileServer(
-            get_data_dir(), file_server_port, file_server_host, expiration_config, file_server_public_url
-        )
+        if file_server is not None:
+            self.file_server = file_server
+        else:
+            self.file_server = FileServer(
+                get_data_dir(), file_server_port, file_server_host, expiration_config, file_server_public_url,
+                enabled=file_server_enabled,
+            )
         self.tts_service = tts_service
         if self.tts_service is not None:
             self.tts_service.bind_file_server(self.file_server)

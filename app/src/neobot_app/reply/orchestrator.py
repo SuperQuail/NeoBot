@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
@@ -21,6 +22,7 @@ from neobot_app.statistics.tracker import (
     get_usage_tracker,
 )
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
+from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
 if TYPE_CHECKING:
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
     from neobot_app.willing.models import WillingDecision
     from neobot_app.willing.service import WillingService
     from neobot_app.image import ImageParseService
+    from neobot_app.core.file_server import FileServer
 
 
 def _msg_id_of(entry) -> int | None:
@@ -110,6 +113,7 @@ class ReplyOrchestrator:
         tool_package_manager: Any = None,
         balance_checker: Any = None,
         runtime_events: Any = None,
+        file_server: FileServer | None = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -137,6 +141,7 @@ class ReplyOrchestrator:
         self._tool_package_manager = tool_package_manager
         self._balance_checker = balance_checker
         self._runtime_events = runtime_events
+        self._file_server = file_server
         self._tasks: set[asyncio.Task[None]] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -771,12 +776,8 @@ class ReplyOrchestrator:
         if entry is None:
             return
 
-        segments: list[dict] = [{
-            "type": "image",
-            "data": {"file": f"file:///{entry.file_path.as_posix()}"},
-        }]
         try:
-            await self._send_with_timeout(event.conversation_ref, segments)
+            await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path)
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
             self._logger.debug(
@@ -938,10 +939,7 @@ class ReplyOrchestrator:
             segments: list[dict] = []
             if text.strip():
                 segments.append({"type": "text", "data": {"text": text.strip()}})
-            segments.append({
-                "type": "image",
-                "data": {"file": f"file:///{entry.file_path.as_posix()}"},
-            })
+            segments.append(prepare_image_segment(self._file_server, entry.file_path))
             await self._send_with_timeout(event.conversation_ref, segments)
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
@@ -1052,7 +1050,6 @@ class ReplyOrchestrator:
             nonlocal reply_sent
             reply_sent = True
             conv_ref = event.conversation_ref
-            path = image_path
             # 解析消息编号 -> 实际 message_id
             reply_to_message_id = None
             if reply_to is not None:
@@ -1067,8 +1064,7 @@ class ReplyOrchestrator:
                 )
                 await self._send_with_timeout(conv_ref, caption_segs)
             # 发送图片（不附带引用，图片单独发送）
-            img_seg = [{"type": "image", "data": {"file": f"file:///{path}"}}]
-            await self._send_with_timeout(conv_ref, img_seg)
+            await send_image(self._file_server, self._adapter, conv_ref, Path(image_path))
             # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
             if markdown.strip():
                 self._push_self_sent_message(
@@ -2393,22 +2389,16 @@ class ReplyOrchestrator:
                     reply_to_message_id=reply_to_message_id,
                     mention_user_ids=mention_user_ids,
                 )
-                merged.append({
-                    "type": "image",
-                    "data": {"file": f"file:///{first_img.file_path.as_posix()}"},
-                })
+                merged.append(prepare_image_segment(self._file_server, first_img.file_path))
                 formatted_messages.append(merged)
                 send_results.append(await self._send_with_timeout(event.conversation_ref, merged))
                 if self._emoji_service:
                     await self._emoji_service.record_usage(images[0])
                 # 发送剩余图片
                 for i, entry in enumerate(image_entries[1:], start=1):
-                    img_seg = [{
-                        "type": "image",
-                        "data": {"file": f"file:///{entry.file_path.as_posix()}"},
-                    }]
+                    img_seg = [prepare_image_segment(self._file_server, entry.file_path)]
                     formatted_messages.append(img_seg)
-                    send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                    send_results.append(await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path))
                     if self._emoji_service:
                         await self._emoji_service.record_usage(images[i])
             event.send_response = send_results[0] if len(send_results) == 1 else send_results
@@ -2432,12 +2422,9 @@ class ReplyOrchestrator:
                 entry = self._emoji_service.get_entry(image_number)
                 if entry is None:
                     continue
-                img_seg = [{
-                    "type": "image",
-                    "data": {"file": f"file:///{entry.file_path.as_posix()}"},
-                }]
+                img_seg = [prepare_image_segment(self._file_server, entry.file_path)]
                 formatted_messages.append(img_seg)
-                send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                send_results.append(await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path))
                 await self._emoji_service.record_usage(image_number)
 
         # Phase C: 发送文字（切分后逐条发送）
