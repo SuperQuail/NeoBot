@@ -66,14 +66,6 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
     "AI绘图与图片资产管理（图库/表情包/图片发送）"
 )
 
-# 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
-    "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞等）、发送表情包。\n"
-    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
-    "如果收到的任务明显属于其他 agent 的职责（如群管理/好友管理/头像解析/图片内容解析），直接告知主Agent该委托给对应的 agent，不要越权处理。"
-)
 
 TMP_SOURCE = "tmp"
 GALLERY_SOURCE = "gallery"
@@ -2712,7 +2704,7 @@ def _record_payload(record: CreatorImageRecord) -> dict[str, Any]:
         "height": record.original_height,
     }
 
-def _build_system_prompt(config: CreatorAgentConfig) -> str:
+def _build_system_prompt(config: CreatorAgentConfig, *, peer_descriptions: str = "") -> str:
     gallery_text = (
         f"图库容量上限为 {config.gallery_capacity}。"
         if config.gallery_capacity > 0
@@ -2786,7 +2778,7 @@ def _build_system_prompt(config: CreatorAgentConfig) -> str:
         f"{gallery_text}\n"
         f"{emoji_text}\n"
         f"{pagination_text}\n"
-        f"{PEER_AGENT_DESCRIPTIONS}\n"
+        f"{peer_descriptions}\n"
         "输出尽量简短，任务完成后只返回必要结果。"
     )
 
@@ -2802,6 +2794,7 @@ class CreatorAgent:
         file_server: "FileServer | None" = None,
         logger: Logger | None = None,
         drawing_manager: BackgroundDrawingManager | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         normalized_config = (
             config if isinstance(config, CreatorAgentConfig) else CreatorAgentConfig.from_schema(config)
@@ -2831,7 +2824,7 @@ class CreatorAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(normalized_config),
+            system_prompt=_build_system_prompt(normalized_config, peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
@@ -2877,6 +2870,7 @@ def build_creator_agent(
     file_server: "FileServer | None" = None,
     logger: Logger | None = None,
     drawing_manager: BackgroundDrawingManager | None = None,
+    peer_descriptions: str = "",
 ) -> CreatorAgent:
     normalized_config = (
         config if isinstance(config, CreatorAgentConfig) else CreatorAgentConfig.from_schema(config)
@@ -2900,4 +2894,5 @@ def build_creator_agent(
         file_server=file_server,
         logger=logger,
         drawing_manager=drawing_manager,
+        peer_descriptions=peer_descriptions,
     )

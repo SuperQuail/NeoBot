@@ -845,7 +845,7 @@ class CrossChatToolExecutor(ToolExecutor):
         })
 
 
-def _build_system_prompt(config: CrossChatAgentConfig | None) -> str:
+def _build_system_prompt(config: CrossChatAgentConfig | None, *, peer_descriptions: str = "") -> str:
     cfg = config or CrossChatAgentConfig()
     return (
         "你是跨聊天通信 Agent (cross_chat)，负责在不同聊天（群聊/私聊）之间传递信息，"
@@ -877,6 +877,7 @@ def _build_system_prompt(config: CrossChatAgentConfig | None) -> str:
         "- 查询模式必须使用 report_back 提交回报内容\n"
         "- 一个任务中只能使用 send_to_chat 或 report_back 之一，不能两者都使用\n"
         "- send_to_chat 的 message 参数应为自然语言，描述要向目标聊天传达的内容\n"
+        f"{peer_descriptions}\n"
         f"- 超时时间: {cfg.timeout_seconds} 秒\n"
     )
 
@@ -918,6 +919,7 @@ class CrossChatAgent:
         logger: Logger | None = None,
         manager: CrossChatManager | None = None,
         toolset: Toolset | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         cfg = config or CrossChatAgentConfig()
         self._logger = logger or NullLogger()
@@ -941,7 +943,7 @@ class CrossChatAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(cfg),
+            system_prompt=_build_system_prompt(cfg, peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             max_iterations=cfg.max_iterations,
             command_timeout=cfg.timeout_seconds,
@@ -1201,6 +1203,7 @@ def build_cross_chat_agent(
     group_message_queue: Any = None,
     friend_message_queue: Any = None,
     bot_config: Any = None,
+    peer_descriptions: str = "",
 ) -> CrossChatAgent:
     cfg = (
         config if isinstance(config, CrossChatAgentConfig)
@@ -1216,6 +1219,7 @@ def build_cross_chat_agent(
     )
     agent = CrossChatAgent(
         provider=provider, config=cfg, logger=logger, manager=manager, toolset=toolset,
+        peer_descriptions=peer_descriptions,
     )
     if manager is not None:
         manager.set_agent(agent._agent)

@@ -55,16 +55,6 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
     "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
 )
 
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
-    "- chat_interaction: 聊天互动、群管理、好友管理、发送表情包。\n"
-    "- creator: 绘图与图片资产管理、图库管理、表情包管理。\n"
-    "- image_parse: 按需求解析图片内容。\n"
-    "- scheduled_task: 定时提醒、生日记录与祝福。\n"
-    "- willingness: 调整回复意愿。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
-)
 
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")
 _SOLUTION_RESULT: ContextVar[str] = ContextVar("solution_result", default="")
@@ -658,7 +648,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
         return f"未知工具: {name}"
 
 
-def _build_system_prompt(config: ProblemSolverAgentConfig | None) -> str:
+def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descriptions: str = "") -> str:
     cfg = config or ProblemSolverAgentConfig()
     return (
         "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
@@ -682,6 +672,7 @@ def _build_system_prompt(config: ProblemSolverAgentConfig | None) -> str:
         "- 对于数学问题，使用标准的数学符号和步骤编号\n"
         "- 对于编程问题，提供可运行的代码及其解释\n"
         f"- 最终解答必须通过 submit_solution 提交，不要直接在对话中输出全部解答\n"
+        f"{peer_descriptions}\n"
         f"- 超时时间: {cfg.timeout_seconds} 秒\n"
     )
 
@@ -719,6 +710,7 @@ class ProblemSolverAgent:
         logger: Logger | None = None,
         web_search_config: dict | None = None,
         manager: ProblemSolverManager | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
@@ -744,7 +736,7 @@ class ProblemSolverAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(cfg),
+            system_prompt=_build_system_prompt(cfg, peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             max_iterations=20,
             command_timeout=cfg.timeout_seconds,
@@ -827,6 +819,7 @@ def build_problem_solver_agent(
     logger: Logger | None = None,
     manager: ProblemSolverManager | None = None,
     web_search_config: dict | None = None,
+    peer_descriptions: str = "",
 ) -> ProblemSolverAgent:
     """构建解题 Agent 并关联到 Manager。
 
@@ -836,6 +829,7 @@ def build_problem_solver_agent(
         logger: 日志记录器
         manager: 后台任务管理器
         web_search_config: 联网搜索配置字典，包含 engines, max_rounds, preview_pages_limit
+        peer_descriptions: 同级 sub agent 描述
     """
     cfg = (
         config if isinstance(config, ProblemSolverAgentConfig)
@@ -847,6 +841,7 @@ def build_problem_solver_agent(
         logger=logger,
         web_search_config=web_search_config,
         manager=manager,
+        peer_descriptions=peer_descriptions,
     )
     if manager is not None:
         manager.set_agent(agent)

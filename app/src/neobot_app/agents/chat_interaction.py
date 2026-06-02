@@ -50,15 +50,6 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
 
 _CHAT_INTERACTION_CONTEXT: ContextVar[str] = ContextVar("chat_interaction_context", default="")
 
-# 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
-    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
-)
-
 
 def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
     return {
@@ -585,7 +576,7 @@ def build_chat_interaction_toolset(
     return Toolset(executor=executor, specs=specs, policy=policy or ToolAccessPolicy())
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(peer_descriptions: str = "") -> str:
     return (
         "你是聊天互动代理。\n"
         "负责执行聊天互动、群管理、好友管理。\n"
@@ -595,7 +586,7 @@ def _build_system_prompt() -> str:
         "禁止使用Markdown。\n"
         "输出尽可能精简，只返回必要结果。\n"
         "send_like（点赞用户主页）注意事项：非VIP用户每日最多点赞10次，VIP用户每日最多20次。需要确保点赞次数不超出限制。\n"
-        f"{PEER_AGENT_DESCRIPTIONS}\n"
+        f"{peer_descriptions}\n"
         "任务完成后，只返回简短纯文本结果。"
     )
 
@@ -612,6 +603,7 @@ class ChatInteractionAgent:
         logger: Logger | None = None,
         forward_display_threshold: int = 50,
         forward_max_nesting: int = 10,
+        peer_descriptions: str = "",
         file_server: FileServer | None = None,
     ) -> None:
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
@@ -640,7 +632,7 @@ class ChatInteractionAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(),
+            system_prompt=_build_system_prompt(peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
@@ -677,6 +669,7 @@ def build_chat_interaction_agent(
     forward_display_threshold: int = 50,
     forward_max_nesting: int = 10,
     file_server: FileServer | None = None,
+    peer_descriptions: str = "",
 ) -> ChatInteractionAgent:
     return ChatInteractionAgent(
         provider=provider,
@@ -687,4 +680,5 @@ def build_chat_interaction_agent(
         forward_display_threshold=forward_display_threshold,
         forward_max_nesting=forward_max_nesting,
         file_server=file_server,
+        peer_descriptions=peer_descriptions,
     )

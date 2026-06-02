@@ -54,14 +54,6 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
 
 _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
 
-# 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
-    "- chat_interaction: 聊天互动、群管理（设管理员/禁言/踢人/群名片/头衔等）、好友管理（备注/分组/删除/点赞等）、发送表情包。\n"
-    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
-)
 
 DEFAULT_LIST_LIMIT = 10
 MAX_LIST_LIMIT = 200
@@ -1019,6 +1011,7 @@ def _build_system_prompt(
     has_avatar_analysis: bool = False,
     has_history: bool = False,
     has_favorability: bool = False,
+    peer_descriptions: str = "",
 ) -> str:
     allowed_tables = "、".join(config.allowed_tables) if config.allowed_tables else "全部表"
     delete_state = "允许" if config.allow_delete else "禁用"
@@ -1084,7 +1077,7 @@ def _build_system_prompt(
         "示例2：读取QQ号为12345和QQ号为67890的两个用户档案。\n"
         f"可访问的表：{allowed_tables}。\n"
         f"delete_archive：{delete_state}。\n"
-        f"{PEER_AGENT_DESCRIPTIONS}\n"
+        f"{peer_descriptions}\n"
         "任务完成后，只返回简短纯文本结果。"
     )
 
@@ -1104,6 +1097,7 @@ class ArchiveMemoryAgent:
         adapter: "OneBotAdapter | None" = None,
         image_parse_provider: Provider | None = None,
         logger: Logger | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         normalized = (
             config
@@ -1149,6 +1143,7 @@ class ArchiveMemoryAgent:
                 has_avatar_analysis=profile_service is not None and adapter is not None and image_parse_provider is not None,
                 has_history=adapter is not None,
                 has_favorability=has_favorability,
+                peer_descriptions=peer_descriptions,
             ),
             on_model_usage=_record_usage,
             logger=logger or NullLogger(),
@@ -1188,6 +1183,7 @@ def build_archive_memory_agent(
     adapter: "OneBotAdapter | None" = None,
     image_parse_provider: Provider | None = None,
     logger: Logger | None = None,
+    peer_descriptions: str = "",
 ) -> ArchiveMemoryAgent:
     return ArchiveMemoryAgent(
         provider,
@@ -1199,4 +1195,5 @@ def build_archive_memory_agent(
         adapter=adapter,
         image_parse_provider=image_parse_provider,
         logger=logger,
+        peer_descriptions=peer_descriptions,
     )
