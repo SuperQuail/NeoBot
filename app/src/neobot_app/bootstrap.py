@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neobot_adapter import OneBotAdapter
 from neobot_chat import create_provider
 from neobot_modloader import PluginHookBus, PluginHostFacade, PluginRuntime
 from neobot_contracts.ports.clock import SystemClock
@@ -15,6 +14,7 @@ from neobot_storage import run_migrations, sqlite_url
 from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.config.schemas.env import EnvConfig
 from neobot_app.assembly.agents import build_agent_registry, resolve_agent_model_name
+from neobot_app.assembly.adapter import build_adapter
 from neobot_app.bot_detect import BotDetector
 from neobot_app.assembly.memory import (
     build_archive_memory_service,
@@ -123,7 +123,7 @@ def _create_optional_agent_provider(
         return fallback_provider
 
 
-def create_application() -> NeoBotApplication[OneBotAdapter]:
+def create_application() -> NeoBotApplication:
     configure_loguru(DATA_DIR / "logs", runtime_events=True)
     logger_factory = LoguruLoggerFactory()
     clock = SystemClock()
@@ -185,7 +185,8 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         reply_blacklist=reply_blacklist,
     )
 
-    adapter = OneBotAdapter(
+    adapter = build_adapter(
+        config=config,
         logger=logger_factory.get_logger("adapter"),
         packet_callback=debug_recorder.record_packet if debug_recorder is not None else None,
     )
