@@ -17,7 +17,7 @@ from neobot_adapter.eventing import (
     extract_event_model,
 )
 from neobot_adapter.model import response
-from neobot_adapter.receiver.core import AdapterCore
+from neobot_adapter.onebot.receiver.core import AdapterCore
 from neobot_adapter.request._proxy import bind_core, unbind_core
 from neobot_adapter.request.websocket import WebSocketAPI
 from neobot_adapter.utils.parse import safe_parse_model

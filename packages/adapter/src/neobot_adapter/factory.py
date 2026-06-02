@@ -6,9 +6,9 @@ from typing import Any, Callable
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.sandbox import SandboxDataPort
 
-from neobot_adapter.adapter import OneBotAdapter
 from neobot_adapter.interfaces import RuntimeAdapter
 from neobot_adapter.local import LocalAdapter
+from neobot_adapter.onebot import OneBotAdapter
 
 
 @dataclass(frozen=True)
