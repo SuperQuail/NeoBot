@@ -75,6 +75,7 @@ class PluginApiTest(unittest.IsolatedAsyncioTestCase):
         agent_registry: FakeAgentRegistry | None = None,
         plugin_registry: Any | None = None,
         host: Any | None = None,
+        plugin_control: Any | None = None,
     ) -> RuntimePluginContext:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -91,6 +92,7 @@ class PluginApiTest(unittest.IsolatedAsyncioTestCase):
             agent_registry=agent_registry,
             plugin_registry=plugin_registry,
             host=host,
+            plugin_control=plugin_control,
         )
 
     async def test_command_captures_image_and_injects_reply(self) -> None:
@@ -161,6 +163,21 @@ class PluginApiTest(unittest.IsolatedAsyncioTestCase):
         await plugin.on_stop()
 
         self.assertEqual(seen, ["load", "start", "stop"])
+
+    async def test_lifecycle_injects_context_and_plugin_control(self) -> None:
+        plugin = Plugin("life")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        control = object()
+        seen: list[tuple[str, bool, bool]] = []
+
+        @plugin.on_load
+        async def loaded(ctx: RuntimePluginContext, context: RuntimePluginContext, plugin_control: Any) -> None:
+            seen.append((ctx.plugin_name, ctx is context, plugin_control is control))
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter, plugin_control=control))
+
+        self.assertEqual(seen, [("life", True, True)])
 
     async def test_agent_handler_registers_and_returns_string(self) -> None:
         plugin = Plugin("demo", config=Config)

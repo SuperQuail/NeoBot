@@ -20,6 +20,9 @@ class FakeLogger:
     def exception(self, *args: Any, **kwargs: Any) -> None:
         pass
 
+    def warning(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
 
 class FakeLoggerFactory:
     def get_logger(self, name: str) -> Any:
@@ -123,6 +126,142 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await runtime.reload_plugin("hot"))
 
             self.assertEqual(runtime.manager.get_plugin("hot").version, "2")
+
+    async def test_reload_plugin_still_raises_key_error_for_missing_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+            )
+
+            with self.assertRaises(KeyError):
+                await runtime.reload_plugin("missing")
+
+    async def test_load_path_loads_and_starts_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            plugin_file = plugin_dir / "hot.py"
+            plugin_file.write_text(
+                "from neobot_modloader import Plugin\n"
+                "plugin = Plugin('hot', version='1')\n",
+                encoding="utf-8",
+            )
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+            )
+
+            result = await runtime.control.load_path(plugin_file)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.name, "hot")
+            self.assertEqual(result.state, "running")
+            self.assertEqual(runtime.manager.get_plugin("hot").version, "1")
+
+    async def test_unload_cleans_host_registrations_and_runtime_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            plugin_file = plugin_dir / "registrar.py"
+            plugin_file.write_text(
+                "from neobot_modloader import Plugin\n"
+                "plugin = Plugin('registrar')\n"
+                "@plugin.on_load\n"
+                "async def load(host):\n"
+                "    host.commands.register('registrar.cmd', 'cmd', lambda: 'ok')\n",
+                encoding="utf-8",
+            )
+            host = PluginHostFacade()
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                host=host,
+            )
+
+            load_result = await runtime.control.load_path(plugin_file)
+            self.assertTrue(load_result.ok)
+            self.assertIn("registrar.cmd", host.commands.names())
+
+            unload_result = await runtime.control.unload("registrar")
+
+            self.assertTrue(unload_result.ok)
+            self.assertEqual(unload_result.state, "unloaded")
+            self.assertNotIn("registrar.cmd", host.commands.names())
+            self.assertNotIn("registrar", runtime._loaded_paths)
+            self.assertNotIn("registrar", runtime._loaded_modules)
+
+    async def test_snapshot_reports_disabled_and_missing_dependency_plugins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            disabled_prefix = plugin_dir / "_off"
+            disabled_prefix.mkdir()
+            (disabled_prefix / "plugin.toml").write_text("name = \"off\"\nversion = \"1\"\n", encoding="utf-8")
+            (disabled_prefix / "__init__.py").write_text("from neobot_modloader import Plugin\nplugin = Plugin('off')\n", encoding="utf-8")
+            disabled_manifest = plugin_dir / "manifest_off"
+            disabled_manifest.mkdir()
+            (disabled_manifest / "plugin.toml").write_text("name = \"manifest_off\"\nenabled = false\n", encoding="utf-8")
+            (disabled_manifest / "__init__.py").write_text("raise RuntimeError('should not import')\n", encoding="utf-8")
+            missing_dep = plugin_dir / "dep"
+            missing_dep.mkdir()
+            (missing_dep / "plugin.toml").write_text(
+                "name = \"dep\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
+                encoding="utf-8",
+            )
+            (missing_dep / "__init__.py").write_text("from neobot_modloader import Plugin\nplugin = Plugin('dep')\n", encoding="utf-8")
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+            )
+
+            snapshots = {snapshot.name: snapshot for snapshot in runtime.control.snapshot()}
+
+            self.assertFalse(snapshots["off"].enabled)
+            self.assertEqual(snapshots["off"].state, "unloaded")
+            self.assertFalse(snapshots["manifest_off"].enabled)
+            self.assertEqual(snapshots["dep"].state, "error")
+            self.assertEqual(snapshots["dep"].missing_python_dependencies, ("package-that-should-not-exist-xyz",))
+
+    async def test_load_path_returns_structured_error_for_missing_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "dep"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"dep\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text("from neobot_modloader import Plugin\nplugin = Plugin('dep')\n", encoding="utf-8")
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+            )
+
+            result = await runtime.control.load_path(package, auto_install_dependencies=False)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.name, "dep")
+            self.assertEqual(result.state, "error")
+            self.assertIn("缺少 PyPI 依赖", result.error or "")
 
     async def test_load_all_prompts_for_missing_python_dependencies_when_enabled(self) -> None:
         class FakeInstaller:
