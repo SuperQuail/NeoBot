@@ -6,7 +6,7 @@ from typing import Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 
-from neobot_modloader.context import PluginContext
+from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import TrackedPluginHostFacade
@@ -36,6 +36,8 @@ class PluginRuntime:
         record_ai_reply_block: Any | None = None,
         output: OutputPort | None = None,
         host: Any | None = None,
+        file_server: Any | None = None,
+        media_sender: Any | None = None,
         dependency_installer: PythonDependencyInstaller | None = None,
         auto_install_dependencies: bool = False,
     ) -> None:
@@ -44,6 +46,8 @@ class PluginRuntime:
         self.adapter = adapter
         self.logger_factory = logger_factory
         self.agent_registry = agent_registry
+        self._file_server = file_server
+        self._media_sender = media_sender
         self.record_ai_reply_block = record_ai_reply_block
         self.output = output or NullOutput()
         self.logger = logger or self._get_logger("modloader.runtime")
@@ -162,7 +166,7 @@ class PluginRuntime:
             if self.host is not None
             else None
         )
-        context = PluginContext(
+        context = RuntimePluginContext(
             plugin_name=loaded.name,
             plugin_dir=loaded.plugin_dir,
             data_dir=self.data_dir / loaded.name,
@@ -178,6 +182,8 @@ class PluginRuntime:
             plugin_registry=self.manager.registry_view,
             output=self.output,
             host=tracked_host,
+            file_server=self._file_server,
+            media_sender=self._media_sender,
         )
         try:
             self.manager.register(loaded.plugin, context)

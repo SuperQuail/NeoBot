@@ -14,7 +14,7 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_modloader.plugin import FunctionPlugin
+from neobot_modloader.plugin import Plugin
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +170,7 @@ class FilesystemPluginLoader:
         try:
             self._validate_plugin_name(name)
             module = self._import_module(path, name)
-            plugin = self._create_plugin(module, name=name, version="0.1.0")
+            plugin = self._create_plugin(module)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
             version = str(getattr(plugin, "version", "0.1.0") or "0.1.0")
@@ -180,12 +180,12 @@ class FilesystemPluginLoader:
                 plugin=plugin,
                 plugin_dir=path.parent,
                 config={},
-                description="",
-                author="",
-                dependencies=(),
-                priority=0,
-                min_neobot_version=None,
-                python_dependencies=(),
+                description=str(getattr(plugin, "description", "") or ""),
+                author=str(getattr(plugin, "author", "") or ""),
+                dependencies=tuple(getattr(plugin, "dependencies", ()) or ()),
+                priority=int(getattr(plugin, "priority", 0) or 0),
+                min_neobot_version=getattr(plugin, "min_neobot_version", None),
+                python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
                 module_names=self._last_module_names,
                 source_path=path,
             )
@@ -220,18 +220,27 @@ class FilesystemPluginLoader:
                 raise TypeError("plugin.toml 的 [config] 必须是 table")
 
             module = self._import_module(path / "__init__.py", name)
-            plugin = self._create_plugin(module, name=name, version=version)
+            plugin = self._create_plugin(module)
+            self._validate_manifest_conflicts(metadata, plugin)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
             plugin_version = str(getattr(plugin, "version", version) or version)
+            if "dependencies" not in metadata:
+                dependencies = tuple(getattr(plugin, "dependencies", ()) or ())
+            if not any(key in metadata for key in ("python_dependencies", "pypi_dependencies", "requirements")):
+                python_dependencies = tuple(getattr(plugin, "python_dependencies", ()) or ())
+            if "priority" not in metadata:
+                priority = int(getattr(plugin, "priority", 0) or 0)
+            if min_neobot_version is None:
+                min_neobot_version = getattr(plugin, "min_neobot_version", None)
             return LoadedPlugin(
                 name=plugin_name,
                 version=plugin_version,
                 plugin=plugin,
                 plugin_dir=path,
                 config=dict(config),
-                description=description,
-                author=author,
+                description=str(getattr(plugin, "description", description) or description),
+                author=str(getattr(plugin, "author", author) or author),
                 dependencies=dependencies,
                 priority=priority,
                 min_neobot_version=min_neobot_version,
@@ -395,20 +404,20 @@ class FilesystemPluginLoader:
         self._last_module_names = tuple(sorted(after))
         return module
 
-    def _create_plugin(self, module: ModuleType, *, name: str, version: str) -> Any:
-        setup = getattr(module, "setup", None)
-        if callable(setup):
-            return FunctionPlugin(name=name, version=version, setup=setup)
-
+    def _create_plugin(self, module: ModuleType) -> Plugin:
         plugin = getattr(module, "plugin", None)
-        if plugin is not None:
+        if isinstance(plugin, Plugin):
             return plugin
 
-        create_plugin = getattr(module, "create_plugin", None)
-        if callable(create_plugin):
-            return create_plugin()
+        raise ValueError("插件模块必须导出 plugin = Plugin(...)")
 
-        raise ValueError("插件模块未导出 setup(ctx)、plugin 或 create_plugin()")
+    def _validate_manifest_conflicts(self, metadata: dict[str, Any], plugin: Plugin) -> None:
+        manifest_name = metadata.get("name")
+        if manifest_name is not None and str(manifest_name) != plugin.name:
+            raise ValueError(f"plugin.toml name 与 Plugin(...) name 不一致: {manifest_name!r} != {plugin.name!r}")
+        manifest_version = metadata.get("version")
+        if manifest_version is not None and str(manifest_version) != plugin.version:
+            raise ValueError(f"plugin.toml version 与 Plugin(...) version 不一致: {manifest_version!r} != {plugin.version!r}")
 
     def _module_name(self, path: Path, plugin_name: str) -> str:
         digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]

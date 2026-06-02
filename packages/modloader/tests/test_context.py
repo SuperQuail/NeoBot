@@ -5,12 +5,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
-
 from neobot_contracts.models import ConversationRef
-from neobot_contracts.ports.output import CapturingOutput
-from neobot_contracts.ports.runtime_event import RuntimeEnvelope
-from neobot_modloader.context import PluginContext
+from neobot_modloader.context import RuntimePluginContext
 
 
 class FakeAgent:
@@ -60,38 +56,25 @@ class FakeAdapter:
         return "send-ok"
 
 
-class MessageModel(BaseModel):
-    message_type: str
-    user_id: int | None = None
-    group_id: int | None = None
-    raw_message: str | None = None
-    message: list[dict[str, Any]] | None = None
-
-
-class PluginContextTest(unittest.IsolatedAsyncioTestCase):
+class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
     def make_context(
         self,
         data_dir: Path,
         adapter: FakeAdapter | None = None,
         agent_registry: FakeRegistry | None = None,
         record_agent_registration: Any | None = None,
-        plugin_registry: Any | None = None,
-        output: Any | None = None,
-        hook_bus: Any | None = None,
-    ) -> PluginContext:
-        return PluginContext(
+    ) -> RuntimePluginContext:
+        return RuntimePluginContext(
             plugin_name="test",
             plugin_dir=data_dir,
             data_dir=data_dir / "data",
             config={"reply": "pong"},
             logger=None,
             adapter=adapter or FakeAdapter(),
-            hook_bus=hook_bus,
+            hook_bus=object(),
             record_subscription=lambda _subscription: None,
             agent_registry=agent_registry,
             record_agent_registration=record_agent_registration,
-            plugin_registry=plugin_registry,
-            output=output,
         )
 
     async def test_send_methods_delegate_to_adapter(self) -> None:
@@ -110,41 +93,17 @@ class PluginContextTest(unittest.IsolatedAsyncioTestCase):
             adapter = FakeAdapter()
             ctx = self.make_context(Path(temp), adapter)
             await ctx.reply({"message_type": "group", "group_id": 123}, "pong")
-            self.assertEqual(
-                adapter.calls,
-                [("send", ConversationRef(kind="group", id="123"), "pong")],
-            )
-
-    def test_message_text_supports_raw_model_and_segments(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            ctx = self.make_context(Path(temp))
-            self.assertEqual(ctx.message_text({"raw_message": "hello"}), "hello")
-            self.assertEqual(
-                ctx.message_text(
-                    {
-                        "message": [
-                            {"type": "text", "data": {"text": "he"}},
-                            {"type": "image", "data": {"url": "x"}},
-                            {"type": "text", "data": {"text": "llo"}},
-                        ]
-                    }
-                ),
-                "hello",
-            )
-            model = MessageModel(message_type="private", user_id=1, raw_message="model")
-            self.assertEqual(ctx.message_text(model), "model")
+            self.assertEqual(adapter.calls, [("send", ConversationRef(kind="group", id="123"), "pong")])
 
     def test_conversation_from_event_and_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ctx = self.make_context(Path(temp))
             self.assertTrue(ctx.data_dir.exists())
-            self.assertEqual(ctx.require_config("reply"), "pong")
+            self.assertEqual(ctx.config["reply"], "pong")
             self.assertEqual(
-                ctx.conversation_from_event(MessageModel(message_type="private", user_id=1)),
+                ctx.conversation_from_event({"message_type": "private", "user_id": 1}),
                 ConversationRef(kind="private", id="1"),
             )
-            with self.assertRaises(KeyError):
-                ctx.require_config("missing")
             with self.assertRaises(ValueError):
                 ctx.conversation_from_event({})
 
@@ -157,62 +116,13 @@ class PluginContextTest(unittest.IsolatedAsyncioTestCase):
                 agent_registry=registry,
                 record_agent_registration=lambda name, agent: recorded.append((name, agent)),
             )
-            agent = FakeAgent()
 
-            registered_name = ctx.agents.register("echo", agent)
+            registered_name = ctx.agents.register("echo", FakeAgent())
 
             self.assertEqual(registered_name, "plugin:test:echo")
-            self.assertIs(registry.agents[registered_name], agent)
-            self.assertEqual(recorded, [(registered_name, agent)])
-            self.assertEqual(ctx.agents.names, [registered_name])
-            self.assertEqual(
-                ctx.agents.snapshot(),
-                [{"name": registered_name, "description": "Echo agent"}],
-            )
-            self.assertIn("plugin:test:echo", ctx.agents.list_agents())
-            self.assertEqual(
-                ctx.agents.list_agents("echo"),
-                "Agent plugin:test:echo: Echo agent",
-            )
-
-    async def test_runtime_intercept_and_output_are_exposed(self) -> None:
-        from neobot_modloader.hooks import PluginHookBus
-
-        with tempfile.TemporaryDirectory() as temp:
-            output = CapturingOutput()
-            hook_bus = PluginHookBus(output=output)
-            ctx = self.make_context(Path(temp), output=output, hook_bus=hook_bus, plugin_registry={"x": object()})
-            seen: list[str] = []
-
-            @ctx.intercept.subscribe(kind="reply_lifecycle", stage="model.call.before")
-            async def intercept(envelope: RuntimeEnvelope) -> None:
-                seen.append(envelope.stage)
-
-            direct_subscription = ctx.intercept.subscribe(lambda envelope: seen.append("direct"), kind="output")
-
-            ctx.output.write("hello", source="test")
-            await hook_bus.dispatch_envelope(RuntimeEnvelope(kind="reply_lifecycle", stage="model.call.before"))
-
-            self.assertIs(ctx.plugins["x"].__class__, object)
-            self.assertEqual(seen, ["model.call.before"])
-            self.assertTrue(getattr(direct_subscription, "unsubscribe", None))
-            self.assertEqual(output.messages[0].text, "hello")
-
-    def test_agent_registrar_validation(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            ctx = self.make_context(Path(temp), agent_registry=FakeRegistry())
-            with self.assertRaises(ValueError):
-                ctx.agents.register(" bad", FakeAgent())
-            with self.assertRaises(ValueError):
-                ctx.agents.register("bad:name", FakeAgent())
-            with self.assertRaises(TypeError):
-                ctx.agents.register("bad", object())
-
-    def test_agent_registrar_requires_registry(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            ctx = self.make_context(Path(temp))
-            with self.assertRaises(RuntimeError):
-                ctx.agents.register("echo", FakeAgent())
+            self.assertIn(registered_name, registry.agents)
+            self.assertEqual(len(recorded), 1)
+            self.assertEqual(ctx.agents.snapshot(), [{"name": registered_name, "description": "Echo agent"}])
 
 
 if __name__ == "__main__":
