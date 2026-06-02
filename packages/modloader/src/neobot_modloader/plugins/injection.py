@@ -10,6 +10,7 @@ from neobot_contracts.ports.logging import Logger
 
 from neobot_modloader.agent import AgentRequest
 from neobot_modloader.bot import Bot
+from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.message import Message
 from neobot_modloader.reply import Reply
 from neobot_modloader.plugins.registration import Handler
@@ -39,6 +40,8 @@ async def resolve_handler_kwargs(
         # 这里保持轻量注入：优先 DSL 捕获，再按类型注解和少量约定参数名解析。
         if name in captures:
             kwargs[name] = captures[name]
+        elif name in {"ctx", "context"} or annotation is context.__class__:
+            kwargs[name] = context
         elif annotation is Reply:
             kwargs[name] = Reply(context, event)
         elif annotation is Message:
@@ -65,6 +68,8 @@ async def resolve_handler_kwargs(
             kwargs[name] = context.plugins
         elif name == "host":
             kwargs[name] = context.plugin_host
+        elif annotation is PluginControlFacade or name == "plugin_control":
+            kwargs[name] = context.plugin_control
         elif config_model is not None and annotation is config_model:
             kwargs[name] = config
         elif parameter.default is inspect.Parameter.empty:

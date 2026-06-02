@@ -10,6 +10,7 @@ from neobot_adapter.model.response import SendMsgResponse
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
+from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
 
 MessagePayload = str | list[dict[str, Any]]
@@ -36,6 +37,7 @@ class RuntimePluginContext:
         host: Any | None = None,
         file_server: Any | None = None,
         media_sender: Any | None = None,
+        plugin_control: PluginControlFacade | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -50,6 +52,7 @@ class RuntimePluginContext:
         self._host = host
         self._file_server = file_server
         self._media_sender = media_sender
+        self._plugin_control = plugin_control
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self.agents = PluginAgentRegistrar(
             plugin_name=plugin_name,
@@ -92,6 +95,10 @@ class RuntimePluginContext:
     @property
     def plugin_host(self) -> Any:
         return self._host
+
+    @property
+    def plugin_control(self) -> PluginControlFacade | None:
+        return self._plugin_control
 
     @property
     def output(self) -> OutputPort:

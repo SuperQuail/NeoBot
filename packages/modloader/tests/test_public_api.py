@@ -12,6 +12,10 @@ class PublicApiTest(unittest.TestCase):
         self.assertIn("AgentRequest", exported)
         self.assertIn("Reply", exported)
         self.assertIn("Message", exported)
+        self.assertIn("PluginControlFacade", exported)
+        self.assertIn("PluginOperationResult", exported)
+        self.assertIn("PluginSnapshot", exported)
+        self.assertIn("RuntimePluginContext", exported)
         for old_name in (
             "BasePlugin",
             "PluginContext",

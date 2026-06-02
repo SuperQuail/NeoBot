@@ -287,6 +287,34 @@ await runtime.reload_plugin("ping")
 
 重载插件时，运行时会停止旧插件、清理已跟踪的订阅、Host 注册和 Agent 注册，清除模块缓存，然后重新导入插件并按需启动。
 
+## 插件管理 API
+
+Dashboard 或其他管理型插件可以通过生命周期注入拿到受控管理门面：
+
+```python
+from neobot_modloader import Plugin, RuntimePluginContext
+
+plugin = Plugin("manager")
+
+
+@plugin.on_load
+async def load(ctx: RuntimePluginContext):
+    snapshots = ctx.plugin_control.snapshot()
+```
+
+`PluginControlFacade` 只暴露运行期管理能力，不暴露完整 `PluginRuntime`：
+
+```python
+await ctx.plugin_control.load_path(path, start=True)
+await ctx.plugin_control.unload("ping")
+await ctx.plugin_control.reload("ping")
+await ctx.plugin_control.start("ping")
+await ctx.plugin_control.stop("ping")
+ctx.plugin_control.snapshot()
+```
+
+这些方法返回 `PluginOperationResult` 或 `PluginSnapshot`，用于展示结构化状态和错误，不需要访问 runtime/loader/manager 的私有成员。
+
 ## 公开 API
 
 `neobot_modloader` 顶层只导出新的插件开发 API 和运行时基础设施：
@@ -303,11 +331,15 @@ from neobot_modloader import (
     MessageChain,
     MessageSegment,
     Plugin,
+    PluginControlFacade,
     PluginHookBus,
     PluginHostFacade,
+    PluginOperationResult,
     PluginRuntime,
+    PluginSnapshot,
     PythonDependencyInstaller,
     Reply,
+    RuntimePluginContext,
     image,
     text,
 )
