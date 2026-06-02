@@ -2094,7 +2094,8 @@ class ReplyOrchestrator:
                         if uid_str not in rendered_user_ids:
                             new_user_ids.append(uid_str)
 
-        parts: list[str] = []
+        new_messages_text = ""
+        new_member_text = ""
 
         # 新消息文本
         if numbering is not None:
@@ -2107,7 +2108,7 @@ class ReplyOrchestrator:
                 previous_entries=[],
             )
             if new_text:
-                parts.append(f"[收到新消息]\n{new_text}")
+                new_messages_text = f"[收到新消息]\n{new_text}"
         else:
             new_text_lines: list[str] = []
             for entry in new_entries:
@@ -2117,23 +2118,49 @@ class ReplyOrchestrator:
                     sender_name = getattr(sender, "nickname", None) or getattr(entry.message, "user_id", "?")
                     new_text_lines.append(f"{sender_name}: {text}")
             if new_text_lines:
-                parts.append(f"[收到新消息]\n" + "\n".join(new_text_lines))
+                new_messages_text = f"[收到新消息]\n" + "\n".join(new_text_lines)
 
         # 新成员档案
         if new_user_ids and self._prompt_builder is not None:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
-                new_member_text = await profile_service.render_specific_members(new_user_ids)
-                if new_member_text:
-                    parts.append(f"[新出现的群友档案]\n{new_member_text}")
+                member_profiles = await profile_service.render_specific_members(new_user_ids)
+                if member_profiles:
+                    new_member_text = f"[新出现的群友档案]\n{member_profiles}"
 
-        if not parts:
+        if not new_messages_text and not new_member_text:
             return ""
 
-        parts.append(
-            "这是群聊对话。请根据新消息决定是否需要回复。"
-        )
-        return "\n\n".join(parts)
+        from neobot_app.time_context import get_current_time_and_lunar_date
+        current_time = get_current_time_and_lunar_date()
+
+        template = getattr(
+            getattr(self._config, "chat", None), "group_chat_resume_prompt_template", None
+        ) if self._config else None
+        if not template:
+            template = (
+                "{new_messages}\n\n"
+                "{new_member_profiles}\n\n"
+                "<当前时间>{current_time}</当前时间>\n\n"
+                "这是群聊对话。请根据新消息决定是否需要回复。"
+            )
+
+        try:
+            return template.format(
+                new_messages=new_messages_text,
+                new_member_profiles=new_member_text,
+                current_time=current_time,
+            )
+        except (ValueError, KeyError):
+            # Fallback: simple concatenation with current time
+            parts: list[str] = []
+            if new_messages_text:
+                parts.append(new_messages_text)
+            if new_member_text:
+                parts.append(new_member_text)
+            parts.append(f"<当前时间>{current_time}</当前时间>")
+            parts.append("这是群聊对话。请根据新消息决定是否需要回复。")
+            return "\n\n".join(parts)
 
     # ── Prompt 构建 ──
 

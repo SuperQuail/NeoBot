@@ -45,15 +45,6 @@ _WILLINGNESS_CONTEXT: ContextVar[str] = ContextVar("willingness_context", defaul
 _CONV_KIND: ContextVar[str] = ContextVar("willingness_conv_kind", default="")
 _CONV_ID: ContextVar[str] = ContextVar("willingness_conv_id", default="")
 
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像、调整好感度。\n"
-    "- image_parse: 仅按需求解析图片内容，不保存、不导入、不管理图库/表情包。\n"
-    "- chat_interaction: 聊天互动、群管理、好友管理、发送表情包。\n"
-    "如果收到的任务明显属于其他 agent 的职责，直接告知主Agent该委托给对应的 agent，不要越权处理。"
-)
-
 
 def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
     return {
@@ -290,7 +281,7 @@ def build_willingness_control_toolset(
     return Toolset(executor=executor, specs=specs, policy=policy or ToolAccessPolicy())
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(peer_descriptions: str = "") -> str:
     return (
         "你是回复意愿控制代理。"
         "负责调整运行时回复意愿参数，不修改配置文件。\n"
@@ -317,7 +308,7 @@ def _build_system_prompt() -> str:
         "8. 调整前先查看当前状态，避免无意义的重复设置。\n"
         "9. 默认所有系数为 1.0，值越小回复概率越低。\n\n"
         "注意：你修改的是运行时参数，系统配置中的默认值不会改变。\n"
-        f"{PEER_AGENT_DESCRIPTIONS}\n"
+        f"{peer_descriptions}\n"
         "任务完成后，只返回简短纯文本结果（说明做了什么调整即可）。"
     )
 
@@ -330,6 +321,7 @@ class WillingnessControlAgent:
         provider: Provider,
         willing_service: "WillingService",
         logger: Logger | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self._toolset = build_willingness_control_toolset(
@@ -352,7 +344,7 @@ class WillingnessControlAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(),
+            system_prompt=_build_system_prompt(peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
@@ -396,9 +388,11 @@ def build_willingness_control_agent(
     provider: Provider,
     willing_service: "WillingService",
     logger: Logger | None = None,
+    peer_descriptions: str = "",
 ) -> WillingnessControlAgent:
     return WillingnessControlAgent(
         provider=provider,
         willing_service=willing_service,
         logger=logger,
+        peer_descriptions=peer_descriptions,
     )

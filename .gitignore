@@ -121,3 +121,6 @@ uv.lock
 /test/
 /dev-test/
 /.claude/
+
+.kagent/
+/.cursor/
