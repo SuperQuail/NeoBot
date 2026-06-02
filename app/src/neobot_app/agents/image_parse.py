@@ -37,14 +37,6 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
     "图片内容解析，仅解析不管理，头像委托memory、入库委托creator"
 )
 
-# 同级 sub agent 描述，用于识别任务是否应委托给其他 agent
-PEER_AGENT_DESCRIPTIONS = (
-    "同级 sub agent 及其职责：\n"
-    "- creator: 绘图、导入聊天图片、管理图库/表情包、发送图片。\n"
-    "- memory: 读写长期记忆档案、查询用户资料/好友备注/聊天记录、解析用户头像（头像解析由 memory 负责，不要直接处理）、调整好感度。\n"
-    "- chat_interaction: 聊天互动、群管理、好友管理、发送表情包。\n"
-    "你只负责按需求解析图片内容。如果收到的任务是：保存图片/导入图库/表情包 → 告知主Agent委托 creator；头像解析 → 委托 memory；群管理/好友管理 → 委托 chat_interaction。"
-)
 
 DEFAULT_REQUIREMENT = "请简洁描述这张图片的主要内容。"
 DEFAULT_MIME_TYPE = "image/png"
@@ -78,12 +70,14 @@ class ImageParseAgent:
         *,
         adapter: "OneBotAdapter | None" = None,
         logger: Logger | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         self.tool_definitions: list[dict[str, Any]] = []
         self._provider = provider
         self._adapter = adapter
         self._logger = logger or NullLogger()
+        self._peer_descriptions = peer_descriptions
 
     def _get_model_timeout_seconds(self) -> float:
         return 60.0
@@ -102,6 +96,7 @@ class ImageParseAgent:
             result = await self._call_vision_model(
                 image_url=image_url,
                 requirement=request.requirement,
+                peer_descriptions=self._peer_descriptions,
             )
         except Exception as exc:
             self._logger.warning("图片解析 Agent 执行失败", error=str(exc))
@@ -118,7 +113,7 @@ class ImageParseAgent:
     async def close(self) -> None:
         await self._provider.close()
 
-    async def _call_vision_model(self, *, image_url: str, requirement: str) -> str:
+    async def _call_vision_model(self, *, image_url: str, requirement: str, peer_descriptions: str = "") -> str:
         messages = [
             {
                 "role": "user",
@@ -128,7 +123,7 @@ class ImageParseAgent:
                         "text": (
                             "你是图片解析 Agent。只根据图片和需求给出解析结果，"
                             "不要记录、不要提及数据库或缓存、不要建议后续操作。\n"
-                            f"{PEER_AGENT_DESCRIPTIONS}\n"
+                            f"{peer_descriptions}\n"
                             f"解析需求：{requirement}"
                         ),
                     },
@@ -625,5 +620,6 @@ def build_image_parse_agent(
     *,
     adapter: "OneBotAdapter | None" = None,
     logger: Logger | None = None,
+    peer_descriptions: str = "",
 ) -> ImageParseAgent:
-    return ImageParseAgent(provider=provider, adapter=adapter, logger=logger)
+    return ImageParseAgent(provider=provider, adapter=adapter, logger=logger, peer_descriptions=peer_descriptions)

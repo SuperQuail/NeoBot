@@ -581,6 +581,7 @@ class ScheduledTaskAgent:
         uow_factory: UnitOfWorkFactory,
         config: ScheduledTaskAgentConfig | ScheduledTaskSchema | None = None,
         logger: Logger | None = None,
+        peer_descriptions: str = "",
     ) -> None:
         normalized = (
             config
@@ -609,7 +610,7 @@ class ScheduledTaskAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(normalized),
+            system_prompt=_build_system_prompt(normalized, peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             logger=logger or NullLogger(),
         )
@@ -674,16 +675,18 @@ def build_scheduled_task_agent(
     uow_factory: UnitOfWorkFactory,
     config: ScheduledTaskAgentConfig | ScheduledTaskSchema | None = None,
     logger: Logger | None = None,
+    peer_descriptions: str = "",
 ) -> ScheduledTaskAgent:
     return ScheduledTaskAgent(
         provider,
         uow_factory=uow_factory,
         config=config,
         logger=logger,
+        peer_descriptions=peer_descriptions,
     )
 
 
-def _build_system_prompt(config: ScheduledTaskAgentConfig) -> str:
+def _build_system_prompt(config: ScheduledTaskAgentConfig, *, peer_descriptions: str = "") -> str:
     return (
         "你是定时任务管理 agent。只负责创建、查询、修改、删除定时任务，不负责实际聊天回复。\n"
         "创建任务前必须确认时间窗口：start_at 是提醒窗口开始，end_at 是窗口结束，end_at 必须晚于 start_at。\n"
@@ -704,6 +707,7 @@ def _build_system_prompt(config: ScheduledTaskAgentConfig) -> str:
         "如果之后问到了更准确的时间、聊天流、祝福方式、称呼偏好或禁忌，再用 update_scheduled_task 修改已有任务。\n"
         "如果用户提出某人生日想要的祝福、庆祝方式、祝福场合或禁忌发生变化，先 list_scheduled_tasks 查找对应生日任务；"
         "找到后使用 update_scheduled_task 更新 detail/metadata/bindings，不要重复创建。找不到时再创建新的生日任务。"
+        f"{peer_descriptions}\n"
         "如果用户只想修改通知方式，优先使用 set_scheduled_task_notification_policy。"
     )
 

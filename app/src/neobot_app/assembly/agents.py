@@ -39,6 +39,49 @@ AGENT_MODEL_NAMES: dict[int, str] = {
     3: "agent_model_3",
 }
 
+# 每个子 agent 的简短描述，用于动态组合 PEER_AGENT_DESCRIPTIONS
+AGENT_SHORT_DESCRIPTIONS: dict[str, str] = {
+    "creator": (
+        "AI绘图与图片资产管理（图库/表情包/图片发送）"
+    ),
+    "memory": (
+        "长期记忆档案与用户资料（增/查记忆、用户资料、头像解析、好感度）"
+    ),
+    "chat_interaction": (
+        "聊天互动与社交管理（群管理/好友管理/表情包/合并转发）"
+    ),
+    "image_parse": (
+        "图片内容解析，仅解析不管理，头像委托memory、入库委托creator"
+    ),
+    "willingness": (
+        "调整运行时回复意愿系数（会话级别/用户级别/黑名单）"
+    ),
+    "scheduled_task": (
+        "定时提醒与生日管理（一次性/重复/生日记录）"
+    ),
+    "problem_solver": (
+        "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。"
+        "简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
+    ),
+    "cross_chat": (
+        "跨聊天通信与信息查询，传递消息到其他群/私聊或查询其他聊天记录"
+    ),
+}
+
+
+def build_peer_descriptions(self_name: str) -> str:
+    """根据所有注册的子 agent 描述，动态组合除自己以外的同级描述。"""
+    lines: list[str] = ["同级 sub agent 及其职责："]
+    for name, short_desc in AGENT_SHORT_DESCRIPTIONS.items():
+        if name == self_name:
+            continue
+        lines.append(f"- {name}: {short_desc}")
+    lines.append(
+        "如果收到的任务明显属于其他 agent 的职责，"
+        "直接告知主Agent该委托给对应的 agent，不要越权处理。"
+    )
+    return "\n".join(lines)
+
 
 def resolve_agent_model_name(
     config: BotConfig,
@@ -113,6 +156,7 @@ def build_agent_registry(
                         file_server=file_server,
                         logger=active_logger,
                         drawing_manager=drawing_manager,
+                        peer_descriptions=build_peer_descriptions("creator"),
                     ),
                 )
             except Exception as exc:
@@ -140,6 +184,7 @@ def build_agent_registry(
                     adapter=adapter,
                     image_parse_provider=vision_provider,
                     logger=active_logger,
+                    peer_descriptions=build_peer_descriptions("memory"),
                 ),
             )
 
@@ -165,6 +210,7 @@ def build_agent_registry(
                         config.chat, "forward_message_max_nesting", 10,
                     ),
                     file_server=file_server,
+                    peer_descriptions=build_peer_descriptions("chat_interaction"),
                 ),
             )
 
@@ -177,6 +223,7 @@ def build_agent_registry(
                     vision_provider,
                     adapter=adapter,
                     logger=active_logger,
+                    peer_descriptions=build_peer_descriptions("image_parse"),
                 ),
             )
         except Exception as exc:
@@ -196,6 +243,7 @@ def build_agent_registry(
                     provider,
                     willing_service=willing_service,
                     logger=active_logger,
+                    peer_descriptions=build_peer_descriptions("willingness"),
                 ),
             )
 
@@ -218,6 +266,7 @@ def build_agent_registry(
                     uow_factory=uow_factory,
                     config=scheduled_task_config,
                     logger=active_logger,
+                    peer_descriptions=build_peer_descriptions("scheduled_task"),
                 ),
             )
 
@@ -250,6 +299,7 @@ def build_agent_registry(
                         logger=active_logger,
                         manager=problem_solver_manager,
                         web_search_config=web_search_kwargs if web_search_kwargs else None,
+                        peer_descriptions=build_peer_descriptions("problem_solver"),
                     ),
                 )
             except Exception as exc:
@@ -279,6 +329,7 @@ def build_agent_registry(
                         group_message_queue=group_message_queue,
                         friend_message_queue=friend_message_queue,
                         bot_config=config,
+                        peer_descriptions=build_peer_descriptions("cross_chat"),
                     ),
                 )
             except Exception as exc:

@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "pillowmd>=0.7.3",
+    "transformers>=5.9.0",
 ]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
