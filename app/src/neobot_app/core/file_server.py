@@ -8,7 +8,7 @@ import logging
 import secrets
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 from aiohttp import web
 from neobot_app.time_context import epoch_seconds
@@ -36,6 +36,15 @@ class FileMetadata:
 class FileServer:
     """HTTP 文件服务器"""
 
+    _MAX_UPLOAD_BYTES = 30_000_000
+    _SUPPORTED_IMAGE_FORMATS = {
+        "JPEG": (".jpg", "image/jpeg"),
+        "PNG": (".png", "image/png"),
+        "GIF": (".gif", "image/gif"),
+        "WEBP": (".webp", "image/webp"),
+        "BMP": (".bmp", "image/bmp"),
+    }
+
     def __init__(
         self,
         data_dir: Path,
@@ -57,6 +66,7 @@ class FileServer:
         self._metadata_file = self._tmp_dir / ".file_metadata.json"
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._running = False
         self._load_metadata()
@@ -68,12 +78,18 @@ class FileServer:
             return
         if self._running:
             return
-        self._app = web.Application()
+        self._app = web.Application(middlewares=[self._cors_middleware])
+        self._app.router.add_post("/files", self._handle_upload)
         self._app.router.add_get("/files/{filename}", self._handle_file)
+        self._app.router.add_options("/{tail:.*}", self._handle_options)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        self._site = web.TCPSite(self._runner, self._host, self._port)
+        await self._site.start()
+        if self._port == 0 and self._site._server is not None:
+            sockets = self._site._server.sockets or []
+            if sockets:
+                self._port = int(sockets[0].getsockname()[1])
         self._running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -90,6 +106,7 @@ class FileServer:
                 pass
         if self._runner:
             await self._runner.cleanup()
+        self._site = None
         self._save_metadata()
 
     def register_file(self, file_path: Path) -> str:
@@ -111,6 +128,88 @@ class FileServer:
         if self._public_url:
             return f"{self._public_url}/files/{filename}?token={token}"
         return f"http://{self._host}:{self._port}/files/{filename}?token={token}"
+
+    @web.middleware
+    async def _cors_middleware(self, request: web.Request, handler):
+        response = await handler(request)
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+        response.headers.setdefault("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        response.headers.setdefault("Access-Control-Allow-Headers", "Content-Type,Authorization")
+        response.headers.setdefault("Access-Control-Max-Age", "86400")
+        return response
+
+    async def _handle_options(self, request: web.Request) -> web.Response:
+        return web.Response(status=204)
+
+    async def _handle_upload(self, request: web.Request) -> web.Response:
+        """处理浏览器上传的图片文件."""
+        if not self._enabled:
+            return self._json_error("disabled", "文件服务器未启用", status=503)
+
+        try:
+            reader = await request.multipart()
+        except Exception as exc:
+            return self._json_error("invalid_multipart", f"需要 multipart/form-data: {exc}", status=400)
+
+        field = await reader.next()
+        while field is not None and field.name != "file":
+            await field.read(decode=False)
+            field = await reader.next()
+
+        if field is None:
+            return self._json_error("missing_file", "缺少 file 字段", status=400)
+
+        temp_path = self._tmp_dir / f".upload_{secrets.token_hex(16)}.tmp"
+        size = 0
+        try:
+            with temp_path.open("wb") as fh:
+                while True:
+                    chunk = await field.read_chunk(size=1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > self._MAX_UPLOAD_BYTES:
+                        return self._json_error(
+                            "file_too_large",
+                            f"图片不能超过 {self._MAX_UPLOAD_BYTES} 字节",
+                            status=413,
+                        )
+                    fh.write(chunk)
+
+            if size <= 0:
+                return self._json_error("empty_file", "上传文件为空", status=400)
+
+            try:
+                image_info = self._inspect_uploaded_image(temp_path)
+            except ValueError as exc:
+                return self._json_error("invalid_image", str(exc), status=400)
+
+            filename = self._uploaded_filename(image_info["suffix"])
+            final_path = self._tmp_dir / filename
+            temp_path.replace(final_path)
+            url = self.register_file(final_path)
+            metadata = self._files[filename]
+            return self._json_ok(
+                {
+                    "filename": filename,
+                    "original_filename": Path(field.filename or "").name,
+                    "size": size,
+                    "content_type": image_info["mime_type"],
+                    "width": image_info["width"],
+                    "height": image_info["height"],
+                    "url": url,
+                    "expires_at": metadata.expires_at,
+                    "segment": {
+                        "type": "image",
+                        "data": {
+                            "file": url,
+                            "url": url,
+                        },
+                    },
+                }
+            )
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def _calculate_expiration(self, size: int) -> float:
         """根据文件大小计算过期时间"""
@@ -139,6 +238,52 @@ class FileServer:
             self._save_metadata()
             return web.Response(status=404, text="文件已过期")
         return web.FileResponse(meta.path)
+
+    def _inspect_uploaded_image(self, path: Path) -> dict[str, Any]:
+        try:
+            from PIL import Image, UnidentifiedImageError
+        except Exception as exc:  # pragma: no cover - pillow is an app dependency
+            raise ValueError("图片处理依赖不可用") from exc
+
+        try:
+            with Image.open(path) as image:
+                format_name = str(image.format or "").upper()
+                width, height = image.size
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise ValueError("上传内容不是有效图片") from exc
+
+        if format_name not in self._SUPPORTED_IMAGE_FORMATS:
+            supported = ", ".join(sorted(self._SUPPORTED_IMAGE_FORMATS))
+            raise ValueError(f"不支持的图片格式: {format_name or 'unknown'}，支持: {supported}")
+
+        suffix, mime_type = self._SUPPORTED_IMAGE_FORMATS[format_name]
+        return {
+            "format": format_name,
+            "suffix": suffix,
+            "mime_type": mime_type,
+            "width": width,
+            "height": height,
+        }
+
+    @staticmethod
+    def _uploaded_filename(suffix: str) -> str:
+        return f"upload_{secrets.token_hex(16)}{suffix}"
+
+    @staticmethod
+    def _json_ok(data: Any) -> web.Response:
+        return web.json_response({"ok": True, "data": data, "error": None})
+
+    @staticmethod
+    def _json_error(code: str, message: str, *, status: int = 400) -> web.Response:
+        return web.json_response(
+            {
+                "ok": False,
+                "data": None,
+                "error": {"code": code, "message": message},
+            },
+            status=status,
+        )
 
     async def _cleanup_loop(self) -> None:
         """清理过期文件"""

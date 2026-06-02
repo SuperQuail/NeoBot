@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 from typing import Any, Callable, Dict, Optional
 
-from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.sandbox import SandboxDataPort
 
 from neobot_adapter.eventing import (
     EventDispatcher,
@@ -16,45 +16,56 @@ from neobot_adapter.eventing import (
     _HandlerRegistration,
     extract_event_model,
 )
+from neobot_adapter.local.core import LocalCore
 from neobot_adapter.model import response
-from neobot_adapter.receiver.core import AdapterCore
 from neobot_adapter.request._proxy import bind_core, unbind_core
-from neobot_adapter.request.websocket import WebSocketAPI
 from neobot_adapter.utils.parse import safe_parse_model
 
 
-class OneBotAdapter:
+class LocalAdapter:
     def __init__(
         self,
         *,
-        max_queue_size: int = 1000,
+        host: str = "127.0.0.1",
+        port: int = 8090,
+        auth_token: str = "",
+        bot_user_id: int = 0,
+        bot_name: str = "Neo Bot",
         logger: Optional[Logger] = None,
         packet_callback: Callable[[Dict[str, Any]], None] | None = None,
+        sandbox_data: SandboxDataPort | None = None,
     ) -> None:
         self._logger: Logger = logger if logger is not None else NullLogger()
-        self._core = AdapterCore(
-            max_queue_size=max_queue_size,
-            packet_callback=packet_callback,
-        )
         self._dispatcher = EventDispatcher(self._logger)
-        self._dispatch_task: Optional[asyncio.Task[None]] = None
-        self._stopping = asyncio.Event()
-        self._api: Optional[WebSocketAPI] = None
+        self._core = LocalCore(
+            dispatcher=self._dispatcher,
+            host=host,
+            port=port,
+            auth_token=auth_token,
+            bot_user_id=bot_user_id,
+            bot_name=bot_name,
+            logger=self._logger,
+            packet_callback=packet_callback,
+            sandbox_data=sandbox_data,
+        )
+        self._packet_callback = packet_callback
         self.on = EventNamespace(self)
 
     @property
-    def requires_connection_wait(self) -> bool:
-        return True
-
-    @property
-    def core(self) -> AdapterCore:
+    def core(self) -> LocalCore:
         return self._core
 
     @property
-    def api(self) -> WebSocketAPI:
-        if self._api is None:
-            self._api = WebSocketAPI(self._core)
-        return self._api
+    def requires_connection_wait(self) -> bool:
+        return False
+
+    @property
+    def http_url(self) -> str:
+        return self._core.http_url
+
+    @property
+    def ws_url(self) -> str:
+        return self._core.ws_url
 
     @property
     def on_message(self) -> EventNamespace:
@@ -71,6 +82,35 @@ class OneBotAdapter:
     @property
     def on_meta_event(self) -> EventNamespace:
         return self.on.meta_event
+
+    async def start(self) -> None:
+        bind_core(self._core)
+        await self._core.start()
+
+    async def stop(self) -> None:
+        await self._core.stop()
+        unbind_core()
+
+    def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
+        return self._core.wait_for_connection(timeout)
+
+    async def call_api(
+        self,
+        action: str,
+        params: Dict[str, Any],
+        timeout: float = 5.0,
+    ) -> Optional[Dict[str, Any]]:
+        return await self._core.call_api(action, params, timeout)
+
+    def subscribe(
+        self,
+        event_type: Any,
+        handler: EventHandlerFunc,
+        **filters: Any,
+    ) -> Subscription:
+        if isinstance(event_type, str) and "post_type" not in filters:
+            filters["post_type"] = event_type
+        return self._subscribe(handler, **filters)
 
     def on_event(
         self,
@@ -102,43 +142,6 @@ class OneBotAdapter:
         if func is not None:
             return decorator(func)
         return decorator
-
-    async def start(self) -> None:
-        if self._dispatch_task is not None and not self._dispatch_task.done():
-            return
-        self._stopping = asyncio.Event()
-        bind_core(self._core)
-        self._core.start()
-        self._dispatch_task = asyncio.create_task(self._dispatch_loop())
-
-    async def stop(self) -> None:
-        self._stopping.set()
-        if self._dispatch_task is not None:
-            await self._dispatch_task
-            self._dispatch_task = None
-        self._core.stop()
-        unbind_core()
-
-    def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
-        return self._core.wait_for_connection(timeout)
-
-    async def call_api(
-        self,
-        action: str,
-        params: Dict[str, Any],
-        timeout: float = 5.0,
-    ) -> Optional[Dict[str, Any]]:
-        return await self._core.call_api(action, params, timeout)
-
-    def subscribe(
-        self,
-        event_type: Any,
-        handler: EventHandlerFunc,
-        **filters: Any,
-    ) -> Subscription:
-        if isinstance(event_type, str) and "post_type" not in filters:
-            filters["post_type"] = event_type
-        return self._subscribe(handler, **filters)
 
     async def get_friend_list(self, timeout: float = 5.0) -> response.GetFriendListResponse:
         result = await self.call_api("get_friend_list", {}, timeout)
@@ -195,13 +198,16 @@ class OneBotAdapter:
         reverse_order: bool = False,
         timeout: float = 5.0,
     ) -> response.GetHistoryMsgListResponse:
-        params = {
-            "user_id": user_id,
-            "message_seq": message_seq,
-            "count": count,
-            "reverseOrder": reverse_order,
-        }
-        result = await self.call_api("get_friend_msg_history", params, timeout)
+        result = await self.call_api(
+            "get_friend_msg_history",
+            {
+                "user_id": user_id,
+                "message_seq": message_seq,
+                "count": count,
+                "reverseOrder": reverse_order,
+            },
+            timeout,
+        )
         return safe_parse_model(result, response.GetHistoryMsgListResponse)
 
     async def get_group_msg_history(
@@ -212,13 +218,16 @@ class OneBotAdapter:
         reverse_order: bool = False,
         timeout: float = 5.0,
     ) -> response.GetHistoryMsgListResponse:
-        params = {
-            "group_id": group_id,
-            "message_seq": message_seq,
-            "count": count,
-            "reverseOrder": reverse_order,
-        }
-        result = await self.call_api("get_group_msg_history", params, timeout)
+        result = await self.call_api(
+            "get_group_msg_history",
+            {
+                "group_id": group_id,
+                "message_seq": message_seq,
+                "count": count,
+                "reverseOrder": reverse_order,
+            },
+            timeout,
+        )
         return safe_parse_model(result, response.GetHistoryMsgListResponse)
 
     async def get_msg(
@@ -234,7 +243,6 @@ class OneBotAdapter:
         message_id: str,
         timeout: float = 5.0,
     ) -> dict[str, Any] | None:
-        """获取合并转发消息的具体内容。"""
         return await self.call_api("get_forward_msg", {"message_id": message_id}, timeout)
 
     async def send_private_msg(
@@ -275,20 +283,11 @@ class OneBotAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
     ) -> response.SendMsgResponse:
-        """统一的消息发送接口"""
-        if conversation.kind == "private":
-            return await self.send_private_msg(int(conversation.id), message, timeout)
-        else:
-            return await self.send_group_msg(int(conversation.id), message, timeout)
-
-    async def _dispatch_loop(self) -> None:
-        while True:
-            if self._stopping.is_set():
-                break
-            event = await asyncio.to_thread(self._core.get_message, True, 0.1)
-            if event is None:
-                continue
-            await self._dispatcher.publish(event)
+        stored = await self._core.send(conversation, message)
+        return safe_parse_model(
+            self._core._ok({"message_id": stored.message_id}),
+            response.SendMsgResponse,
+        )
 
     def _subscribe(
         self,
@@ -338,10 +337,8 @@ class OneBotAdapter:
             "meta_event_type": None,
             "sub_type": sub_type,
         }
-
         if not path:
             return filters
-
         root = path[0]
         if root == "message":
             filters["post_type"] = "message"
@@ -359,7 +356,6 @@ class OneBotAdapter:
             filters["post_type"] = "meta_event"
             if len(path) > 1:
                 filters["meta_event_type"] = path[1]
-
         if group:
             filters["message_type"] = "group"
         if private:

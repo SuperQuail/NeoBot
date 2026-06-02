@@ -22,7 +22,7 @@ members = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["app/tests", "packages/modloader/tests"]
+testpaths = ["app/tests", "packages/adapter/tests", "packages/modloader/tests"]
 
 [dependency-groups]
 dev = [
