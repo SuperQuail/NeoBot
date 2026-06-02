@@ -387,6 +387,42 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
         plugin_dir = Path(config.plugins.dir)
         if not plugin_dir.is_absolute():
             plugin_dir = DATA_DIR / plugin_dir
+
+        # MediaSender wrapper — binds file_server so plugins never import neobot_app
+        from neobot_app.utils import media_sender as _media_sender_module
+
+        class _MediaSenderWrapper:
+            """Wraps neobot_app.utils.media_sender for injection via MediaSender protocol."""
+
+            def __init__(self, fs: Any) -> None:
+                self._fs = fs
+
+            async def send_image(
+                self,
+                adapter: Any,
+                conversation: Any,
+                *,
+                path: Path | None = None,
+                data: bytes | None = None,
+                filename: str | None = None,
+            ) -> Any:
+                if path is not None:
+                    return await _media_sender_module.send_image(self._fs, adapter, conversation, path)
+                if data is not None:
+                    raise NotImplementedError("send_image with raw data is handled by the plugin runtime context")
+                raise ValueError("Must provide path or data+filename")
+
+            async def send_audio(self, adapter: Any, conversation: Any, *, path: Path) -> Any:
+                return await _media_sender_module.send_audio(self._fs, adapter, conversation, path)
+
+            def prepare_image_segment(self, file_server: Any, file_path: Path) -> dict:
+                return _media_sender_module.prepare_image_segment(file_server, file_path)
+
+            def prepare_audio_segment(self, file_server: Any, file_path: Path) -> dict:
+                return _media_sender_module.prepare_audio_segment(file_server, file_path)
+
+        media_sender = _MediaSenderWrapper(file_server)
+
         plugin_runtime = PluginRuntime(
             plugin_dir=plugin_dir,
             data_dir=DATA_DIR / "plugins_data",
@@ -397,6 +433,8 @@ def create_application() -> NeoBotApplication[OneBotAdapter]:
             record_ai_reply_block=reply_block_registry.block_event,
             output=runtime_output,
             host=host_facade,
+            file_server=file_server,
+            media_sender=media_sender,
             auto_install_dependencies=True,
         )
         plugin_runtime.load_all()

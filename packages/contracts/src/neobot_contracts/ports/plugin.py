@@ -8,7 +8,6 @@ from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.output import OutputPort
-from neobot_contracts.ports.runtime_event import RuntimeInterceptionRegistry
 
 
 class PluginState(Enum):
@@ -82,8 +81,8 @@ class PluginRegistry(Protocol):
 
 
 @runtime_checkable
-class PluginContext(Protocol):
-    """插件上下文接口"""
+class RuntimePluginContext(Protocol):
+    """Internal runtime context passed to plugin objects by the loader."""
 
     @property
     def plugin_name(self) -> str: ...
@@ -101,16 +100,10 @@ class PluginContext(Protocol):
     def logger(self) -> Any: ...
 
     @property
-    def on(self) -> Any: ...
-
-    @property
     def agents(self) -> PluginAgentRegistrar: ...
 
     @property
     def plugins(self) -> PluginRegistry: ...
-
-    @property
-    def intercept(self) -> RuntimeInterceptionRegistry: ...
 
     @property
     def output(self) -> OutputPort: ...
@@ -139,11 +132,7 @@ class PluginContext(Protocol):
 
     async def reply(self, event: dict[str, Any] | Any, message: str | list[dict[str, Any]]) -> Any: ...
 
-    def message_text(self, event: dict[str, Any] | Any) -> str: ...
-
     def conversation_from_event(self, event: dict[str, Any] | Any) -> ConversationRef: ...
-
-    def require_config(self, key: str) -> Any: ...
 
 
 @runtime_checkable
@@ -156,7 +145,7 @@ class Plugin(Protocol):
     @property
     def version(self) -> str: ...
 
-    async def on_load(self, ctx: PluginContext) -> None: ...
+    async def on_load(self, ctx: RuntimePluginContext) -> None: ...
 
     async def on_start(self) -> None: ...
 

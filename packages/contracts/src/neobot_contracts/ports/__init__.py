@@ -8,12 +8,12 @@ from neobot_contracts.ports.event_source import EventSource, Subscription
 from neobot_contracts.ports.plugin import (
     Plugin,
     PluginCapability,
-    PluginContext,
     PluginHandle,
     PluginLoader,
     PluginManager,
     PluginRegistry,
     PluginState,
+    RuntimePluginContext,
 )
 from neobot_contracts.ports.repository import MemoryRepository, MessageRepository, ProfileRepository
 from neobot_contracts.ports.provider import Provider
@@ -54,12 +54,12 @@ __all__ = [
     "Subscription",
     "Plugin",
     "PluginCapability",
-    "PluginContext",
     "PluginHandle",
     "PluginLoader",
     "PluginManager",
     "PluginRegistry",
     "PluginState",
+    "RuntimePluginContext",
     "MemoryRepository",
     "MessageRepository",
     "ProfileRepository",
