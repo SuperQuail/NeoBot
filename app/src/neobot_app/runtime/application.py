@@ -93,17 +93,25 @@ class NeoBotApplication(Generic[T]):
             await self._plugin_runtime.load_registered()
             self._logger.info("插件加载完成")
         await self.adapter.start()
-        connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
-        if not connected:
-            if self._plugin_runtime is not None:
-                await self._plugin_runtime.stop_all()
-            await self.file_server.stop()
-            if self.tts_service is not None:
-                await self.tts_service.close()
-            await self.adapter.stop()
-            raise ConnectionTimeoutError(
-                "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
-            )
+        if getattr(self.adapter, "requires_connection_wait", True):
+            connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
+            if not connected:
+                if self._plugin_runtime is not None:
+                    await self._plugin_runtime.stop_all()
+                await self.file_server.stop()
+                if self.tts_service is not None:
+                    await self.tts_service.close()
+                await self.adapter.stop()
+                raise ConnectionTimeoutError(
+                    "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
+                )
+        else:
+            http_url = getattr(self.adapter, "http_url", "")
+            ws_url = getattr(self.adapter, "ws_url", "")
+            if http_url:
+                self._logger.info(f"本地适配器 HTTP 地址: {http_url}")
+            if ws_url:
+                self._logger.info(f"本地适配器 WebSocket 地址: {ws_url}")
         self._logger.info("NeoBot适配器启动完成")
         if self._bot_detector is not None:
             await self._bot_detector.refresh()

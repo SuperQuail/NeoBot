@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel
 
-from neobot_adapter.receiver.core import AdapterCore
+from neobot_adapter.onebot.receiver.core import AdapterCore
 from neobot_adapter.model.basic import *
 
 

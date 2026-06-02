@@ -10,6 +10,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "websockets",
+    "aiohttp",
     "pydantic>=2.7.4",
     "loguru>=0.7.2",
     "neobot-contracts",

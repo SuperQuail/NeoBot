@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import math
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -183,29 +185,14 @@ class ImageParseService:
             try:
                 from neobot_adapter.request.message import get_image
                 result = await asyncio.wait_for(get_image(str(file_name)), timeout=30.0)
-                img_data = result.get("data", {})
+                img_data = _response_data(result)
                 if isinstance(img_data, dict):
                     img_file = img_data.get("file") or img_data.get("url")
                     if img_file:
-                        if str(img_file).startswith("base64://"):
-                            import base64
-                            content = base64.b64decode(str(img_file)[9:])
-                            if _is_valid_image(content):
-                                return content
-                            self._logger.warning("get_image base64 内容不是有效图片", file=str(file_name)[:60])
-                            return None
-                        async with httpx.AsyncClient(timeout=30.0) as client:
-                            resp = await client.get(str(img_file))
-                            resp.raise_for_status()
-                            content = resp.content
-                            if _is_valid_image(content):
-                                return content
-                            self._logger.warning(
-                                "get_image URL 内容不是有效图片",
-                                file=str(file_name)[:60],
-                                content_type=resp.headers.get("content-type", ""),
-                                content_len=len(content),
-                            )
+                        content = await _read_image_ref(str(img_file))
+                        if content is not None and _is_valid_image(content):
+                            return content
+                        self._logger.warning("get_image 返回内容不是有效图片", file=str(file_name)[:60])
             except Exception as exc:
                 self._logger.warning("通过get_image下载失败", file=str(file_name)[:60], error=str(exc))
 
@@ -282,6 +269,36 @@ def _segment_data(segment) -> dict:
     if hasattr(raw_data, "model_dump"):
         return raw_data.model_dump(exclude_none=True)
     return {}
+
+
+def _response_data(response) -> dict:
+    if isinstance(response, dict):
+        data = response.get("data", {})
+        return data if isinstance(data, dict) else {}
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if hasattr(data, "model_dump"):
+        return data.model_dump(exclude_none=True)
+    if hasattr(response, "model_dump"):
+        dumped = response.model_dump(exclude_none=True)
+        data = dumped.get("data", {})
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+async def _read_image_ref(ref: str) -> bytes | None:
+    if ref.startswith("base64://"):
+        return base64.b64decode(ref[9:])
+    if ref.startswith("file://"):
+        return Path(ref[7:]).expanduser().read_bytes()
+    path = Path(ref).expanduser()
+    if path.exists() and path.is_file():
+        return path.read_bytes()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(ref)
+        resp.raise_for_status()
+        return resp.content
 
 
 _MIN_IMAGE_DIMENSION = 29       # Qwen VL models require width and height > 28

@@ -28,7 +28,7 @@ async def send_custom_group_msg(
     timeout: float = 5,
 ) -> response.SendMsgResponse:
     """发送自定义群聊消息"""
-    param = {"user_id": group_id, "message": {"type": type, "data": data}}
+    param = {"group_id": group_id, "message": {"type": type, "data": data}}
     result = await core.call_api("send_group_msg", param, timeout)
     return safe_parse_model(result, response.SendMsgResponse)
 
@@ -236,10 +236,11 @@ async def can_send_record(
 async def set_msg_emoji_like(
     message_id: int,
     emoji_id: int,
+    set: bool = True,
     timeout: float = 5,
 ) -> response.BaseResponse:
     """设置消息表情回应"""
-    params = {"message_id": message_id, "emoji_id": emoji_id}
+    params = {"message_id": message_id, "emoji_id": emoji_id, "set": set}
     result = await core.call_api("set_msg_emoji_like", params, timeout)
     return safe_parse_model(result, response.BaseResponse)
 

@@ -2,182 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Optional, get_type_hints
-
-from pydantic import BaseModel
+from typing import Any, Callable, Dict, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.models import ConversationRef
 
+from neobot_adapter.eventing import (
+    EventDispatcher,
+    EventHandlerFunc,
+    EventNamespace,
+    Rule,
+    Subscription,
+    _HandlerRegistration,
+    extract_event_model,
+)
 from neobot_adapter.model import response
-from neobot_adapter.receiver.core import AdapterCore
+from neobot_adapter.onebot.receiver.core import AdapterCore
 from neobot_adapter.request._proxy import bind_core, unbind_core
 from neobot_adapter.request.websocket import WebSocketAPI
 from neobot_adapter.utils.parse import safe_parse_model
-
-Rule = Callable[[Dict[str, Any]], bool | Awaitable[bool]]
-EventHandlerFunc = Callable[..., Any]
-
-
-@dataclass
-class Subscription:
-    _unsubscribe: Callable[[], None]
-    _active: bool = True
-
-    def unsubscribe(self) -> None:
-        if not self._active:
-            return
-        self._unsubscribe()
-        self._active = False
-
-
-@dataclass
-class _HandlerRegistration:
-    handler: EventHandlerFunc
-    is_async: bool
-    post_type: Optional[str]
-    message_type: Optional[str]
-    notice_type: Optional[str]
-    request_type: Optional[str]
-    meta_event_type: Optional[str]
-    sub_type: Optional[str]
-    rule: Optional[Rule]
-    priority: int
-    event_model: Optional[type[BaseModel]] = field(default=None)
-
-    def matches(self, event: Dict[str, Any]) -> bool:
-        if self.post_type and event.get("post_type") != self.post_type:
-            return False
-        if self.message_type and event.get("message_type") != self.message_type:
-            return False
-        if self.notice_type and event.get("notice_type") != self.notice_type:
-            return False
-        if self.request_type and event.get("request_type") != self.request_type:
-            return False
-        if self.meta_event_type and event.get("meta_event_type") != self.meta_event_type:
-            return False
-        if self.sub_type and event.get("sub_type") != self.sub_type:
-            return False
-        return True
-
-    def coerce(self, event: Dict[str, Any]) -> Any:
-        """将原始 dict 转换为 handler 期望的类型。"""
-        if self.event_model is not None:
-            return self.event_model.model_validate(event)
-        return event
-
-
-class EventDispatcher:
-    def __init__(self, logger: Optional[Logger] = None) -> None:
-        self._handlers: list[_HandlerRegistration] = []
-        self._lock = threading.RLock()
-        self._logger: Logger = logger if logger is not None else NullLogger()
-
-    def subscribe(self, registration: _HandlerRegistration) -> Subscription:
-        with self._lock:
-            self._handlers.append(registration)
-            self._handlers.sort(key=lambda item: item.priority, reverse=True)
-
-        def _unsubscribe() -> None:
-            with self._lock:
-                self._handlers = [
-                    item for item in self._handlers if item is not registration
-                ]
-
-        return Subscription(_unsubscribe)
-
-    async def publish(self, event: Dict[str, Any]) -> None:
-        with self._lock:
-            handlers = [handler for handler in self._handlers if handler.matches(event)]
-
-        for handler in handlers:
-            if handler.rule is not None:
-                try:
-                    rule_result = handler.rule(event)
-                    if inspect.isawaitable(rule_result):
-                        rule_result = await rule_result
-                    if not rule_result:
-                        continue
-                except Exception as exc:
-                    self._logger.error(f"事件规则执行失败: {exc}")
-                    continue
-
-            try:
-                coerced = handler.coerce(event)
-            except Exception as exc:
-                self._logger.error(f"事件模型转换失败 ({handler.handler.__qualname__}): {exc}")
-                coerced = event  # fallback 传原始 dict
-
-            try:
-                if handler.is_async:
-                    await handler.handler(coerced)
-                else:
-                    await asyncio.to_thread(handler.handler, coerced)
-            except Exception as exc:
-                self._logger.error(f"事件处理失败: {exc}")
-
-
-def _extract_event_model(handler: EventHandlerFunc) -> Optional[type[BaseModel]]:
-    """从 handler 的第一个参数类型注解中提取 pydantic 模型类。
-
-    如果注解是 BaseModel 子类，返回该类；否则返回 None（传原始 dict）。
-    """
-    try:
-        hints = get_type_hints(handler)
-    except Exception:
-        return None
-    # 取第一个参数（跳过 self/cls）
-    params = list(inspect.signature(handler).parameters.values())
-    if not params:
-        return None
-    first_param = params[0]
-    annotation = hints.get(first_param.name)
-    if annotation is None:
-        return None
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return annotation
-    return None
-
-
-class _EventNamespace:
-    def __init__(self, adapter: "OneBotAdapter", path: tuple[str, ...] = ()) -> None:
-        self._adapter = adapter
-        self._path = path
-
-    def __getattr__(self, name: str) -> "_EventNamespace":
-        return _EventNamespace(self._adapter, self._path + (name,))
-
-    def __call__(
-        self,
-        func: Optional[EventHandlerFunc] = None,
-        *,
-        group: bool = False,
-        private: bool = False,
-        rule: Optional[Rule] = None,
-        priority: int = 0,
-        sub_type: Optional[str] = None,
-    ) -> Any:
-        filters = self._adapter._filters_from_path(
-            self._path,
-            group=group,
-            private=private,
-            sub_type=sub_type,
-        )
-
-        def decorator(handler: EventHandlerFunc) -> EventHandlerFunc:
-            self._adapter._register_handler(
-                handler,
-                rule=rule,
-                priority=priority,
-                **filters,
-            )
-            return handler
-
-        if func is not None:
-            return decorator(func)
-        return decorator
 
 
 class OneBotAdapter:
@@ -197,7 +40,11 @@ class OneBotAdapter:
         self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._stopping = asyncio.Event()
         self._api: Optional[WebSocketAPI] = None
-        self.on = _EventNamespace(self)
+        self.on = EventNamespace(self)
+
+    @property
+    def requires_connection_wait(self) -> bool:
+        return True
 
     @property
     def core(self) -> AdapterCore:
@@ -210,19 +57,19 @@ class OneBotAdapter:
         return self._api
 
     @property
-    def on_message(self) -> _EventNamespace:
+    def on_message(self) -> EventNamespace:
         return self.on.message
 
     @property
-    def on_notice(self) -> _EventNamespace:
+    def on_notice(self) -> EventNamespace:
         return self.on.notice
 
     @property
-    def on_request(self) -> _EventNamespace:
+    def on_request(self) -> EventNamespace:
         return self.on.request
 
     @property
-    def on_meta_event(self) -> _EventNamespace:
+    def on_meta_event(self) -> EventNamespace:
         return self.on.meta_event
 
     def on_event(
@@ -456,7 +303,7 @@ class OneBotAdapter:
         rule: Optional[Rule] = None,
         priority: int = 0,
     ) -> Subscription:
-        event_model = _extract_event_model(handler)
+        event_model = extract_event_model(handler)
         registration = _HandlerRegistration(
             handler=handler,
             is_async=inspect.iscoroutinefunction(handler),

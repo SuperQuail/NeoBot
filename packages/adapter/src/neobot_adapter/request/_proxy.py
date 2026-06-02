@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from neobot_adapter.receiver.core import AdapterCore
+from neobot_adapter.interfaces import CoreLike
 
 
 class CoreProxy:
@@ -23,9 +23,9 @@ class CoreProxy:
     """
 
     def __init__(self) -> None:
-        self._core: AdapterCore | None = None
+        self._core: CoreLike | None = None
 
-    def bind(self, core: AdapterCore) -> None:
+    def bind(self, core: CoreLike) -> None:
         self._core = core
 
     def unbind(self) -> None:
@@ -35,7 +35,7 @@ class CoreProxy:
     def is_bound(self) -> bool:
         return self._core is not None
 
-    def _get_core(self) -> AdapterCore:
+    def _get_core(self) -> CoreLike:
         if self._core is None:
             raise RuntimeError(
                 "AdapterCore 尚未绑定请先调用 OneBotAdapter.start() 或手动 bind_core()"
@@ -57,7 +57,7 @@ class CoreProxy:
 core_proxy = CoreProxy()
 
 
-def bind_core(real_core: AdapterCore) -> None:
+def bind_core(real_core: CoreLike) -> None:
     """绑定真实的 AdapterCore 实例由 OneBotAdapter.start() 调用"""
     core_proxy.bind(real_core)
 

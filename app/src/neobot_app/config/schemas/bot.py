@@ -656,6 +656,28 @@ class FileServer:
 
 
 @dataclass
+class Adapter:
+    """适配器配置。"""
+
+    mode: str = field(
+        default="onebot",
+        metadata={"description": "适配器模式：onebot 或 local"},
+    )
+    local_host: str = field(
+        default="127.0.0.1",
+        metadata={"description": "本地适配器 HTTP/WebSocket 监听地址"},
+    )
+    local_port: int = field(
+        default=8090,
+        metadata={"description": "本地适配器 HTTP/WebSocket 监听端口"},
+    )
+    local_auth_token: str = field(
+        default="",
+        metadata={"description": "本地适配器鉴权 Token；留空表示仅本机开发免鉴权"},
+    )
+
+
+@dataclass
 class Debug:
     """调试配置。"""
 
@@ -1000,6 +1022,7 @@ class BotConfig:
     plugins: Plugins = field(default_factory=Plugins)
     message: Message = field(default_factory=Message)
     file_server: FileServer = field(default_factory=FileServer)
+    adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
