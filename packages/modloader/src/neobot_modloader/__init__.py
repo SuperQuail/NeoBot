@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from neobot_modloader.agent import AgentRequest
 from neobot_modloader.bot import Bot
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
@@ -12,6 +13,7 @@ from neobot_modloader.reply import Reply
 from neobot_modloader.runtime import PluginRuntime
 
 __all__ = [
+    "AgentRequest",
     "Bot",
     "DefaultPluginManager",
     "DiscoveredPlugin",

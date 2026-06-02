@@ -10,92 +10,9 @@ from neobot_adapter.model.response import SendMsgResponse
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
+from neobot_modloader.plugins.agents import PluginAgentRegistrar
 
 MessagePayload = str | list[dict[str, Any]]
-
-
-class PluginAgentRegistrar:
-    def __init__(
-        self,
-        *,
-        plugin_name: str,
-        registry: Any | None,
-        record_registration: Any | None,
-    ) -> None:
-        self._plugin_name = plugin_name
-        self._registry = registry
-        self._record_registration = record_registration
-        self._registered: dict[str, Any] = {}
-
-    @property
-    def names(self) -> list[str]:
-        return list(self._registered)
-
-    def register(self, name: str, agent: Any) -> str:
-        if self._registry is None:
-            raise RuntimeError("Agent registry is not available")
-        local_name = self._validate_name(name)
-        self._validate_agent(agent)
-        registered_name = f"plugin:{self._plugin_name}:{local_name}"
-        if registered_name in self._registered:
-            raise ValueError(f"插件 Agent 已注册: {registered_name}")
-        registry_names = getattr(self._registry, "names", [])
-        if registered_name in registry_names:
-            raise ValueError(f"Agent 已注册: {registered_name}")
-        self._registry.register(registered_name, agent)
-        self._registered[registered_name] = agent
-        if self._record_registration is not None:
-            self._record_registration(registered_name, agent)
-        return registered_name
-
-    def unregister(self, registered_name: str) -> Any | None:
-        agent = self._registered.pop(registered_name, None)
-        unregister = getattr(self._registry, "unregister", None)
-        if callable(unregister):
-            removed = unregister(registered_name)
-            return removed if removed is not None else agent
-        return agent
-
-    def snapshot(self) -> list[dict[str, str]]:
-        return [
-            {"name": name, "description": str(getattr(agent, "description", ""))}
-            for name, agent in self._registered.items()
-        ]
-
-    def list_agents(self, name: str | None = None) -> str:
-        if name is not None:
-            registered_name = f"plugin:{self._plugin_name}:{self._validate_name(name)}"
-            agent = self._registered.get(registered_name)
-            if agent is None:
-                return f"Agent '{registered_name}' not found"
-            return f"Agent {registered_name}: {getattr(agent, 'description', '')}"
-        if not self._registered:
-            return "No agents available"
-        lines = [
-            f"- {registered_name}: {getattr(agent, 'description', '')}"
-            for registered_name, agent in self._registered.items()
-        ]
-        return "Available agents:\n" + "\n".join(lines)
-
-    @staticmethod
-    def _validate_name(name: str) -> str:
-        if not isinstance(name, str):
-            raise TypeError("Agent name must be a string")
-        if not name or name != name.strip() or ":" in name:
-            raise ValueError("Agent name cannot be empty, padded, or contain ':'")
-        return name
-
-    @staticmethod
-    def _validate_agent(agent: Any) -> None:
-        missing: list[str] = []
-        for attr in ("description", "tool_definitions"):
-            if not hasattr(agent, attr):
-                missing.append(attr)
-        for method in ("invoke", "stream_invoke", "close"):
-            if not callable(getattr(agent, method, None)):
-                missing.append(method)
-        if missing:
-            raise TypeError(f"Plugin agent is missing required attributes: {', '.join(missing)}")
 
 
 class RuntimePluginContext:

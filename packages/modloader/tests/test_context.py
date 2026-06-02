@@ -107,7 +107,7 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 ctx.conversation_from_event({})
 
-    def test_agent_registrar_registers_namespaced_agent(self) -> None:
+    def test_agent_registrar_registers_exposed_agent_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             registry = FakeRegistry()
             recorded: list[tuple[str, Any]] = []
@@ -119,7 +119,7 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
 
             registered_name = ctx.agents.register("echo", FakeAgent())
 
-            self.assertEqual(registered_name, "plugin:test:echo")
+            self.assertEqual(registered_name, "test.echo")
             self.assertIn(registered_name, registry.agents)
             self.assertEqual(len(recorded), 1)
             self.assertEqual(ctx.agents.snapshot(), [{"name": registered_name, "description": "Echo agent"}])

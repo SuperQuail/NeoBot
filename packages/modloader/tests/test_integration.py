@@ -43,6 +43,30 @@ class DispatchCtx:
         self.skip_ai_reply = True
 
 
+class FakeAgentRegistry:
+    def __init__(self) -> None:
+        self.agents: dict[str, Any] = {}
+
+    @property
+    def names(self) -> list[str]:
+        return list(self.agents)
+
+    def register(self, name: str, agent: Any) -> None:
+        self.agents[name] = agent
+
+    def unregister(self, name: str) -> Any | None:
+        return self.agents.pop(name, None)
+
+    async def delegate(self, agent: str, task: str, context: str = "") -> str:
+        result = await self.agents[agent].invoke(
+            {
+                "messages": [{"role": "user", "content": task}],
+                "_delegate_context": context,
+            }
+        )
+        return str(result["messages"][-1]["content"])
+
+
 class IntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -53,12 +77,14 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.mock_adapter = AsyncMock()
         self.hook_bus = PluginHookBus()
+        self.agent_registry = FakeAgentRegistry()
         self.runtime = PluginRuntime(
             plugin_dir=self.plugin_dir,
             data_dir=self.data_dir,
             adapter=self.mock_adapter,
             logger_factory=FakeLoggerFactory(),
             hook_bus=self.hook_bus,
+            agent_registry=self.agent_registry,
         )
 
     async def asyncTearDown(self) -> None:
@@ -138,6 +164,30 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self._dispatch({"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "/ping"})
 
         self.assertEqual(self.mock_adapter.send.call_args.args[1], "pong")
+
+    async def test_e2e_agent_handler_registration(self) -> None:
+        self._write_pkg(
+            "helper",
+            textwrap.dedent(
+                """\
+                from neobot_modloader import AgentRequest, Plugin
+
+                plugin = Plugin("helper")
+
+                @plugin.agent("echo", description="Echo delegated tasks")
+                async def echo(task: str, request: AgentRequest):
+                    return f"{request.delegate_context}: {task}"
+                """
+            ),
+        )
+
+        self.runtime.load_all()
+        await self.runtime.load_registered()
+
+        self.assertIn("helper.echo", self.agent_registry.agents)
+        result = await self.agent_registry.delegate("helper.echo", "hello", context="ctx")
+
+        self.assertEqual(result, "ctx: hello")
 
 
 if __name__ == "__main__":

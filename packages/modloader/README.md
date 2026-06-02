@@ -2,7 +2,7 @@
 
 NeoBot Modloader 用于从文件系统目录加载 Python 插件。
 
-当前版本是一次破坏性插件 API 更新。插件作者入口只保留一种写法：显式导出 `plugin = Plugin(...)`，不再支持旧的 `setup(ctx)`、`ctx.on.*`、`Matcher`、`on_command()` 等兼容 API。
+当前版本是一次破坏性插件 API 更新。插件入口只保留一种写法：显式导出 `plugin = Plugin(...)`，不再支持旧的 `setup(ctx)`、`ctx.on.*`、`Matcher`、`on_command()` 等兼容 API。
 
 ## 插件结构
 
@@ -204,6 +204,52 @@ async def weather(city: str | None, config: Config, reply: Reply):
 
 如果 `plugin.toml` 声明了和 `Plugin(...)` 冲突的 `name` 或 `version`，插件加载会失败。
 
+## 注册子 Agent
+
+插件可以声明可被主 Agent 委托的子 Agent。默认写法是 handler：接收自然语言 `task`，返回文本结果。
+
+```python
+from neobot_modloader import AgentRequest, Plugin
+
+plugin = Plugin("weather")
+
+
+@plugin.agent("forecast", description="查询天气、解释天气状况")
+async def forecast(task: str, request: AgentRequest, config: Config) -> str:
+    city = task.strip() or config.default_city
+    return f"{city} 今天晴，22-28 度。"
+```
+
+子 Agent 会以 `<plugin>.<agent>` 的名字暴露给主 Agent，例如 `weather.forecast`。
+
+如果要使用 `neobot_chat` 的 `Workflow`、`StateGraph`、`CompiledGraph`，使用 `factory=True` 返回一个有 `invoke(state)` 的对象：
+
+```python
+from neobot_chat import State, Workflow
+from neobot_modloader import Plugin
+
+plugin = Plugin("planner")
+
+
+async def parse(state: State) -> State:
+    messages = list(state.get("messages", []))
+    task = str(messages[-1].get("content", "")) if messages else ""
+    return {**state, "_task": task}
+
+
+async def answer(state: State) -> State:
+    messages = list(state.get("messages", []))
+    messages.append({"role": "assistant", "content": f"完成: {state.get('_task', '')}"})
+    return {**state, "messages": messages}
+
+
+@plugin.agent("worker", description="使用 Workflow 处理委托任务", factory=True)
+def build_worker() -> Workflow:
+    return Workflow().add_step(parse).add_step(answer)
+```
+
+子 Agent 默认不直接发消息，而是把结果返回给主 Agent。需要直接回复用户时，仍使用 `@plugin.command` 或 `@plugin.message`。
+
 ## 生命周期
 
 ```python
@@ -247,6 +293,7 @@ await runtime.reload_plugin("ping")
 
 ```python
 from neobot_modloader import (
+    AgentRequest,
     Bot,
     DefaultPluginManager,
     DiscoveredPlugin,
