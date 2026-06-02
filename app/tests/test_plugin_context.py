@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from neobot_contracts.models import ConversationRef
-from neobot_modloader.context import PluginContext
+from neobot_modloader.context import RuntimePluginContext
 
 
 @pytest.fixture
@@ -36,13 +36,35 @@ def mock_logger() -> MagicMock:
 
 
 @pytest.fixture
+def mock_media_sender(mock_adapter: MagicMock, mock_file_server: MagicMock) -> MagicMock:
+    """MediaSender mock that simulates disabled FileServer (file:/// URLs)."""
+    ms = MagicMock()
+
+    async def _send_image(
+        adapter: MagicMock,
+        conversation: ConversationRef,
+        *,
+        path: Path | None = None,
+        data: bytes | None = None,
+        filename: str | None = None,
+    ) -> None:
+        segment = {"type": "image", "data": {"file": f"file:///{path.as_posix()}"}}
+        return await adapter.send(conversation, [segment])
+
+    ms.send_image = AsyncMock(side_effect=_send_image)
+    ms.send_audio = AsyncMock()
+    return ms
+
+
+@pytest.fixture
 def ctx(
     tmp_path: Path,
     mock_adapter: MagicMock,
     mock_file_server: MagicMock,
     mock_logger: MagicMock,
-) -> PluginContext:
-    return PluginContext(
+    mock_media_sender: MagicMock,
+) -> RuntimePluginContext:
+    return RuntimePluginContext(
         plugin_name="test_plugin",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "data",
@@ -50,6 +72,7 @@ def ctx(
         logger=mock_logger,
         adapter=mock_adapter,
         file_server=mock_file_server,
+        media_sender=mock_media_sender,
     )
 
 
@@ -58,7 +81,7 @@ class TestSendImageByPath:
 
     async def test_send_image_by_path(
         self,
-        ctx: PluginContext,
+        ctx: RuntimePluginContext,
         mock_adapter: MagicMock,
         conversation: ConversationRef,
         tmp_path: Path,
@@ -81,7 +104,7 @@ class TestSendImageByBinary:
 
     async def test_send_image_by_binary(
         self,
-        ctx: PluginContext,
+        ctx: RuntimePluginContext,
         mock_adapter: MagicMock,
         conversation: ConversationRef,
     ) -> None:
@@ -106,7 +129,7 @@ class TestSendImageByBinary:
 
     async def test_send_image_binary_size_limit(
         self,
-        ctx: PluginContext,
+        ctx: RuntimePluginContext,
         conversation: ConversationRef,
     ) -> None:
         """>30MB binary data raises ValueError."""
@@ -116,12 +139,12 @@ class TestSendImageByBinary:
 
     async def test_send_image_binary_cleanup_on_error(
         self,
-        ctx: PluginContext,
-        mock_adapter: MagicMock,
+        ctx: RuntimePluginContext,
+        mock_media_sender: MagicMock,
         conversation: ConversationRef,
     ) -> None:
-        """When adapter.send fails, the temp file is still cleaned up."""
-        mock_adapter.send.side_effect = RuntimeError("send failed")
+        """When media_sender.send_image fails, the temp file is still cleaned up."""
+        mock_media_sender.send_image.side_effect = RuntimeError("send failed")
         data = b"\x89PNG\r\n\x1a\n"
 
         with pytest.raises(RuntimeError, match="send failed"):
@@ -138,7 +161,7 @@ class TestSendImageMissingArgs:
 
     async def test_send_image_missing_args(
         self,
-        ctx: PluginContext,
+        ctx: RuntimePluginContext,
         conversation: ConversationRef,
     ) -> None:
         """Calling with neither path nor data raises ValueError."""

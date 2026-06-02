@@ -59,11 +59,14 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_dir = root / "plugins"
             plugin_dir.mkdir()
             (plugin_dir / "registrar.py").write_text(
-                "def setup(ctx):\n"
-                "    ctx.plugin_host.commands.register('registrar.cmd', 'cmd', lambda: 'ok')\n"
-                "    ctx.plugin_host.queries.register('registrar.query', 'query', lambda: 'q')\n"
-                "    ctx.plugin_host.capabilities.register('registrar.cap', 'cap', lambda: 'c')\n"
-                "    ctx.plugin_host.lifecycle.subscribe('config.changed', lambda stage: None)\n",
+                "from neobot_modloader import Plugin\n"
+                "plugin = Plugin('registrar')\n"
+                "@plugin.on_load\n"
+                "async def load(host):\n"
+                "    host.commands.register('registrar.cmd', 'cmd', lambda: 'ok')\n"
+                "    host.queries.register('registrar.query', 'query', lambda: 'q')\n"
+                "    host.capabilities.register('registrar.cap', 'cap', lambda: 'c')\n"
+                "    host.lifecycle.subscribe('config.changed', lambda stage: None)\n",
                 encoding="utf-8",
             )
             host = PluginHostFacade()
@@ -96,13 +99,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_dir.mkdir()
             plugin_file = plugin_dir / "hot.py"
             plugin_file.write_text(
-                "class Plugin:\n"
-                "    name = 'hot'\n"
-                "    version = '1'\n"
-                "    async def on_load(self, ctx): self.ctx = ctx\n"
-                "    async def on_start(self): pass\n"
-                "    async def on_stop(self): pass\n"
-                "plugin = Plugin()\n",
+                "from neobot_modloader import Plugin\n"
+                "plugin = Plugin('hot', version='1')\n",
                 encoding="utf-8",
             )
             runtime = PluginRuntime(
@@ -117,13 +115,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime.manager.get_plugin("hot").version, "1")
 
             plugin_file.write_text(
-                "class Plugin:\n"
-                "    name = 'hot'\n"
-                "    version = '2'\n"
-                "    async def on_load(self, ctx): self.ctx = ctx\n"
-                "    async def on_start(self): pass\n"
-                "    async def on_stop(self): pass\n"
-                "plugin = Plugin()\n",
+                "from neobot_modloader import Plugin\n"
+                "plugin = Plugin('hot', version='2')\n",
                 encoding="utf-8",
             )
 
@@ -150,7 +143,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "name = \"dep\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
                 encoding="utf-8",
             )
-            (package / "__init__.py").write_text("def setup(ctx): pass\n", encoding="utf-8")
+            (package / "__init__.py").write_text("from neobot_modloader import Plugin\nplugin = Plugin('dep')\n", encoding="utf-8")
             installer = FakeInstaller()
             runtime = PluginRuntime(
                 plugin_dir=plugin_dir,

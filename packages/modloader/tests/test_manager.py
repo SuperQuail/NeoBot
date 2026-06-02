@@ -151,13 +151,13 @@ class DefaultPluginManagerTest(unittest.IsolatedAsyncioTestCase):
         context = FakeContext()
         agent = FakeAgent()
         manager.register(plugin, context)
-        manager.record_agent_registration("plugin", "plugin:plugin:echo", agent)
+        manager.record_agent_registration("plugin", "plugin.echo", agent)
 
         await manager.load_plugin("plugin")
         await manager.start_plugin("plugin")
         await manager.stop_plugin("plugin")
 
-        self.assertEqual(context.agents.unregistered, ["plugin:plugin:echo"])
+        self.assertEqual(context.agents.unregistered, ["plugin.echo"])
         self.assertTrue(agent.closed)
 
     async def test_registry_view_returns_restricted_handle(self) -> None:
@@ -186,12 +186,12 @@ class DefaultPluginManagerTest(unittest.IsolatedAsyncioTestCase):
         context = FakeContext()
         agent = FakeAgent()
         manager.register(plugin, context)
-        manager.record_agent_registration("plugin", "plugin:plugin:echo", agent)
+        manager.record_agent_registration("plugin", "plugin.echo", agent)
 
         await manager.load_plugin("plugin")
 
         self.assertEqual(manager.get_state("plugin"), PluginState.ERROR)
-        self.assertEqual(context.agents.unregistered, ["plugin:plugin:echo"])
+        self.assertEqual(context.agents.unregistered, ["plugin.echo"])
         self.assertTrue(agent.closed)
 
     async def test_start_failure_cleans_agent_registrations(self) -> None:
@@ -201,13 +201,13 @@ class DefaultPluginManagerTest(unittest.IsolatedAsyncioTestCase):
         context = FakeContext()
         agent = FakeAgent()
         manager.register(plugin, context)
-        manager.record_agent_registration("plugin", "plugin:plugin:echo", agent)
+        manager.record_agent_registration("plugin", "plugin.echo", agent)
 
         await manager.load_plugin("plugin")
         await manager.start_plugin("plugin")
 
         self.assertEqual(manager.get_state("plugin"), PluginState.ERROR)
-        self.assertEqual(context.agents.unregistered, ["plugin:plugin:echo"])
+        self.assertEqual(context.agents.unregistered, ["plugin.echo"])
         self.assertTrue(agent.closed)
 
     async def test_concurrent_load_only_runs_once(self) -> None:
