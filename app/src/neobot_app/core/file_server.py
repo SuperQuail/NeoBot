@@ -234,7 +234,7 @@ class FileServer:
             return web.Response(status=403, text="无效的访问令牌")
         if epoch_seconds() > meta.expires_at:
             self._files.pop(filename)
-            Path(meta.path).unlink(missing_ok=True)
+            self._unlink_registered_file(meta)
             self._save_metadata()
             return web.Response(status=404, text="文件已过期")
         return web.FileResponse(meta.path)
@@ -286,16 +286,25 @@ class FileServer:
         )
 
     async def _cleanup_loop(self) -> None:
-        """清理过期文件"""
+        """清理过期文件（仅删除临时文件，不删除图库/表情包等永久文件）"""
         while self._running:
             await asyncio.sleep(60)
             now = epoch_seconds()
             expired = [name for name, meta in self._files.items() if meta.expires_at <= now]
             for name in expired:
                 meta = self._files.pop(name)
-                Path(meta.path).unlink(missing_ok=True)
+                self._unlink_registered_file(meta)
             if expired:
                 self._save_metadata()
+
+    def _unlink_registered_file(self, meta: FileMetadata) -> None:
+        """删除注册的文件。仅删除 tmp 目录下的临时文件，避免误删表情包等永久文件。"""
+        file_path = Path(meta.path)
+        try:
+            if self._tmp_dir in file_path.parents:
+                file_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
     def _load_metadata(self) -> None:
         """加载元数据"""

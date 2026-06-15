@@ -43,14 +43,9 @@ if TYPE_CHECKING:
 # 次级 Agent 文件都应在文件顶部集中声明这部分内容。
 EXPOSED_TO_MAIN_AGENT_NAME = "memory"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "长期记忆与用户档案。可读写群聊/好友的长期记忆档案（增/查/列）、"
-    "查询用户资料与好友备注、解析用户头像并写入用户档案、"
-    "拉取历史聊天记录辅助记忆决策、根据互动质量调整用户好感度。"
-    "涉及记忆/档案/用户资料/头像解析/好感度的任务均委托它。"
+    "长期记忆与用户档案。可读写群聊/好友的长期记忆档案（增/查/列）、查询用户资料与好友备注、解析用户头像并写入用户档案、拉取历史聊天记录辅助记忆决策、根据互动质量调整用户好感度。涉及记忆/档案/用户资料/头像解析/好感度的任务均委托它。"
 )
-EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
-    "长期记忆档案与用户资料（增/查记忆、用户资料、头像解析、好感度）"
-)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = "读写长期记忆档案与用户资料（增/查记忆、用户资料、头像解析、好感度）"
 
 _MEMORY_CONTEXT: ContextVar[str] = ContextVar("memory_context", default="")
 
