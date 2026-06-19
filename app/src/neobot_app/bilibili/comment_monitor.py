@@ -10,26 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CommentMonitorConfig:
-    """评论监控器配置。"""
-    enable_reply_feed: bool = True
-    enable_video_comments: bool = True
-    video_check_count: int = 5
-    like_enabled: bool = True
-    like_probability: float = 0.5
-    reply_probability: float = 0.8
-    user_cooldown_minutes: int = 60
-    send_delay_interval: float = 1.0
-    cache_cleanup_seconds: int = 600
-    simulate: bool = False
-    ai_reply_enabled: bool = True
 
 
 class BilibiliCommentMonitor:

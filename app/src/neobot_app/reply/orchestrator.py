@@ -451,7 +451,7 @@ class ReplyOrchestrator:
         task.add_done_callback(_cleanup)
 
     async def _run_bilibili_comment(self, event: Any, prompt: str, bilibili_client: Any) -> str:
-        """B站评论回复：使用 LLM 生成回复并发送。"""
+        """B站评论回复：agent 循环调用 LLM + 执行工具，直到 reply_comment/cancel_reply。"""
         from neobot_app.reply.event import ReplyState
 
         event.transition(ReplyState.GENERATING)
@@ -460,25 +460,100 @@ class ReplyOrchestrator:
             event.transition(ReplyState.FAILED)
             return ""
 
+        ctx = event.bilibili_context
+        type_map = {"视频": 1, "动态": 17, "专栏": 12}
+
         try:
-            # 使用 skill 工具集（reply_comment / cancel_reply）
-            toolset = self._build_bilibili_comment_toolset(event, bilibili_client)
-            result = await self._provider.generate_with_tools(
-                prompt=prompt,
-                tools=toolset,
-            )
-            event.generated_text = result
+            comment_skill = self._build_bilibili_comment_skill(bilibili_client)
+            toolset = comment_skill.get_tools() if comment_skill else []
+            messages: list[dict] = [{"role": "user", "content": prompt}]
+            reply_sent = False
+
+            while True:
+                response = await self._provider.chat(
+                    messages, tools=toolset if toolset else None
+                )
+                messages.append(response)
+
+                tool_calls = response.get("tool_calls") if isinstance(response, dict) else None
+                if not tool_calls:
+                    content = response.get("content", "") if isinstance(response, dict) else str(response)
+                    text = content.strip() if isinstance(content, str) else str(content)
+                    if text and ctx is not None:
+                        ok = await asyncio.to_thread(
+                            bilibili_client.send_comment_reply,
+                            oid=ctx.target_oid,
+                            root=ctx.reply_root_rpid or ctx.reply_target_rpid,
+                            parent=ctx.reply_target_rpid,
+                            text=text,
+                            type_=type_map.get(ctx.target_type, 1),
+                        )
+                        if not ok:
+                            self._logger.warning("B站评论回复API返回失败", oid=ctx.target_oid)
+                        reply_sent = True
+                        event.generated_text = text
+                    break
+
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        args = {}
+
+                    if name == "reply_comment" and ctx is not None:
+                        ok = await asyncio.to_thread(
+                            bilibili_client.send_comment_reply,
+                            oid=int(args.get("oid", ctx.target_oid)),
+                            root=int(args.get("root", ctx.reply_root_rpid or ctx.reply_target_rpid)),
+                            parent=int(args.get("parent", ctx.reply_target_rpid)),
+                            text=str(args.get("text", "")),
+                            type_=int(args.get("type_", type_map.get(ctx.target_type, 1))),
+                        )
+                        if not ok:
+                            self._logger.warning("B站评论回复API返回失败", oid=ctx.target_oid)
+                        event.generated_text = str(args.get("text", ""))
+                        reply_sent = True
+                        break
+
+                    if name == "cancel_reply":
+                        self._logger.info("B站评论已跳过", reason=args.get("reason", ""))
+                        event.generated_text = ""
+                        reply_sent = True
+                        break
+
+                    # 执行 comment_skill 工具
+                    if comment_skill is not None:
+                        result = await comment_skill.execute(name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": str(result),
+                        })
+
+                if reply_sent:
+                    break
+
+            if not reply_sent:
+                self._logger.warning("B站评论未发送：LLM 未调用 reply_comment 且未生成文本")
+
+            event.transition(ReplyState.SENDING)
             event.transition(ReplyState.COMPLETED)
-            self._logger.info("B站评论回复完成: rpid=%s", event.conversation_ref.id if event.conversation_ref else "")
-            return result
+            self._logger.info("B站评论回复完成", rpid=event.conversation_ref.id if event.conversation_ref else "")
+            return event.generated_text
         except Exception as e:
-            self._logger.error("B站评论回复失败: %s", e)
+            self._logger.error(f"B站评论回复失败: {e}")
             event.error = str(e)
             event.transition(ReplyState.FAILED)
             return ""
 
+    def _build_bilibili_comment_skill(self, bilibili_client: Any) -> Any:
+        """构建 B站评论 Skill 实例。"""
+        from neobot_app.bilibili.skills.reply_comment import BilibiliCommentSkill
+        return BilibiliCommentSkill(client=bilibili_client)
+
     async def _run_bilibili_private(self, event: Any, prompt: str, bilibili_client: Any) -> str:
-        """B站私信回复：使用 LLM 生成回复并发送。"""
+        """B站私信回复：agent 循环调用 LLM + 执行工具，直到 send_reply/cancel。"""
         from neobot_app.reply.event import ReplyState
 
         event.transition(ReplyState.GENERATING)
@@ -486,28 +561,94 @@ class ReplyOrchestrator:
         if self._provider is None:
             event.transition(ReplyState.FAILED)
             return ""
+
+        ctx = event.bilibili_context
 
         try:
             toolset = self._build_bilibili_private_toolset(event, bilibili_client)
-            result = await self._provider.generate_with_tools(
-                prompt=prompt,
-                tools=toolset,
-            )
-            event.generated_text = result
+            messages: list[dict] = [{"role": "user", "content": prompt}]
+            reply_sent = False
+
+            while True:
+                response = await self._provider.chat(
+                    messages, tools=toolset if toolset else None
+                )
+                messages.append(response)
+
+                tool_calls = response.get("tool_calls") if isinstance(response, dict) else None
+                if not tool_calls:
+                    content = response.get("content", "") if isinstance(response, dict) else str(response)
+                    text = content.strip() if isinstance(content, str) else str(content)
+                    if text and ctx is not None:
+                        await asyncio.to_thread(
+                            bilibili_client.send_message,
+                            receiver_id=ctx.sender_uid,
+                            content=text,
+                        )
+                        reply_sent = True
+                        event.generated_text = text
+                        self._logger.info("B站私信已发送", uid=ctx.sender_uid, text_len=len(text))
+                    break
+
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        args = {}
+
+                    if name == "send_reply":
+                        text = str(args.get("text", "")).strip()
+                        if text and ctx is not None:
+                            await asyncio.to_thread(
+                                bilibili_client.send_message,
+                                receiver_id=ctx.sender_uid,
+                                content=text,
+                            )
+                            reply_sent = True
+                            event.generated_text = text
+                            self._logger.info("B站私信已发送", uid=ctx.sender_uid, text_len=len(text))
+                        break
+
+                    if name == "cancel":
+                        self._logger.info("B站私信已取消")
+                        event.generated_text = ""
+                        reply_sent = True
+                        break
+
+                    # 执行 skill 工具
+                    result = await self._execute_bilibili_skill_tool(name, args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+                    self._logger.info(f"B站私信工具返回: {name}", result_len=len(result))
+
+                if reply_sent:
+                    break
+
+            if not reply_sent:
+                self._logger.warning("B站私信未发送：LLM 未调用 send_reply 且未生成文本")
+
+            event.transition(ReplyState.SENDING)
             event.transition(ReplyState.COMPLETED)
-            self._logger.info("B站私信回复完成: uid=%s", event.conversation_ref.id if event.conversation_ref else "")
-            return result
+            self._logger.info("B站私信回复完成", uid=event.conversation_ref.id if event.conversation_ref else "")
+            return event.generated_text
         except Exception as e:
-            self._logger.error("B站私信回复失败: %s", e)
+            self._logger.error(f"B站私信回复失败: {e}")
             event.error = str(e)
             event.transition(ReplyState.FAILED)
             return ""
 
-    def _build_bilibili_comment_toolset(self, event: Any, bilibili_client: Any) -> list[dict]:
-        """构建 B站评论回复的工具集（精简：reply_comment + cancel_reply）。"""
-        from neobot_app.bilibili.skills.reply_comment import BilibiliCommentSkill
-        skill = BilibiliCommentSkill(client=bilibili_client)
-        return skill.get_tools()
+    async def _execute_bilibili_skill_tool(self, name: str, args: dict) -> str:
+        """执行 B站私信管线中的 skill 工具。"""
+        if self._skill_manager is not None:
+            try:
+                return str(await self._skill_manager.execute(name, args))
+            except Exception as exc:
+                return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        return json.dumps({"ok": False, "error": "SkillManager 未配置"}, ensure_ascii=False)
 
     def _build_bilibili_private_toolset(self, event: Any, bilibili_client: Any) -> list[dict]:
         """构建 B站私信回复的工具集（复用完整 skill 集 + send_reply 适配）。"""
@@ -674,7 +815,7 @@ class ReplyOrchestrator:
             val = getattr(self._config.chat, "private_chat_max_tokens", None)
             if isinstance(val, int) and val > 0:
                 return val
-        return 10000
+        return 50000
 
     def _get_private_chat_new_message_collect_seconds(self) -> float:
         if self._config is not None:
@@ -686,7 +827,8 @@ class ReplyOrchestrator:
     @staticmethod
     def _estimate_tokens(messages: list[dict]) -> int:
         total_chars = sum(len(str(m)) for m in messages)
-        return int(total_chars / 1.5)
+        # 中文为主：1 字符 ≈ 1.3-1.5 token；用 /0.75 做偏保守估计
+        return int(total_chars / 0.75)
 
     def _get_ai_reply_check(self) -> bool:
         if self._config is None:

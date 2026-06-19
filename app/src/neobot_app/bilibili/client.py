@@ -26,6 +26,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+from urllib.parse import urlencode
 
 import requests
 
@@ -130,6 +131,9 @@ class BilibiliClient:
         self._seen_msg_keys: set[str] = set()
         self._last_msg_times: dict[int, int] = defaultdict(int)  # talker_id → timestamp
 
+        # WBI 签名缓存
+        self._wbi_mixin_key: str = ""
+
     # ── 认证 ──
 
     @property
@@ -140,7 +144,7 @@ class BilibiliClient:
         return self._my_uid
 
     def _extract_uid(self) -> int:
-        """从 API 获取自己的 UID。"""
+        """从 API 获取自己的 UID，同时缓存 WBI 签名密钥。"""
         try:
             resp = self.session.get(
                 "https://api.bilibili.com/x/web-interface/nav",
@@ -149,10 +153,64 @@ class BilibiliClient:
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("code") == 0:
-                    return data["data"].get("mid", 0)
+                    self._cache_wbi_keys(data["data"])
+                    mid = data["data"].get("mid", 0)
+                    if mid:
+                        self._my_uid = mid
+                    return mid
         except Exception:
             pass
         return 0
+
+    # ── WBI 签名 ──
+
+    _WBI_MIXIN_INDICES = [
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 52, 44, 34,
+    ]
+
+    def _cache_wbi_keys(self, nav_data: dict) -> None:
+        """从 nav 接口响应中提取并缓存 WBI 混合密钥。"""
+        if self._wbi_mixin_key:
+            return
+        wbi_img = nav_data.get("wbi_img")
+        if not wbi_img or not isinstance(wbi_img, dict):
+            logger.debug("nav 响应中无 wbi_img 字段，跳过 WBI 签名")
+            return
+        # 兼容 img_key/img_url 两种字段名
+        img_raw = str(wbi_img.get("img_key") or wbi_img.get("img_url") or "")
+        sub_raw = str(wbi_img.get("sub_key") or wbi_img.get("sub_url") or "")
+        img_key = img_raw.rsplit("/", 1)[-1].split(".")[0]
+        sub_key = sub_raw.rsplit("/", 1)[-1].split(".")[0]
+        if not img_key or not sub_key:
+            logger.debug("WBI 密钥提取失败: img=%s sub=%s", img_key[:8] if img_key else "", sub_key[:8] if sub_key else "")
+            return
+        combined = img_key + sub_key
+        self._wbi_mixin_key = "".join(
+            combined[i] for i in self._WBI_MIXIN_INDICES if i < len(combined)
+        )[:32]
+
+    def _sign_wbi(self, params: dict) -> dict:
+        """为请求参数添加 WBI 签名（w_rid + wts）。"""
+        if not self._wbi_mixin_key:
+            self._extract_uid()
+        if not self._wbi_mixin_key:
+            logger.warning("WBI 密钥未缓存，跳过签名")
+            return params
+
+        signed = dict(params)
+        # 确保 mid 使用真实 UID（而非 cookie 中的 DedeUserID）
+        if "mid" in signed and self._my_uid and self._my_uid != signed["mid"]:
+            signed["mid"] = self._my_uid
+        signed["wts"] = int(time.time())
+        # 按 key 排序并构建查询字符串
+        sorted_params = sorted(signed.items(), key=lambda x: x[0])
+        query_str = urlencode(sorted_params)
+        w_rid = hashlib.md5((query_str + self._wbi_mixin_key).encode()).hexdigest()
+        signed["w_rid"] = w_rid
+        return signed
 
     # ── 会话 ──
 
@@ -617,9 +675,11 @@ class BilibiliClient:
     def get_my_videos(self, page: int = 1, page_size: int = 10) -> list[dict]:
         """获取自己投稿的视频列表。返回 list[{aid, bvid, title, ...}]。"""
         try:
+            raw_params = {"mid": self.my_uid, "ps": page_size, "pn": page, "order": "pubdate"}
+            params = self._sign_wbi(raw_params)
             resp = self.session.get(
                 "https://api.bilibili.com/x/space/wbi/arc/search",
-                params={"mid": self.my_uid, "ps": page_size, "pn": page, "order": "pubdate"},
+                params=params,
                 timeout=5,
             )
             resp.raise_for_status()

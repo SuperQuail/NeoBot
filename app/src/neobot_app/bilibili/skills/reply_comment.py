@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -124,8 +125,9 @@ async def _handle_reply_comment(self: BilibiliCommentSkill, args: dict) -> str:
         return _json({"ok": False, "error": "缺少必要参数 (oid/root/parent/text)"})
 
     try:
-        ok = await self._client.send_comment_reply(
-            oid=oid, root=root, parent=parent, text=text, type_=type_
+        ok = await asyncio.to_thread(
+            self._client.send_comment_reply,
+            oid=oid, root=root, parent=parent, text=text, type_=type_,
         )
         if ok:
             return _json({"ok": True, "message": f"回复成功 (oid={oid}, rpid={parent})"})

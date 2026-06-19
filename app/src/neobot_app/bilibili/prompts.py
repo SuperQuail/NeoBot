@@ -46,7 +46,8 @@ class CommentContext:
     target_up_name: str = ""      # UP 主昵称
     target_desc: str = ""         # 视频/动态简介描述
     comment_tree: list[CommentNode] = field(default_factory=list)
-    reply_target_rpid: int = 0    # ★ 标记的目标评论 rpid
+    reply_target_rpid: int = 0    # ★ 标记的目标评论 rpid（=parent）
+    reply_root_rpid: int = 0      # 根评论 rpid（嵌套回复时 ≠ reply_target_rpid）
 
 
 @dataclass

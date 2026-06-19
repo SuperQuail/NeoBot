@@ -55,22 +55,9 @@ class BilibiliEventBridge:
             if ctx is None:
                 return
 
-            if bilibili_cfg.simulate:
-                logger.info("[模拟] 评论回复: @%s → %s",
-                           ctx.reply_target_rpid, ctx.target_title[:30])
-                return
-
             # 提交给 orchestrator
-            if self._orchestrator is not None and bilibili_cfg.enable_agent_mode:
+            if self._orchestrator is not None:
                 self._orchestrator.start_bilibili_comment_reply(ctx, self._client)
-            elif self._prompt_builder is not None:
-                prompt = await asyncio.to_thread(
-                    self._prompt_builder.build_bilibili_comment_prompt, ctx
-                )
-                logger.debug("评论提示词已构建: %d 字符", len(prompt))
-                # 单次模式交由 orchestrator 处理
-                if self._orchestrator is not None:
-                    self._orchestrator.start_bilibili_comment_reply(ctx, self._client)
 
         except Exception:
             logger.exception("处理评论事件失败")
@@ -86,10 +73,6 @@ class BilibiliEventBridge:
         try:
             ctx = self._build_private_context(msg, session)
             if ctx is None:
-                return
-
-            if bilibili_cfg.simulate:
-                logger.info("[模拟] 私信回复: @%s", msg.sender_uid)
                 return
 
             if self._orchestrator is not None:
@@ -137,6 +120,7 @@ class BilibiliEventBridge:
             target_url=item_data.get("uri", ""),
             comment_tree=[target_node],
             reply_target_rpid=source_id,
+            reply_root_rpid=real_root,
         )
 
     def _build_context_from_video_comment(
@@ -168,6 +152,7 @@ class BilibiliEventBridge:
             target_url=f"https://www.bilibili.com/video/av{aid}",
             comment_tree=[target_node],
             reply_target_rpid=rpid,
+            reply_root_rpid=rpid,  # 视频评论为顶层，root=parent=rpid
         )
 
     def _build_private_context(self, msg, session):

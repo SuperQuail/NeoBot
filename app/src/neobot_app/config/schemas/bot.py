@@ -709,7 +709,7 @@ class ScheduledTask:
         metadata={"description": "同一定时任务在触发时间窗口内重复提醒的冷却秒数，默认300秒"},
     )
     poll_interval_seconds: int = field(
-        default=60,
+        default=10,
         metadata={"description": "定时任务扫描间隔秒数，默认每分钟扫描一次"},
     )
     default_window_seconds: int = field(
@@ -1090,7 +1090,7 @@ class BilibiliConfig:
         metadata={"description": "B站模块总开关；启动时若无法提取浏览器Cookie则自动关闭"},
     )
     poll_interval_seconds: float = field(
-        default=60.0,
+        default=5.0,
         metadata={"description": "B站轮询间隔秒数"},
     )
     comment_reply_enabled: bool = field(
@@ -1100,30 +1100,6 @@ class BilibiliConfig:
     private_message_enabled: bool = field(
         default=True,
         metadata={"description": "是否启用私信回复"},
-    )
-    like_enabled: bool = field(
-        default=True,
-        metadata={"description": "是否给评论点赞"},
-    )
-    like_probability: float = field(
-        default=0.5,
-        metadata={"description": "点赞概率，0.0~1.0"},
-    )
-    reply_probability: float = field(
-        default=0.8,
-        metadata={"description": "回复概率，0.0~1.0"},
-    )
-    user_cooldown_minutes: int = field(
-        default=60,
-        metadata={"description": "同一用户回复冷却分钟数"},
-    )
-    simulate: bool = field(
-        default=False,
-        metadata={"description": "模拟模式，不实际发送回复"},
-    )
-    enable_agent_mode: bool = field(
-        default=False,
-        metadata={"description": "是否启用完整 agent 模式（含 skills/tools）；关闭则使用单次 LLM 调用"},
     )
     max_video_check_count: int = field(
         default=5,
@@ -1378,7 +1354,7 @@ class EnhancedChat(Chat):
         metadata={"description": "私聊回复后挂起等待秒数；超时无新消息则结束会话，默认300秒（5分钟）"},
     )
     private_chat_max_tokens: int = field(
-        default=10000,
+        default=50000,
         metadata={"description": "私聊会话最大token数；超过后重启聊天管线"},
     )
     private_chat_dynamic_warmup: bool = field(
