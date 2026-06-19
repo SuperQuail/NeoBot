@@ -489,22 +489,36 @@ class ReplyOrchestrator:
                     content = response.get("content", "") if isinstance(response, dict) else str(response)
                     text = content.strip() if isinstance(content, str) else str(content)
                     if text and ctx is not None:
+                        root = ctx.reply_root_rpid or ctx.reply_target_rpid
+                        parent = ctx.reply_target_rpid
+                        type_ = type_map.get(ctx.target_type, 1)
                         self._logger.info(
                             "B站评论发送",
                             event_id=event_id,
                             oid=ctx.target_oid,
-                            rpid=ctx.reply_target_rpid,
+                            root=root,
+                            parent=parent,
+                            type_=type_,
                             text_len=len(text),
                         )
                         ok = await asyncio.to_thread(
                             bilibili_client.send_comment_reply,
                             oid=ctx.target_oid,
-                            root=ctx.reply_root_rpid or ctx.reply_target_rpid,
-                            parent=ctx.reply_target_rpid,
+                            root=root,
+                            parent=parent,
                             text=text,
-                            type_=type_map.get(ctx.target_type, 1),
+                            type_=type_,
                         )
-                        if not ok:
+                        if ok:
+                            self._logger.info(
+                                "B站评论API调用成功",
+                                event_id=event_id,
+                                oid=ctx.target_oid,
+                                root=root,
+                                parent=parent,
+                                type_=type_,
+                            )
+                        else:
                             self._logger.warning(
                                 "B站评论回复API返回失败",
                                 event_id=event_id,
@@ -528,19 +542,39 @@ class ReplyOrchestrator:
                     )
 
                     if name == "reply_comment" and ctx is not None:
+                        oid = int(args.get("oid", ctx.target_oid))
+                        root = int(args.get("root", ctx.reply_root_rpid or ctx.reply_target_rpid))
+                        parent = int(args.get("parent", ctx.reply_target_rpid))
+                        text = str(args.get("text", ""))
+                        type_ = int(args.get("type_", type_map.get(ctx.target_type, 1)))
+                        self._logger.info(
+                            "B站评论发送",
+                            event_id=event_id,
+                            oid=oid,
+                            root=root,
+                            parent=parent,
+                            type_=type_,
+                            text_len=len(text),
+                        )
                         ok = await asyncio.to_thread(
                             bilibili_client.send_comment_reply,
-                            oid=int(args.get("oid", ctx.target_oid)),
-                            root=int(args.get("root", ctx.reply_root_rpid or ctx.reply_target_rpid)),
-                            parent=int(args.get("parent", ctx.reply_target_rpid)),
-                            text=str(args.get("text", "")),
-                            type_=int(args.get("type_", type_map.get(ctx.target_type, 1))),
+                            oid=oid, root=root, parent=parent,
+                            text=text, type_=type_,
                         )
-                        if not ok:
+                        if ok:
+                            self._logger.info(
+                                "B站评论API调用成功",
+                                event_id=event_id,
+                                oid=oid,
+                                root=root,
+                                parent=parent,
+                                type_=type_,
+                            )
+                        else:
                             self._logger.warning(
                                 "B站评论回复API返回失败",
                                 event_id=event_id,
-                                oid=ctx.target_oid,
+                                oid=oid,
                             )
                         event.generated_text = str(args.get("text", ""))
                         reply_sent = True
@@ -747,7 +781,7 @@ class ReplyOrchestrator:
         return json.dumps({"ok": False, "error": "SkillManager 未配置"}, ensure_ascii=False)
 
     def _build_bilibili_private_toolset(self, event: Any, bilibili_client: Any) -> list[dict]:
-        """构建 B站私信回复的工具集（复用完整 skill 集 + send_reply 适配）。"""
+        """构建 B站私信回复的工具集（复用完整 skill 集 + send_reply/cancel）。"""
         tools: list[dict] = []
 
         # send_reply 工具（适配 B站私信发送）
@@ -755,13 +789,27 @@ class ReplyOrchestrator:
             "type": "function",
             "function": {
                 "name": "send_reply",
-                "description": "向B站私信对话发送回复。简短自然，不要使用markdown。",
+                "description": "向B站私信对话发送回复。简短自然，不要使用markdown。如果要取消回复请使用 cancel 工具，不要把 cancel 作为 text 参数的值。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "description": "回复文本内容"},
                     },
                     "required": ["text"],
+                },
+            },
+        })
+
+        # cancel 工具（跳过当前私信不回复）
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "cancel",
+                "description": "跳过当前B站私信不回复。当消息不值得回复（已回复过、无意义刷屏等）时调用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
             },
         })

@@ -104,6 +104,9 @@ class BilibiliPrivateMonitor:
             # 跳过自己的消息
             if msg.sender_uid == self.client.my_uid:
                 continue
+            # 跳过启动前的旧消息（防止重启后重复回复）
+            if msg.timestamp and msg.timestamp < self._program_start_time - 300:
+                continue
             # 去重
             if msg.msg_key and msg.msg_key in self._processed_ids:
                 continue

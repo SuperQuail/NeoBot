@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging as stdlib_logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,13 +48,35 @@ def _loguru_runtime_sink(message: Any) -> None:
         pass
 
 
+class _InterceptHandler(stdlib_logging.Handler):
+    """将 stdlib logging 调用转发到 loguru。"""
+
+    def emit(self, record: stdlib_logging.LogRecord) -> None:
+        try:
+            level = loguru.logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame = stdlib_logging.currentframe()
+        depth = 2
+        while frame and frame.f_code.co_filename == stdlib_logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        loguru.logger.bind(module_name=record.name).opt(
+            depth=depth, exception=record.exc_info
+        ).log(level, record.getMessage())
+
+
 def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = False) -> None:
     """配置 Loguru 输出格式。
 
     移除默认 handler，注册 stderr 和可选的文件 handler。
+    同时拦截 stdlib logging 调用，统一路由到 loguru。
     """
     loguru.logger.remove()
     loguru.logger.configure(extra={"module_name": "root"})
+
+    # 拦截所有 stdlib logging，转发到 loguru
+    stdlib_logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
 
     console_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "

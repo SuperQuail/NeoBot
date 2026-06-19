@@ -604,6 +604,8 @@ class BilibiliClient:
         parent: 父评论 rpid（回复顶层评论时=root）
         type_: 1=视频, 12=专栏, 17=动态
         """
+        logger.info("send_comment_reply 被调用: oid=%d root=%d parent=%d type=%d text=%.40s",
+                     oid, root, parent, type_, text)
         self._rate_limit_wait()
 
         data = {
@@ -620,6 +622,10 @@ class BilibiliClient:
             resp = self.session.post(
                 "https://api.bilibili.com/x/v2/reply/add",
                 data=data,
+                headers={
+                    "Referer": "https://www.bilibili.com/",
+                    "Origin": "https://www.bilibili.com",
+                },
                 timeout=5,
             )
             resp.raise_for_status()
@@ -628,6 +634,11 @@ class BilibiliClient:
 
             code = result.get("code", -1)
             if code == 0:
+                rpid = result.get("data", {}).get("rpid", 0)
+                logger.info(
+                    "评论回复成功: code=0 reply_rpid={} oid={} root={} parent={} text={:.40}",
+                    rpid, oid, root, parent, text,
+                )
                 return True
             if code == -799:
                 logger.warning("评论限流 (-799)，增加冷却时间")
@@ -637,7 +648,10 @@ class BilibiliClient:
             elif code == 12016:
                 logger.warning("评论包含敏感词 (12016)")
             else:
-                logger.warning("评论回复失败: code=%d msg=%s", code, result.get("message", ""))
+                logger.warning(
+                    "评论回复失败: code={} msg={} body={}",
+                    code, result.get("message", ""), result,
+                )
             return False
         except requests.RequestException as e:
             logger.error("发送评论回复异常: %s", e)
