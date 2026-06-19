@@ -561,6 +561,12 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.image_parse"),
     )
 
+    adaptive_prompt_skill = skill_manager.get("adaptive_prompt")
+    summary_tool_defs = adaptive_prompt_skill.get_tools() if adaptive_prompt_skill else []
+
+    async def _summary_tool_executor(tool_name: str, args: dict) -> str:
+        return await skill_manager.execute(tool_name, args)
+
     archive_summary_service = ArchiveMemoryAutoSummaryService(
         archive_memory_service=archive_memory_service,
         provider=_create_optional_agent_provider(
@@ -574,6 +580,8 @@ def create_application() -> NeoBotApplication:
             getattr(getattr(config, "agent", None), "memory", None), "item_archive", None
         ),
         logger=logger_factory.get_logger("app.archive_summary"),
+        tool_definitions=summary_tool_defs,
+        tool_executor=_summary_tool_executor,
     )
 
     tts_service = _create_tts_service(

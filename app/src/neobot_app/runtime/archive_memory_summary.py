@@ -36,12 +36,16 @@ class ArchiveMemoryAutoSummaryService:
         config: "BotConfig",
         item_archive_config: "AgentMemoryItemArchive | None" = None,
         logger: Logger | None = None,
+        tool_definitions: list[dict] | None = None,
+        tool_executor: Any = None,
     ) -> None:
         self._archive = archive_memory_service
         self._provider = provider
         self._config = config
         self._logger = logger or NullLogger()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._tool_definitions = tool_definitions or []
+        self._tool_executor = tool_executor
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
         self._favorability_max_change: int = int(getattr(fav_cfg, "max_change_per_summary", 5) or 5)
         self._favorability_min: int = int(getattr(fav_cfg, "min_value", -1000) or -1000)
@@ -128,22 +132,51 @@ class ArchiveMemoryAutoSummaryService:
         )
 
         try:
-            response = await asyncio.wait_for(
-                self._provider.chat(
-                    [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You maintain concise long-term archive summaries for a chat bot. "
-                                "Return only the updated summary text."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ]
-                ),
-                timeout=60.0,
-            )
-            new_summary = _extract_response_text(response).strip()
+            chat_messages: list[dict] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You maintain concise long-term archive summaries for a chat bot. "
+                        "Return only the updated summary text."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            tools = self._tool_definitions if self._tool_definitions else None
+            new_summary = ""
+
+            for _iteration in range(3):
+                response = await asyncio.wait_for(
+                    self._provider.chat(chat_messages, tools=tools),
+                    timeout=60.0,
+                )
+                chat_messages.append(response)
+
+                tool_calls = response.get("tool_calls")
+                if not tool_calls:
+                    new_summary = _extract_response_text(response).strip()
+                    break
+
+                if self._tool_executor is None:
+                    new_summary = _extract_response_text(response).strip()
+                    break
+
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    try:
+                        result = await self._tool_executor(name, args)
+                    except Exception as tool_exc:
+                        result = f"Tool error: {tool_exc}"
+                    chat_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": str(result),
+                    })
+
             if not new_summary:
                 raise ValueError("summary provider returned empty content")
             await self._archive.set(summary_table, conversation_id, new_summary, SUMMARY_TAGS)
@@ -162,6 +195,7 @@ class ArchiveMemoryAutoSummaryService:
                 conversation_id=conversation_id,
                 error=str(exc),
             )
+            await self._save_counter(counter_key, {"count": 0, "messages": []})
 
     async def _load_counter(self, key: str) -> dict[str, Any]:
         item = await self._archive.get(COUNTER_TABLE, key)
