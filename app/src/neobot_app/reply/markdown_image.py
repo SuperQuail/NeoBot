@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from PIL import Image
 import markdown as md_lib
 import pillowmd
 
@@ -220,7 +221,7 @@ class MarkdownImageConverter:
             height = min(max(height, 200), 8192)
             await browser.set_viewport(width=self._width + 40, height=height)
 
-            result = await browser.shot(name=filename)
+            result = await browser.screenshot()
             if not isinstance(result, dict) or not result.get("success"):
                 err = ""
                 if isinstance(result, dict):
@@ -230,17 +231,21 @@ class MarkdownImageConverter:
             image_path_str = result.get("path", "")
             if not image_path_str:
                 raise MarkdownImageError("浏览器截图未返回路径")
-            image_path = Path(image_path_str)
 
-            # 复制到标准输出目录
+            # screenshot() 返回 jpg，复制到标准输出目录并统一为 png
+            src = Path(image_path_str)
             target = self._output_dir / f"{filename}.png"
-            if image_path != target:
+            if src.suffix.lower() in (".jpg", ".jpeg"):
+                from PIL import Image
+                img = Image.open(str(src))
+                img.save(str(target), "PNG")
+                img.close()
+            else:
                 import shutil
-                shutil.copy2(str(image_path), str(target))
-                image_path = target
+                shutil.copy2(str(src), str(target))
 
-            self._logger.info("Markdown 浏览器渲染完成", path=str(image_path), height=height)
-            return image_path
+            self._logger.info("Markdown 浏览器渲染完成", path=str(target), height=height)
+            return target
 
     # ── pillowmd 渲染 ──
 
