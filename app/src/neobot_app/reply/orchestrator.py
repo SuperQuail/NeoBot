@@ -28,7 +28,6 @@ from neobot_app.time_context import monotonic_seconds
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
-    from neobot_chat import AgentRegistry
     from neobot_chat.providers.base import Provider
     from neobot_app.config.schemas.bot import BotConfig
     from neobot_app.emoji.service import EmojiEntry, EmojiService
@@ -98,7 +97,6 @@ class ReplyOrchestrator:
         willing_service: WillingService | None = None,
         image_parse_service: ImageParseService | None = None,
         emoji_service: EmojiService | None = None,
-        agent_registry: AgentRegistry | None = None,
         tts_service: Any = None,
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
@@ -124,7 +122,6 @@ class ReplyOrchestrator:
         self._willing_service = willing_service
         self._image_parse_service = image_parse_service
         self._emoji_service = emoji_service
-        self._agent_registry = agent_registry
         self._tts_service = tts_service
         self._provider_error_message = (
             provider_error_message or "当前主回复模型不可用，请检查模型配置"
@@ -389,8 +386,6 @@ class ReplyOrchestrator:
             await self._cross_chat_manager.shutdown()
         if self._notification_hub is not None:
             self._notification_hub.clear()
-        if self._agent_registry is not None:
-            await self._agent_registry.close()
         if self._provider is not None:
             await self._provider.close()
         self._logger.info("ReplyOrchestrator 已关闭")
@@ -852,13 +847,6 @@ class ReplyOrchestrator:
                 prompt += f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
-        if self._agent_registry is not None:
-            self._record_debug(
-                "sub_agents_enabled",
-                event,
-                queue_key=queue_key,
-                sub_agents=self._agent_registry.snapshot(),
-            )
 
         # 3. 准备消息列表
         event.transition(ReplyState.GENERATING)
@@ -1085,7 +1073,6 @@ class ReplyOrchestrator:
             numbering=numbering,
             send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
-            agent_registry=self._agent_registry,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
             search_emoji_handler=search_emoji_handler,

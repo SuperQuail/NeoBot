@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
@@ -50,6 +51,7 @@ class EmojiManagementSkill(SkillModule):
                     "properties": {
                         "page": {"type": "integer", "description": "页码，从1开始", "default": 1},
                         "page_size": {"type": "integer", "description": "每页数量", "default": 50},
+                        "return_paths": {"type": "boolean", "description": "是否返回文件路径", "default": False},
                     },
                     "required": [],
                 },
@@ -60,6 +62,7 @@ class EmojiManagementSkill(SkillModule):
                 {
                     "properties": {
                         "keyword": {"type": "string", "description": "搜索关键词"},
+                        "return_paths": {"type": "boolean", "description": "是否返回文件路径", "default": False},
                     },
                     "required": ["keyword"],
                 },
@@ -80,10 +83,10 @@ class EmojiManagementSkill(SkillModule):
                 "更新表情包信息。",
                 {
                     "properties": {
-                        "emoji_id": {"type": "integer", "description": "表情包 ID"},
+                        "emoji_id": {"type": "integer", "description": "表情包编号"},
                         "description": {"type": "string", "description": "新的描述"},
                     },
-                    "required": ["emoji_id"],
+                    "required": ["emoji_id", "description"],
                 },
             ),
             self._tool_def(
@@ -91,8 +94,8 @@ class EmojiManagementSkill(SkillModule):
                 "重命名表情包。",
                 {
                     "properties": {
-                        "emoji_id": {"type": "integer", "description": "表情包 ID"},
-                        "name": {"type": "string", "description": "新的名称"},
+                        "emoji_id": {"type": "integer", "description": "表情包编号"},
+                        "name": {"type": "string", "description": "新的文件名称"},
                     },
                     "required": ["emoji_id", "name"],
                 },
@@ -121,30 +124,114 @@ async def _handle_emoji_list(self: EmojiManagementSkill, args: dict) -> str:
         return _json({"ok": False, "error": "emoji_service 未配置"})
     page = int(args.get("page", 1))
     page_size = int(args.get("page_size", 50))
+    return_paths = bool(args.get("return_paths", False))
     try:
-        result = await self._emoji_service.list_emoji(page=page, page_size=page_size)
-        return _json({"ok": True, "result": str(result)[:2000]})
+        offset = (page - 1) * page_size
+        items_result, total, has_more = self._emoji_service.list_entries_paginated(
+            offset=offset, limit=page_size
+        )
+        items = []
+        for number, entry in items_result:
+            item = {
+                "number": number,
+                "file_name": entry.file_name,
+                "description": entry.analysis_text,
+                "use_count": entry.use_count,
+            }
+            if return_paths:
+                item["path"] = str(entry.file_path)
+            items.append(item)
+        return _json({
+            "ok": True, "items": items, "total": total, "has_more": has_more,
+        })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
+
 
 async def _handle_emoji_search(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:
         return _json({"ok": False, "error": "emoji_service 未配置"})
     keyword = str(args.get("keyword", "")).strip()
+    return_paths = bool(args.get("return_paths", False))
     try:
-        result = await self._emoji_service.search_emoji(keyword)
-        return _json({"ok": True, "result": str(result)[:2000]})
+        entries = self._emoji_service.search_entries(keyword)
+        items = []
+        for number, entry in entries:
+            item = {
+                "number": number,
+                "file_name": entry.file_name,
+                "description": entry.analysis_text,
+                "use_count": entry.use_count,
+            }
+            if return_paths:
+                item["path"] = str(entry.file_path)
+            items.append(item)
+        return _json({"ok": True, "items": items, "total": len(items)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
+
 async def _handle_emoji_add(self: EmojiManagementSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "emoji_service 未配置"})
+    if self._emoji_service is None:
+        return _json({"ok": False, "error": "emoji_service 未配置"})
+    image_path = str(args.get("image_path", "")).strip()
+    description = args.get("description", None)
+    if not image_path:
+        return _json({"ok": False, "error": "缺少 image_path"})
+    path = Path(image_path)
+    if not path.exists():
+        return _json({"ok": False, "error": f"文件不存在: {image_path}"})
+    try:
+        image_bytes = path.read_bytes()
+        result = await self._emoji_service.add_image_bytes(
+            image_bytes,
+            file_name=path.name,
+            analysis_text=description,
+            image_source="skill_import",
+        )
+        return _json({
+            "ok": True, "number": result.number,
+            "file_name": result.entry.file_name,
+            "description": result.entry.analysis_text,
+        })
+    except ValueError as e:
+        return _json({"ok": False, "error": str(e)})
+    except Exception as e:
+        return _json({"ok": False, "error": f"添加失败: {e}"})
+
 
 async def _handle_emoji_update(self: EmojiManagementSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "emoji_service 未配置"})
+    if self._emoji_service is None:
+        return _json({"ok": False, "error": "emoji_service 未配置"})
+    emoji_id = int(args.get("emoji_id", 0))
+    description = str(args.get("description", "")).strip()
+    if not emoji_id or not description:
+        return _json({"ok": False, "error": "缺少 emoji_id 或 description"})
+    try:
+        entry = await self._emoji_service.update_entry_description(emoji_id, description)
+        return _json({
+            "ok": True, "number": emoji_id,
+            "description": entry.analysis_text,
+        })
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
+
 
 async def _handle_emoji_rename(self: EmojiManagementSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "emoji_service 未配置"})
+    if self._emoji_service is None:
+        return _json({"ok": False, "error": "emoji_service 未配置"})
+    emoji_id = int(args.get("emoji_id", 0))
+    name = str(args.get("name", "")).strip()
+    if not emoji_id or not name:
+        return _json({"ok": False, "error": "缺少 emoji_id 或 name"})
+    try:
+        entry = await self._emoji_service.rename_entry(emoji_id, name)
+        return _json({
+            "ok": True, "number": emoji_id,
+            "file_name": entry.file_name,
+        })
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
 
 
 _HANDLERS = {

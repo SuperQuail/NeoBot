@@ -8,7 +8,6 @@ from typing import Any
 from neobot_chat.schema.exceptions import ToolError
 from neobot_chat.schema.protocol import ToolExecutor
 from neobot_chat.schema.types import ToolAccessPolicy, ToolAccessRule, ToolDefinition, ToolGuardContext
-from neobot_chat.tools import AgentRegistry
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
@@ -43,7 +42,6 @@ class ReplyToolExecutor(ToolExecutor):
         numbering: Any = None,
         send_emoji_handler: Any = None,
         emoji_service: Any = None,
-        agent_registry: AgentRegistry | None = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
         search_emoji_handler: Any = None,
@@ -66,7 +64,6 @@ class ReplyToolExecutor(ToolExecutor):
         ai_reply_check: bool = False,
         ai_reply_check_lightweight: bool = True,
         bot_name: str = "Bot",
-        skill_manager: Any = None,
         long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
         long_reply_max_length: int = 300,
         long_reply_max_sentence_count: int = 12,
@@ -78,7 +75,6 @@ class ReplyToolExecutor(ToolExecutor):
         self._numbering = numbering
         self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
-        self._agent_registry = agent_registry
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler
         self._search_emoji = search_emoji_handler
@@ -395,92 +391,6 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 ),
             )
-        if self._agent_registry:
-            tools.extend(
-                [
-                    _tool_def(
-                        "list_agents",
-                        "列出可用的子代理及其完整描述，或查看某个子代理的详细说明。"
-                        "不指定 agent 时列出全部子代理的完整描述；指定 agent 时显示该子代理的详细功能说明。",
-                        {
-                            "properties": {
-                                "agent": {
-                                    "type": "string",
-                                    "enum": self._agent_registry.names,
-                                    "description": "可选，子代理名称。不填则列出全部子代理。",
-                                },
-                            },
-                            "required": [],
-                        },
-                    ),
-                    _tool_def(
-                        "delegate",
-                        "把任务委托给子代理；当子代理的上次回复有疑问或需要更多信息时，"
-                        "在 previous_response 中传入其上次回复，并在 task 中给出答复；"
-                        "需要同一个子代理持续处理时传同一个 session_id。"
-                        "子代理可按需通过自己的工具读取当前聊天上下文。"
-                        "重要：仅做单一信息查询（查天气/查事实/查定义），不需要分析整理或写长文时，"
-                        "使用 list_tools 查看可用工具包，用 unlock 解锁 web_search 工具包自行搜索即可，不要委托 agent。"
-                        "但如果任务涉及研究收集+分析整理+撰写输出（如写报告/写markdown/综合评测），"
-                        "即使包含搜索步骤也是复杂任务，必须委托 problem_solver 处理。"
-                        "判断标准：只需回答一句话的事实查询→自行搜索；需要组织材料并产出结构化内容→委托 problem_solver。"
-                        "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
-                        "即使用户只说「这张图/刚才那张图/加到表情包」也直接委托 creator，不要先委托 image_parse。"
-                        "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
-                        "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。"
-                        "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
-                        "如果有人提出生日想要的祝福、庆祝场合或禁忌，委托 scheduled_task 记录或更新生日任务，不要只写入普通记忆。"
-                        "绘图失败时必须先发消息告知失败原因，再询问用户是否重试，不要自行立刻重试。"
-                        "涉及复杂数学、编程算法、科学计算、逻辑推理等需要深度思考的问题时，必须委托 problem_solver 处理。"
-                        "创建早安、生日祝福、普通提醒等定时任务时，默认使用一次性通知；一次性通知不是 once 一次性任务，循环任务也可以每个周期只通知一次。",
-                        {
-                            "properties": {
-                                "agent": {
-                                    "type": "string",
-                                    "enum": self._agent_registry.names,
-                                    "description": "子代理名称。",
-                                },
-                                "task": {
-                                    "type": "string",
-                                    "description": "传给子代理的自然语言任务或结构化任务。",
-                                },
-                                "previous_response": {
-                                    "type": "string",
-                                    "description": "可选，子代理上次回复的内容。当子代理提问或索要信息时填写。",
-                                },
-                                "session_id": {
-                                    "type": "string",
-                                    "description": "可选，持续会话 ID。继续同一个子代理任务时保持相同值。",
-                                },
-                                "tasks": {
-                                    "type": "array",
-                                    "description": "可选，批量委托任务列表。",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "agent": {
-                                                "type": "string",
-                                                "enum": self._agent_registry.names,
-                                            },
-                                            "task": {"type": "string"},
-                                            "previous_response": {
-                                                "type": "string",
-                                                "description": "可选，该子代理的上次回复。",
-                                            },
-                                            "session_id": {
-                                                "type": "string",
-                                                "description": "可选，持续会话 ID。",
-                                            },
-                                        },
-                                        "required": ["agent", "task"],
-                                    },
-                                },
-                            },
-                            "required": [],
-                        },
-                    ),
-                ]
-            )
         if (
             self._drawing_manager is not None
             or self._scheduled_task_manager is not None
@@ -561,10 +471,6 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_speak(args)
         if name == "poke_user":
             return await self._execute_poke_user(args)
-        if name == "list_agents":
-            return self._execute_list_agents(args)
-        if name == "delegate":
-            return await self._execute_delegate(args)
         if name == "check_background_tasks":
             return await self._execute_check_background_tasks(args)
         if name == "check_last_drawing":
@@ -826,52 +732,6 @@ class ReplyToolExecutor(ToolExecutor):
             return f"错误：user_id 无效，收到 {args.get('user_id')}"
         return await self._poke_user(user_id=user_id)
 
-    def _execute_list_agents(self, args: dict) -> str:
-        if self._agent_registry is None:
-            return "No agents available"
-        agent = args.get("agent")
-        if agent is None:
-            return self._agent_registry.list_agents()
-        return self._agent_registry.list_agents(str(agent))
-
-    async def _execute_delegate(self, args: dict) -> str:
-        if self._agent_registry is None:
-            return "No agents available"
-        agent = args.get("agent")
-        task = args.get("task")
-        tasks = args.get("tasks")
-        previous_response = args.get("previous_response")
-        session_id = args.get("session_id")
-        normalized_tasks = tasks if isinstance(tasks, list) else None
-        target_agent = str(agent) if agent is not None else "unknown"
-        task_str = str(task) if task is not None else None
-        task_summary = (task_str or str(normalized_tasks))[:200]
-        self._logger.info(
-            f"委托子Agent: {target_agent}",
-            agent=target_agent,
-            task=task_summary,
-        )
-        return await self._agent_registry.delegate(
-            agent=target_agent,
-            task=task_str,
-            tasks=normalized_tasks,
-            previous_response=str(previous_response) if previous_response else None,
-            session_id=str(session_id) if session_id else None,
-            context=self._build_delegate_context(),
-        )
-
-    def _build_delegate_context(self) -> str:
-        parts: list[str] = []
-        if self._conv_kind and self._conv_id:
-            parts.append(f"[当前会话]\nkind={self._conv_kind}\nid={self._conv_id}")
-        if self._chat_context:
-            parts.append("[主Agent当前提示词]\n" + self._chat_context)
-
-        mapping_text = self._build_message_id_context()
-        if mapping_text:
-            parts.append(mapping_text)
-        return "\n\n".join(parts)
-
     def _build_message_id_context(self) -> str:
         if self._numbering is None:
             return ""
@@ -1065,7 +925,6 @@ def build_reply_toolset(
     numbering: Any = None,
     send_emoji_handler: Any = None,
     emoji_service: Any = None,
-    agent_registry: AgentRegistry | None = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
     search_emoji_handler: Any = None,
@@ -1100,7 +959,6 @@ def build_reply_toolset(
         numbering=numbering,
         send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
-        agent_registry=agent_registry,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
         search_emoji_handler=search_emoji_handler,

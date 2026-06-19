@@ -139,7 +139,14 @@ def build_all_skills(
         skills_to_register.append(ImageSendSkill(adapter=adapter, file_server=file_server))
 
     if "image_parse" not in disabled:
-        skills_to_register.append(ImageParseSkill(vision_provider=vision_provider, adapter=adapter))
+        skills_to_register.append(
+            ImageParseSkill(
+                vision_provider=vision_provider,
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+            )
+        )
 
     if "willingness" not in disabled:
         skills_to_register.append(WillingnessSkill(willing_service=willing_service))
@@ -184,11 +191,8 @@ def build_all_skills(
             )
         )
 
-    # ── Phase 3: 浏览器 Skills（条件注册） ──
-    browser_enabled = bool(
-        config and hasattr(config.agent, "browser") and config.agent.browser.enabled
-    )
-    if "browser" not in disabled and browser_enabled:
+    # ── Phase 3: 浏览器 Skills（browser_instance 为 None 时不注册） ──
+    if "browser" not in disabled and browser_instance is not None:
         skills_to_register.append(
             BrowserSkill(
                 browser_instance=browser_instance,
@@ -196,11 +200,11 @@ def build_all_skills(
                 sandbox_service=sandbox_service,
             )
         )
-    if "browser_network" not in disabled and browser_enabled:
+    if "browser_network" not in disabled and browser_instance is not None:
         skills_to_register.append(
             BrowserNetworkSkill(browser_instance=browser_instance)
         )
-    if "browser_video" not in disabled and browser_enabled:
+    if "browser_video" not in disabled and browser_instance is not None:
         skills_to_register.append(
             BrowserVideoSkill(
                 browser_instance=browser_instance,

@@ -13,7 +13,7 @@ from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.config.schemas.env import EnvConfig
-from neobot_app.assembly.agents import build_agent_registry, resolve_agent_model_name
+from neobot_app.assembly.agents import resolve_agent_model_name
 from neobot_app.assembly.adapter import build_adapter
 from neobot_app.bot_detect import BotDetector
 from neobot_app.assembly.memory import (
@@ -61,6 +61,7 @@ from neobot_app.runtime.temp_cleaner import TempCleaner
 from neobot_app.runtime.sandbox_lock import SandboxLock
 from neobot_app.runtime.sandbox_service import SandboxService
 from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
+from neobot_app.browser import BrowserAgentWrapper
 from neobot_app.skills import build_all_skills
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
@@ -374,6 +375,20 @@ def create_application() -> NeoBotApplication:
         else None
     )
 
+    browser_instance = (
+        BrowserAgentWrapper(
+            data_dir=DATA_DIR / "browser",
+            headless=getattr(browser_cfg, "headless", True),
+            port=getattr(browser_cfg, "port", 0),
+            lifecycle_manager=browser_lifecycle_manager,
+        )
+        if browser_cfg and browser_cfg.enabled
+        else None
+    )
+
+    if browser_instance and browser_lifecycle_manager:
+        browser_lifecycle_manager.set_browser_instance(browser_instance)
+
     file_server = FileServer(
         DATA_DIR,
         port=config.file_server.port,
@@ -423,30 +438,13 @@ def create_application() -> NeoBotApplication:
         markdown_image_converter=markdown_image_converter,
         sandbox_lock=sandbox_lock,
         sandbox_service=sandbox_service,
+        browser_instance=browser_instance,
         browser_lifecycle_manager=browser_lifecycle_manager,
         problem_solver_manager=problem_solver_manager,
     )
 
     # 将 SkillManager 注入 PluginHostFacade（供插件 register_skill 使用）
     host_facade._set_skills(skill_manager)
-
-    agent_registry = build_agent_registry(
-        config=config,
-        archive_memory_service=archive_memory_service,
-        uow_factory=uow_factory,
-        adapter=adapter,
-        emoji_service=emoji_service,
-        profile_service=profile_service,
-        vision_provider=vision_provider,
-        willing_service=willing_service,
-        logger=logger_factory.get_logger("app.agent_registry"),
-        drawing_manager=drawing_manager,
-        problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
-        group_message_queue=group_message_queue,
-        friend_message_queue=friend_message_queue,
-        file_server=file_server,
-    )
 
     if config.plugins.enabled:
         plugin_dir = Path(config.plugins.dir)
@@ -493,7 +491,6 @@ def create_application() -> NeoBotApplication:
             data_dir=DATA_DIR / "plugins_data",
             adapter=adapter,
             logger_factory=logger_factory,
-            agent_registry=agent_registry,
             hook_bus=hook_bus,
             record_ai_reply_block=reply_block_registry.block_event,
             output=runtime_output,
@@ -520,7 +517,6 @@ def create_application() -> NeoBotApplication:
             provider_logger=provider_logger,
         ),
         config=config,
-        agent_registry=agent_registry,
         item_archive_config=getattr(
             getattr(getattr(config, "agent", None), "memory", None), "item_archive", None
         ),
@@ -570,7 +566,6 @@ def create_application() -> NeoBotApplication:
         willing_service=willing_service,
         image_parse_service=image_parse_service,
         emoji_service=emoji_service,
-        agent_registry=agent_registry,
         tts_service=tts_service,
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,

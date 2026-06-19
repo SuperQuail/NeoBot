@@ -15,7 +15,6 @@ from neobot_app.time_context import get_current_time_and_lunar_date
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import AgentMemoryItemArchive, BotConfig
     from neobot_chat.providers.base import Provider
-    from neobot_chat.tools.registry import AgentRegistry
 
 
 COUNTER_TABLE = "memory_counter"
@@ -35,14 +34,12 @@ class ArchiveMemoryAutoSummaryService:
         archive_memory_service: ArchiveMemoryService,
         provider: "Provider | None",
         config: "BotConfig",
-        agent_registry: "AgentRegistry | None" = None,
         item_archive_config: "AgentMemoryItemArchive | None" = None,
         logger: Logger | None = None,
     ) -> None:
         self._archive = archive_memory_service
         self._provider = provider
         self._config = config
-        self._agent_registry = agent_registry
         self._logger = logger or NullLogger()
         self._locks: dict[str, asyncio.Lock] = {}
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
@@ -69,8 +66,7 @@ class ArchiveMemoryAutoSummaryService:
         interval = self._interval_for(conversation_kind)
         if interval <= 0:
             return
-        has_memory_agent = self._agent_registry is not None and "memory" in self._agent_registry.names
-        if self._provider is None and not has_memory_agent:
+        if self._provider is None:
             self._logger.debug(
                 "archive auto summary skipped because provider is unavailable",
                 conversation_kind=conversation_kind,
@@ -119,15 +115,6 @@ class ArchiveMemoryAutoSummaryService:
     ) -> None:
         if not messages:
             await self._save_counter(counter_key, {"count": 0, "messages": []})
-            return
-
-        if self._agent_registry is not None and "memory" in self._agent_registry.names:
-            await self._delegate_memory_agent_and_reset(
-                conversation_kind=conversation_kind,
-                conversation_id=conversation_id,
-                counter_key=counter_key,
-                messages=messages,
-            )
             return
 
         summary_table = self._summary_table_for(conversation_kind)
@@ -288,41 +275,6 @@ class ArchiveMemoryAutoSummaryService:
         if self._provider is not None:
             await self._provider.close()
 
-    async def _delegate_memory_agent_and_reset(
-        self,
-        *,
-        conversation_kind: str,
-        conversation_id: str,
-        counter_key: str,
-        messages: list[Any],
-    ) -> None:
-        task = self._build_agent_task(
-            conversation_kind=conversation_kind,
-            conversation_id=conversation_id,
-            messages=messages,
-        )
-        try:
-            result = await self._agent_registry.delegate(
-                agent="memory",
-                task=task,
-                session_id=f"auto:{conversation_kind}:{conversation_id}",
-            )
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
-            self._logger.info(
-                "memory agent auto processing completed",
-                conversation_kind=conversation_kind,
-                conversation_id=conversation_id,
-                message_count=len(messages),
-                result=str(result),
-            )
-        except Exception as exc:
-            self._logger.warning(
-                "memory agent auto processing failed",
-                conversation_kind=conversation_kind,
-                conversation_id=conversation_id,
-                error=str(exc),
-            )
-
     def _interval_for(self, conversation_kind: str) -> int:
         trigger = getattr(getattr(self._config, "agent", None), "memory", None)
         trigger = getattr(trigger, "trigger", None)
@@ -382,62 +334,6 @@ class ArchiveMemoryAutoSummaryService:
             f"Recent messages:\n{recent}\n\n"
             "Updated summary:"
         )
-
-    def _build_agent_task(
-        self,
-        *,
-        conversation_kind: str,
-        conversation_id: str,
-        messages: list[Any],
-    ) -> str:
-        current_time = get_current_time_and_lunar_date()
-        recent = "\n".join(f"- {_format_counter_message(message)}" for message in messages)
-        fav_instruction = ""
-        if self._favorability_max_change > 0:
-            fav_instruction = (
-                f"此外，根据近期聊天中用户的行为综合评估并调整好感度：\n"
-                f"正向互动（友好、配合、积极）适当增加好感度，负向（冒犯、骚扰、恶意）减少好感度。\n"
-                f"每次变更上限 ±{self._favorability_max_change}，范围 {self._favorability_min}~{self._favorability_max}。\n"
-                f"使用 update_favorability 工具执行变更，不要遗漏任何值得调整的用户。\n"
-            )
-        item_instruction = ""
-        if self._item_archive_enabled:
-            item_instruction = (
-                f"最后，检查聊天中是否讨论了值得记录的物品、事件或话题，"
-                f"如果有，在 {self._item_archive_table} 表中记录：\n"
-                f"用关键词（下划线连接，如\"游戏_原神\"或\"事件_2026春游\"）作为 key，"
-                f"先 read_archive 检查已有档案，再 save_archive 合并写入。\n"
-                f"只记录确实有实质信息的内容，不要记录琐碎的提及。\n"
-            )
-        if conversation_kind == "group":
-            conversation_label = f"群聊(群号:{conversation_id})"
-            workflow = (
-                "这是自动触发的群聊记忆处理。请按顺序执行：\n"
-                "1. 依次检查本轮参与聊天的所有群友，读取他们现有 user_profile 档案，只记录了解到的新个人信息，不记录具体聊天事件。\n"
-                "2. 如果聊天中明确要求你记住某些事情，而对应档案没有，加入对应档案记录。\n"
-                "3. 没有需要记录的新信息时允许不写。\n"
-                f"4. {fav_instruction}"
-                "5. 最后读取并更新 group_profile，只记录对群的新稳定信息，不记录具体事件。\n"
-                f"6. {item_instruction}"
-            )
-        else:
-            conversation_label = f"私聊(QQ号:{conversation_id})"
-            workflow = (
-                "这是自动触发的好友聊天记忆处理。请读取该好友现有 user_profile 档案，"
-                "只记录好友新的稳定信息或明确要求记住的内容，不记录具体聊天事件；没有新信息时允许不写。\n"
-                f"{fav_instruction}"
-                f"{item_instruction}"
-            )
-        return (
-            f"当前时间(记忆总结时间): {current_time}\n"
-            f"会话: {conversation_label}\n"
-            "以下待总结消息是当前时间不久前产生的近期消息。\n"
-            f"{workflow}"
-            "如果近期消息含义不明确或指代不清，可以调用 read_earlier_messages 拉取更早消息确认。\n"
-            "近期消息:\n"
-            f"{recent}"
-        )
-
 
 def _normalize_message_text(text: str) -> str:
     return " ".join(str(text or "").split())

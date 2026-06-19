@@ -78,6 +78,28 @@ class BrowserLifecycleManager:
         """
         return not self.has_held_pages
 
+    async def try_auto_close(self, browser: Any) -> bool:
+        """自动关闭浏览器（如果满足条件）。
+
+        Args:
+            browser: 浏览器实例（需有 close() 方法）
+
+        Returns:
+            True 表示已关闭，False 表示未满足关闭条件
+        """
+        if not self.should_auto_close():
+            return False
+        try:
+            if hasattr(browser, "close"):
+                if callable(browser.close):
+                    result = browser.close()
+                    if hasattr(result, "__await__"):
+                        await result
+            self.reset()
+        except Exception:
+            pass
+        return True
+
     def _purge_expired(self) -> None:
         """清理过期的保活记录。"""
         now = time.time()
