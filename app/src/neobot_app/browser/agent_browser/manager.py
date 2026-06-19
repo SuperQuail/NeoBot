@@ -172,8 +172,6 @@ class BrowserManager:
         co.set_argument("--disable-blink-features=AutomationControlled")
         co.ignore_certificate_errors(True)
         co.set_load_mode("eager")
-        co.set_argument("--disable-gpu")
-        co.set_argument("--disable-software-rasterizer")
         co.set_argument("--no-sandbox")
         if self._headless:
             co.headless(True)
@@ -182,11 +180,15 @@ class BrowserManager:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             )
+            # headless 模式必须保留软件渲染能力，否则截图会失败
+            co.set_argument("--disable-gpu")
         else:
             co.headless(False)
             co.set_argument("--start-maximized")
             co.set_argument("--window-position=0,0")
             co.set_argument("--window-size=1280,800")
+            co.set_argument("--disable-gpu")
+            co.set_argument("--disable-software-rasterizer")
             co.set_argument("--disable-gpu-compositing")
             co.set_argument("--disable-accelerated-2d-canvas")
             co.set_argument("--disable-accelerated-video-decode")
@@ -1203,9 +1205,10 @@ class BrowserManager:
     # ── 截图 ──
 
     async def screenshot(self, path: str | Path | None = None, full_page: bool = False) -> bytes:
+        page = await self._ensure_page()
         if path is None:
             path = Path(self._user_data_dir) / "screenshot.png"
-        await asyncio.to_thread(self.page.get_screenshot, path=str(path), full_page=full_page)
+        await asyncio.to_thread(page.get_screenshot, path=str(path), full_page=full_page)
         try:
             from PIL import Image
             img = Image.open(path)

@@ -207,9 +207,9 @@ class BrowserAgentWrapper:
 
     # ── 等待 ──
 
-    async def wait(self, seconds: float = 2.0) -> dict:
+    async def wait(self, condition: str = "timeout", value: str = "", timeout: int = 20) -> dict:
         agent = await self._ensure()
-        result = await agent.wait(seconds)
+        result = await agent.wait(condition, value, timeout)
         await self._notify_lifecycle()
         return result
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
@@ -282,7 +283,21 @@ async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
             conv_ref = ConversationRef(kind="private", id=user_id)
 
         segment = prepare_image_segment(self._file_server, path)
-        await self._adapter.send(conv_ref, [segment])
+        resp = await self._adapter.send(conv_ref, [segment])
+
+        # 检查 go-cqhttp API 响应状态
+        if resp is None:
+            return _json({"ok": False, "error": "发送超时，无响应"})
+        if hasattr(resp, "status") and hasattr(resp, "retcode"):
+            if resp.status == "failed" or (resp.retcode is not None and resp.retcode != 0):
+                msg = resp.message or resp.wording or str(resp.retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={resp.retcode}): {msg}"})
+        elif isinstance(resp, dict):
+            r_status = resp.get("status")
+            r_retcode = resp.get("retcode")
+            if r_status == "failed" or (r_retcode is not None and r_retcode != 0):
+                msg = resp.get("message") or resp.get("wording") or str(r_retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={r_retcode}): {msg}"})
         return _json({"ok": True, "path": str(path)})
     except Exception as e:
         return _json({"ok": False, "error": f"发送失败: {e}"})

@@ -364,8 +364,15 @@ async def _handle_shot(self: BrowserSkill, args: dict) -> str:
     result = await self._browser.screenshot()
     if not isinstance(result, dict) or not result.get("success"):
         return _json({"ok": False, "error": "截图失败"})
-    b64_data = result.get("data_url", "").removeprefix("data:image/png;base64,")
-    png_bytes = base64.b64decode(b64_data)
+    # screenshot() 返回 JPEG，转换为 PNG 保存
+    b64_data = result.get("data_url", "").removeprefix("data:image/jpeg;base64,")
+    jpg_bytes = base64.b64decode(b64_data)
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(jpg_bytes))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    png_bytes = buf.getvalue()
     if self._sandbox:
         path = self._sandbox.ensure_temp_dir(chat_flow_id) / f"{name}.png"
         await self._sandbox.write_file(path, png_bytes)

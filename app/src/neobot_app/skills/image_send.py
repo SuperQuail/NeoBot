@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
@@ -74,7 +75,62 @@ class ImageSendSkill(SkillModule):
 # ── Handlers ──
 
 async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "图片发送服务未配置"})
+    if self._adapter is None:
+        return _json({"ok": False, "error": "adapter 未配置"})
+    if self._file_server is None:
+        return _json({"ok": False, "error": "file_server 未配置"})
+
+    image_id = args.get("image_id")
+    file_path = str(args.get("file_path", "")).strip()
+    group_id = str(args.get("group_id", "")).strip()
+    user_id = str(args.get("user_id", "")).strip()
+
+    if not group_id and not user_id:
+        return _json({"ok": False, "error": "缺少 group_id 或 user_id"})
+    if not image_id and not file_path:
+        return _json({"ok": False, "error": "缺少 image_id 或 file_path"})
+
+    try:
+        from neobot_app.utils.media_sender import prepare_image_segment
+        from neobot_contracts.models import ConversationRef
+
+        if group_id:
+            conv_ref = ConversationRef(kind="group", id=group_id)
+        else:
+            conv_ref = ConversationRef(kind="private", id=user_id)
+
+        # 根据 image_id 或 file_path 获取图片路径
+        if file_path:
+            path = Path(file_path)
+            if not path.exists():
+                return _json({"ok": False, "error": f"文件不存在: {file_path}"})
+        elif image_id:
+            from neobot_app.core import DATA_DIR
+            gallery_dir = DATA_DIR / "creator" / "gallery"
+            candidates = list(gallery_dir.glob(f"{image_id}.*"))
+            if not candidates:
+                return _json({"ok": False, "error": f"图库不存在 image_id={image_id}"})
+            path = candidates[0]
+
+        segment = prepare_image_segment(self._file_server, path)
+        resp = await self._adapter.send(conv_ref, [segment])
+
+        # 检查 go-cqhttp API 响应状态
+        if resp is None:
+            return _json({"ok": False, "error": "发送超时，无响应"})
+        if hasattr(resp, "status") and hasattr(resp, "retcode"):
+            if resp.status == "failed" or (resp.retcode is not None and resp.retcode != 0):
+                msg = resp.message or resp.wording or str(resp.retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={resp.retcode}): {msg}"})
+        elif isinstance(resp, dict):
+            r_status = resp.get("status")
+            r_retcode = resp.get("retcode")
+            if r_status == "failed" or (r_retcode is not None and r_retcode != 0):
+                msg = resp.get("message") or resp.get("wording") or str(r_retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={r_retcode}): {msg}"})
+        return _json({"ok": True, "path": str(path)})
+    except Exception as e:
+        return _json({"ok": False, "error": f"发送失败: {e}"})
 
 
 _HANDLERS = {
