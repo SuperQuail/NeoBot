@@ -110,7 +110,7 @@ class ReplyOrchestrator:
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
-        tool_package_manager: Any = None,
+        skill_manager: Any = None,
         balance_checker: Any = None,
         runtime_events: Any = None,
         file_server: FileServer | None = None,
@@ -138,7 +138,7 @@ class ReplyOrchestrator:
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
-        self._tool_package_manager = tool_package_manager
+        self._skill_manager = skill_manager
         self._balance_checker = balance_checker
         self._runtime_events = runtime_events
         self._file_server = file_server
@@ -804,10 +804,6 @@ class ReplyOrchestrator:
         from neobot_app.message.numbering import MessageNumbering
         from neobot_app.reply.tools import build_reply_toolset
 
-        # 复位工具包会话状态（搜索计数器等），确保新任务从零开始
-        if self._tool_package_manager is not None:
-            self._tool_package_manager.reset_sessions()
-
         # 随机触发表情包发送
         await self._maybe_trigger_sticker(queue, queue_key, event)
 
@@ -848,6 +844,12 @@ class ReplyOrchestrator:
                     f"{search_hint}\n"
                     "</可用的表情包>"
                 )
+
+        # 注入 Skill 操作说明
+        if self._skill_manager is not None:
+            skill_instructions = self._skill_manager.get_instructions()
+            if skill_instructions:
+                prompt += f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
         if self._agent_registry is not None:
@@ -1084,7 +1086,6 @@ class ReplyOrchestrator:
             send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
             agent_registry=self._agent_registry,
-            tool_package_manager=self._tool_package_manager,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
             search_emoji_handler=search_emoji_handler,
@@ -1096,6 +1097,7 @@ class ReplyOrchestrator:
             scheduled_task_manager=self._scheduled_task_manager,
             problem_solver_manager=self._problem_solver_manager,
             cross_chat_manager=self._cross_chat_manager,
+            skill_manager=self._skill_manager,
             notification_hub=self._notification_hub,
             markdown_image_converter=self._markdown_image_converter,
             send_long_reply_handler=send_long_reply_handler,
@@ -1114,9 +1116,6 @@ class ReplyOrchestrator:
         )
 
         tools = reply_toolset.definitions()
-
-        # 工具包管理器存在时，工具列表需动态获取（unlock 后新工具立即可用）
-        _use_dynamic_tools = self._tool_package_manager is not None
 
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = 12
@@ -1193,10 +1192,6 @@ class ReplyOrchestrator:
             for iteration in range(max_iterations):
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
-
-                # 工具包管理器存在时每次迭代刷新工具列表，确保 unlock 后新工具立即可用
-                if _use_dynamic_tools:
-                    tools = reply_toolset.executor.definitions()
 
                 pipeline_key = f"{conv_kind}:{conv_id}"
                 notification_text = await self._poll_background_notifications(pipeline_key)

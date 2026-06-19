@@ -928,6 +928,10 @@ class AgentProblemSolver:
         default=30,
         metadata={"description": "解题完成后通知重试间隔（秒）"},
     )
+    allow_sandbox_output: bool = field(
+        default=True,
+        metadata={"description": "是否允许解题结果保存到沙箱并返回文件路径"},
+    )
     max_retries: int = field(
         default=1,
         metadata={"description": "通知最大重试次数（不含首次）"},
@@ -988,6 +992,74 @@ class AgentCrossChat:
 
 
 @dataclass
+class AgentBrowser:
+    """浏览器 Agent 配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用浏览器 Agent"},
+    )
+    hold_max_minutes: int = field(
+        default=30,
+        metadata={"description": "浏览器页面保活最大分钟数"},
+    )
+    auto_close_idle_seconds: int = field(
+        default=300,
+        metadata={"description": "空闲自动关闭秒数"},
+    )
+    data_dir: str = field(
+        default="./data/browser/",
+        metadata={"description": "浏览器数据目录"},
+    )
+
+
+@dataclass
+class AgentSandbox:
+    """沙箱文件系统配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用沙箱系统"},
+    )
+    temp_max_age_seconds: int = field(
+        default=1800,
+        metadata={"description": "临时文件最大存活秒数，默认 1800（30 分钟）"},
+    )
+    temp_hold_max_minutes: int = field(
+        default=120,
+        metadata={"description": "临时文件保活最大分钟数，默认 120（2 小时）"},
+    )
+    scan_interval_seconds: int = field(
+        default=300,
+        metadata={"description": "临时文件清理扫描间隔秒数，默认 300（5 分钟）"},
+    )
+    allowed_read_dirs: list[str] = field(
+        default_factory=lambda: ["./data/emoji/", "./data/creator/gallery/"],
+        metadata={"description": "允许文件操作 agent 只读访问的目录列表"},
+    )
+
+
+@dataclass
+class AgentSkill:
+    """Skill 系统全局配置。"""
+
+    disabled_skills: list[str] = field(
+        default_factory=list,
+        metadata={"description": "禁用的 skill 名称列表（黑名单模式），空列表表示全部启用"},
+    )
+
+
+@dataclass
+class AgentFileOperation:
+    """文件操作 Agent 配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用文件操作 Agent"},
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -997,6 +1069,10 @@ class Agent:
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
     cross_chat: AgentCrossChat = field(default_factory=AgentCrossChat)
+    browser: AgentBrowser = field(default_factory=AgentBrowser)
+    sandbox: AgentSandbox = field(default_factory=AgentSandbox)
+    skill: AgentSkill = field(default_factory=AgentSkill)
+    file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
 
 
 @dataclass

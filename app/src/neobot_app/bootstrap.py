@@ -41,7 +41,6 @@ from neobot_app.observability.output import RuntimeOutput
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.statistics.balance import BalanceChecker
 from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
-from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
 from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
@@ -58,6 +57,11 @@ from neobot_app.runtime.notifications import BackgroundNotificationHub
 from neobot_app.runtime.onebot_request_handler import OneBotRequestHandler
 from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
+from neobot_app.runtime.temp_cleaner import TempCleaner
+from neobot_app.runtime.sandbox_lock import SandboxLock
+from neobot_app.runtime.sandbox_service import SandboxService
+from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
+from neobot_app.skills import build_all_skills
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
 
@@ -358,6 +362,18 @@ def create_application() -> NeoBotApplication:
         else None
     )
 
+    # ── Phase 1: Skill 系统基础设施 ──
+    sandbox_lock = SandboxLock()
+
+    browser_cfg = getattr(config.agent, "browser", None)
+    browser_lifecycle_manager = (
+        BrowserLifecycleManager(
+            hold_max_minutes=browser_cfg.hold_max_minutes,
+        )
+        if browser_cfg and browser_cfg.enabled
+        else None
+    )
+
     file_server = FileServer(
         DATA_DIR,
         port=config.file_server.port,
@@ -365,6 +381,54 @@ def create_application() -> NeoBotApplication:
         public_url=config.file_server.public_url,
         enabled=config.file_server.enabled,
     )
+
+    sandbox_cfg = getattr(config.agent, "sandbox", None)
+    sandbox_service = (
+        SandboxService(
+            sandbox_root=DATA_DIR / "sandbox",
+            lock=sandbox_lock,
+            allowed_read_dirs=[
+                DATA_DIR / "emoji",
+                DATA_DIR / "creator" / "gallery",
+            ],
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
+    )
+
+    temp_cleaner = (
+        TempCleaner(
+            temp_dir=DATA_DIR / "sandbox" / "temp",
+            max_age_seconds=sandbox_cfg.temp_max_age_seconds,
+            scan_interval_seconds=sandbox_cfg.scan_interval_seconds,
+            logger=logger_factory.get_logger("app.temp_cleaner"),
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
+    )
+
+    skill_manager = build_all_skills(
+        disabled_skills=getattr(getattr(config.agent, "skill", None), "disabled_skills", None),
+        config=config,
+        adapter=adapter,
+        archive_memory_service=archive_memory_service,
+        profile_service=profile_service,
+        emoji_service=emoji_service,
+        vision_provider=vision_provider,
+        file_server=file_server,
+        willing_service=willing_service,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
+        sandbox_lock=sandbox_lock,
+        sandbox_service=sandbox_service,
+        browser_lifecycle_manager=browser_lifecycle_manager,
+        problem_solver_manager=problem_solver_manager,
+    )
+
+    # 将 SkillManager 注入 PluginHostFacade（供插件 register_skill 使用）
+    host_facade._set_skills(skill_manager)
 
     agent_registry = build_agent_registry(
         config=config,
@@ -468,18 +532,6 @@ def create_application() -> NeoBotApplication:
         logger_factory=logger_factory,
     )
 
-    # 构建工具包管理器
-    web_search_cfg = getattr(config, "web_search", None)
-    tool_package_manager = ToolPackageManager()
-    ws_package = build_web_search_package(
-        enabled=getattr(web_search_cfg, "enabled", True) if web_search_cfg else False,
-        max_rounds=getattr(web_search_cfg, "max_search_rounds", 5) if web_search_cfg else 5,
-        preview_pages_limit=getattr(web_search_cfg, "preview_pages_limit", 30) if web_search_cfg else 30,
-        variant_result_limit=getattr(web_search_cfg, "variant_result_limit", 6) if web_search_cfg else 6,
-    )
-    if ws_package is not None:
-        tool_package_manager = ToolPackageManager([ws_package])
-
     chat_cfg = config.chat
     balance_checker = None
     if getattr(chat_cfg, "enable_balance_check", False):
@@ -530,7 +582,7 @@ def create_application() -> NeoBotApplication:
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
-        tool_package_manager=tool_package_manager,
+        skill_manager=skill_manager,
         balance_checker=balance_checker,
         runtime_events=hook_bus,
         file_server=file_server,
@@ -605,4 +657,5 @@ def create_application() -> NeoBotApplication:
         engine=_engine,
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
+        temp_cleaner=temp_cleaner,
     )

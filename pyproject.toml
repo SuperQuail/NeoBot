@@ -8,8 +8,17 @@ authors = [
     { name = "tangtian", email = "a14b@126.com" },
 ]
 dependencies = [
+    "drissionpage>=4.1",
+    "fpdf2>=2.8",
+    "markdown>=3.10",
+    "markdown-it-py>=3.0",
+    "openpyxl>=3.1",
+    "pikepdf>=9.0",
     "pillowmd>=0.7.3",
+    "pypdf>=6.7",
+    "python-docx>=1.2.0",
     "transformers>=5.9.0",
+    "xlsxwriter>=3.2",
 ]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"

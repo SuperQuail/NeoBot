@@ -15,7 +15,7 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from neobot_app.toolpackage.web_parser.models import PageMetadata, ParsedPage
+from neobot_app.web_parser.models import PageMetadata, ParsedPage
 
 REMOVE_TAGS = [
     "script", "style", "nav", "footer", "header", "aside",

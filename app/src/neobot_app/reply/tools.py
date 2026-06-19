@@ -44,7 +44,6 @@ class ReplyToolExecutor(ToolExecutor):
         send_emoji_handler: Any = None,
         emoji_service: Any = None,
         agent_registry: AgentRegistry | None = None,
-        tool_package_manager: Any = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
         search_emoji_handler: Any = None,
@@ -59,6 +58,7 @@ class ReplyToolExecutor(ToolExecutor):
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
         cross_chat_manager: Any = None,
+        skill_manager: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -66,6 +66,7 @@ class ReplyToolExecutor(ToolExecutor):
         ai_reply_check: bool = False,
         ai_reply_check_lightweight: bool = True,
         bot_name: str = "Bot",
+        skill_manager: Any = None,
         long_reply_fallback_template: str = "{bot_name}懒得和你说道理，你不配听",
         long_reply_max_length: int = 300,
         long_reply_max_sentence_count: int = 12,
@@ -78,7 +79,6 @@ class ReplyToolExecutor(ToolExecutor):
         self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
         self._agent_registry = agent_registry
-        self._tool_package_manager = tool_package_manager
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler
         self._search_emoji = search_emoji_handler
@@ -93,6 +93,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
         self._cross_chat_manager = cross_chat_manager
+        self._skill_manager = skill_manager
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -480,27 +481,6 @@ class ReplyToolExecutor(ToolExecutor):
                     ),
                 ]
             )
-        if self._tool_package_manager is not None:
-            # 合并工具包管理器动态生成的工具（unlock / relock / 已解锁包的工具）
-            tools.extend(self._tool_package_manager.definitions())
-            tools.append(
-                _tool_def(
-                    "list_tools",
-                    "列出工具包信息。无参时列出全部工具包（含锁定状态和简短描述）；"
-                    "指定 package_id 时显示该工具包的详细功能说明和包含的工具列表。"
-                    "请在需要了解有哪些工具包可用时使用。"
-                    "使用 unlock <工具包ID> 解锁需要的工具包后即可使用其中的工具。",
-                    {
-                        "properties": {
-                            "package_id": {
-                                "type": "string",
-                                "description": "可选，工具包 ID。不填则列出全部工具包。",
-                            },
-                        },
-                        "required": [],
-                    },
-                )
-            )
         if (
             self._drawing_manager is not None
             or self._scheduled_task_manager is not None
@@ -551,6 +531,9 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
+        # 合并 Skill 系统的工具定义
+        if self._skill_manager is not None:
+            tools.extend(self._skill_manager.get_tools())
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -580,8 +563,6 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_poke_user(args)
         if name == "list_agents":
             return self._execute_list_agents(args)
-        if name == "list_tools":
-            return self._execute_list_tools(args)
         if name == "delegate":
             return await self._execute_delegate(args)
         if name == "check_background_tasks":
@@ -592,10 +573,9 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
-        if self._tool_package_manager is not None:
-            parsed = self._tool_package_manager.parse_tool_name(name)
-            if parsed is not None or name in ("unlock", "relock"):
-                return await self._tool_package_manager.execute(name, args)
+        # Skill 系统路由（优先于 ToolError）
+        if self._skill_manager is not None and "__" in name:
+            return await self._skill_manager.execute(name, args)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -854,12 +834,6 @@ class ReplyToolExecutor(ToolExecutor):
             return self._agent_registry.list_agents()
         return self._agent_registry.list_agents(str(agent))
 
-    def _execute_list_tools(self, args: dict) -> str:
-        if self._tool_package_manager is None:
-            return "无工具包管理器"
-        pkg_id = args.get("package_id")
-        return self._tool_package_manager.list_packages(str(pkg_id) if pkg_id else None)
-
     async def _execute_delegate(self, args: dict) -> str:
         if self._agent_registry is None:
             return "No agents available"
@@ -1092,7 +1066,6 @@ def build_reply_toolset(
     send_emoji_handler: Any = None,
     emoji_service: Any = None,
     agent_registry: AgentRegistry | None = None,
-    tool_package_manager: Any = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
     search_emoji_handler: Any = None,
@@ -1128,7 +1101,6 @@ def build_reply_toolset(
         send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
         agent_registry=agent_registry,
-        tool_package_manager=tool_package_manager,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
         search_emoji_handler=search_emoji_handler,
@@ -1143,6 +1115,7 @@ def build_reply_toolset(
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
         cross_chat_manager=cross_chat_manager,
+        skill_manager=skill_manager,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

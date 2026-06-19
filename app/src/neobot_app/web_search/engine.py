@@ -14,7 +14,7 @@ from typing import Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from neobot_app.toolpackage.web_search.models import SearchResponse, SearchResult
+from neobot_app.web_search.models import SearchResponse, SearchResult
 
 
 class BaseSearchEngine(ABC):

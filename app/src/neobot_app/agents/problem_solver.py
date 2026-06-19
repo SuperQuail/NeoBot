@@ -35,7 +35,7 @@ from neobot_app.statistics.tracker import (
     get_usage_tracker,
 )
 from neobot_app.time_context import monotonic_seconds
-from neobot_app.toolpackage.web_search_package import WebSearchExecutor
+from neobot_app.web_search_package import WebSearchExecutor
 
 if TYPE_CHECKING:
     pass
