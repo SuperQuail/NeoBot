@@ -23,6 +23,7 @@ from neobot_app.skills.reminder_skill import ReminderSkill
 from neobot_app.skills.birthday_skill import BirthdaySkill
 from neobot_app.skills.cross_chat_skill import CrossChatSkill
 from neobot_app.skills.background_trigger import BackgroundTriggerSkill
+from neobot_app.skills.adaptive_prompt_skill import AdaptivePromptSkill
 from neobot_app.skills.file_storage_skill import FileStorageSkill
 from neobot_app.skills.sandbox_manager_skill import SandboxManagerSkill
 from neobot_app.skills.sandbox_maintenance_skill import SandboxMaintenanceSkill
@@ -78,6 +79,24 @@ def build_all_skills(
                 archive_service=archive_memory_service,
                 allow_delete=(config.agent.archive.allow_delete if config and hasattr(config.agent, "archive") else False),
                 allowed_tables=(config.agent.archive.allowed_tables if config and hasattr(config.agent, "archive") else ()),
+            )
+        )
+
+    # ── 自适应提示词（agent 永久记忆） ──
+    if "adaptive_prompt" not in disabled:
+        skills_to_register.append(
+            AdaptivePromptSkill(
+                data_dir=kwargs.get("data_dir"),
+                max_chars=(
+                    config.agent.memory.adaptive_prompt_max_chars
+                    if config and hasattr(config.agent, "memory")
+                    else 200
+                ),
+                enabled=(
+                    config.agent.memory.adaptive_prompt_enabled
+                    if config and hasattr(config.agent, "memory")
+                    else True
+                ),
             )
         )
 

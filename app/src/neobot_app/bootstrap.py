@@ -296,11 +296,17 @@ def create_application() -> NeoBotApplication:
         provider_error_message = "当前主回复模型不可用，请检查模型配置与 API Key"
         provider_logger.error(provider_error_message)
 
+    adaptive_prompt_enabled = (
+        getattr(getattr(config.agent, "memory", None), "adaptive_prompt_enabled", True)
+    )
     prompt_builder = PromptBuilder(
         config=config,
         profile_service=profile_service,
         logger=logger_factory.get_logger("app.prompt"),
         archive_memory_service=archive_memory_service,
+        adaptive_prompt_path=(
+            DATA_DIR / "自适应提示词.txt" if adaptive_prompt_enabled else None
+        ),
     )
 
     vision_provider = None
@@ -487,6 +493,7 @@ def create_application() -> NeoBotApplication:
         browser_instance=browser_instance,
         browser_lifecycle_manager=browser_lifecycle_manager,
         problem_solver_manager=problem_solver_manager,
+        data_dir=DATA_DIR,
     )
 
     # 将 SkillManager 注入 PluginHostFacade（供插件 register_skill 使用）

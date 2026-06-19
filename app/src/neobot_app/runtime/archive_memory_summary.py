@@ -322,6 +322,12 @@ class ArchiveMemoryAutoSummaryService:
                 f"learned or discussed about that item/event. "
                 f"Merge with any existing entry for the same key.\n"
             )
+        adaptive_instruction = (
+            "\nIf the conversation contains information that the agent should always know "
+            "(user preferences, important facts, relationship changes, long-term agreements) "
+            "and it has been confirmed as trustworthy through the dialogue, "
+            "use adaptive_prompt__update_adaptive_prompt to record it in the adaptive prompt.\n"
+        )
         return (
             f"Summary time: {current_time}\n"
             f"Conversation: {kind_label}\n"
@@ -329,7 +335,7 @@ class ArchiveMemoryAutoSummaryService:
             "Update the existing archive summary with stable facts, recurring preferences, "
             "important decisions, relationships, and topic changes from the recent messages. "
             "Keep it compact. Do not include trivial small talk unless it changes the long-term context."
-            f"{item_instruction}\n\n"
+            f"{item_instruction}{adaptive_instruction}\n\n"
             f"Existing summary:\n{old}\n\n"
             f"Recent messages:\n{recent}\n\n"
             "Updated summary:"

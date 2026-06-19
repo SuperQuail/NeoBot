@@ -889,6 +889,14 @@ class AgentMemory:
     archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
     favorability: AgentMemoryFavorability = field(default_factory=AgentMemoryFavorability)
     item_archive: AgentMemoryItemArchive = field(default_factory=AgentMemoryItemArchive)
+    adaptive_prompt_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用自适应提示词（agent 可自主维护的永久记忆）"},
+    )
+    adaptive_prompt_max_chars: int = field(
+        default=200,
+        metadata={"description": "自适应提示词最大字符数，超出自动截断"},
+    )
 
 
 @dataclass
