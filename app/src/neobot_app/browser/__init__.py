@@ -68,14 +68,13 @@ class BrowserAgentWrapper:
         return {"success": True, "action": "close"}
 
     async def _notify_lifecycle(self) -> None:
-        """每次工具调用后尝试自动关闭浏览器。"""
-        if self._lifecycle is None:
-            return
-        try:
-            if self._lifecycle.should_auto_close():
-                await self.close()
-        except Exception:
-            pass
+        """工具调用后通知生命周期管理器（保留扩展点）。
+
+        注意：不在此处自动关闭浏览器。自动关闭会导致后续工具
+        调用时浏览器重新启动到新标签页，使标签页状态丢失。
+        关闭由上层 Skill 或会话结束控制。
+        """
+        pass
 
     # ── 导航 ──
 

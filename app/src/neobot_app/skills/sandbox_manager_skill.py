@@ -28,17 +28,24 @@ class SandboxManagerSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "沙箱文件管理 Skill 提供以下能力：\n\n"
+            "沙箱文件管理 Skill 提供聊天可操作的文件系统，用于保存生成的文件（截图/图片/文档/PDF等）"
+            "以及临时存储各类数据。\n\n"
+            "文件路径相对于沙箱根目录如 tmp/{chat_flow_id}/...（写入时自动拼接）。\n"
+            "可使用 write_file 创建文件、list_files 浏览目录结构、read_file 读取内容。\n"
+            "生成文件（如代码/文档/PDF/图片等）后可先存入沙箱，再用 send_file 发送到聊天。\n\n"
+            "工具列表：\n"
             "  read_file — 读取文件内容（返回 base64）\n"
             "  write_file — 写入文件到沙箱临时目录\n"
             "  delete_file — 删除文件\n"
             "  list_files — 列出目录内容\n"
             "  move_file — 移动/重命名文件\n"
             "  copy_file — 复制文件\n"
-            "  send_file — 将沙箱文件发送到聊天\n"
+            "  send_file — 将沙箱内的图片发送到聊天（以图片消息）\n"
+            "  send_chat_file — 将沙箱内任意文件（PDF/文档等）发送到聊天（以文件附件形式）\n"
+            "  download_file — 从 URL 下载文件到沙箱临时目录\n"
             "  hold_temp — 保活临时文件目录（最长 2 小时）\n\n"
-            "注意：写入操作需要沙箱锁。同一时间只有一个 agent 可写沙箱。\n"
-            "临时文件 30 分钟无修改自动清理。"
+            "写入操作需要沙箱锁（同一时间只有一个 agent 可写）。\n"
+            "临时文件 30 分钟无修改自动清理，重要文件请用 hold_temp 保活。"
         )
 
     def __init__(
@@ -57,6 +64,20 @@ class SandboxManagerSkill(SkillModule):
 
     def reset(self) -> None:
         pass
+
+    def _resolve_send_path(self, path_str: str, chat_flow_id: str | None = None) -> Path:
+        """解析发送文件的路径：先尝试原路径，再通过沙箱解析。"""
+        p = Path(path_str)
+        if p.is_absolute() and p.exists():
+            return p
+        if self._sandbox is not None:
+            try:
+                resolved = self._sandbox.resolve_path(path_str, chat_flow_id)
+                if resolved.exists():
+                    return resolved
+            except Exception:
+                pass
+        return p
 
     def get_tools(self) -> list[dict]:
         return [
@@ -130,13 +151,26 @@ class SandboxManagerSkill(SkillModule):
             ),
             self._tool_def(
                 "send_file",
-                "将沙箱内的图片文件发送到聊天（以图片消息发送，非文件形式）。"
-                "支持发送截图、浏览器截图等图片到指定群或好友。",
+                "将沙箱内的图片发送到聊天（以图片消息）。",
                 {
                     "properties": {
                         "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
                         "group_id": {"type": "string", "description": "可选，目标群号"},
                         "user_id": {"type": "string", "description": "可选，目标QQ号"},
+                        "chat_flow_id": {"type": "string", "description": "可选，当 path 不包含 temp/ 前缀时需要此 ID 来定位文件"},
+                    },
+                    "required": ["path"],
+                },
+            ),
+            self._tool_def(
+                "send_chat_file",
+                "将沙箱内的任意文件（PDF/文档/代码等）发送到聊天（以文件附件形式）。",
+                {
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
+                        "group_id": {"type": "string", "description": "目标群号"},
+                        "user_id": {"type": "string", "description": "目标QQ号"},
+                        "chat_flow_id": {"type": "string", "description": "可选，当 path 不包含 temp/ 前缀时需要此 ID 来定位文件"},
                     },
                     "required": ["path"],
                 },
@@ -150,6 +184,19 @@ class SandboxManagerSkill(SkillModule):
                         "minutes": {"type": "integer", "description": "保活分钟数，默认120", "default": 120},
                     },
                     "required": ["chat_flow_id"],
+                },
+            ),
+            self._tool_def(
+                "download_file",
+                "从 URL 下载文件到沙箱。支持下载聊天中的文件、网络图片等。"
+                "下载后文件保存到沙箱临时目录，供后续读取或发送。",
+                {
+                    "properties": {
+                        "url": {"type": "string", "description": "文件的下载 URL"},
+                        "save_name": {"type": "string", "description": "保存的文件名，如 image.png、document.pdf"},
+                        "chat_flow_id": {"type": "string", "description": "聊天流 ID，如 Group_12345"},
+                    },
+                    "required": ["url", "save_name", "chat_flow_id"],
                 },
             ),
         ]
@@ -174,7 +221,7 @@ class SandboxManagerSkill(SkillModule):
 async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    rel_path = str(args.get("path", "")).strip()
+    rel_path = str(args.get("path", "")).strip().lstrip("/")
     if not rel_path:
         return _json({"ok": False, "error": "缺少 path"})
     try:
@@ -217,7 +264,7 @@ async def _handle_delete_file(self: SandboxManagerSkill, args: dict) -> str:
 async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    rel_path = str(args.get("path", "")).strip() or "."
+    rel_path = str(args.get("path", "")).strip().lstrip("/") or "."
     pattern = args.get("pattern")
     try:
         path = self._sandbox.resolve_path(rel_path)
@@ -266,9 +313,10 @@ async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
     file_path = str(args.get("path", "")).strip()
     group_id = str(args.get("group_id", "")).strip()
     user_id = str(args.get("user_id", "")).strip()
+    chat_flow_id = str(args.get("chat_flow_id", "")).strip() or None
     if not file_path:
         return _json({"ok": False, "error": "缺少 path"})
-    path = Path(file_path)
+    path = self._resolve_send_path(file_path, chat_flow_id)
     if not path.exists():
         return _json({"ok": False, "error": f"文件不存在: {file_path}"})
     if not group_id and not user_id:
@@ -302,6 +350,50 @@ async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": f"发送失败: {e}"})
 
+async def _handle_send_chat_file(self: SandboxManagerSkill, args: dict) -> str:
+    if self._adapter is None:
+        return _json({"ok": False, "error": "adapter 未配置"})
+    if self._file_server is None:
+        return _json({"ok": False, "error": "file_server 未配置"})
+    file_path = str(args.get("path", "")).strip()
+    group_id = str(args.get("group_id", "")).strip()
+    user_id = str(args.get("user_id", "")).strip()
+    chat_flow_id = str(args.get("chat_flow_id", "")).strip() or None
+    if not file_path:
+        return _json({"ok": False, "error": "缺少 path"})
+    path = self._resolve_send_path(file_path, chat_flow_id)
+    if not path.exists():
+        return _json({"ok": False, "error": f"文件不存在: {file_path}"})
+    if not group_id and not user_id:
+        return _json({"ok": False, "error": "缺少 group_id 或 user_id"})
+    try:
+        from neobot_app.utils.media_sender import prepare_file_segment
+        from neobot_contracts.models import ConversationRef
+
+        if group_id:
+            conv_ref = ConversationRef(kind="group", id=group_id)
+        else:
+            conv_ref = ConversationRef(kind="private", id=user_id)
+
+        segment = prepare_file_segment(self._file_server, path)
+        resp = await self._adapter.send(conv_ref, [segment])
+
+        if resp is None:
+            return _json({"ok": False, "error": "发送超时，无响应"})
+        if hasattr(resp, "status") and hasattr(resp, "retcode"):
+            if resp.status == "failed" or (resp.retcode is not None and resp.retcode != 0):
+                msg = resp.message or resp.wording or str(resp.retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={resp.retcode}): {msg}"})
+        elif isinstance(resp, dict):
+            r_status = resp.get("status")
+            r_retcode = resp.get("retcode")
+            if r_status == "failed" or (r_retcode is not None and r_retcode != 0):
+                msg = resp.get("message") or resp.get("wording") or str(r_retcode)
+                return _json({"ok": False, "error": f"发送失败(retcode={r_retcode}): {msg}"})
+        return _json({"ok": True, "path": str(path)})
+    except Exception as e:
+        return _json({"ok": False, "error": f"发送失败: {e}"})
+
 async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
     chat_flow_id = str(args.get("chat_flow_id", "")).strip()
     minutes = int(args.get("minutes", 120))
@@ -313,6 +405,27 @@ async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
     return _json({"ok": True, "note": f"临时目录 {chat_flow_id} 已保活 {minutes} 分钟"})
 
 
+async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
+    if self._sandbox is None:
+        return _json({"ok": False, "error": "sandbox_service 未配置"})
+    url = str(args.get("url", "")).strip()
+    save_name = str(args.get("save_name", "")).strip()
+    chat_flow_id = str(args.get("chat_flow_id", "")).strip()
+    if not url or not save_name or not chat_flow_id:
+        return _json({"ok": False, "error": "缺少必要参数 url/save_name/chat_flow_id"})
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.content
+        path = self._sandbox.resolve_path(save_name, chat_flow_id)
+        await self._sandbox.write_file(path, data)
+        return _json({"ok": True, "path": str(path), "size": len(data)})
+    except Exception as e:
+        return _json({"ok": False, "error": f"下载失败: {e}"})
+
+
 _HANDLERS = {
     "read_file": _handle_read_file,
     "write_file": _handle_write_file,
@@ -321,5 +434,7 @@ _HANDLERS = {
     "move_file": _handle_move_file,
     "copy_file": _handle_copy_file,
     "send_file": _handle_send_file,
+    "send_chat_file": _handle_send_chat_file,
     "hold_temp": _handle_hold_temp,
+    "download_file": _handle_download_file,
 }

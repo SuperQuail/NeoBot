@@ -323,23 +323,15 @@ def create_application() -> NeoBotApplication:
 
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
-    from neobot_app.agents.cross_chat import (
-        CrossChatManager,
-        CrossChatAgentConfig,
-    )
     from neobot_app.agents.problem_solver import (
         ProblemSolverManager,
         ProblemSolverAgentConfig,
+        build_problem_solver_agent,
     )
     from neobot_app.reply.markdown_image import MarkdownImageConverter
 
     notification_hub = BackgroundNotificationHub(
         logger=logger_factory.get_logger("app.background_notifications"),
-    )
-
-    markdown_image_converter = MarkdownImageConverter(
-        output_dir=DATA_DIR / "markdown_images",
-        logger=logger_factory.get_logger("app.markdown_image"),
     )
 
     creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
@@ -369,26 +361,8 @@ def create_application() -> NeoBotApplication:
             config=problem_solver_config,
             logger=logger_factory.get_logger("app.problem_solver"),
             notification_hub=notification_hub,
-            markdown_image_converter=markdown_image_converter,
         )
         if problem_solver_config.enabled
-        else None
-    )
-
-    cross_chat_config = CrossChatAgentConfig.from_schema(
-        getattr(config.agent, "cross_chat", None)
-    )
-    cross_chat_manager = (
-        CrossChatManager(
-            config=cross_chat_config,
-            logger=logger_factory.get_logger("app.cross_chat"),
-            notification_hub=notification_hub,
-            adapter=adapter,
-            group_message_queue=group_message_queue,
-            friend_message_queue=friend_message_queue,
-            bot_config=config,
-        )
-        if cross_chat_config.enabled
         else None
     )
 
@@ -419,6 +393,12 @@ def create_application() -> NeoBotApplication:
             browser_lifecycle_manager.set_browser_instance(browser_instance)
         else:
             logger.warning("浏览器已启用但未能找到或下载 Chromium，浏览器功能不可用")
+
+    markdown_image_converter = MarkdownImageConverter(
+        output_dir=DATA_DIR / "markdown_images",
+        browser_instance=browser_instance,
+        logger=logger_factory.get_logger("app.markdown_image"),
+    )
 
     file_server = FileServer(
         DATA_DIR,
@@ -452,6 +432,21 @@ def create_application() -> NeoBotApplication:
         if sandbox_cfg and sandbox_cfg.enabled
         else None
     )
+
+    if problem_solver_manager is not None:
+        ps_provider = _create_optional_agent_provider(
+            config=config,
+            agent_name="problem_solver",
+            fallback_provider=provider,
+            provider_logger=provider_logger,
+        )
+        build_problem_solver_agent(
+            ps_provider,
+            config=problem_solver_config,
+            logger=logger_factory.get_logger("app.problem_solver"),
+            manager=problem_solver_manager,
+            sandbox_service=sandbox_service,
+        )
 
     skill_manager = build_all_skills(
         disabled_skills=getattr(getattr(config.agent, "skill", None), "disabled_skills", None),
@@ -604,7 +599,6 @@ def create_application() -> NeoBotApplication:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
@@ -619,8 +613,6 @@ def create_application() -> NeoBotApplication:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
-    if cross_chat_manager is not None:
-        cross_chat_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -676,7 +668,6 @@ def create_application() -> NeoBotApplication:
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
         markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
         report_service=report_service,

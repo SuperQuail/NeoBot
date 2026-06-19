@@ -104,7 +104,6 @@ class ReplyOrchestrator:
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
         problem_solver_manager: Any = None,
-        cross_chat_manager: Any = None,
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         reply_block_registry: Any = None,
@@ -131,8 +130,6 @@ class ReplyOrchestrator:
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
         self._problem_solver_manager = problem_solver_manager
-        self._cross_chat_manager = cross_chat_manager
-        self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
         self._skill_manager = skill_manager
@@ -143,6 +140,7 @@ class ReplyOrchestrator:
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
         self._last_sentence_time: dict[str, float] = {}
+        self._notification_hub = notification_hub
 
     def start_reply(
         self,
@@ -291,12 +289,14 @@ class ReplyOrchestrator:
         queue_key = str(conversation_id)
         pipeline_key = f"{kind}:{queue_key}"
 
-        self._logger.info(
-            "[CROSS_CHAT_DIAG] orchestrator.start_background_reply() 被调用",
-            pipeline_key=pipeline_key,
-            manager_name=manager_name,
-            content_preview=content[:120],
-        )
+        if not kind or not conversation_id:
+            self._logger.error(
+                "start_background_reply: 无效的会话参数",
+                kind=kind,
+                conversation_id=conversation_id,
+                manager_name=manager_name,
+            )
+            return None
 
         existing = self._active_pipelines.get(pipeline_key)
         if existing is not None and existing.done():
@@ -382,8 +382,6 @@ class ReplyOrchestrator:
             await self._drawing_manager.shutdown()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.shutdown()
-        if self._cross_chat_manager is not None:
-            await self._cross_chat_manager.shutdown()
         if self._notification_hub is not None:
             self._notification_hub.clear()
         if self._provider is not None:
@@ -438,6 +436,13 @@ class ReplyOrchestrator:
             if isinstance(val, int) and val > 0:
                 return val
         return 300
+
+    def _get_agent_max_iterations(self) -> int:
+        if self._config is not None:
+            val = getattr(self._config.chat, "agent_max_iterations", None)
+            if isinstance(val, int) and val > 0:
+                return val
+        return 200
 
     def _get_group_agent_silent_timeout_seconds(self) -> float:
         if self._config is not None:
@@ -856,7 +861,7 @@ class ReplyOrchestrator:
             _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
             _bg_id = event.conversation_ref.id if event.conversation_ref else ""
             self._logger.info(
-                "[CROSS_CHAT_DIAG] orchestrator 注入后台通知（新管线初始消息）",
+                "orchestrator 注入后台通知（新管线初始消息）",
                 event_id=event.event_id,
                 pipeline_key=f"{_bg_kind}:{_bg_id}",
                 notification_preview=event.background_content[:120],
@@ -1083,7 +1088,6 @@ class ReplyOrchestrator:
             drawing_manager=self._drawing_manager,
             scheduled_task_manager=self._scheduled_task_manager,
             problem_solver_manager=self._problem_solver_manager,
-            cross_chat_manager=self._cross_chat_manager,
             skill_manager=self._skill_manager,
             notification_hub=self._notification_hub,
             markdown_image_converter=self._markdown_image_converter,
@@ -1105,7 +1109,7 @@ class ReplyOrchestrator:
         tools = reply_toolset.definitions()
 
         # 5. Agent 循环（外层 while 支持私聊连续会话）
-        max_iterations = 12
+        max_iterations = self._get_agent_max_iterations()
         ai_check_prompted = False
         is_private = (
             event.conversation_ref is not None
@@ -1185,7 +1189,7 @@ class ReplyOrchestrator:
                 if notification_text:
                     messages.append({"role": "user", "content": notification_text})
                     self._logger.info(
-                        "[CROSS_CHAT_DIAG] orchestrator 注入通知到消息列表",
+                        "orchestrator 注入通知到消息列表",
                         event_id=event.event_id,
                         pipeline_key=pipeline_key,
                         iteration=iteration,
@@ -1721,7 +1725,7 @@ class ReplyOrchestrator:
                 )
                 if notification:
                     self._logger.info(
-                        "[CROSS_CHAT_DIAG] orchestrator._poll_background_notifications 轮询到通知",
+                        "orchestrator._poll_background_notifications 轮询到通知",
                         pipeline_key=pipeline_key,
                         source=notification.source,
                         preview=notification.content[:120],
@@ -2436,6 +2440,24 @@ class ReplyOrchestrator:
                 send_results.append(await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path))
                 await self._emoji_service.record_usage(image_number)
 
+        # ── 超长回复 → Markdown 图片渲染 ──
+        if not images and not send_original and not segments and text.strip():
+            if self._can_use_markdown_image(text):
+                try:
+                    image_path = await self._render_long_reply_as_image(text)
+                    img_seg = [prepare_image_segment(self._file_server, image_path)]
+                    formatted_messages.append(img_seg)
+                    send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
+                    event.send_response = send_results[0]
+                    if event.conversation_ref.kind == "private":
+                        event.transition(ReplyState.GENERATING)
+                    else:
+                        event.transition(ReplyState.COMPLETED)
+                    self._record_debug("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
+                    return
+                except Exception as exc:
+                    self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
+
         # Phase C: 发送文字（切分后逐条发送）
         reply_messages = self._build_reply_messages(
             text,
@@ -2549,6 +2571,25 @@ class ReplyOrchestrator:
 
         queue.push(queue_key, msg)
         queue_copy.push(queue_key, msg)
+
+    # ── Markdown 图片渲染（超长回复自动转图片） ──
+
+    def _can_use_markdown_image(self, text: str) -> bool:
+        """检查是否应将文本渲染为 markdown 图片（超长回复自动转图片）。"""
+        if self._markdown_image_converter is None:
+            return False
+        result = process_reply_text(
+            text,
+            bot_name=self._get_bot_name(),
+            fallback_template=self._get_long_reply_fallback_template(),
+            max_length=self._get_long_reply_max_length(),
+            max_sentence_count=self._get_long_reply_max_sentence_count(),
+        )
+        return result.fallback_used
+
+    async def _render_long_reply_as_image(self, text: str) -> Path:
+        """将文本渲染为 markdown 图片，返回 Path。"""
+        return await self._markdown_image_converter.convert(text)
 
     def _build_reply_messages(
         self,

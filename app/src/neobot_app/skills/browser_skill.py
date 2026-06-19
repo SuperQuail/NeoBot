@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from datetime import datetime
 from typing import Any
@@ -46,7 +47,7 @@ class BrowserSkill(SkillModule):
             "## 等待\n"
             "  wait — 支持 selector/text/url/network_idle/fn/timeout 条件\n\n"
             "## 截图\n"
-            "  screenshot — 返回 base64\n"
+            "  screenshot — 截图保存到文件\n"
             "  shot — 保存到沙箱并返回路径\n\n"
             "## JavaScript\n"
             "  execute_js\n\n"
@@ -351,7 +352,7 @@ async def _handle_screenshot(self: BrowserSkill, args: dict) -> str:
     if hasattr(self._browser, "screenshot"):
         result = await self._browser.screenshot()
         if isinstance(result, dict) and result.get("success"):
-            return _json({"ok": True, "data_url": result.get("data_url", ""), "size_bytes": result.get("size_bytes", 0)})
+            return _json({"ok": True, "path": result.get("path", ""), "size_bytes": result.get("size_bytes", 0)})
     return _json({"ok": True, "note": "screenshot stub"})
 
 async def _handle_shot(self: BrowserSkill, args: dict) -> str:
@@ -364,12 +365,10 @@ async def _handle_shot(self: BrowserSkill, args: dict) -> str:
     result = await self._browser.screenshot()
     if not isinstance(result, dict) or not result.get("success"):
         return _json({"ok": False, "error": "截图失败"})
-    # screenshot() 返回 JPEG，转换为 PNG 保存
-    b64_data = result.get("data_url", "").removeprefix("data:image/jpeg;base64,")
-    jpg_bytes = base64.b64decode(b64_data)
+    # loader 已经保存了 JPEG 文件，直接读取然后转换为 PNG
+    jpg_path = result["path"]
     from PIL import Image
-    import io
-    img = Image.open(io.BytesIO(jpg_bytes))
+    img = Image.open(jpg_path)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     png_bytes = buf.getvalue()

@@ -7,6 +7,7 @@ agent-browser — 页面快照系统
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -31,64 +32,52 @@ _INTERACTIVE_ROLES = {"button", "link", "checkbox", "radio", "tab", "menuitem",
                       "spinbutton", "option"}
 
 
-def _build_css_selector(el) -> str:
-    """为元素生成最佳 CSS 选择器。"""
-    tag = el.tag
-    # 优先用 id
-    el_id = el.attr("id")
-    if el_id:
-        return f"#{el_id}"
+JS_COLLECT_SCRIPT = r"""
+var _it, _ir, _ct, _parts, _sel, _results, _seen;
 
-    # 用 class
-    classes = (el.attr("class") or "").strip()
-    if classes:
-        cls_part = ".".join(c for c in classes.split() if c)[:60]
-        if cls_part:
-            return f"{tag}.{cls_part}"
+_it=['a','button','input','textarea','select','details','summary'];
+_ir=['button','link','checkbox','radio','tab','menuitem','combobox','switch','slider','textbox','searchbox','spinbutton','option'];
+_ct=['h1','h2','h3','h4','h5','h6','p','img','li','span','label','td','th'];
 
-    # 用文本内容（仅对 a/button 有效）
-    text = (el.text or "").strip()[:30]
-    if text and tag in ("a", "button"):
-        return f"{tag}:has-text('{text}')"
+_parts=[];
+_it.forEach(function(t){_parts.push(t);_parts.push('[role="'+t+'"]');});
+_ir.forEach(function(r){_parts.push('[role="'+r+'"]');});
+_sel=_parts.join(',');
 
-    return tag
+_results=[];
+_seen={};
 
+function _gd(el){var d=0,p=el.parentElement;while(p&&p.tagName!=='BODY'){d++;p=p.parentElement;}return d;}
+function _iv(el){try{if(el.offsetParent===null)return false;if(typeof el.checkVisibility==='function'&&!el.checkVisibility())return false;return true;}catch(e){return false;}}
+function _tx(el){var t=(el.innerText||'').trim().slice(0,120);if(t)return t;if(el.placeholder)return '[placeholder='+el.placeholder+']';if(el.value)return '[value='+(el.value+'').slice(0,30)+']';if(el.href)return '[href='+el.href.slice(0,60)+']';if(el.alt)return '[img:'+el.alt.slice(0,60)+']';var al=el.getAttribute('aria-label');if(al)return '[aria-label='+al.slice(0,60)+']';return '<'+el.tagName.toLowerCase()+'>';}
+function _sl(el){var t=el.tagName.toLowerCase();if(el.id)return '#'+el.id;if(el.className&&typeof el.className==='string'){var c=el.className.trim().split(/\s+/).filter(function(x){return x}).join('.');if(c)return t+'.'+c.slice(0,60);}var x=(el.innerText||'').trim().slice(0,30);if(x&&(t==='a'||t==='button')){return t+":has-text('"+x.replace(/'/g,"\\'")+"')";}return t;}
+function _at(el){var a={};['href','src','type','role','aria-label','aria-expanded','aria-selected','placeholder','value','alt'].forEach(function(k){try{var v=el.getAttribute(k);if(v)a[k]=v;}catch(e){}});if(el.role&&!a.role)a.role=el.role;return a;}
 
-def _get_element_text(el) -> str:
-    """获取元素的最佳可见文本。"""
-    text = (el.text or "").strip()
-    if text:
-        return text[:120]
-    # 对 input，用 placeholder 或 value
-    placeholder = el.attr("placeholder")
-    if placeholder:
-        return f"[placeholder={placeholder}]"
-    value = el.attr("value")
-    if value:
-        return f"[value={value[:30]}]"
-    # 对 a 用 href
-    href = el.attr("href")
-    if href:
-        return f"[href={href[:60]}]"
-    alt = el.attr("alt")
-    if alt:
-        return f"[img:{alt[:60]}]"
-    aria = el.attr("aria-label")
-    if aria:
-        return f"[aria-label={aria[:60]}]"
-    return f"<{el.tag}>"
+function _cl(items, maxD){
+for(var i=0;i<items.length;i++){try{
+var el=items[i];
+if(!_iv(el))continue;
+if(maxD>0&&_gd(el)>maxD)continue;
+var tag=el.tagName.toLowerCase(),text=_tx(el),attrs=_at(el),selector=_sl(el);
+var key=tag+':'+text.slice(0,40)+':'+(attrs.href||'').slice(0,40);
+if(_seen[key])continue;_seen[key]=true;
+_results.push({tag:tag,text:text,selector:selector,attrs:attrs});
+}catch(e){}}
+}
 
+// Determine calling convention
+var root, iOnly, maxD;
+if(arguments.length===3&&typeof arguments[0]==='object'&&arguments[0]!==null){
+  root=arguments[0];iOnly=arguments[1]!==false;maxD=arguments[2]||0;
+}else{
+  root=document;iOnly=arguments[0]!==false;maxD=arguments[1]||0;
+}
 
-def _get_element_depth(page: ChromiumPage, el) -> int:
-    """获取元素在 DOM 树中的深度。"""
-    try:
-        result = page.run_js(
-            "(function(el){let d=0;while(el&&el.tagName!=='BODY'){el=el.parentElement;d++}return d})",
-            el,
-        )
-        return int(result) if result else 0
-    except Exception:
-        return 0
+_cl(root.querySelectorAll(_sel),maxD);
+if(!iOnly)_cl(root.querySelectorAll(_ct.join(',')),maxD);
+
+return JSON.stringify(_results);
+"""
 
 
 def _collect_elements(
@@ -97,10 +86,13 @@ def _collect_elements(
     scope: str = "",
     max_depth: int = 0,
 ) -> list[ElementRef]:
-    """收集页面中所有可交互元素，生成带 @ref 的列表。"""
-    refs: list[ElementRef] = []
-    seen_selectors: set[str] = set()
+    """收集页面中所有可交互元素，生成带 @ref 的列表。
 
+    使用单次 JS 评估批量采集，避免逐元素 CDP 往返。
+    """
+    refs: list[ElementRef] = []
+
+    # 解析 scope 元素
     scope_el = None
     if scope:
         try:
@@ -108,102 +100,37 @@ def _collect_elements(
         except Exception:
             pass
 
-    def _query(selector: str):
+    # 单次 JS 调用采集所有元素数据
+    try:
         if scope_el:
-            try:
-                return scope_el.eles(selector)
-            except Exception:
-                return []
-        return page.eles(selector)
+            raw = page.run_js(JS_COLLECT_SCRIPT, scope_el, interactive_only, max_depth)
+        else:
+            raw = page.run_js(JS_COLLECT_SCRIPT, interactive_only, max_depth)
+    except Exception as e:
+        raise RuntimeError(f"快照 JS 采集失败: {e}") from e
 
-    def _is_visible(el) -> bool:
+    # 解析 JSON 结果
+    if isinstance(raw, str):
         try:
-            return bool(page.run_js("return arguments[0].offsetParent !== null", el))
-        except Exception:
-            return False
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"快照结果 JSON 解析失败: {e}") from e
+    elif isinstance(raw, (list, tuple)):
+        data = raw
+    else:
+        data = []
 
-    def _check_depth(el) -> bool:
-        if max_depth <= 0:
-            return True
-        return _get_element_depth(page, el) <= max_depth
+    # 构建 ElementRef 列表
+    for item in data:
+        refs.append(ElementRef(
+            ref="",
+            tag=item.get("tag", "unknown"),
+            text=item.get("text", ""),
+            attrs=item.get("attrs", {}),
+            selector=item.get("selector", ""),
+        ))
 
-    # 1. 收集可交互元素
-    for tag in _INTERACTIVE_TAGS:
-        els = _query(f"tag:{tag}")
-        for el in els:
-            try:
-                if not _is_visible(el) or not _check_depth(el):
-                    continue
-                text = _get_element_text(el)
-                sel = _build_css_selector(el)
-                tag_name = el.tag
-                attrs = {}
-                for attr in ("href", "src", "type", "role", "aria-label", "placeholder", "value"):
-                    v = el.attr(attr)
-                    if v:
-                        attrs[attr] = v
-                key = f"{tag_name}:{text[:40]}:{attrs.get('href','')[:40]}"
-                if key in seen_selectors:
-                    continue
-                seen_selectors.add(key)
-                refs.append(ElementRef("", tag_name, text, attrs, sel))
-            except Exception:
-                continue
-
-    # 2. 收集 [role=*] 交互元素
-    for role in _INTERACTIVE_ROLES:
-        try:
-            els = _query(f"[role=\"{role}\"]")
-            for el in els:
-                try:
-                    if not _is_visible(el) or not _check_depth(el):
-                        continue
-                    text = _get_element_text(el)
-                    sel = _build_css_selector(el)
-                    attrs = {"role": role}
-                    for attr in ("aria-label", "aria-expanded", "aria-selected"):
-                        v = el.attr(attr)
-                        if v:
-                            attrs[attr] = v
-                    key = f"role:{role}:{text[:40]}"
-                    if key in seen_selectors:
-                        continue
-                    seen_selectors.add(key)
-                    refs.append(ElementRef("", el.tag, text, attrs, sel))
-                except Exception:
-                    continue
-        except Exception:
-            continue
-
-    # 3. 非交互模式：收集标题/图片/段落等重要可见元素
-    if not interactive_only:
-        _CONTENT_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "img", "li", "span", "label", "td", "th"}
-        for tag in _CONTENT_TAGS:
-            try:
-                els = _query(f"tag:{tag}")
-                for el in els:
-                    try:
-                        if not _is_visible(el) or not _check_depth(el):
-                            continue
-                        text = _get_element_text(el)
-                        sel = _build_css_selector(el)
-                        tag_name = el.tag
-                        attrs = {}
-                        for attr in ("src", "alt", "aria-label"):
-                            v = el.attr(attr)
-                            if v:
-                                attrs[attr] = v
-                        key = f"content:{tag_name}:{text[:40]}:{attrs.get('src','')[:40]}"
-                        if key in seen_selectors:
-                            continue
-                        seen_selectors.add(key)
-                        refs.append(ElementRef("", tag_name, text, attrs, sel))
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-    # 4. 分配 @ref 编号
+    # 分配 @ref 编号
     for i, ref in enumerate(refs):
         ref.ref = f"@e{i + 1}"
 

@@ -55,7 +55,6 @@ class ReplyToolExecutor(ToolExecutor):
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
-        cross_chat_manager: Any = None,
         skill_manager: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
@@ -88,7 +87,6 @@ class ReplyToolExecutor(ToolExecutor):
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
-        self._cross_chat_manager = cross_chat_manager
         self._skill_manager = skill_manager
         self._chat_context = chat_context
         self._conv_kind = conv_kind
@@ -481,7 +479,11 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_send_long_reply(args)
         # Skill 系统路由（优先于 ToolError）
         if self._skill_manager is not None and "__" in name:
-            return await self._skill_manager.execute(name, args)
+            # 自动注入当前对话上下文，skill 工具不需要也不应自行指定
+            enriched = dict(args)
+            if self._conv_kind and self._conv_id:
+                enriched["pipeline_key"] = f"{self._conv_kind}_{self._conv_id}"
+            return await self._skill_manager.execute(name, enriched)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -599,7 +601,10 @@ class ReplyToolExecutor(ToolExecutor):
         elapsed = now - self._last_wait_time
         if self._last_wait_time > 0 and elapsed < self._wait_cooldown_seconds:
             remaining = int(self._wait_cooldown_seconds - elapsed)
-            return f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
+            return (
+                f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
+                "【提示】如果是在等待后台任务完成，请结束本轮回复，系统会在完成后通知你。"
+            )
         seconds = args.get("seconds", 20)
         if seconds is not None:
             try:
@@ -752,7 +757,6 @@ class ReplyToolExecutor(ToolExecutor):
             self._drawing_manager is None
             and self._scheduled_task_manager is None
             and self._problem_solver_manager is None
-            and self._cross_chat_manager is None
             and self._notification_hub is None
         ):
             return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
@@ -766,8 +770,6 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
         if self._problem_solver_manager is not None:
             status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
-        if self._cross_chat_manager is not None:
-            status.update(self._cross_chat_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
         self._logger.info(
@@ -938,7 +940,6 @@ def build_reply_toolset(
     notification_hub: Any = None,
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
-    cross_chat_manager: Any = None,
     skill_manager: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
@@ -973,7 +974,6 @@ def build_reply_toolset(
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
-        cross_chat_manager=cross_chat_manager,
         skill_manager=skill_manager,
         chat_context=chat_context,
         conv_kind=conv_kind,

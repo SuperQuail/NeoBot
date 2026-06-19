@@ -38,13 +38,11 @@ class CrossChatSkill(SkillModule):
 
     def __init__(
         self,
-        manager: Any = None,
         config: Any = None,
         adapter: Any = None,
         group_message_queue: Any = None,
         friend_message_queue: Any = None,
     ) -> None:
-        self._manager = manager
         self._config = config
         self._adapter = adapter
         self._group_queue = group_message_queue
@@ -131,8 +129,6 @@ class CrossChatSkill(SkillModule):
 # ── Handlers ──
 
 async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
-    if self._manager is None:
-        return _json({"ok": False, "error": "cross_chat_manager 未配置"})
     target_kind = str(args.get("target_kind", "")).strip()
     target_id = str(args.get("target_id", "")).strip()
     task_desc = str(args.get("task", "")).strip()
@@ -156,13 +152,9 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_cross_chat_status(self: CrossChatSkill, args: dict) -> str:
-    if self._manager is None:
-        return _json({"ok": False, "error": "cross_chat_manager 未配置"})
     task_id = args.get("task_id", "")
-    if task_id and hasattr(self._manager, "_tasks"):
-        task = self._manager._tasks.get(task_id)
-        if task:
-            return _json({"ok": True, "task_id": task_id, "status": task.status})
+    if task_id:
+        return _json({"ok": True, "task_id": task_id, "status": "unknown"})
     return _json({"ok": True, "active_tasks": 0})
 
 

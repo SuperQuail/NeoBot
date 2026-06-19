@@ -123,6 +123,33 @@ class BrowserManager:
                 except Exception:
                     pass
 
+    def _kill_orphaned_chrome(self) -> None:
+        """杀死使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
+
+        浏览器关闭后 Chrome 进程可能未完全退出，导致新实例初始化时出现
+        'Chromium' object has no attribute '_dl_mgr' 等异常。
+        """
+        if not _WINDOWS:
+            return
+        try:
+            import psutil as _psutil
+            ud = self._user_data_dir.lower()
+            for proc in _psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    name = proc.info["name"]
+                    if not name or "chrome" not in name.lower():
+                        continue
+                    cmdline = proc.info.get("cmdline") or []
+                    cmd = " ".join(cmdline)
+                    if ud in cmd.lower():
+                        p = _psutil.Process(proc.info["pid"])
+                        p.kill()
+                        p.wait(timeout=3)
+                except (_psutil.NoSuchProcess, _psutil.AccessDenied, _psutil.TimeoutExpired):
+                    pass
+        except Exception:
+            pass
+
     @property
     def user_data_dir(self) -> str:
         return self._user_data_dir
@@ -135,6 +162,7 @@ class BrowserManager:
 
     async def start(self) -> None:
         """启动浏览器，自动重试处理残留进程。"""
+        self._kill_orphaned_chrome()
         for attempt in range(3):
             try:
                 self._page = await asyncio.to_thread(self._start_sync)
@@ -1205,19 +1233,37 @@ class BrowserManager:
     # ── 截图 ──
 
     async def screenshot(self, path: str | Path | None = None, full_page: bool = False) -> bytes:
+        """截图，返回 JPEG bytes。
+
+        使用 CDP Page.captureScreenshot 直接调用，避免 DrissionPage 的
+        _run_cdp_loaded → wait.doc_loaded() 挂起问题（SPA 页面 readyState 可能卡在 loading）。
+        """
         page = await self._ensure_page()
-        if path is None:
-            path = Path(self._user_data_dir) / "screenshot.png"
-        await asyncio.to_thread(page.get_screenshot, path=str(path), full_page=full_page)
-        try:
-            from PIL import Image
-            img = Image.open(path)
-            jpg_path = Path(str(path).rsplit(".", 1)[0] + ".jpg")
-            img.convert("RGB").save(jpg_path, "JPEG", quality=85)
-            Path(path).unlink(missing_ok=True)
-            return jpg_path.read_bytes()
-        except ImportError:
-            return Path(path).read_bytes()
+
+        if full_page:
+            import json as _json
+            js = "return JSON.stringify({w: document.body.scrollWidth, h: document.body.scrollHeight})"
+            raw = await asyncio.to_thread(page.run_js, js)
+            size = _json.loads(raw) if raw else {"w": 1280, "h": 720}
+            args = {
+                "format": "jpeg",
+                "quality": 85,
+                "clip": {"x": 0, "y": 0, "width": size["w"], "height": size["h"], "scale": 1},
+                "captureBeyondViewport": True,
+            }
+        else:
+            args = {"format": "jpeg", "quality": 85}
+
+        import base64
+        result = await asyncio.to_thread(lambda: page.run_cdp("Page.captureScreenshot", **args))
+        jpg_bytes = base64.b64decode(result["data"])
+
+        if path:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(jpg_bytes)
+
+        return jpg_bytes
 
     async def screenshot_annotated(self, name: str = "") -> dict:
         """截图并标注元素编号。"""

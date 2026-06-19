@@ -514,10 +514,6 @@ class AgentModelRouting:
         default=1,
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
-    cross_chat: int = field(
-        default=1,
-        metadata={"description": "cross_chat Agent 使用的模型编号，0-3"},
-    )
 
 
 @dataclass
@@ -951,47 +947,6 @@ class AgentProblemSolver:
 
 
 @dataclass
-class AgentCrossChat:
-    """Cross-Chat Agent 配置。
-
-    模型路由由 agent_model.cross_chat 编号控制，无需在子 agent 配置中指定模型名。
-    """
-
-    enabled: bool = field(
-        default=True,
-        metadata={"description": "是否启用跨聊天通信 Agent"},
-    )
-    timeout_seconds: float = field(
-        default=600.0,
-        metadata={"description": "cross_chat 任务超时时间（秒），默认 10 分钟"},
-    )
-    max_iterations: int = field(
-        default=20,
-        metadata={"description": "最大工具调用循环次数"},
-    )
-    notification_retry_seconds: int = field(
-        default=30,
-        metadata={"description": "通知重试间隔（秒）"},
-    )
-    max_retries: int = field(
-        default=1,
-        metadata={"description": "通知最大重试次数（不含首次）"},
-    )
-    startup_grace_seconds: float = field(
-        default=3.0,
-        metadata={"description": "后台任务启动宽限期（秒）"},
-    )
-    max_tasks_per_pipeline: int = field(
-        default=5,
-        metadata={"description": "每个聊天流最多保留的后台通信任务数"},
-    )
-    max_history_fetch_multiplier: int = field(
-        default=2,
-        metadata={"description": "拉取历史消息时的倍数因子，相对于观察窗口"},
-    )
-
-
-@dataclass
 class AgentBrowser:
     """浏览器 Agent 配置。"""
 
@@ -1072,7 +1027,6 @@ class Agent:
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
-    cross_chat: AgentCrossChat = field(default_factory=AgentCrossChat)
     browser: AgentBrowser = field(default_factory=AgentBrowser)
     sandbox: AgentSandbox = field(default_factory=AgentSandbox)
     skill: AgentSkill = field(default_factory=AgentSkill)
@@ -1193,6 +1147,10 @@ class EnhancedChat(Chat):
     agent_wait_max_seconds: int = field(
         default=60,
         metadata={"description": "Agent wait 工具单次最大等待秒数"},
+    )
+    agent_max_iterations: int = field(
+        default=200,
+        metadata={"description": "Agent 模式单轮回复最大工具调用迭代次数"},
     )
     group_agent_silent_timeout_seconds: float = field(
         default=60.0,

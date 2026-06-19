@@ -54,7 +54,6 @@ def build_all_skills(
     browser_instance: Any = None,
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
-    cross_chat_manager: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -162,7 +161,6 @@ def build_all_skills(
     if "cross_chat" not in disabled:
         skills_to_register.append(
             CrossChatSkill(
-                manager=cross_chat_manager,
                 config=config,
                 adapter=adapter,
                 group_message_queue=group_message_queue,

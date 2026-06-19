@@ -582,14 +582,18 @@ class AgentBrowser:
     # ── 截图 ──
 
     async def screenshot(self) -> dict:
-        """截图并返回 base64 编码（viewport 尺寸 JPEG）。"""
+        """截图并保存为 JPEG 文件，返回文件路径（而非 base64 避免浪费 token）。"""
         mgr = await self._ensure()
         try:
             jpg_bytes = await mgr.screenshot(full_page=False)
-            b64 = base64.b64encode(jpg_bytes).decode("utf-8")
+            shot_dir = Path(self._manager.user_data_dir) / "screenshots"
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            shot_path = shot_dir / fname
+            shot_path.write_bytes(jpg_bytes)
             return self._result(True, {
                 "action": "screenshot",
-                "data_url": f"data:image/jpeg;base64,{b64}",
+                "path": str(shot_path),
                 "size_bytes": len(jpg_bytes),
             })
         except Exception as e:

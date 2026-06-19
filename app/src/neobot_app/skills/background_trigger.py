@@ -26,7 +26,13 @@ class BackgroundTriggerSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "后台推理 Skill 提供后台深度推理能力：\n\n"
+            "后台推理 Skill 提供后台深度推理能力。\n\n"
+            "## 重要: 提交问题后的行为规范\n"
+            "调用 submit_problem 提交后台任务后，你必须：\n"
+            "  1. 立即结束本轮回复（使用 send_reply 告知用户「已提交解题任务，请稍候」或 cancel）\n"
+            "  2. 不要轮询 get_solver_status 或 get_solution\n"
+            "  3. 不要使用 wait 等待\n"
+            "  4. 系统会在解题完成后通过通知自动唤醒你，届时携带结果\n\n"
             "## submit_problem\n"
             "提交复杂问题到后台进行深度推理解题。适用场景：\n"
             "  - 高难度数学证明与计算\n"
@@ -35,13 +41,14 @@ class BackgroundTriggerSkill(SkillModule):
             "  - 需要多步骤推演的逻辑问题\n"
             "  - 多网页信息收集与综合分析\n"
             "  - 文档编写与报告生成\n\n"
-            "解题为后台任务，提交后立即返回 task_id，完成后会通过通知告知主Agent。\n"
+            "提交后立即返回 task_id。解题完成后系统将通过后台通知携带结果唤醒你。\n"
             "解题完成后可将结果保存到沙箱并返回路径。\n"
             "返回内容不限于文本，可以是文件路径、图片路径等任意形式。\n\n"
             "## get_solution\n"
-            "查询已完成的解题结果。\n\n"
+            "查询已完成的解题结果。仅在收到解题完成通知后调用。\n\n"
             "## get_solver_status\n"
-            "查询当前管线的解题状态。\n\n"
+            "查询当前管线的解题状态。仅在需要决策是否提交新问题时调用。\n"
+            "有活跃任务时请勿轮询，等待通知即可。\n\n"
             "注意：简单问答、常识性问题、日常聊天、普通信息查询不应使用本 skill。"
         )
 
@@ -65,17 +72,14 @@ class BackgroundTriggerSkill(SkillModule):
                             "type": "string",
                             "description": "可选，补充上下文信息，如已知条件、相关代码等",
                         },
-                        "pipeline_key": {
-                            "type": "string",
-                            "description": "可选，聊天流标识如 Group_12345。不传则由主 agent 自动填充",
-                        },
                     },
                     "required": ["question"],
                 },
             ),
             self._tool_def(
                 "get_solution",
-                "查询已完成的解题结果。返回解题结果（文本、文件路径、图片路径等）。",
+                "查询已完成的解题结果。返回解题结果（文本、文件路径、图片路径等）。"
+                "【注意】仅在收到解题完成通知后调用，不要在解题进行中轮询此工具。",
                 {
                     "properties": {
                         "task_id": {"type": "string", "description": "submit_problem 返回的任务 ID"},
@@ -85,11 +89,10 @@ class BackgroundTriggerSkill(SkillModule):
             ),
             self._tool_def(
                 "get_solver_status",
-                "查询当前会话管线的解题状态（是否有活跃任务、近期完成的任务等）。",
+                "查询当前会话管线的解题状态（是否有活跃任务、近期完成的任务等）。"
+                "【注意】有活跃任务时请勿轮询，等待通知即可。仅在需要决策是否提交新问题时查询。",
                 {
-                    "properties": {
-                        "pipeline_key": {"type": "string", "description": "可选，管线标识"},
-                    },
+                    "properties": {},
                     "required": [],
                 },
             ),
@@ -119,11 +122,15 @@ async def _handle_submit_problem(self: BackgroundTriggerSkill, args: dict) -> st
     if not question:
         return _json({"ok": False, "error": "question 不能为空"})
     try:
-        pipeline_key = str(args.get("pipeline_key", "")).strip() or "default"
+        pipeline_key = str(args.get("pipeline_key", "")).strip()
+        parts = pipeline_key.split("_", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return _json({"ok": False, "error": f"无效的 pipeline_key: {pipeline_key}（缺少聊天流信息）"})
+        conversation_kind, conversation_id = parts
         result = await self._manager.submit(
             pipeline_key=pipeline_key,
-            conversation_kind=pipeline_key.split("_")[0] if "_" in pipeline_key else "",
-            conversation_id=pipeline_key.split("_", 1)[1] if "_" in pipeline_key else "",
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
             question=question,
             delegate_context=str(args.get("context", "")),
         )
@@ -151,7 +158,10 @@ async def _handle_get_solver_status(self: BackgroundTriggerSkill, args: dict) ->
         return _json({"ok": False, "error": "solver_manager 未配置"})
     pipeline_key = args.get("pipeline_key", "")
     status = self._manager.get_pipeline_status(pipeline_key) if pipeline_key else {}
-    return _json({"ok": True, "status": status})
+    result: dict[str, Any] = {"ok": True, "status": status}
+    if status.get("solver_has_active_task"):
+        result["_hint"] = "【有活跃任务进行中，请结束本轮回复等待通知，无需轮询】"
+    return _json(result)
 
 
 _HANDLERS = {
