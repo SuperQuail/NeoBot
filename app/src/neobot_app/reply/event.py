@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
 from neobot_app.time_context import now_utc
@@ -51,6 +51,7 @@ class ReplyEvent:
     pre_reply_message_id: int | None = None
     error: str | None = None
     background_content: str | None = None
+    bilibili_context: Any = None  # B站 CommentContext / PrivateMessageContext
 
     def transition(self, new_state: ReplyState) -> None:
         allowed = _VALID_TRANSITIONS.get(self.state, set())

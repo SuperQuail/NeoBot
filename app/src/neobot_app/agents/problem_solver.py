@@ -699,6 +699,31 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return await self._execute_list_files(args)
         return f"未知工具: {name}"
 
+    def _get_sandbox_work_dir(self) -> Path | None:
+        """返回沙箱工作目录，供 run_python 的 cwd 和 write_file 使用。
+
+        从 _SOLVER_CHAT_CONTEXT 解析 chat_flow_id，优先使用 temp/{chat_flow_id}/，
+        回退到沙箱根目录。
+        """
+        if self._sandbox is None:
+            return None
+        chat_flow_id = self._parse_chat_flow_id()
+        if chat_flow_id:
+            return self._sandbox.ensure_temp_dir(chat_flow_id)
+        return self._sandbox.resolve_path(".")
+
+    @staticmethod
+    def _parse_chat_flow_id() -> str | None:
+        """从 _SOLVER_CHAT_CONTEXT 解析 pipeline_key 作为 chat_flow_id。"""
+        import re
+        ctx = _SOLVER_CHAT_CONTEXT.get("")
+        if not ctx:
+            return None
+        m = re.search(r"\[当前会话\]\s*\nkind=(\w+)\s*\nid=(\S+)", ctx)
+        if m:
+            return f"{m.group(1)}_{m.group(2)}"
+        return None
+
     async def _execute_run_python(self, args: dict) -> str:
         code = str(args.get("code", "")).strip()
         if not code:
@@ -710,12 +735,14 @@ class ProblemSolverToolExecutor(ToolExecutor):
             ) as f:
                 f.write(code)
                 script_path = f.name
+            cwd = str(self._get_sandbox_work_dir()) if self._sandbox else None
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: subprocess.run(
                         [sys.executable, script_path],
                         capture_output=True, text=True, timeout=timeout,
+                        cwd=cwd,
                     ),
                 ),
                 timeout=timeout + 5,
@@ -755,7 +782,8 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return _json({"ok": False, "error": "缺少 path 或 content_base64"})
         try:
             data = base64.b64decode(content_b64)
-            path = self._sandbox.resolve_path(rel_path)
+            chat_flow_id = self._parse_chat_flow_id()
+            path = self._sandbox.resolve_path(rel_path, chat_flow_id)
             await self._sandbox.write_file(path, data)
             return _json({"ok": True, "path": str(path)})
         except Exception as e:
@@ -769,7 +797,8 @@ class ProblemSolverToolExecutor(ToolExecutor):
         if not rel_path:
             return _json({"ok": False, "error": "缺少 path"})
         try:
-            path = self._sandbox.resolve_path(rel_path)
+            chat_flow_id = self._parse_chat_flow_id()
+            path = self._sandbox.resolve_path(rel_path, chat_flow_id)
             data = await self._sandbox.read_file(path)
             return _json({
                 "ok": True,
@@ -784,7 +813,8 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return _json({"ok": False, "error": "sandbox 未配置"})
         rel_path = str(args.get("path", "")).strip().lstrip("/") or "."
         try:
-            path = self._sandbox.resolve_path(rel_path)
+            chat_flow_id = self._parse_chat_flow_id()
+            path = self._sandbox.resolve_path(rel_path, chat_flow_id)
             files = await self._sandbox.list_files(path)
             return _json({"ok": True, "files": files})
         except Exception as e:

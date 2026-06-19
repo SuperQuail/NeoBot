@@ -203,6 +203,16 @@ class ImageParseService:
         import base64
 
         mime_type = _detect_image_mime(image_bytes)
+        # GIF 转 PNG：多数视觉 API 不支持 GIF，尤其是动图
+        if mime_type == "image/gif":
+            try:
+                buf = BytesIO()
+                img = Image.open(BytesIO(image_bytes))
+                img.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
+                mime_type = "image/png"
+            except Exception:
+                pass
         base64_data = base64.b64encode(image_bytes).decode("utf-8")
         image_url = f"data:{mime_type};base64,{base64_data}"
 
@@ -241,6 +251,7 @@ class ImageParseService:
                     pass
             self._logger.error(
                 "视觉模型调用失败",
+                exc_type=type(exc).__name__,
                 error=str(exc),
                 mime=mime_type,
                 image_bytes_len=len(image_bytes),

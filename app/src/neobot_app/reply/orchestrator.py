@@ -370,6 +370,171 @@ class ReplyOrchestrator:
             background_content=content,
         )
 
+    # ── B站回复启动 ──
+
+    def start_bilibili_comment_reply(
+        self,
+        comment_context: Any,
+        bilibili_client: Any,
+    ) -> Any | None:
+        """启动 B站评论回复管线。"""
+        from neobot_app.reply.event import ReplyEvent, ReplyState
+        from neobot_contracts.models import ConversationRef
+
+        if comment_context is None or comment_context.reply_target_rpid == 0:
+            return None
+
+        event = ReplyEvent(
+            mode="agent",
+            conversation_ref=ConversationRef(
+                kind="bilibili_comment",
+                id=str(comment_context.reply_target_rpid),
+            ),
+            bilibili_context=comment_context,
+        )
+        # Use agent mode but with limited toolset
+        self._launch_bilibili_event(event, bilibili_client)
+        return event
+
+    def start_bilibili_private_reply(
+        self,
+        msg_context: Any,
+        bilibili_client: Any,
+    ) -> Any | None:
+        """启动 B站私信回复管线。"""
+        from neobot_app.reply.event import ReplyEvent, ReplyState
+        from neobot_contracts.models import ConversationRef
+
+        if msg_context is None or not msg_context.current_message:
+            return None
+
+        event = ReplyEvent(
+            mode="agent",
+            conversation_ref=ConversationRef(
+                kind="bilibili_private",
+                id=str(msg_context.sender_uid),
+            ),
+            bilibili_context=msg_context,
+        )
+        self._launch_bilibili_event(event, bilibili_client)
+        return event
+
+    def _launch_bilibili_event(self, event: Any, bilibili_client: Any) -> None:
+        """启动 B站回复事件的异步任务。"""
+        pipeline_key = f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
+
+        existing = self._active_pipelines.get(pipeline_key)
+        if existing is not None and not existing.done():
+            return  # 已有活跃管线
+
+        async def _bilibili_run() -> None:
+            try:
+                prompt = await self._build_prompt(event, None, pipeline_key)
+                if not prompt:
+                    return
+
+                # B站评论用精简工具集
+                if event.conversation_ref.kind == "bilibili_comment":
+                    await self._run_bilibili_comment(event, prompt, bilibili_client)
+                else:
+                    await self._run_bilibili_private(event, prompt, bilibili_client)
+            except Exception:
+                self._logger.exception("B站回复管线异常")
+
+        def _cleanup(task: asyncio.Task[None]) -> None:
+            self._tasks.discard(task)
+            self._active_pipelines.pop(pipeline_key, None)
+
+        task = asyncio.create_task(_bilibili_run())
+        self._tasks.add(task)
+        self._active_pipelines[pipeline_key] = task
+        task.add_done_callback(_cleanup)
+
+    async def _run_bilibili_comment(self, event: Any, prompt: str, bilibili_client: Any) -> str:
+        """B站评论回复：使用 LLM 生成回复并发送。"""
+        from neobot_app.reply.event import ReplyState
+
+        event.transition(ReplyState.GENERATING)
+
+        if self._provider is None:
+            event.transition(ReplyState.FAILED)
+            return ""
+
+        try:
+            # 使用 skill 工具集（reply_comment / cancel_reply）
+            toolset = self._build_bilibili_comment_toolset(event, bilibili_client)
+            result = await self._provider.generate_with_tools(
+                prompt=prompt,
+                tools=toolset,
+            )
+            event.generated_text = result
+            event.transition(ReplyState.COMPLETED)
+            self._logger.info("B站评论回复完成: rpid=%s", event.conversation_ref.id if event.conversation_ref else "")
+            return result
+        except Exception as e:
+            self._logger.error("B站评论回复失败: %s", e)
+            event.error = str(e)
+            event.transition(ReplyState.FAILED)
+            return ""
+
+    async def _run_bilibili_private(self, event: Any, prompt: str, bilibili_client: Any) -> str:
+        """B站私信回复：使用 LLM 生成回复并发送。"""
+        from neobot_app.reply.event import ReplyState
+
+        event.transition(ReplyState.GENERATING)
+
+        if self._provider is None:
+            event.transition(ReplyState.FAILED)
+            return ""
+
+        try:
+            toolset = self._build_bilibili_private_toolset(event, bilibili_client)
+            result = await self._provider.generate_with_tools(
+                prompt=prompt,
+                tools=toolset,
+            )
+            event.generated_text = result
+            event.transition(ReplyState.COMPLETED)
+            self._logger.info("B站私信回复完成: uid=%s", event.conversation_ref.id if event.conversation_ref else "")
+            return result
+        except Exception as e:
+            self._logger.error("B站私信回复失败: %s", e)
+            event.error = str(e)
+            event.transition(ReplyState.FAILED)
+            return ""
+
+    def _build_bilibili_comment_toolset(self, event: Any, bilibili_client: Any) -> list[dict]:
+        """构建 B站评论回复的工具集（精简：reply_comment + cancel_reply）。"""
+        from neobot_app.bilibili.skills.reply_comment import BilibiliCommentSkill
+        skill = BilibiliCommentSkill(client=bilibili_client)
+        return skill.get_tools()
+
+    def _build_bilibili_private_toolset(self, event: Any, bilibili_client: Any) -> list[dict]:
+        """构建 B站私信回复的工具集（复用完整 skill 集 + send_reply 适配）。"""
+        tools: list[dict] = []
+
+        # send_reply 工具（适配 B站私信发送）
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "send_reply",
+                "description": "向B站私信对话发送回复。简短自然，不要使用markdown。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "回复文本内容"},
+                    },
+                    "required": ["text"],
+                },
+            },
+        })
+
+        # 添加 skill 工具
+        if self._skill_manager is not None:
+            tools.extend(self._skill_manager.get_tools())
+
+        return tools
+
     async def shutdown(self) -> None:
         for task in list(self._tasks):
             task.cancel()
@@ -2198,6 +2363,25 @@ class ReplyOrchestrator:
                     timeout_seconds=self._get_prompt_timeout_seconds(),
                 )
                 raise
+
+        # B站评论回复
+        if event.conversation_ref.kind == "bilibili_comment" and event.bilibili_context is not None:
+            prompt = await asyncio.to_thread(
+                self._prompt_builder.build_bilibili_comment_prompt,
+                event.bilibili_context,
+            )
+            await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
+            return prompt
+
+        # B站私信回复
+        if event.conversation_ref.kind == "bilibili_private" and event.bilibili_context is not None:
+            prompt = await asyncio.to_thread(
+                self._prompt_builder.build_bilibili_private_message_prompt,
+                event.bilibili_context,
+            )
+            await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
+            return prompt
+
         try:
             prompt = await asyncio.wait_for(
                 self._prompt_builder.build_friend_chat_prompt(

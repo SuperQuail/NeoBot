@@ -13,8 +13,8 @@ from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 
 
-async def run() -> None:
-    application = create_application()
+async def run(*, bilibili_only: bool = False) -> None:
+    application = create_application(bilibili_only=bilibili_only)
     loop = asyncio.get_running_loop()
 
     def request_stop() -> None:
@@ -36,7 +36,7 @@ async def run() -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人主程序。"""
     try:
-        asyncio.run(run())
+        asyncio.run(run(bilibili_only=args.bili))
     except ConnectionTimeoutError as exc:
         print(f"错误: {exc}")
     except KeyboardInterrupt:
@@ -59,10 +59,20 @@ def cmd_open_web(args: argparse.Namespace) -> None:
     try:
         from DrissionPage import ChromiumOptions, ChromiumPage
 
+        # 自动检测浏览器路径（Chrome > Edge > Chromium）
+        from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+        browser_path = _find_chrome_binary()
+        if browser_path:
+            print(f"使用浏览器: {browser_path}")
+        else:
+            print("警告: 未检测到浏览器，将使用 DrissionPage 默认浏览器")
+
         options = ChromiumOptions()
+        if browser_path:
+            options.set_browser_path(browser_path)
         options.set_argument("--user-data-dir", str(profile_dir))
-        options.no_imgs(False)  # 允许图片加载
-        options.headless(False)  # 有头模式
+        options.no_imgs(False)
+        options.headless(False)
         options.set_argument("--no-first-run")
         options.set_argument("--no-default-browser-check")
 
@@ -149,6 +159,11 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version",
         version="%(prog)s 1.0.0",
+    )
+
+    parser.add_argument(
+        "--bili", action="store_true",
+        help="仅启动B站模块（评论+私信），不启动QQ适配器",
     )
 
     sub = parser.add_subparsers(title="子命令", dest="command")

@@ -1082,6 +1082,135 @@ class WebSearchConfig:
 
 
 @dataclass
+class BilibiliConfig:
+    """B站模块配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "B站模块总开关；启动时若无法提取浏览器Cookie则自动关闭"},
+    )
+    poll_interval_seconds: float = field(
+        default=60.0,
+        metadata={"description": "B站轮询间隔秒数"},
+    )
+    comment_reply_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用评论回复"},
+    )
+    private_message_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用私信回复"},
+    )
+    like_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否给评论点赞"},
+    )
+    like_probability: float = field(
+        default=0.5,
+        metadata={"description": "点赞概率，0.0~1.0"},
+    )
+    reply_probability: float = field(
+        default=0.8,
+        metadata={"description": "回复概率，0.0~1.0"},
+    )
+    user_cooldown_minutes: int = field(
+        default=60,
+        metadata={"description": "同一用户回复冷却分钟数"},
+    )
+    simulate: bool = field(
+        default=False,
+        metadata={"description": "模拟模式，不实际发送回复"},
+    )
+    enable_agent_mode: bool = field(
+        default=False,
+        metadata={"description": "是否启用完整 agent 模式（含 skills/tools）；关闭则使用单次 LLM 调用"},
+    )
+    max_video_check_count: int = field(
+        default=5,
+        metadata={"description": "检查最近N个视频的评论"},
+    )
+    video_comment_interval: float = field(
+        default=300.0,
+        metadata={"description": "视频评论区扫描间隔秒数"},
+    )
+
+
+@dataclass
+class BilibiliChat:
+    """B站聊天提示词模板配置。"""
+
+    comment_reply_prompt_template: str = field(
+        default=(
+            "<你是谁>\n"
+            "你的名字是{bot_name},你的B站UID是{bot_uid}{other_name}.\n"
+            "{bot_data}\n"
+            "</你是谁><回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包等 ),不要使用markdown,和正常聊天一样,回复短句即可.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,引用原评论内容;其他情况不要引用.如果有人要求你做什么事情,你不一定要答应.</回复要求>\n"
+            "<cot>\n"
+            "[思维模式要求]在你的思考过程(<think>标签内)中，请遵守以下规则：\n"
+            "1. 检查当前待回复内容的话题是否已经回复过,如果已经回复过,并且没有需要补充的内容,则跳过该评论不回复\n"
+            "2. 确定对于回复对象的称呼,检查有没有明确的要求,如果有明确的对于称呼的要求,应该按照要求来称呼对方,并且保持称呼的一致性\n"
+            "3. 对于任务请求,你应该判断基于你的性格以及对方与你的关系,你是否会答应,不需要答应任何请求\n"
+            "</cot>\n"
+            "<回复样例>\n"
+            "回复1:好哦\n"
+            "回复2:我这就去看看\n"
+            "注意,短句分开回复,而不是以整段回复\n"
+            "** 严格禁止使用()来描述你的行为和思考,不要发送这样的内容 **</回复样例>\n"
+            "<当前时间>{current_time}</当前时间>\n"
+            "<评论区内容>{target_info}\n"
+            "</评论区内容>\n"
+            "<待回复评论>\n"
+            "{target_comment}\n"
+            "</待回复评论>\n"
+            "<评论树>\n"
+            "{comment_tree}\n"
+            "</评论树>\n"
+            "<回复指引>\n"
+            "★ 标记的评论是你需要回复的目标。直接输出回复文本即可。\n"
+            "如果对应的评论不值得回复(刷屏/无意义/已回复过),则跳过。\n"
+            "</回复指引>"
+        ),
+        metadata={"description": "评论回复提示词模板，非开发者不建议修改"},
+    )
+    private_message_prompt_template: str = field(
+        default=(
+            "<你是谁>\n"
+            "你的名字是{bot_name},你的B站UID是{bot_uid}{other_name}.\n"
+            "{bot_data}\n"
+            "</你是谁><回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包等 ),不要使用markdown,和正常聊天一样,回复短句即可.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具来完成,不要只表示去做而不使用工具完成,如果你发现你没有合适的工具或者工具无法完成任务,则回复你做不到如果你不确定你的工具能否完成指定任务,不要先回复做不到,先回复试试看.</回复要求>\n"
+            "<cot>\n"
+            "[思维模式要求]在你的思考过程(<think>标签内)中，请遵守以下规则：\n"
+            "1. 检查当前待回复内容的话题是否已经回复过,如果已经回复过,并且没有需要补充的内容,使用cancel直接取消回复,而不要对一个话题反复重复回复\n"
+            "2. 确定对于回复对象的称呼,检查有没有明确的要求,如果有明确的对于称呼的要求,应该按照要求来称呼对方,并且保持称呼的一致性\n"
+            "3. 对于任务请求,你应该判断基于你的性格以及对方与你的关系,你是否会答应,不需要答应任何请求\n"
+            "</cot>\n"
+            "<回复样例>\n"
+            "回复1:好哦\n"
+            "回复2:我这就去看看\n"
+            "注意,短句分开回复,而不是以整段回复\n"
+            "** 严格禁止使用()来描述你的行为和思考,不要发送这样的内容 **</回复样例>\n"
+            "<当前时间>{current_time}</当前时间>\n"
+            "<聊天对象>{chat_target}</聊天对象>{profile_line}{memory_line}\n"
+            "<对话历史>\n"
+            "{history}\n"
+            "</对话历史>\n"
+            "<待回复消息>\n"
+            "{current_message}\n"
+            "</待回复消息>"
+        ),
+        metadata={"description": "B站私信提示词模板，非开发者不建议修改"},
+    )
+    max_comment_tree_nodes: int = field(
+        default=100,
+        metadata={"description": "评论树最大展示节点数"},
+    )
+    max_private_history: int = field(
+        default=50,
+        metadata={"description": "私信对话历史最大条数"},
+    )
+
+
+@dataclass
 class BotConfig:
     """机器人主配置。"""
 
@@ -1100,6 +1229,8 @@ class BotConfig:
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
+    bilibili: BilibiliConfig = field(default_factory=BilibiliConfig)
+    bilibili_chat: BilibiliChat = field(default_factory=BilibiliChat)
 
 
 @dataclass

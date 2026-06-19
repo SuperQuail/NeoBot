@@ -231,6 +231,49 @@ class PromptBuilder:
         return prompt
 
 
+    # ── B站提示词构建 ──
+
+    def build_bilibili_comment_prompt(
+        self,
+        comment_context: Any,  # neobot_app.bilibili.prompts.CommentContext
+    ) -> str:
+        """构建 B站评论区回复提示词。"""
+        from neobot_app.bilibili.prompts import assemble_comment_reply_prompt
+
+        # 注入 bot 身份信息
+        ctx = comment_context
+        if not ctx.bot_name:
+            ctx.bot_name = self._config.bot.nick_name
+        if not ctx.bot_uid:
+            ctx.bot_uid = self._config.bot.account
+        if not ctx.bot_data:
+            ctx.bot_data = self._config.bot.bot_data
+        if not ctx.other_name and self._config.bot.alias_name:
+            ctx.other_name = _build_bot_other_name(self._config)
+
+        max_nodes = getattr(self._config.bilibili_chat, "max_comment_tree_nodes", 100)
+        return assemble_comment_reply_prompt(ctx, max_comments=max_nodes)
+
+    def build_bilibili_private_message_prompt(
+        self,
+        msg_context: Any,  # neobot_app.bilibili.prompts.PrivateMessageContext
+    ) -> str:
+        """构建 B站私信回复提示词。"""
+        from neobot_app.bilibili.prompts import assemble_private_message_prompt
+
+        ctx = msg_context
+        if not ctx.bot_name:
+            ctx.bot_name = self._config.bot.nick_name
+        if not ctx.bot_uid:
+            ctx.bot_uid = self._config.bot.account
+        if not ctx.bot_data:
+            ctx.bot_data = self._config.bot.bot_data
+        if not ctx.other_name and self._config.bot.alias_name:
+            ctx.other_name = _build_bot_other_name(self._config)
+
+        max_history = getattr(self._config.bilibili_chat, "max_private_history", 50)
+        return assemble_private_message_prompt(ctx, max_history=max_history)
+
     async def _fetch_archive(self, table_name: str, key: str) -> str | None:
         if self._archive_memory_service is None:
             return None
