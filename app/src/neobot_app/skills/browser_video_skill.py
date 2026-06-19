@@ -40,9 +40,11 @@ class BrowserVideoSkill(SkillModule):
         self,
         browser_instance: Any = None,
         sandbox_service: Any = None,
+        lifecycle_manager: Any = None,
     ) -> None:
         self._browser = browser_instance
         self._sandbox = sandbox_service
+        self._lifecycle = lifecycle_manager
 
     def reset(self) -> None:
         pass
@@ -71,10 +73,40 @@ class BrowserVideoSkill(SkillModule):
         err = self._check_browser()
         if err:
             return _json({"ok": False, "error": f"浏览器不可用: {err}"})
+
+        pipeline_key = str(args.get("pipeline_key", "")).strip()
+        if pipeline_key and self._lifecycle is not None:
+            self._lifecycle.touch(pipeline_key)
+            await self._switch_to_flow_tab(pipeline_key)
+
         handler = _HANDLERS.get(tool_name)
         if handler is None:
             return _json({"ok": False, "error": f"unknown browser_video tool: {tool_name}"})
         return await handler(self, args)
+
+    @staticmethod
+    def _parse_tabs(result: Any) -> list[dict]:
+        """解析 list_tabs() 的返回值，统一返回 tab 列表。"""
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            return result.get("tabs", [])
+        return []
+
+    async def _switch_to_flow_tab(self, pipeline_key: str) -> None:
+        """切换到该聊天流分配的标签页。"""
+        tab_ids = self._lifecycle.get_tab_ids(pipeline_key)
+        if not tab_ids:
+            return
+        tabs = self._parse_tabs(await self._browser.list_tabs())
+        id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+        for tab_id in tab_ids:
+            if tab_id in id_to_index:
+                try:
+                    await self._browser.switch_tab(id_to_index[tab_id])
+                    return
+                except Exception:
+                    continue
 
     @staticmethod
     def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:

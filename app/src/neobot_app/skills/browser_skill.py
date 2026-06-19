@@ -242,6 +242,30 @@ class BrowserSkill(SkillModule):
             self._tool_def("get_page_errors", "获取当前页面的运行时错误。"),
         ]
 
+    @staticmethod
+    def _parse_tabs(result: Any) -> list[dict]:
+        """解析 list_tabs() 的返回值，统一返回 tab 列表。"""
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            return result.get("tabs", [])
+        return []
+
+    async def _switch_to_flow_tab(self, pipeline_key: str) -> None:
+        """切换到该聊天流分配的标签页。"""
+        tab_ids = self._lifecycle.get_tab_ids(pipeline_key)
+        if not tab_ids:
+            return
+        tabs = self._parse_tabs(await self._browser.list_tabs())
+        id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+        for tab_id in tab_ids:
+            if tab_id in id_to_index:
+                try:
+                    await self._browser.switch_tab(id_to_index[tab_id])
+                    return
+                except Exception:
+                    continue
+
     async def execute(self, tool_name: str, args: dict[str, Any]) -> str:
         err = self._check_browser()
         if err:
@@ -249,6 +273,12 @@ class BrowserSkill(SkillModule):
             if handler:
                 return await handler(self, args)
             return _json({"ok": False, "error": f"浏览器不可用: {err}"})
+
+        pipeline_key = str(args.get("pipeline_key", "")).strip()
+        if pipeline_key and self._lifecycle is not None:
+            self._lifecycle.touch(pipeline_key)
+            await self._switch_to_flow_tab(pipeline_key)
+
         handler = _HANDLERS.get(tool_name)
         if handler is None:
             return _json({"ok": False, "error": f"unknown browser tool: {tool_name}"})
@@ -281,13 +311,61 @@ _STUB_HANDLERS = {
 # ── Real Handlers（browser_instance 存在时）──
 
 async def _handle_open(self: BrowserSkill, args: dict) -> str:
-    url = args.get("url", "")
-    result = await self._browser.open(url) if hasattr(self._browser, "open") else None
-    if result and result.get("success"):
+    pipeline_key = str(args.get("pipeline_key", "")).strip()
+    url = str(args.get("url", "")).strip()
+
+    if pipeline_key and self._lifecycle is not None:
+        existing_tabs = self._lifecycle.get_tab_ids(pipeline_key)
+        if existing_tabs:
+            await self._switch_to_flow_tab(pipeline_key)
+            if url:
+                result = await self._browser.navigate(url)
+            else:
+                result = await self._browser.open(url) if hasattr(self._browser, "open") else None
+            if isinstance(result, dict) and result.get("success"):
+                return _json({"ok": True, "url": result.get("url", ""), "title": result.get("title", "")})
+            return _json({"ok": True, "note": "浏览器已就绪"})
+
+    # 该聊天流还没有标签页，打开新标签页
+    before_ids = {t["tab_id"] for t in self._parse_tabs(await self._browser.list_tabs()) if "tab_id" in t}
+
+    if url:
+        result = await self._browser.new_tab(url)
+    else:
+        result = await self._browser.new_tab()
+
+    # 找出新建的 tab_id 并关联到该聊天流
+    if pipeline_key and self._lifecycle is not None:
+        for t in self._parse_tabs(await self._browser.list_tabs()):
+            tid = t.get("tab_id")
+            if tid and tid not in before_ids:
+                self._lifecycle.track_tab_open(pipeline_key, tid)
+                break
+
+    if isinstance(result, dict) and result.get("success"):
         return _json({"ok": True, "url": result.get("url", ""), "title": result.get("title", "")})
     return _json({"ok": True, "note": "浏览器已就绪"})
 
 async def _handle_close(self: BrowserSkill, args: dict) -> str:
+    pipeline_key = str(args.get("pipeline_key", "")).strip()
+
+    if pipeline_key and self._lifecycle is not None:
+        tab_ids = self._lifecycle.get_tab_ids(pipeline_key)
+        if tab_ids:
+            tabs = self._parse_tabs(await self._browser.list_tabs())
+            id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+            indices = sorted(
+                (id_to_index[tid] for tid in tab_ids if tid in id_to_index),
+                reverse=True,
+            )
+            for idx in indices:
+                try:
+                    await self._browser.close_tab(idx)
+                except Exception:
+                    pass
+        self._lifecycle.reset_flow(pipeline_key)
+        return _json({"ok": True, "note": "浏览器页面已关闭"})
+
     if hasattr(self._browser, "close"):
         await self._browser.close()
     return _json({"ok": True, "note": "浏览器已关闭"})

@@ -116,7 +116,7 @@ class BrowserManager:
         ud = Path(self._user_data_dir)
         if not ud.exists():
             return
-        for pattern in ("SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"):
+        for pattern in ("SingletonLock", "SingletonSocket", "lockfile"):
             for f in _glob.glob(str(ud / "**" / pattern), recursive=True):
                 try:
                     Path(f).unlink(missing_ok=True)
@@ -168,6 +168,8 @@ class BrowserManager:
                 self._page = await asyncio.to_thread(self._start_sync)
                 self._session_page = self._page
                 _ = self._page.url
+                # 浏览器就绪后自动恢复 cookie 和 localStorage
+                await self._restore_persisted_state()
                 return
             except Exception:
                 if attempt < 2:
@@ -235,19 +237,35 @@ class BrowserManager:
             await self._recording_stop()
         self._tab_pages.clear()
         if self._session_page:
+            # 关闭前持久化 cookie 和 localStorage，防止 Chrome 内部数据库损坏导致丢失
             try:
-                await asyncio.to_thread(self._session_page.quit)
+                await self._persist_state()
             except Exception:
                 pass
+            try:
+                await asyncio.to_thread(self._session_page.quit, timeout=3, force=False)
+            except Exception:
+                pass
+            # 等待进程自然退出
             if self._chrome_pid and _WINDOWS:
                 try:
-                    import subprocess as _sp
-                    _sp.run(
-                        ["taskkill", "/F", "/PID", str(self._chrome_pid)],
-                        capture_output=True, timeout=5,
-                    )
+                    import psutil as _psutil
+                    proc = _psutil.Process(self._chrome_pid)
+                    proc.wait(timeout=5)
+                except (_psutil.NoSuchProcess, _psutil.TimeoutExpired):
+                    pass
                 except Exception:
                     pass
+                # 仅在进程残留时才强制终止
+                if self._chrome_pid:
+                    try:
+                        import subprocess as _sp
+                        _sp.run(
+                            ["taskkill", "/F", "/PID", str(self._chrome_pid)],
+                            capture_output=True, timeout=5,
+                        )
+                    except Exception:
+                        pass
                 self._chrome_pid = None
         self._page = None
         self._session_page = None
@@ -1766,6 +1784,45 @@ class BrowserManager:
             return {"success": True, "cookie_count": loaded, "ls_keys": len(ls)}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @property
+    def _state_file(self) -> Path:
+        return Path(self._user_data_dir) / "browser_state.json"
+
+    async def _persist_state(self) -> None:
+        """内部方法：持久化 cookie 和 localStorage 到 JSON 文件（关闭前调用）。"""
+        if self._page is None:
+            return
+        try:
+            cookies = self._page.cookies()
+            ls_data = await asyncio.to_thread(
+                self._page.run_js, "return JSON.stringify(window.localStorage)"
+            )
+            state = {
+                "cookies": cookies,
+                "localStorage": json.loads(ls_data) if ls_data else {},
+                "url": self._page.url,
+                "timestamp": time.time(),
+            }
+            self._state_file.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    async def _restore_persisted_state(self) -> None:
+        """内部方法：从 JSON 文件恢复 cookie 和 localStorage（启动后调用）。"""
+        if not self._state_file.exists():
+            return
+        try:
+            state = json.loads(self._state_file.read_text(encoding="utf-8"))
+            for c in state.get("cookies", []):
+                try:
+                    self._page.set.cookies(c)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ── 调试 ──
 

@@ -245,13 +245,17 @@ def build_all_skills(
         )
     if "browser_network" not in disabled and browser_instance is not None:
         skills_to_register.append(
-            BrowserNetworkSkill(browser_instance=browser_instance)
+            BrowserNetworkSkill(
+                browser_instance=browser_instance,
+                lifecycle_manager=browser_lifecycle_manager,
+            )
         )
     if "browser_video" not in disabled and browser_instance is not None:
         skills_to_register.append(
             BrowserVideoSkill(
                 browser_instance=browser_instance,
                 sandbox_service=sandbox_service,
+                lifecycle_manager=browser_lifecycle_manager,
             )
         )
 

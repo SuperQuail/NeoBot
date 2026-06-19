@@ -96,4 +96,4 @@ class TempCleaner:
                 pass
 
         if removed:
-            self._logger.debug("TempCleaner: 清理了 %d 个过期文件", removed)
+            self._logger.debug(f"TempCleaner: 清理了 {removed} 个过期文件")
