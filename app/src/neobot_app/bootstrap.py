@@ -387,7 +387,9 @@ def create_application() -> NeoBotApplication:
             _auto_install_chromium()
 
         if _find_chrome_binary():
+            idle_timeout = int(getattr(browser_cfg, "auto_close_idle_seconds", 600)) // 60
             browser_lifecycle_manager = BrowserLifecycleManager(
+                idle_timeout_minutes=max(idle_timeout, 1),
                 hold_max_minutes=browser_cfg.hold_max_minutes,
             )
             browser_instance = BrowserAgentWrapper(
@@ -398,6 +400,30 @@ def create_application() -> NeoBotApplication:
                 lifecycle_manager=browser_lifecycle_manager,
             )
             browser_lifecycle_manager.set_browser_instance(browser_instance)
+
+            # 设置关闭回调：当聊天流闲置超时，关闭其标签页
+            async def _close_flow_tabs(chat_flow_id: str, tab_ids: set) -> None:
+                if browser_instance is None:
+                    return
+                tabs_result = await browser_instance.list_tabs()
+                if isinstance(tabs_result, list):
+                    tabs = tabs_result
+                elif isinstance(tabs_result, dict):
+                    tabs = tabs_result.get("tabs", [])
+                else:
+                    return
+                id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+                indices = sorted(
+                    (id_to_index[tid] for tid in tab_ids if tid in id_to_index),
+                    reverse=True,
+                )
+                for idx in indices:
+                    try:
+                        await browser_instance.close_tab(idx)
+                    except Exception:
+                        pass
+
+            browser_lifecycle_manager.set_close_callback(_close_flow_tabs)
         else:
             logger.warning("浏览器已启用但未能找到或下载 Chromium，浏览器功能不可用")
 
@@ -711,4 +737,5 @@ def create_application() -> NeoBotApplication:
         archive_summary_service=archive_summary_service,
         temp_cleaner=temp_cleaner,
         sandbox_maintenance_manager=sandbox_maintenance_manager,
+        browser_lifecycle_manager=browser_lifecycle_manager,
     )

@@ -963,12 +963,12 @@ class AgentBrowser:
         metadata={"description": "是否启用浏览器 Agent"},
     )
     hold_max_minutes: int = field(
-        default=30,
-        metadata={"description": "浏览器页面保活最大分钟数"},
+        default=120,
+        metadata={"description": "浏览器页面保活最大分钟数，默认 120（2 小时）"},
     )
     auto_close_idle_seconds: int = field(
-        default=300,
-        metadata={"description": "空闲自动关闭秒数"},
+        default=600,
+        metadata={"description": "空闲自动关闭秒数，默认 600（10 分钟）"},
     )
     data_dir: str = field(
         default="./data/browser/",

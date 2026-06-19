@@ -86,6 +86,9 @@ class ArchiveMemoryAutoSummaryService:
         lock = self._locks.setdefault(counter_key, asyncio.Lock())
         async with lock:
             state = await self._load_counter(counter_key)
+            # 防止残留的高计数（如之前摘要失败未复位）导致一条消息就触发
+            if int(state.get("count", 0)) >= interval:
+                state = {"count": 0, "messages": []}
             messages = list(state.get("messages", []))
             messages.append(
                 {
@@ -137,7 +140,7 @@ class ArchiveMemoryAutoSummaryService:
                     "role": "system",
                     "content": (
                         "You maintain concise long-term archive summaries for a chat bot. "
-                        "Return only the updated summary text."
+                        "Use available tools if needed, then return the updated summary text."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -176,6 +179,16 @@ class ArchiveMemoryAutoSummaryService:
                         "tool_call_id": tc["id"],
                         "content": str(result),
                     })
+
+            if not new_summary:
+                chat_messages.append(
+                    {"role": "user", "content": "Now provide the updated summary text."}
+                )
+                response = await asyncio.wait_for(
+                    self._provider.chat(chat_messages),
+                    timeout=60.0,
+                )
+                new_summary = _extract_response_text(response).strip()
 
             if not new_summary:
                 raise ValueError("summary provider returned empty content")

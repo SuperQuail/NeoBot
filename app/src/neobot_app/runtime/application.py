@@ -49,6 +49,7 @@ class NeoBotApplication(Generic[T]):
         file_server: FileServer | None = None,
         temp_cleaner: Any = None,
         sandbox_maintenance_manager: Any = None,
+        browser_lifecycle_manager: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -81,6 +82,7 @@ class NeoBotApplication(Generic[T]):
         self._archive_summary_service = archive_summary_service
         self._temp_cleaner = temp_cleaner
         self._sandbox_maintenance_manager = sandbox_maintenance_manager
+        self._browser_lifecycle_manager = browser_lifecycle_manager
 
     async def start(self) -> None:
         if self._started:
@@ -132,6 +134,9 @@ class NeoBotApplication(Generic[T]):
         if self._sandbox_maintenance_manager is not None:
             self._sandbox_maintenance_manager.start()
             self._logger.info("沙箱持久化文件维护服务启动完成")
+        if self._browser_lifecycle_manager is not None:
+            await self._browser_lifecycle_manager.start()
+            self._logger.info("浏览器生命周期管理器启动完成")
         self.event_ingress.start()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.start()
@@ -185,6 +190,8 @@ class NeoBotApplication(Generic[T]):
             await self._temp_cleaner.stop()
         if self._sandbox_maintenance_manager is not None:
             await self._sandbox_maintenance_manager.stop()
+        if self._browser_lifecycle_manager is not None:
+            await self._browser_lifecycle_manager.stop()
         if self._vision_provider is not None:
             await self._vision_provider.close()
         await self.adapter.stop()

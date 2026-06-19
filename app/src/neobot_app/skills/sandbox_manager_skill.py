@@ -28,8 +28,12 @@ class SandboxManagerSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "沙箱文件管理 Skill 提供聊天可操作的文件系统，用于保存生成的文件（截图/图片/文档/PDF等）"
-            "以及临时存储各类数据。\n\n"
+            "沙箱文件管理 Skill 提供聊天可操作的文件系统，用于已生成文件的存储与发送。\n\n"
+            "**重要：你（主 Agent）无法直接生成 PDF/图片/文档等二进制文件！**\n"
+            "如需生成此类文件，请使用 background_trigger__submit_problem 提交到后台 Agent，"
+            "后台 Agent 可以运行 Python 代码生成文件。任务完成后你会收到通知，"
+            "其中携带文件路径，然后你可使用 send_file 或 send_chat_file 发送到聊天。\n"
+            "write_file 仅用于保存你已有的 base64 内容（如从 URL 下载的文件）。\n\n"
             "## 目录结构\n"
             "  temp/{chat_flow_id}/ — 临时目录（30分钟无修改自动清理，重要文件用 hold_temp 保活）\n"
             "  tools/             — 可复用工具脚本（Python/shell 等），持久保存\n"
@@ -38,17 +42,19 @@ class SandboxManagerSkill(SkillModule):
             "  gift/              — 礼物准备目录（由 gift skill 管理）\n"
             "  文件存储.md         — 持久化文件索引文档\n"
             "  TODO.md            — 待实现工具清单\n\n"
+            "## chat_flow_id 说明\n"
+            "chat_flow_id 参数的值即系统注入的 pipeline_key（格式如 group_12345 或 private_12345），"
+            "你可以从任意工具调用的 args 中获取 pipeline_key 的值作为 chat_flow_id。\n\n"
             "## 持久化文件操作规则（操作 tools/docs/assets 时必须遵守）\n"
             "  1. 操作前必须先调用 file_storage__read_storage_doc 查看当前文件索引\n"
             "  2. 修改后必须调用 file_storage__update_storage_doc 更新文档\n"
             "  3. 文档要求精简：工具类写文件名+用法用途，文档类写文件名+大概内容（一行以内）\n"
             "  4. 需要但暂未实现的复杂脚本，调用 file_storage__update_todo 写入 TODO.md\n\n"
-            "文件路径相对于沙箱根目录如 tmp/{chat_flow_id}/...（写入时自动拼接）。\n"
-            "可使用 write_file 创建文件、list_files 浏览目录结构、read_file 读取内容。\n"
-            "生成文件（如代码/文档/PDF/图片等）后可先存入沙箱，再用 send_file 发送到聊天。\n\n"
+            "文件路径相对于沙箱根目录如 temp/{chat_flow_id}/...（写入时自动拼接）。\n"
+            "可使用 write_file 保存已有文件内容、list_files 浏览目录结构、read_file 读取内容。\n\n"
             "工具列表：\n"
             "  read_file — 读取文件内容（返回 base64）\n"
-            "  write_file — 写入文件到沙箱临时目录\n"
+            "  write_file — 写入已知 base64 内容到沙箱临时目录（不生成新内容）\n"
             "  delete_file — 删除文件\n"
             "  list_files — 列出目录内容\n"
             "  move_file — 移动/重命名文件\n"
@@ -250,6 +256,8 @@ async def _handle_write_file(self: SandboxManagerSkill, args: dict) -> str:
     rel_path = str(args.get("path", "")).strip()
     content_b64 = args.get("content_base64", "")
     chat_flow_id = str(args.get("chat_flow_id", "")).strip()
+    if not chat_flow_id:
+        chat_flow_id = str(args.get("pipeline_key", "")).strip()
     if not rel_path or not content_b64 or not chat_flow_id:
         return _json({"ok": False, "error": "缺少必要参数 path/content_base64/chat_flow_id"})
     try:

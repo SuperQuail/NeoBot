@@ -90,21 +90,59 @@ async def _handle_manage_friend(self: FriendManagementSkill, args: dict) -> str:
     if self._adapter is None:
         return _json({"ok": False, "error": "adapter 未配置"})
     action = str(args.get("action", "")).strip()
-    action_params: dict[str, Any] = {"action": action}
-    for key in ("user_id", "category_id", "times"):
-        if key in args:
-            action_params[key] = int(args[key])
-    for key in ("approve",):
-        if key in args:
-            action_params[key] = bool(args[key])
-    for key in ("remark", "flag"):
-        if key in args:
-            action_params[key] = str(args[key])
     try:
-        result = await self._adapter.call_api("manage_friend", action_params)
-        return _json({"ok": True, "result": str(result)})
+        api_action, params = _friend_action_params(action, args)
+        result = await self._adapter.call_api(api_action, params)
+        return _json({"ok": True, "action": action, "api": api_action, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
+
+
+def _friend_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
+    user_id = _as_int(args.get("user_id"))
+    if action == "set_remark":
+        return "set_friend_remark", {
+            "user_id": _require(user_id, "user_id"),
+            "remark": _require(_as_str(args.get("remark")), "remark"),
+        }
+    if action == "set_category":
+        return "set_friend_category", {
+            "user_id": _require(user_id, "user_id"),
+            "category_id": _require(_as_int(args.get("category_id")), "category_id"),
+        }
+    if action == "delete_friend":
+        return "delete_friend", {"user_id": _require(user_id, "user_id")}
+    if action == "handle_add_request":
+        return "set_friend_add_request", {
+            "flag": _require(_as_str(args.get("flag")), "flag"),
+            "approve": bool(args.get("approve", True)),
+            "remark": _as_str(args.get("remark")) or "",
+        }
+    if action == "send_like":
+        return "send_like", {
+            "user_id": _require(user_id, "user_id"),
+            "times": int(args.get("times") or 1),
+        }
+    raise ValueError(f"未知好友管理动作: {action}")
+
+
+def _as_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _as_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _require(value: Any, name: str) -> Any:
+    if value is None or value == "":
+        raise ValueError(f"缺少参数 {name}")
+    return value
 
 
 _HANDLERS = {

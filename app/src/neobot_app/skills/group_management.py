@@ -101,24 +101,97 @@ async def _handle_manage_group(self: GroupManagementSkill, args: dict) -> str:
     if self._adapter is None:
         return _json({"ok": False, "error": "adapter 未配置"})
     action = str(args.get("action", "")).strip()
-    action_params: dict[str, Any] = {"action": action}
-    for key in ("group_id", "user_id"):
-        if key in args:
-            action_params[key] = int(args[key])
-    for key in ("enable", "reject_add_request", "approve"):
-        if key in args:
-            action_params[key] = bool(args[key])
-    for key in ("duration", "message_id"):
-        if key in args:
-            action_params[key] = int(args[key])
-    for key in ("text", "flag", "reason"):
-        if key in args:
-            action_params[key] = str(args[key])
     try:
-        result = await self._adapter.call_api("manage_group", action_params)
-        return _json({"ok": True, "result": str(result)})
+        api_action, params = _group_action_params(action, args)
+        result = await self._adapter.call_api(api_action, params)
+        return _json({"ok": True, "action": action, "api": api_action, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
+
+
+def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
+    group_id = _as_int(args.get("group_id"))
+    user_id = _as_int(args.get("user_id"))
+    message_id = _as_int(args.get("message_id"))
+    text = _as_str(args.get("text"))
+
+    if action == "set_admin":
+        return "set_group_admin", {
+            "group_id": _require(group_id, "group_id"),
+            "user_id": _require(user_id, "user_id"),
+            "enable": bool(args.get("enable")),
+        }
+    if action == "set_ban":
+        return "set_group_ban", {
+            "group_id": _require(group_id, "group_id"),
+            "user_id": _require(user_id, "user_id"),
+            "duration": _require(_as_int(args.get("duration")), "duration"),
+        }
+    if action == "set_whole_ban":
+        return "set_group_whole_ban", {
+            "group_id": _require(group_id, "group_id"),
+            "enable": bool(args.get("enable", True)),
+        }
+    if action == "kick":
+        return "set_group_kick", {
+            "group_id": _require(group_id, "group_id"),
+            "user_id": _require(user_id, "user_id"),
+            "reject_add_request": bool(args.get("reject_add_request", False)),
+        }
+    if action == "set_card":
+        return "set_group_card", {
+            "group_id": _require(group_id, "group_id"),
+            "user_id": _require(user_id, "user_id"),
+            "card": _require(text, "text"),
+        }
+    if action == "set_group_name":
+        return "set_group_name", {
+            "group_id": _require(group_id, "group_id"),
+            "group_name": _require(text, "text"),
+        }
+    if action == "set_group_remark":
+        return "set_group_remark", {
+            "group_id": _require(group_id, "group_id"),
+            "remark": _require(text, "text"),
+        }
+    if action == "set_special_title":
+        return "set_group_special_title", {
+            "group_id": _require(group_id, "group_id"),
+            "user_id": _require(user_id, "user_id"),
+            "special_title": _require(text, "text"),
+        }
+    if action == "handle_add_request":
+        return "set_group_add_request", {
+            "flag": _require(_as_str(args.get("flag")), "flag"),
+            "approve": bool(args.get("approve", True)),
+            "reason": _as_str(args.get("reason")) or "",
+        }
+    if action == "set_essence":
+        return "set_essence_msg", {"message_id": _require(message_id, "message_id")}
+    if action == "delete_essence":
+        return "delete_essence_msg", {"message_id": _require(message_id, "message_id")}
+    if action == "delete_msg":
+        return "delete_msg", {"message_id": _require(message_id, "message_id")}
+    raise ValueError(f"未知群管理动作: {action}")
+
+
+def _as_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _as_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _require(value: Any, name: str) -> Any:
+    if value is None or value == "":
+        raise ValueError(f"缺少参数 {name}")
+    return value
 
 
 _HANDLERS = {
