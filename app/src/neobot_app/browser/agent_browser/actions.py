@@ -19,8 +19,8 @@ from .snapshot import snapshot_page
 class AgentBrowser:
     """AI 代理浏览器 — 高级操作接口。"""
 
-    def __init__(self, headless: bool = True, port: int = 0, user_data_dir: str | Path | None = None):
-        self._manager = BrowserManager(headless=headless, port=port, user_data_dir=user_data_dir)
+    def __init__(self, headless: bool = True, port: int = 0, user_data_dir: str | Path | None = None, browser_path: str = ""):
+        self._manager = BrowserManager(headless=headless, port=port, user_data_dir=user_data_dir, browser_path=browser_path)
         self._started = False
 
     async def start(self) -> None:

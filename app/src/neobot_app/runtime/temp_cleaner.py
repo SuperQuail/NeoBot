@@ -44,8 +44,7 @@ class TempCleaner:
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run_loop())
         self._logger.info(
-            "TempCleaner 已启动: dir=%s, max_age=%ds, interval=%ds",
-            self._temp_dir, self._max_age, self._scan_interval,
+            f"TempCleaner 已启动: dir={self._temp_dir}, max_age={self._max_age}s, interval={self._scan_interval}s"
         )
 
     async def stop(self) -> None:
@@ -66,7 +65,7 @@ class TempCleaner:
             try:
                 self._cleanup_once()
             except Exception as exc:
-                self._logger.warning("TempCleaner 清理异常: %s", exc)
+                self._logger.warning(f"TempCleaner 清理异常: {exc}")
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(),

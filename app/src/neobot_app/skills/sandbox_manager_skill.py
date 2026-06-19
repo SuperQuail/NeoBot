@@ -129,7 +129,8 @@ class SandboxManagerSkill(SkillModule):
             ),
             self._tool_def(
                 "send_file",
-                "将沙箱内的文件发送到聊天。",
+                "将沙箱内的图片文件发送到聊天（以图片消息发送，非文件形式）。"
+                "支持发送截图、浏览器截图等图片到指定群或好友。",
                 {
                     "properties": {
                         "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
@@ -257,7 +258,34 @@ async def _handle_copy_file(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "发送文件服务未配置"})
+    if self._adapter is None:
+        return _json({"ok": False, "error": "adapter 未配置"})
+    if self._file_server is None:
+        return _json({"ok": False, "error": "file_server 未配置"})
+    file_path = str(args.get("path", "")).strip()
+    group_id = str(args.get("group_id", "")).strip()
+    user_id = str(args.get("user_id", "")).strip()
+    if not file_path:
+        return _json({"ok": False, "error": "缺少 path"})
+    path = Path(file_path)
+    if not path.exists():
+        return _json({"ok": False, "error": f"文件不存在: {file_path}"})
+    if not group_id and not user_id:
+        return _json({"ok": False, "error": "缺少 group_id 或 user_id"})
+    try:
+        from neobot_app.utils.media_sender import prepare_image_segment
+        from neobot_contracts.models import ConversationRef
+
+        if group_id:
+            conv_ref = ConversationRef(kind="group", id=group_id)
+        else:
+            conv_ref = ConversationRef(kind="private", id=user_id)
+
+        segment = prepare_image_segment(self._file_server, path)
+        await self._adapter.send(conv_ref, [segment])
+        return _json({"ok": True, "path": str(path)})
+    except Exception as e:
+        return _json({"ok": False, "error": f"发送失败: {e}"})
 
 async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
     chat_flow_id = str(args.get("chat_flow_id", "")).strip()

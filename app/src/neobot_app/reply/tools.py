@@ -939,6 +939,7 @@ def build_reply_toolset(
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
     cross_chat_manager: Any = None,
+    skill_manager: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",

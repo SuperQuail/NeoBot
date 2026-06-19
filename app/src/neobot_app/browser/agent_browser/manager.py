@@ -27,10 +27,32 @@ _RETRY_INTERVAL = 1.0
 _WINDOWS = platform.system() == "Windows"
 
 
+def _playwright_chromium_path() -> str:
+    """查找 Playwright 下载的 Chromium 路径。"""
+    home = Path.home()
+    if _WINDOWS:
+        candidates = list((home / "AppData" / "Local" / "ms-playwright").glob("chromium-*/chrome-win/chrome.exe"))
+    elif platform.system() == "Linux":
+        candidates = list((home / ".cache" / "ms-playwright").glob("chromium-*/chrome-linux/chrome"))
+    elif platform.system() == "Darwin":
+        candidates = list((home / "Library" / "Caches" / "ms-playwright").glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"))
+    else:
+        candidates = []
+    # 取最新版本（按 revision 号排序）
+    if candidates:
+        return str(sorted(candidates, key=lambda p: str(p))[-1])
+    return ""
+
+
 def _find_chrome_binary() -> str:
     """跨平台查找 Chrome/Chromium 可执行路径。"""
     if path := os.getenv("CHROME_PATH"):
         return path
+
+    # 1. 优先使用 Playwright 内嵌的 Chromium
+    if pw_path := _playwright_chromium_path():
+        return pw_path
+
     system = platform.system()
     candidates = []
     if system == "Windows":
@@ -39,6 +61,8 @@ def _find_chrome_binary() -> str:
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             r"C:\Users\%USERNAME%\AppData\Local\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files\Chromium\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         ]
     elif system == "Linux":
         candidates = [
@@ -57,7 +81,7 @@ def _find_chrome_binary() -> str:
         expanded = Path(os.path.expandvars(p))
         if expanded.exists():
             return str(expanded)
-    return "chrome"
+    return ""
 
 
 class BrowserManager:
@@ -68,10 +92,12 @@ class BrowserManager:
         headless: bool = True,
         user_data_dir: str | Path | None = None,
         port: int = 0,
+        browser_path: str = "",
     ):
         self._headless = headless
         self._user_data_dir = str(user_data_dir or Path.cwd() / "browser_user_data")
         self._port = port
+        self._browser_path = browser_path or _find_chrome_binary()
         self._page: ChromiumBase | None = None
         self._session_page: ChromiumPage | None = None
         self._chrome_pid: Optional[int] = None
@@ -138,7 +164,8 @@ class BrowserManager:
 
     def _make_options(self) -> ChromiumOptions:
         co = ChromiumOptions()
-        co.set_browser_path(_find_chrome_binary())
+        if self._browser_path:
+            co.set_browser_path(self._browser_path)
         co.set_user_data_path(self._user_data_dir)
         if self._port:
             co.set_paths(local_port=self._port)

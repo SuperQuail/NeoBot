@@ -1011,6 +1011,10 @@ class AgentBrowser:
         default="./data/browser/",
         metadata={"description": "浏览器数据目录"},
     )
+    browser_path: str = field(
+        default="",
+        metadata={"description": "Chrome/Chromium 可执行路径，留空则自动检测"},
+    )
 
 
 @dataclass

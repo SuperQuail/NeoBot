@@ -128,6 +128,35 @@ def _create_optional_agent_provider(
         return fallback_provider
 
 
+def _auto_install_chromium() -> bool:
+    """尝试通过 Playwright 自动下载 Chromium。"""
+    logger = LoguruLoggerFactory().get_logger("app.bootstrap")
+    try:
+        from playwright._impl._driver import compute_driver_executable, get_driver_dir
+
+        import subprocess
+        driver_path = get_driver_dir()
+        driver_exe = compute_driver_executable()
+        cli = Path(driver_path) / driver_exe
+        logger.info("未检测到浏览器，正在自动下载 Chromium（约 150MB）…")
+        result = subprocess.run(
+            [str(cli), "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("Chromium 自动下载完成")
+            return True
+        logger.warning(f"Chromium 自动下载失败: {result.stderr.strip()}")
+        return False
+    except ImportError:
+        logger.info("playwright 未安装，跳过自动下载。"
+                     "如需浏览器功能请: pip install playwright && playwright install chromium")
+        return False
+    except Exception as exc:
+        logger.warning(f"Chromium 自动下载异常: {exc}")
+        return False
+
+
 def create_application() -> NeoBotApplication:
     configure_loguru(DATA_DIR / "logs", runtime_events=True)
     logger_factory = LoguruLoggerFactory()
@@ -367,27 +396,29 @@ def create_application() -> NeoBotApplication:
     sandbox_lock = SandboxLock()
 
     browser_cfg = getattr(config.agent, "browser", None)
-    browser_lifecycle_manager = (
-        BrowserLifecycleManager(
-            hold_max_minutes=browser_cfg.hold_max_minutes,
-        )
-        if browser_cfg and browser_cfg.enabled
-        else None
-    )
+    browser_instance: Any = None
+    browser_lifecycle_manager: Any = None
 
-    browser_instance = (
-        BrowserAgentWrapper(
-            data_dir=DATA_DIR / "browser",
-            headless=getattr(browser_cfg, "headless", True),
-            port=getattr(browser_cfg, "port", 0),
-            lifecycle_manager=browser_lifecycle_manager,
-        )
-        if browser_cfg and browser_cfg.enabled
-        else None
-    )
+    if browser_cfg and browser_cfg.enabled:
+        # 尝试查找浏览器，找不到则自动下载
+        from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+        if not _find_chrome_binary():
+            _auto_install_chromium()
 
-    if browser_instance and browser_lifecycle_manager:
-        browser_lifecycle_manager.set_browser_instance(browser_instance)
+        if _find_chrome_binary():
+            browser_lifecycle_manager = BrowserLifecycleManager(
+                hold_max_minutes=browser_cfg.hold_max_minutes,
+            )
+            browser_instance = BrowserAgentWrapper(
+                data_dir=DATA_DIR / "browser",
+                headless=getattr(browser_cfg, "headless", True),
+                port=getattr(browser_cfg, "port", 0),
+                browser_path=getattr(browser_cfg, "browser_path", ""),
+                lifecycle_manager=browser_lifecycle_manager,
+            )
+            browser_lifecycle_manager.set_browser_instance(browser_instance)
+        else:
+            logger.warning("浏览器已启用但未能找到或下载 Chromium，浏览器功能不可用")
 
     file_server = FileServer(
         DATA_DIR,

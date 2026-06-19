@@ -25,11 +25,13 @@ class BrowserAgentWrapper:
         data_dir: str | Path,
         headless: bool = True,
         port: int = 0,
+        browser_path: str = "",
         lifecycle_manager: Any = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._headless = headless
         self._port = port
+        self._browser_path = browser_path
         self._lifecycle = lifecycle_manager
         self._agent: AgentBrowser | None = None
 
@@ -45,6 +47,7 @@ class BrowserAgentWrapper:
                 headless=self._headless,
                 port=self._port,
                 user_data_dir=str(self._data_dir),
+                browser_path=self._browser_path,
             )
         if not self._agent._started:
             await self._agent.start()
