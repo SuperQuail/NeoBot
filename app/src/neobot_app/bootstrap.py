@@ -60,6 +60,7 @@ from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTas
 from neobot_app.runtime.temp_cleaner import TempCleaner
 from neobot_app.runtime.sandbox_lock import SandboxLock
 from neobot_app.runtime.sandbox_service import SandboxService
+from neobot_app.runtime.sandbox_maintenance import SandboxMaintenanceManager
 from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
 from neobot_app.browser import BrowserAgentWrapper
 from neobot_app.skills import build_all_skills
@@ -433,6 +434,24 @@ def create_application() -> NeoBotApplication:
         else None
     )
 
+    sandbox_maintenance_manager = (
+        SandboxMaintenanceManager(
+            sandbox_root=DATA_DIR / "sandbox",
+            interval_seconds=(
+                sandbox_cfg.maintenance.interval_seconds
+                if sandbox_cfg else 43200
+            ),
+            enabled=(
+                sandbox_cfg.maintenance.enabled
+                if sandbox_cfg else True
+            ),
+            notification_hub=notification_hub,
+            logger=logger_factory.get_logger("app.sandbox_maintenance"),
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
+    )
+
     if problem_solver_manager is not None:
         ps_provider = _create_optional_agent_provider(
             config=config,
@@ -464,6 +483,7 @@ def create_application() -> NeoBotApplication:
         markdown_image_converter=markdown_image_converter,
         sandbox_lock=sandbox_lock,
         sandbox_service=sandbox_service,
+        sandbox_maintenance_manager=sandbox_maintenance_manager,
         browser_instance=browser_instance,
         browser_lifecycle_manager=browser_lifecycle_manager,
         problem_solver_manager=problem_solver_manager,
@@ -675,4 +695,5 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
         temp_cleaner=temp_cleaner,
+        sandbox_maintenance_manager=sandbox_maintenance_manager,
     )

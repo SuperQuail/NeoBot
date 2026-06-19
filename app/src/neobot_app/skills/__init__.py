@@ -23,7 +23,10 @@ from neobot_app.skills.reminder_skill import ReminderSkill
 from neobot_app.skills.birthday_skill import BirthdaySkill
 from neobot_app.skills.cross_chat_skill import CrossChatSkill
 from neobot_app.skills.background_trigger import BackgroundTriggerSkill
+from neobot_app.skills.file_storage_skill import FileStorageSkill
 from neobot_app.skills.sandbox_manager_skill import SandboxManagerSkill
+from neobot_app.skills.sandbox_maintenance_skill import SandboxMaintenanceSkill
+from neobot_app.skills.gift_skill import GiftSkill
 from neobot_app.skills.browser_skill import BrowserSkill
 from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
@@ -54,6 +57,7 @@ def build_all_skills(
     browser_instance: Any = None,
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
+    sandbox_maintenance_manager: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -171,6 +175,28 @@ def build_all_skills(
     if "background_trigger" not in disabled:
         skills_to_register.append(
             BackgroundTriggerSkill(manager=problem_solver_manager, config=config)
+        )
+
+    # ── Phase 3: 文件存储管理（持久化文件索引和 TODO） ──
+    if "file_storage" not in disabled and sandbox_service is not None:
+        skills_to_register.append(
+            FileStorageSkill(sandbox_service=sandbox_service)
+        )
+
+    # ── Phase 3: 沙箱维护管理 ──
+    if "sandbox_maintenance" not in disabled and sandbox_maintenance_manager is not None:
+        skills_to_register.append(
+            SandboxMaintenanceSkill(maintenance_manager=sandbox_maintenance_manager)
+        )
+
+    # ── Phase 3: 礼物管理 ──
+    if "gift" not in disabled and sandbox_service is not None:
+        skills_to_register.append(
+            GiftSkill(
+                sandbox_service=sandbox_service,
+                scheduled_task_manager=scheduled_task_manager,
+                notification_hub=notification_hub,
+            )
         )
 
     # ── Phase 3: 沙箱管理器 ──

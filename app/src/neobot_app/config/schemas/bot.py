@@ -973,6 +973,20 @@ class AgentBrowser:
 
 
 @dataclass
+class SandboxMaintenance:
+    """沙箱持久化文件定时维护配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用定时维护"},
+    )
+    interval_seconds: int = field(
+        default=43200,
+        metadata={"description": "维护间隔秒数，默认 43200（12 小时）"},
+    )
+
+
+@dataclass
 class AgentSandbox:
     """沙箱文件系统配置。"""
 
@@ -995,6 +1009,10 @@ class AgentSandbox:
     allowed_read_dirs: list[str] = field(
         default_factory=lambda: ["./data/emoji/", "./data/creator/gallery/"],
         metadata={"description": "允许文件操作 agent 只读访问的目录列表"},
+    )
+    maintenance: SandboxMaintenance = field(
+        default_factory=SandboxMaintenance,
+        metadata={"description": "沙箱持久化文件定时维护配置"},
     )
 
 
