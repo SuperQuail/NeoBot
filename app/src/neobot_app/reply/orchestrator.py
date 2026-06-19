@@ -462,14 +462,23 @@ class ReplyOrchestrator:
 
         ctx = event.bilibili_context
         type_map = {"视频": 1, "动态": 17, "专栏": 12}
+        event_id = event.event_id
 
         try:
             comment_skill = self._build_bilibili_comment_skill(bilibili_client)
             toolset = comment_skill.get_tools() if comment_skill else []
             messages: list[dict] = [{"role": "user", "content": prompt}]
             reply_sent = False
+            iteration = 0
 
             while True:
+                iteration += 1
+                self._logger.info(
+                    f"B站评论 agent 第 {iteration} 轮",
+                    event_id=event_id,
+                    kind="bilibili_comment",
+                    prompt_chars=len(prompt),
+                )
                 response = await self._provider.chat(
                     messages, tools=toolset if toolset else None
                 )
@@ -480,6 +489,13 @@ class ReplyOrchestrator:
                     content = response.get("content", "") if isinstance(response, dict) else str(response)
                     text = content.strip() if isinstance(content, str) else str(content)
                     if text and ctx is not None:
+                        self._logger.info(
+                            "B站评论发送",
+                            event_id=event_id,
+                            oid=ctx.target_oid,
+                            rpid=ctx.reply_target_rpid,
+                            text_len=len(text),
+                        )
                         ok = await asyncio.to_thread(
                             bilibili_client.send_comment_reply,
                             oid=ctx.target_oid,
@@ -489,7 +505,11 @@ class ReplyOrchestrator:
                             type_=type_map.get(ctx.target_type, 1),
                         )
                         if not ok:
-                            self._logger.warning("B站评论回复API返回失败", oid=ctx.target_oid)
+                            self._logger.warning(
+                                "B站评论回复API返回失败",
+                                event_id=event_id,
+                                oid=ctx.target_oid,
+                            )
                         reply_sent = True
                         event.generated_text = text
                     break
@@ -500,6 +520,12 @@ class ReplyOrchestrator:
                         args = json.loads(tc["function"]["arguments"])
                     except (json.JSONDecodeError, KeyError):
                         args = {}
+                    self._logger.info(
+                        f"B站评论工具调用: {name}",
+                        event_id=event_id,
+                        tool=name,
+                        args=str(args),
+                    )
 
                     if name == "reply_comment" and ctx is not None:
                         ok = await asyncio.to_thread(
@@ -511,13 +537,21 @@ class ReplyOrchestrator:
                             type_=int(args.get("type_", type_map.get(ctx.target_type, 1))),
                         )
                         if not ok:
-                            self._logger.warning("B站评论回复API返回失败", oid=ctx.target_oid)
+                            self._logger.warning(
+                                "B站评论回复API返回失败",
+                                event_id=event_id,
+                                oid=ctx.target_oid,
+                            )
                         event.generated_text = str(args.get("text", ""))
                         reply_sent = True
                         break
 
                     if name == "cancel_reply":
-                        self._logger.info("B站评论已跳过", reason=args.get("reason", ""))
+                        self._logger.info(
+                            "B站评论已跳过",
+                            event_id=event_id,
+                            reason=args.get("reason", ""),
+                        )
                         event.generated_text = ""
                         reply_sent = True
                         break
@@ -525,6 +559,11 @@ class ReplyOrchestrator:
                     # 执行 comment_skill 工具
                     if comment_skill is not None:
                         result = await comment_skill.execute(name, args)
+                        self._logger.info(
+                            f"B站评论工具返回: {name}",
+                            event_id=event_id,
+                            tool=name,
+                        )
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
@@ -535,14 +574,26 @@ class ReplyOrchestrator:
                     break
 
             if not reply_sent:
-                self._logger.warning("B站评论未发送：LLM 未调用 reply_comment 且未生成文本")
+                self._logger.warning(
+                    "B站评论未发送：LLM 未调用 reply_comment 且未生成文本",
+                    event_id=event_id,
+                )
 
             event.transition(ReplyState.SENDING)
             event.transition(ReplyState.COMPLETED)
-            self._logger.info("B站评论回复完成", rpid=event.conversation_ref.id if event.conversation_ref else "")
+            self._logger.info(
+                "B站评论回复完成",
+                event_id=event_id,
+                rpid=event.conversation_ref.id if event.conversation_ref else "",
+                text=event.generated_text[:100] if event.generated_text else "",
+            )
             return event.generated_text
         except Exception as e:
-            self._logger.error(f"B站评论回复失败: {e}")
+            self._logger.error(
+                "B站评论回复失败",
+                event_id=event_id,
+                error=str(e),
+            )
             event.error = str(e)
             event.transition(ReplyState.FAILED)
             return ""
@@ -563,13 +614,23 @@ class ReplyOrchestrator:
             return ""
 
         ctx = event.bilibili_context
+        event_id = event.event_id
 
         try:
             toolset = self._build_bilibili_private_toolset(event, bilibili_client)
             messages: list[dict] = [{"role": "user", "content": prompt}]
             reply_sent = False
+            iteration = 0
 
             while True:
+                iteration += 1
+                self._logger.info(
+                    f"B站私信 agent 第 {iteration} 轮",
+                    event_id=event_id,
+                    kind="bilibili_private",
+                    uid=ctx.sender_uid if ctx else "",
+                    prompt_chars=len(prompt),
+                )
                 response = await self._provider.chat(
                     messages, tools=toolset if toolset else None
                 )
@@ -580,6 +641,12 @@ class ReplyOrchestrator:
                     content = response.get("content", "") if isinstance(response, dict) else str(response)
                     text = content.strip() if isinstance(content, str) else str(content)
                     if text and ctx is not None:
+                        self._logger.info(
+                            "B站私信发送",
+                            event_id=event_id,
+                            uid=ctx.sender_uid,
+                            text_len=len(text),
+                        )
                         await asyncio.to_thread(
                             bilibili_client.send_message,
                             receiver_id=ctx.sender_uid,
@@ -587,7 +654,6 @@ class ReplyOrchestrator:
                         )
                         reply_sent = True
                         event.generated_text = text
-                        self._logger.info("B站私信已发送", uid=ctx.sender_uid, text_len=len(text))
                     break
 
                 for tc in tool_calls:
@@ -596,10 +662,22 @@ class ReplyOrchestrator:
                         args = json.loads(tc["function"]["arguments"])
                     except (json.JSONDecodeError, KeyError):
                         args = {}
+                    self._logger.info(
+                        f"B站私信工具调用: {name}",
+                        event_id=event_id,
+                        tool=name,
+                        args=str(args),
+                    )
 
                     if name == "send_reply":
                         text = str(args.get("text", "")).strip()
                         if text and ctx is not None:
+                            self._logger.info(
+                                "B站私信发送",
+                                event_id=event_id,
+                                uid=ctx.sender_uid,
+                                text_len=len(text),
+                            )
                             await asyncio.to_thread(
                                 bilibili_client.send_message,
                                 receiver_id=ctx.sender_uid,
@@ -607,36 +685,54 @@ class ReplyOrchestrator:
                             )
                             reply_sent = True
                             event.generated_text = text
-                            self._logger.info("B站私信已发送", uid=ctx.sender_uid, text_len=len(text))
                         break
 
                     if name == "cancel":
-                        self._logger.info("B站私信已取消")
+                        self._logger.info(
+                            "B站私信已取消",
+                            event_id=event_id,
+                        )
                         event.generated_text = ""
                         reply_sent = True
                         break
 
                     # 执行 skill 工具
                     result = await self._execute_bilibili_skill_tool(name, args)
+                    self._logger.info(
+                        f"B站私信工具返回: {name}",
+                        event_id=event_id,
+                        tool=name,
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": result,
                     })
-                    self._logger.info(f"B站私信工具返回: {name}", result_len=len(result))
 
                 if reply_sent:
                     break
 
             if not reply_sent:
-                self._logger.warning("B站私信未发送：LLM 未调用 send_reply 且未生成文本")
+                self._logger.warning(
+                    "B站私信未发送：LLM 未调用 send_reply 且未生成文本",
+                    event_id=event_id,
+                )
 
             event.transition(ReplyState.SENDING)
             event.transition(ReplyState.COMPLETED)
-            self._logger.info("B站私信回复完成", uid=event.conversation_ref.id if event.conversation_ref else "")
+            self._logger.info(
+                "B站私信回复完成",
+                event_id=event_id,
+                uid=event.conversation_ref.id if event.conversation_ref else "",
+                text=event.generated_text[:100] if event.generated_text else "",
+            )
             return event.generated_text
         except Exception as e:
-            self._logger.error(f"B站私信回复失败: {e}")
+            self._logger.error(
+                "B站私信回复失败",
+                event_id=event_id,
+                error=str(e),
+            )
             event.error = str(e)
             event.transition(ReplyState.FAILED)
             return ""
@@ -2508,8 +2604,7 @@ class ReplyOrchestrator:
 
         # B站评论回复
         if event.conversation_ref.kind == "bilibili_comment" and event.bilibili_context is not None:
-            prompt = await asyncio.to_thread(
-                self._prompt_builder.build_bilibili_comment_prompt,
+            prompt = await self._prompt_builder.build_bilibili_comment_prompt(
                 event.bilibili_context,
             )
             await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
@@ -2517,8 +2612,7 @@ class ReplyOrchestrator:
 
         # B站私信回复
         if event.conversation_ref.kind == "bilibili_private" and event.bilibili_context is not None:
-            prompt = await asyncio.to_thread(
-                self._prompt_builder.build_bilibili_private_message_prompt,
+            prompt = await self._prompt_builder.build_bilibili_private_message_prompt(
                 event.bilibili_context,
             )
             await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)

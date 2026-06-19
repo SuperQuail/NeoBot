@@ -68,7 +68,11 @@ class PrivateMessageContext:
 
 # ── 评论回复提示词 ──
 
-def assemble_comment_reply_prompt(ctx: CommentContext, max_comments: int = 100) -> str:
+def assemble_comment_reply_prompt(
+    ctx: CommentContext,
+    max_comments: int = 100,
+    profiles: list[dict] | None = None,
+) -> str:
     """组装评论回复提示词，格式对齐 QQ 群聊模板。"""
     now = datetime.datetime.now()
     current_time = now.strftime("%Y年%m月%d日 %H:%M, %A")
@@ -87,6 +91,9 @@ def assemble_comment_reply_prompt(ctx: CommentContext, max_comments: int = 100) 
     # 构建待回复评论
     target_comment_text = _build_target_comment(ctx)
 
+    # 构建评论者档案块
+    commenter_profiles_text = _build_commenter_profiles_section(profiles or [])
+
     template = f"""<你是谁>
 {who_am_i}
 </你是谁><回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包等 ),不要使用markdown,和正常聊天一样,回复短句即可.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,引用原评论内容;其他情况不要引用.如果有人要求你做什么事情,你不一定要答应.</回复要求>
@@ -103,7 +110,7 @@ def assemble_comment_reply_prompt(ctx: CommentContext, max_comments: int = 100) 
 ** 严格禁止使用()来描述你的行为和思考,不要发送这样的内容 **</回复样例>
 <当前时间>{current_time}</当前时间>
 <评论区内容>{_build_target_info(ctx)}
-</评论区内容>
+</评论区内容>{commenter_profiles_text}
 <待回复评论>
 {target_comment_text}
 </待回复评论>
@@ -286,7 +293,10 @@ def _collect_bot_related_branches(
 
 
 def _render_nodes(
-    nodes: list[CommentNode], target_rpid: int, parts: list[str], depth: int = 0
+    nodes: list[CommentNode],
+    target_rpid: int,
+    parts: list[str],
+    depth: int = 0,
 ) -> None:
     indent = "  " * depth
     for n in nodes:
@@ -303,6 +313,38 @@ def _render_nodes(
 
         if n.children:
             _render_nodes(n.children, target_rpid, parts, depth + 1)
+
+
+def _build_commenter_profiles_section(profiles: list[dict]) -> str:
+    """构建评论者档案块，每人只显示一次，对齐群聊 <群友列表> 格式。"""
+    if not profiles:
+        return ""
+    lines = ["<评论者档案>"]
+    for i, p in enumerate(profiles, start=1):
+        uname = p.get("uname", "?")
+        uid = p.get("uid", "?")
+        parts: list[str] = [f"B站昵称:{uname}", f"UID:{uid}"]
+        remark = p.get("remark")
+        if remark:
+            parts.append(f"你对Ta的备注:{remark}")
+        profile_text = p.get("profile")
+        if profile_text:
+            parts.append(f"你对Ta的印象:{profile_text}")
+        known_gender = p.get("known_gender")
+        if known_gender:
+            parts.append(f"Ta告诉你的性别:{known_gender}")
+        avatar = p.get("avatar_analysis")
+        if avatar:
+            parts.append(f"头像记忆:{avatar}")
+        bili_archive = p.get("bilibili_archive")
+        if bili_archive:
+            parts.append(f"你记得关于Ta的事:{bili_archive}")
+        qq_archive = p.get("qq_archive")
+        if qq_archive:
+            parts.append(f"QQ相关记忆:{qq_archive}")
+        lines.append(f"<评论者_{i}>{','.join(parts)}</评论者_{i}>")
+    lines.append("</评论者档案>")
+    return "\n".join(lines)
 
 
 def _format_timestamp(ts: int) -> str:

@@ -349,6 +349,7 @@ def create_application(*, bilibili_only: bool = False) -> NeoBotApplication:
         adaptive_prompt_path=(
             DATA_DIR / "自适应提示词.txt" if adaptive_prompt_enabled else None
         ),
+        uow_factory=uow_factory,
     )
 
     vision_provider = None

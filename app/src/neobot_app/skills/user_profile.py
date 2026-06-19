@@ -103,7 +103,25 @@ async def _handle_read_user_info(self: UserProfileSkill, args: dict) -> str:
     if not user_id:
         return _json({"ok": False, "error": "缺少 user_id"})
     try:
-        info = await self._profile_service.get_user_info(user_id)
+        profile = await self._profile_service.get_user(user_id)
+        if profile is None:
+            return _json({"ok": True, "info": None, "message": "该用户暂无资料"})
+        info = {
+            "nick_name": getattr(profile, "nick_name", None),
+            "remark": getattr(profile, "remark", None),
+            "profile": getattr(profile, "profile", None),
+            "avatar_analysis": getattr(profile, "avatar_analysis", None),
+            "sex": getattr(profile, "sex", None),
+            "age": getattr(profile, "age", None),
+            "city": getattr(profile, "city", None),
+            "country": getattr(profile, "country", None),
+            "long_nick": getattr(profile, "long_nick", None),
+            "birthday": getattr(profile, "birthday", None),
+            "favorability": getattr(profile, "favorability", 0),
+            "relation_ship": getattr(profile, "relation_ship", None),
+            "known_gender": getattr(profile, "known_gender", None),
+            "labs": getattr(profile, "labs", None),
+        }
         return _json({"ok": True, "info": info})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
