@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -22,6 +23,7 @@ class PromptBuilder:
         profile_service: UserProfileService,
         logger: Logger | None = None,
         archive_memory_service: Any | None = None,
+        adaptive_prompt_path: Path | None = None,
     ) -> None:
         self._config = config
         self._profile_service = profile_service
@@ -31,6 +33,27 @@ class PromptBuilder:
             config.chat.key_word or [],
             logger=self._logger,
         )
+        self._adaptive_prompt_path = adaptive_prompt_path
+        self._adaptive_prompt_cache: str | None = None
+        self._adaptive_prompt_mtime: float | None = None
+
+    def _get_adaptive_prompt(self) -> str:
+        """读取自适应提示词内容（带 mtime 缓存）。"""
+        if self._adaptive_prompt_path is None:
+            return ""
+        try:
+            path = self._adaptive_prompt_path
+            if not path.is_file():
+                return ""
+            mtime = path.stat().st_mtime
+            if self._adaptive_prompt_cache is not None and self._adaptive_prompt_mtime == mtime:
+                return self._adaptive_prompt_cache
+            content = path.read_text("utf-8").strip()
+            self._adaptive_prompt_cache = content
+            self._adaptive_prompt_mtime = mtime
+            return content
+        except Exception:
+            return ""
 
     async def build_group_chat_prompt(
         self,
@@ -121,6 +144,9 @@ class PromptBuilder:
             prompt = _merge_prompt_fragments(prompt, group_info)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.group_prompt_template:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
+        adaptive = self._get_adaptive_prompt()
+        if adaptive:
+            prompt += f"\n<自适应提示词>\n{adaptive}\n</自适应提示词>"
         return prompt
 
     async def build_friend_chat_prompt(
@@ -193,6 +219,9 @@ class PromptBuilder:
             prompt = _merge_prompt_fragments(prompt, merged_memory_list)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.friend_prompt_template:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
+        adaptive = self._get_adaptive_prompt()
+        if adaptive:
+            prompt += f"\n<自适应提示词>\n{adaptive}\n</自适应提示词>"
         prompt += (
             "\n<私聊提示>"
             "\n这是私聊对话。必须先正常回复对方的消息，回复内容根据聊天内容自然决定。"

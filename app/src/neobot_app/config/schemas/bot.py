@@ -44,13 +44,25 @@ class Chat:
         default=(
             (
 (
+(
 """
 <你是谁>
 你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.
 {bot_data}
 </你是谁>
-<回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.</回复要求>
-<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>
+<回复要求>
+请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.
+只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.
+如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.
+</回复要求>
+<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。
+</任务处理要求>
+<cot>
+[思维模式要求]在你的思考过程(<think>标签内)中，请遵守以下规则：
+1. 检查当前待回复内容的话题是否已经回复过,如果已经回复过,并且没有需要补充的内容,使用cancel直接取消回复,而不要对一个话题反复重复回复
+2. 确定对于回复对象的称呼,检查有没有明确的要求,如果有明确的对于称呼的要求,应该按照要求来称呼对方,并且保持称呼的一致性
+3. 对于任务请求,你应该判断基于你的性格以及对方与你的关系,你是否会答应,不需要答应任何请求
+</cot>
 <回复样例>
 回复1:好哦
 回复2:我这就去看看
@@ -75,6 +87,7 @@ class Chat:
 </你的印象>
 
 """
+        )
         )
         )
         ),
@@ -501,10 +514,6 @@ class AgentModelRouting:
         default=1,
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
-    cross_chat: int = field(
-        default=1,
-        metadata={"description": "cross_chat Agent 使用的模型编号，0-3"},
-    )
 
 
 @dataclass
@@ -880,6 +889,14 @@ class AgentMemory:
     archive: AgentMemoryArchive = field(default_factory=AgentMemoryArchive)
     favorability: AgentMemoryFavorability = field(default_factory=AgentMemoryFavorability)
     item_archive: AgentMemoryItemArchive = field(default_factory=AgentMemoryItemArchive)
+    adaptive_prompt_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用自适应提示词（agent 可自主维护的永久记忆）"},
+    )
+    adaptive_prompt_max_chars: int = field(
+        default=200,
+        metadata={"description": "自适应提示词最大字符数，超出自动截断"},
+    )
 
 
 @dataclass
@@ -915,6 +932,10 @@ class AgentProblemSolver:
         default=30,
         metadata={"description": "解题完成后通知重试间隔（秒）"},
     )
+    allow_sandbox_output: bool = field(
+        default=True,
+        metadata={"description": "是否允许解题结果保存到沙箱并返回文件路径"},
+    )
     max_retries: int = field(
         default=1,
         metadata={"description": "通知最大重试次数（不含首次）"},
@@ -934,43 +955,92 @@ class AgentProblemSolver:
 
 
 @dataclass
-class AgentCrossChat:
-    """Cross-Chat Agent 配置。
-
-    模型路由由 agent_model.cross_chat 编号控制，无需在子 agent 配置中指定模型名。
-    """
+class AgentBrowser:
+    """浏览器 Agent 配置。"""
 
     enabled: bool = field(
         default=True,
-        metadata={"description": "是否启用跨聊天通信 Agent"},
+        metadata={"description": "是否启用浏览器 Agent"},
     )
-    timeout_seconds: float = field(
-        default=600.0,
-        metadata={"description": "cross_chat 任务超时时间（秒），默认 10 分钟"},
+    hold_max_minutes: int = field(
+        default=120,
+        metadata={"description": "浏览器页面保活最大分钟数，默认 120（2 小时）"},
     )
-    max_iterations: int = field(
-        default=20,
-        metadata={"description": "最大工具调用循环次数"},
+    auto_close_idle_seconds: int = field(
+        default=600,
+        metadata={"description": "空闲自动关闭秒数，默认 600（10 分钟）"},
     )
-    notification_retry_seconds: int = field(
-        default=30,
-        metadata={"description": "通知重试间隔（秒）"},
+    data_dir: str = field(
+        default="./data/browser/",
+        metadata={"description": "浏览器数据目录"},
     )
-    max_retries: int = field(
-        default=1,
-        metadata={"description": "通知最大重试次数（不含首次）"},
+    browser_path: str = field(
+        default="",
+        metadata={"description": "Chrome/Chromium 可执行路径，留空则自动检测"},
     )
-    startup_grace_seconds: float = field(
-        default=3.0,
-        metadata={"description": "后台任务启动宽限期（秒）"},
+
+
+@dataclass
+class SandboxMaintenance:
+    """沙箱持久化文件定时维护配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用定时维护"},
     )
-    max_tasks_per_pipeline: int = field(
-        default=5,
-        metadata={"description": "每个聊天流最多保留的后台通信任务数"},
+    interval_seconds: int = field(
+        default=43200,
+        metadata={"description": "维护间隔秒数，默认 43200（12 小时）"},
     )
-    max_history_fetch_multiplier: int = field(
-        default=2,
-        metadata={"description": "拉取历史消息时的倍数因子，相对于观察窗口"},
+
+
+@dataclass
+class AgentSandbox:
+    """沙箱文件系统配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用沙箱系统"},
+    )
+    temp_max_age_seconds: int = field(
+        default=1800,
+        metadata={"description": "临时文件最大存活秒数，默认 1800（30 分钟）"},
+    )
+    temp_hold_max_minutes: int = field(
+        default=120,
+        metadata={"description": "临时文件保活最大分钟数，默认 120（2 小时）"},
+    )
+    scan_interval_seconds: int = field(
+        default=300,
+        metadata={"description": "临时文件清理扫描间隔秒数，默认 300（5 分钟）"},
+    )
+    allowed_read_dirs: list[str] = field(
+        default_factory=lambda: ["./data/emoji/", "./data/creator/gallery/"],
+        metadata={"description": "允许文件操作 agent 只读访问的目录列表"},
+    )
+    maintenance: SandboxMaintenance = field(
+        default_factory=SandboxMaintenance,
+        metadata={"description": "沙箱持久化文件定时维护配置"},
+    )
+
+
+@dataclass
+class AgentSkill:
+    """Skill 系统全局配置。"""
+
+    disabled_skills: list[str] = field(
+        default_factory=list,
+        metadata={"description": "禁用的 skill 名称列表（黑名单模式），空列表表示全部启用"},
+    )
+
+
+@dataclass
+class AgentFileOperation:
+    """文件操作 Agent 配置。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用文件操作 Agent"},
     )
 
 
@@ -983,7 +1053,10 @@ class Agent:
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
-    cross_chat: AgentCrossChat = field(default_factory=AgentCrossChat)
+    browser: AgentBrowser = field(default_factory=AgentBrowser)
+    sandbox: AgentSandbox = field(default_factory=AgentSandbox)
+    skill: AgentSkill = field(default_factory=AgentSkill)
+    file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
 
 
 @dataclass
@@ -1100,6 +1173,10 @@ class EnhancedChat(Chat):
     agent_wait_max_seconds: int = field(
         default=60,
         metadata={"description": "Agent wait 工具单次最大等待秒数"},
+    )
+    agent_max_iterations: int = field(
+        default=200,
+        metadata={"description": "Agent 模式单轮回复最大工具调用迭代次数"},
     )
     group_agent_silent_timeout_seconds: float = field(
         default=60.0,

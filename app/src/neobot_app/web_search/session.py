@@ -10,8 +10,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from neobot_app.toolpackage.web_search.manager import SearchManager
-from neobot_app.toolpackage.web_search.models import SearchResponse, SearchResult
+from neobot_app.web_search.manager import SearchManager
+from neobot_app.web_search.models import SearchResponse, SearchResult
 
 
 @dataclass

@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Awaitable
+from dataclasses import dataclass, field
 from typing import Any
 
-from neobot_app.toolpackage.manager import ToolDefinition, ToolPackage
-from neobot_app.toolpackage.web_search import SearchResult, SearchSession
+from neobot_app.web_search import SearchResult, SearchSession
+
+ToolDefinition = dict[str, Any]
+ToolExecutorFn = Callable[[str, dict[str, Any]], Awaitable[str]]
+ResetHandlerFn = Callable[[], None]
+
+
+@dataclass
+class ToolPackage:
+    """工具包：将一组相关工具打包，可动态解锁/关闭。"""
+
+    id: str
+    name: str
+    short_description: str
+    description: str
+    tools: list[ToolDefinition]
+    executor: ToolExecutorFn
+    reset_handler: ResetHandlerFn | None = None
+    locked: bool = True
 
 
 def _build_search_tool() -> ToolDefinition:
@@ -171,7 +190,7 @@ class WebSearchExecutor:
             return "未找到指定编号的结果"
 
         # Format read results for agent consumption
-        from neobot_app.toolpackage.web_parser import ContentExtractor, format_pages_for_agent
+        from neobot_app.web_parser import ContentExtractor, format_pages_for_agent
 
         extractor = ContentExtractor()
         parsed_pages = []
@@ -181,7 +200,7 @@ class WebSearchExecutor:
                 parsed_pages.append(parsed)
             else:
                 # Create a minimal ParsedPage for failed fetches
-                from neobot_app.toolpackage.web_parser.models import ParsedPage
+                from neobot_app.web_parser.models import ParsedPage
                 parsed_pages.append(
                     ParsedPage(
                         url=r.url,

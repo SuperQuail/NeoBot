@@ -195,6 +195,14 @@ class TrackedPluginHostFacade:
     def lifecycle(self) -> "_TrackedLifecycleHooks":
         return self._lifecycle
 
+    def register_skill(self, skill: Any) -> None:
+        """注册 Skill，插件卸载时自动注销。"""
+        self._host.register_skill(skill)
+        self._record_cleanup(lambda name=skill.name: self._unregister_skill(name))
+
+    def _unregister_skill(self, name: str) -> None:
+        self._host._skills.unregister(name)
+
 
 class _TrackedCommandRegistry:
     def __init__(self, registry: DefaultCommandRegistry, record_cleanup: Callable[[Callable[[], None]], None]) -> None:
@@ -318,6 +326,16 @@ class _TrackedLifecycleHooks:
 # ---------------------------------------------------------------------------
 
 
+class _NullSkillRegistry:
+    """当未注入 SkillManager 时的空桩对象。"""
+
+    def register(self, skill: Any) -> None:
+        pass
+
+    def unregister(self, name: str) -> None:
+        pass
+
+
 class PluginHostFacade:
     def __init__(
         self,
@@ -328,6 +346,7 @@ class PluginHostFacade:
         queries: DefaultQueryRegistry | None = None,
         capabilities: DefaultCapabilityRegistry | None = None,
         lifecycle: DefaultLifecycleHooks | None = None,
+        skills: Any = None,
     ) -> None:
         self._events = events or _NullRuntimeInterceptionRegistry()
         self._output = output or NullOutput()
@@ -335,6 +354,7 @@ class PluginHostFacade:
         self._queries = queries or DefaultQueryRegistry()
         self._capabilities = capabilities or DefaultCapabilityRegistry()
         self._lifecycle = lifecycle or DefaultLifecycleHooks()
+        self._skills = skills or _NullSkillRegistry()
 
     @property
     def events(self) -> RuntimeInterceptionRegistry:
@@ -362,6 +382,19 @@ class PluginHostFacade:
     @property
     def lifecycle(self) -> DefaultLifecycleHooks:
         return self._lifecycle
+
+    def register_skill(self, skill: Any) -> None:
+        """注册一个外部 Skill 模块。
+
+        Args:
+            skill: 实现 SkillModule 协议的对象（name, get_tools, execute）。
+                   SkillManager 已有 register() 和 unregister() 方法以支持此接口。
+        """
+        self._skills.register(skill)
+
+    def _set_skills(self, skills_registry: Any) -> None:
+        """注入 SkillManager（用于创建顺序靠后的场景）。"""
+        self._skills = skills_registry
 
 
 # ---------------------------------------------------------------------------

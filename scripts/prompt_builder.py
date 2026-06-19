@@ -535,12 +535,6 @@ AGENT_SOURCES: list[AgentPromptSource] = [
         has_config=True,
     ),
     AgentPromptSource(
-        "neobot_app.agents.cross_chat",
-        AGENTS_DIR / "cross_chat.py",
-        "CrossChatAgent",
-        has_config=True,
-    ),
-    AgentPromptSource(
         "neobot_app.agents.image_parse",
         AGENTS_DIR / "image_parse.py",
         "ImageParseAgent",

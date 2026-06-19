@@ -33,12 +33,12 @@ if TYPE_CHECKING:
 
 EXPOSED_TO_MAIN_AGENT_NAME = "willingness"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "回复意愿控制。可调整运行时回复意愿：当前会话的回复系数（0.0~1.0）、"
-    "指定会话内指定用户的回复系数、指定用户的全局回复系数，以及当前会话临时黑名单。"
-    "所有调整仅存于内存，重启后重置为默认值。"
+    "回复意愿控制。可调整运行时回复意愿：当前会话的回复系数（0.0~1.0）、指定会话内指定用户的回复系数、指定用户的全局回复系数，以及当前会话临时黑名单。所有调整仅存于内存，重启后重置为默认值。"
 )
 EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
-    "调整运行时回复意愿系数（会话级别/用户级别/黑名单）"
+    "调整运行时回复意愿系数（会话级别/用户级别/黑名单）",
+    "-当有人认为你烦时,根据你与对方的关系,以及你自身意愿选择是否降低回复意愿/直接将对方加入黑名单",
+    "-或者,如果有人持续对你进行敌意行为,也可以选择将对方加入回复黑名单"
 )
 
 _WILLINGNESS_CONTEXT: ContextVar[str] = ContextVar("willingness_context", default="")

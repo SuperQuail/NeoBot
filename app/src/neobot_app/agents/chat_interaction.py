@@ -39,13 +39,19 @@ from neobot_app.statistics.tracker import (
 
 EXPOSED_TO_MAIN_AGENT_NAME = "chat_interaction"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "聊天互动与社交管理。可执行群管理（设管理员/禁言/踢人/群名片/群名/头衔/加群请求/精华/撤回）、"
-    "好友管理（备注/分组/删除/好友请求/为好友QQ空间主页点赞）、读取合并转发消息、发送表情包。"
-    "戳一戳请使用主Agent的 poke_user 工具。"
-    "需提供目标群号/QQ号；修改好友备注用 manage_friend(set_remark)，修改群名片用 manage_group(set_card)。"
+    "聊天互动与社交管理。可执行群管理（设管理员/禁言/踢人/群名片/群名/头衔/加群请求/精华/撤回）、好友管理（备注/分组/删除/好友请求/为好友QQ空间主页点赞）、读取合并转发消息、发送表情包。戳一戳请使用主Agent的 poke_user 工具。需提供目标群号/QQ号；修改好友备注用 manage_friend(set_remark)，修改群名片用 manage_group(set_card)。"
++"，修改群名片用 manage_group(set_card)。"
++"，修改群名片用 manage_group(set_card)。"
 )
 EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
-    "聊天互动与社交管理（群管理/好友管理/表情包/合并转发）"
+    "聊天互动与社交管理（群管理/好友管理/表情包/合并转发）",
+    "-通过QQ号查看用户信息/获取头像信息/修改好友备注",
+    "-使用群管理功能(需要管理员):设置管理(需要群主权限)/禁言/踢人/修改群名片等功能",
+    "-读取合并转发消息",
+    "-发送表情包"
+    ":设置管理(需要群主权限)/禁言/踢人/修改群名片等功能",
+    "-读取合并转发消息",
+    "-发送表情包"
 )
 
 _CHAT_INTERACTION_CONTEXT: ContextVar[str] = ContextVar("chat_interaction_context", default="")

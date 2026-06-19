@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from neobot_app.toolpackage.web_parser.models import ParsedPage
+from neobot_app.web_parser.models import ParsedPage
 
 AGENT_FORMAT = """## {title}
 

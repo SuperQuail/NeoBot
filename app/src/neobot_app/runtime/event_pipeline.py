@@ -195,15 +195,12 @@ class EventPipeline:
             return
 
         async def _run() -> None:
-            await asyncio.wait_for(
-                self._record_archive_summary(
-                    conversation_kind=conversation_kind,
-                    conversation_id=conversation_id,
-                    message_text=message_text,
-                    sender_id=sender_id,
-                    sender_name=sender_name,
-                ),
-                timeout=180.0,
+            await self._record_archive_summary(
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                message_text=message_text,
+                sender_id=sender_id,
+                sender_name=sender_name,
             )
 
         task = asyncio.create_task(_run())
@@ -213,13 +210,6 @@ class EventPipeline:
                 done_task.result()
             except asyncio.CancelledError:
                 pass
-            except asyncio.TimeoutError:
-                self._logger.warning(
-                    "archive auto summary background task timed out",
-                    conversation_kind=conversation_kind,
-                    conversation_id=conversation_id,
-                    timeout_seconds=180.0,
-                )
             except Exception as exc:
                 self._logger.warning(
                     "archive auto summary background task failed",

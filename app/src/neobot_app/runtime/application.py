@@ -40,7 +40,6 @@ class NeoBotApplication(Generic[T]):
         bot_detector: Any = None,
         scheduled_task_manager: Any = None,
         problem_solver_manager: Any = None,
-        cross_chat_manager: Any = None,
         markdown_image_converter: Any = None,
         plugin_runtime: Any = None,
         report_service: Any = None,
@@ -48,6 +47,9 @@ class NeoBotApplication(Generic[T]):
         vision_provider: Any = None,
         archive_summary_service: Any = None,
         file_server: FileServer | None = None,
+        temp_cleaner: Any = None,
+        sandbox_maintenance_manager: Any = None,
+        browser_lifecycle_manager: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -71,7 +73,6 @@ class NeoBotApplication(Generic[T]):
         self._bot_detector = bot_detector
         self._scheduled_task_manager = scheduled_task_manager
         self._problem_solver_manager = problem_solver_manager
-        self._cross_chat_manager = cross_chat_manager
         self._markdown_image_converter = markdown_image_converter
         self._plugin_runtime = plugin_runtime
         self._report_service = report_service
@@ -79,6 +80,9 @@ class NeoBotApplication(Generic[T]):
         self._engine = engine
         self._vision_provider = vision_provider
         self._archive_summary_service = archive_summary_service
+        self._temp_cleaner = temp_cleaner
+        self._sandbox_maintenance_manager = sandbox_maintenance_manager
+        self._browser_lifecycle_manager = browser_lifecycle_manager
 
     async def start(self) -> None:
         if self._started:
@@ -124,6 +128,15 @@ class NeoBotApplication(Generic[T]):
         if self._emoji_service is not None:
             await self._emoji_service.start()
             self._logger.info("表情包服务启动完成")
+        if self._temp_cleaner is not None:
+            self._temp_cleaner.start()
+            self._logger.info("沙箱临时文件清理服务启动完成")
+        if self._sandbox_maintenance_manager is not None:
+            self._sandbox_maintenance_manager.start()
+            self._logger.info("沙箱持久化文件维护服务启动完成")
+        if self._browser_lifecycle_manager is not None:
+            await self._browser_lifecycle_manager.start()
+            self._logger.info("浏览器生命周期管理器启动完成")
         self.event_ingress.start()
         if self._scheduled_task_manager is not None:
             await self._scheduled_task_manager.start()
@@ -173,6 +186,12 @@ class NeoBotApplication(Generic[T]):
             await self._markdown_image_converter.stop()
         if self._emoji_service is not None:
             await self._emoji_service.stop()
+        if self._temp_cleaner is not None:
+            await self._temp_cleaner.stop()
+        if self._sandbox_maintenance_manager is not None:
+            await self._sandbox_maintenance_manager.stop()
+        if self._browser_lifecycle_manager is not None:
+            await self._browser_lifecycle_manager.stop()
         if self._vision_provider is not None:
             await self._vision_provider.close()
         await self.adapter.stop()

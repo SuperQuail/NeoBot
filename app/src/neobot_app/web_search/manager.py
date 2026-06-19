@@ -7,8 +7,8 @@ import time
 from collections import defaultdict
 from typing import Optional
 
-from neobot_app.toolpackage.web_search.engine import BaseSearchEngine, get_engine
-from neobot_app.toolpackage.web_search.models import SearchResponse
+from neobot_app.web_search.engine import BaseSearchEngine, get_engine
+from neobot_app.web_search.models import SearchResponse
 
 
 class SearchManager:

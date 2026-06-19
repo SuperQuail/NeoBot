@@ -1,13 +1,13 @@
 """Web search module — multi-engine search with retrieve-read workflow."""
 
-from neobot_app.toolpackage.web_search.engine import (
+from neobot_app.web_search.engine import (
     BingSearchEngine,
     DuckDuckGoSearchEngine,
     get_engine,
 )
-from neobot_app.toolpackage.web_search.manager import SearchManager
-from neobot_app.toolpackage.web_search.models import SearchResponse, SearchResult
-from neobot_app.toolpackage.web_search.session import SearchSession
+from neobot_app.web_search.manager import SearchManager
+from neobot_app.web_search.models import SearchResponse, SearchResult
+from neobot_app.web_search.session import SearchSession
 
 __all__ = [
     "BingSearchEngine",

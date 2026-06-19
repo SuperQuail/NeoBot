@@ -13,7 +13,7 @@ from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.config.schemas.env import EnvConfig
-from neobot_app.assembly.agents import build_agent_registry, resolve_agent_model_name
+from neobot_app.assembly.agents import resolve_agent_model_name
 from neobot_app.assembly.adapter import build_adapter
 from neobot_app.bot_detect import BotDetector
 from neobot_app.assembly.memory import (
@@ -41,7 +41,6 @@ from neobot_app.observability.output import RuntimeOutput
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.statistics.balance import BalanceChecker
 from neobot_app.statistics.tracker import UsageTracker, initialize_usage_tracker
-from neobot_app.toolpackage import ToolPackageManager, build_web_search_package
 from neobot_app.statistics.reporter import UsageReportService
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
@@ -58,6 +57,13 @@ from neobot_app.runtime.notifications import BackgroundNotificationHub
 from neobot_app.runtime.onebot_request_handler import OneBotRequestHandler
 from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
+from neobot_app.runtime.temp_cleaner import TempCleaner
+from neobot_app.runtime.sandbox_lock import SandboxLock
+from neobot_app.runtime.sandbox_service import SandboxService
+from neobot_app.runtime.sandbox_maintenance import SandboxMaintenanceManager
+from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
+from neobot_app.browser import BrowserAgentWrapper
+from neobot_app.skills import build_all_skills
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
 
@@ -121,6 +127,35 @@ def _create_optional_agent_provider(
             f"无法创建 {agent_name} provider({model_name})，回退到主回复 provider: {exc}"
         )
         return fallback_provider
+
+
+def _auto_install_chromium() -> bool:
+    """尝试通过 Playwright 自动下载 Chromium。"""
+    logger = LoguruLoggerFactory().get_logger("app.bootstrap")
+    try:
+        from playwright._impl._driver import compute_driver_executable, get_driver_dir
+
+        import subprocess
+        driver_path = get_driver_dir()
+        driver_exe = compute_driver_executable()
+        cli = Path(driver_path) / driver_exe
+        logger.info("未检测到浏览器，正在自动下载 Chromium（约 150MB）…")
+        result = subprocess.run(
+            [str(cli), "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("Chromium 自动下载完成")
+            return True
+        logger.warning(f"Chromium 自动下载失败: {result.stderr.strip()}")
+        return False
+    except ImportError:
+        logger.info("playwright 未安装，跳过自动下载。"
+                     "如需浏览器功能请: pip install playwright && playwright install chromium")
+        return False
+    except Exception as exc:
+        logger.warning(f"Chromium 自动下载异常: {exc}")
+        return False
 
 
 def create_application() -> NeoBotApplication:
@@ -261,11 +296,17 @@ def create_application() -> NeoBotApplication:
         provider_error_message = "当前主回复模型不可用，请检查模型配置与 API Key"
         provider_logger.error(provider_error_message)
 
+    adaptive_prompt_enabled = (
+        getattr(getattr(config.agent, "memory", None), "adaptive_prompt_enabled", True)
+    )
     prompt_builder = PromptBuilder(
         config=config,
         profile_service=profile_service,
         logger=logger_factory.get_logger("app.prompt"),
         archive_memory_service=archive_memory_service,
+        adaptive_prompt_path=(
+            DATA_DIR / "自适应提示词.txt" if adaptive_prompt_enabled else None
+        ),
     )
 
     vision_provider = None
@@ -289,23 +330,15 @@ def create_application() -> NeoBotApplication:
 
     # 创建后台绘图管理器
     from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
-    from neobot_app.agents.cross_chat import (
-        CrossChatManager,
-        CrossChatAgentConfig,
-    )
     from neobot_app.agents.problem_solver import (
         ProblemSolverManager,
         ProblemSolverAgentConfig,
+        build_problem_solver_agent,
     )
     from neobot_app.reply.markdown_image import MarkdownImageConverter
 
     notification_hub = BackgroundNotificationHub(
         logger=logger_factory.get_logger("app.background_notifications"),
-    )
-
-    markdown_image_converter = MarkdownImageConverter(
-        output_dir=DATA_DIR / "markdown_images",
-        logger=logger_factory.get_logger("app.markdown_image"),
     )
 
     creator_config = CreatorAgentConfig.from_schema(config.agent.creator)
@@ -335,27 +368,69 @@ def create_application() -> NeoBotApplication:
             config=problem_solver_config,
             logger=logger_factory.get_logger("app.problem_solver"),
             notification_hub=notification_hub,
-            markdown_image_converter=markdown_image_converter,
         )
         if problem_solver_config.enabled
         else None
     )
 
-    cross_chat_config = CrossChatAgentConfig.from_schema(
-        getattr(config.agent, "cross_chat", None)
-    )
-    cross_chat_manager = (
-        CrossChatManager(
-            config=cross_chat_config,
-            logger=logger_factory.get_logger("app.cross_chat"),
-            notification_hub=notification_hub,
-            adapter=adapter,
-            group_message_queue=group_message_queue,
-            friend_message_queue=friend_message_queue,
-            bot_config=config,
-        )
-        if cross_chat_config.enabled
-        else None
+    # ── Phase 1: Skill 系统基础设施 ──
+    sandbox_lock = SandboxLock()
+
+    browser_cfg = getattr(config.agent, "browser", None)
+    browser_instance: Any = None
+    browser_lifecycle_manager: Any = None
+
+    if browser_cfg and browser_cfg.enabled:
+        # 尝试查找浏览器，找不到则自动下载
+        from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+        if not _find_chrome_binary():
+            _auto_install_chromium()
+
+        if _find_chrome_binary():
+            idle_timeout = int(getattr(browser_cfg, "auto_close_idle_seconds", 600)) // 60
+            browser_lifecycle_manager = BrowserLifecycleManager(
+                idle_timeout_minutes=max(idle_timeout, 1),
+                hold_max_minutes=browser_cfg.hold_max_minutes,
+            )
+            browser_instance = BrowserAgentWrapper(
+                data_dir=DATA_DIR / "browser",
+                headless=getattr(browser_cfg, "headless", True),
+                port=getattr(browser_cfg, "port", 0),
+                browser_path=getattr(browser_cfg, "browser_path", ""),
+                lifecycle_manager=browser_lifecycle_manager,
+            )
+            browser_lifecycle_manager.set_browser_instance(browser_instance)
+
+            # 设置关闭回调：当聊天流闲置超时，关闭其标签页
+            async def _close_flow_tabs(chat_flow_id: str, tab_ids: set) -> None:
+                if browser_instance is None:
+                    return
+                tabs_result = await browser_instance.list_tabs()
+                if isinstance(tabs_result, list):
+                    tabs = tabs_result
+                elif isinstance(tabs_result, dict):
+                    tabs = tabs_result.get("tabs", [])
+                else:
+                    return
+                id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+                indices = sorted(
+                    (id_to_index[tid] for tid in tab_ids if tid in id_to_index),
+                    reverse=True,
+                )
+                for idx in indices:
+                    try:
+                        await browser_instance.close_tab(idx)
+                    except Exception:
+                        pass
+
+            browser_lifecycle_manager.set_close_callback(_close_flow_tabs)
+        else:
+            logger.warning("浏览器已启用但未能找到或下载 Chromium，浏览器功能不可用")
+
+    markdown_image_converter = MarkdownImageConverter(
+        output_dir=DATA_DIR / "markdown_images",
+        browser_instance=browser_instance,
+        logger=logger_factory.get_logger("app.markdown_image"),
     )
 
     file_server = FileServer(
@@ -366,23 +441,89 @@ def create_application() -> NeoBotApplication:
         enabled=config.file_server.enabled,
     )
 
-    agent_registry = build_agent_registry(
-        config=config,
-        archive_memory_service=archive_memory_service,
-        uow_factory=uow_factory,
-        adapter=adapter,
-        emoji_service=emoji_service,
-        profile_service=profile_service,
-        vision_provider=vision_provider,
-        willing_service=willing_service,
-        logger=logger_factory.get_logger("app.agent_registry"),
-        drawing_manager=drawing_manager,
-        problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
-        group_message_queue=group_message_queue,
-        friend_message_queue=friend_message_queue,
-        file_server=file_server,
+    sandbox_cfg = getattr(config.agent, "sandbox", None)
+    sandbox_service = (
+        SandboxService(
+            sandbox_root=DATA_DIR / "sandbox",
+            lock=sandbox_lock,
+            allowed_read_dirs=[
+                DATA_DIR / "emoji",
+                DATA_DIR / "creator" / "gallery",
+            ],
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
     )
+
+    temp_cleaner = (
+        TempCleaner(
+            temp_dir=DATA_DIR / "sandbox" / "temp",
+            max_age_seconds=sandbox_cfg.temp_max_age_seconds,
+            scan_interval_seconds=sandbox_cfg.scan_interval_seconds,
+            logger=logger_factory.get_logger("app.temp_cleaner"),
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
+    )
+
+    sandbox_maintenance_manager = (
+        SandboxMaintenanceManager(
+            sandbox_root=DATA_DIR / "sandbox",
+            interval_seconds=(
+                sandbox_cfg.maintenance.interval_seconds
+                if sandbox_cfg else 43200
+            ),
+            enabled=(
+                sandbox_cfg.maintenance.enabled
+                if sandbox_cfg else True
+            ),
+            notification_hub=notification_hub,
+            logger=logger_factory.get_logger("app.sandbox_maintenance"),
+        )
+        if sandbox_cfg and sandbox_cfg.enabled
+        else None
+    )
+
+    if problem_solver_manager is not None:
+        ps_provider = _create_optional_agent_provider(
+            config=config,
+            agent_name="problem_solver",
+            fallback_provider=provider,
+            provider_logger=provider_logger,
+        )
+        build_problem_solver_agent(
+            ps_provider,
+            config=problem_solver_config,
+            logger=logger_factory.get_logger("app.problem_solver"),
+            manager=problem_solver_manager,
+            sandbox_service=sandbox_service,
+        )
+
+    skill_manager = build_all_skills(
+        disabled_skills=getattr(getattr(config.agent, "skill", None), "disabled_skills", None),
+        config=config,
+        adapter=adapter,
+        archive_memory_service=archive_memory_service,
+        profile_service=profile_service,
+        emoji_service=emoji_service,
+        vision_provider=vision_provider,
+        file_server=file_server,
+        willing_service=willing_service,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        notification_hub=notification_hub,
+        markdown_image_converter=markdown_image_converter,
+        sandbox_lock=sandbox_lock,
+        sandbox_service=sandbox_service,
+        sandbox_maintenance_manager=sandbox_maintenance_manager,
+        browser_instance=browser_instance,
+        browser_lifecycle_manager=browser_lifecycle_manager,
+        problem_solver_manager=problem_solver_manager,
+        data_dir=DATA_DIR,
+    )
+
+    # 将 SkillManager 注入 PluginHostFacade（供插件 register_skill 使用）
+    host_facade._set_skills(skill_manager)
 
     if config.plugins.enabled:
         plugin_dir = Path(config.plugins.dir)
@@ -429,7 +570,6 @@ def create_application() -> NeoBotApplication:
             data_dir=DATA_DIR / "plugins_data",
             adapter=adapter,
             logger_factory=logger_factory,
-            agent_registry=agent_registry,
             hook_bus=hook_bus,
             record_ai_reply_block=reply_block_registry.block_event,
             output=runtime_output,
@@ -447,6 +587,12 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.image_parse"),
     )
 
+    adaptive_prompt_skill = skill_manager.get("adaptive_prompt")
+    summary_tool_defs = adaptive_prompt_skill.get_tools() if adaptive_prompt_skill else []
+
+    async def _summary_tool_executor(tool_name: str, args: dict) -> str:
+        return await skill_manager.execute(tool_name, args)
+
     archive_summary_service = ArchiveMemoryAutoSummaryService(
         archive_memory_service=archive_memory_service,
         provider=_create_optional_agent_provider(
@@ -456,29 +602,18 @@ def create_application() -> NeoBotApplication:
             provider_logger=provider_logger,
         ),
         config=config,
-        agent_registry=agent_registry,
         item_archive_config=getattr(
             getattr(getattr(config, "agent", None), "memory", None), "item_archive", None
         ),
         logger=logger_factory.get_logger("app.archive_summary"),
+        tool_definitions=summary_tool_defs,
+        tool_executor=_summary_tool_executor,
     )
 
     tts_service = _create_tts_service(
         config=config,
         logger_factory=logger_factory,
     )
-
-    # 构建工具包管理器
-    web_search_cfg = getattr(config, "web_search", None)
-    tool_package_manager = ToolPackageManager()
-    ws_package = build_web_search_package(
-        enabled=getattr(web_search_cfg, "enabled", True) if web_search_cfg else False,
-        max_rounds=getattr(web_search_cfg, "max_search_rounds", 5) if web_search_cfg else 5,
-        preview_pages_limit=getattr(web_search_cfg, "preview_pages_limit", 30) if web_search_cfg else 30,
-        variant_result_limit=getattr(web_search_cfg, "variant_result_limit", 6) if web_search_cfg else 6,
-    )
-    if ws_package is not None:
-        tool_package_manager = ToolPackageManager([ws_package])
 
     chat_cfg = config.chat
     balance_checker = None
@@ -518,7 +653,6 @@ def create_application() -> NeoBotApplication:
         willing_service=willing_service,
         image_parse_service=image_parse_service,
         emoji_service=emoji_service,
-        agent_registry=agent_registry,
         tts_service=tts_service,
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
@@ -526,11 +660,10 @@ def create_application() -> NeoBotApplication:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         reply_block_registry=reply_block_registry,
-        tool_package_manager=tool_package_manager,
+        skill_manager=skill_manager,
         balance_checker=balance_checker,
         runtime_events=hook_bus,
         file_server=file_server,
@@ -541,8 +674,6 @@ def create_application() -> NeoBotApplication:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
-    if cross_chat_manager is not None:
-        cross_chat_manager.set_orchestrator(reply_orchestrator)
 
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -598,11 +729,13 @@ def create_application() -> NeoBotApplication:
         bot_detector=bot_detector,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
-        cross_chat_manager=cross_chat_manager,
         markdown_image_converter=markdown_image_converter,
         plugin_runtime=plugin_runtime,
         report_service=report_service,
         engine=_engine,
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
+        temp_cleaner=temp_cleaner,
+        sandbox_maintenance_manager=sandbox_maintenance_manager,
+        browser_lifecycle_manager=browser_lifecycle_manager,
     )

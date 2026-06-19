@@ -48,6 +48,24 @@ def prepare_audio_segment(file_server: FileServer, file_path: Path) -> Dict[str,
     return {"type": "record", "data": {"file": url}}
 
 
+def prepare_file_segment(file_server: FileServer, file_path: Path) -> Dict[str, Any]:
+    """准备文件消息段（用于发送任意文件如 PDF）
+
+    根据 FileServer 是否启用，返回不同格式的消息段：
+    - 启用：调用 register_file 获取 HTTP URL
+    - 禁用：使用 file:/// 本地路径
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    if file_server._enabled:
+        url = file_server.register_file(file_path)
+    else:
+        url = f"file:///{file_path.as_posix()}"
+
+    return {"type": "file", "data": {"file": url, "name": file_path.name}}
+
+
 async def send_image(
     file_server: FileServer,
     adapter: Any,

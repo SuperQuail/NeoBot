@@ -72,7 +72,7 @@ class FileServer:
         self._load_metadata()
 
     async def start(self) -> None:
-        """启动文件服务器"""
+        """启动文件服务器（端口被占时自动 +1 重试，最多 100 次）"""
         if not self._enabled:
             logging.warning("已跳过 HTTP 文件服务器启动（配置要求走本地路径）")
             return
@@ -84,13 +84,32 @@ class FileServer:
         self._app.router.add_options("/{tail:.*}", self._handle_options)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self._host, self._port)
-        await self._site.start()
+
+        max_attempts = 100
+        _first_port = self._port
+        last_error = None
+        for _ in range(max_attempts):
+            try:
+                self._site = web.TCPSite(self._runner, self._host, self._port)
+                await self._site.start()
+                last_error = None
+                break
+            except OSError as e:
+                last_error = e
+                self._port += 1
+
+        if last_error is not None:
+            raise RuntimeError(
+                f"文件服务器端口占用: 尝试 {_first_port}~{_first_port + max_attempts - 1} "
+                f"共 {max_attempts} 个端口均被占用"
+            ) from last_error
+
         if self._port == 0 and self._site._server is not None:
             sockets = self._site._server.sockets or []
             if sockets:
                 self._port = int(sockets[0].getsockname()[1])
         self._running = True
+        logging.info(f"文件服务器已启动: http://{self._host}:{self._port}")
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self) -> None:
@@ -234,10 +253,23 @@ class FileServer:
             return web.Response(status=403, text="无效的访问令牌")
         if epoch_seconds() > meta.expires_at:
             self._files.pop(filename)
-            Path(meta.path).unlink(missing_ok=True)
+            self._unlink_registered_file(meta)
             self._save_metadata()
             return web.Response(status=404, text="文件已过期")
-        return web.FileResponse(meta.path)
+
+        file_path = Path(meta.path)
+        if not file_path.exists():
+            return web.Response(status=404, text="文件已被删除")
+        suffix = file_path.suffix.lower()
+        content_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }.get(suffix, "application/octet-stream")
+        return web.FileResponse(file_path, headers={"Content-Type": content_type})
 
     def _inspect_uploaded_image(self, path: Path) -> dict[str, Any]:
         try:
@@ -286,16 +318,25 @@ class FileServer:
         )
 
     async def _cleanup_loop(self) -> None:
-        """清理过期文件"""
+        """清理过期文件（仅删除临时文件，不删除图库/表情包等永久文件）"""
         while self._running:
             await asyncio.sleep(60)
             now = epoch_seconds()
             expired = [name for name, meta in self._files.items() if meta.expires_at <= now]
             for name in expired:
                 meta = self._files.pop(name)
-                Path(meta.path).unlink(missing_ok=True)
+                self._unlink_registered_file(meta)
             if expired:
                 self._save_metadata()
+
+    def _unlink_registered_file(self, meta: FileMetadata) -> None:
+        """删除注册的文件。仅删除 tmp 目录下的临时文件，避免误删表情包等永久文件。"""
+        file_path = Path(meta.path)
+        try:
+            if self._tmp_dir in file_path.parents:
+                file_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
     def _load_metadata(self) -> None:
         """加载元数据"""

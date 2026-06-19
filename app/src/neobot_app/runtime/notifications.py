@@ -77,18 +77,16 @@ class BackgroundNotificationHub:
 
         queue = self._queues.get(pipeline_key)
         queue_size_before = queue.qsize() if queue is not None else 0
-        self._logger.info(
-            "[CROSS_CHAT_DIAG] hub.publish() 入口",
+        self._logger.debug(
+            "hub.publish() 入口",
             source=source,
             pipeline_key=pipeline_key,
             queue_size_before=queue_size_before,
-            task_id=(metadata or {}).get("task_id", "N/A"),
-            content_preview=content[:100],
         )
 
         if await self._try_start_background_reply(notification):
             self._logger.info(
-                "[CROSS_CHAT_DIAG] hub.publish() 已启动新管线",
+                "hub.publish() 已启动新管线",
                 source=source,
                 pipeline_key=pipeline_key,
             )
@@ -97,7 +95,7 @@ class BackgroundNotificationHub:
         queue = self._queues.setdefault(pipeline_key, asyncio.Queue())
         await queue.put(notification)
         self._logger.info(
-            "[CROSS_CHAT_DIAG] hub.publish() 通知已入队",
+            "hub.publish() 通知已入队",
             source=source,
             pipeline_key=pipeline_key,
             pending=queue.qsize(),
@@ -126,7 +124,7 @@ class BackgroundNotificationHub:
         await self._consume(notification)
 
         self._logger.info(
-            "[CROSS_CHAT_DIAG] hub.poll() 取出通知",
+            "hub.poll() 取出通知",
             source=notification.source,
             pipeline_key=pipeline_key,
             notification_preview=notification.content[:120],
@@ -151,19 +149,19 @@ class BackgroundNotificationHub:
     async def _try_start_background_reply(self, notification: BackgroundNotification) -> bool:
         if self._orchestrator is None:
             self._logger.debug(
-                "[CROSS_CHAT_DIAG] _try_start_background_reply: orchestrator 为空"
+                "_try_start_background_reply: orchestrator 为空"
             )
             return False
 
         if self._orchestrator.is_pipeline_key_active(notification.pipeline_key):
             self._logger.info(
-                "[CROSS_CHAT_DIAG] _try_start_background_reply: 管线已活跃，跳过启动",
+                "_try_start_background_reply: 管线已活跃，跳过启动",
                 pipeline_key=notification.pipeline_key,
             )
             return False
 
         self._logger.info(
-            "[CROSS_CHAT_DIAG] _try_start_background_reply: 尝试启动新管线",
+            "_try_start_background_reply: 尝试启动新管线",
             source=notification.source,
             pipeline_key=notification.pipeline_key,
         )
@@ -186,7 +184,7 @@ class BackgroundNotificationHub:
 
         if result is None:
             self._logger.info(
-                "[CROSS_CHAT_DIAG] _try_start_background_reply: start_background_reply 返回 None",
+                "_try_start_background_reply: start_background_reply 返回 None",
                 pipeline_key=notification.pipeline_key,
                 source=notification.source,
             )

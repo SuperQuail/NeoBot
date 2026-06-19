@@ -96,7 +96,6 @@ AGENT_SOURCES: list[AgentPromptSource] = [
     AgentPromptSource("neobot_app.agents.memory", AGENTS_DIR / "memory.py", "ArchiveMemoryAgent", has_config=True),
     AgentPromptSource("neobot_app.agents.scheduled_task", AGENTS_DIR / "scheduled_task.py", "ScheduledTaskAgent", has_config=True),
     AgentPromptSource("neobot_app.agents.problem_solver", AGENTS_DIR / "problem_solver.py", "ProblemSolverAgent", has_config=True),
-    AgentPromptSource("neobot_app.agents.cross_chat", AGENTS_DIR / "cross_chat.py", "CrossChatAgent", has_config=True),
 ]
 
 
@@ -703,9 +702,6 @@ class ToolExecutionEnv:
     async def _handle_problem_solver(self, tool_name: str, args: dict[str, Any]) -> str:
         return json.dumps({"ok": True, "message": f"problem_solver/{tool_name} 已执行（调试模式）"}, ensure_ascii=False)
 
-    async def _handle_cross_chat(self, tool_name: str, args: dict[str, Any]) -> str:
-        return json.dumps({"ok": True, "message": f"cross_chat/{tool_name} 已执行（调试模式）"}, ensure_ascii=False)
-
 
 # ── Delegate streaming window ─────────────────────────────────────────────
 
@@ -1094,7 +1090,7 @@ class ToolsEditorApp:
                 model_index_map = {
                     "creator": 1, "memory": 1, "chat_interaction": 1,
                     "willingness": 1, "scheduled_task": 1,
-                    "problem_solver": 1, "cross_chat": 1,
+                    "problem_solver": 1,
                 }
                 index = model_index_map.get(agent_name, 1)
                 model_names = {0: "primary_chat_model", 1: "agent_model_1",
