@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
+import tempfile
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -35,7 +39,7 @@ from neobot_app.statistics.tracker import (
     get_usage_tracker,
 )
 from neobot_app.time_context import monotonic_seconds
-from neobot_app.toolpackage.web_search_package import WebSearchExecutor
+from neobot_app.web_search_package import WebSearchExecutor
 
 if TYPE_CHECKING:
     pass
@@ -46,7 +50,7 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "适用场景：高难度数学证明与计算、复杂编程算法设计与实现、"
     "深度科学推理与计算、需要多步骤推演的逻辑问题。"
     "解题为后台任务，提交后立即返回状态，"
-    "完成后会通过通知告知主Agent，届时主Agent可调用 send_long_reply 发送解题结果图片。"
+    "完成后会通过通知将解答结果（文本/文件路径等）告知主Agent，由主Agent决定如何回复。"
     "注意：简单问答、常识性问题、日常聊天、普通信息查询/搜索等不应委托本 agent。"
     "简单搜索查询请使用联网搜索工具包(先 unlock web_search)自行完成。"
     "只有确认问题需要深度推理（非简单搜索能解决）时才使用本 agent。"
@@ -133,7 +137,6 @@ class SolveTask:
     delegate_context: str = ""
     status: str = "solving"  # solving | completed | failed | timeout
     markdown_solution: str | None = None
-    image_path: str | None = None
     error: str | None = None
     notification_count: int = 0
     notified: bool = False
@@ -149,12 +152,10 @@ class ProblemSolverManager:
         config: ProblemSolverAgentConfig | None = None,
         logger: Logger | None = None,
         notification_hub: Any = None,
-        markdown_image_converter: Any = None,
     ) -> None:
         self._config = config or ProblemSolverAgentConfig()
         self._logger = logger or NullLogger()
         self._notification_hub = notification_hub
-        self._markdown_image_converter = markdown_image_converter
         self._tasks: dict[str, SolveTask] = {}
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None
@@ -170,9 +171,6 @@ class ProblemSolverManager:
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
-
-    def set_markdown_converter(self, converter: Any) -> None:
-        self._markdown_image_converter = converter
 
     def _pipeline_key(self, kind: str, conv_id: str) -> str:
         return f"{kind}:{conv_id}"
@@ -254,6 +252,8 @@ class ProblemSolverManager:
         """提交后台解题任务。返回 JSON 状态字符串。"""
         if self._agent is None:
             return _json({"ok": False, "error": "解题 Agent 未配置"})
+        if not conversation_kind or not conversation_id:
+            return _json({"ok": False, "error": f"无效的会话信息: kind={conversation_kind!r}, id={conversation_id!r}"})
 
         active = self._get_active_task(pipeline_key)
         if active is not None:
@@ -310,12 +310,14 @@ class ProblemSolverManager:
 
             solution = _SOLUTION_RESULT.get("")
             if not solution:
-                # 尝试从结果消息中提取
+                # 尝试从结果消息中提取：收集所有 assistant 消息的文本内容
                 messages = result_state.get("messages", [])
-                for msg in reversed(messages):
+                texts = []
+                for msg in messages:
                     if msg.get("role") == "assistant" and msg.get("content"):
-                        solution = str(msg["content"])
-                        break
+                        texts.append(str(msg["content"]))
+                if texts:
+                    solution = "\n\n".join(texts)
 
             if not solution:
                 raise RuntimeError("解题 Agent 未提交解答内容")
@@ -323,25 +325,10 @@ class ProblemSolverManager:
             task.markdown_solution = solution
             task.status = "completed"
 
-            if self._markdown_image_converter is not None:
-                try:
-                    image_path = await self._markdown_image_converter.convert(
-                        solution,
-                        filename=f"solve_{task.task_id}",
-                    )
-                    task.image_path = str(image_path)
-                except Exception as exc:
-                    self._logger.warning(
-                        "解题结果 Markdown 转图片失败，仅保留文本",
-                        task_id=task.task_id,
-                        error=str(exc),
-                    )
-
             self._logger.info(
                 "后台解题任务完成",
                 task_id=task.task_id,
                 solution_length=len(solution),
-                has_image=task.image_path is not None,
             )
             await self._on_completed(task)
 
@@ -363,30 +350,15 @@ class ProblemSolverManager:
     async def _on_completed(self, task: SolveTask) -> None:
         question_preview = task.question[:200]
         solution = task.markdown_solution or ""
-        if task.image_path:
-            image_info = (
-                f"解答图片已预渲染：{task.image_path}\n"
-                f"请直接调用 send_long_reply(image_path=\"{task.image_path}\", "
-                f"caption=\"解题结果\") 发送，无需重新渲染。"
-            )
-        else:
-            image_info = (
-                "注意：图片预渲染失败。请用 send_long_reply(markdown=\"...\") 发送下方 Markdown 文本，"
-                "系统会实时渲染。"
-            )
         notification = (
             "<这是新的必须要回答的内容>\n"
-            f"解题任务完成通知\n\n"
+            f"你之前提交的解题任务已完成\n\n"
             f"任务ID: {task.task_id}\n"
-            f"原始问题: {question_preview}\n"
-            f"{image_info}\n\n"
-            f"--- 解答内容开始 ---\n"
+            f"原始问题: {question_preview}\n\n"
+            f"--- 解题结果 ---\n"
             f"{solution}\n"
-            f"--- 解答内容结束 ---\n\n"
-            "请立即将解答结果发送给用户。"
-            "如有图片路径则用 send_long_reply(image_path=...) 直接发送预渲染图片，"
-            "否则用 send_long_reply(markdown=...) 发送。\n"
-            "注意：这不是一个新的解题请求，而是已完成的结果通知。\n"
+            f"--- 以上为解题结果 ---\n\n"
+            "请根据以上结果回复用户。如需发送文件，可以使用沙箱或直接告知用户结果。\n"
             "</这是新的必须要回答的内容>"
         )
         self._logger.info(
@@ -534,13 +506,14 @@ class ProblemSolverManager:
 
 
 class ProblemSolverToolExecutor(ToolExecutor):
-    """解题 Agent 的工具执行器，包含联网搜索能力。"""
+    """解题 Agent 的工具执行器，包含联网搜索、文件读写、Python 执行。"""
 
     def __init__(
         self,
         *,
         logger: Logger | None = None,
         web_search_config: dict | None = None,
+        sandbox_service: Any = None,
     ) -> None:
         self._logger = logger or NullLogger()
         ws = web_search_config or {}
@@ -549,13 +522,14 @@ class ProblemSolverToolExecutor(ToolExecutor):
             max_rounds=ws.get("max_rounds", 5),
             preview_pages_limit=ws.get("preview_pages_limit", 30),
         )
+        self._sandbox = sandbox_service
 
     def reset_search(self) -> None:
         """复位搜索会话计数器，每次解题任务启动时调用。"""
         self._search.reset()
 
     def definitions(self) -> list[ToolDefinition]:
-        return [
+        tools = [
             _tool_def(
                 "get_chat_context",
                 "读取主Agent本轮看到的聊天上下文和消息编号映射，"
@@ -625,7 +599,77 @@ class ProblemSolverToolExecutor(ToolExecutor):
                     "required": ["solution"],
                 },
             ),
+            _tool_def(
+                "run_python",
+                "在 Bot 的 Python 虚拟环境中执行 Python 代码，返回标准输出和错误。"
+                "可用于生成文件（PDF/图片等）、数据分析、计算等。"
+                "代码中的 `print()` 输出会被捕获返回。"
+                "生成的临时文件保存在当前工作目录，可通过 write_file/read_file 持久化到沙箱。"
+                "运行耗时操作时注意控制执行时间，避免超时。",
+                {
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "要执行的 Python 代码",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "可选，超时秒数（默认 30，最大 120）",
+                        },
+                    },
+                    "required": ["code"],
+                },
+            ),
         ]
+        if self._sandbox is not None:
+            tools.extend([
+                _tool_def(
+                    "write_file",
+                    "将内容写入沙箱文件。文件路径相对于沙箱临时目录。"
+                    "可用于保存生成的 PDF、图片、代码等文件。"
+                    "写入后主Agent可通过 sandbox_manager 工具查看和发送这些文件。",
+                    {
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "文件名（如 test.pdf），将保存到沙箱临时目录",
+                            },
+                            "content_base64": {
+                                "type": "string",
+                                "description": "文件内容的 base64 编码",
+                            },
+                        },
+                        "required": ["path", "content_base64"],
+                    },
+                ),
+                _tool_def(
+                    "read_file",
+                    "读取沙箱文件的内容，返回 base64 编码数据。",
+                    {
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "文件路径（相对于沙箱根）",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                ),
+                _tool_def(
+                    "list_files",
+                    "列出沙箱目录下的内容。",
+                    {
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "目录路径（相对于沙箱根），默认为 /",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+            ])
+        return tools
 
     async def execute(self, name: str, args: dict) -> str:
         if name == "get_chat_context":
@@ -645,20 +689,120 @@ class ProblemSolverToolExecutor(ToolExecutor):
                 return "错误：solution 不能为空"
             _SOLUTION_RESULT.set(solution)
             return "解题结果已提交"
+        if name == "run_python":
+            return await self._execute_run_python(args)
+        if name == "write_file":
+            return await self._execute_write_file(args)
+        if name == "read_file":
+            return await self._execute_read_file(args)
+        if name == "list_files":
+            return await self._execute_list_files(args)
         return f"未知工具: {name}"
+
+    async def _execute_run_python(self, args: dict) -> str:
+        code = str(args.get("code", "")).strip()
+        if not code:
+            return "错误：code 不能为空"
+        timeout = min(int(args.get("timeout", 30)), 120)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", encoding="utf-8", delete=False
+            ) as f:
+                f.write(code)
+                script_path = f.name
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        [sys.executable, script_path],
+                        capture_output=True, text=True, timeout=timeout,
+                    ),
+                ),
+                timeout=timeout + 5,
+            )
+            Path(script_path).unlink(missing_ok=True)
+            output = result.stdout.strip()
+            error = result.stderr.strip()
+            # 如果超时被 subprocess 自己捕获
+            if result.returncode != 0:
+                return _json({
+                    "ok": True,
+                    "stdout": output,
+                    "stderr": error,
+                    "returncode": result.returncode,
+                    "note": "进程退出码非零，请检查 stderr",
+                })
+            return _json({
+                "ok": True,
+                "stdout": output,
+                "stderr": error or None,
+                "returncode": 0,
+            })
+        except subprocess.TimeoutExpired:
+            Path(script_path).unlink(missing_ok=True)
+            return _json({"ok": False, "error": f"Python 执行超时（{timeout}秒）"})
+        except Exception as e:
+            Path(script_path).unlink(missing_ok=True)
+            return _json({"ok": False, "error": str(e)})
+
+    async def _execute_write_file(self, args: dict) -> str:
+        if self._sandbox is None:
+            return _json({"ok": False, "error": "sandbox 未配置"})
+        import base64
+        rel_path = str(args.get("path", "")).strip()
+        content_b64 = args.get("content_base64", "")
+        if not rel_path or not content_b64:
+            return _json({"ok": False, "error": "缺少 path 或 content_base64"})
+        try:
+            data = base64.b64decode(content_b64)
+            path = self._sandbox.resolve_path(rel_path)
+            await self._sandbox.write_file(path, data)
+            return _json({"ok": True, "path": str(path)})
+        except Exception as e:
+            return _json({"ok": False, "error": str(e)})
+
+    async def _execute_read_file(self, args: dict) -> str:
+        if self._sandbox is None:
+            return _json({"ok": False, "error": "sandbox 未配置"})
+        import base64
+        rel_path = str(args.get("path", "")).strip().lstrip("/")
+        if not rel_path:
+            return _json({"ok": False, "error": "缺少 path"})
+        try:
+            path = self._sandbox.resolve_path(rel_path)
+            data = await self._sandbox.read_file(path)
+            return _json({
+                "ok": True,
+                "content_base64": base64.b64encode(data).decode(),
+                "size": len(data),
+            })
+        except Exception as e:
+            return _json({"ok": False, "error": str(e)})
+
+    async def _execute_list_files(self, args: dict) -> str:
+        if self._sandbox is None:
+            return _json({"ok": False, "error": "sandbox 未配置"})
+        rel_path = str(args.get("path", "")).strip().lstrip("/") or "."
+        try:
+            path = self._sandbox.resolve_path(rel_path)
+            files = await self._sandbox.list_files(path)
+            return _json({"ok": True, "files": files})
+        except Exception as e:
+            return _json({"ok": False, "error": str(e)})
 
 
 def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descriptions: str = "") -> str:
     cfg = config or ProblemSolverAgentConfig()
     return (
         "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
+        "【强制要求】每次解题结束前必须调用 submit_solution 提交最终解答，否则任务将被视为失败。\n\n"
         "工作流程：\n"
         "1. 先用 get_chat_context 获取问题背景（如果问题来自聊天群/私聊）\n"
         "2. 仔细分析问题，逐步推理，不要跳步\n"
         "3. 如果问题涉及实时信息、数据查询或需要查阅资料，使用 search 联网搜索，"
         "通过 read_page 读取有价值的页面获取详细信息\n"
-        "4. 给出完整、清晰的解答过程，使用 Markdown 格式\n"
-        "5. 使用 submit_solution 工具提交最终解答\n\n"
+        "4. 使用 run_python 执行代码生成文件，使用 write_file 保存文件到沙箱\n"
+        "5. 最后调用 submit_solution 提交完整解答\n\n"
         "搜索使用提示：\n"
         "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
         "- search 支持 mode 参数进行多角度搜索，如 mode=\"encyclopedia\" 查百科类信息\n"
@@ -667,11 +811,6 @@ def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descri
         "交互规则：\n"
         "- 如果缺少关键信息无法解答，通过 submit_solution 返回说明，指出缺失什么信息\n"
         "- 如果问题不属于你的能力范围，直接声明无法处理\n\n"
-        "格式要求：\n"
-        "- 解答应包含完整的推理步骤，使用合适的 Markdown 格式（代码块、表格等）\n"
-        "- 对于数学问题，使用标准的数学符号和步骤编号\n"
-        "- 对于编程问题，提供可运行的代码及其解释\n"
-        f"- 最终解答必须通过 submit_solution 提交，不要直接在对话中输出全部解答\n"
         f"{peer_descriptions}\n"
         f"- 超时时间: {cfg.timeout_seconds} 秒\n"
     )
@@ -683,10 +822,12 @@ def build_problem_solver_toolset(
     logger: Logger | None = None,
     policy: ToolAccessPolicy | None = None,
     web_search_config: dict | None = None,
+    sandbox_service: Any = None,
 ) -> Toolset:
     executor = ProblemSolverToolExecutor(
         logger=logger,
         web_search_config=web_search_config,
+        sandbox_service=sandbox_service,
     )
     specs = [
         ToolSpec(definition=d, access_resolver=_default_resolver)
@@ -711,6 +852,7 @@ class ProblemSolverAgent:
         web_search_config: dict | None = None,
         manager: ProblemSolverManager | None = None,
         peer_descriptions: str = "",
+        sandbox_service: Any = None,
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
@@ -719,6 +861,7 @@ class ProblemSolverAgent:
             config=cfg,
             logger=logger,
             web_search_config=web_search_config,
+            sandbox_service=sandbox_service,
         )
         self.tool_definitions = self._toolset.definitions()
 
@@ -820,6 +963,7 @@ def build_problem_solver_agent(
     manager: ProblemSolverManager | None = None,
     web_search_config: dict | None = None,
     peer_descriptions: str = "",
+    sandbox_service: Any = None,
 ) -> ProblemSolverAgent:
     """构建解题 Agent 并关联到 Manager。
 
@@ -830,6 +974,7 @@ def build_problem_solver_agent(
         manager: 后台任务管理器
         web_search_config: 联网搜索配置字典，包含 engines, max_rounds, preview_pages_limit
         peer_descriptions: 同级 sub agent 描述
+        sandbox_service: 沙箱文件服务，提供 run_python/write_file/read_file/list_files 工具
     """
     cfg = (
         config if isinstance(config, ProblemSolverAgentConfig)
@@ -842,6 +987,7 @@ def build_problem_solver_agent(
         web_search_config=web_search_config,
         manager=manager,
         peer_descriptions=peer_descriptions,
+        sandbox_service=sandbox_service,
     )
     if manager is not None:
         manager.set_agent(agent)

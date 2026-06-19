@@ -8,7 +8,6 @@ from typing import Any
 from neobot_chat.schema.exceptions import ToolError
 from neobot_chat.schema.protocol import ToolExecutor
 from neobot_chat.schema.types import ToolAccessPolicy, ToolAccessRule, ToolDefinition, ToolGuardContext
-from neobot_chat.tools import AgentRegistry
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
@@ -43,8 +42,6 @@ class ReplyToolExecutor(ToolExecutor):
         numbering: Any = None,
         send_emoji_handler: Any = None,
         emoji_service: Any = None,
-        agent_registry: AgentRegistry | None = None,
-        tool_package_manager: Any = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
         search_emoji_handler: Any = None,
@@ -58,7 +55,7 @@ class ReplyToolExecutor(ToolExecutor):
         notification_hub: Any = None,
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
-        cross_chat_manager: Any = None,
+        skill_manager: Any = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -77,8 +74,6 @@ class ReplyToolExecutor(ToolExecutor):
         self._numbering = numbering
         self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
-        self._agent_registry = agent_registry
-        self._tool_package_manager = tool_package_manager
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler
         self._search_emoji = search_emoji_handler
@@ -92,7 +87,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._notification_hub = notification_hub
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
-        self._cross_chat_manager = cross_chat_manager
+        self._skill_manager = skill_manager
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -394,113 +389,6 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 ),
             )
-        if self._agent_registry:
-            tools.extend(
-                [
-                    _tool_def(
-                        "list_agents",
-                        "列出可用的子代理及其完整描述，或查看某个子代理的详细说明。"
-                        "不指定 agent 时列出全部子代理的完整描述；指定 agent 时显示该子代理的详细功能说明。",
-                        {
-                            "properties": {
-                                "agent": {
-                                    "type": "string",
-                                    "enum": self._agent_registry.names,
-                                    "description": "可选，子代理名称。不填则列出全部子代理。",
-                                },
-                            },
-                            "required": [],
-                        },
-                    ),
-                    _tool_def(
-                        "delegate",
-                        "把任务委托给子代理；当子代理的上次回复有疑问或需要更多信息时，"
-                        "在 previous_response 中传入其上次回复，并在 task 中给出答复；"
-                        "需要同一个子代理持续处理时传同一个 session_id。"
-                        "子代理可按需通过自己的工具读取当前聊天上下文。"
-                        "重要：仅做单一信息查询（查天气/查事实/查定义），不需要分析整理或写长文时，"
-                        "使用 list_tools 查看可用工具包，用 unlock 解锁 web_search 工具包自行搜索即可，不要委托 agent。"
-                        "但如果任务涉及研究收集+分析整理+撰写输出（如写报告/写markdown/综合评测），"
-                        "即使包含搜索步骤也是复杂任务，必须委托 problem_solver 处理。"
-                        "判断标准：只需回答一句话的事实查询→自行搜索；需要组织材料并产出结构化内容→委托 problem_solver。"
-                        "涉及聊天图片导入、保存图片、图库管理、表情包增删时必须委托 creator，"
-                        "即使用户只说「这张图/刚才那张图/加到表情包」也直接委托 creator，不要先委托 image_parse。"
-                        "image_parse 只用于纯图片内容解析，且必须有明确图片参数。"
-                        "涉及长期记忆、档案记忆、用户资料记忆时委托 memory。"
-                        "涉及定时提醒、生日记录、生日祝福偏好、庆祝方式或提醒任务变更时，必须委托 scheduled_task；"
-                        "如果有人提出生日想要的祝福、庆祝场合或禁忌，委托 scheduled_task 记录或更新生日任务，不要只写入普通记忆。"
-                        "绘图失败时必须先发消息告知失败原因，再询问用户是否重试，不要自行立刻重试。"
-                        "涉及复杂数学、编程算法、科学计算、逻辑推理等需要深度思考的问题时，必须委托 problem_solver 处理。"
-                        "创建早安、生日祝福、普通提醒等定时任务时，默认使用一次性通知；一次性通知不是 once 一次性任务，循环任务也可以每个周期只通知一次。",
-                        {
-                            "properties": {
-                                "agent": {
-                                    "type": "string",
-                                    "enum": self._agent_registry.names,
-                                    "description": "子代理名称。",
-                                },
-                                "task": {
-                                    "type": "string",
-                                    "description": "传给子代理的自然语言任务或结构化任务。",
-                                },
-                                "previous_response": {
-                                    "type": "string",
-                                    "description": "可选，子代理上次回复的内容。当子代理提问或索要信息时填写。",
-                                },
-                                "session_id": {
-                                    "type": "string",
-                                    "description": "可选，持续会话 ID。继续同一个子代理任务时保持相同值。",
-                                },
-                                "tasks": {
-                                    "type": "array",
-                                    "description": "可选，批量委托任务列表。",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "agent": {
-                                                "type": "string",
-                                                "enum": self._agent_registry.names,
-                                            },
-                                            "task": {"type": "string"},
-                                            "previous_response": {
-                                                "type": "string",
-                                                "description": "可选，该子代理的上次回复。",
-                                            },
-                                            "session_id": {
-                                                "type": "string",
-                                                "description": "可选，持续会话 ID。",
-                                            },
-                                        },
-                                        "required": ["agent", "task"],
-                                    },
-                                },
-                            },
-                            "required": [],
-                        },
-                    ),
-                ]
-            )
-        if self._tool_package_manager is not None:
-            # 合并工具包管理器动态生成的工具（unlock / relock / 已解锁包的工具）
-            tools.extend(self._tool_package_manager.definitions())
-            tools.append(
-                _tool_def(
-                    "list_tools",
-                    "列出工具包信息。无参时列出全部工具包（含锁定状态和简短描述）；"
-                    "指定 package_id 时显示该工具包的详细功能说明和包含的工具列表。"
-                    "请在需要了解有哪些工具包可用时使用。"
-                    "使用 unlock <工具包ID> 解锁需要的工具包后即可使用其中的工具。",
-                    {
-                        "properties": {
-                            "package_id": {
-                                "type": "string",
-                                "description": "可选，工具包 ID。不填则列出全部工具包。",
-                            },
-                        },
-                        "required": [],
-                    },
-                )
-            )
         if (
             self._drawing_manager is not None
             or self._scheduled_task_manager is not None
@@ -551,6 +439,9 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
+        # 合并 Skill 系统的工具定义
+        if self._skill_manager is not None:
+            tools.extend(self._skill_manager.get_tools())
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -578,12 +469,6 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_speak(args)
         if name == "poke_user":
             return await self._execute_poke_user(args)
-        if name == "list_agents":
-            return self._execute_list_agents(args)
-        if name == "list_tools":
-            return self._execute_list_tools(args)
-        if name == "delegate":
-            return await self._execute_delegate(args)
         if name == "check_background_tasks":
             return await self._execute_check_background_tasks(args)
         if name == "check_last_drawing":
@@ -592,10 +477,13 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
-        if self._tool_package_manager is not None:
-            parsed = self._tool_package_manager.parse_tool_name(name)
-            if parsed is not None or name in ("unlock", "relock"):
-                return await self._tool_package_manager.execute(name, args)
+        # Skill 系统路由（优先于 ToolError）
+        if self._skill_manager is not None and "__" in name:
+            # 自动注入当前对话上下文，skill 工具不需要也不应自行指定
+            enriched = dict(args)
+            if self._conv_kind and self._conv_id:
+                enriched["pipeline_key"] = f"{self._conv_kind}_{self._conv_id}"
+            return await self._skill_manager.execute(name, enriched)
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_cancel(self, args: dict) -> str:
@@ -713,7 +601,10 @@ class ReplyToolExecutor(ToolExecutor):
         elapsed = now - self._last_wait_time
         if self._last_wait_time > 0 and elapsed < self._wait_cooldown_seconds:
             remaining = int(self._wait_cooldown_seconds - elapsed)
-            return f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
+            return (
+                f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
+                "【提示】如果是在等待后台任务完成，请结束本轮回复，系统会在完成后通知你。"
+            )
         seconds = args.get("seconds", 20)
         if seconds is not None:
             try:
@@ -846,58 +737,6 @@ class ReplyToolExecutor(ToolExecutor):
             return f"错误：user_id 无效，收到 {args.get('user_id')}"
         return await self._poke_user(user_id=user_id)
 
-    def _execute_list_agents(self, args: dict) -> str:
-        if self._agent_registry is None:
-            return "No agents available"
-        agent = args.get("agent")
-        if agent is None:
-            return self._agent_registry.list_agents()
-        return self._agent_registry.list_agents(str(agent))
-
-    def _execute_list_tools(self, args: dict) -> str:
-        if self._tool_package_manager is None:
-            return "无工具包管理器"
-        pkg_id = args.get("package_id")
-        return self._tool_package_manager.list_packages(str(pkg_id) if pkg_id else None)
-
-    async def _execute_delegate(self, args: dict) -> str:
-        if self._agent_registry is None:
-            return "No agents available"
-        agent = args.get("agent")
-        task = args.get("task")
-        tasks = args.get("tasks")
-        previous_response = args.get("previous_response")
-        session_id = args.get("session_id")
-        normalized_tasks = tasks if isinstance(tasks, list) else None
-        target_agent = str(agent) if agent is not None else "unknown"
-        task_str = str(task) if task is not None else None
-        task_summary = (task_str or str(normalized_tasks))[:200]
-        self._logger.info(
-            f"委托子Agent: {target_agent}",
-            agent=target_agent,
-            task=task_summary,
-        )
-        return await self._agent_registry.delegate(
-            agent=target_agent,
-            task=task_str,
-            tasks=normalized_tasks,
-            previous_response=str(previous_response) if previous_response else None,
-            session_id=str(session_id) if session_id else None,
-            context=self._build_delegate_context(),
-        )
-
-    def _build_delegate_context(self) -> str:
-        parts: list[str] = []
-        if self._conv_kind and self._conv_id:
-            parts.append(f"[当前会话]\nkind={self._conv_kind}\nid={self._conv_id}")
-        if self._chat_context:
-            parts.append("[主Agent当前提示词]\n" + self._chat_context)
-
-        mapping_text = self._build_message_id_context()
-        if mapping_text:
-            parts.append(mapping_text)
-        return "\n\n".join(parts)
-
     def _build_message_id_context(self) -> str:
         if self._numbering is None:
             return ""
@@ -918,7 +757,6 @@ class ReplyToolExecutor(ToolExecutor):
             self._drawing_manager is None
             and self._scheduled_task_manager is None
             and self._problem_solver_manager is None
-            and self._cross_chat_manager is None
             and self._notification_hub is None
         ):
             return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
@@ -932,8 +770,6 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
         if self._problem_solver_manager is not None:
             status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
-        if self._cross_chat_manager is not None:
-            status.update(self._cross_chat_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
         self._logger.info(
@@ -1091,8 +927,6 @@ def build_reply_toolset(
     numbering: Any = None,
     send_emoji_handler: Any = None,
     emoji_service: Any = None,
-    agent_registry: AgentRegistry | None = None,
-    tool_package_manager: Any = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
     search_emoji_handler: Any = None,
@@ -1106,7 +940,7 @@ def build_reply_toolset(
     notification_hub: Any = None,
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
-    cross_chat_manager: Any = None,
+    skill_manager: Any = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -1127,8 +961,6 @@ def build_reply_toolset(
         numbering=numbering,
         send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
-        agent_registry=agent_registry,
-        tool_package_manager=tool_package_manager,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
         search_emoji_handler=search_emoji_handler,
@@ -1142,7 +974,7 @@ def build_reply_toolset(
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
-        cross_chat_manager=cross_chat_manager,
+        skill_manager=skill_manager,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,
