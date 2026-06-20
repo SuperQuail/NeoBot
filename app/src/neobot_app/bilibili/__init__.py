@@ -5,11 +5,10 @@
 
 from __future__ import annotations
 
-import logging
+from loguru import logger
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -53,7 +52,7 @@ def build_bilibili_module(
         logger.warning("B站模块: cookie 已失效")
         return None
 
-    logger.info("B站模块: 认证成功 (UID=%d)", uid)
+    logger.info("B站模块: 认证成功 (UID={})", uid)
 
     bridge = BilibiliEventBridge(
         orchestrator=orchestrator,

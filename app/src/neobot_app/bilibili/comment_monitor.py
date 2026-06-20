@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 import time
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
 
 
 class BilibiliCommentMonitor:

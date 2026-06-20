@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import mimetypes
 import os
 import time
@@ -29,8 +28,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 import requests
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # ── 常量 ──
 BILIBILI_API_BASE = "https://api.vc.bilibili.com"
@@ -185,7 +183,7 @@ class BilibiliClient:
         img_key = img_raw.rsplit("/", 1)[-1].split(".")[0]
         sub_key = sub_raw.rsplit("/", 1)[-1].split(".")[0]
         if not img_key or not sub_key:
-            logger.debug("WBI 密钥提取失败: img=%s sub=%s", img_key[:8] if img_key else "", sub_key[:8] if sub_key else "")
+            logger.debug("WBI 密钥提取失败: img={} sub={}", img_key[:8] if img_key else "", sub_key[:8] if sub_key else "")
             return
         combined = img_key + sub_key
         self._wbi_mixin_key = "".join(
@@ -246,7 +244,7 @@ class BilibiliClient:
                 for s in sessions[:count]
             ]
         except requests.RequestException as e:
-            logger.error("获取会话列表失败: %s", e)
+            logger.error("获取会话列表失败: {}", e)
             return []
 
     # ── 消息 ──
@@ -278,7 +276,7 @@ class BilibiliClient:
                 for m in messages
             ]
         except requests.RequestException as e:
-            logger.debug("获取会话 %d 消息失败: %s", talker_id, e)
+            logger.debug("获取会话 {} 消息失败: {}", talker_id, e)
             return []
 
     def get_new_messages(self, session: BilibiliSession) -> list[BilibiliMessage]:
@@ -342,10 +340,10 @@ class BilibiliClient:
             elif code == -101:
                 logger.error("登录态失效 (-101)，请更新 SESSDATA")
             else:
-                logger.warning("发送失败: code=%d msg=%s", code, result.get("message", ""))
+                logger.warning("发送失败: code={} msg={}", code, result.get("message", ""))
             return False
         except requests.RequestException as e:
-            logger.error("发送消息异常: %s", e)
+            logger.error("发送消息异常: {}", e)
             self._last_send_time = time.time()
             return False
 
@@ -354,11 +352,11 @@ class BilibiliClient:
     def upload_image(self, image_path: str) -> dict | None:
         """上传图片到 B站，返回图片信息 dict（含 image_url 等）。"""
         if not os.path.exists(image_path):
-            logger.error("图片文件不存在: %s", image_path)
+            logger.error("图片文件不存在: {}", image_path)
             return None
         file_size = os.path.getsize(image_path)
         if file_size > 20 * 1024 * 1024:
-            logger.error("图片文件过大: %.1fMB", file_size / 1024 / 1024)
+            logger.error("图片文件过大: {}MB", file_size / 1024 / 1024)
             return None
 
         # 方案 A: 直接上传到 im 专用接口
@@ -411,7 +409,7 @@ class BilibiliClient:
                 if resp.status_code == 200:
                     result = resp.json()
                     if result.get("code") == 0:
-                        logger.info("图片上传成功: %s", file_name)
+                        logger.info("图片上传成功: {}", file_name)
                         return result.get("data", {})
             except Exception:
                 continue
@@ -441,7 +439,7 @@ class BilibiliClient:
                     "image_height": 0,
                 }
         except Exception as e:
-            logger.debug("BFS 上传失败: %s", e)
+            logger.debug("BFS 上传失败: {}", e)
         return None
 
     def _get_upload_info(self) -> dict | None:
@@ -520,10 +518,10 @@ class BilibiliClient:
             elif code == -101:
                 logger.error("登录态失效 (-101)，请更新 SESSDATA")
             else:
-                logger.warning("图片发送失败: code=%d msg=%s", code, result.get("message", ""))
+                logger.warning("图片发送失败: code={} msg={}", code, result.get("message", ""))
             return False
         except requests.RequestException as e:
-            logger.error("发送图片消息异常: %s", e)
+            logger.error("发送图片消息异常: {}", e)
             self._last_send_time = time.time()
             return False
 
@@ -542,7 +540,7 @@ class BilibiliClient:
             if data.get("code") == 0:
                 return data.get("data", {}).get("list", [])
         except requests.RequestException as e:
-            logger.error("获取关注者失败: %s", e)
+            logger.error("获取关注者失败: {}", e)
         return []
 
     # ── 评论 ──
@@ -562,12 +560,12 @@ class BilibiliClient:
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
-                logger.warning("获取评论回复失败: code=%d msg=%s", data.get("code"), data.get("message", ""))
+                logger.warning("获取评论回复失败: code={} msg={}", data.get("code"), data.get("message", ""))
                 return []
             items = data.get("data", {}).get("items", []) or []
             return items[:limit]
         except requests.RequestException as e:
-            logger.error("获取评论回复异常: %s", e)
+            logger.error("获取评论回复异常: {}", e)
             return []
 
     def get_video_comments(
@@ -592,52 +590,58 @@ class BilibiliClient:
                 return []
             return data.get("data", {}).get("replies", []) or []
         except requests.RequestException as e:
-            logger.debug("获取视频 %d 评论失败: %s", oid, e)
+            logger.debug("获取视频 {} 评论失败: {}", oid, e)
             return []
 
     def send_comment_reply(
         self, oid: int, root: int, parent: int, text: str, *, type_: int = 1
     ) -> bool:
-        """回复一条评论。
+        """回复一条评论。使用 bilibili_api 库以确保 WBI 签名和反爬字段正确。
+
         oid: 稿件/动态 ID
         root: 根评论 rpid
         parent: 父评论 rpid（回复顶层评论时=root）
-        type_: 1=视频, 12=专栏, 17=动态
+        type_: 对应 CommentResourceType: 1=视频, 11=图文动态, 12=专栏, 17=纯文字动态
         """
-        logger.info("send_comment_reply 被调用: oid=%d root=%d parent=%d type=%d text=%.40s",
-                     oid, root, parent, type_, text)
+        import asyncio as _asyncio
+
+        from bilibili_api import Credential
+        from bilibili_api.comment import CommentResourceType, send_comment
+
+        logger.info(
+            "send_comment_reply 被调用: oid={} root={} parent={} type={} text={}",
+            oid, root, parent, type_, text,
+        )
         self._rate_limit_wait()
 
-        data = {
-            "oid": oid,
-            "type": type_,
-            "root": root,
-            "parent": parent,
-            "message": text,
-            "csrf": self._bili_jct,
-            "csrf_token": self._bili_jct,
-        }
+        credential = Credential(
+            sessdata=self._sessdata,
+            bili_jct=self._bili_jct,
+        )
 
         try:
-            resp = self.session.post(
-                "https://api.bilibili.com/x/v2/reply/add",
-                data=data,
-                headers={
-                    "Referer": "https://www.bilibili.com/",
-                    "Origin": "https://www.bilibili.com",
-                },
-                timeout=5,
-            )
-            resp.raise_for_status()
-            result = resp.json()
+            resource_type = CommentResourceType(type_)
+        except ValueError:
+            logger.warning("未知的 CommentResourceType: {}，回退为 VIDEO", type_)
+            resource_type = CommentResourceType.VIDEO
+
+        try:
+            result = _asyncio.run(send_comment(
+                text=text,
+                oid=oid,
+                type_=resource_type,
+                root=root,
+                parent=parent,
+                credential=credential,
+            ))
             self._last_send_time = time.time()
 
             code = result.get("code", -1)
-            if code == 0:
-                rpid = result.get("data", {}).get("rpid", 0)
+            if code in (0, -1):
+                rpid = result.get("data", {}).get("rpid", 0) or result.get("rpid", 0)
                 logger.info(
-                    "评论回复成功: code=0 reply_rpid={} oid={} root={} parent={} text={:.40}",
-                    rpid, oid, root, parent, text,
+                    "评论回复成功: code={} reply_rpid={} oid={} root={} parent={} text={:.40}",
+                    code, rpid, oid, root, parent, text,
                 )
                 return True
             if code == -799:
@@ -653,8 +657,8 @@ class BilibiliClient:
                     code, result.get("message", ""), result,
                 )
             return False
-        except requests.RequestException as e:
-            logger.error("发送评论回复异常: %s", e)
+        except Exception as e:
+            logger.error("发送评论回复异常: {}", e)
             self._last_send_time = time.time()
             return False
 
@@ -682,7 +686,7 @@ class BilibiliClient:
             self._last_send_time = time.time()
             return result.get("code") == 0
         except requests.RequestException as e:
-            logger.error("点赞评论异常: %s", e)
+            logger.error("点赞评论异常: {}", e)
             self._last_send_time = time.time()
             return False
 
@@ -702,7 +706,7 @@ class BilibiliClient:
                 return []
             return data.get("data", {}).get("list", {}).get("vlist", []) or []
         except requests.RequestException as e:
-            logger.error("获取视频列表失败: %s", e)
+            logger.error("获取视频列表失败: {}", e)
             return []
 
     # ── 限流 ──
@@ -718,15 +722,15 @@ class BilibiliClient:
     @staticmethod
     def _handle_api_error(code: int, message: str) -> None:
         if code == -101:
-            logger.error("登录态失效: %s", message)
+            logger.error("登录态失效: {}", message)
         elif code == -111:
-            logger.error("账号被限制: %s", message)
+            logger.error("账号被限制: {}", message)
         elif code == -400:
-            logger.error("请求参数错误: %s", message)
+            logger.error("请求参数错误: {}", message)
         elif code == -412:
-            logger.warning("请求被拦截(风控): %s", message)
+            logger.warning("请求被拦截(风控): {}", message)
         else:
-            logger.warning("API 错误 code=%d: %s", code, message)
+            logger.warning("API 错误 code={}: {}", code, message)
 
     # ── 工具 ──
 
@@ -762,7 +766,7 @@ def create_client_from_browser(browser_data_dir: str = "") -> Optional[BilibiliC
     if not sd or not jct:
         logger.error(
             "未找到 B站 cookie。请先使用浏览器登录 bilibili.com，"
-            "确保 SESSDATA 和 bili_jct 已保存至 %s",
+            "确保 SESSDATA 和 bili_jct 已保存至 {}",
             provider._data_dir,
         )
         return None

@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
 
 
 class BilibiliEventBridge:
@@ -55,12 +54,81 @@ class BilibiliEventBridge:
             if ctx is None:
                 return
 
+            # 异步补充内容详情（UP主、简介等）
+            await self._enrich_comment_context(ctx)
+
             # 提交给 orchestrator
             if self._orchestrator is not None:
                 self._orchestrator.start_bilibili_comment_reply(ctx, self._client)
 
         except Exception:
             logger.exception("处理评论事件失败")
+
+    async def _enrich_comment_context(self, ctx: Any) -> None:
+        """异步补充内容详情：UP主、扩展简介等。"""
+        try:
+            if ctx.business_id == 1:  # 视频
+                from bilibili_api.video import Video
+
+                v = Video(aid=ctx.target_oid)
+                info = await v.get_info()
+                if info:
+                    owner = info.get("owner", {}) or {}
+                    ctx.target_up_name = owner.get("name", "") or ctx.target_up_name
+                    ctx.target_title = info.get("title", "") or ctx.target_title
+                    ctx.target_desc = info.get("desc", "") or ctx.target_desc
+                    logger.debug("视频详情获取成功: oid={} title={} up={}",
+                                 ctx.target_oid, ctx.target_title, ctx.target_up_name)
+            elif ctx.business_id in (11, 17):  # 动态
+                await self._enrich_dynamic_context(ctx)
+        except Exception:
+            pass  # 内容获取失败不影响回复
+
+    async def _enrich_dynamic_context(self, ctx: Any) -> None:
+        """补充动态详情。"""
+        from bilibili_api import sync as _sync
+
+        # 策略1: 从 uri 提取 dynamic_id
+        dynamic_id = 0
+        uri = ctx.target_url or ""
+        if "t.bilibili.com/" in uri:
+            import re as _re
+            m = _re.search(r"t\.bilibili\.com/(\d+)", uri)
+            if m:
+                dynamic_id = int(m.group(1))
+                logger.debug("从 uri 提取 dynamic_id={}", dynamic_id)
+
+        # 策略2: 用 subject_id
+        if not dynamic_id and ctx.target_oid:
+            dynamic_id = ctx.target_oid
+            logger.debug("用 subject_id 作为 dynamic_id={}", dynamic_id)
+
+        if not dynamic_id:
+            return
+
+        try:
+            from bilibili_api.dynamic import Dynamic
+
+            dyn = Dynamic(dynamic_id=dynamic_id)
+            info = await dyn.get_info()
+            if info:
+                item = info.get("item", {}) or info
+                ctx.target_title = item.get("title", "") or ctx.target_title
+                desc = item.get("description", "") or item.get("desc", "")
+                ctx.target_desc = desc or ctx.target_desc
+
+                # 动态的 UP 主
+                user = info.get("user", {}) or info.get("author", {}) or info.get("owner", {})
+                ctx.target_up_name = (
+                    user.get("name", "") or info.get("uname", "") or ctx.target_up_name
+                )
+                logger.debug("动态详情获取成功: dynamic_id={} title={:.40} up={}",
+                             dynamic_id, ctx.target_title, ctx.target_up_name)
+            else:
+                logger.debug("动态 {} 获取详情为空", dynamic_id)
+        except Exception as e:
+            logger.debug("动态 {} 详情获取失败: {}", dynamic_id, e)
+            pass
 
     async def handle_new_private_message(self, msg, session) -> None:
         """处理一条新私信。"""
@@ -116,7 +184,9 @@ class BilibiliEventBridge:
             bot_uid=self._client.my_uid,
             target_oid=subject_id,
             target_type=target_type,
+            business_id=business_id,
             target_title=item_data.get("title", "") or item_data.get("desc", ""),
+            target_desc=item_data.get("desc", "") or item_data.get("message", ""),
             target_url=item_data.get("uri", ""),
             comment_tree=[target_node],
             reply_target_rpid=source_id,

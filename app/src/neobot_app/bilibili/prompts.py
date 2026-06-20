@@ -41,6 +41,7 @@ class CommentContext:
     other_name: str = ""          # Bot 别名
     target_oid: int = 0           # 视频/动态 oid
     target_type: str = "视频"     # "视频" / "动态" / "专栏"
+    business_id: int = 1          # B站 reply_feed business_id，直接作为 reply type_
     target_title: str = ""
     target_url: str = ""
     target_up_name: str = ""      # UP 主昵称

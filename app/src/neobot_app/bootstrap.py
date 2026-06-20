@@ -63,7 +63,6 @@ from neobot_app.runtime.sandbox_service import SandboxService
 from neobot_app.runtime.sandbox_maintenance import SandboxMaintenanceManager
 from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
 from neobot_app.browser import BrowserAgentWrapper
-from neobot_app.bilibili import build_bilibili_module
 from neobot_app.skills import build_all_skills
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
@@ -159,54 +158,13 @@ def _auto_install_chromium() -> bool:
         return False
 
 
-def _register_bilibili_skills(
-    skill_manager: Any,
-    *,
-    bilibili_client: Any,
-    disabled_skills: list[str] | None = None,
-    archive_memory_service: Any = None,
-    uow_factory: Any = None,
-    profile_service: Any = None,
-) -> None:
-    """在 B站模块初始化成功后，动态注册 B站相关 skills。"""
-    from neobot_app.bilibili.skills.reply_comment import BilibiliCommentSkill
-    from neobot_app.bilibili.skills.bilibili_memory import BilibiliMemorySkill
-    from neobot_app.bilibili.skills.account_link import BilibiliLinkSkill
-
-    disabled = set(disabled_skills or [])
-
-    if "bilibili_comment" not in disabled:
-        skill_manager.register(BilibiliCommentSkill(client=bilibili_client))
-
-    if "bilibili_memory" not in disabled and archive_memory_service is not None:
-        skill_manager.register(
-            BilibiliMemorySkill(
-                archive_service=archive_memory_service,
-                allowed_tables=("bv_video", "cv_column", "bilibili_user"),
-            )
-        )
-
-    if "bilibili_link" not in disabled and uow_factory is not None:
-        skill_manager.register(
-            BilibiliLinkSkill(
-                uow_factory=uow_factory,
-                profile_service=profile_service,
-                archive_memory_service=archive_memory_service,
-            )
-        )
-
-
-def create_application(*, bilibili_only: bool = False) -> NeoBotApplication:
+def create_application() -> NeoBotApplication:
     configure_loguru(DATA_DIR / "logs", runtime_events=True)
     logger_factory = LoguruLoggerFactory()
     clock = SystemClock()
     config = ConfigProxy(_load_config())
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
-
-    if bilibili_only:
-        config.message.enable_group = False
-        config.message.enable_private = False
 
     debug_recorder = (
         DebugRecorder(
@@ -718,29 +676,6 @@ def create_application(*, bilibili_only: bool = False) -> NeoBotApplication:
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
 
-    # ── B站模块 ──
-    bilibili_module = build_bilibili_module(
-        config=config,
-        browser_data_dir=str(DATA_DIR / "browser"),
-        logger_factory=logger_factory,
-        orchestrator=reply_orchestrator,
-        prompt_builder=prompt_builder,
-    )
-    if bilibili_module is not None:
-        _register_bilibili_skills(
-            skill_manager,
-            bilibili_client=bilibili_module.client,
-            disabled_skills=getattr(getattr(config.agent, "skill", None), "disabled_skills", None),
-            archive_memory_service=archive_memory_service,
-            uow_factory=uow_factory,
-            profile_service=profile_service,
-        )
-    elif getattr(getattr(config, "bilibili", None), "enabled", False):
-        config.bilibili.enabled = False
-        logger_factory.get_logger("app.bootstrap").warning(
-            "B站模块初始化失败，已自动禁用。请检查浏览器中是否已登录B站。"
-        )
-
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
         memory=memory,
@@ -804,5 +739,4 @@ def create_application(*, bilibili_only: bool = False) -> NeoBotApplication:
         temp_cleaner=temp_cleaner,
         sandbox_maintenance_manager=sandbox_maintenance_manager,
         browser_lifecycle_manager=browser_lifecycle_manager,
-        bilibili_module=bilibili_module,
     )

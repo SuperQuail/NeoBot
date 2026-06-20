@@ -13,8 +13,8 @@ from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 
 
-async def run(*, bilibili_only: bool = False) -> None:
-    application = create_application(bilibili_only=bilibili_only)
+async def run() -> None:
+    application = create_application()
     loop = asyncio.get_running_loop()
 
     def request_stop() -> None:
@@ -36,7 +36,7 @@ async def run(*, bilibili_only: bool = False) -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人主程序。"""
     try:
-        asyncio.run(run(bilibili_only=args.bili))
+        asyncio.run(run())
     except ConnectionTimeoutError as exc:
         print(f"错误: {exc}")
     except KeyboardInterrupt:
@@ -159,11 +159,6 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version",
         version="%(prog)s 1.0.0",
-    )
-
-    parser.add_argument(
-        "--bili", action="store_true",
-        help="仅启动B站模块（评论+私信），不启动QQ适配器",
     )
 
     sub = parser.add_subparsers(title="子命令", dest="command")

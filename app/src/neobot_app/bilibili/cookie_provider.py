@@ -10,7 +10,7 @@ B站 Cookie 提供器 — 从 NeoBot 浏览器持久化状态中提取 SESSDATA 
 from __future__ import annotations
 
 import json
-import logging
+from loguru import logger
 import os
 import shutil
 import sqlite3
@@ -18,7 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
 
 # NeoBot 数据目录下的浏览器用户数据路径（与 bootstrap.py 中的 DATA_DIR / "browser" 对应）
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -69,7 +68,7 @@ class BilibiliCookieProvider:
         for profile_dir in self._chrome_profile_dirs():
             value = self._from_chrome_cookies_db(profile_dir, name)
             if value:
-                logger.debug("从 Chrome profile %s 读取 %s", profile_dir.name, name)
+                logger.debug("从 Chrome profile {} 读取 {}", profile_dir.name, name)
                 return value
 
         # 2. JSON 持久化文件
@@ -82,7 +81,7 @@ class BilibiliCookieProvider:
         env_key = f"BILI_{name.upper() if name == 'bili_jct' else name.upper()}"
         env_value = os.getenv(env_key)
         if env_value:
-            logger.debug("从环境变量 %s 读取 %s", env_key, name)
+            logger.debug("从环境变量 {} 读取 {}", env_key, name)
             return env_value
 
         return None
@@ -192,7 +191,7 @@ class BilibiliCookieProvider:
             finally:
                 os.unlink(tmp_path)
         except Exception as e:
-            logger.debug("读取 Chrome cookies DB 失败: %s", e)
+            logger.debug("读取 Chrome cookies DB 失败: {}", e)
             return None
 
     @staticmethod
@@ -237,7 +236,7 @@ class BilibiliCookieProvider:
             value = BilibiliCookieProvider._strip_chromium_cookie_header(plaintext)
             return value.decode("ascii")
         except Exception as e:
-            logger.debug("AES-GCM 解密失败: %s", e)
+            logger.debug("AES-GCM 解密失败: {}", e)
             return None
 
     @staticmethod
@@ -283,7 +282,7 @@ class BilibiliCookieProvider:
             _, aes_key = CryptUnprotectData(encrypted_key)
             return aes_key
         except Exception as e:
-            logger.debug("获取 AES 密钥失败: %s", e)
+            logger.debug("获取 AES 密钥失败: {}", e)
             return None
 
     # ── 提取器：JSON 文件 ──
@@ -305,7 +304,7 @@ class BilibiliCookieProvider:
                 if c.get("name") == name and c.get("value"):
                     return str(c["value"])
         except (json.JSONDecodeError, OSError) as e:
-            logger.debug("读取 %s 失败: %s", path, e)
+            logger.debug("读取 {} 失败: {}", path, e)
         return None
 
 

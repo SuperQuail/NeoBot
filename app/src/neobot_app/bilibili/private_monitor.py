@@ -6,12 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,7 +87,7 @@ class BilibiliPrivateMonitor:
             try:
                 await self._process_session(session)
             except Exception:
-                logger.exception("处理私信会话失败: talker=%s", getattr(session, "talker_id", "?"))
+                logger.exception("处理私信会话失败: talker={}", getattr(session, "talker_id", "?"))
 
     async def _process_session(self, session) -> None:
         """处理单个会话的新消息。"""
