@@ -35,8 +35,17 @@ class ImageParseSkill(SkillModule):
             "  - msg_number — **推荐**，聊天记录中显示的消息编号（如「75: 用户名: [图片]」中的 75）\n"
             "  - chat_flow_id + image_index — 通过聊天流 ID 和图片编号定位\n"
             "  - message_id — OneBot 消息 ID（不常用，勿将显示编号当作 message_id 传入）\n\n"
+            "parse_image 为会话工具(session模式)：\n"
+            "  - 调用后立即返回 session_submitted，实际解析在后台进行\n"
+            "  - timeout_seconds 默认为 300 秒（5分钟），agent 可按需设置，最长 1800 秒（30分钟）\n"
+            "  - 收到返回后请立即结束本轮回复，不要继续调用其他工具或使用 wait\n"
+            "  - 系统会在解析完成后通过通知自动唤醒你，届时携带解析结果\n\n"
             "仅负责解析回传结果，不保存、不导入、不管理图库/表情包。"
         )
+
+    @property
+    def session_tools(self) -> set[str]:
+        return {"parse_image"}
 
     def __init__(
         self,
@@ -57,7 +66,7 @@ class ImageParseSkill(SkillModule):
         return [
             self._tool_def(
                 "parse_image",
-                "解析一张或多张图片的内容。"
+                "【会话工具】解析一张或多张图片的内容。"
                 "支持 image_path（本地图片路径）、image_url（HTTP/data/file URL）、image_base64（base64编码）、"
                 "msg_number（聊天记录中的消息编号，如「75: 用户名: [图片]」中的 75）、"
                 "chat_flow_id+image_index（聊天流ID+图片编号）。",
@@ -76,6 +85,7 @@ class ImageParseSkill(SkillModule):
                         "message_id": {"type": "integer", "description": "可选，OneBot 消息 ID（不常用，优先使用 msg_number）"},
                         "chat_flow_id": {"type": "string", "description": "可选，聊天流 ID（如 Group_12345），与 image_index 配合使用"},
                         "image_index": {"type": "integer", "description": "可选，图片编号（从0开始），与 chat_flow_id 配合使用", "default": 0},
+                        "timeout_seconds": {"type": "integer", "description": "可选，下载超时秒数，默认 300（5分钟），最长 1800（30分钟）", "default": 300},
                     },
                     "required": [],
                 },
@@ -90,7 +100,7 @@ class ImageParseSkill(SkillModule):
 
     # ── 图片来源解析 ──
 
-    async def _resolve_by_message_id(self, message_id: int, image_index: int = 0) -> bytes | None:
+    async def _resolve_by_message_id(self, message_id: int, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
         """通过消息 ID 获取第 N 张图片的字节。"""
         if self._adapter is None:
             return None
@@ -111,7 +121,6 @@ class ImageParseSkill(SkillModule):
         if data is None:
             return None
 
-        # 提取消息中的消息段列表
         message_segments = None
         if hasattr(data, "message"):
             message_segments = data.message
@@ -121,7 +130,6 @@ class ImageParseSkill(SkillModule):
         if not message_segments:
             return None
 
-        # 找到第 image_index 张图片
         img_idx = 0
         for seg in message_segments:
             seg_type = seg.get("type") if isinstance(seg, dict) else getattr(seg, "type", None)
@@ -130,20 +138,18 @@ class ImageParseSkill(SkillModule):
             if img_idx != image_index:
                 img_idx += 1
                 continue
-            # 获取图片 URL
             seg_data = seg.get("data", {}) if isinstance(seg, dict) else (getattr(seg, "data", {}) or {})
             url = None
             if isinstance(seg_data, dict):
                 url = seg_data.get("url")
             if not url:
                 return None
-            return await self._download_image(url)
+            return await self._download_image(url, timeout=timeout)
 
         return None
 
-    async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0) -> bytes | None:
+    async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
         """通过聊天流 ID 和图片编号获取图片字节。"""
-        # 解析 "Group_12345" 或 "Friend_12345"
         if chat_flow_id.startswith("Group_"):
             queue_key = chat_flow_id[len("Group_"):]
             queue = self._group_queue
@@ -156,7 +162,6 @@ class ImageParseSkill(SkillModule):
         if queue is None or not queue_key:
             return None
 
-        # 从最新消息开始遍历，找第 image_index 张图片
         try:
             img_idx = 0
             for msg in queue.iterate_from_newest(queue_key):
@@ -173,16 +178,16 @@ class ImageParseSkill(SkillModule):
                     seg_data = seg.get("data", {}) if isinstance(seg, dict) else (getattr(seg, "data", {}) or {})
                     url = seg_data.get("url") if isinstance(seg_data, dict) else None
                     if url:
-                        return await self._download_image(url)
+                        return await self._download_image(url, timeout=timeout)
             return None
         except Exception:
             return None
 
-    async def _download_image(self, url: str) -> bytes | None:
+    async def _download_image(self, url: str, timeout: float = 30.0) -> bytes | None:
         """下载图片字节。"""
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 return resp.content
@@ -192,6 +197,7 @@ class ImageParseSkill(SkillModule):
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
         numbering_mapping: dict[int, int] | None = None,
+        timeout: float = 30.0,
     ) -> bytes | None:
         """通过显示消息编号（如 "75: 用户名: [图片]" 中的 75）获取图片字节。
 
@@ -243,10 +249,10 @@ class ImageParseSkill(SkillModule):
         if message is None:
             return None
 
-        return await self._extract_image_from_message(message, image_index)
+        return await self._extract_image_from_message(message, image_index, timeout=timeout)
 
     @staticmethod
-    async def _extract_image_from_message(message: Any, image_index: int = 0) -> bytes | None:
+    async def _extract_image_from_message(message: Any, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
         if not segments:
@@ -266,10 +272,9 @@ class ImageParseSkill(SkillModule):
             url = seg_data.get("url") if isinstance(seg_data, dict) else None
             if not url:
                 return None
-            # 静态方法无法访问实例方法，内联下载逻辑
             try:
                 import httpx
-                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                     resp = await client.get(url)
                     resp.raise_for_status()
                     return resp.content
@@ -292,7 +297,9 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     chat_flow_id = args.get("chat_flow_id")
     pipeline_key = str(args.get("pipeline_key", "")).strip()
 
-    # 至少需要一种图片来源
+    timeout_seconds = float(int(args.get("timeout_seconds", 300) or 300))
+    timeout_seconds = max(1.0, min(timeout_seconds, 1800.0))
+
     if not any([image_path, image_url, image_base64, msg_number, message_id, chat_flow_id]):
         return _json({"ok": False, "error": "请提供 image_path、image_url、image_base64、msg_number、message_id 或 chat_flow_id 中的至少一种"})
 
@@ -314,7 +321,8 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
             else:
                 numbering_mapping = None
             image_bytes = await self._resolve_by_msg_number(
-                pipeline_key, int(msg_number), image_index, numbering_mapping=numbering_mapping,
+                pipeline_key, int(msg_number), image_index,
+                numbering_mapping=numbering_mapping, timeout=timeout_seconds,
             )
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从消息编号 {msg_number}（第 {image_index} 张图片）获取图片，请尝试用 msg_number 指定正确的消息编号"})
@@ -322,14 +330,14 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
             content_parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}})
         elif message_id:
             image_index = int(args.get("image_index", 0))
-            image_bytes = await self._resolve_by_message_id(int(message_id), image_index)
+            image_bytes = await self._resolve_by_message_id(int(message_id), image_index, timeout=timeout_seconds)
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从消息 {message_id} 获取第 {image_index} 张图片"})
             import base64
             content_parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}})
         elif chat_flow_id:
             image_index = int(args.get("image_index", 0))
-            image_bytes = await self._resolve_by_chat_flow(chat_flow_id, image_index)
+            image_bytes = await self._resolve_by_chat_flow(chat_flow_id, image_index, timeout=timeout_seconds)
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从 {chat_flow_id} 获取第 {image_index} 张图片"})
             import base64

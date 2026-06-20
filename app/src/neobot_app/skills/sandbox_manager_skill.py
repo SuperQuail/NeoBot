@@ -45,23 +45,40 @@ class SandboxManagerSkill(SkillModule):
             "              → 收到后台通知（含文件路径）\n"
             "              → send_chat_file(path) 发送给用户\n\n"
             "=== 工具列表 ===\n"
-            "  read_file(path)          — 读取文件（返回文本或 base64）\n"
+            "  read_file(path, chat_flow_id)  — 读取文件（返回文本或 base64）\n"
             "  write_file(path, content, chat_flow_id) — 写入文本内容到文件\n"
             "  write_file_base64(path, content_base64, chat_flow_id) — 写入 base64 数据\n"
-            "  edit_file(path, old_string, new_string) — 原地替换文本片段\n"
-            "  glob_files(pattern, path) — 按 glob 模式搜索文件名\n"
-            "  grep_files(pattern, path, glob) — 按正则搜索文件内容\n"
-            "  list_files(path, pattern) — 列出目录\n"
-            "  delete_file(path) / move_file / copy_file\n"
+            "  edit_file(path, old_string, new_string, chat_flow_id) — 原地替换文本片段\n"
+            "  glob_files(pattern, path, chat_flow_id) — 按 glob 模式搜索文件名\n"
+            "  grep_files(pattern, path, glob, chat_flow_id) — 按正则搜索文件内容\n"
+            "  list_files(path, pattern, chat_flow_id) — 列出目录\n"
+            "  delete_file(path, chat_flow_id) / move_file / copy_file\n"
             "  download_file(url, save_name, chat_flow_id) — 从 URL 下载\n"
-            "  send_file(path) / send_chat_file(path) — 发送到聊天\n"
+            "  send_file(path, chat_flow_id) / send_chat_file(path, chat_flow_id) — 发送到聊天\n"
             "  hold_temp(chat_flow_id, minutes) — 保活临时目录\n\n"
+            "## 下载任务（重要）\n"
+            "download_file 为会话工具(session模式)：\n"
+            "  - 调用后立即返回 session_submitted，实际下载在后台进行\n"
+            "  - timeout_seconds 默认为 300 秒（5分钟），agent 可按需设置，最长 1800 秒（30分钟）\n"
+            "  - 收到返回后请立即结束本轮回复，不要继续调用其他工具或使用 wait\n"
+            "  - 系统会在下载完成后通过通知自动唤醒你，届时携带文件路径\n\n"
             "## chat_flow_id\n"
             "取 pipeline_key 的值（格式 group:12345 或 private:12345）。\n\n"
+            "## 临时目录 vs 沙箱根（重要）\n"
+            "路径选择规则：除非文件是长期复用的工具/文档/资源，否则一律写入临时目录。\n"
+            "write_file / write_file_base64 写入的文件位于临时目录（sandbox/temp/{chat_flow_id}/）。\n"
+            "read_file / edit_file / glob_files / grep_files / list_files 操作临时文件时，\n"
+            "必须显式传入 chat_flow_id（取 pipeline_key 的值），否则默认在沙箱根目录查找。\n"
+            "注意：读工具不会自动使用 pipeline_key 作为 chat_flow_id，你必须显式传递。\n"
+            "沙箱根目录仅用于访问持久化文件（tools/、docs/、assets/、gift/、emoji/ 等长期复用的资源）。\n\n"
             "## 持久化文件操作（tools/docs/assets 目录）\n"
             "  操作前先调用 file_storage__read_storage_doc 查看索引\n"
             "  修改后调用 file_storage__update_storage_doc 更新索引"
         )
+
+    @property
+    def session_tools(self) -> set[str]:
+        return {"download_file"}
 
     def __init__(
         self,
@@ -109,10 +126,12 @@ class SandboxManagerSkill(SkillModule):
             # ── 读取 ──
             self._tool_def(
                 "read_file",
-                "读取沙箱内文件的内容。文本文件返回文本，二进制文件返回 base64。",
+                "读取沙箱内文件的内容。文本文件返回文本，二进制文件返回 base64。"
+                "操作临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "chat_flow_id": {"type": "string", "description": "读取临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
                 },
@@ -152,16 +171,18 @@ class SandboxManagerSkill(SkillModule):
                 "edit_file",
                 "原地编辑沙箱内文本文件：查找 old_string 替换为 new_string。"
                 "old_string 必须在文件中唯一（除非设置 replace_all=true）。"
-                "这是修改文件的首选方式——不需要先读取再写入。",
+                "这是修改文件的首选方式——不需要先读取再写入。"
+                "编辑临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
                         "old_string": {"type": "string", "description": "要被替换的文本片段"},
                         "new_string": {"type": "string", "description": "替换后的文本片段"},
                         "replace_all": {
                             "type": "boolean",
                             "description": "是否替换所有匹配项。默认 false（要求 old_string 唯一）",
                         },
+                        "chat_flow_id": {"type": "string", "description": "编辑临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path", "old_string", "new_string"],
                 },
@@ -170,11 +191,13 @@ class SandboxManagerSkill(SkillModule):
             self._tool_def(
                 "glob_files",
                 "按 glob 模式搜索沙箱中的文件路径。支持 ** 递归匹配。"
-                "示例：glob_files(pattern='**/*.py') 查找所有 Python 文件。",
+                "示例：glob_files(pattern='**/*.py') 查找所有 Python 文件。"
+                "搜索临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
                         "pattern": {"type": "string", "description": "glob 模式，如 **/*.py、*.txt、tools/**"},
-                        "path": {"type": "string", "description": "搜索起始目录（相对于沙箱根），默认根目录"},
+                        "path": {"type": "string", "description": "搜索起始目录（临时文件相对于临时目录，持久化文件相对于沙箱根），默认根目录"},
+                        "chat_flow_id": {"type": "string", "description": "搜索临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["pattern"],
                 },
@@ -183,11 +206,12 @@ class SandboxManagerSkill(SkillModule):
             self._tool_def(
                 "grep_files",
                 "在沙箱文件中按正则表达式搜索内容。可指定文件过滤和输出模式。"
-                "output_mode: content（显示匹配行）、files_with_matches（仅文件路径）、count（匹配计数）。",
+                "output_mode: content（显示匹配行）、files_with_matches（仅文件路径）、count（匹配计数）。"
+                "搜索临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
                         "pattern": {"type": "string", "description": "正则表达式，如 'def write_file'"},
-                        "path": {"type": "string", "description": "搜索目录（相对于沙箱根），默认根目录"},
+                        "path": {"type": "string", "description": "搜索目录（临时文件相对于临时目录，持久化文件相对于沙箱根），默认根目录"},
                         "glob": {"type": "string", "description": "文件过滤，如 *.py、**/*.md"},
                         "output_mode": {
                             "type": "string",
@@ -196,6 +220,7 @@ class SandboxManagerSkill(SkillModule):
                         },
                         "-i": {"type": "boolean", "description": "大小写不敏感搜索"},
                         "head_limit": {"type": "integer", "description": "最多返回条数，默认 50"},
+                        "chat_flow_id": {"type": "string", "description": "搜索临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["pattern"],
                 },
@@ -206,19 +231,20 @@ class SandboxManagerSkill(SkillModule):
                 "删除沙箱内的文件或空目录。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
-                        "chat_flow_id": {"type": "string", "description": "可选，聊天流 ID"},
+                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "chat_flow_id": {"type": "string", "description": "删除临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
                 },
             ),
             self._tool_def(
                 "list_files",
-                "列出沙箱目录下的内容。",
+                "列出沙箱目录下的内容。列出临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "目录路径（相对于沙箱根），默认为 /"},
+                        "path": {"type": "string", "description": "目录路径（临时文件相对于临时目录，持久化文件相对于沙箱根），默认为 /"},
                         "pattern": {"type": "string", "description": "可选，glob 模式过滤如 *.txt"},
+                        "chat_flow_id": {"type": "string", "description": "列出临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": [],
                 },
@@ -228,9 +254,9 @@ class SandboxManagerSkill(SkillModule):
                 "移动或重命名沙箱内的文件/目录。",
                 {
                     "properties": {
-                        "source": {"type": "string", "description": "源路径（相对于沙箱根）"},
-                        "destination": {"type": "string", "description": "目标路径（相对于沙箱根）"},
-                        "chat_flow_id": {"type": "string", "description": "可选，聊天流 ID"},
+                        "source": {"type": "string", "description": "源路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "destination": {"type": "string", "description": "目标路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "chat_flow_id": {"type": "string", "description": "操作临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["source", "destination"],
                 },
@@ -240,9 +266,9 @@ class SandboxManagerSkill(SkillModule):
                 "复制沙箱内的文件。",
                 {
                     "properties": {
-                        "source": {"type": "string", "description": "源路径（相对于沙箱根）"},
-                        "destination": {"type": "string", "description": "目标路径（相对于沙箱根）"},
-                        "chat_flow_id": {"type": "string", "description": "可选，聊天流 ID"},
+                        "source": {"type": "string", "description": "源路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "destination": {"type": "string", "description": "目标路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "chat_flow_id": {"type": "string", "description": "操作临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["source", "destination"],
                 },
@@ -252,10 +278,10 @@ class SandboxManagerSkill(SkillModule):
                 "将沙箱内的图片发送到聊天（以图片消息）。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
                         "group_id": {"type": "string", "description": "可选，目标群号"},
                         "user_id": {"type": "string", "description": "可选，目标QQ号"},
-                        "chat_flow_id": {"type": "string", "description": "可选，当 path 不包含 temp/ 前缀时需要此 ID 来定位文件"},
+                        "chat_flow_id": {"type": "string", "description": "发送临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
                 },
@@ -265,10 +291,10 @@ class SandboxManagerSkill(SkillModule):
                 "将沙箱内的任意文件（PDF/文档/代码等）发送到聊天（以文件附件形式）。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
                         "group_id": {"type": "string", "description": "目标群号"},
                         "user_id": {"type": "string", "description": "目标QQ号"},
-                        "chat_flow_id": {"type": "string", "description": "可选，当 path 不包含 temp/ 前缀时需要此 ID 来定位文件"},
+                        "chat_flow_id": {"type": "string", "description": "发送临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
                 },
@@ -286,13 +312,19 @@ class SandboxManagerSkill(SkillModule):
             ),
             self._tool_def(
                 "download_file",
-                "从 URL 下载文件到沙箱。支持下载聊天中的文件、网络图片等。"
-                "下载后文件保存到沙箱临时目录，供后续读取或发送。",
+                "【会话工具】从 URL 下载文件到沙箱。支持下载聊天中的文件、网络图片等。"
+                "下载后文件保存到沙箱临时目录，供后续读取或发送。"
+                "调用后立即返回 session_submitted，不要等待——系统会在下载完成后通知你。",
                 {
                     "properties": {
                         "url": {"type": "string", "description": "文件的下载 URL"},
                         "save_name": {"type": "string", "description": "保存的文件名，如 image.png、document.pdf"},
                         "chat_flow_id": {"type": "string", "description": "聊天流 ID，取 pipeline_key 的值"},
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "可选，下载超时秒数，默认 300（5分钟），最大 1800（30分钟）",
+                            "default": 300,
+                        },
                     },
                     "required": ["url", "save_name", "chat_flow_id"],
                 },
@@ -314,9 +346,9 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
     if not rel_path:
         return _json({"ok": False, "error": "缺少 path"})
     try:
-        path = self._sandbox.resolve_path(rel_path)
+        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
+        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
         data = await self._sandbox.read_file(path)
-        # 尝试作为文本返回，否则返回 base64
         try:
             text = data.decode("utf-8")
             return _json({"ok": True, "content": text, "size": len(data)})
@@ -374,7 +406,8 @@ async def _handle_edit_file(self: SandboxManagerSkill, args: dict) -> str:
     if not old_string:
         return _json({"ok": False, "error": "old_string 不能为空"})
     try:
-        path = self._sandbox.resolve_path(rel_path)
+        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
+        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
         data = await self._sandbox.read_file(path)
         text = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -403,10 +436,10 @@ async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
     if not pattern:
         return _json({"ok": False, "error": "缺少 pattern"})
     try:
-        base = self._sandbox.resolve_path(base_path)
+        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
+        base = self._sandbox.resolve_path(base_path, chat_flow_id)
         full_pattern = str(base / pattern)
         import glob as glob_module
-        sandbox_root = self._sandbox.resolve_path(".")
         matches = []
         for p in glob_module.iglob(full_pattern, recursive=True):
             fp = Path(p)
@@ -414,7 +447,7 @@ async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
                 continue
             stat = fp.stat()
             matches.append({
-                "path": str(fp.relative_to(sandbox_root)),
+                "path": str(fp.relative_to(base)),
                 "size": stat.st_size,
                 "is_dir": fp.is_dir(),
             })
@@ -445,11 +478,11 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": False, "error": f"正则表达式无效: {e}"})
 
     try:
-        base = self._sandbox.resolve_path(base_path)
+        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
+        base = self._sandbox.resolve_path(base_path, chat_flow_id)
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-    # 收集候选文件
     import glob as glob_module
     if glob_filter:
         search = str(base / glob_filter)
@@ -459,7 +492,6 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
 
     results: list[dict] = []
     files_searched = 0
-    sandbox_root = self._sandbox.resolve_path(".")
 
     for fp in candidates:
         if not fp.is_file():
@@ -481,7 +513,7 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
                     break
 
         if file_matches:
-            rel = str(fp.relative_to(sandbox_root))
+            rel = str(fp.relative_to(base))
             if output_mode == "content":
                 for m in file_matches:
                     results.append({"file": rel, "line": m["line"], "text": m["text"]})
@@ -520,7 +552,8 @@ async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
     rel_path = str(args.get("path", "")).strip().lstrip("/") or "."
     pattern = args.get("pattern")
     try:
-        path = self._sandbox.resolve_path(rel_path)
+        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
+        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
         files = await self._sandbox.list_files(path, pattern)
         return _json({"ok": True, "files": files})
     except Exception as e:
@@ -665,6 +698,9 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
     if not url or not save_name or not chat_flow_id:
         return _json({"ok": False, "error": "缺少必要参数 url/save_name/chat_flow_id"})
 
+    timeout_seconds = int(args.get("timeout_seconds", 300) or 300)
+    timeout_seconds = max(1, min(timeout_seconds, 1800))
+
     # 安全检查：禁止非 HTTP(S) 协议
     from urllib.parse import urlparse
     parsed = urlparse(url)
@@ -685,7 +721,7 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=float(timeout_seconds), follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.content

@@ -154,6 +154,72 @@ def cmd_install_browser(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def _run_sandbox_cleanup() -> int:
+    """独立运行沙箱清理，不启动 Bot 主程序。返回 exit code。"""
+    from neobot_app.bootstrap._config import build_config
+    from neobot_app.bootstrap._runtime import build_sandbox_components
+
+    print("正在加载配置…")
+    config = build_config()
+    sandbox_cfg = getattr(config.agent, "sandbox", None)
+    if not sandbox_cfg or not sandbox_cfg.enabled:
+        print("错误: 沙箱功能未启用 (agent.sandbox.enabled = false)")
+        return 1
+
+    print("正在构建沙箱组件…")
+    components = build_sandbox_components(
+        config=config,
+        data_dir=DATA_DIR,
+        notification_hub=None,
+    )
+
+    temp_cleaner = components.get("temp_cleaner")
+    maintenance = components.get("sandbox_maintenance_manager")
+
+    if temp_cleaner is None and maintenance is None:
+        print("错误: 沙箱组件未成功构建")
+        return 1
+
+    exit_code = 0
+
+    # 1. 临时文件清理
+    if temp_cleaner is not None:
+        print(f"\n[1/2] 清理临时文件: {temp_cleaner.temp_dir}")
+        result = temp_cleaner.run_once()
+        print(f"  过期文件: {result['files_removed']}")
+        print(f"  空目录:   {result['dirs_removed']}")
+        print(f"  嵌套修复: {result['nests_fixed']}")
+
+    # 2. 沙箱维护
+    if maintenance is not None:
+        print(f"\n[2/2] 沙箱持久化维护…")
+        result = await maintenance.run_once(force=True)
+        if result.get("skipped"):
+            print("  跳过（无文件变更）")
+        else:
+            print(f"  完成, 详情:")
+            for key, value in result.items():
+                if key in ("ok", "skipped"):
+                    continue
+                print(f"  {key}: {value}")
+        if result.get("errors"):
+            print(f"  错误: {result['errors']}")
+            exit_code = 1
+
+    print("\n沙箱清理完成。")
+    return exit_code
+
+
+def cmd_sandbox_clean(args: argparse.Namespace) -> None:
+    """独立执行沙箱清理。"""
+    try:
+        exit_code = asyncio.run(_run_sandbox_cleanup())
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\n用户中断")
+        sys.exit(130)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
     parser.add_argument(
@@ -179,12 +245,20 @@ def main() -> None:
     open_web.add_argument("url", nargs="?", default=None,
                           help="要打开的网址 (默认 bing.com)")
 
+    # `neobot sandbox_CP`
+    sub.add_parser(
+        "sandbox_CP", help="独立执行沙箱清理（临时文件 + 维护），不启动 Bot",
+        description="执行一次完整的沙箱临时文件清理和持久化文件维护，完成后退出。",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-browser":
         cmd_install_browser(args)
     elif args.command == "open_web":
         cmd_open_web(args)
+    elif args.command == "sandbox_CP":
+        cmd_sandbox_clean(args)
     else:
         # 无子命令 → 启动机器人
         cmd_run(args)

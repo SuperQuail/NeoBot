@@ -80,10 +80,16 @@ class TempCleaner:
             except TimeoutError:
                 pass
 
-    def _cleanup_once(self) -> None:
-        """执行一次清理。"""
+    def run_once(self) -> dict:
+        """执行一次清理并返回结果统计。可独立调用，不依赖后台循环。"""
+        result = self._cleanup_once()
+        return result
+
+    def _cleanup_once(self) -> dict:
+        """执行一次清理并返回统计信息。"""
+        result = {"files_removed": 0, "dirs_removed": 0, "nests_fixed": 0}
         if not self._temp_dir.is_dir():
-            return
+            return result
 
         now = time.time()
         cutoff = now - self._max_age
@@ -146,11 +152,16 @@ class TempCleaner:
                 except OSError:
                     pass
 
+        result["files_removed"] = files_removed
+        result["dirs_removed"] = dirs_removed
+        result["nests_fixed"] = nests_fixed
+
         if files_removed or dirs_removed or nests_fixed:
-            self._logger.debug(
+            self._logger.info(
                 f"TempCleaner: 清理 {files_removed} 过期文件, "
                 f"{dirs_removed} 空目录, 修复 {nests_fixed} 嵌套"
             )
+        return result
 
 
 def os_walk_topdown(path: str):

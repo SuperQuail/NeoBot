@@ -62,6 +62,7 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
 
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")
 _SOLUTION_RESULT: ContextVar[str] = ContextVar("solution_result", default="")
+_CHAT_FLOW_ID: ContextVar[str] = ContextVar("solver_chat_flow_id", default="")
 
 
 def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
@@ -299,9 +300,11 @@ class ProblemSolverManager:
     async def _run_solve(self, task: SolveTask) -> None:
         """后台执行解题。"""
         try:
+            chat_flow_id = f"{task.conversation_kind.title()}_{task.conversation_id}"
             state: State = {
                 "messages": [{"role": "user", "content": task.question}],
                 "_delegate_context": task.delegate_context,
+                "_chat_flow_id": chat_flow_id,
             }
             result_state = await asyncio.wait_for(
                 self._agent._invoke_direct(state),
@@ -319,8 +322,44 @@ class ProblemSolverManager:
                 if texts:
                     solution = "\n\n".join(texts)
 
+            # 如果 agent 未提交任何答复，保留上下文再次唤起，要求明确提供答复
             if not solution:
-                raise RuntimeError("解题 Agent 未提交解答内容")
+                messages = result_state.get("messages", [])
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "你尚未调用 submit_solution 提交任何解答。"
+                        "请立即提交你的最终解答（调用 submit_solution）。"
+                        "即使无法解答，也必须说明失败原因（如缺少关键信息、超出能力范围等）。"
+                    ),
+                })
+                retry_state: State = {
+                    "messages": messages,
+                    "_delegate_context": task.delegate_context,
+                    "_chat_flow_id": chat_flow_id,
+                }
+                retry_timeout = max(self._config.timeout_seconds * 0.5, 120)
+                self._logger.info(
+                    "解题 Agent 未提交答复，保留上下文重新唤起",
+                    task_id=task.task_id,
+                    retry_timeout=retry_timeout,
+                )
+                result_state = await asyncio.wait_for(
+                    self._agent._invoke_direct(retry_state),
+                    timeout=retry_timeout,
+                )
+                solution = _SOLUTION_RESULT.get("")
+                if not solution:
+                    messages = result_state.get("messages", [])
+                    texts = []
+                    for msg in messages:
+                        if msg.get("role") == "assistant" and msg.get("content"):
+                            texts.append(str(msg["content"]))
+                    if texts:
+                        solution = "\n\n".join(texts)
+
+            if not solution:
+                raise RuntimeError("解题 Agent 经重新唤起后仍未提交解答内容")
 
             task.markdown_solution = solution
             task.status = "completed"
@@ -674,9 +713,20 @@ class ProblemSolverToolExecutor(ToolExecutor):
     async def execute(self, name: str, args: dict) -> str:
         if name == "get_chat_context":
             context = _SOLVER_CHAT_CONTEXT.get("")
+            chat_flow_id = self._parse_chat_flow_id()
+            path_info = ""
+            if chat_flow_id and self._sandbox is not None:
+                temp_dir = self._sandbox.get_temp_dir(chat_flow_id)
+                path_info = (
+                    f"\n[文件路径上下文]\n"
+                    f"chat_flow_id: {chat_flow_id}\n"
+                    f"临时目录: {temp_dir}\n"
+                    f"规则：write_file/run_python 输出的文件默认写入上述临时目录。"
+                    f"除非文件是需要长期复用的工具/文档/资源，否则一律放入临时目录。"
+                )
             if not context:
-                return "无聊天上下文可用（可能未通过主Agent委托调用）"
-            return context
+                return f"无聊天上下文可用（可能未通过主Agent委托调用）{path_info}"
+            return context + path_info
         if name == "search":
             return await self._search.execute("search", args)
         if name == "read_page":
@@ -714,7 +764,12 @@ class ProblemSolverToolExecutor(ToolExecutor):
 
     @staticmethod
     def _parse_chat_flow_id() -> str | None:
-        """从 _SOLVER_CHAT_CONTEXT 解析 pipeline_key 作为 chat_flow_id。"""
+        """从结构化 ContextVar 获取 chat_flow_id，兼容旧格式上下文。"""
+        # 优先：_run_solve 注入的结构化 _CHAT_FLOW_ID
+        cfid = _CHAT_FLOW_ID.get("")
+        if cfid:
+            return cfid
+        # 回退：正则解析旧格式 [当前会话] 文本（兼容旧格式）
         import re
         ctx = _SOLVER_CHAT_CONTEXT.get("")
         if not ctx:
@@ -827,12 +882,17 @@ def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descri
         "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
         "【强制要求】每次解题结束前必须调用 submit_solution 提交最终解答，否则任务将被视为失败。\n\n"
         "工作流程：\n"
-        "1. 先用 get_chat_context 获取问题背景（如果问题来自聊天群/私聊）\n"
+        "1. 先用 get_chat_context 获取问题背景和文件路径上下文\n"
         "2. 仔细分析问题，逐步推理，不要跳步\n"
         "3. 如果问题涉及实时信息、数据查询或需要查阅资料，使用 search 联网搜索，"
         "通过 read_page 读取有价值的页面获取详细信息\n"
         "4. 使用 run_python 执行代码生成文件，使用 write_file 保存文件到沙箱\n"
         "5. 最后调用 submit_solution 提交完整解答\n\n"
+        "文件路径规则（重要）：\n"
+        "- write_file / run_python 生成的文件默认在临时目录（通过 get_chat_context 获取路径）\n"
+        "- 临时目录的文件会被定期自动清理，不要依赖其长期存在\n"
+        "- 除非文件是需要长期复用的工具/文档/资源（如通用脚本、参考文档），否则一律放入临时目录\n"
+        "- 提交解答时说明生成的文件路径，主Agent将通过 sandbox_manager 工具读取和发送\n\n"
         "搜索使用提示：\n"
         "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
         "- search 支持 mode 参数进行多角度搜索，如 mode=\"encyclopedia\" 查百科类信息\n"
@@ -964,21 +1024,25 @@ class ProblemSolverAgent:
         """内部直接执行解题（供 ProblemSolverManager 后台任务使用）。"""
         self._toolset.executor.reset_search()
         token = _SOLVER_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_cf = _CHAT_FLOW_ID.set(str(state.get("_chat_flow_id") or ""))
         token_m = CURRENT_USAGE_MODULE.set("agent:problem_solver")
         try:
             return await self._agent.invoke(state)
         finally:
             _SOLVER_CHAT_CONTEXT.reset(token)
+            _CHAT_FLOW_ID.reset(token_cf)
             CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _SOLVER_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
+        token_cf = _CHAT_FLOW_ID.set(str(state.get("_chat_flow_id") or ""))
         token_m = CURRENT_USAGE_MODULE.set("agent:problem_solver")
         try:
             async for chunk in self._agent.stream_invoke(state):
                 yield chunk
         finally:
             _SOLVER_CHAT_CONTEXT.reset(token)
+            _CHAT_FLOW_ID.reset(token_cf)
             CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:

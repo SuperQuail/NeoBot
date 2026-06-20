@@ -12,12 +12,14 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from neobot_app.skills.base import SkillModule
+
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
-class ArchiveSkill:
+class ArchiveSkill(SkillModule):
     """文件压缩/解压 Skill。"""
 
     def __init__(self, sandbox_service: Any = None) -> None:
@@ -95,11 +97,6 @@ class ArchiveSkill:
         if self._sandbox is not None:
             return self._sandbox.resolve_path(path)
         return Path(path)
-
-    @staticmethod
-    def _tool_def(name: str, description: str, parameters: dict | None = None) -> dict:
-        from neobot_app.skills.base import SkillModule
-        return SkillModule._tool_def(name, description, parameters)
 
     # ── execute ──
 

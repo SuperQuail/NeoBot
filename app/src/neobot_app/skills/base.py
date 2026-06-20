@@ -35,6 +35,11 @@ class SkillModule(ABC):
         """可选：注入到系统提示词的操作说明。"""
         return ""
 
+    @property
+    def session_tools(self) -> set[str]:
+        """返回需要以 Session 模式（提交后立即返回，后台执行完成后通知）执行的无前缀工具名集合。"""
+        return set()
+
     @abstractmethod
     def get_tools(self) -> list[dict]:
         """返回 OpenAI function-calling 格式的工具定义列表。
@@ -89,12 +94,15 @@ class SkillManager:
 
     def __init__(self) -> None:
         self._skills: dict[str, SkillModule] = {}
+        self._session_tools: set[str] = set()
 
     def register(self, skill: SkillModule) -> None:
         """注册一个 Skill 模块。"""
         if skill.name in self._skills:
             raise ValueError(f"Skill '{skill.name}' 已注册")
         self._skills[skill.name] = skill
+        for tool_name in skill.session_tools:
+            self._session_tools.add(f"{skill.name}{_SEPARATOR}{tool_name}")
 
     def unregister(self, name: str) -> None:
         """注销指定 Skill。"""
@@ -156,6 +164,10 @@ class SkillManager:
         """复位所有 Skill 的状态。"""
         for skill in self._skills.values():
             skill.reset()
+
+    def is_session_tool(self, prefixed_name: str) -> bool:
+        """检查指定前缀工具名是否已声明为 Session 模式执行。"""
+        return prefixed_name in self._session_tools
 
     def _parse_name(self, prefixed_name: str) -> tuple[str, str] | None:
         if _SEPARATOR in prefixed_name:

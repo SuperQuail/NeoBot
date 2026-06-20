@@ -96,13 +96,13 @@ class SandboxMaintenanceManager:
             except asyncio.TimeoutError:
                 pass
 
-    async def run_once(self) -> dict[str, Any]:
-        """手动触发一次维护，返回结果摘要。"""
-        return await self._maintenance_cycle()
+    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
+        """手动触发一次维护，返回结果摘要。force=True 时跳过变更检查强制执行。"""
+        return await self._maintenance_cycle(force=force)
 
-    async def _maintenance_cycle(self) -> dict[str, Any]:
-        """执行一次完整的维护周期。"""
-        if not self._has_changes_since_last():
+    async def _maintenance_cycle(self, *, force: bool = False) -> dict[str, Any]:
+        """执行一次完整的维护周期。force=True 时跳过变更检查强制执行。"""
+        if not force and not self._has_changes_since_last():
             self._logger.debug("无文件变更，跳过维护")
             return {"ok": True, "skipped": True, "reason": "无文件变更"}
 
