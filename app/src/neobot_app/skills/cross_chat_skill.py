@@ -129,15 +129,23 @@ class CrossChatSkill(SkillModule):
 # ── Handlers ──
 
 async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
+    if self._adapter is None:
+        return _json({"ok": False, "error": "adapter 未配置"})
     target_kind = str(args.get("target_kind", "")).strip()
     target_id = str(args.get("target_id", "")).strip()
     task_desc = str(args.get("task", "")).strip()
     if not target_kind or not target_id or not task_desc:
         return _json({"ok": False, "error": "缺少必要参数 target_kind/target_id/task"})
     mode = args.get("mode", "fire_and_forget")
-    if mode == "wait":
-        return _json({"ok": True, "status": "sent", "mode": "wait", "note": "等待模式（stub）"})
-    return _json({"ok": True, "status": "submitted", "mode": "fire_and_forget"})
+    try:
+        if target_kind == "private":
+            result = await self._adapter.send_private_msg(int(target_id), task_desc)
+        else:
+            result = await self._adapter.send_group_msg(int(target_id), task_desc)
+        msg_id = getattr(result, "message_id", None)
+        return _json({"ok": True, "status": "sent", "mode": mode, "message_id": msg_id})
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
 
 async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
     if self._adapter is None:
@@ -146,7 +154,10 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
     target_id = str(args.get("target_id", "")).strip()
     count = int(args.get("message_count", 20))
     try:
-        history = await self._adapter.get_chat_history(target_kind, target_id, limit=count)
+        if target_kind == "private":
+            history = await self._adapter.get_friend_msg_history(int(target_id), count=count)
+        else:
+            history = await self._adapter.get_group_msg_history(int(target_id), count=count)
         return _json({"ok": True, "history": str(history)[:3000]})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
@@ -154,8 +165,8 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
 async def _handle_cross_chat_status(self: CrossChatSkill, args: dict) -> str:
     task_id = args.get("task_id", "")
     if task_id:
-        return _json({"ok": True, "task_id": task_id, "status": "unknown"})
-    return _json({"ok": True, "active_tasks": 0})
+        return _json({"ok": True, "task_id": task_id, "status": "unknown", "note": "跨聊天任务无持久化跟踪"})
+    return _json({"ok": True, "active_tasks": 0, "note": "跨聊天通信为 fire_and_forget 模式，无任务队列"})
 
 
 _HANDLERS = {

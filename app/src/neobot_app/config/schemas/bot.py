@@ -616,10 +616,6 @@ class Willing:
         default=5,
         metadata={"description": "意愿计算观察窗口"},
     )
-    reply_threshold: float = field(
-        default=0.5,
-        metadata={"description": "建议回复阈值"},
-    )
 
 
 @dataclass

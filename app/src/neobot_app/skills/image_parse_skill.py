@@ -207,13 +207,13 @@ class ImageParseSkill(SkillModule):
         使用 MessageNumbering 重建编号映射，直接从消息队列中提取图片 URL，
         完全不依赖 OneBot get_msg API。
         """
-        parts = pipeline_key.split("_", 1)
+        parts = pipeline_key.split(":", 1)
         if len(parts) != 2:
             return None
         conv_kind, conv_id = parts
         if conv_kind == "group":
             queue = self._group_queue
-        elif conv_kind == "friend":
+        elif conv_kind in ("private", "friend"):
             queue = self._friend_queue
         else:
             return None

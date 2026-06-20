@@ -85,8 +85,17 @@ async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> s
     conv_kind = str(args.get("conversation_kind", "")).strip()
     conv_id = str(args.get("conversation_id", "")).strip()
     count = min(int(args.get("count", 20)), 50)
+    message_seq = int(args.get("message_seq", 0))
+    reverse_order = bool(args.get("reverse_order", False))
     try:
-        messages = await self._adapter.get_chat_history(conv_kind, conv_id, limit=count)
+        if conv_kind == "private":
+            messages = await self._adapter.get_friend_msg_history(
+                int(conv_id), message_seq=message_seq, count=count, reverse_order=reverse_order,
+            )
+        else:
+            messages = await self._adapter.get_group_msg_history(
+                int(conv_id), message_seq=message_seq, count=count, reverse_order=reverse_order,
+            )
         return _json({"ok": True, "count": len(messages), "messages": str(messages)[:3000]})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})

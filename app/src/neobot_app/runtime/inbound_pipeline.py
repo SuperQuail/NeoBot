@@ -41,7 +41,7 @@ class InboundPipeline:
 
         try:
             await self._memory.remember(
-                conversation_id=f"{message.conversation.kind}:{message.conversation.id}",
+                conversation_id=str(message.conversation.id),
                 speaker_id=message.sender_id,
                 content=message.text,
             )

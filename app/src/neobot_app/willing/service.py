@@ -312,7 +312,6 @@ class WillingService:
             observed_messages_text=tuple(observed_messages),
             base_probability=base_probability,
             conversation_coefficient=conversation_coefficient,
-            reply_threshold=self._config.willing.reply_threshold,
             bot_account=int(self._config.bot.account),
             bot_name=self._config.bot.nick_name,
             bot_aliases=tuple(self._config.bot.alias_name or []),

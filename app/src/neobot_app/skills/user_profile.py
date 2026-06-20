@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -127,7 +128,55 @@ async def _handle_read_user_info(self: UserProfileSkill, args: dict) -> str:
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_analyze_user_avatar(self: UserProfileSkill, args: dict) -> str:
-    return _json({"ok": False, "error": "avatar 解析服务未完整配置"})
+    if self._profile_service is None or self._adapter is None or self._image_parse_provider is None:
+        return _json({"ok": False, "error": "avatar 解析服务未完整配置"})
+    user_id = str(args.get("user_id", "")).strip()
+    if not user_id:
+        return _json({"ok": False, "error": "缺少 user_id"})
+    group_id = str(args.get("group_id", "")).strip() or None
+    requirement = str(args.get("requirement", "")).strip() or (
+        "请简洁描述这个QQ头像中稳定、可作为长期记忆的视觉信息。"
+        "只描述头像本身，不要推断真实身份、性格或敏感属性。"
+    )
+
+    # 获取头像 URL
+    avatar_url: str | None = None
+    try:
+        params: dict = {"user_id": int(user_id)}
+        if group_id:
+            params["group_id"] = int(group_id)
+        result = await asyncio.wait_for(
+            self._adapter.call_api("get_qq_avatar", params),
+            timeout=10.0,
+        )
+        if isinstance(result, dict):
+            data = result.get("data", {})
+            avatar_url = (data.get("url") if isinstance(data, dict) else None) or result.get("url")
+        else:
+            avatar_url = getattr(result, "url", None)
+    except Exception:
+        pass
+
+    if not avatar_url:
+        return _json({"ok": False, "error": f"无法获取用户 {user_id} 的头像 URL"})
+
+    # 解析头像
+    try:
+        result = await self._image_parse_provider.chat([{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": requirement},
+                {"type": "image", "source": {"type": "url", "url": avatar_url}},
+            ],
+        }])
+        analysis = result.get("content", "") if isinstance(result, dict) else str(result)
+        analysis = analysis.strip()
+        if not analysis:
+            return _json({"ok": False, "error": "头像解析返回空文本", "user_id": user_id})
+        await self._profile_service.update_user_avatar_analysis(user_id, analysis)
+        return _json({"ok": True, "user_id": user_id, "avatar_analysis": analysis[:2000]})
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
 
 
 _HANDLERS = {

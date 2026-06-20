@@ -482,7 +482,7 @@ class ReplyToolExecutor(ToolExecutor):
             # 自动注入当前对话上下文，skill 工具不需要也不应自行指定
             enriched = dict(args)
             if self._conv_kind and self._conv_id:
-                enriched["pipeline_key"] = f"{self._conv_kind}_{self._conv_id}"
+                enriched["pipeline_key"] = f"{self._conv_kind}:{self._conv_id}"
             return await self._skill_manager.execute(name, enriched)
         raise ToolError(f"Unknown reply tool: {name}")
 

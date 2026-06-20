@@ -104,7 +104,44 @@ class DrawingSkill(SkillModule):
 async def _handle_draw(self: DrawingSkill, args: dict) -> str:
     if self._drawing_manager is None:
         return _json({"ok": False, "error": "drawing_manager 未配置"})
-    return _json({"ok": True, "status": "submitted", "message": "绘图任务已加入后台队列"})
+
+    pipeline_key = str(args.get("pipeline_key", "") or "")
+    conversation_kind = ""
+    conversation_id = ""
+    if ":" in pipeline_key:
+        conversation_kind, conversation_id = pipeline_key.split(":", 1)
+
+    prompt = str(args.get("prompt", "") or "")
+    if not prompt.strip():
+        return _json({"ok": False, "error": "prompt 不能为空"})
+
+    reference_id = args.get("reference_id")
+    if reference_id is not None:
+        try:
+            reference_id = int(reference_id)
+        except (TypeError, ValueError):
+            reference_id = None
+
+    seed = args.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError):
+            seed = None
+
+    return await self._drawing_manager.submit(
+        pipeline_key=pipeline_key,
+        conversation_kind=conversation_kind,
+        conversation_id=conversation_id,
+        prompt=prompt,
+        requester=str(args.get("requester", "") or ""),
+        requirements=str(args.get("requirements", "") or ""),
+        references=args.get("references"),
+        reference_id=reference_id,
+        negative_prompt=str(args.get("negative_prompt", "") or "") or None,
+        image_size=str(args.get("image_size", "") or "") or None,
+        seed=seed,
+    )
 
 async def _handle_check_draw_status(self: DrawingSkill, args: dict) -> str:
     if self._drawing_manager is None:

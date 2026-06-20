@@ -26,39 +26,28 @@ class BackgroundTriggerSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "后台任务 Skill 提供后台深度推理和文件生成能力。\n\n"
-            "## 重要: 提交问题后的行为规范\n"
-            "调用 submit_problem 提交后台任务后，你必须：\n"
-            "  1. 立即结束本轮回复（使用 send_reply 告知用户「已提交后台任务，请稍候」或 cancel）\n"
-            "  2. 不要轮询 get_solver_status 或 get_solution\n"
-            "  3. 不要使用 wait 等待\n"
-            "  4. 系统会在任务完成后通过通知自动唤醒你，届时携带结果\n\n"
-            "## submit_problem\n"
-            "提交复杂问题到后台进行深度推理或文件生成。\n"
-            "**适用场景（两类）：**\n"
-            "  推理计算类：\n"
-            "    - 高难度数学证明与计算\n"
-            "    - 复杂编程算法设计与实现\n"
-            "    - 深度科学推理与计算\n"
-            "    - 需要多步骤推演的逻辑问题\n"
-            "    - 多网页信息收集与综合分析\n"
-            "  文件生成类：\n"
-            "    - 生成 PDF 文档（报告、表格、证书、简历等）\n"
-            "    - 生成图片/图表/可视化\n"
-            "    - 生成 Word/Excel/PPT 等办公文档\n"
-            "    - 编写并保存代码文件\n"
-            "    - 其他需要运行代码才能生成的任意文件\n\n"
-            "**文件生成后如何发送：** 后台任务完成后的通知会携带文件路径，"
-            "你可以使用 sandbox_manager__send_chat_file（普通文件）"
-            "或 sandbox_manager__send_file（图片）将文件发送到聊天。\n\n"
-            "提交后立即返回 task_id。任务完成后系统将通过后台通知携带结果唤醒你。\n"
-            "返回内容不限于文本，可以是文件路径、图片路径等任意形式。\n\n"
-            "## get_solution\n"
-            "查询已完成的任务结果。仅在收到任务完成通知后调用。\n\n"
-            "## get_solver_status\n"
-            "查询当前管线的任务状态。仅在需要决策是否提交新任务时调用。\n"
-            "有活跃任务时请勿轮询，等待通知即可。\n\n"
-            "注意：简单问答、常识性问题、日常聊天、普通信息查询不应使用本 skill。"
+            "后台任务 Skill — 这是你生成文件、运行代码、深度推理的唯一途径。\n\n"
+            "=== 必须使用本 skill 的场景 ===\n"
+            "以下任何场景都必须通过 submit_problem 提交，你自身没有能力完成：\n"
+            "  文件生成：PDF、图片、Word/Excel/PPT、图表、代码文件、数据报表等一切文件\n"
+            "  代码执行：任何需要运行 Python/Shell 的操作（计算、绘图、数据处理、格式转换）\n"
+            "  深度推理：复杂数学、多步逻辑推演、多网页综合调研\n"
+            "  网页搜索：需要联网获取实时信息的任务\n\n"
+            "=== 文件生成的标准流程 ===\n"
+            "用户要文件 → submit_problem(question=\"生成xxx文件，格式为...，内容包含...\")\n"
+            "           → 返回 task_id，立即结束本轮回复（告知用户稍候）\n"
+            "           → 收到后台通知（含文件路径）\n"
+            "           → sandbox_manager__send_chat_file 或 send_file 发送给用户\n\n"
+            "=== 提交后的行为规范 ===\n"
+            "1. 立即用 send_reply 告知用户「已提交后台任务，请稍候」，然后结束\n"
+            "2. 禁止轮询 get_solver_status 或 get_solution\n"
+            "3. 禁止使用 wait 等待结果\n"
+            "4. 系统会在任务完成后通过通知自动唤醒你，届时携带结果\n\n"
+            "=== 工具说明 ===\n"
+            "submit_problem(question, context) — 提交任务。question 写清楚要什么文件/什么格式/什么内容\n"
+            "get_solution(task_id) — 仅在收到完成通知后调用，获取结果\n"
+            "get_solver_status() — 仅在需要判断是否提交新任务时调用\n\n"
+            "注意：简单问答、日常聊天、已知信息的查询不应使用本 skill。"
         )
 
     def __init__(self, manager: Any = None, config: Any = None) -> None:
@@ -72,12 +61,13 @@ class BackgroundTriggerSkill(SkillModule):
         return [
             self._tool_def(
                 "submit_problem",
-                "提交复杂任务到后台 Agent 进行深度推理或文件生成。"
-                "后台 Agent 可以运行 Python 代码生成 PDF、图片、文档等任意文件，"
-                "也可以进行复杂计算、网页搜索、数据分析等。"
-                "任务完成后系统会通过通知唤醒主 Agent，通知中携带结果或文件路径。"
-                "主 Agent 收到通知后可用 sandbox_manager__send_chat_file 将生成的文件发送到聊天。"
-                "适用：生成 PDF/文档、复杂计算、数据分析、多步推理、网页调研等。",
+                "【生成文件/运行代码/深度推理的唯一途径】"
+                "将任务提交到后台 Agent 执行。后台 Agent 可以运行 Python 代码生成 PDF、图片、"
+                "Word/Excel/PPT、图表、代码文件等任意文件，也可以进行复杂计算、网页搜索、数据分析。"
+                "这是你唯一能完成文件生成和代码执行的方式——不要用 sandbox_manager__write_file 或 write_file_base64 替代。"
+                "提交后立即结束本轮回复，等待系统通知唤醒。"
+                "完成后用 sandbox_manager__send_chat_file 将生成的文件发送到聊天。"
+                "适用：生成任何文件、复杂计算、数据分析、多步推理、网页调研。",
                 {
                     "properties": {
                         "question": {"type": "string", "description": "任务描述。如果是文件生成，请明确说明文件格式、内容和要求。"},
@@ -136,7 +126,7 @@ async def _handle_submit_problem(self: BackgroundTriggerSkill, args: dict) -> st
         return _json({"ok": False, "error": "question 不能为空"})
     try:
         pipeline_key = str(args.get("pipeline_key", "")).strip()
-        parts = pipeline_key.split("_", 1)
+        parts = pipeline_key.split(":", 1)
         if len(parts) != 2 or not parts[0] or not parts[1]:
             return _json({"ok": False, "error": f"无效的 pipeline_key: {pipeline_key}（缺少聊天流信息）"})
         conversation_kind, conversation_id = parts
