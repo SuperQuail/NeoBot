@@ -90,12 +90,9 @@ class PromptBuilder:
             message_queue,
         )
 
-        # 查询群聊档案记忆（table_name='group_profile', key=群号）
         group_profile = await self._fetch_archive("group_profile", group_id_str) or ""
-        group_summary = await self._fetch_archive("group_summary", group_id_str) or ""
         group_info = _merge_labeled_prompt_fragments(
             ("群聊档案", group_profile),
-            ("近期阶段摘要", group_summary),
         )
 
         if numbering is not None:
@@ -199,10 +196,8 @@ class PromptBuilder:
             keyword_reaction_text,
         )
 
-        private_summary = await self._fetch_archive("private_summary", user_id_str) or ""
         merged_memory_list = _merge_labeled_prompt_fragments(
             ("既有记忆", memory_list),
-            ("近期阶段摘要", private_summary),
         )
 
         prompt = self._config.chat.friend_prompt_template.format(

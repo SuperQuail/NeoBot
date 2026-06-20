@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+from typing import Any
+
 from neobot_contracts.ports.clock import SystemClock
 from neobot_storage import run_migrations, sqlite_url
 
@@ -51,6 +55,114 @@ from neobot_app.bootstrap._pipeline import (
     build_reply_orchestrator,
     register_config_reload_command,
 )
+
+
+_MAINTENANCE_SYSTEM_PROMPT = (
+    "你是一个沙箱文件维护助手，负责检查和清理沙箱中的文件。\n\n"
+    "## 核心规则\n"
+    "1. **清理前必须先阅读 sandbox/文件存储.md 了解当前存储规范**\n"
+    "2. 如文件存储.md 不存在，先检查 sandbox/ 目录结构，按默认规范创建文件存储.md\n"
+    "3. 清理完成后必须调用 file_storage__update_storage_doc 更新索引\n\n"
+    "## 默认存储规范（文件存储.md 不存在时参考）\n"
+    "- tools/ — 可复用的工具脚本、程序\n"
+    "- docs/ — 文档、参考资料、说明文件\n"
+    "- assets/ — 静态资源（图片、字体、模板等）\n"
+    "- temp/ — 临时文件，按 chat_flow_id 分子目录，可随时清理\n"
+    "- gift/ — 礼物文件，由 gift skill 管理，勿手动编辑\n"
+    "- 文件命名统一使用 snake_case，中文名保留原样\n"
+    "- 根目录只保留 文件存储.md、TODO.md 和持久化目录\n\n"
+    "## 维护流程\n"
+    "1. 先调用 sandbox_maintenance__check_capacity 了解容量\n"
+    "2. 调用 sandbox_maintenance__scan_temp_files 检查临时文件\n"
+    "3. 调用 sandbox_maintenance__get_maintenance_status 查看状态\n"
+    "4. 阅读 sandbox/文件存储.md 了解当前规范\n"
+    "5. 根据需要清理过期临时文件、垃圾文件、错放文件\n"
+    "6. 调用 sandbox_maintenance__trigger_maintenance 整理持久化文件\n"
+    "7. 完成后调用 file_storage__update_storage_doc 更新索引\n\n"
+    "## 注意\n"
+    "- 只做文件清理和整理，不实现新工具，不处理 TODO\n"
+    "- 输出简洁明了，完成每步后汇报结果"
+)
+
+
+def _make_maintenance_coro(
+    *,
+    provider: Any,
+    skill_manager: Any,
+    sandbox_components: dict[str, Any],
+    data_dir: Path,
+    admin_id: str,
+    logger: Any,
+):
+    """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。"""
+    from dataclasses import dataclass
+
+    from neobot_chat.runtime.agent import Agent
+    from neobot_chat.tools.toolset import ToolSpec, Toolset
+    from neobot_chat.schema.types import ToolAccessRule
+
+    @dataclass(frozen=True)
+    class _SkillToolExecutor:
+        _mgr: Any = skill_manager
+
+        def definitions(self):
+            return self._mgr.get_tools()
+
+        async def execute(self, name: str, args: dict) -> str:
+            return await self._mgr.execute(name, args)
+
+        async def close(self) -> None:
+            pass
+
+    def _always_allow(_args: dict, _ctx: Any, _policy: Any) -> ToolAccessRule:
+        return ToolAccessRule(action="allow")
+
+    tool_defs = skill_manager.get_tools()
+    specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
+    toolset = Toolset(executor=_SkillToolExecutor(), specs=specs)
+
+    async def _loop() -> None:
+        await asyncio.sleep(60)
+        while True:
+            try:
+                logger.info("沙箱维护 Agent 开始执行")
+                agent = Agent(
+                    provider=provider,
+                    toolset=toolset,
+                    system_prompt=_MAINTENANCE_SYSTEM_PROMPT,
+                    max_iterations=30,
+                    command_timeout=120,
+                )
+                state = {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "请执行一次完整的沙箱维护清理。\n"
+                                "按系统提示中的维护流程逐步操作，完成每步后汇报结果。"
+                            ),
+                        },
+                    ],
+                }
+                result = await agent.invoke(state)
+                msgs = result.get("messages", [])
+                tool_count = sum(1 for m in msgs if m.get("role") == "tool")
+                assist_msgs = [m for m in msgs if m.get("role") == "assistant" and m.get("content")]
+                last_content = assist_msgs[-1].get("content", "")[:200] if assist_msgs else "(无文本输出)"
+                logger.info(
+                    f"沙箱维护完成: {tool_count} 次工具调用, "
+                    f"最后输出: {last_content}"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"沙箱维护 Agent 异常: {exc}")
+            try:
+                await asyncio.sleep(10800)  # 3 小时
+            except asyncio.CancelledError:
+                raise
+
+    return _loop()
 
 
 def create_application() -> NeoBotApplication:
@@ -272,6 +384,21 @@ def create_application() -> NeoBotApplication:
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
 
+    # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
+    admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []
+    maintenance_coros = []
+    if sandbox["sandbox_service"] is not None and admin_accounts:
+        maintenance_coros.append(
+            _make_maintenance_coro(
+                provider=provider,
+                skill_manager=skill_manager,
+                sandbox_components=sandbox,
+                data_dir=DATA_DIR,
+                admin_id=admin_accounts[0],
+                logger=logger_factory.get_logger("app.sandbox_maintenance_agent"),
+            )
+        )
+
     # ── 管线 / 网关 / 应用 ──
     return build_pipelines_and_app(
         adapter=adapter,
@@ -299,6 +426,6 @@ def create_application() -> NeoBotApplication:
         report_service=usage["report_service"],
         _engine=_engine,
         vision_provider=vision_provider,
-        notification_hub=notification_hub,
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
+        background_coros=maintenance_coros,
     )

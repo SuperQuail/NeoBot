@@ -227,8 +227,13 @@ def build_archive_summary_service(
 ) -> ArchiveMemoryAutoSummaryService:
     from neobot_app.bootstrap._providers import build_optional_agent_provider
 
-    adaptive_prompt_skill = skill_manager.get("adaptive_prompt")
-    summary_tool_defs = adaptive_prompt_skill.get_tools() if adaptive_prompt_skill else []
+    archive_crud_skill = skill_manager.get("archive_crud")
+    favorability_skill = skill_manager.get("favorability")
+    summary_tool_defs: list[dict] = []
+    if archive_crud_skill:
+        summary_tool_defs.extend(archive_crud_skill.get_tools())
+    if favorability_skill:
+        summary_tool_defs.extend(favorability_skill.get_tools())
 
     async def _summary_tool_executor(tool_name: str, args: dict) -> str:
         return await skill_manager.execute(tool_name, args)

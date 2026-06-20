@@ -808,7 +808,7 @@ class AgentSystem:
 @dataclass
 class AgentMemoryTrigger:
     group_interval: int = field(
-        default=100,
+        default=300,
         metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
     )
     private_interval: int = field(

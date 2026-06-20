@@ -184,8 +184,8 @@ def build_pipelines_and_app(
     report_service: Any,
     _engine: Any,
     vision_provider: Any,
-    notification_hub: Any,
     browser_lifecycle_manager: Any,
+    background_coros: list | None = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -245,6 +245,6 @@ def build_pipelines_and_app(
         engine=_engine,
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
-        notification_hub=notification_hub,
         browser_lifecycle_manager=browser_lifecycle_manager,
+        background_coros=background_coros,
     )
