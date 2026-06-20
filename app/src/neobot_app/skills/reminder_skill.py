@@ -11,17 +11,14 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.models.scheduled_task import ScheduledTaskRecurrence, ScheduledTaskState
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 def _parse_pipeline_key(pipeline_key: str) -> tuple[str, str]:
     """从 pipeline_key 中提取 (kind, id)。"""
     if ":" in pipeline_key:
         return tuple(pipeline_key.split(":", 1))  # type: ignore
     return "", ""
-
 
 def _resolve_bindings(args: dict) -> list[ConversationRef]:
     """从 args 中解析 bindings，若未提供则从当前 pipeline_key 构造默认值。"""
@@ -42,7 +39,6 @@ def _resolve_bindings(args: dict) -> list[ConversationRef]:
         return [ConversationRef(kind=kind, id=conv_id)]
     return []
 
-
 def _resolve_task_uuid(args: dict) -> str:
     """从 args 的多种键名中提取任务 UUID。"""
     for key in ("task_uuid", "task_id", "uuid"):
@@ -50,7 +46,6 @@ def _resolve_task_uuid(args: dict) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return ""
-
 
 class ReminderSkill(SkillModule):
     """定时提醒 Skill — 创建/查询/修改/删除定时提醒，通知策略管理。"""
@@ -202,15 +197,6 @@ class ReminderSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown reminder tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
@@ -264,7 +250,6 @@ async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
 
-
 async def _handle_list_scheduled_tasks(self: ReminderSkill, args: dict) -> str:
     if self._uow_factory is None:
         return _json({"ok": False, "error": "uow_factory 未配置"})
@@ -291,7 +276,6 @@ async def _handle_list_scheduled_tasks(self: ReminderSkill, args: dict) -> str:
         return _json({"ok": True, "tasks": tasks})
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
-
 
 async def _handle_update_scheduled_task(self: ReminderSkill, args: dict) -> str:
     if self._uow_factory is None:
@@ -341,7 +325,6 @@ async def _handle_update_scheduled_task(self: ReminderSkill, args: dict) -> str:
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
 
-
 async def _handle_set_scheduled_task_state(self: ReminderSkill, args: dict) -> str:
     if self._uow_factory is None:
         return _json({"ok": False, "error": "uow_factory 未配置"})
@@ -365,7 +348,6 @@ async def _handle_set_scheduled_task_state(self: ReminderSkill, args: dict) -> s
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
 
-
 async def _handle_set_scheduled_task_notification_policy(self: ReminderSkill, args: dict) -> str:
     if self._uow_factory is None:
         return _json({"ok": False, "error": "uow_factory 未配置"})
@@ -388,7 +370,6 @@ async def _handle_set_scheduled_task_notification_policy(self: ReminderSkill, ar
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
 
-
 async def _handle_delete_scheduled_task(self: ReminderSkill, args: dict) -> str:
     if self._uow_factory is None:
         return _json({"ok": False, "error": "uow_factory 未配置"})
@@ -403,7 +384,6 @@ async def _handle_delete_scheduled_task(self: ReminderSkill, args: dict) -> str:
         return _json({"ok": False, "error": f"未找到任务: {task_uuid}"})
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
-
 
 _HANDLERS = {
     "create_scheduled_task": _handle_create_scheduled_task,

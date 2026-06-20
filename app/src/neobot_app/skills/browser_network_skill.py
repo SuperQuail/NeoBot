@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class BrowserNetworkSkill(SkillModule):
     """浏览器网络与状态管理 Skill — Cookie、Storage、网络请求拦截、浏览器设置。"""
@@ -186,15 +184,6 @@ class BrowserNetworkSkill(SkillModule):
                 except Exception:
                     continue
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_get_cookies(self: BrowserNetworkSkill, args: dict) -> str:
@@ -316,7 +305,6 @@ async def _handle_set_offline(self: BrowserNetworkSkill, args: dict) -> str:
     if hasattr(self._browser, "set_offline"):
         await self._browser.set_offline(offline)
     return _json({"ok": True, "note": "已切换为离线模式" if offline else "已恢复在线模式"})
-
 
 _HANDLERS = {
     "get_cookies": _handle_get_cookies,

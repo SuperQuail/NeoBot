@@ -483,6 +483,8 @@ class ReplyToolExecutor(ToolExecutor):
             enriched = dict(args)
             if self._conv_kind and self._conv_id:
                 enriched["pipeline_key"] = f"{self._conv_kind}:{self._conv_id}"
+            if self._numbering is not None:
+                enriched["_numbering_mapping"] = self._numbering.mapping
             return await self._skill_manager.execute(name, enriched)
         raise ToolError(f"Unknown reply tool: {name}")
 

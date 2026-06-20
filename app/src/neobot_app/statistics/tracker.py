@@ -15,7 +15,6 @@ CURRENT_CONVERSATION_ID: ContextVar[str] = ContextVar("current_conversation_id",
 _VALID_MODULES = frozenset({
     "reply_agent",
     "reply_common",
-    "agent:creator",
     "agent:memory",
     "agent:chat_interaction",
     "agent:image_parse",

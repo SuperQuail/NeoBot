@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class CrossChatSkill(SkillModule):
     """跨聊天通信 Skill — 向其他群/私聊传递消息，查询其他聊天记录。"""
@@ -117,15 +115,6 @@ class CrossChatSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown cross_chat tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
@@ -167,7 +156,6 @@ async def _handle_cross_chat_status(self: CrossChatSkill, args: dict) -> str:
     if task_id:
         return _json({"ok": True, "task_id": task_id, "status": "unknown", "note": "跨聊天任务无持久化跟踪"})
     return _json({"ok": True, "active_tasks": 0, "note": "跨聊天通信为 fire_and_forget 模式，无任务队列"})
-
 
 _HANDLERS = {
     "cross_chat_send": _handle_cross_chat_send,

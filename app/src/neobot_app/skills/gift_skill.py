@@ -19,10 +19,8 @@ GIFT_MD = "gift.md"
 PREPARED_MARKER = "prepared"
 _STORAGE_DOC = "文件存储.md"
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class GiftSkill(SkillModule):
     """礼物管理 Skill — 创建、列表、取消礼物，与定时任务集成。"""
@@ -143,15 +141,6 @@ class GiftSkill(SkillModule):
         if handler is None:
             return _json({"ok": False, "error": f"unknown gift tool: {tool_name}"})
         return await handler(self, args)
-
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
 
 # ── Handlers ──
 
@@ -287,7 +276,6 @@ async def _handle_create_gift(self: GiftSkill, args: dict) -> str:
         "prepare_status": prepare_status,
     })
 
-
 async def _handle_list_gifts(self: GiftSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -328,7 +316,6 @@ async def _handle_list_gifts(self: GiftSkill, args: dict) -> str:
 
     return _json({"ok": True, "gifts": gifts})
 
-
 async def _handle_cancel_gift(self: GiftSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -367,7 +354,6 @@ async def _handle_cancel_gift(self: GiftSkill, args: dict) -> str:
         "user_id": user_id,
         "task_deleted": task_deleted,
     })
-
 
 async def _handle_mark_gift_sent(self: GiftSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -409,7 +395,6 @@ async def _handle_mark_gift_sent(self: GiftSkill, args: dict) -> str:
         "task_deleted": task_deleted,
     })
 
-
 def _build_gift_md(
     user_id: str,
     idea: str,
@@ -432,7 +417,6 @@ def _build_gift_md(
         "## 状态\n"
         f"- prepared: {'true' if prepared else 'false'}\n"
     )
-
 
 _HANDLERS = {
     "create_gift": _handle_create_gift,

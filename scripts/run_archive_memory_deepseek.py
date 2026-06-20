@@ -23,7 +23,7 @@ from neobot_chat.providers import DeepSeekOfficialProvider
 from neobot_contracts.models.memory import ArchiveMemory
 from neobot_contracts.ports.logging import NullLogger
 
-from neobot_app.assembly.agents import build_agent_registry
+from neobot_chat.tools.registry import AgentRegistry
 from neobot_app.config.loader.env import load_env
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.config.schemas.env import EnvConfig
@@ -369,12 +369,7 @@ async def main() -> None:
     agent_registry = None
     main_agent = None
     try:
-        agent_registry = build_agent_registry(
-            config=config,
-            archive_memory_service=archive_service,
-            provider_factory=lambda: build_deepseek_provider(archive_model),
-            logger=NullLogger(),
-        )
+        agent_registry = AgentRegistry()
 
         seeded = False
         if args.seed_table and args.seed_key and args.seed_value.strip():

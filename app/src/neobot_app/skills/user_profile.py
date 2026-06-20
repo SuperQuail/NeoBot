@@ -8,10 +8,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class UserProfileSkill(SkillModule):
     """用户资料 Skill — 查询用户资料、解析用户头像。"""
@@ -85,15 +83,6 @@ class UserProfileSkill(SkillModule):
         if handler is None:
             return _json({"ok": False, "error": f"unknown user_profile tool: {tool_name}"})
         return await handler(self, args)
-
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
 
 # ── Handlers ──
 
@@ -177,7 +166,6 @@ async def _handle_analyze_user_avatar(self: UserProfileSkill, args: dict) -> str
         return _json({"ok": True, "user_id": user_id, "avatar_analysis": analysis[:2000]})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "read_user_info": _handle_read_user_info,

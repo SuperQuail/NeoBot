@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class DrawingSkill(SkillModule):
     """AI 绘图 Skill — 提交绘图任务、查询状态、取消冷却。"""
@@ -27,10 +25,47 @@ class DrawingSkill(SkillModule):
     def instructions(self) -> str:
         return (
             "AI 绘图 Skill 提供以下能力：\n\n"
-            "  draw — 提交绘图任务（支持参考图/垫图/图生图），后台异步完成\n"
-            "  check_draw_status — 查询指定管线的绘图状态和剩余冷却\n"
-            "  cancel_draw_cooldown — 取消当前管线的冷却期\n\n"
-            "注意：绘图任务会加入后台任务，完成后会另外通知，不需要等待。"
+            "  draw — 提交绘图任务，后台异步完成\n"
+            "  check_draw_status — 查询绘图状态和剩余冷却\n"
+            "  cancel_draw_cooldown — 取消冷却期\n\n"
+
+            "【参考绘图工作流（重要）】\n"
+            "当用户要求参考图库中的某张图片来绘图时，按以下步骤操作：\n\n"
+            "  1. 调用 gallery_search 查找目标图片\n"
+            "     - 用关键词搜索（如角色名、图片描述等）\n"
+            "     - 如果 gallery_search 返回空，尝试 gallery_list 浏览全部\n"
+            "  2. 将搜索结果中的编号填入 draw 的 reference_id 参数\n"
+            "     - 单张参考：reference_id=<编号>\n"
+            "     - 多张参考：references=[\"<编号1>\", \"<编号2>\"]\n"
+            "  3. 如果有参考图暂存在缓存池中，也可用 pool:<key> 格式引用\n"
+            "  4. 编写绘图 prompt（见下方约束）\n\n"
+
+            "【references 参数完整格式】\n"
+            "references 数组中的每个字符串支持以下格式：\n"
+            "  - 图库编号：直接写数字字符串，如 \"3\"（来自 gallery_list/gallery_search 返回的编号）\n"
+            "  - 缓存池：\"pool:<key>\"，如 \"pool:a1b2c3d4\"\n"
+            "  - 表情包：\"emoji:<编号>\"，如 \"emoji:5\"\n"
+            "  - 外部链接：\"url:<URL>\"，如 \"url:https://example.com/img.jpg\"\n"
+            "  - 本地文件：\"file:<路径>\"，如 \"file:/data/images/ref.png\"\n"
+            "  - 聊天图片：\"chat:<message_id>\" 或 \"chat:<message_id>:<image_index>\"（index 默认 1）\n\n"
+
+            "【提示词编写约束（必须遵守）】\n"
+            "  1. 提示词使用自然语言，中文或英文均可\n"
+            "  2. 参考绘图时，严禁在 prompt 中描述参考图中的角色特征\n"
+            "     - 正确：'参考图中角色，坐在椅子上，背景为图书馆'\n"
+            "     - 错误：'一个银发红瞳穿水手服的少女坐在椅子上' ← 这些特征来自参考图，不要重复描述\n"
+            "  3. 多张参考图时，使用'参考图一'、'参考图二'的方式指定\n"
+            "  4. prompt 只需描述你想要的动作/场景/构图/风格，角色外观由参考图决定\n\n"
+
+            "【图片尺寸】\n"
+            "  常用尺寸：512x512（方形头像）、1024x1024（方形）、768x1024（竖向）、1024x768（横向）\n"
+            "  根据用户需求选择合适的尺寸，未指定时默认 1024x1024\n\n"
+
+            "【重要提醒】\n"
+            "  - draw 提交后立即返回，绘图在后台进行，不要等待\n"
+            "  - 不要在回复中说'正在生成中请稍等'并保持等待状态\n"
+            "  - 告知用户'绘图已提交，完成后会通知'即可\n"
+            "  - 如果用户要的是聊天图片而非图库图片，先用 image_pool__put 存入缓存池，再用 pool:key 引用\n"
         )
 
     def __init__(self, drawing_manager: Any = None) -> None:
@@ -90,15 +125,6 @@ class DrawingSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown drawing tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_draw(self: DrawingSkill, args: dict) -> str:
@@ -157,7 +183,6 @@ async def _handle_cancel_draw_cooldown(self: DrawingSkill, args: dict) -> str:
     if pipeline_key:
         self._drawing_manager.cancel_cooldown(pipeline_key)
     return _json({"ok": True})
-
 
 _HANDLERS = {
     "draw": _handle_draw,

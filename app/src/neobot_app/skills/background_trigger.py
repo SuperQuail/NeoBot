@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class BackgroundTriggerSkill(SkillModule):
     """后台问题求解 Skill — 提交深度推理任务，查询状态与结果。"""
@@ -107,15 +105,6 @@ class BackgroundTriggerSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown background_trigger tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_submit_problem(self: BackgroundTriggerSkill, args: dict) -> str:
@@ -165,7 +154,6 @@ async def _handle_get_solver_status(self: BackgroundTriggerSkill, args: dict) ->
     if status.get("solver_has_active_task"):
         result["_hint"] = "【有活跃任务进行中，请结束本轮回复等待通知，无需轮询】"
     return _json(result)
-
 
 _HANDLERS = {
     "submit_problem": _handle_submit_problem,

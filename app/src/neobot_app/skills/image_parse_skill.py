@@ -9,10 +9,8 @@ from typing import Any
 from neobot_app.message.numbering import MessageNumbering
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class ImageParseSkill(SkillModule):
     """图片内容解析 Skill — 解析聊天中的图片内容。"""
@@ -89,14 +87,6 @@ class ImageParseSkill(SkillModule):
         if handler is None:
             return _json({"ok": False, "error": f"unknown image_parse tool: {tool_name}"})
         return await handler(self, args)
-
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
 
     # ── 图片来源解析 ──
 
@@ -201,11 +191,12 @@ class ImageParseSkill(SkillModule):
 
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
+        numbering_mapping: dict[int, int] | None = None,
     ) -> bytes | None:
         """通过显示消息编号（如 "75: 用户名: [图片]" 中的 75）获取图片字节。
 
-        使用 MessageNumbering 重建编号映射，直接从消息队列中提取图片 URL，
-        完全不依赖 OneBot get_msg API。
+        优先使用 Agent 注入的 numbering_mapping（与 prompt 编号一致），
+        否则从实时队列重建编号映射。
         """
         parts = pipeline_key.split(":", 1)
         if len(parts) != 2:
@@ -221,34 +212,33 @@ class ImageParseSkill(SkillModule):
         if queue is None or not conv_id:
             return None
 
-        try:
-            entries = queue.entries(conv_id)
-        except KeyError:
-            return None
+        # 优先使用 Agent 注入的编号映射（保证与 prompt 一致）
+        if numbering_mapping:
+            real_message_id = numbering_mapping.get(msg_number)
+        else:
+            try:
+                entries = queue.entries(conv_id)
+            except KeyError:
+                return None
+            if not entries:
+                return None
+            numbering = MessageNumbering()
+            for entry in entries:
+                from neobot_app.message.queue import QueueEntryType
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                    msg_id = entry.message.message_id
+                    if msg_id is None:
+                        continue
+                    for replied in getattr(entry, "replied_messages", []) or []:
+                        rid = getattr(replied, "message_id", None)
+                        if rid is not None and numbering.get_number(rid) is None:
+                            numbering._assign_number(rid)
+                    numbering._assign_number(msg_id)
+            real_message_id = numbering.get_message_id(msg_number)
 
-        if not entries:
-            return None
-
-        # 用同样的 MessageNumbering 算法重建编号 → message_id 映射
-        numbering = MessageNumbering()
-        for entry in entries:
-            from neobot_app.message.queue_impl import QueueEntryType
-            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                msg_id = entry.message.message_id
-                if msg_id is None:
-                    continue
-                # 先处理被回复消息
-                for replied in getattr(entry, "replied_messages", []) or []:
-                    rid = getattr(replied, "message_id", None)
-                    if rid is not None and numbering.get_number(rid) is None:
-                        numbering._assign_number(rid)
-                numbering._assign_number(msg_id)
-
-        real_message_id = numbering.get_message_id(msg_number)
         if real_message_id is None:
             return None
 
-        # 从队列中找到该消息，直接提取图片 URL
         message = queue.find_by_message_id(conv_id, real_message_id)
         if message is None:
             return None
@@ -288,7 +278,6 @@ class ImageParseSkill(SkillModule):
 
         return None
 
-
 # ── Handler ──
 
 async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
@@ -319,7 +308,14 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
             content_parts.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_base64}})
         elif msg_number:
             image_index = int(args.get("image_index", 0))
-            image_bytes = await self._resolve_by_msg_number(pipeline_key, int(msg_number), image_index)
+            numbering_mapping = args.get("_numbering_mapping")
+            if isinstance(numbering_mapping, dict):
+                numbering_mapping = {int(k): int(v) for k, v in numbering_mapping.items()}
+            else:
+                numbering_mapping = None
+            image_bytes = await self._resolve_by_msg_number(
+                pipeline_key, int(msg_number), image_index, numbering_mapping=numbering_mapping,
+            )
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从消息编号 {msg_number}（第 {image_index} 张图片）获取图片，请尝试用 msg_number 指定正确的消息编号"})
             import base64
@@ -344,7 +340,6 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
         return _json({"ok": True, "description": text[:2000]})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "parse_image": _handle_parse_image,

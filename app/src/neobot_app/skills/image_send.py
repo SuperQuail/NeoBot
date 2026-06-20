@@ -8,10 +8,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class ImageSendSkill(SkillModule):
     """图片发送 Skill — 发送图片到指定群聊或私聊。"""
@@ -29,12 +27,19 @@ class ImageSendSkill(SkillModule):
         return (
             "图片发送 Skill 提供以下能力：\n\n"
             "  send_image — 发送图片到指定群聊或私聊\n\n"
-            "注意：如果图片在图库中，提供 image_id；如果是本地文件，提供 file_path。"
+            "注意：如果图片在图库中，提供 image_id；如果是本地文件，提供 file_path；"
+            "如果是缓存池中的图片，提供 pool_key 和 pipeline_key。"
         )
 
-    def __init__(self, adapter: Any = None, file_server: Any = None) -> None:
+    def __init__(
+        self,
+        adapter: Any = None,
+        file_server: Any = None,
+        image_pool: Any = None,
+    ) -> None:
         self._adapter = adapter
         self._file_server = file_server
+        self._image_pool = image_pool
 
     def reset(self) -> None:
         pass
@@ -43,11 +48,13 @@ class ImageSendSkill(SkillModule):
         tools = [
             self._tool_def(
                 "send_image",
-                "发送图片到指定群聊或私聊。支持图库图片 ID 或本地文件路径。",
+                "发送图片到指定群聊或私聊。支持图库图片 ID、本地文件路径或缓存池 key。",
                 {
                     "properties": {
                         "image_id": {"type": "integer", "description": "可选，图库图片 ID"},
                         "file_path": {"type": "string", "description": "可选，本地图片路径（沙箱内路径）"},
+                        "pool_key": {"type": "string", "description": "可选，缓存池中的图片 key（需配合 pipeline_key 使用）"},
+                        "pipeline_key": {"type": "string", "description": "可选，管线标识（格式为 kind:id），使用 pool_key 时需提供"},
                         "group_id": {"type": "string", "description": "可选，目标群号"},
                         "user_id": {"type": "string", "description": "可选，目标QQ号"},
                     },
@@ -63,15 +70,6 @@ class ImageSendSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown image_send tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
@@ -82,13 +80,15 @@ async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
 
     image_id = args.get("image_id")
     file_path = str(args.get("file_path", "")).strip()
+    pool_key = str(args.get("pool_key", "")).strip()
+    pipeline_key = str(args.get("pipeline_key", "")).strip()
     group_id = str(args.get("group_id", "")).strip()
     user_id = str(args.get("user_id", "")).strip()
 
     if not group_id and not user_id:
         return _json({"ok": False, "error": "缺少 group_id 或 user_id"})
-    if not image_id and not file_path:
-        return _json({"ok": False, "error": "缺少 image_id 或 file_path"})
+    if not image_id and not file_path and not pool_key:
+        return _json({"ok": False, "error": "缺少 image_id、file_path 或 pool_key"})
 
     try:
         from neobot_app.utils.media_sender import prepare_image_segment
@@ -99,8 +99,17 @@ async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
         else:
             conv_ref = ConversationRef(kind="private", id=user_id)
 
-        # 根据 image_id 或 file_path 获取图片路径
-        if file_path:
+        # 根据 pool_key / image_id / file_path 获取图片路径
+        if pool_key:
+            if self._image_pool is None:
+                return _json({"ok": False, "error": "image_pool 未配置"})
+            if not pipeline_key or ":" not in pipeline_key:
+                return _json({"ok": False, "error": "使用 pool_key 时需要 pipeline_key（格式 kind:id）"})
+            staged = self._image_pool.get(pipeline_key, pool_key)
+            if staged is None:
+                return _json({"ok": False, "error": f"缓存池中不存在 pool_key={pool_key}（可能已过期）"})
+            path = staged.file_path
+        elif file_path:
             path = Path(file_path)
             if not path.exists():
                 return _json({"ok": False, "error": f"文件不存在: {file_path}"})
@@ -131,7 +140,6 @@ async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
         return _json({"ok": True, "path": str(path)})
     except Exception as e:
         return _json({"ok": False, "error": f"发送失败: {e}"})
-
 
 _HANDLERS = {
     "send_image": _handle_send_image,

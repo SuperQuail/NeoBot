@@ -52,6 +52,18 @@ class SkillModule(ABC):
             args: 工具参数字典
         """
 
+    @staticmethod
+    def _tool_def(name: str, description: str, parameters: dict | None = None) -> dict:
+        """统一工具定义格式（OpenAI function-calling）。"""
+        params: dict = {"type": "object", "properties": {}, "required": []}
+        if parameters:
+            params["properties"] = parameters.get("properties", {})
+            params["required"] = parameters.get("required", [])
+        return {
+            "type": "function",
+            "function": {"name": name, "description": description, "parameters": params},
+        }
+
     def reset(self) -> None:
         """复位内部状态（新会话时调用）。"""
 
@@ -135,7 +147,10 @@ class SkillManager:
         if skill is None:
             return f"错误：未找到 Skill '{skill_name}'"
 
-        return await skill.execute(tool_name, args)
+        try:
+            return await skill.execute(tool_name, args)
+        except Exception as exc:
+            return f"工具执行失败 [{prefixed_name}]: {exc}"
 
     def reset_all(self) -> None:
         """复位所有 Skill 的状态。"""

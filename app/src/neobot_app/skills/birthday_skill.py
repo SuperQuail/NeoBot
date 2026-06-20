@@ -11,16 +11,13 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.models.scheduled_task import ScheduledTaskRecurrence
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 def _parse_pipeline_key(pipeline_key: str) -> tuple[str, str]:
     if ":" in pipeline_key:
         return tuple(pipeline_key.split(":", 1))  # type: ignore
     return "", ""
-
 
 def _resolve_bindings(args: dict) -> list[ConversationRef]:
     raw = args.get("bindings")
@@ -39,7 +36,6 @@ def _resolve_bindings(args: dict) -> list[ConversationRef]:
     if kind and conv_id:
         return [ConversationRef(kind=kind, id=conv_id)]
     return []
-
 
 class BirthdaySkill(SkillModule):
     """生日管理 Skill — 记录生日，自动创建 yearly 定时任务。"""
@@ -108,15 +104,6 @@ class BirthdaySkill(SkillModule):
         if handler is None:
             return _json({"ok": False, "error": f"unknown birthday tool: {tool_name}"})
         return await handler(self, args)
-
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
 
 # ── Handlers ──
 
@@ -199,7 +186,6 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
         }})
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
-
 
 _HANDLERS = {
     "create_birthday_task": _handle_create_birthday_task,

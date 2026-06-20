@@ -13,8 +13,11 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
+from neobot_app.reply._utils import entry_fingerprint, msg_id_of
+from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.reply.sender import ReplySender
 from neobot_app.statistics.tracker import (
     CURRENT_USAGE_MODULE,
     CURRENT_CONVERSATION_KIND,
@@ -39,49 +42,6 @@ if TYPE_CHECKING:
     from neobot_app.willing.service import WillingService
     from neobot_app.image import ImageParseService
     from neobot_app.core.file_server import FileServer
-
-
-def _msg_id_of(entry) -> int | None:
-    """从 QueueEntry 中提取 message_id，不存在则返回 None。"""
-    from neobot_app.message.queue_impl import QueueEntryType
-
-    if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-        return entry.message.message_id
-    return None
-
-
-def _entry_fingerprint(entry) -> str:
-    """为 QueueEntry 生成去重指纹。
-
-    MESSAGE 条目使用 message_id；非 MESSAGE 条目使用类型+内容哈希。
-    确保 TIMESTAMP / RECALL / REACTION / POKE 等条目也能正确去重。
-    """
-    from neobot_app.message.queue_impl import QueueEntryType
-
-    if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-        mid = entry.message.message_id
-        if mid is not None:
-            return f"msg:{mid}"
-        return f"msg:hash:{hash(str(entry.message.model_dump(mode='json')))}"
-
-    if entry.kind == QueueEntryType.TIMESTAMP:
-        return f"ts:{entry.occurred_at}"
-
-    if entry.kind == QueueEntryType.RECALL and entry.notice is not None:
-        nid = entry.notice.message_id
-        uid = getattr(entry.notice, "user_id", "")
-        oid = getattr(entry.notice, "operator_id", "")
-        return f"recall:{nid}:{uid}:{oid}:{entry.occurred_at}"
-
-    if entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
-        r = entry.reaction
-        return f"reaction:{r.target_message_id}:{r.emoji_id}:{r.operator_user_id}"
-
-    if entry.kind == QueueEntryType.POKE and entry.poke is not None:
-        p = entry.poke
-        return f"poke:{p.sender_id}:{p.target_id}:{p.sub_type}:{entry.occurred_at}"
-
-    return f"unknown:{entry.kind.value}:{hash(str(entry))}"
 
 
 class ReplyOrchestrator:
@@ -141,6 +101,67 @@ class ReplyOrchestrator:
         self._last_reply_time: dict[str, float] = {}
         self._last_sentence_time: dict[str, float] = {}
         self._notification_hub = notification_hub
+        self._pre_reply_hooks: list[Callable[[ReplyEvent], Awaitable[str | None]]] = []
+        self._post_reply_hooks: list[Callable[[ReplyEvent, str | None], Awaitable[str | None]]] = []
+        self._debug_helper = DebugHelper(
+            debug_recorder=debug_recorder,
+            runtime_events=runtime_events,
+            logger=self._logger,
+        )
+        self._sender = ReplySender(
+            adapter=adapter,
+            file_server=file_server,
+            config=config,
+            bot_name=self._get_bot_name(),
+            emoji_service=emoji_service,
+            markdown_image_converter=markdown_image_converter,
+            debug_helper=self._debug_helper,
+            runtime_events=runtime_events,
+            io_timeout_seconds=self._get_io_timeout_seconds(),
+            sentence_cooldown_seconds=self._get_sentence_cooldown_seconds(),
+            private_chat_sentence_cooldown_seconds=self._get_private_chat_sentence_cooldown_seconds(),
+            long_reply_max_length=self._get_long_reply_max_length(),
+            long_reply_max_sentence_count=self._get_long_reply_max_sentence_count(),
+            long_reply_fallback_template=self._get_long_reply_fallback_template(),
+            enable_ai_reply_regenerate=self._get_enable_ai_reply_regenerate(),
+            provider=provider,
+            balance_checker=balance_checker,
+            logger=self._logger,
+        )
+
+    def register_pre_reply_hook(
+        self, hook: Callable[[ReplyEvent], Awaitable[str | None]]
+    ) -> None:
+        """注册预回复钩子。返回非 None 字符串时将短路跳过 AI 生成。"""
+        self._pre_reply_hooks.append(hook)
+
+    def register_post_reply_hook(
+        self, hook: Callable[[ReplyEvent, str | None], Awaitable[str | None]]
+    ) -> None:
+        """注册后回复钩子。返回非 None 字符串时将替换回复文本。"""
+        self._post_reply_hooks.append(hook)
+
+    async def _apply_pre_reply_hooks(self, event: ReplyEvent) -> str | None:
+        for hook in self._pre_reply_hooks:
+            try:
+                result = await hook(event)
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+        return None
+
+    async def _apply_post_reply_hooks(
+        self, event: ReplyEvent, text: str | None
+    ) -> str | None:
+        for hook in self._post_reply_hooks:
+            try:
+                modified = await hook(event, text)
+                if modified is not None:
+                    text = modified
+            except Exception:
+                pass
+        return text
 
     def start_reply(
         self,
@@ -321,7 +342,7 @@ class ReplyOrchestrator:
             return None
 
         # 将通知内容推入消息队列作为触发消息
-        from neobot_app.message.queue_impl import QueueEntryType
+        from neobot_app.message.queue import QueueEntryType
 
         @dataclass
         class _SyntheticSender:
@@ -468,41 +489,10 @@ class ReplyOrchestrator:
         return 120.0
 
     async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
-        envelope = RuntimeEnvelope(
-            kind="reply_lifecycle",
-            stage="message.send.before",
-            source="app.reply",
-            target=f"{conversation_ref.kind}:{conversation_ref.id}",
-            payload={"conversation_ref": conversation_ref, "message": payload},
-            context={},
-        )
-        dispatch = getattr(self._runtime_events, "dispatch_envelope", None)
-        if callable(dispatch):
-            envelope = await dispatch(envelope)
-        if envelope.consumed:
-            return envelope.result
-        send_payload = envelope.payload.get("message", payload)
-        result = await asyncio.wait_for(
-            self._adapter.send(conversation_ref, send_payload),
-            timeout=self._get_io_timeout_seconds(),
-        )
-        after = RuntimeEnvelope(
-            kind="reply_lifecycle",
-            stage="message.send.after",
-            source="app.reply",
-            target=f"{conversation_ref.kind}:{conversation_ref.id}",
-            payload={"conversation_ref": conversation_ref, "message": send_payload, "result": result},
-            context={},
-        )
-        if callable(dispatch):
-            await dispatch(after)
-        return result
+        return await self._sender.send_with_timeout(conversation_ref, payload)
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
-        return await asyncio.wait_for(
-            self._adapter.call_api(action, params),
-            timeout=self._get_io_timeout_seconds(),
-        )
+        return await self._sender.call_api_with_timeout(action, params)
 
     def _get_private_chat_max_tokens(self) -> int:
         if self._config is not None:
@@ -600,57 +590,17 @@ class ReplyOrchestrator:
         return 5.0
 
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
-        if self._debug_recorder is None:
-            return
-        self._debug_recorder.record_reply_event(stage, event, **extra)
+        self._debug_helper.record(stage, event, **extra)
 
     async def _emit_runtime_event(self, stage: str, event: ReplyEvent, **payload: object) -> RuntimeEnvelope:
-        envelope = RuntimeEnvelope(
-            kind="reply_lifecycle",
-            stage=stage,
-            source="app.reply",
-            target=(
-                f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
-                if event.conversation_ref is not None
-                else None
-            ),
-            payload={"reply_event": event, **payload},
-            context={
-                "event_id": event.event_id,
-                "mode": event.mode,
-                "state": event.state.name,
-            },
-        )
-        dispatch = getattr(self._runtime_events, "dispatch_envelope", None)
-        if callable(dispatch):
-            return await dispatch(envelope)
-        return envelope
+        return await self._debug_helper.emit_runtime_event(stage, event, **payload)
 
     async def _handle_runtime_failure(self, event: ReplyEvent, exc: Exception) -> None:
-        if not isinstance(exc, RuntimeError):
-            return
-        if "chat provider" not in str(exc):
-            return
-        if event.conversation_ref is None:
-            return
-        try:
-            await self._send_with_timeout(event.conversation_ref, self._provider_error_message)
-        except Exception as send_exc:
-            self._logger.error(
-                "Provider unavailable notice failed",
-                event_id=event.event_id,
-                error=str(send_exc),
-            )
-            self._record_debug(
-                "provider_unavailable_notice_failed",
-                event,
-                send_error=str(send_exc),
-            )
-            return
-        self._record_debug(
-            "provider_unavailable_notice_sent",
+        return await self._debug_helper.handle_runtime_failure(
             event,
-            notice=self._provider_error_message,
+            exc,
+            provider_error_message=self._provider_error_message,
+            send_with_timeout=self._send_with_timeout,
         )
 
     async def _run(
@@ -736,8 +686,17 @@ class ReplyOrchestrator:
             all_new=all_new,
         )
         self._record_debug("base_prompt_built", event, queue_key=queue_key, prompt=prompt)
-        reply_text = await self._generate_reply(event, prompt)
+
+        # pre-reply hooks：可短路跳过 AI 生成
+        reply_text = await self._apply_pre_reply_hooks(event)
+        if reply_text is None:
+            reply_text = await self._generate_reply(event, prompt)
+
         self._record_debug("reply_generated", event, queue_key=queue_key, reply_text=reply_text)
+
+        # post-reply hooks：可对文本做后处理
+        reply_text = await self._apply_post_reply_hooks(event, reply_text)
+
         await self._send_reply(event, reply_text)
 
     async def _maybe_trigger_sticker(
@@ -959,7 +918,7 @@ class ReplyOrchestrator:
 
         async def react_emoji_handler(message_number: int, emoji_id: int) -> str:
             from neobot_adapter.request.message import set_msg_emoji_like
-            from neobot_app.message.queue_impl import ReactionEntry
+            from neobot_app.message.queue import ReactionEntry
 
             msg_id = numbering.get_message_id(message_number)
             if msg_id is None:
@@ -1125,7 +1084,7 @@ class ReplyOrchestrator:
         # 记录已渲染的群成员用户ID，用于挂起恢复时补充新成员档案
         rendered_user_ids: set[str] = set()
         if is_group:
-            from neobot_app.message.queue_impl import QueueEntryType as _QET
+            from neobot_app.message.queue import QueueEntryType as _QET
             for entry in queue_copy.entries(queue_key):
                 if entry.kind == _QET.MESSAGE and entry.message is not None:
                     uid = getattr(entry.message, "user_id", None)
@@ -1175,6 +1134,16 @@ class ReplyOrchestrator:
             )
 
         _heartbeat_token = SILENT_HEARTBEAT.set(reset_silent_deadline)
+
+        # pre-reply hooks：可短路跳过 Agent 循环，直接用返回文本发送
+        pre_hook_text = await self._apply_pre_reply_hooks(event)
+        if pre_hook_text is not None:
+            event.generated_text = pre_hook_text
+            self._record_debug(
+                "reply_generated", event, queue_key=queue_key, reply_text=pre_hook_text
+            )
+            await self._send_reply(event, pre_hook_text)
+            return
 
         while True:
             reply_sent = False
@@ -1555,7 +1524,7 @@ class ReplyOrchestrator:
                             new_entries, queue_key, rendered_user_ids, numbering, queue_copy
                         )
                         # 更新已渲染用户ID集合
-                        from neobot_app.message.queue_impl import QueueEntryType as _QET2
+                        from neobot_app.message.queue import QueueEntryType as _QET2
                         for entry in new_entries:
                             if entry.kind == _QET2.MESSAGE and entry.message is not None:
                                 uid = getattr(entry.message, "user_id", None)
@@ -1671,7 +1640,7 @@ class ReplyOrchestrator:
         - 指纹在 snapshot 中已存在 → 不是新条目（即使推送顺序与 message_id 顺序不一致）
         - 指纹不在 snapshot 中 → 新条目（支持队列驱逐后的安全回退）
         """
-        from neobot_app.message.queue_impl import QueueEntryType
+        from neobot_app.message.queue import QueueEntryType
 
         source_entries = source.entries(queue_key)
         if not source_entries:
@@ -1682,14 +1651,14 @@ class ReplyOrchestrator:
         # 收集 snapshot 中所有条目的指纹
         snapshot_fingerprints: set[str] = set()
         for entry in snapshot_entries:
-            fp = _entry_fingerprint(entry)
+            fp = entry_fingerprint(entry)
             if fp:
                 snapshot_fingerprints.add(fp)
 
         # 在 source 中找出指纹不在 snapshot 中的新条目
         new_entries: list = []
         for entry in source_entries:
-            fp = _entry_fingerprint(entry)
+            fp = entry_fingerprint(entry)
             if fp and fp in snapshot_fingerprints:
                 continue  # 已存在于快照中
             new_entries.append(entry)
@@ -1930,7 +1899,7 @@ class ReplyOrchestrator:
         - 后台通知：立即中断挂起
         返回 (新消息条目列表, 通知文本或None)；返回空列表且无通知表示超时。
         """
-        from neobot_app.message.queue_impl import QueueEntryType as _QET
+        from neobot_app.message.queue import QueueEntryType as _QET
 
         suspend_secs = self._get_group_chat_suspend_wait_seconds()
         at_delay = self._get_at_mention_reply_delay_seconds()
@@ -2066,7 +2035,7 @@ class ReplyOrchestrator:
         queue_copy: MessageQueue,
     ) -> str:
         """为群聊挂起恢复构建增量提示文本：仅包含新消息和新成员档案。"""
-        from neobot_app.message.queue_impl import QueueEntryType
+        from neobot_app.message.queue import QueueEntryType
 
         # 收集新消息中的用户ID
         new_user_ids: list[str] = []
@@ -2354,169 +2323,17 @@ class ReplyOrchestrator:
         images: list[int] | None = None,
         merge_text_with_image: bool = False,
     ) -> None:
-        before_postprocess = await self._emit_runtime_event(
-            "reply.postprocess.before",
+        # post-reply hooks：可对回复文本做后处理
+        text = await self._apply_post_reply_hooks(event, text) or text
+        return await self._sender.send_reply(
             event,
-            text=text,
-            segments=segments,
-            send_original=send_original,
-            images=images,
-        )
-        text = str(before_postprocess.payload.get("text", text))
-        segments = before_postprocess.payload.get("segments", segments)
-        send_original = bool(before_postprocess.payload.get("send_original", send_original))
-        images = before_postprocess.payload.get("images", images)
-        before_send = await self._emit_runtime_event(
-            "reply.send.before",
-            event,
-            text=text,
-            segments=segments,
-            send_original=send_original,
-            images=images,
+            text,
             reply_to_message_id=reply_to_message_id,
             mention_user_ids=mention_user_ids,
-        )
-        if before_send.consumed:
-            event.send_response = before_send.result
-            event.transition(ReplyState.COMPLETED)
-            return
-        text = str(before_send.payload.get("text", text))
-        segments = before_send.payload.get("segments", segments)
-        send_original = bool(before_send.payload.get("send_original", send_original))
-        images = before_send.payload.get("images", images)
-        reply_to_message_id = before_send.payload.get("reply_to_message_id", reply_to_message_id)
-        mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
-        event.transition(ReplyState.SENDING)
-        if event.conversation_ref is None:
-            raise ValueError("ReplyEvent.conversation_ref is None")
-
-        send_results: list[object] = []
-        formatted_messages: list[list[dict]] = []
-
-        # Phase B: 文字与第一张图片合并发送（不切分文字）
-        if images and merge_text_with_image:
-            image_entries = self._resolve_image_entries(images)
-            if image_entries:
-                first_img = image_entries[0]
-                merged = self._build_reply_segments(
-                    text=text,
-                    conversation_kind=event.conversation_ref.kind,
-                    reply_to_message_id=reply_to_message_id,
-                    mention_user_ids=mention_user_ids,
-                )
-                merged.append(prepare_image_segment(self._file_server, first_img.file_path))
-                formatted_messages.append(merged)
-                send_results.append(await self._send_with_timeout(event.conversation_ref, merged))
-                if self._emoji_service:
-                    await self._emoji_service.record_usage(images[0])
-                # 发送剩余图片
-                for i, entry in enumerate(image_entries[1:], start=1):
-                    img_seg = [prepare_image_segment(self._file_server, entry.file_path)]
-                    formatted_messages.append(img_seg)
-                    send_results.append(await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path))
-                    if self._emoji_service:
-                        await self._emoji_service.record_usage(images[i])
-            event.send_response = send_results[0] if len(send_results) == 1 else send_results
-            if event.conversation_ref.kind == "private":
-                event.transition(ReplyState.GENERATING)
-            else:
-                event.transition(ReplyState.COMPLETED)
-            self._record_debug(
-                "reply_sent",
-                event,
-                formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
-                reply_to_message_id=reply_to_message_id,
-            )
-            return
-
-        # Phase A: 先逐一发送图片
-        if images:
-            for image_number in images:
-                if self._emoji_service is None:
-                    continue
-                entry = self._emoji_service.get_entry(image_number)
-                if entry is None:
-                    continue
-                img_seg = [prepare_image_segment(self._file_server, entry.file_path)]
-                formatted_messages.append(img_seg)
-                send_results.append(await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path))
-                await self._emoji_service.record_usage(image_number)
-
-        # ── 超长回复 → Markdown 图片渲染 ──
-        if not images and not send_original and not segments and text.strip():
-            if self._can_use_markdown_image(text):
-                try:
-                    image_path = await self._render_long_reply_as_image(text)
-                    img_seg = [prepare_image_segment(self._file_server, image_path)]
-                    formatted_messages.append(img_seg)
-                    send_results.append(await self._send_with_timeout(event.conversation_ref, img_seg))
-                    event.send_response = send_results[0]
-                    if event.conversation_ref.kind == "private":
-                        event.transition(ReplyState.GENERATING)
-                    else:
-                        event.transition(ReplyState.COMPLETED)
-                    self._record_debug("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
-                    return
-                except Exception as exc:
-                    self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
-
-        # Phase C: 发送文字（切分后逐条发送）
-        reply_messages = self._build_reply_messages(
-            text,
             segments=segments,
             send_original=send_original,
-        )
-        after_postprocess = await self._emit_runtime_event(
-            "reply.postprocess.after",
-            event,
-            text=text,
-            reply_messages=reply_messages,
-            segments=segments,
-            send_original=send_original,
-        )
-        reply_messages = list(after_postprocess.payload.get("reply_messages", reply_messages))
-        is_group = event.conversation_ref.kind == "group"
-        pipeline_key = f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
-
-        for index, message_text in enumerate(reply_messages):
-            if index > 0:
-                if is_group:
-                    cooldown = self._get_sentence_cooldown_seconds()
-                else:
-                    cooldown = self._get_private_chat_sentence_cooldown_seconds()
-                last_time = self._last_sentence_time.get(pipeline_key, 0.0)
-                elapsed = monotonic_seconds() - last_time
-                if elapsed < cooldown:
-                    await asyncio.sleep(cooldown - elapsed)
-
-            formatted = self._build_reply_segments(
-                text=message_text,
-                conversation_kind=event.conversation_ref.kind,
-                reply_to_message_id=reply_to_message_id if index == 0 else None,
-                mention_user_ids=mention_user_ids if index == 0 else None,
-            )
-            formatted_messages.append(formatted)
-            send_results.append(await self._send_with_timeout(event.conversation_ref, formatted))
-
-            self._last_sentence_time[pipeline_key] = monotonic_seconds()
-
-        event.send_response = send_results[0] if len(send_results) == 1 else send_results
-        if event.conversation_ref is not None and event.conversation_ref.kind == "private":
-            event.transition(ReplyState.GENERATING)
-        else:
-            event.transition(ReplyState.COMPLETED)
-        self._record_debug(
-            "reply_sent",
-            event,
-            formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
-            reply_to_message_id=reply_to_message_id,
-        )
-        await self._emit_runtime_event(
-            "reply.send.after",
-            event,
-            reply_to_message_id=reply_to_message_id,
-            formatted_messages=formatted_messages,
-            send_results=send_results,
+            images=images,
+            merge_text_with_image=merge_text_with_image,
         )
 
     def _push_self_sent_message(
@@ -2527,71 +2344,13 @@ class ReplyOrchestrator:
         conv_ref: ConversationRef,
         text: str,
     ) -> None:
-        """将 bot 自身发送的消息记录到消息队列，供后续上下文感知。"""
-        import time
-        from neobot_adapter.model.basic import PostMessageMessagesender
-        from neobot_adapter.model.message import (
-            GroupMessage,
-            MessageSegment,
-            MessageTypeEnum,
-            PrivateMessage,
-        )
-
-        bot_qq = 0
-        bot_name = self._get_bot_name()
-        if self._config is not None:
-            bot_cfg = getattr(self._config, "bot", None)
-            if bot_cfg is not None:
-                account = getattr(bot_cfg, "account", 0)
-                if account:
-                    bot_qq = int(account)
-
-        synthetic_msg_id = -int(time.time() * 1_000_000)
-
-        message_segments = [MessageSegment(type="text", data={"text": text})]
-        sender = PostMessageMessagesender(user_id=bot_qq, nickname=bot_name)
-
-        if conv_ref.kind == "group":
-            msg = GroupMessage(
-                message_type=MessageTypeEnum.group,
-                message_id=synthetic_msg_id,
-                user_id=bot_qq,
-                message=message_segments,
-                raw_message=text,
-                group_id=int(conv_ref.id) if conv_ref.id else 0,
-                sender=sender,
-            )
-        else:
-            msg = PrivateMessage(
-                message_type=MessageTypeEnum.private,
-                message_id=synthetic_msg_id,
-                user_id=bot_qq,
-                message=message_segments,
-                raw_message=text,
-                sender=sender,
-            )
-
-        queue.push(queue_key, msg)
-        queue_copy.push(queue_key, msg)
-
-    # ── Markdown 图片渲染（超长回复自动转图片） ──
+        self._sender.push_self_sent_message(queue, queue_copy, queue_key, conv_ref, text)
 
     def _can_use_markdown_image(self, text: str) -> bool:
-        """检查是否应将文本渲染为 markdown 图片（超长回复自动转图片）。"""
-        if self._markdown_image_converter is None:
-            return False
-        result = process_reply_text(
-            text,
-            bot_name=self._get_bot_name(),
-            fallback_template=self._get_long_reply_fallback_template(),
-            max_length=self._get_long_reply_max_length(),
-            max_sentence_count=self._get_long_reply_max_sentence_count(),
-        )
-        return result.fallback_used
+        return self._sender._can_use_markdown_image(text)
 
     async def _render_long_reply_as_image(self, text: str) -> Path:
-        """将文本渲染为 markdown 图片，返回 Path。"""
-        return await self._markdown_image_converter.convert(text)
+        return await self._sender._render_long_reply_as_image(text)
 
     def _build_reply_messages(
         self,
@@ -2600,20 +2359,7 @@ class ReplyOrchestrator:
         segments: list[str] | None = None,
         send_original: bool = False,
     ) -> list[str]:
-        if send_original:
-            return [text.strip()]
-        if segments:
-            cleaned_segments = [segment.strip() for segment in segments if segment.strip()]
-            if cleaned_segments:
-                return cleaned_segments
-        result = process_reply_text(
-            text,
-            bot_name=self._get_bot_name(),
-            fallback_template=self._get_long_reply_fallback_template(),
-            max_length=self._get_long_reply_max_length(),
-            max_sentence_count=self._get_long_reply_max_sentence_count(),
-        )
-        return result.messages
+        return self._sender._build_reply_messages(text, segments=segments, send_original=send_original)
 
     @staticmethod
     def _build_reply_segments(
@@ -2623,30 +2369,15 @@ class ReplyOrchestrator:
         reply_to_message_id: int | None = None,
         mention_user_ids: list[int] | None = None,
     ) -> list[dict]:
-        segments: list[dict] = []
-        if mention_user_ids and conversation_kind == "group":
-            for qq in mention_user_ids:
-                segments.append({
-                    "type": "at",
-                    "data": {"qq": str(qq)},
-                })
-
-        if reply_to_message_id is not None:
-            segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
-
-        segments.append({"type": "text", "data": {"text": text}})
-        return segments
+        return ReplySender.build_reply_segments(
+            text=text,
+            conversation_kind=conversation_kind,
+            reply_to_message_id=reply_to_message_id,
+            mention_user_ids=mention_user_ids,
+        )
 
     def _resolve_image_entries(self, image_numbers: list[int]) -> list[Any]:
-        """将表情包编号列表解析为 EmojiEntry 列表，跳过无效编号。"""
-        if self._emoji_service is None:
-            return []
-        entries: list[Any] = []
-        for number in image_numbers:
-            entry = self._emoji_service.get_entry(number)
-            if entry is not None:
-                entries.append(entry)
-        return entries
+        return self._sender._resolve_image_entries(image_numbers)
 
     # ── 工具方法 ──
 

@@ -775,7 +775,7 @@ class EventPipeline:
         self._logger.info(f"收到通知[{label}] {info}".rstrip())
 
     async def _handle_reaction_notice(self, event: Dict[str, Any]) -> None:
-        from neobot_app.message.queue_impl import ReactionEntry
+        from neobot_app.message.queue import ReactionEntry
 
         notice = safe_parse_model(event, EmojiReaction)
         if notice.message_id is None or notice.emoji_id is None:
@@ -821,7 +821,7 @@ class EventPipeline:
         )
 
     async def _handle_poke_notice(self, event: Dict[str, Any]) -> None:
-        from neobot_app.message.queue_impl import PokeEntry
+        from neobot_app.message.queue import PokeEntry
 
         group_id = event.get("group_id")
         if group_id is not None:

@@ -725,8 +725,8 @@ class ScheduledTask:
 
 
 @dataclass
-class AgentCreatorGallery:
-    """Creator Agent 图库配置。"""
+class GalleryConfig:
+    """图库配置。"""
 
     capacity: int = field(
         default=10,
@@ -739,8 +739,8 @@ class AgentCreatorGallery:
 
 
 @dataclass
-class AgentCreatorEmoji:
-    """Creator Agent 表情包管理配置。"""
+class CreatorEmojiConfig:
+    """表情包管理配置。"""
 
     allow_add: bool = field(
         default=False,
@@ -757,8 +757,8 @@ class AgentCreatorEmoji:
 
 
 @dataclass
-class AgentCreatorDrawing:
-    """Creator Agent 后台绘图配置。"""
+class BackgroundDrawConfig:
+    """后台绘图配置。"""
 
     background_enabled: bool = field(
         default=True,
@@ -787,16 +787,16 @@ class AgentCreatorDrawing:
 
 
 @dataclass
-class AgentCreator:
-    """Creator Agent 配置。"""
+class ImageCreationConfig:
+    """图像创作配置（生图、图库、表情包）。"""
 
     enabled: bool = field(
         default=False,
-        metadata={"description": "是否启用Creator Agent"},
+        metadata={"description": "是否启用图像创作功能"},
     )
-    gallery: AgentCreatorGallery = field(default_factory=AgentCreatorGallery)
-    emoji: AgentCreatorEmoji = field(default_factory=AgentCreatorEmoji)
-    drawing: AgentCreatorDrawing = field(default_factory=AgentCreatorDrawing)
+    gallery: GalleryConfig = field(default_factory=GalleryConfig)
+    emoji: CreatorEmojiConfig = field(default_factory=CreatorEmojiConfig)
+    drawing: BackgroundDrawConfig = field(default_factory=BackgroundDrawConfig)
 
 
 @dataclass
@@ -1044,7 +1044,7 @@ class AgentFileOperation:
 class Agent:
     """Agent 配置。"""
 
-    creator: AgentCreator = field(default_factory=AgentCreator)
+    creator: ImageCreationConfig = field(default_factory=ImageCreationConfig)
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
     willingness: AgentWillingness = field(default_factory=AgentWillingness)

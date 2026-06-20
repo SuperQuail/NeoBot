@@ -10,10 +10,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class SandboxManagerSkill(SkillModule):
     """沙箱文件操作 Skill — 沙箱内文件读写/编辑/搜索/删列移拷贝及发送到聊天。"""
@@ -307,15 +305,6 @@ class SandboxManagerSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown sandbox_manager tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
@@ -336,7 +325,6 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_write_file(self: SandboxManagerSkill, args: dict) -> str:
     """CC 风格：直接写文本内容。"""
     if self._sandbox is None:
@@ -356,7 +344,6 @@ async def _handle_write_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_write_file_base64(self: SandboxManagerSkill, args: dict) -> str:
     """二进制内容通过 base64 写入。"""
     if self._sandbox is None:
@@ -373,7 +360,6 @@ async def _handle_write_file_base64(self: SandboxManagerSkill, args: dict) -> st
         return _json({"ok": True, "path": str(path), "size": len(data)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_edit_file(self: SandboxManagerSkill, args: dict) -> str:
     """CC 风格 Edit：读取→替换→写回。"""
@@ -408,7 +394,6 @@ async def _handle_edit_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
     """CC 风格 Glob：按模式匹配文件路径。"""
     if self._sandbox is None:
@@ -439,7 +424,6 @@ async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": True, "matches": result, "count": len(matches)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
     """CC 风格 Grep：正则搜索文件内容。"""
@@ -516,7 +500,6 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
         "files_searched": files_searched,
     })
 
-
 async def _handle_delete_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -531,7 +514,6 @@ async def _handle_delete_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -543,7 +525,6 @@ async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": True, "files": files})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_move_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -561,7 +542,6 @@ async def _handle_move_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_copy_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -577,7 +557,6 @@ async def _handle_copy_file(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": True})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._adapter is None:
@@ -623,7 +602,6 @@ async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": f"发送失败: {e}"})
 
-
 async def _handle_send_chat_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._adapter is None:
         return _json({"ok": False, "error": "adapter 未配置"})
@@ -668,7 +646,6 @@ async def _handle_send_chat_file(self: SandboxManagerSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": f"发送失败: {e}"})
 
-
 async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
     chat_flow_id = str(args.get("chat_flow_id", "")).strip()
     minutes = int(args.get("minutes", 120))
@@ -678,7 +655,6 @@ async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": True, "note": f"模拟：临时目录 {chat_flow_id} 已保活 {minutes} 分钟"})
     self._sandbox.ensure_temp_dir(chat_flow_id)
     return _json({"ok": True, "note": f"临时目录 {chat_flow_id} 已保活 {minutes} 分钟"})
-
 
 async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -699,7 +675,6 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": True, "path": str(path), "size": len(data)})
     except Exception as e:
         return _json({"ok": False, "error": f"下载失败: {e}"})
-
 
 _HANDLERS = {
     "read_file": _handle_read_file,

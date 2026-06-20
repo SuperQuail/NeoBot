@@ -93,7 +93,7 @@ class MessageNumbering:
         previous_entries: list | None = None,
     ) -> str:
         """Number newly arrived queue entries and render them as text."""
-        from neobot_app.message.queue_impl import QueueEntryType
+        from neobot_app.message.queue import QueueEntryType
 
         render_context = context_entries or messages
         sender_labels = queue._build_sender_labels(render_context)
@@ -138,7 +138,7 @@ class MessageNumbering:
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:
         """Number raw message objects and render them as text."""
-        from neobot_app.message.queue_impl import QueueEntry, QueueEntryType
+        from neobot_app.message.queue import QueueEntry, QueueEntryType
 
         entries = [QueueEntry(kind=QueueEntryType.MESSAGE, message=msg) for msg in messages]
         sender_labels = queue._build_sender_labels(entries)
