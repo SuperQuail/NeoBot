@@ -2,6 +2,7 @@
 
 每 N 秒扫描 sandbox/ 下的持久化目录（tools/、docs/、assets/），
 整理文件命名和位置，删除冗余文件，更新 文件存储.md。
+清理根目录和 tmp/ 中的不当文件，清除空目录。
 如果自上次维护以来无非 temp 文件变更，则跳过。
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -29,15 +31,17 @@ class SandboxMaintenanceManager:
         self,
         sandbox_root: str | Path,
         *,
-        interval_seconds: int = 43200,
+        interval_seconds: int = 10800,
         enabled: bool = True,
         notification_hub: Any = None,
+        sandbox_service: Any = None,
         logger: Logger | None = None,
     ) -> None:
         self._root = Path(sandbox_root).resolve()
         self._interval = interval_seconds
         self._enabled = enabled
         self._notification_hub = notification_hub
+        self._sandbox = sandbox_service
         self._logger = logger or NullLogger()
         self._runner: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -110,22 +114,34 @@ class SandboxMaintenanceManager:
             "moved": [],
             "doc_updated": False,
             "todo_processed": False,
+            "junk_cleaned": False,
+            "capacity": self._get_capacity_info(),
         }
 
         # 确保目录存在
         for d in _PERSISTENT_DIRS:
             (self._root / d).mkdir(parents=True, exist_ok=True)
 
-        # 1. 扫描并整理文件
+        # 0. 清理根目录和 tmp/ 中的不当文件
+        self._clean_misplaced_files(result)
+
+        # 1. 清理垃圾文件
+        self._clean_junk_files(result)
+        result["junk_cleaned"] = True
+
+        # 2. 扫描并整理文件
         self._organize_files(result)
 
-        # 2. 更新 文件存储.md
+        # 3. 更新 文件存储.md
         self._update_storage_doc(result)
 
-        # 3. 尝试处理 TODO
+        # 4. 尝试处理 TODO
         await self._process_todo(result)
 
-        # 4. 更新维护标记
+        # 5. 刷新容量信息（清理后）
+        result["capacity"] = self._get_capacity_info()
+
+        # 6. 更新维护标记
         self._touch_maintenance_marker()
 
         return result
@@ -152,6 +168,109 @@ class SandboxMaintenanceManager:
                 return True
 
         return False
+
+    # ── 已知的按 chat_flow_id 命名的目录前缀 ──
+    _CHAT_FLOW_PREFIXES = ("Group_", "Private_", "Friend_", "Channel_")
+
+    # 已知的持久化目录名（不会被误清理）
+    _KNOWN_DIRS = frozenset(
+        _PERSISTENT_DIRS + ["temp", "tmp", "gift", "__pycache__"]
+    )
+    # 根目录保留文件（不被移动到 docs/）
+    _KEPT_FILES = frozenset({".last_maintenance", "文件存储.md", "TODO.md"})
+
+    def _is_chat_flow_dir(self, name: str) -> bool:
+        return name.startswith(self._CHAT_FLOW_PREFIXES)
+
+    def _clean_misplaced_files(self, result: dict) -> None:
+        """清理根目录和 tmp/ 中不当放置的文件和目录。
+
+        - 根目录下的 chat_flow 目录 → 移到 temp/
+        - 根目录下的孤立文件 → 移到 docs/ 或删除
+        - tmp/ 下的内容 → 移到 temp/，删除 tmp/
+        """
+        # 根目录清理
+        for entry in sorted(self._root.iterdir()):
+            name = entry.name
+            if name in self._KNOWN_DIRS or name.startswith("."):
+                continue
+
+            if entry.is_dir():
+                if self._is_chat_flow_dir(name):
+                    # chat_flow 目录应放在 temp/ 下
+                    target = self._root / "temp" / name
+                    try:
+                        if not target.exists():
+                            shutil.move(str(entry), str(target))
+                        else:
+                            # 目标存在 → 合并文件
+                            self._merge_dir(entry, target)
+                            shutil.rmtree(str(entry))
+                        result["moved"].append(f"{name} -> temp/{name}")
+                        self._logger.debug(f"移动 chat_flow 目录: {name} -> temp/")
+                    except OSError as e:
+                        self._logger.warning(f"移动目录失败 {name}: {e}")
+                else:
+                    # 非 chat_flow 非已知目录 → 移到 docs/
+                    target = self._root / "docs" / name
+                    try:
+                        if not target.exists():
+                            shutil.move(str(entry), str(target))
+                            result["moved"].append(f"{name} -> docs/{name}")
+                            self._logger.debug(f"移动未知目录: {name} -> docs/")
+                    except OSError as e:
+                        self._logger.warning(f"移动目录失败 {name}: {e}")
+            elif entry.is_file():
+                # 保留文件不移动
+                if name in self._KEPT_FILES:
+                    continue
+                # 根目录下的孤立文件 → 移到 docs/
+                target = self._root / "docs" / name
+                try:
+                    shutil.move(str(entry), str(target))
+                    result["moved"].append(f"{name} -> docs/{name}")
+                    self._logger.debug(f"移动根目录文件: {name} -> docs/")
+                except OSError as e:
+                    self._logger.warning(f"移动文件失败 {name}: {e}")
+
+        # 清理残留的 tmp/ 目录（旧版本遗留，已无代码使用）
+        tmp_dir = self._root / "tmp"
+        if tmp_dir.is_dir():
+            temp_base = self._root / "temp"
+            temp_base.mkdir(parents=True, exist_ok=True)
+            for entry in sorted(tmp_dir.iterdir()):
+                target = temp_base / entry.name
+                try:
+                    if not target.exists():
+                        shutil.move(str(entry), str(target))
+                    else:
+                        if entry.is_dir():
+                            self._merge_dir(entry, target)
+                        shutil.rmtree(str(entry))
+                    result["moved"].append(f"tmp/{entry.name} -> temp/{entry.name}")
+                except OSError as e:
+                    self._logger.warning(f"tmp/ 迁移失败 {entry.name}: {e}")
+            try:
+                shutil.rmtree(str(tmp_dir))
+                result["removed"].append("tmp/ (已废弃)")
+                self._logger.info("已清理废弃的 tmp/ 目录")
+            except OSError as e:
+                self._logger.warning(f"删除 tmp/ 失败: {e}")
+
+    @staticmethod
+    def _merge_dir(src: Path, dst: Path) -> None:
+        """将 src 目录中的文件合并到 dst 目录。"""
+        dst.mkdir(parents=True, exist_ok=True)
+        for item in src.rglob("*"):
+            if item.is_file():
+                rel = item.relative_to(src)
+                target = dst / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists():
+                    try:
+                        shutil.move(str(item), str(target))
+                    except OSError:
+                        pass
 
     def _organize_files(self, result: dict) -> None:
         """整理持久化目录中的文件。"""
@@ -206,6 +325,90 @@ class SandboxMaintenanceManager:
             except OSError:
                 pass
 
+    def _clean_junk_files(self, result: dict) -> None:
+        """扫描整个沙箱，删除垃圾文件（缓存、临时文件、空目录等）。"""
+        junk_patterns = [
+            "__pycache__",
+            ".cache",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            "node_modules",
+        ]
+        junk_suffixes = (
+            ".tmp", ".bak", ".swp", ".pyc", ".pyo", ".log",
+        )
+        junk_names = frozenset({
+            ".DS_Store", "Thumbs.db", ".directory",
+            "desktop.ini",
+        })
+
+        cleaned_dirs = 0
+        cleaned_files = 0
+
+        # 扫描所有目录，删除垃圾目录
+        for entry in sorted(self._root.rglob("*"), reverse=True):
+            if not entry.is_dir():
+                continue
+            if entry.name in junk_patterns:
+                try:
+                    shutil.rmtree(str(entry))
+                    cleaned_dirs += 1
+                    self._logger.debug(f"清理垃圾目录: {entry.relative_to(self._root)}")
+                except OSError:
+                    pass
+                continue
+            # 清理空目录（已经在上面 rglob 中，通过 reverse 自底向上）
+            if entry.name not in self._KNOWN_DIRS and entry != self._root:
+                try:
+                    if not any(entry.iterdir()):
+                        entry.rmdir()
+                        cleaned_dirs += 1
+                except OSError:
+                    pass
+
+        # 扫描垃圾文件
+        for entry in self._root.rglob("*"):
+            if not entry.is_file():
+                continue
+            name = entry.name
+            should_delete = False
+
+            if name in junk_names:
+                should_delete = True
+            elif name.endswith(junk_suffixes) or name.startswith("~") or name.endswith("~"):
+                should_delete = True
+
+            if should_delete:
+                try:
+                    entry.unlink()
+                    cleaned_files += 1
+                    self._logger.debug(f"清理垃圾文件: {entry.relative_to(self._root)}")
+                except OSError:
+                    pass
+
+        if cleaned_dirs > 0:
+            result["removed"].append(f"垃圾目录 x{cleaned_dirs}")
+        if cleaned_files > 0:
+            result["removed"].append(f"垃圾文件 x{cleaned_files}")
+
+    def _get_capacity_info(self) -> dict[str, Any]:
+        """获取当前沙箱容量信息。"""
+        if self._sandbox is None:
+            return {"available": False, "reason": "sandbox_service 未配置"}
+        total = self._sandbox.get_total_size()
+        max_size = self._sandbox.max_total_size
+        remaining = max_size - total
+        return {
+            "total_bytes": total,
+            "max_bytes": max_size,
+            "remaining_bytes": remaining,
+            "total_mb": round(total / (1024 * 1024), 1),
+            "max_mb": round(max_size / (1024 * 1024), 1),
+            "remaining_mb": round(remaining / (1024 * 1024), 1),
+            "usage_percent": round(total / max_size * 100, 1) if max_size > 0 else 0,
+        }
+
     def _update_storage_doc(self, result: dict) -> None:
         """根据实际文件状态更新 文件存储.md。"""
         doc_path = self._root / _STORAGE_DOC
@@ -257,6 +460,13 @@ class SandboxMaintenanceManager:
         # 通过 notification_hub 发布 TODO 处理通知
         if self._notification_hub is not None:
             todo_list = "\n".join(f"- {item}" for item in pending_items)
+            cap = self._get_capacity_info()
+            cap_line = (
+                f"沙箱容量：已用 {cap['total_mb']}MB / 上限 {cap['max_mb']}MB "
+                f"（{cap['usage_percent']}%）"
+                if cap.get("available", True)
+                else "沙箱容量：不可用"
+            )
             try:
                 await self._notification_hub.publish(
                     source="sandbox_maintenance",
@@ -265,6 +475,7 @@ class SandboxMaintenanceManager:
                     content=(
                         "<新的必须回复内容>\n"
                         "这是一条沙箱定时维护通知。\n"
+                        f"{cap_line}\n\n"
                         "以下是 TODO.md 中的待实现工具，请在 sandbox/tools/ 目录下逐一实现：\n\n"
                         f"{todo_list}\n\n"
                         "实现要求：\n"
@@ -272,11 +483,15 @@ class SandboxMaintenanceManager:
                         "2. 测试通过后调用 file_storage__update_storage_doc 更新文件索引\n"
                         "3. 调用 file_storage__update_todo action=complete 将实现完成的项标记为完成\n"
                         "4. 所有工具完成后调用 sandbox_maintenance__get_maintenance_status 确认状态\n"
+                        "5. 注意及时清理沙箱中的垃圾文件，保持空间充足\n"
                         "</新的必须回复内容>"
                     ),
                     manager_name="sandbox_maintenance",
                     reasons=["sandbox maintenance TODO processing"],
-                    metadata={"pending_count": len(pending_items)},
+                    metadata={
+                        "pending_count": len(pending_items),
+                        "capacity": cap,
+                    },
                 )
                 result["todo_processed"] = True
                 self._logger.info(
@@ -298,7 +513,7 @@ class SandboxMaintenanceManager:
         return None
 
     def get_status(self) -> dict[str, Any]:
-        """返回当前维护状态。"""
+        """返回当前维护状态（含容量信息）。"""
         last_time = self.get_last_maintenance_time()
         pending_count = 0
         todo_path = self._root / _TODO_DOC
@@ -314,6 +529,7 @@ class SandboxMaintenanceManager:
             ),
             "persistent_dirs": _PERSISTENT_DIRS,
             "pending_todo_count": pending_count,
+            "capacity": self._get_capacity_info(),
         }
 
 

@@ -97,6 +97,10 @@ class QuailWillingManager(BaseWillingManager):
             probability *= context.official_bot_coefficient
             reasons.append(f"官方Bot系数={context.official_bot_coefficient:.3f}")
 
+        # ── 配置基础概率（group_chat_chance）──
+        probability *= context.base_probability
+        reasons.append(f"×配置概率={context.base_probability:.3f}")
+
         probability = clamp_probability(probability)
         should_reply = random.random() < probability
         reasons.append(f"最终概率={probability:.3f}")

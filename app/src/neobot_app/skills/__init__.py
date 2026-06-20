@@ -223,7 +223,10 @@ def build_all_skills(
     # ── Phase 3: 沙箱维护管理 ──
     if "sandbox_maintenance" not in disabled and sandbox_maintenance_manager is not None:
         skills_to_register.append(
-            SandboxMaintenanceSkill(maintenance_manager=sandbox_maintenance_manager)
+            SandboxMaintenanceSkill(
+                maintenance_manager=sandbox_maintenance_manager,
+                sandbox_service=sandbox_service,
+            )
         )
 
     # ── Phase 3: 礼物管理 ──

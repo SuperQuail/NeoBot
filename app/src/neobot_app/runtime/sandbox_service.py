@@ -27,9 +27,11 @@ class SandboxService:
         sandbox_root: Path,
         lock: Any = None,
         allowed_read_dirs: list[Path] | None = None,
+        max_total_size_bytes: int = 2 * 1024 * 1024 * 1024,
     ) -> None:
         self._root = sandbox_root.resolve()
         self._lock = lock
+        self._max_total_size = max_total_size_bytes
         self._allowed_read_dirs: list[Path] = []
         if allowed_read_dirs:
             for d in allowed_read_dirs:
@@ -188,3 +190,29 @@ class SandboxService:
         """清理聊天流 ID，防止路径遍历。"""
         sanitized = chat_flow_id.replace("..", "").replace("/", "").replace("\\", "")
         return sanitized or "unknown"
+
+    # ── 容量管理 ──
+
+    def get_total_size(self) -> int:
+        """计算沙箱内所有文件的总大小（字节）。"""
+        total = 0
+        for entry in self._root.rglob("*"):
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    pass
+        return total
+
+    def check_capacity(self, additional_bytes: int = 0) -> int | None:
+        """检查沙箱容量。
+
+        返回 None 表示容量充足；返回剩余可写入字节数（≤0 时表示不足）。
+        """
+        current = self.get_total_size()
+        remaining = self._max_total_size - current - additional_bytes
+        return remaining
+
+    @property
+    def max_total_size(self) -> int:
+        return self._max_total_size

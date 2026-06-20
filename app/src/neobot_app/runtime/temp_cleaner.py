@@ -1,11 +1,16 @@
 """TempCleaner — 沙箱临时文件自动清理。
 
-扫描 ``data/sandbox/temp/`` 目录，删除超过指定时间未修改的文件。
+扫描 ``data/sandbox/temp/`` 目录：
+- 删除超过指定时间未修改的文件
+- 删除空目录
+- 修复递归嵌套（temp/X/temp/X → 合并到 temp/X）
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -15,7 +20,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 class TempCleaner:
     """沙箱临时文件清理器。
 
-    按固定间隔扫描目录，清理过期的临时文件。
+    按固定间隔扫描 temp/ 目录，清理过期临时文件、空目录和嵌套异常。
     """
 
     def __init__(
@@ -76,14 +81,17 @@ class TempCleaner:
                 pass
 
     def _cleanup_once(self) -> None:
-        """执行一次清理：删除过期文件。"""
+        """执行一次清理。"""
         if not self._temp_dir.is_dir():
             return
 
         now = time.time()
         cutoff = now - self._max_age
-        removed = 0
+        files_removed = 0
+        dirs_removed = 0
+        nests_fixed = 0
 
+        # 1. 清理过期文件
         for entry in self._temp_dir.rglob("*"):
             if not entry.is_file():
                 continue
@@ -91,9 +99,63 @@ class TempCleaner:
                 mtime = entry.stat().st_mtime
                 if mtime < cutoff:
                     entry.unlink(missing_ok=True)
-                    removed += 1
+                    files_removed += 1
             except OSError:
                 pass
 
-        if removed:
-            self._logger.debug(f"TempCleaner: 清理了 {removed} 个过期文件")
+        # 2. 修复递归嵌套: temp/Group_X/temp/Group_X → 内容提到 temp/Group_X
+        for chat_dir in self._temp_dir.iterdir():
+            if not chat_dir.is_dir():
+                continue
+            nested_temp = chat_dir / "temp"
+            if not nested_temp.is_dir():
+                continue
+            for nested_chat in nested_temp.iterdir():
+                if not nested_chat.is_dir():
+                    continue
+                target = self._temp_dir / nested_chat.name
+                if target.exists():
+                    # 目标已存在 → 只移文件不覆盖
+                    for f in nested_chat.rglob("*"):
+                        if f.is_file():
+                            try:
+                                shutil.move(str(f), str(target / f.name))
+                            except OSError:
+                                pass
+                else:
+                    try:
+                        shutil.move(str(nested_chat), str(target))
+                    except OSError:
+                        pass
+                nests_fixed += 1
+            # 删除嵌套的 temp 目录
+            try:
+                shutil.rmtree(str(nested_temp))
+                dirs_removed += 1
+            except OSError:
+                pass
+
+        # 3. 清理空目录（从深到浅）
+        for root, dirs, files in os_walk_topdown(str(self._temp_dir)):
+            for d in dirs:
+                dir_path = Path(root) / d
+                try:
+                    if not any(dir_path.iterdir()):
+                        dir_path.rmdir()
+                        dirs_removed += 1
+                except OSError:
+                    pass
+
+        if files_removed or dirs_removed or nests_fixed:
+            self._logger.debug(
+                f"TempCleaner: 清理 {files_removed} 过期文件, "
+                f"{dirs_removed} 空目录, 修复 {nests_fixed} 嵌套"
+            )
+
+
+def os_walk_topdown(path: str):
+    """类似 os.walk 但返回列表（避免迭代中修改目录的问题）。"""
+    result = []
+    for root, dirs, files in os.walk(path, topdown=True):
+        result.append((root, list(dirs), list(files)))
+    return result

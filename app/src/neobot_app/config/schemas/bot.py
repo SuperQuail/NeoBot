@@ -156,10 +156,6 @@ class Chat:
         default=100,
         metadata={"description": "私聊观察上限"},
     )
-    friend_chat_chance: float = field(
-        default=0.5,
-        metadata={"description": "私聊基础回复概率"},
-    )
     friend_use_black_list: bool = field(
         default=True,
         metadata={"description": "私聊名单是否使用黑名单模式"},
@@ -896,16 +892,6 @@ class AgentMemory:
 
 
 @dataclass
-class AgentWillingness:
-    """Willingness Agent 配置。"""
-
-    enabled: bool = field(
-        default=False,
-        metadata={"description": "是否启用 Willingness Agent"},
-    )
-
-
-@dataclass
 class AgentProblemSolver:
     """Problem Solver Agent 配置。
 
@@ -985,8 +971,8 @@ class SandboxMaintenance:
         metadata={"description": "是否启用定时维护"},
     )
     interval_seconds: int = field(
-        default=43200,
-        metadata={"description": "维护间隔秒数，默认 43200（12 小时）"},
+        default=10800,
+        metadata={"description": "维护间隔秒数，默认 10800（3 小时）"},
     )
 
 
@@ -997,6 +983,10 @@ class AgentSandbox:
     enabled: bool = field(
         default=True,
         metadata={"description": "是否启用沙箱系统"},
+    )
+    max_total_size_bytes: int = field(
+        default=2 * 1024 * 1024 * 1024,
+        metadata={"description": "沙箱整体最大总容量（字节），默认 2GB。写入前检查，超出则拒绝"},
     )
     temp_max_age_seconds: int = field(
         default=1800,
@@ -1047,7 +1037,6 @@ class Agent:
     creator: ImageCreationConfig = field(default_factory=ImageCreationConfig)
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
-    willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
     browser: AgentBrowser = field(default_factory=AgentBrowser)
     sandbox: AgentSandbox = field(default_factory=AgentSandbox)
@@ -1133,10 +1122,6 @@ class EnhancedChat(Chat):
     willing_agent_global_coefficient: float = field(
         default=1.0,
         metadata={"description": "agent 模式全局回复概率系数"},
-    )
-    friend_response_coefficient: dict[str, float] = field(
-        default_factory=dict,
-        metadata={"description": "私聊回复系数", "aliases": ("friend_Response_coefficient",)},
     )
     enable_group_startup_history_warmup: bool = field(
         default=False,

@@ -226,6 +226,7 @@ def build_sandbox_components(
             data_dir / "emoji",
             data_dir / "creator" / "gallery",
         ],
+        max_total_size_bytes=sandbox_cfg.max_total_size_bytes,
     )
     result["temp_cleaner"] = TempCleaner(
         temp_dir=data_dir / "sandbox" / "temp",
@@ -237,13 +238,14 @@ def build_sandbox_components(
         sandbox_root=data_dir / "sandbox",
         interval_seconds=(
             sandbox_cfg.maintenance.interval_seconds
-            if sandbox_cfg else 43200
+            if sandbox_cfg else 10800
         ),
         enabled=(
             sandbox_cfg.maintenance.enabled
             if sandbox_cfg else True
         ),
         notification_hub=notification_hub,
+        sandbox_service=result["sandbox_service"],
         logger=None,  # injected below
     )
     return result

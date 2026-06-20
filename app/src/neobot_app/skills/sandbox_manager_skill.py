@@ -664,12 +664,46 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
     chat_flow_id = str(args.get("chat_flow_id", "")).strip()
     if not url or not save_name or not chat_flow_id:
         return _json({"ok": False, "error": "缺少必要参数 url/save_name/chat_flow_id"})
+
+    # 安全检查：禁止非 HTTP(S) 协议
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return _json({"ok": False, "error": f"不支持的协议: {parsed.scheme}，仅允许 http/https"})
+
+    # 安全检查：禁止回环地址
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return _json({"ok": False, "error": "禁止下载回环地址"})
+
+    # 安全检查：禁止内网地址
+    if hostname.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                            "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                            "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                            "172.30.", "172.31.", "192.168.")):
+        return _json({"ok": False, "error": "禁止下载内网地址"})
+
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.content
+
+        # 检查沙箱总容量（不限制单文件大小）
+        remaining = self._sandbox.check_capacity(len(data))
+        if remaining is not None and remaining < 0:
+            current = self._sandbox.get_total_size()
+            max_mb = self._sandbox.max_total_size / (1024 * 1024)
+            current_mb = current / (1024 * 1024)
+            return _json({
+                "ok": False,
+                "error": (
+                    f"沙箱空间不足：当前 {current_mb:.0f}MB / 上限 {max_mb:.0f}MB，"
+                    f"下载需要 {len(data) / (1024*1024):.1f}MB"
+                ),
+            })
+
         path = self._sandbox.resolve_path(save_name, chat_flow_id)
         await self._sandbox.write_file(path, data)
         return _json({"ok": True, "path": str(path), "size": len(data)})

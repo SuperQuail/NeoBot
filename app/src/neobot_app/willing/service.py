@@ -397,9 +397,7 @@ class WillingService:
         return value
 
     def _base_probability(self, conversation_type: str) -> float:
-        if conversation_type == "group":
-            return self._clamp_probability(self._config.chat.group_chat_chance)
-        return self._clamp_probability(self._config.chat.friend_chat_chance)
+        return self._clamp_probability(self._config.chat.group_chat_chance)
 
     def _conversation_coefficient(self, message: ChatMessage) -> float:
         if isinstance(message, GroupMessage) and message.group_id is not None:
@@ -409,14 +407,6 @@ class WillingService:
                 or {}
             )
             return max(0.0, float(coefficients.get(str(message.group_id), 1.0)))
-
-        if isinstance(message, PrivateMessage) and message.user_id is not None:
-            coefficients = (
-                getattr(self._config.chat, "friend_response_coefficient", None)
-                or getattr(self._config.chat, "friend_Response_coefficient", None)
-                or {}
-            )
-            return max(0.0, float(coefficients.get(str(message.user_id), 1.0)))
 
         return 1.0
 
