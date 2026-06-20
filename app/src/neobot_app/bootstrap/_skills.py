@@ -33,7 +33,9 @@ def build_skill_manager(
     browser_lifecycle_manager: Any,
     problem_solver_manager: Any,
     image_pool: Any,
-    data_dir: Path,
+    group_message_queue: Any = None,
+    friend_message_queue: Any = None,
+    data_dir: Path = Path("."),
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -59,6 +61,8 @@ def build_skill_manager(
         browser_lifecycle_manager=browser_lifecycle_manager,
         problem_solver_manager=problem_solver_manager,
         image_pool=image_pool,
+        group_message_queue=group_message_queue,
+        friend_message_queue=friend_message_queue,
         data_dir=data_dir,
     )
 

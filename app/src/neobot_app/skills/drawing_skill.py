@@ -162,7 +162,7 @@ async def _handle_draw(self: DrawingSkill, args: dict) -> str:
         prompt=prompt,
         requester=str(args.get("requester", "") or ""),
         requirements=str(args.get("requirements", "") or ""),
-        references=args.get("references"),
+        references=_translate_chat_refs(args.get("references"), args),
         reference_id=reference_id,
         negative_prompt=str(args.get("negative_prompt", "") or "") or None,
         image_size=str(args.get("image_size", "") or "") or None,
@@ -183,6 +183,33 @@ async def _handle_cancel_draw_cooldown(self: DrawingSkill, args: dict) -> str:
     if pipeline_key:
         self._drawing_manager.cancel_cooldown(pipeline_key)
     return _json({"ok": True})
+
+def _translate_chat_refs(references: Any, args: dict) -> Any:
+    """将 references 中 chat:<msg_number> 的显示编号翻译为真实 message_id。"""
+    if not references or not isinstance(references, list):
+        return references
+
+    def _translate_one(ref: str) -> str:
+        if not isinstance(ref, str) or not ref.startswith("chat:"):
+            return ref
+        rest = ref[len("chat:"):]
+        parts = rest.split(":")
+        try:
+            display_number = int(parts[0])
+        except (ValueError, IndexError):
+            return ref
+        numbering_mapping = args.get("_numbering_mapping")
+        if not isinstance(numbering_mapping, dict):
+            return ref
+        numbering_mapping = {int(k): int(v) for k, v in numbering_mapping.items()}
+        real_id = numbering_mapping.get(display_number)
+        if real_id is None:
+            return ref
+        img_idx = parts[1] if len(parts) > 1 else "1"
+        return f"chat:{real_id}:{img_idx}"
+
+    return [_translate_one(r) for r in references]
+
 
 _HANDLERS = {
     "draw": _handle_draw,

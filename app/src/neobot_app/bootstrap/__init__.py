@@ -200,6 +200,8 @@ def create_application() -> NeoBotApplication:
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
         problem_solver_manager=problem_solver_manager,
         image_pool=image_pool,
+        group_message_queue=group_queue,
+        friend_message_queue=friend_queue,
         data_dir=DATA_DIR,
     )
     plugin["host_facade"]._set_skills(skill_manager)

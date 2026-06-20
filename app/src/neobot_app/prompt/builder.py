@@ -105,7 +105,8 @@ class PromptBuilder:
                 all_new=all_new,
             )
             format_example = numbering.format_example()
-            message_list = f"{format_example}\n\n{message_list}"
+            message_id_context = _build_message_id_context(numbering)
+            message_list = f"{format_example}\n\n{message_id_context}\n\n{message_list}"
         else:
             message_list = message_queue.to_text(
                 group_id_str,
@@ -179,7 +180,8 @@ class PromptBuilder:
                 all_new=all_new,
             )
             format_example = numbering.format_example()
-            message_list = f"{format_example}\n\n{message_list}"
+            message_id_context = _build_message_id_context(numbering)
+            message_list = f"{format_example}\n\n{message_id_context}\n\n{message_list}"
         else:
             message_list = message_queue.to_text(
                 user_id_str,
@@ -265,6 +267,25 @@ def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
         if value and value.strip()
     ]
     return "\n".join(cleaned)
+
+
+def _build_message_id_context(numbering: Any) -> str:
+    """构建消息编号 → 真实 message_id 的映射文本，嵌入 prompt 供 Agent 查阅。"""
+    from neobot_app.message.numbering import MessageNumbering
+
+    if numbering is None:
+        return ""
+    mapping = numbering.mapping
+    if not isinstance(mapping, dict) or not mapping:
+        return ""
+    lines = [
+        "[聊天消息编号映射]",
+        "以下为 prompt 中每条消息左侧编号对应的真实 OneBot message_id。",
+        "当工具参数需要 message_id 时（如 message_id、chat: 前缀等），必须使用右侧的 message_id，不要把左侧聊天编号当作 message_id 传入。",
+    ]
+    for number, message_id in sorted(mapping.items(), key=lambda x: x[0]):
+        lines.append(f"  编号 {number} → message_id {message_id}")
+    return "\n".join(lines)
 
 
 async def get_group_chat_prompt(

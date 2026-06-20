@@ -16,9 +16,13 @@ from neobot_app.drawing.config import DrawServiceConfig, ImageGenerationError
 from neobot_app.drawing.tasks import DrawTask
 from neobot_app.time_context import monotonic_seconds
 
+def _json(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+from neobot_app.drawing.service import _record_payload
+
 if TYPE_CHECKING:
     from neobot_app.drawing.service import CreatorImageService
-
 
 class BackgroundDrawingManager:
     """管理后台绘图任务的提交、冷却、通知与重试。"""

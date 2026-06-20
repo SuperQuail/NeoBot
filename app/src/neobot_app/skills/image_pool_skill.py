@@ -155,12 +155,36 @@ async def _handle_put(self: ImagePoolSkill, args: dict) -> str:
     if self._image_service is None:
         return _json({"ok": False, "error": "creator_image_service 未配置"})
 
+    # 将 chat:<msg_number> 中的显示编号翻译为真实 message_id
+    source = _translate_chat_number(source, args)
+
     try:
         file_path = await self._image_service.resolve_source_to_path(source)
         key = self._pool.put(conv_id, file_path, source=source)
         return _json({"ok": True, "key": key, "source": source})
     except Exception as exc:
         return _json({"ok": False, "error": str(exc)})
+
+
+def _translate_chat_number(source: str, args: dict) -> str:
+    """将 chat:<msg_number>:<idx> 中的显示编号翻译为真实 message_id。"""
+    if not source.startswith("chat:"):
+        return source
+    rest = source[len("chat:"):]
+    parts = rest.split(":")
+    try:
+        display_number = int(parts[0])
+    except (ValueError, IndexError):
+        return source
+    numbering_mapping = args.get("_numbering_mapping")
+    if not isinstance(numbering_mapping, dict):
+        return source
+    numbering_mapping = {int(k): int(v) for k, v in numbering_mapping.items()}
+    real_id = numbering_mapping.get(display_number)
+    if real_id is None:
+        return source
+    img_idx = parts[1] if len(parts) > 1 else "1"
+    return f"chat:{real_id}:{img_idx}"
 
 
 async def _handle_list(self: ImagePoolSkill, args: dict) -> str:
