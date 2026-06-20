@@ -330,7 +330,11 @@ def create_application() -> NeoBotApplication:
     )
 
     # 创建后台绘图管理器
-    from neobot_app.agents.creator import BackgroundDrawingManager, CreatorAgentConfig
+    from neobot_app.agents.creator import (
+        BackgroundDrawingManager,
+        CreatorAgentConfig,
+        CreatorImageService,
+    )
     from neobot_app.agents.problem_solver import (
         ProblemSolverManager,
         ProblemSolverAgentConfig,
@@ -442,6 +446,18 @@ def create_application() -> NeoBotApplication:
         enabled=config.file_server.enabled,
     )
 
+    # 注入 CreatorImageService 到后台绘图管理器
+    creator_image_service = CreatorImageService(
+        uow_factory=uow_factory,
+        adapter=adapter,
+        config=creator_config,
+        emoji_service=emoji_service,
+        vision_provider=vision_provider,
+        file_server=file_server,
+        logger=logger_factory.get_logger("app.creator_image"),
+    )
+    drawing_manager.set_image_service(creator_image_service)
+
     sandbox_cfg = getattr(config.agent, "sandbox", None)
     sandbox_service = (
         SandboxService(
@@ -514,6 +530,7 @@ def create_application() -> NeoBotApplication:
         scheduled_task_manager=scheduled_task_manager,
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
+        creator_image_service=creator_image_service,
         sandbox_lock=sandbox_lock,
         sandbox_service=sandbox_service,
         sandbox_maintenance_manager=sandbox_maintenance_manager,
