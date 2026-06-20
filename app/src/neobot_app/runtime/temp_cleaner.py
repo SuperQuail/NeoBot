@@ -1,14 +1,7 @@
-"""TempCleaner — 沙箱临时文件自动清理。
-
-扫描 ``data/sandbox/temp/`` 目录：
-- 删除超过指定时间未修改的文件
-- 删除空目录
-- 修复递归嵌套（temp/X/temp/X → 合并到 temp/X）
-"""
+"""TempCleaner — 沙箱临时文件清理（工具类，由 AI 或 CLI 按需调用）。"""
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import time
@@ -20,7 +13,8 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 class TempCleaner:
     """沙箱临时文件清理器。
 
-    按固定间隔扫描 temp/ 目录，清理过期临时文件、空目录和嵌套异常。
+    不自动运行，由 AI agent 通过 scan_temp_files / clean_temp_files 工具调用，
+    或通过 CLI sandbox_CP 命令执行。
     """
 
     def __init__(
@@ -28,60 +22,75 @@ class TempCleaner:
         temp_dir: str | Path,
         *,
         max_age_seconds: int = 1800,
-        scan_interval_seconds: int = 300,
         logger: Logger | None = None,
     ) -> None:
         self._temp_dir = Path(temp_dir)
         self._max_age = max_age_seconds
-        self._scan_interval = scan_interval_seconds
         self._logger = logger or NullLogger()
-        self._task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
 
     @property
     def temp_dir(self) -> Path:
         return self._temp_dir
 
-    def start(self) -> None:
-        """启动后台清理循环。"""
-        if self._task is not None:
-            return
-        self._stop_event.clear()
-        self._task = asyncio.create_task(self._run_loop())
-        self._logger.info(
-            f"TempCleaner 已启动: dir={self._temp_dir}, max_age={self._max_age}s, interval={self._scan_interval}s"
-        )
+    def get_status(self) -> dict:
+        """只读扫描临时目录，返回状态报告供 AI 决策。"""
+        result = {
+            "ok": True,
+            "total_files": 0,
+            "total_size_bytes": 0,
+            "expired_files": [],
+            "has_nests": False,
+            "empty_dirs": 0,
+        }
+        if not self._temp_dir.is_dir():
+            return result
 
-    async def stop(self) -> None:
-        """停止后台清理循环。"""
-        if self._task is None:
-            return
-        self._stop_event.set()
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
-        self._logger.info("TempCleaner 已停止")
+        now = time.time()
+        cutoff = now - self._max_age
 
-    async def _run_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self._cleanup_once()
-            except Exception as exc:
-                self._logger.warning(f"TempCleaner 清理异常: {exc}")
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self._scan_interval,
-                )
-                break
-            except TimeoutError:
-                pass
+        for entry in self._temp_dir.rglob("*"):
+            if entry.is_file():
+                result["total_files"] += 1
+                try:
+                    size = entry.stat().st_size
+                    result["total_size_bytes"] += size
+                    mtime = entry.stat().st_mtime
+                    if mtime < cutoff:
+                        result["expired_files"].append({
+                            "path": str(entry.relative_to(self._temp_dir)),
+                            "size_bytes": size,
+                            "age_seconds": int(now - mtime),
+                        })
+                except OSError:
+                    pass
+
+        for chat_dir in self._temp_dir.iterdir():
+            if not chat_dir.is_dir():
+                continue
+            nested_temp = chat_dir / "temp"
+            if nested_temp.is_dir():
+                result["has_nests"] = True
+
+        # 统计空目录
+        for root, dirs, _files in os_walk_topdown(str(self._temp_dir)):
+            for d in dirs:
+                dir_path = Path(root) / d
+                try:
+                    if not any(dir_path.iterdir()):
+                        result["empty_dirs"] += 1
+                except OSError:
+                    pass
+
+        result["expired_count"] = len(result["expired_files"])
+        # 限制过期文件列表最长 50 条，避免 context 爆炸
+        if len(result["expired_files"]) > 50:
+            result["expired_files"] = result["expired_files"][:50]
+            result["expired_truncated"] = True
+
+        return result
 
     def run_once(self) -> dict:
-        """执行一次清理并返回结果统计。可独立调用，不依赖后台循环。"""
+        """执行一次清理并返回结果统计。"""
         result = self._cleanup_once()
         return result
 
@@ -121,7 +130,6 @@ class TempCleaner:
                     continue
                 target = self._temp_dir / nested_chat.name
                 if target.exists():
-                    # 目标已存在 → 只移文件不覆盖
                     for f in nested_chat.rglob("*"):
                         if f.is_file():
                             try:
@@ -134,7 +142,6 @@ class TempCleaner:
                     except OSError:
                         pass
                 nests_fixed += 1
-            # 删除嵌套的 temp 目录
             try:
                 shutil.rmtree(str(nested_temp))
                 dirs_removed += 1

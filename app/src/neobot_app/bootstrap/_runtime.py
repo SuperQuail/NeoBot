@@ -205,7 +205,6 @@ def build_sandbox_components(
     *,
     config: BotConfigSchema,
     data_dir: Path,
-    notification_hub: BackgroundNotificationHub,
 ) -> dict[str, Any]:
     """创建沙箱、临时清理、维护管理器。"""
     sandbox_cfg = getattr(config.agent, "sandbox", None)
@@ -231,20 +230,14 @@ def build_sandbox_components(
     result["temp_cleaner"] = TempCleaner(
         temp_dir=data_dir / "sandbox" / "temp",
         max_age_seconds=sandbox_cfg.temp_max_age_seconds,
-        scan_interval_seconds=sandbox_cfg.scan_interval_seconds,
         logger=None,  # injected below
     )
     result["sandbox_maintenance_manager"] = SandboxMaintenanceManager(
         sandbox_root=data_dir / "sandbox",
-        interval_seconds=(
-            sandbox_cfg.maintenance.interval_seconds
-            if sandbox_cfg else 10800
-        ),
         enabled=(
             sandbox_cfg.maintenance.enabled
             if sandbox_cfg else True
         ),
-        notification_hub=notification_hub,
         sandbox_service=result["sandbox_service"],
         logger=None,  # injected below
     )

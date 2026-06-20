@@ -159,7 +159,6 @@ def create_application() -> NeoBotApplication:
     sandbox = build_sandbox_components(
         config=config,
         data_dir=DATA_DIR,
-        notification_hub=notification_hub,
     )
     if sandbox["temp_cleaner"] is not None:
         sandbox["temp_cleaner"].logger = logger_factory.get_logger("app.temp_cleaner")
@@ -196,6 +195,7 @@ def create_application() -> NeoBotApplication:
         sandbox_lock=sandbox["sandbox_lock"],
         sandbox_service=sandbox["sandbox_service"],
         sandbox_maintenance_manager=sandbox["sandbox_maintenance_manager"],
+        temp_cleaner=sandbox["temp_cleaner"],
         browser_instance=browser["browser_instance"],
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
         problem_solver_manager=problem_solver_manager,
@@ -299,7 +299,6 @@ def create_application() -> NeoBotApplication:
         report_service=usage["report_service"],
         _engine=_engine,
         vision_provider=vision_provider,
-        temp_cleaner=sandbox["temp_cleaner"],
-        sandbox_maintenance_manager=sandbox["sandbox_maintenance_manager"],
+        notification_hub=notification_hub,
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
     )

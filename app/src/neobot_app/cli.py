@@ -170,7 +170,6 @@ async def _run_sandbox_cleanup() -> int:
     components = build_sandbox_components(
         config=config,
         data_dir=DATA_DIR,
-        notification_hub=None,
     )
 
     temp_cleaner = components.get("temp_cleaner")

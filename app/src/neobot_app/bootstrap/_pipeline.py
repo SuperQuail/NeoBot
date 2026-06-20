@@ -184,8 +184,7 @@ def build_pipelines_and_app(
     report_service: Any,
     _engine: Any,
     vision_provider: Any,
-    temp_cleaner: Any,
-    sandbox_maintenance_manager: Any,
+    notification_hub: Any,
     browser_lifecycle_manager: Any,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
@@ -246,7 +245,6 @@ def build_pipelines_and_app(
         engine=_engine,
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
-        temp_cleaner=temp_cleaner,
-        sandbox_maintenance_manager=sandbox_maintenance_manager,
+        notification_hub=notification_hub,
         browser_lifecycle_manager=browser_lifecycle_manager,
     )

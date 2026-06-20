@@ -62,6 +62,7 @@ def build_all_skills(
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
     sandbox_maintenance_manager: Any = None,
+    temp_cleaner: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -226,6 +227,7 @@ def build_all_skills(
             SandboxMaintenanceSkill(
                 maintenance_manager=sandbox_maintenance_manager,
                 sandbox_service=sandbox_service,
+                temp_cleaner=temp_cleaner,
             )
         )
 
