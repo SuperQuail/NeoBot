@@ -287,6 +287,7 @@ def create_application() -> NeoBotApplication:
         provider_logger=provider_logger,
         sandbox_service=sandbox["sandbox_service"],
         logger_factory=logger_factory,
+        vision_provider=vision_provider,
     )
 
     # ── Skill 系统 ──

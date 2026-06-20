@@ -103,7 +103,7 @@ class SandboxManagerSkill(SkillModule):
             return p
         if self._sandbox is not None:
             try:
-                resolved = self._sandbox.resolve_path(path_str, chat_flow_id)
+                resolved = self._sandbox.resolve_read_path(path_str, chat_flow_id)
                 if resolved.exists():
                     return resolved
             except Exception:
@@ -346,14 +346,82 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
     if not rel_path:
         return _json({"ok": False, "error": "缺少 path"})
     try:
+        from neobot_app.runtime.sandbox_service import (
+            MAX_BASE64_BYTES,
+            MAX_TEXT_READ_BYTES,
+            detect_file_type,
+        )
+
         chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
+        path = self._sandbox.resolve_read_path(rel_path, chat_flow_id)
+
+        info = detect_file_type(path)
+        ftype = info["type"]
+        fmt = info.get("format")
+        size = info["size"]
+
+        if ftype == "error":
+            return _json({"ok": False, "error": f"无法读取文件: {rel_path}"})
+        if ftype == "empty":
+            return _json({"ok": True, "content": "", "size": 0})
+
+        if ftype == "image":
+            return _json({
+                "ok": True,
+                "type": "image",
+                "format": fmt,
+                "size": size,
+                "note": (
+                    f"这是 {fmt} 图片文件（{size} 字节），内容不会直接以文本/base64 返回。"
+                    "请使用 image_parse 工具分析图片内容；发送图片请使用 send_file。"
+                ),
+            })
+
+        if ftype == "binary":
+            return _json({
+                "ok": True,
+                "type": "binary",
+                "format": fmt,
+                "size": size,
+                "note": (
+                    f"这是 {fmt} 二进制文件（{size} 字节），无法以文本读取。"
+                    "发送此文件请使用 send_chat_file；分析内容请委托 background_trigger__submit_problem。"
+                ),
+            })
+
+        # 文本或未知类型 → 读取内容
         data = await self._sandbox.read_file(path)
+
         try:
             text = data.decode("utf-8")
+            if len(data) > MAX_TEXT_READ_BYTES:
+                return _json({
+                    "ok": True,
+                    "content": text[:MAX_TEXT_READ_BYTES],
+                    "size": len(data),
+                    "truncated": True,
+                    "note": (
+                        f"[PARTIAL view] 文本过大（{len(data)} 字节），仅返回前 {MAX_TEXT_READ_BYTES} 字节。"
+                        "如需查看后续内容，请使用 offset 参数再次读取。"
+                    ),
+                })
             return _json({"ok": True, "content": text, "size": len(data)})
         except UnicodeDecodeError:
-            return _json({"ok": True, "content_base64": base64.b64encode(data).decode(), "size": len(data)})
+            # 未知二进制（不在已知签名中），返回最小预览
+            preview_size = min(len(data), MAX_BASE64_BYTES)
+            truncated = len(data) > MAX_BASE64_BYTES
+            return _json({
+                "ok": True,
+                "type": "unknown_binary",
+                "content_base64": base64.b64encode(data[:preview_size]).decode(),
+                "size": len(data),
+                "truncated": truncated,
+                "note": (
+                    f"未知二进制格式（{len(data)} 字节）"
+                    + (f"，仅返回前 {MAX_BASE64_BYTES} 字节预览。" if truncated else "。")
+                    + "发送文件请使用 send_chat_file。"
+                ),
+            })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -437,7 +505,7 @@ async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
         return _json({"ok": False, "error": "缺少 pattern"})
     try:
         chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        base = self._sandbox.resolve_path(base_path, chat_flow_id)
+        base = self._sandbox.resolve_read_path(base_path, chat_flow_id)
         full_pattern = str(base / pattern)
         import glob as glob_module
         matches = []
@@ -479,7 +547,7 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
 
     try:
         chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        base = self._sandbox.resolve_path(base_path, chat_flow_id)
+        base = self._sandbox.resolve_read_path(base_path, chat_flow_id)
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -553,7 +621,7 @@ async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
     pattern = args.get("pattern")
     try:
         chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
+        path = self._sandbox.resolve_read_path(rel_path, chat_flow_id)
         files = await self._sandbox.list_files(path, pattern)
         return _json({"ok": True, "files": files})
     except Exception as e:
@@ -584,7 +652,7 @@ async def _handle_copy_file(self: SandboxManagerSkill, args: dict) -> str:
     if not src or not dst:
         return _json({"ok": False, "error": "缺少 source 或 destination"})
     try:
-        src_path = self._sandbox.resolve_path(src, chat_flow_id or None)
+        src_path = self._sandbox.resolve_read_path(src, chat_flow_id or None)
         dst_path = self._sandbox.resolve_path(dst, chat_flow_id or None)
         await self._sandbox.copy_file(src_path, dst_path)
         return _json({"ok": True})

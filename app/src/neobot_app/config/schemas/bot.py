@@ -325,7 +325,7 @@ def _default_agent_model_1() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -348,7 +348,7 @@ def _default_agent_model_2() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -371,7 +371,7 @@ def _default_agent_model_3() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -672,10 +672,7 @@ class Adapter:
         default=8090,
         metadata={"description": "本地适配器 HTTP/WebSocket 监听端口"},
     )
-    local_auth_token: str = field(
-        default="",
-        metadata={"description": "本地适配器鉴权 Token；留空表示仅本机开发免鉴权"},
-    )
+
 
 
 @dataclass

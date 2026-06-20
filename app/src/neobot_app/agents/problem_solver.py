@@ -86,6 +86,8 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
+
+
 class ProblemSolverAgentConfig:
     """解题 Agent 配置。"""
 
@@ -545,7 +547,7 @@ class ProblemSolverManager:
 
 
 class ProblemSolverToolExecutor(ToolExecutor):
-    """解题 Agent 的工具执行器，包含联网搜索、文件读写、Python 执行。"""
+    """解题 Agent 的工具执行器，包含联网搜索、文件读写、Python 执行、图片解析。"""
 
     def __init__(
         self,
@@ -553,6 +555,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
         logger: Logger | None = None,
         web_search_config: dict | None = None,
         sandbox_service: Any = None,
+        vision_provider: Any = None,
     ) -> None:
         self._logger = logger or NullLogger()
         ws = web_search_config or {}
@@ -562,6 +565,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
             preview_pages_limit=ws.get("preview_pages_limit", 30),
         )
         self._sandbox = sandbox_service
+        self._vision_provider = vision_provider
 
     def reset_search(self) -> None:
         """复位搜索会话计数器，每次解题任务启动时调用。"""
@@ -659,6 +663,29 @@ class ProblemSolverToolExecutor(ToolExecutor):
                     "required": ["code"],
                 },
             ),
+            _tool_def(
+                "parse_image",
+                "解析沙箱中的图片文件内容。传入图片路径和分析要求，返回图片的文字描述。"
+                "适用于：读取图片中的数据/文字、分析图表、理解图片内容等。",
+                {
+                    "properties": {
+                        "image_path": {
+                            "type": "string",
+                            "description": "图片文件路径（相对于沙箱临时目录或沙箱根）",
+                        },
+                        "requirement": {
+                            "type": "string",
+                            "description": "分析要求，如「请描述这张图片的内容」「请提取图片中的文字」",
+                            "default": "请简洁描述这张图片的主要内容。",
+                        },
+                        "chat_flow_id": {
+                            "type": "string",
+                            "description": "聊天流 ID，便于定位临时目录中的文件",
+                        },
+                    },
+                    "required": ["image_path"],
+                },
+            ),
         ]
         if self._sandbox is not None:
             tools.extend([
@@ -741,6 +768,8 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return "解题结果已提交"
         if name == "run_python":
             return await self._execute_run_python(args)
+        if name == "parse_image":
+            return await self._execute_parse_image(args)
         if name == "write_file":
             return await self._execute_write_file(args)
         if name == "read_file":
@@ -827,6 +856,49 @@ class ProblemSolverToolExecutor(ToolExecutor):
             Path(script_path).unlink(missing_ok=True)
             return _json({"ok": False, "error": str(e)})
 
+    async def _execute_parse_image(self, args: dict) -> str:
+        if self._vision_provider is None:
+            return _json({"ok": False, "error": "vision_provider 未配置，无法解析图片"})
+        from neobot_app.runtime.sandbox_service import detect_file_type
+
+        image_path = str(args.get("image_path", "")).strip()
+        if not image_path:
+            return _json({"ok": False, "error": "缺少 image_path"})
+
+        requirement = str(args.get("requirement") or "请简洁描述这张图片的主要内容。").strip()
+        chat_flow_id = str(args.get("chat_flow_id", "")).strip() or None
+
+        try:
+            if self._sandbox is not None:
+                path = self._sandbox.resolve_read_path(image_path, chat_flow_id)
+            else:
+                path = Path(image_path)
+
+            info = detect_file_type(path)
+            if info["type"] != "image":
+                return _json({
+                    "ok": False,
+                    "error": f"文件不是图片（检测为 {info['type']}"
+                    + (f"/{info['format']}" if info.get("format") else "")
+                    + "），请确认路径正确",
+                })
+
+            import base64
+            data = path.read_bytes()
+            content_parts = [
+                {"type": "text", "text": requirement},
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": f"image/{info['format'].lower()}" if info.get("format") else "image/png",
+                    "data": base64.b64encode(data).decode("utf-8"),
+                }},
+            ]
+            result = await self._vision_provider.chat([{"role": "user", "content": content_parts}])
+            text = result.get("content", "") if isinstance(result, dict) else str(result)
+            return _json({"ok": True, "description": text[:2000]})
+        except Exception as e:
+            return _json({"ok": False, "error": str(e)})
+
     async def _execute_write_file(self, args: dict) -> str:
         if self._sandbox is None:
             return _json({"ok": False, "error": "sandbox 未配置"})
@@ -848,18 +920,84 @@ class ProblemSolverToolExecutor(ToolExecutor):
         if self._sandbox is None:
             return _json({"ok": False, "error": "sandbox 未配置"})
         import base64
+        from neobot_app.runtime.sandbox_service import (
+            MAX_BASE64_BYTES,
+            MAX_TEXT_READ_BYTES,
+            detect_file_type,
+        )
+
         rel_path = str(args.get("path", "")).strip().lstrip("/")
         if not rel_path:
             return _json({"ok": False, "error": "缺少 path"})
         try:
             chat_flow_id = self._parse_chat_flow_id()
-            path = self._sandbox.resolve_path(rel_path, chat_flow_id)
+            path = self._sandbox.resolve_read_path(rel_path, chat_flow_id)
+
+            info = detect_file_type(path)
+            ftype = info["type"]
+            fmt = info.get("format")
+            size = info["size"]
+
+            if ftype == "error":
+                return _json({"ok": False, "error": f"无法读取文件: {rel_path}"})
+            if ftype == "empty":
+                return _json({"ok": True, "content_base64": "", "size": 0})
+
+            if ftype == "image":
+                return _json({
+                    "ok": True,
+                    "type": "image",
+                    "format": fmt,
+                    "size": size,
+                    "note": (
+                        f"这是 {fmt} 图片文件（{size} 字节），内容不会以文本/base64 返回。"
+                        "请使用 parse_image 工具分析图片内容。"
+                    ),
+                })
+
+            if ftype == "binary":
+                return _json({
+                    "ok": True,
+                    "type": "binary",
+                    "format": fmt,
+                    "size": size,
+                    "note": (
+                        f"这是 {fmt} 二进制文件（{size} 字节），无法以文本读取。"
+                        "请在解题结果中引用此文件路径，由主 Agent 通过 send_chat_file 发送。"
+                    ),
+                })
+
+            # 文本或未知类型 → 读取内容
             data = await self._sandbox.read_file(path)
-            return _json({
-                "ok": True,
-                "content_base64": base64.b64encode(data).decode(),
-                "size": len(data),
-            })
+
+            try:
+                text = data.decode("utf-8")
+                if len(data) > MAX_TEXT_READ_BYTES:
+                    return _json({
+                        "ok": True,
+                        "content": text[:MAX_TEXT_READ_BYTES],
+                        "size": len(data),
+                        "truncated": True,
+                        "note": (
+                            f"[PARTIAL view] 文本过大（{len(data)} 字节），"
+                            f"仅返回前 {MAX_TEXT_READ_BYTES} 字节。"
+                        ),
+                    })
+                return _json({"ok": True, "content": text, "size": len(data)})
+            except UnicodeDecodeError:
+                preview_size = min(len(data), MAX_BASE64_BYTES)
+                truncated = len(data) > MAX_BASE64_BYTES
+                return _json({
+                    "ok": True,
+                    "type": "unknown_binary",
+                    "content_base64": base64.b64encode(data[:preview_size]).decode(),
+                    "size": len(data),
+                    "truncated": truncated,
+                    "note": (
+                        f"未知二进制格式（{len(data)} 字节）"
+                        + (f"，仅返回前 {MAX_BASE64_BYTES} 字节预览。" if truncated else "。")
+                    ),
+                })
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
 
@@ -913,11 +1051,13 @@ def build_problem_solver_toolset(
     policy: ToolAccessPolicy | None = None,
     web_search_config: dict | None = None,
     sandbox_service: Any = None,
+    vision_provider: Any = None,
 ) -> Toolset:
     executor = ProblemSolverToolExecutor(
         logger=logger,
         web_search_config=web_search_config,
         sandbox_service=sandbox_service,
+        vision_provider=vision_provider,
     )
     specs = [
         ToolSpec(definition=d, access_resolver=_default_resolver)
@@ -943,6 +1083,7 @@ class ProblemSolverAgent:
         manager: ProblemSolverManager | None = None,
         peer_descriptions: str = "",
         sandbox_service: Any = None,
+        vision_provider: Any = None,
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
@@ -952,6 +1093,7 @@ class ProblemSolverAgent:
             logger=logger,
             web_search_config=web_search_config,
             sandbox_service=sandbox_service,
+            vision_provider=vision_provider,
         )
         self.tool_definitions = self._toolset.definitions()
 
@@ -1058,6 +1200,7 @@ def build_problem_solver_agent(
     web_search_config: dict | None = None,
     peer_descriptions: str = "",
     sandbox_service: Any = None,
+    vision_provider: Any = None,
 ) -> ProblemSolverAgent:
     """构建解题 Agent 并关联到 Manager。
 
@@ -1069,11 +1212,15 @@ def build_problem_solver_agent(
         web_search_config: 联网搜索配置字典，包含 engines, max_rounds, preview_pages_limit
         peer_descriptions: 同级 sub agent 描述
         sandbox_service: 沙箱文件服务，提供 run_python/write_file/read_file/list_files 工具
+        vision_provider: 视觉模型 provider，提供 parse_image 工具
     """
     cfg = (
         config if isinstance(config, ProblemSolverAgentConfig)
         else ProblemSolverAgentConfig.from_schema(config)
     )
+    # 解题 agent 的 max_tokens 覆盖 agent 模型的默认值，
+    # 否则 agent 模型的 max_output_tokens 会限制解题输出长度。
+    provider.max_tokens = cfg.max_tokens
     agent = ProblemSolverAgent(
         provider=provider,
         config=cfg,
@@ -1082,6 +1229,7 @@ def build_problem_solver_agent(
         manager=manager,
         peer_descriptions=peer_descriptions,
         sandbox_service=sandbox_service,
+        vision_provider=vision_provider,
     )
     if manager is not None:
         manager.set_agent(agent)

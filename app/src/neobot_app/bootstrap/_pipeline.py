@@ -77,6 +77,7 @@ def build_problem_solver_agent_wiring(
     provider_logger: Any,
     sandbox_service: Any,
     logger_factory: Any,
+    vision_provider: Any = None,
 ) -> None:
     if problem_solver_manager is None:
         return
@@ -101,6 +102,7 @@ def build_problem_solver_agent_wiring(
         logger=logger_factory.get_logger("app.problem_solver"),
         manager=problem_solver_manager,
         sandbox_service=sandbox_service,
+        vision_provider=vision_provider,
     )
 
 

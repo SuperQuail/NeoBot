@@ -11,6 +11,93 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+# ── 文件类型检测：magic bytes ──
+
+MAX_TEXT_READ_BYTES = 65536   # 文本文件单次返回上限（64KB）
+MAX_BASE64_BYTES = 512        # 未知二进制 base64 预览上限（0.5KB）
+
+_IMAGE_SIGNATURES: list[tuple[bytes, str]] = [
+    (b'\x89PNG\r\n\x1a\n', 'PNG'),
+    (b'\xff\xd8\xff', 'JPEG'),
+    (b'GIF87a', 'GIF'),
+    (b'GIF89a', 'GIF'),
+    (b'BM', 'BMP'),
+    (b'\x00\x00\x01\x00', 'ICO'),
+]
+
+_BINARY_SIGNATURES: list[tuple[bytes, str]] = [
+    (b'%PDF', 'PDF'),
+    (b'PK\x03\x04', 'ZIP/Office'),
+    (b'\x7fELF', 'ELF'),
+    (b'MZ', 'PE/EXE'),
+    (b'\x1f\x8b', 'GZip'),
+    (b'BZh', 'BZip2'),
+    (b'\x1f\x9d', 'Compress'),
+    (b'\x00\x00\x01\xba', 'MPEG'),
+    (b'\x00\x00\x01\xb3', 'MPEG'),
+    (b'fLaC', 'FLAC'),
+    (b'ID3', 'MP3'),
+    (b'OggS', 'OGG'),
+    (b'RIFF', 'RIFF'),  # AVI/WAV/WEBP — checked further below
+    (b'\x1aE\xdf\xa3', 'WebM/MKV'),
+    (b'ftyp', 'MP4'),   # at offset 4
+    (b'\xd0\xcf\x11\xe0', 'MS Office (OLE)'),
+]
+
+
+def detect_file_type(path: Path) -> dict[str, Any]:
+    """检测文件类型（仅读头部字节，不加载完整文件）。
+
+    返回 ``{"type": "image"|"binary"|"text"|"unknown", "size": int, "format": str|None}``.
+    """
+    try:
+        stat = path.stat()
+        size = stat.st_size
+    except OSError:
+        return {"type": "error", "size": 0, "format": None}
+
+    if not path.is_file():
+        return {"type": "error", "size": size, "format": None}
+
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(16)
+    except OSError:
+        return {"type": "error", "size": size, "format": None}
+
+    if len(header) == 0:
+        return {"type": "empty", "size": 0, "format": None}
+
+    # 图像签名
+    for magic, fmt in _IMAGE_SIGNATURES:
+        if header.startswith(magic):
+            return {"type": "image", "size": size, "format": fmt}
+
+    # WEBP: RIFF????WEBP
+    if header.startswith(b'RIFF') and len(header) >= 12 and header[8:12] == b'WEBP':
+        return {"type": "image", "size": size, "format": "WEBP"}
+
+    # 已知二进制签名
+    for magic, fmt in _BINARY_SIGNATURES:
+        if header.startswith(magic):
+            # MP4: ftyp at offset 4
+            if magic == b'ftyp':
+                continue
+            # RIFF that isn't WEBP → treat as generic binary
+            if magic == b'RIFF':
+                return {"type": "binary", "size": size, "format": "RIFF container (AVI/WAV)"}
+            return {"type": "binary", "size": size, "format": fmt}
+
+    if header[4:8] == b'ftyp':
+        return {"type": "binary", "size": size, "format": "MP4"}
+
+    # 尝试 UTF-8 解码前 16 字节区分文本/未知二进制
+    try:
+        header.decode('utf-8')
+        return {"type": "text", "size": size, "format": None}
+    except UnicodeDecodeError:
+        return {"type": "unknown", "size": size, "format": None}
+
 
 class SandboxService:
     """沙箱文件操作服务。
@@ -59,6 +146,25 @@ class SandboxService:
         if not self._is_within_sandbox(candidate):
             raise PermissionError(f"路径越界: {relative_path}")
         return candidate
+
+    def resolve_read_path(
+        self,
+        relative_path: str,
+        chat_flow_id: str | None = None,
+    ) -> Path:
+        """与 resolve_path 相同，但也允许只读目录（emoji/, gallery/ 等）。"""
+        try:
+            return self.resolve_path(relative_path, chat_flow_id)
+        except PermissionError:
+            for ad in self._allowed_read_dirs:
+                candidate = (ad / relative_path).resolve()
+                try:
+                    candidate.relative_to(ad)
+                except ValueError:
+                    continue
+                if candidate.is_file() or candidate.is_dir():
+                    return candidate
+            raise
 
     def is_path_allowed(self, path: Path) -> bool:
         """检查路径是否在沙箱或 allowed_read_dirs 内。"""
