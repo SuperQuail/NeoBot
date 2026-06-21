@@ -17,6 +17,7 @@ from neobot_app.skills.drawing_skill import DrawingSkill
 from neobot_app.skills.gallery_skill import GallerySkill
 from neobot_app.skills.emoji_management import EmojiManagementSkill
 from neobot_app.skills.image_send import ImageSendSkill
+from neobot_app.skills.image_pool_skill import ImagePoolSkill
 from neobot_app.skills.image_parse_skill import ImageParseSkill
 from neobot_app.skills.willingness_skill import WillingnessSkill
 from neobot_app.skills.reminder_skill import ReminderSkill
@@ -25,6 +26,7 @@ from neobot_app.skills.cross_chat_skill import CrossChatSkill
 from neobot_app.skills.background_trigger import BackgroundTriggerSkill
 from neobot_app.skills.adaptive_prompt_skill import AdaptivePromptSkill
 from neobot_app.skills.file_storage_skill import FileStorageSkill
+from neobot_app.skills.archive_skill import ArchiveSkill
 from neobot_app.skills.sandbox_manager_skill import SandboxManagerSkill
 from neobot_app.skills.sandbox_maintenance_skill import SandboxMaintenanceSkill
 from neobot_app.skills.gift_skill import GiftSkill
@@ -52,13 +54,15 @@ def build_all_skills(
     creator_image_service: Any = None,
     group_message_queue: Any = None,
     friend_message_queue: Any = None,
-    background_agent_manager: Any = None,
+    image_pool: Any = None,
+
     sandbox_service: Any = None,
     sandbox_lock: Any = None,
     browser_instance: Any = None,
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
     sandbox_maintenance_manager: Any = None,
+    temp_cleaner: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -157,8 +161,18 @@ def build_all_skills(
     if "emoji_management" not in disabled:
         skills_to_register.append(EmojiManagementSkill(emoji_service=emoji_service))
 
+    if "image_pool" not in disabled and image_pool is not None:
+        skills_to_register.append(
+            ImagePoolSkill(
+                image_pool=image_pool,
+                creator_image_service=creator_image_service,
+            )
+        )
+
     if "image_send" not in disabled:
-        skills_to_register.append(ImageSendSkill(adapter=adapter, file_server=file_server))
+        skills_to_register.append(
+            ImageSendSkill(adapter=adapter, file_server=file_server, image_pool=image_pool)
+        )
 
     if "image_parse" not in disabled:
         skills_to_register.append(
@@ -202,10 +216,19 @@ def build_all_skills(
             FileStorageSkill(sandbox_service=sandbox_service)
         )
 
+    if "archive" not in disabled and sandbox_service is not None:
+        skills_to_register.append(
+            ArchiveSkill(sandbox_service=sandbox_service)
+        )
+
     # ── Phase 3: 沙箱维护管理 ──
     if "sandbox_maintenance" not in disabled and sandbox_maintenance_manager is not None:
         skills_to_register.append(
-            SandboxMaintenanceSkill(maintenance_manager=sandbox_maintenance_manager)
+            SandboxMaintenanceSkill(
+                maintenance_manager=sandbox_maintenance_manager,
+                sandbox_service=sandbox_service,
+                temp_cleaner=temp_cleaner,
+            )
         )
 
     # ── Phase 3: 礼物管理 ──

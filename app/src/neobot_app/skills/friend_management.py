@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class FriendManagementSkill(SkillModule):
     """好友管理 Skill — 备注、分组、删除、好友请求、点赞。"""
@@ -75,15 +73,6 @@ class FriendManagementSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown friend_management tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_manage_friend(self: FriendManagementSkill, args: dict) -> str:
@@ -96,7 +85,6 @@ async def _handle_manage_friend(self: FriendManagementSkill, args: dict) -> str:
         return _json({"ok": True, "action": action, "api": api_action, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 def _friend_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
     user_id = _as_int(args.get("user_id"))
@@ -125,12 +113,10 @@ def _friend_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]
         }
     raise ValueError(f"未知好友管理动作: {action}")
 
-
 def _as_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
-
 
 def _as_str(value: Any) -> str | None:
     if value is None:
@@ -138,12 +124,10 @@ def _as_str(value: Any) -> str | None:
     text = str(value).strip()
     return text or None
 
-
 def _require(value: Any, name: str) -> Any:
     if value is None or value == "":
         raise ValueError(f"缺少参数 {name}")
     return value
-
 
 _HANDLERS = {
     "manage_friend": _handle_manage_friend,

@@ -145,7 +145,7 @@ class Config:
                 model_field.name == "creator_image_model"
                 and not getattr(creator_config, "enabled", False)
             ):
-                logger.info("Creator Agent 未启用，跳过注册 creator_image_model")
+                logger.info("图像创作功能未启用，跳过注册 creator_image_model")
                 continue
 
             provider_name = getattr(model_config, "provider", "").strip()

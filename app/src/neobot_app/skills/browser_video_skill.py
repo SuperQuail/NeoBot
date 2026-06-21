@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class BrowserVideoSkill(SkillModule):
     """浏览器录屏 Skill — 将浏览器操作录制成 GIF。"""
@@ -108,15 +106,6 @@ class BrowserVideoSkill(SkillModule):
                 except Exception:
                     continue
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_record_start(self: BrowserVideoSkill, args: dict) -> str:
@@ -141,7 +130,6 @@ async def _handle_record_restart(self: BrowserVideoSkill, args: dict) -> str:
         if isinstance(result, dict) and result.get("success"):
             return _json({"ok": True, "output": result.get("output", filepath)})
     return _json({"ok": True, "note": "record_restart stub"})
-
 
 _HANDLERS = {
     "record_start": _handle_record_start,

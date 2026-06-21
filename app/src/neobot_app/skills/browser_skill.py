@@ -13,10 +13,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class BrowserSkill(SkillModule):
     """核心浏览器自动化 Skill — 导航、交互、内容提取、截图、JS 执行等。"""
@@ -284,15 +282,6 @@ class BrowserSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown browser tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Stub Handlers（无 browser_instance 时的 fallback）──
 
 async def _stub_open(self: BrowserSkill, args: dict) -> str:
@@ -301,12 +290,10 @@ async def _stub_open(self: BrowserSkill, args: dict) -> str:
 async def _stub_navigate(self: BrowserSkill, args: dict) -> str:
     return _json({"ok": False, "error": "浏览器未启动"})
 
-
 _STUB_HANDLERS = {
     "open": _stub_open,
     "navigate": _stub_navigate,
 }
-
 
 # ── Real Handlers（browser_instance 存在时）──
 
@@ -590,7 +577,6 @@ async def _handle_get_page_errors(self: BrowserSkill, args: dict) -> str:
         if isinstance(result, dict) and result.get("success"):
             return _json({"ok": True, "errors": result.get("errors", "")})
     return _json({"ok": True, "errors": ""})
-
 
 _HANDLERS = {
     "open": _handle_open,

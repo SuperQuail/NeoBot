@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class ForwardMessageSkill(SkillModule):
     """合并转发 Skill — 读取合并转发消息内容。"""
@@ -69,15 +67,6 @@ class ForwardMessageSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown forward_message tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_read_forward_msg(self: ForwardMessageSkill, args: dict) -> str:
@@ -93,7 +82,6 @@ async def _handle_read_forward_msg(self: ForwardMessageSkill, args: dict) -> str
         return _json({"ok": True, "message_id": message_id, "node_count": len(messages), "content": str(messages[:20])})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "read_forward_msg": _handle_read_forward_msg,

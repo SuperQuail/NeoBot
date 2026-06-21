@@ -13,10 +13,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class AdaptivePromptSkill(SkillModule):
     """自适应提示词管理 Skill — 读写 agent 永久记忆提示词。"""
@@ -105,15 +103,6 @@ class AdaptivePromptSkill(SkillModule):
             return await _handle_read(self, args)
         return _json({"ok": False, "error": f"unknown adaptive_prompt tool: {tool_name}"})
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 async def _handle_update(self: AdaptivePromptSkill, args: dict) -> str:
     content = str(args.get("content", "")).strip()
     action = str(args.get("action", "append")).strip()
@@ -152,7 +141,6 @@ async def _handle_update(self: AdaptivePromptSkill, args: dict) -> str:
         })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_read(self: AdaptivePromptSkill, args: dict) -> str:
     try:

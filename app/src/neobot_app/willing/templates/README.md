@@ -8,7 +8,6 @@
 [willing]
 manager_name = "Quail"
 observe_window = 5
-reply_threshold = 0.5
 ```
 
 - `manager_name = "Quail"` 时，使用默认内置鹌鹑意愿生成器。
@@ -28,10 +27,11 @@ class WillingManager(BaseWillingManager):
 
     def evaluate(self, context):
         probability = 0.9 if context.mentioned_bot else 0.2
+        import random
         return WillingDecision(
             manager_name=self.name,
             probability=probability,
-            should_reply=probability >= context.reply_threshold,
+            should_reply=random.random() < probability,
             reasons=("custom_manager",),
         )
 ```
