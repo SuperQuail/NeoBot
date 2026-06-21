@@ -156,10 +156,6 @@ class Chat:
         default=100,
         metadata={"description": "私聊观察上限"},
     )
-    friend_chat_chance: float = field(
-        default=0.5,
-        metadata={"description": "私聊基础回复概率"},
-    )
     friend_use_black_list: bool = field(
         default=True,
         metadata={"description": "私聊名单是否使用黑名单模式"},
@@ -329,7 +325,7 @@ def _default_agent_model_1() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -352,7 +348,7 @@ def _default_agent_model_2() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -375,7 +371,7 @@ def _default_agent_model_3() -> "ModelRegistration":
         model_name="deepseek-v4-flash",
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=20480,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -616,10 +612,6 @@ class Willing:
         default=5,
         metadata={"description": "意愿计算观察窗口"},
     )
-    reply_threshold: float = field(
-        default=0.5,
-        metadata={"description": "建议回复阈值"},
-    )
 
 
 @dataclass
@@ -680,10 +672,7 @@ class Adapter:
         default=8090,
         metadata={"description": "本地适配器 HTTP/WebSocket 监听端口"},
     )
-    local_auth_token: str = field(
-        default="",
-        metadata={"description": "本地适配器鉴权 Token；留空表示仅本机开发免鉴权"},
-    )
+
 
 
 @dataclass
@@ -709,7 +698,7 @@ class ScheduledTask:
         metadata={"description": "同一定时任务在触发时间窗口内重复提醒的冷却秒数，默认300秒"},
     )
     poll_interval_seconds: int = field(
-        default=60,
+        default=10,
         metadata={"description": "定时任务扫描间隔秒数，默认每分钟扫描一次"},
     )
     default_window_seconds: int = field(
@@ -729,8 +718,8 @@ class ScheduledTask:
 
 
 @dataclass
-class AgentCreatorGallery:
-    """Creator Agent 图库配置。"""
+class GalleryConfig:
+    """图库配置。"""
 
     capacity: int = field(
         default=10,
@@ -743,8 +732,8 @@ class AgentCreatorGallery:
 
 
 @dataclass
-class AgentCreatorEmoji:
-    """Creator Agent 表情包管理配置。"""
+class CreatorEmojiConfig:
+    """表情包管理配置。"""
 
     allow_add: bool = field(
         default=False,
@@ -761,8 +750,8 @@ class AgentCreatorEmoji:
 
 
 @dataclass
-class AgentCreatorDrawing:
-    """Creator Agent 后台绘图配置。"""
+class BackgroundDrawConfig:
+    """后台绘图配置。"""
 
     background_enabled: bool = field(
         default=True,
@@ -791,16 +780,16 @@ class AgentCreatorDrawing:
 
 
 @dataclass
-class AgentCreator:
-    """Creator Agent 配置。"""
+class ImageCreationConfig:
+    """图像创作配置（生图、图库、表情包）。"""
 
     enabled: bool = field(
         default=False,
-        metadata={"description": "是否启用Creator Agent"},
+        metadata={"description": "是否启用图像创作功能"},
     )
-    gallery: AgentCreatorGallery = field(default_factory=AgentCreatorGallery)
-    emoji: AgentCreatorEmoji = field(default_factory=AgentCreatorEmoji)
-    drawing: AgentCreatorDrawing = field(default_factory=AgentCreatorDrawing)
+    gallery: GalleryConfig = field(default_factory=GalleryConfig)
+    emoji: CreatorEmojiConfig = field(default_factory=CreatorEmojiConfig)
+    drawing: BackgroundDrawConfig = field(default_factory=BackgroundDrawConfig)
 
 
 @dataclass
@@ -816,7 +805,7 @@ class AgentSystem:
 @dataclass
 class AgentMemoryTrigger:
     group_interval: int = field(
-        default=100,
+        default=300,
         metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
     )
     private_interval: int = field(
@@ -900,16 +889,6 @@ class AgentMemory:
 
 
 @dataclass
-class AgentWillingness:
-    """Willingness Agent 配置。"""
-
-    enabled: bool = field(
-        default=False,
-        metadata={"description": "是否启用 Willingness Agent"},
-    )
-
-
-@dataclass
 class AgentProblemSolver:
     """Problem Solver Agent 配置。
 
@@ -989,8 +968,8 @@ class SandboxMaintenance:
         metadata={"description": "是否启用定时维护"},
     )
     interval_seconds: int = field(
-        default=43200,
-        metadata={"description": "维护间隔秒数，默认 43200（12 小时）"},
+        default=10800,
+        metadata={"description": "维护间隔秒数，默认 10800（3 小时）"},
     )
 
 
@@ -1001,6 +980,10 @@ class AgentSandbox:
     enabled: bool = field(
         default=True,
         metadata={"description": "是否启用沙箱系统"},
+    )
+    max_total_size_bytes: int = field(
+        default=2 * 1024 * 1024 * 1024,
+        metadata={"description": "沙箱整体最大总容量（字节），默认 2GB。写入前检查，超出则拒绝"},
     )
     temp_max_age_seconds: int = field(
         default=1800,
@@ -1048,10 +1031,9 @@ class AgentFileOperation:
 class Agent:
     """Agent 配置。"""
 
-    creator: AgentCreator = field(default_factory=AgentCreator)
+    creator: ImageCreationConfig = field(default_factory=ImageCreationConfig)
     system: AgentSystem = field(default_factory=AgentSystem)
     memory: AgentMemory = field(default_factory=AgentMemory)
-    willingness: AgentWillingness = field(default_factory=AgentWillingness)
     problem_solver: AgentProblemSolver = field(default_factory=AgentProblemSolver)
     browser: AgentBrowser = field(default_factory=AgentBrowser)
     sandbox: AgentSandbox = field(default_factory=AgentSandbox)
@@ -1137,10 +1119,6 @@ class EnhancedChat(Chat):
     willing_agent_global_coefficient: float = field(
         default=1.0,
         metadata={"description": "agent 模式全局回复概率系数"},
-    )
-    friend_response_coefficient: dict[str, float] = field(
-        default_factory=dict,
-        metadata={"description": "私聊回复系数", "aliases": ("friend_Response_coefficient",)},
     )
     enable_group_startup_history_warmup: bool = field(
         default=False,
@@ -1247,7 +1225,7 @@ class EnhancedChat(Chat):
         metadata={"description": "私聊回复后挂起等待秒数；超时无新消息则结束会话，默认300秒（5分钟）"},
     )
     private_chat_max_tokens: int = field(
-        default=10000,
+        default=50000,
         metadata={"description": "私聊会话最大token数；超过后重启聊天管线"},
     )
     private_chat_dynamic_warmup: bool = field(

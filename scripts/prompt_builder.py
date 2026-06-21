@@ -32,6 +32,7 @@ APP_SRC = PROJECT_ROOT / "app" / "src"
 CONFIG_PATH = PROJECT_ROOT / "app" / "data" / "config.toml"
 BOT_SCHEMA_PATH = APP_SRC / "neobot_app" / "config" / "schemas" / "bot.py"
 AGENTS_DIR = APP_SRC / "neobot_app" / "agents"
+DRAWING_DIR = APP_SRC / "neobot_app" / "drawing"
 TOOLPACKAGE_DIR = APP_SRC / "neobot_app" / "toolpackage"
 
 sys.path.insert(0, str(APP_SRC))
@@ -84,7 +85,7 @@ def _inject_system_torch() -> None:
     try:
         result = subprocess.run(
             [sys.executable, "-c", "import torch; print(torch.__file__)"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
             torch_init = result.stdout.strip()
@@ -99,7 +100,7 @@ def _inject_system_torch() -> None:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "show", "torch"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -492,7 +493,7 @@ DEFAULT_VALUES_RESUME: dict[str, str] = {
 class AgentPromptSource:
     """Describes a sub-agent whose prompt we can extract and edit."""
 
-    module_name: str         # e.g. "neobot_app.agents.creator"
+    module_name: str         # e.g. "neobot_app.agents.problem_solver"
     file_path: Path          # e.g. AGENTS_DIR / "creator.py"
     display_name: str        # e.g. "CreatorAgent"
     has_config: bool = False  # whether prompt function takes config
@@ -511,9 +512,9 @@ AGENT_SOURCES: list[AgentPromptSource] = [
         "WillingnessControlAgent",
     ),
     AgentPromptSource(
-        "neobot_app.agents.creator",
-        AGENTS_DIR / "creator.py",
-        "CreatorAgent",
+        "neobot_app.drawing.service",
+        DRAWING_DIR / "service.py",
+        "CreatorImageService",
         has_config=True,
     ),
     AgentPromptSource(
@@ -1839,12 +1840,6 @@ def _build_sub_agent_input(agent_key: str) -> str:
             "[消息2](10:02) 用户B: 这个网上搜一下就有了\n"
             "</聊天记录>\n"
             "<当前任务>评估Bot参与此对话的意愿程度</当前任务>"
-        ),
-        "creator": (
-            "<任务描述>\n"
-            "用户A要求生成一张'夕阳下的海边'的图片，风格为写实油画\n"
-            "</任务描述>\n"
-            "<附加信息>分辨率: 1024x768, 风格参考: 莫奈</附加信息>"
         ),
         "memory": (
             "<聊天记录>\n"

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
 
-from neobot_app.favorability import favorability_to_text
 from neobot_app.time_context import get_current_time_and_lunar_date
 
 if TYPE_CHECKING:
@@ -18,15 +17,12 @@ if TYPE_CHECKING:
 
 
 COUNTER_TABLE = "memory_counter"
-GROUP_SUMMARY_TABLE = "group_summary"
-PRIVATE_SUMMARY_TABLE = "private_summary"
 ITEM_ARCHIVE_TABLE = "item_archive"
-SUMMARY_TAGS = ["auto_summary"]
 MAX_STORED_MESSAGE_CHARS = 800
 
 
 class ArchiveMemoryAutoSummaryService:
-    """Count live messages and periodically write merged archive summaries."""
+    """Count live messages and periodically update archive profiles via tools."""
 
     def __init__(
         self,
@@ -124,13 +120,9 @@ class ArchiveMemoryAutoSummaryService:
             await self._save_counter(counter_key, {"count": 0, "messages": []})
             return
 
-        summary_table = self._summary_table_for(conversation_kind)
-        existing = await self._archive.get(summary_table, conversation_id)
-        old_summary = existing.value.strip() if existing is not None and existing.value else ""
         prompt = self._build_summary_prompt(
             conversation_kind=conversation_kind,
             conversation_id=conversation_id,
-            old_summary=old_summary,
             messages=messages,
         )
 
@@ -139,16 +131,16 @@ class ArchiveMemoryAutoSummaryService:
                 {
                     "role": "system",
                     "content": (
-                        "You maintain concise long-term archive summaries for a chat bot. "
-                        "Use available tools if needed, then return the updated summary text."
+                        "You maintain chat archives for a chat bot. "
+                        "Use the available tools to update archive records based on the recent messages. "
+                        "When you are done, simply respond without tool calls."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ]
             tools = self._tool_definitions if self._tool_definitions else None
-            new_summary = ""
 
-            for _iteration in range(3):
+            for _iteration in range(50):
                 response = await asyncio.wait_for(
                     self._provider.chat(chat_messages, tools=tools),
                     timeout=60.0,
@@ -157,11 +149,9 @@ class ArchiveMemoryAutoSummaryService:
 
                 tool_calls = response.get("tool_calls")
                 if not tool_calls:
-                    new_summary = _extract_response_text(response).strip()
                     break
 
                 if self._tool_executor is None:
-                    new_summary = _extract_response_text(response).strip()
                     break
 
                 for tc in tool_calls:
@@ -180,25 +170,11 @@ class ArchiveMemoryAutoSummaryService:
                         "content": str(result),
                     })
 
-            if not new_summary:
-                chat_messages.append(
-                    {"role": "user", "content": "Now provide the updated summary text."}
-                )
-                response = await asyncio.wait_for(
-                    self._provider.chat(chat_messages),
-                    timeout=60.0,
-                )
-                new_summary = _extract_response_text(response).strip()
-
-            if not new_summary:
-                raise ValueError("summary provider returned empty content")
-            await self._archive.set(summary_table, conversation_id, new_summary, SUMMARY_TAGS)
             await self._save_counter(counter_key, {"count": 0, "messages": []})
             self._logger.info(
-                "archive auto summary saved",
+                "archive profiles updated",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
-                summary_table=summary_table,
                 message_count=len(messages),
             )
         except Exception as exc:
@@ -339,16 +315,11 @@ class ArchiveMemoryAutoSummaryService:
     def _counter_key(conversation_kind: str, conversation_id: str) -> str:
         return f"{conversation_kind}:{conversation_id}"
 
-    @staticmethod
-    def _summary_table_for(conversation_kind: str) -> str:
-        return GROUP_SUMMARY_TABLE if conversation_kind == "group" else PRIVATE_SUMMARY_TABLE
-
     def _build_summary_prompt(
         self,
         *,
         conversation_kind: str,
         conversation_id: str,
-        old_summary: str,
         messages: list[Any],
     ) -> str:
         current_time = get_current_time_and_lunar_date()
@@ -357,35 +328,61 @@ class ArchiveMemoryAutoSummaryService:
             if conversation_kind == "group"
             else f"私聊(QQ号:{conversation_id})"
         )
-        old = old_summary or "(none)"
         recent = "\n".join(f"- {_format_counter_message(message)}" for message in messages)
+
+        if conversation_kind == "group":
+            profile_instruction = (
+                f"\nUse archive_crud__read_archive to read the current 'group_profile' "
+                f"(key='{conversation_id}'), then use archive_crud__save_archive to update it "
+                f"with stable facts you've learned from the recent messages: group interests, "
+                f"atmosphere, inside jokes, common topics, member dynamics, group norms, "
+                f"recurring events, etc. Merge new findings into the existing profile. "
+                f"Keep it compact and factual.\n"
+            )
+            favorability_instruction = (
+                f"\nFor each active speaker in the recent messages, evaluate their behavior "
+                f"(attitude, interaction quality, cooperativeness, etc.) and use "
+                f"favorability__update_favorability to adjust their favorability. "
+                f"Positive behavior increases favorability, negative behavior decreases it. "
+                f"Each change must be within ±{self._favorability_max_change}. "
+                f"Only adjust for users who clearly showed notable behavior worth recording.\n"
+            )
+        else:
+            profile_instruction = (
+                f"\nUse archive_crud__read_archive to read the current 'user_profile' "
+                f"(key='{conversation_id}'), then use archive_crud__save_archive to update it "
+                f"with stable facts you've learned from the recent messages: their preferences, "
+                f"interests, hobbies, personality traits, important life events, relationships, "
+                f"recurring concerns, etc. Merge new findings into the existing profile. "
+                f"Keep it compact and factual.\n"
+            )
+            favorability_instruction = (
+                f"\nEvaluate the user's behavior in the recent messages (attitude, interaction "
+                f"quality, cooperativeness, etc.) and use favorability__update_favorability "
+                f"(user_id='{conversation_id}') to adjust their favorability. "
+                f"Positive behavior increases favorability, negative behavior decreases it. "
+                f"Change must be within ±{self._favorability_max_change}. "
+                f"Only adjust if the user clearly showed notable behavior worth recording.\n"
+            )
+
         item_instruction = ""
         if self._item_archive_enabled:
             item_instruction = (
-                f"\nAdditionally, identify any items, events, or topics discussed that are worth "
+                f"\nAlso, identify any items, events, or topics discussed that are worth "
                 f"recording in the '{self._item_archive_table}' archive. "
                 f"For each item, use descriptive keywords as the key (joined with underscores, "
                 f"e.g. 'game_原神' or 'event_2026春游'), and write a compact summary of what was "
                 f"learned or discussed about that item/event. "
-                f"Merge with any existing entry for the same key.\n"
+                f"Use archive_crud__read_archive first to get any existing entry, then use "
+                f"archive_crud__save_archive to merge.\n"
             )
-        adaptive_instruction = (
-            "\nIf the conversation contains information that the agent should always know "
-            "(user preferences, important facts, relationship changes, long-term agreements) "
-            "and it has been confirmed as trustworthy through the dialogue, "
-            "use adaptive_prompt__update_adaptive_prompt to record it in the adaptive prompt.\n"
-        )
         return (
-            f"Summary time: {current_time}\n"
+            f"Current time: {current_time}\n"
             f"Conversation: {kind_label}\n"
-            f"The messages below were generated shortly before this summary time.\n"
-            "Update the existing archive summary with stable facts, recurring preferences, "
-            "important decisions, relationships, and topic changes from the recent messages. "
-            "Keep it compact. Do not include trivial small talk unless it changes the long-term context."
-            f"{item_instruction}{adaptive_instruction}\n\n"
-            f"Existing summary:\n{old}\n\n"
-            f"Recent messages:\n{recent}\n\n"
-            "Updated summary:"
+            f"The messages below were generated shortly before this time. "
+            f"Use the available tools to update the archive records based on these messages.\n"
+            f"{profile_instruction}{favorability_instruction}{item_instruction}\n"
+            f"Recent messages:\n{recent}"
         )
 
 def _normalize_message_text(text: str) -> str:
@@ -411,20 +408,3 @@ def _format_counter_message(message: Any) -> str:
         sender_bits.append(f"QQ:{item['sender_id']}")
     sender = " / ".join(sender_bits) or "未知发送者"
     return f"{sender}: {item['text']}"
-
-
-def _extract_response_text(response: dict[str, Any]) -> str:
-    content = response.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                value = item.get("text") or item.get("content")
-                if value is not None:
-                    parts.append(str(value))
-            elif item is not None:
-                parts.append(str(item))
-        return "\n".join(parts)
-    return str(content or "")

@@ -1,6 +1,6 @@
 [project]
 name = "neobot"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
 authors = [

@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class FavorabilitySkill(SkillModule):
     """好感度 Skill — 调整用户好感度。"""
@@ -76,15 +74,6 @@ class FavorabilitySkill(SkillModule):
             return _json({"ok": False, "error": f"unknown favorability tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_update_favorability(self: FavorabilitySkill, args: dict) -> str:
@@ -103,7 +92,6 @@ async def _handle_update_favorability(self: FavorabilitySkill, args: dict) -> st
         return _json({"ok": True, "result": result})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "update_favorability": _handle_update_favorability,

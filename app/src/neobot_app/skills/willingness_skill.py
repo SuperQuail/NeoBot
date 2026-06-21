@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class WillingnessSkill(SkillModule):
     """回复意愿控制 Skill — 运行时回复系数调整与会话黑名单管理。"""
@@ -133,15 +131,6 @@ class WillingnessSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown willingness tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_get_willingness_status(self: WillingnessSkill, args: dict) -> str:
@@ -197,7 +186,6 @@ async def _handle_remove_session_blacklist(self: WillingnessSkill, args: dict) -
     if self._willing is None:
         return _json({"ok": True, "note": "模拟：当前会话已从临时黑名单移除"})
     return self._willing.remove_runtime_blacklist("current")
-
 
 _HANDLERS = {
     "get_willingness_status": _handle_get_willingness_status,

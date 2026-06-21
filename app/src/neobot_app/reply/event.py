@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
 from neobot_app.time_context import now_utc

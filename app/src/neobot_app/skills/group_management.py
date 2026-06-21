@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class GroupManagementSkill(SkillModule):
     """群管理 Skill — 管理员、禁言、踢人、群名/备注、头衔、加群请求、精华、撤回。"""
@@ -86,15 +84,6 @@ class GroupManagementSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown group_management tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_manage_group(self: GroupManagementSkill, args: dict) -> str:
@@ -107,7 +96,6 @@ async def _handle_manage_group(self: GroupManagementSkill, args: dict) -> str:
         return _json({"ok": True, "action": action, "api": api_action, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
     group_id = _as_int(args.get("group_id"))
@@ -174,12 +162,10 @@ def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
         return "delete_msg", {"message_id": _require(message_id, "message_id")}
     raise ValueError(f"未知群管理动作: {action}")
 
-
 def _as_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
-
 
 def _as_str(value: Any) -> str | None:
     if value is None:
@@ -187,12 +173,10 @@ def _as_str(value: Any) -> str | None:
     text = str(value).strip()
     return text or None
 
-
 def _require(value: Any, name: str) -> Any:
     if value is None or value == "":
         raise ValueError(f"缺少参数 {name}")
     return value
-
 
 _HANDLERS = {
     "manage_group": _handle_manage_group,

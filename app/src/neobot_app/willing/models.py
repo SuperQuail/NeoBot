@@ -39,7 +39,6 @@ class WillingContext:
     observed_messages_text: tuple[str, ...]
     base_probability: float
     conversation_coefficient: float
-    reply_threshold: float
     bot_account: int
     bot_name: str
     bot_aliases: tuple[str, ...]

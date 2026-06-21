@@ -1,7 +1,6 @@
 """配置模型 — 统一导出"""
 
 from neobot_app.config.schemas.bot import (
-    AgentCrossChat,
     AgentProblemSolver,
     Bot,
     BotConfig,
@@ -23,7 +22,6 @@ from neobot_app.config.schemas.bot import (
 from neobot_app.config.schemas.env import ApiPlatformConfig, EnvConfig
 
 __all__ = [
-    "AgentCrossChat",
     "AgentProblemSolver",
     "Bot",
     "BotConfig",

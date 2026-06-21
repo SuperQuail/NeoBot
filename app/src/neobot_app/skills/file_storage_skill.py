@@ -16,10 +16,8 @@ _STORAGE_DOC = "文件存储.md"
 _TODO_DOC = "TODO.md"
 _PERSISTENT_DIRS = ["tools", "docs", "assets", "gift"]
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class FileStorageSkill(SkillModule):
     """文件存储管理 Skill — 读写 文件存储.md 和 TODO.md，管理持久化目录。"""
@@ -175,15 +173,6 @@ class FileStorageSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown file_storage tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_read_storage_doc(self: FileStorageSkill, args: dict) -> str:
@@ -197,7 +186,6 @@ async def _handle_read_storage_doc(self: FileStorageSkill, args: dict) -> str:
         return _json({"ok": True, "content": data.decode("utf-8")})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_update_storage_doc(self: FileStorageSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -222,7 +210,6 @@ async def _handle_update_storage_doc(self: FileStorageSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_read_todo(self: FileStorageSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -234,7 +221,6 @@ async def _handle_read_todo(self: FileStorageSkill, args: dict) -> str:
         return _json({"ok": True, "content": data.decode("utf-8")})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_update_todo(self: FileStorageSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -255,7 +241,6 @@ async def _handle_update_todo(self: FileStorageSkill, args: dict) -> str:
         return _json({"ok": True, "action": action})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_list_storage_dirs(self: FileStorageSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -278,7 +263,6 @@ async def _handle_list_storage_dirs(self: FileStorageSkill, args: dict) -> str:
         return _json({"ok": True, "dirs": result})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 def _apply_storage_update(content: str, section: str, entry: str, action: str) -> str:
     """更新 文件存储.md 中指定 section 的条目。"""
@@ -324,7 +308,6 @@ def _apply_storage_update(content: str, section: str, entry: str, action: str) -
 
     return "\n".join(new_lines)
 
-
 def _apply_todo_update(content: str, entry: str, action: str) -> str:
     """更新 TODO.md。"""
     lines = content.split("\n")
@@ -361,13 +344,11 @@ def _apply_todo_update(content: str, entry: str, action: str) -> str:
 
     return "\n".join(new_lines)
 
-
 def _extract_filename(entry: str) -> str:
     """从条目中提取文件名，如 '- `script.py` — ...' -> 'script.py'。"""
     import re
     m = re.search(r"`([^`]+)`", entry)
     return m.group(1) if m else ""
-
 
 _HANDLERS = {
     "read_storage_doc": _handle_read_storage_doc,

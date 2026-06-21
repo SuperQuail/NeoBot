@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -100,6 +101,10 @@ class ReplyToolExecutor(ToolExecutor):
         self._enable_ai_reply_regenerate = enable_ai_reply_regenerate
         self._wait_cooldown_seconds = wait_cooldown_seconds
         self._last_wait_time = 0.0
+        self._session_tasks: set[asyncio.Task] = set()
+        self._session_task_info: dict[int, dict] = {}
+        self._session_task_queue: dict[str, dict] = {}
+        self._session_completed: dict[str, list[dict]] = {}
         self._logger = logger or NullLogger()
 
     def definitions(self) -> list[ToolDefinition]:
@@ -390,7 +395,8 @@ class ReplyToolExecutor(ToolExecutor):
                 ),
             )
         if (
-            self._drawing_manager is not None
+            self._skill_manager is not None
+            or self._drawing_manager is not None
             or self._scheduled_task_manager is not None
             or self._notification_hub is not None
         ):
@@ -398,7 +404,9 @@ class ReplyToolExecutor(ToolExecutor):
                 _tool_def(
                     "check_background_tasks",
                     "查询当前聊天流的后台任务状态（可扩展，当前支持绘图任务）。"
-                    "返回：后台任务列表及各任务的状态、进行中/冷却/最近完成/失败等信息。"
+                    "返回：后台任务列表及各任务的状态、进行中/冷却/最近完成/失败等信息；"
+                    "活跃的会话工具（含已运行时长）；排队的会话工具；"
+                    "最近完成的会话工具（含状态和结果摘要，防止重复执行已完成的相同操作）。"
                     "在决定是否调用 generate_image 之前，必须优先调用此工具检查是否有正在进行的后台任务，避免重复提交。",
                     {
                         "properties": {},
@@ -406,6 +414,26 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
+        # cancel_task：手动取消后台任务/会话工具
+        tools.append(
+            _tool_def(
+                "cancel_task",
+                "手动取消后台任务或会话工具。"
+                "可取消正在执行的会话工具（如下载、图片解析）和其排队任务，"
+                "也可取消绘图冷却限制。"
+                "适用于用户想中止当前操作、或需要立即执行其他操作的场景。",
+                {
+                    "properties": {
+                        "task_type": {
+                            "type": "string",
+                            "enum": ["session_tool", "drawing_cooldown"],
+                            "description": "要取消的任务类型：session_tool（取消会话工具的当前任务和排队）、drawing_cooldown（取消绘图冷却）",
+                        },
+                    },
+                    "required": ["task_type"],
+                },
+            )
+        )
         if self._drawing_manager is not None:
             tools.append(
                 _tool_def(
@@ -471,6 +499,8 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_poke_user(args)
         if name == "check_background_tasks":
             return await self._execute_check_background_tasks(args)
+        if name == "cancel_task":
+            return await self._execute_cancel_task(args)
         if name == "check_last_drawing":
             return await self._execute_check_last_drawing(args)
         if name == "mark_scheduled_task_complete":
@@ -482,9 +512,316 @@ class ReplyToolExecutor(ToolExecutor):
             # 自动注入当前对话上下文，skill 工具不需要也不应自行指定
             enriched = dict(args)
             if self._conv_kind and self._conv_id:
-                enriched["pipeline_key"] = f"{self._conv_kind}_{self._conv_id}"
+                enriched["pipeline_key"] = f"{self._conv_kind}:{self._conv_id}"
+            if self._numbering is not None:
+                enriched["_numbering_mapping"] = self._numbering.mapping
+            if self._skill_manager.is_session_tool(name):
+                return await self._execute_session_tool(name, enriched)
             return await self._skill_manager.execute(name, enriched)
         raise ToolError(f"Unknown reply tool: {name}")
+
+    async def _execute_session_tool(self, name: str, args: dict) -> str:
+        """将会话工具提交到后台执行（同一管线最多 1 运行 + 1 排队）。"""
+        pipeline_key = str(args.get("pipeline_key", ""))
+        conv_kind = self._conv_kind
+        conv_id = self._conv_id
+
+        has_running = any(
+            info["pipeline_key"] == pipeline_key
+            for info in self._session_task_info.values()
+        )
+
+        if has_running:
+            if pipeline_key in self._session_task_queue:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "status": "queue_full",
+                        "tool": name,
+                        "message": (
+                            "当前已有会话工具正在执行且已有排队任务（最多排队1个）。"
+                            "请等待当前任务完成后重试，或调用 cancel_task 取消当前任务/排队。"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            self._session_task_queue[pipeline_key] = {
+                "name": name,
+                "args": args,
+                "conv_kind": conv_kind,
+                "conv_id": conv_id,
+                "queued_at": monotonic_seconds(),
+            }
+            self._logger.info(
+                "会话工具已加入排队",
+                tool=name,
+                pipeline_key=pipeline_key,
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "queued",
+                    "tool": name,
+                    "message": (
+                        "已有会话工具正在执行，当前任务已加入排队。"
+                        "系统会在当前任务完成后自动执行排队的任务。请立即结束本轮回复。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        return self._start_session_tool(name, args, pipeline_key, conv_kind, conv_id)
+
+    def _start_session_tool(
+        self, name: str, args: dict, pipeline_key: str, conv_kind: str, conv_id: str,
+    ) -> str:
+        """创建并启动会话工具任务，完成后自动处理排队。"""
+        task = asyncio.create_task(
+            self._run_session_tool(
+                name=name,
+                args=args,
+                pipeline_key=pipeline_key,
+                conv_kind=conv_kind,
+                conv_id=conv_id,
+            )
+        )
+        tid = id(task)
+        self._session_tasks.add(task)
+        self._session_task_info[tid] = {
+            "name": name,
+            "pipeline_key": pipeline_key,
+            "started_at": monotonic_seconds(),
+        }
+
+        def _cleanup(t: asyncio.Task) -> None:
+            self._session_tasks.discard(t)
+            info = self._session_task_info.pop(tid, None)
+            if info:
+                pk = info["pipeline_key"]
+                if pk and pk in self._session_task_queue:
+                    queued = self._session_task_queue.pop(pk)
+                    self._logger.info(
+                        "会话工具排队任务开始执行",
+                        tool=queued["name"],
+                        pipeline_key=pk,
+                    )
+                    self._start_session_tool(
+                        name=queued["name"],
+                        args=queued["args"],
+                        pipeline_key=pk,
+                        conv_kind=queued["conv_kind"],
+                        conv_id=queued["conv_id"],
+                    )
+
+        task.add_done_callback(_cleanup)
+
+        self._logger.info(
+            "会话工具已提交（后台执行）",
+            tool=name,
+            pipeline_key=pipeline_key,
+        )
+
+        return json.dumps(
+            {
+                "ok": True,
+                "status": "session_submitted",
+                "tool": name,
+                "message": (
+                    "任务已提交到后台执行，完成后会自动通知你。"
+                    "请立即结束本轮回复，不要等待、不要轮询、不要调用 wait 工具。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    async def _execute_cancel_task(self, args: dict) -> str:
+        """手动取消后台任务或会话工具。"""
+        task_type = str(args.get("task_type", ""))
+        if not self._conv_kind or not self._conv_id:
+            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+        pipeline_key = f"{self._conv_kind}:{self._conv_id}"
+
+        if task_type == "session_tool":
+            cancelled: list[str] = []
+            # 取消排队中的会话工具
+            if pipeline_key in self._session_task_queue:
+                queued = self._session_task_queue.pop(pipeline_key)
+                cancelled.append(f"排队任务 {queued['name']}")
+            # 取消运行中的会话工具
+            cancelled_running = 0
+            for tid, info in list(self._session_task_info.items()):
+                if info["pipeline_key"] == pipeline_key:
+                    for task in list(self._session_tasks):
+                        if id(task) == tid:
+                            task.cancel()
+                            cancelled_running += 1
+                            break
+            if cancelled_running > 0:
+                cancelled.append(f"运行中任务({cancelled_running}个)")
+
+            if not cancelled:
+                return json.dumps({
+                    "ok": True,
+                    "message": "当前管线没有正在执行或排队的会话工具",
+                }, ensure_ascii=False)
+            self._logger.info(
+                "主Agent取消会话工具",
+                pipeline_key=pipeline_key,
+                cancelled=cancelled,
+            )
+            return json.dumps({
+                "ok": True,
+                "cancelled": cancelled,
+                "message": f"已取消：{', '.join(cancelled)}。排队的任务（如有）将不会执行。",
+            }, ensure_ascii=False)
+
+        if task_type == "drawing_cooldown":
+            if self._drawing_manager is None:
+                return json.dumps({"ok": False, "error": "绘图系统未配置"}, ensure_ascii=False)
+            self._drawing_manager.cancel_cooldown(pipeline_key)
+            self._logger.info("主Agent取消绘图冷却", pipeline_key=pipeline_key)
+            return json.dumps({"ok": True, "message": "已取消当前管线的绘图冷却限制"}, ensure_ascii=False)
+
+        return json.dumps({"ok": False, "error": f"未知任务类型: {task_type}"}, ensure_ascii=False)
+
+    async def _run_session_tool(
+        self,
+        name: str,
+        args: dict,
+        pipeline_key: str,
+        conv_kind: str,
+        conv_id: str,
+    ) -> None:
+        """在后台执行会话工具并将结果发布到 NotificationHub。
+
+        timeout_seconds 从 args 读取（默认 300，最大 1800），用于 asyncio.wait_for。
+        额外 +10 秒留给 NotificationHub publish 等收尾操作。
+        """
+        started_at = monotonic_seconds()
+        timeout_seconds = int(args.get("timeout_seconds", 300) or 300)
+        timeout_seconds = max(1, min(timeout_seconds, 1800))
+        status = "completed"
+        result_summary = ""
+        notification: str | None = None
+
+        try:
+            result = await asyncio.wait_for(
+                self._skill_manager.execute(name, args),
+                timeout=timeout_seconds + 10,
+            )
+            success = True
+            result_text = str(result)
+            try:
+                parsed = json.loads(result_text)
+                if isinstance(parsed, dict) and parsed.get("ok") is False:
+                    success = False
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            if success:
+                result_summary = result_text[:200]
+                notification = (
+                    f"<会话工具结果>\n"
+                    f"工具 {name} 已完成：\n"
+                    f"{result_text}\n"
+                    f"请根据此结果继续处理用户的请求。\n"
+                    f"</会话工具结果>"
+                )
+            else:
+                status = "failed"
+                error_msg = ""
+                try:
+                    error_msg = json.loads(result_text).get("error", "")
+                except Exception:
+                    pass
+                result_summary = (error_msg or result_text)[:200]
+                notification = (
+                    f"<会话工具结果>\n"
+                    f"工具 {name} 执行失败：{error_msg or result_text}\n"
+                    f"请告知用户操作失败，并根据情况尝试替代方案。\n"
+                    f"</会话工具结果>"
+                )
+
+            self._logger.info(
+                "会话工具任务完成",
+                tool=name,
+                pipeline_key=pipeline_key,
+                success=success,
+            )
+        except asyncio.TimeoutError:
+            status = "timeout"
+            result_summary = f"超时（{timeout_seconds}秒）"
+            notification = (
+                f"<会话工具结果>\n"
+                f"工具 {name} 执行超时（{timeout_seconds}秒）。\n"
+                f"请告知用户下载超时，建议减小文件或稍后重试。\n"
+                f"如需更长时间，可通过 timeout_seconds 参数设置（最长 1800 秒）。\n"
+                f"</会话工具结果>"
+            )
+            self._logger.warning(
+                "会话工具任务超时",
+                tool=name,
+                pipeline_key=pipeline_key,
+                timeout_seconds=timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            status = "cancelled"
+            result_summary = "任务被取消"
+            raise
+        except Exception as exc:
+            status = "error"
+            result_summary = str(exc)[:200]
+            notification = (
+                f"<会话工具结果>\n"
+                f"工具 {name} 执行异常：{exc}\n"
+                f"请告知用户操作失败。\n"
+                f"</会话工具结果>"
+            )
+            self._logger.error(
+                "会话工具任务异常",
+                tool=name,
+                pipeline_key=pipeline_key,
+                error=str(exc),
+            )
+        finally:
+            elapsed = monotonic_seconds() - started_at
+            self._record_session_completion(name, pipeline_key, status, result_summary, elapsed)
+
+        if notification is not None and self._notification_hub is not None and conv_kind and conv_id:
+            try:
+                await self._notification_hub.publish(
+                    source="session_tool",
+                    kind=conv_kind,
+                    conversation_id=conv_id,
+                    content=notification,
+                    manager_name="session_tool",
+                    metadata={"tool_name": name, "pipeline_key": pipeline_key},
+                )
+            except Exception:
+                self._logger.warning(
+                    "会话工具通知发布失败",
+                    tool=name,
+                    pipeline_key=pipeline_key,
+                )
+
+    _MAX_COMPLETED_HISTORY = 5
+
+    def _record_session_completion(
+        self, name: str, pipeline_key: str, status: str, summary: str, elapsed: float,
+    ) -> None:
+        """记录已完成的会话工具，供 check_background_tasks 展示。"""
+        if pipeline_key not in self._session_completed:
+            self._session_completed[pipeline_key] = []
+        history = self._session_completed[pipeline_key]
+        history.append({
+            "tool": name,
+            "status": status,
+            "summary": summary,
+            "elapsed_seconds": round(elapsed),
+            "completed_at": monotonic_seconds(),
+        })
+        if len(history) > self._MAX_COMPLETED_HISTORY:
+            self._session_completed[pipeline_key] = history[-self._MAX_COMPLETED_HISTORY:]
 
     async def _execute_cancel(self, args: dict) -> str:
         if self._cancel is None:
@@ -752,17 +1089,26 @@ class ReplyToolExecutor(ToolExecutor):
         return "\n".join(lines)
 
     async def _execute_check_background_tasks(self, args: dict) -> str:
-        """查询当前聊天流的后台任务状态（可扩展，当前返回绘图任务）。"""
-        if (
-            self._drawing_manager is None
-            and self._scheduled_task_manager is None
-            and self._problem_solver_manager is None
-            and self._notification_hub is None
-        ):
-            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+        """查询当前聊天流的后台任务状态（绘图、定时任务、解题、会话工具）。"""
         pipeline_key = f"{self._conv_kind}:{self._conv_id}"
         if not self._conv_kind or not self._conv_id:
             return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+
+        has_any_manager = (
+            self._drawing_manager is not None
+            or self._scheduled_task_manager is not None
+            or self._problem_solver_manager is not None
+            or self._notification_hub is not None
+        )
+        has_session_activity = (
+            bool(self._session_task_info)
+            or bool(self._session_task_queue)
+            or bool(self._session_completed.get(pipeline_key, []))
+        )
+
+        if not has_any_manager and not has_session_activity:
+            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+
         status: dict[str, Any] = {}
         if self._drawing_manager is not None:
             status.update(self._drawing_manager.get_pipeline_status(pipeline_key))
@@ -772,11 +1118,62 @@ class ReplyToolExecutor(ToolExecutor):
             status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
+
+        # 当前管线的会话工具 — 运行中 + 排队中
+        now = monotonic_seconds()
+        active_session_tools: list[dict] = []
+        for info in self._session_task_info.values():
+            # "or not info["pipeline_key"]" 为防御性处理，当前逻辑下 pipeline_key 始终非空
+            if info["pipeline_key"] == pipeline_key or not info["pipeline_key"]:
+                active_session_tools.append({
+                    "tool": info["name"],
+                    "pipeline_key": info["pipeline_key"] or pipeline_key,
+                    "elapsed_seconds": round(now - info["started_at"]),
+                })
+        if active_session_tools:
+            status["active_session_tools"] = active_session_tools
+
+        queued_tools: list[dict] = []
+        for pk, queued in self._session_task_queue.items():
+            if pk == pipeline_key:
+                queued_tools.append({
+                    "tool": queued["name"],
+                    "queued_seconds": round(now - queued["queued_at"]),
+                })
+        if queued_tools:
+            status["queued_session_tools"] = queued_tools
+
+        # 最近完成的会话工具（防止 agent 重复执行已完成的相同任务）
+        completed = self._session_completed.get(pipeline_key, [])
+        if completed:
+            status["completed_session_tools"] = [
+                {
+                    "tool": c["tool"],
+                    "status": c["status"],
+                    "summary": c["summary"],
+                    "elapsed_seconds": c["elapsed_seconds"],
+                    "completed_ago_seconds": round(now - c["completed_at"]),
+                }
+                for c in completed
+            ]
+
+        # 补充绘图任务的已运行时长
+        active_draw = status.get("active_task")
+        if isinstance(active_draw, dict) and active_draw.get("created_at"):
+            try:
+                created = float(active_draw["created_at"])
+                active_draw["elapsed_seconds"] = round(now - created)
+            except (ValueError, TypeError):
+                pass
+
         self._logger.info(
             "主Agent查询后台任务状态",
             pipeline_key=pipeline_key,
             has_active=status.get("has_active_task"),
             cooldown=status.get("cooldown_remaining_seconds"),
+            session_tools=len(active_session_tools),
+            queued=len(queued_tools),
+            completed=len(completed),
         )
         return json.dumps({"ok": True, "pipeline_key": pipeline_key, **status}, ensure_ascii=False)
 
@@ -917,7 +1314,14 @@ class ReplyToolExecutor(ToolExecutor):
         return "\n".join(lines)
 
     async def close(self) -> None:
-        return None
+        for task in list(self._session_tasks):
+            task.cancel()
+        if self._session_tasks:
+            await asyncio.gather(*self._session_tasks, return_exceptions=True)
+        self._session_tasks.clear()
+        self._session_task_info.clear()
+        self._session_task_queue.clear()
+        self._session_completed.clear()
 
 
 def build_reply_toolset(

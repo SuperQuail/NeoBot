@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class ChatHistorySkill(SkillModule):
     """历史消息 Skill — 读取更早的聊天记录。"""
@@ -68,15 +66,6 @@ class ChatHistorySkill(SkillModule):
             return _json({"ok": False, "error": f"unknown chat_history tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> str:
@@ -85,12 +74,20 @@ async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> s
     conv_kind = str(args.get("conversation_kind", "")).strip()
     conv_id = str(args.get("conversation_id", "")).strip()
     count = min(int(args.get("count", 20)), 50)
+    message_seq = int(args.get("message_seq", 0))
+    reverse_order = bool(args.get("reverse_order", False))
     try:
-        messages = await self._adapter.get_chat_history(conv_kind, conv_id, limit=count)
+        if conv_kind == "private":
+            messages = await self._adapter.get_friend_msg_history(
+                int(conv_id), message_seq=message_seq, count=count, reverse_order=reverse_order,
+            )
+        else:
+            messages = await self._adapter.get_group_msg_history(
+                int(conv_id), message_seq=message_seq, count=count, reverse_order=reverse_order,
+            )
         return _json({"ok": True, "count": len(messages), "messages": str(messages)[:3000]})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "read_earlier_messages": _handle_read_earlier_messages,

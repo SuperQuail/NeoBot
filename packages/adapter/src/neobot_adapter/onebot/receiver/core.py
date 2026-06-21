@@ -285,7 +285,7 @@ class AdapterCore:
         except Exception as e:
             logger.error(f"心跳检测任务异常: {e}")
 
-    async def _call_action(self, websocket, action, params, timeout=5):
+    async def _call_action(self, websocket, action, params, timeout=20):
         echo = f"{action}_{id(params)}_{asyncio.get_event_loop().time()}"
         fut = asyncio.get_event_loop().create_future()
         self._pending[echo] = fut
@@ -318,7 +318,7 @@ class AdapterCore:
                 if conn_echo_set and echo in conn_echo_set:
                     conn_echo_set.remove(echo)
 
-    async def call_api(self, action, params, timeout=5, websocket=None):
+    async def call_api(self, action, params, timeout=20, websocket=None):
         """调用 API 并等待响应"""
         if websocket is None:
             async with self._connections_lock:

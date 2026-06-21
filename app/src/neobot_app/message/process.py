@@ -11,7 +11,7 @@ from neobot_adapter.model.notice import (
     ReceiveOfflineFile, ClientStatusChange, EssenceMessage
 )
 from neobot_adapter.utils.parse import safe_parse_model
-from neobot_app.message.queue_impl import _poke_sub_type_text
+from neobot_app.message.queue import _poke_sub_type_text
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
