@@ -24,11 +24,13 @@ class PromptBuilder:
         logger: Logger | None = None,
         archive_memory_service: Any | None = None,
         adaptive_prompt_path: Path | None = None,
+        uow_factory: Any = None,
     ) -> None:
         self._config = config
         self._profile_service = profile_service
         self._logger = logger or NullLogger()
         self._archive_memory_service = archive_memory_service
+        self._uow_factory = uow_factory
         self._keyword_reaction_builder = KeywordReactionBuilder(
             config.chat.key_word or [],
             logger=self._logger,
@@ -88,12 +90,9 @@ class PromptBuilder:
             message_queue,
         )
 
-        # 查询群聊档案记忆（table_name='group_profile', key=群号）
         group_profile = await self._fetch_archive("group_profile", group_id_str) or ""
-        group_summary = await self._fetch_archive("group_summary", group_id_str) or ""
         group_info = _merge_labeled_prompt_fragments(
             ("群聊档案", group_profile),
-            ("近期阶段摘要", group_summary),
         )
 
         if numbering is not None:
@@ -103,7 +102,8 @@ class PromptBuilder:
                 all_new=all_new,
             )
             format_example = numbering.format_example()
-            message_list = f"{format_example}\n\n{message_list}"
+            message_id_context = _build_message_id_context(numbering)
+            message_list = f"{format_example}\n\n{message_id_context}\n\n{message_list}"
         else:
             message_list = message_queue.to_text(
                 group_id_str,
@@ -177,7 +177,8 @@ class PromptBuilder:
                 all_new=all_new,
             )
             format_example = numbering.format_example()
-            message_list = f"{format_example}\n\n{message_list}"
+            message_id_context = _build_message_id_context(numbering)
+            message_list = f"{format_example}\n\n{message_id_context}\n\n{message_list}"
         else:
             message_list = message_queue.to_text(
                 user_id_str,
@@ -195,10 +196,8 @@ class PromptBuilder:
             keyword_reaction_text,
         )
 
-        private_summary = await self._fetch_archive("private_summary", user_id_str) or ""
         merged_memory_list = _merge_labeled_prompt_fragments(
             ("既有记忆", memory_list),
-            ("近期阶段摘要", private_summary),
         )
 
         prompt = self._config.chat.friend_prompt_template.format(
@@ -263,6 +262,25 @@ def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
         if value and value.strip()
     ]
     return "\n".join(cleaned)
+
+
+def _build_message_id_context(numbering: Any) -> str:
+    """构建消息编号 → 真实 message_id 的映射文本，嵌入 prompt 供 Agent 查阅。"""
+    from neobot_app.message.numbering import MessageNumbering
+
+    if numbering is None:
+        return ""
+    mapping = numbering.mapping
+    if not isinstance(mapping, dict) or not mapping:
+        return ""
+    lines = [
+        "[聊天消息编号映射]",
+        "以下为 prompt 中每条消息左侧编号对应的真实 OneBot message_id。",
+        "当工具参数需要 message_id 时（如 message_id、chat: 前缀等），必须使用右侧的 message_id，不要把左侧聊天编号当作 message_id 传入。",
+    ]
+    for number, message_id in sorted(mapping.items(), key=lambda x: x[0]):
+        lines.append(f"  编号 {number} → message_id {message_id}")
+    return "\n".join(lines)
 
 
 async def get_group_chat_prompt(

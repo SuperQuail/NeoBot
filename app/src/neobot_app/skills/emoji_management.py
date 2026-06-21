@@ -8,10 +8,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class EmojiManagementSkill(SkillModule):
     """表情包管理 Skill — 列出、搜索、添加、更新、重命名表情包。"""
@@ -108,15 +106,6 @@ class EmojiManagementSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown emoji_management tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_emoji_list(self: EmojiManagementSkill, args: dict) -> str:
@@ -147,7 +136,6 @@ async def _handle_emoji_list(self: EmojiManagementSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_emoji_search(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:
         return _json({"ok": False, "error": "emoji_service 未配置"})
@@ -169,7 +157,6 @@ async def _handle_emoji_search(self: EmojiManagementSkill, args: dict) -> str:
         return _json({"ok": True, "items": items, "total": len(items)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 async def _handle_emoji_add(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:
@@ -199,7 +186,6 @@ async def _handle_emoji_add(self: EmojiManagementSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": f"添加失败: {e}"})
 
-
 async def _handle_emoji_update(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:
         return _json({"ok": False, "error": "emoji_service 未配置"})
@@ -216,7 +202,6 @@ async def _handle_emoji_update(self: EmojiManagementSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
-
 async def _handle_emoji_rename(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:
         return _json({"ok": False, "error": "emoji_service 未配置"})
@@ -232,7 +217,6 @@ async def _handle_emoji_rename(self: EmojiManagementSkill, args: dict) -> str:
         })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "emoji_list": _handle_emoji_list,

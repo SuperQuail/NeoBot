@@ -1,5 +1,5 @@
 """Assembly module exports."""
 
-from neobot_app.assembly.agents import build_agent_registry
+from neobot_app.assembly.agents import AGENT_MODEL_NAMES, resolve_agent_model_name
 
-__all__ = ["build_agent_registry"]
+__all__ = ["AGENT_MODEL_NAMES", "resolve_agent_model_name"]

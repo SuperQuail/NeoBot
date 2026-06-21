@@ -7,10 +7,8 @@ from typing import Any
 
 from neobot_app.skills.base import SkillModule
 
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
 
 class ArchiveCRUDSkill(SkillModule):
     """长期记忆档案管理 — 档案增查改删。"""
@@ -115,15 +113,6 @@ class ArchiveCRUDSkill(SkillModule):
             return _json({"ok": False, "error": f"unknown archive_crud tool: {tool_name}"})
         return await handler(self, args)
 
-    @staticmethod
-    def _tool_def(name: str, desc: str, params: dict | None = None) -> dict:
-        p = {"type": "object", "properties": {}, "required": []}
-        if params:
-            p["properties"] = params.get("properties", {})
-            p["required"] = params.get("required", [])
-        return {"type": "function", "function": {"name": name, "description": desc, "parameters": p}}
-
-
 # ── Handlers ──
 
 async def _handle_save_archive(self: ArchiveCRUDSkill, args: dict) -> str:
@@ -181,7 +170,6 @@ async def _handle_delete_archive(self: ArchiveCRUDSkill, args: dict) -> str:
         return _json({"ok": True})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
-
 
 _HANDLERS = {
     "save_archive": _handle_save_archive,

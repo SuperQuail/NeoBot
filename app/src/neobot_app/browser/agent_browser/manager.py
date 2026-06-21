@@ -56,14 +56,23 @@ def _find_chrome_binary() -> str:
     system = platform.system()
     candidates = []
     if system == "Windows":
+        local_appdata = os.getenv("LOCALAPPDATA", "")
+        chrome_local = Path(local_appdata) / "Google" / "Chrome" / "Application" / "chrome.exe" if local_appdata else None
+        edge_local = Path(local_appdata) / "Microsoft" / "Edge" / "Application" / "msedge.exe" if local_appdata else None
         candidates = [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            r"C:\Users\%USERNAME%\AppData\Local\Google\Chrome\Application\chrome.exe",
+            str(chrome_local) if chrome_local else "",
             r"C:\Program Files\Chromium\Application\chrome.exe",
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            str(edge_local) if edge_local else "",
         ]
+        # 也尝试通过 PATH 查找
+        if chrome_path := shutil.which("chrome"):
+            candidates.insert(0, chrome_path)
+        if edge_path := shutil.which("msedge"):
+            candidates.insert(0, edge_path)
     elif system == "Linux":
         candidates = [
             "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",

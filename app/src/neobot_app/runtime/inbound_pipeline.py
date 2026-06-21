@@ -36,17 +36,19 @@ class InboundPipeline:
             preview=message.text[:80],
         )
 
-        if self._memory is None:
-            return
-
-        try:
-            await self._memory.remember(
-                conversation_id=f"{message.conversation.kind}:{message.conversation.id}",
-                speaker_id=message.sender_id,
-                content=message.text,
-            )
-        except Exception as exc:
-            self._logger.error("记忆存储失败", error=str(exc))
+        # NOTE: 短期记忆（MemoryService.remember）为未完成功能。
+        # 当前仅将消息写入内存列表，无任何检索调用方（recall 无使用者），
+        # 且纯内存存储在重启后丢失，暂不启用。
+        # if self._memory is None:
+        #     return
+        # try:
+        #     await self._memory.remember(
+        #         conversation_id=str(message.conversation.id),
+        #         speaker_id=message.sender_id,
+        #         content=message.text,
+        #     )
+        # except Exception as exc:
+        #     self._logger.error("记忆存储失败", error=str(exc))
 
     async def handle_raw_event(self, raw_event: dict[str, Any]) -> None:
         await self.handle(map_to_incoming_message(raw_event))

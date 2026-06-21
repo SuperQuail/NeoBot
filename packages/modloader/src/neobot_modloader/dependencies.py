@@ -41,7 +41,7 @@ class PythonDependencyInstaller:
         command = self._install_command(unique)
         self._logger.info(f"正在安装插件 PyPI 依赖: {' '.join(unique)}")
         self._logger.info(f"安装命令: {' '.join(command)}")
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", check=False)
         if completed.returncode != 0:
             self._logger.error(f"插件 PyPI 依赖安装失败: {completed.stderr}")
             return PythonDependencyInstallResult(
@@ -78,6 +78,6 @@ class PythonDependencyInstaller:
         return subprocess.run(
             [sys.executable, "-m", "pip", "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=False,
         ).returncode == 0

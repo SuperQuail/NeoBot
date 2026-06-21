@@ -47,7 +47,7 @@ class WebSocketAPI:
         self,
         action: str,
         params: Union[Dict[str, Any], BaseModel],
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -69,7 +69,7 @@ class WebSocketAPI:
         self,
         action: str,
         params: Union[Dict[str, Any], BaseModel],
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -136,7 +136,7 @@ class WebSocketAPI:
         user_id: int,
         message: str,
         auto_escape: bool = False,
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -164,7 +164,7 @@ class WebSocketAPI:
         user_id: int,
         message: str,
         auto_escape: bool = False,
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -192,7 +192,7 @@ class WebSocketAPI:
         group_id: int,
         message: str,
         auto_escape: bool = False,
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -220,7 +220,7 @@ class WebSocketAPI:
         group_id: int,
         message: str,
         auto_escape: bool = False,
-        timeout: float = 5.0,
+        timeout: float = 20.0,
         websocket: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """

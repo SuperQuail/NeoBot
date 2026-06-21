@@ -92,7 +92,7 @@ class AgentPromptSource:
 AGENT_SOURCES: list[AgentPromptSource] = [
     AgentPromptSource("neobot_app.agents.chat_interaction", AGENTS_DIR / "chat_interaction.py", "ChatInteractionAgent"),
     AgentPromptSource("neobot_app.agents.willingness", AGENTS_DIR / "willingness.py", "WillingnessControlAgent"),
-    AgentPromptSource("neobot_app.agents.creator", AGENTS_DIR / "creator.py", "CreatorAgent", has_config=True),
+    AgentPromptSource("neobot_app.drawing.service", APP_SRC / "neobot_app" / "drawing" / "service.py", "CreatorImageService", has_config=True),
     AgentPromptSource("neobot_app.agents.memory", AGENTS_DIR / "memory.py", "ArchiveMemoryAgent", has_config=True),
     AgentPromptSource("neobot_app.agents.scheduled_task", AGENTS_DIR / "scheduled_task.py", "ScheduledTaskAgent", has_config=True),
     AgentPromptSource("neobot_app.agents.problem_solver", AGENTS_DIR / "problem_solver.py", "ProblemSolverAgent", has_config=True),
@@ -1088,7 +1088,7 @@ class ToolsEditorApp:
 
             def _factory(agent_name: str) -> Any:
                 model_index_map = {
-                    "creator": 1, "memory": 1, "chat_interaction": 1,
+                    "memory": 1, "chat_interaction": 1,
                     "willingness": 1, "scheduled_task": 1,
                     "problem_solver": 1,
                 }
