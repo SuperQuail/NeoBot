@@ -143,11 +143,24 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
     target_id = str(args.get("target_id", "")).strip()
     count = int(args.get("message_count", 20))
     try:
-        if target_kind == "private":
-            history = await self._adapter.get_friend_msg_history(int(target_id), count=count)
-        else:
-            history = await self._adapter.get_group_msg_history(int(target_id), count=count)
-        return _json({"ok": True, "history": str(history)[:3000]})
+        queue = self._friend_queue if target_kind == "private" else self._group_queue
+        if queue is None:
+            return _json({"ok": False, "error": f"{target_kind} 类型的消息队列未配置"})
+
+        if queue.size(target_id) == 0:
+            if target_kind == "private":
+                history = await self._adapter.get_friend_msg_history(int(target_id), count=count)
+            else:
+                history = await self._adapter.get_group_msg_history(int(target_id), count=count)
+            messages = getattr(getattr(history, "data", None), "messages", None)
+            if messages:
+                for msg in messages:
+                    queue.push_history(target_id, msg)
+
+        text = queue.to_text(target_id)
+        if not text:
+            return _json({"ok": True, "history": f"（{target_kind} {target_id} 暂无消息记录）"})
+        return _json({"ok": True, "history": text})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 

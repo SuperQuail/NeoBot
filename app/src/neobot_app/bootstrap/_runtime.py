@@ -34,7 +34,7 @@ def _auto_install_chromium() -> bool:
         logger.info("未检测到浏览器，正在自动下载 Chromium（约 150MB）…")
         result = subprocess.run(
             [str(cli), "install", "chromium"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, encoding="utf-8", timeout=300,
         )
         if result.returncode == 0:
             logger.info("Chromium 自动下载完成")

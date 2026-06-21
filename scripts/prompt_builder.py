@@ -85,7 +85,7 @@ def _inject_system_torch() -> None:
     try:
         result = subprocess.run(
             [sys.executable, "-c", "import torch; print(torch.__file__)"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
             torch_init = result.stdout.strip()
@@ -100,7 +100,7 @@ def _inject_system_torch() -> None:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "show", "torch"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():

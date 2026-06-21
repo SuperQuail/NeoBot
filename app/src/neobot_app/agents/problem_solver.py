@@ -825,8 +825,8 @@ class ProblemSolverToolExecutor(ToolExecutor):
                     None,
                     lambda: subprocess.run(
                         [sys.executable, script_path],
-                        capture_output=True, text=True, timeout=timeout,
-                        cwd=cwd,
+                        capture_output=True, text=True, encoding="utf-8",
+                        timeout=timeout, cwd=cwd,
                     ),
                 ),
                 timeout=timeout + 5,
