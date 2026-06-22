@@ -27,8 +27,9 @@ def run_migrations(db_url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
-    alembic_dir = Path(__file__).resolve().parent.parent.parent / "alembic"
-    ini_path = alembic_dir.parent / "alembic.ini"
+    pkg_dir = Path(__file__).resolve().parent
+    alembic_dir = pkg_dir / "alembic"
+    ini_path = pkg_dir / "alembic.ini"
 
     cfg = Config(str(ini_path))
     cfg.set_main_option("sqlalchemy.url", db_url)

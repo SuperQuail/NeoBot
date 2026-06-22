@@ -229,19 +229,3 @@ class ModelUsageRecord(Base):
         Index("ix_usage_records_created_at", "created_at"),
         Index("ix_usage_records_module", "module_name"),
     )
-
-
-class BilibiliLinkData(Base):
-    __tablename__ = "bilibili_links"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bilibili_uid: Mapped[int] = mapped_column(Integer, nullable=False)
-    qq_number: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("bilibili_uid", "qq_number", name="uq_bilibili_links_uid_qq"),
-        Index("ix_bilibili_links_bilibili_uid", "bilibili_uid"),
-        Index("ix_bilibili_links_qq_number", "qq_number"),
-    )
