@@ -18,6 +18,8 @@ async with uow_factory() as uow:
 ## Migrations
 
 ```bash
-cd packages/storage
+cd packages/storage/src/neobot_storage
 alembic upgrade head
 ```
+
+Migrations are run automatically on app startup via `run_migrations()`.
