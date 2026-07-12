@@ -11,9 +11,11 @@ from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import (
     LoguruLoggerFactory,
     configure_loguru,
+    register_self_heal_manager,
 )
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.utils.data_sync import sync_data_files
@@ -45,6 +47,8 @@ from neobot_app.bootstrap._runtime import (
     build_problem_solver_manager,
     build_sandbox_components,
     build_scheduled_task_manager,
+    build_self_heal_agent_wiring,
+    build_self_heal_manager,
 )
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.bootstrap._skills import build_plugin_runtime, build_skill_manager
@@ -256,17 +260,20 @@ def create_application() -> NeoBotApplication:
         logger_factory=logger_factory,
     )
 
-    creator_image_service = build_creator_image_service(
-        uow_factory=uow_factory,
-        adapter=adapter,
-        config=config,
-        emoji_service=emoji_service,
-        vision_provider=vision_provider,
-        file_server=file_server,
-        image_pool=image_pool,
-        logger_factory=logger_factory,
-    )
-    drawing_manager.set_image_service(creator_image_service)
+    if getattr(config.agent.creator, "enabled", False):
+        creator_image_service = build_creator_image_service(
+            uow_factory=uow_factory,
+            adapter=adapter,
+            config=config,
+            emoji_service=emoji_service,
+            vision_provider=vision_provider,
+            file_server=file_server,
+            image_pool=image_pool,
+            logger_factory=logger_factory,
+        )
+        drawing_manager.set_image_service(creator_image_service)
+    else:
+        creator_image_service = None
 
     sandbox = build_sandbox_components(
         config=config,
@@ -352,6 +359,39 @@ def create_application() -> NeoBotApplication:
         logger_factory=logger_factory,
     )
 
+    # ── 自修复 Agent 装配 ──
+    project_root = _get_project_root()
+    source_roots = [project_root / "app", project_root / "packages"]
+    log_file_path = DATA_DIR / "logs" / "neobot.log"
+    self_heal_manager = build_self_heal_manager(
+        config=config,
+        logger_factory=logger_factory,
+        notification_hub=notification_hub,
+        sandbox_service=sandbox["sandbox_service"],
+        drawing_manager=drawing_manager,
+        creator_image_service=creator_image_service,
+        data_dir=DATA_DIR,
+        source_roots=source_roots,
+        log_file=log_file_path,
+        web_search_config={},
+        vision_provider=vision_provider,
+    )
+    if self_heal_manager is not None:
+        register_self_heal_manager(self_heal_manager)
+        build_self_heal_agent_wiring(
+            config=config,
+            manager=self_heal_manager,
+            provider=provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            data_dir=DATA_DIR,
+            source_roots=source_roots,
+            log_file=log_file_path,
+            vision_provider=vision_provider,
+            web_search_config={},
+        )
+
     # ── 回复编排器 + 交叉注入 ──
     reply_orchestrator = build_reply_orchestrator(
         adapter=adapter,
@@ -384,6 +424,8 @@ def create_application() -> NeoBotApplication:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
+    if self_heal_manager is not None:
+        self_heal_manager.set_orchestrator(reply_orchestrator)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []
@@ -429,4 +471,5 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
         background_coros=maintenance_coros,
+        self_heal_manager=self_heal_manager,
     )

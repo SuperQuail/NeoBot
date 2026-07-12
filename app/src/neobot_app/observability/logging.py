@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging as stdlib_logging
 import sys
+import traceback as _traceback
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,23 @@ from neobot_contracts.ports.logging import Logger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 _runtime_event_dispatcher: Any = None
+_self_heal_manager: Any = None
 
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
     global _runtime_event_dispatcher
     _runtime_event_dispatcher = dispatcher
+
+
+def register_self_heal_manager(manager: Any) -> None:
+    """Register the SelfHealManager so the loguru ERROR sink can feed it.
+
+    The sink hands off each record via call_soon_threadsafe (from loguru's
+    logging thread) to the running event loop.  Until a manager is registered
+    the sink is a no-op.
+    """
+    global _self_heal_manager
+    _self_heal_manager = manager
 
 
 def _loguru_runtime_sink(message: Any) -> None:
@@ -46,6 +59,57 @@ def _loguru_runtime_sink(message: Any) -> None:
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(dispatch(envelope)))
     except RuntimeError:
         pass
+
+
+def _loguru_self_heal_sink(message: Any) -> None:
+    """loguru sink: 捕获 ERROR 及以上日志并推入 SelfHealManager。
+
+    在 loguru 的 logging 线程中执行（同步），通过 call_soon_threadsafe
+    安全转交主事件循环。自修复 agent 自身日志（module_name 前缀
+    'app.self_heal'）会被跳过，避免自激循环。
+    """
+    mgr = _self_heal_manager
+    if mgr is None:
+        return
+    record = message.record
+    module = str(record["extra"].get("module_name", ""))
+    if module.startswith("app.self_heal"):
+        return
+    exc = record.get("exception")
+    from neobot_app.time_context import monotonic_seconds as _monotonic
+    payload = {
+        "time": str(record["time"]),
+        "level": record["level"].name,
+        "module": module,
+        "file": record["file"].name,
+        "line": record["line"],
+        "function": record["function"],
+        "message": record["message"],
+        "traceback": (
+            "".join(_traceback.format_exception(exc.type, exc.value, exc.tb))
+            if exc and exc.type and exc.tb
+            else None
+        ),
+        "_monotonic": _monotonic(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread — loguru calls us from its own
+        # worker thread. Try to obtain the main event loop via the asyncio
+        # policy fallback.
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+    if loop is None:
+        return
+    try:
+        loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(mgr.record(payload))
+        )
+    except RuntimeError:
+        return
 
 
 class _InterceptHandler(stdlib_logging.Handler):
@@ -111,6 +175,13 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
             _loguru_runtime_sink,
             level="DEBUG",
         )
+
+    # Self-heal error ingestion sink: feeds the SelfHealManager with ERROR
+    # level logs (and above). No-op when no manager has been registered.
+    loguru.logger.add(
+        _loguru_self_heal_sink,
+        level="ERROR",
+    )
 
 
 class LoguruLoggerAdapter:

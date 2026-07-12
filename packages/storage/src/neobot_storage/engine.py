@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Union
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine as _create
 
 
@@ -12,8 +13,30 @@ def create_engine(db_url: str, **kwargs) -> AsyncEngine:
     """Create an async SQLAlchemy engine.
 
     For SQLite, pass a URL like ``sqlite+aiosqlite:///path/to/db.sqlite3``.
+
+    When the backend is SQLite, WAL journal mode and a 5-second busy timeout
+    are automatically enabled to reduce "database is locked" errors under
+    concurrent async task access.
     """
-    return _create(db_url, **kwargs)
+    engine = _create(db_url, **kwargs)
+    _enable_wal_if_sqlite(engine)
+    return engine
+
+
+def _enable_wal_if_sqlite(engine: AsyncEngine) -> None:
+    """Enable WAL mode + busy_timeout when the engine targets SQLite."""
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+        try:
+            cursor.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+        cursor.close()
 
 
 def sqlite_url(path: Union[str, Path]) -> str:

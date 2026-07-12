@@ -188,6 +188,7 @@ def build_pipelines_and_app(
     vision_provider: Any,
     browser_lifecycle_manager: Any,
     background_coros: list | None = None,
+    self_heal_manager: Any = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -249,4 +250,5 @@ def build_pipelines_and_app(
         archive_summary_service=archive_summary_service,
         browser_lifecycle_manager=browser_lifecycle_manager,
         background_coros=background_coros,
+        self_heal_manager=self_heal_manager,
     )

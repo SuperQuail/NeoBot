@@ -34,12 +34,13 @@ def _auto_install_chromium() -> bool:
         logger.info("未检测到浏览器，正在自动下载 Chromium（约 150MB）…")
         result = subprocess.run(
             [str(cli), "install", "chromium"],
-            capture_output=True, text=True, encoding="utf-8", timeout=300,
+            capture_output=True, timeout=300,
         )
         if result.returncode == 0:
             logger.info("Chromium 自动下载完成")
             return True
-        logger.warning(f"Chromium 自动下载失败: {result.stderr.strip()}")
+        stderr_text = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
+        logger.warning(f"Chromium 自动下载失败: {stderr_text}")
         return False
     except ImportError:
         logger.info(
@@ -304,3 +305,109 @@ def build_balance_checker(
         cooldown_seconds=getattr(chat_cfg, "balance_check_cooldown_seconds", 300),
         logger=logger_factory.get_logger("app.balance"),
     )
+
+
+def build_self_heal_manager(
+    *,
+    config: BotConfigSchema,
+    logger_factory: Any,
+    notification_hub: BackgroundNotificationHub,
+    sandbox_service: Any,
+    drawing_manager: Any = None,
+    creator_image_service: Any = None,
+    data_dir: Path | None = None,
+    source_roots: list[Path] | None = None,
+    log_file: Path | None = None,
+    web_search_config: dict | None = None,
+    vision_provider: Any = None,
+) -> Any:
+    """创建 SelfHealManager。配置禁用时返回 None。"""
+    from neobot_app.agents.self_heal import SelfHealAgentConfig, SelfHealManager
+
+    schema_cfg = getattr(config.agent, "self_healing", None)
+    if schema_cfg is None or not getattr(schema_cfg, "enabled", True):
+        return None
+
+    cfg = SelfHealAgentConfig.from_schema(schema_cfg)
+
+    # admin fallback: chat.admin_accounts[0]
+    fallback_admin = ""
+    admin_accounts = list(getattr(config.chat, "admin_accounts", None) or [])
+    if admin_accounts:
+        fallback_admin = str(admin_accounts[0])
+
+    repair_hooks: dict[str, Any] = {}
+    if drawing_manager is not None and hasattr(drawing_manager, "cancel_cooldown"):
+        repair_hooks["clear_drawing_cooldown"] = lambda args: (
+            drawing_manager.cancel_cooldown(str(args.get("pipeline_key", "")))
+        )
+    if creator_image_service is not None and hasattr(
+        creator_image_service, "_cleanup_stale_records"
+    ):
+        async def _hook_trigger_image_cleanup(_args: dict) -> dict:
+            try:
+                await creator_image_service._cleanup_stale_records()
+                return {"ok": True, "result": "image cleanup triggered"}
+            except Exception as exc:
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        repair_hooks["trigger_image_cleanup"] = _hook_trigger_image_cleanup
+
+    return SelfHealManager(
+        config=cfg,
+        fallback_admin_account=fallback_admin,
+        logger=logger_factory.get_logger("app.self_heal"),
+        notification_hub=notification_hub,
+        sandbox_service=sandbox_service,
+        data_dir=data_dir,
+        source_roots=source_roots or [],
+        log_file=log_file,
+        repair_hooks=repair_hooks,
+        web_search_config=web_search_config or {},
+        vision_provider=vision_provider,
+    )
+
+
+def build_self_heal_agent_wiring(
+    *,
+    config: BotConfigSchema,
+    manager: Any,
+    provider: Any,
+    provider_logger: Any,
+    sandbox_service: Any,
+    logger_factory: Any,
+    data_dir: Path,
+    source_roots: list[Path],
+    log_file: Path | None,
+    vision_provider: Any = None,
+    web_search_config: dict | None = None,
+) -> Any:
+    """构建 SelfHealAgent 并绑定到已创建的 Manager。"""
+    from neobot_app.agents.self_heal import (
+        SelfHealAgentConfig,
+        build_self_heal_agent,
+    )
+    from neobot_app.assembly.agents import build_peer_descriptions
+
+    schema_cfg = getattr(config.agent, "self_healing", None)
+    cfg = (
+        SelfHealAgentConfig.from_schema(schema_cfg)
+        if schema_cfg is not None
+        else SelfHealAgentConfig()
+    )
+    peer_descriptions = build_peer_descriptions("self_heal")
+    agent = build_self_heal_agent(
+        provider,
+        config=cfg,
+        logger=logger_factory.get_logger("app.self_heal"),
+        manager=manager,
+        sandbox_service=sandbox_service,
+        data_dir=data_dir,
+        source_roots=source_roots,
+        log_file=log_file,
+        repair_hooks=manager._repair_hooks if manager else None,
+        web_search_config=web_search_config or {},
+        vision_provider=vision_provider,
+        peer_descriptions=peer_descriptions,
+    )
+    return agent

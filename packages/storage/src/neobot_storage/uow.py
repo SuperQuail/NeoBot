@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from neobot_contracts.ports.unit_of_work import UnitOfWork
 
+from neobot_storage._retry import retry_on_lock
 from neobot_storage.repositories.memory import SqlAlchemyMemoryRepository
 from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
@@ -42,7 +43,7 @@ class SqlAlchemyUnitOfWork:
         await self._session.close()
 
     async def commit(self) -> None:
-        await self._session.commit()
+        await retry_on_lock(self._session.commit)
 
     async def rollback(self) -> None:
         await self._session.rollback()

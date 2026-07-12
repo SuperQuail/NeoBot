@@ -49,6 +49,7 @@ class NeoBotApplication(Generic[T]):
         file_server: FileServer | None = None,
         browser_lifecycle_manager: Any = None,
         background_coros: list | None = None,
+        self_heal_manager: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -82,6 +83,7 @@ class NeoBotApplication(Generic[T]):
         self._browser_lifecycle_manager = browser_lifecycle_manager
         self._background_coros = background_coros or []
         self._background_tasks: list[asyncio.Task] = []
+        self._self_heal_manager = self_heal_manager
 
     async def start(self) -> None:
         if self._started:
@@ -159,6 +161,13 @@ class NeoBotApplication(Generic[T]):
         if not self._started:
             return
         self._shutdown_event.set()
+        # Shut down self-heal manager first: cancel any in-flight heal task
+        # so it doesn't spawn LLM calls or notifications during teardown.
+        if self._self_heal_manager is not None:
+            try:
+                await self._self_heal_manager.shutdown()
+            except Exception as exc:
+                self._logger.warning("self heal manager shutdown failed", error=str(exc))
         if self._report_task is not None:
             self._report_task.cancel()
             try:
