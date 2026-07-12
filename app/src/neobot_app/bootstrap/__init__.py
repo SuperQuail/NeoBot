@@ -297,7 +297,12 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
     )
 
-    # ── Skill 系统 ──
+    # ── Skill 系统（balance_checker 先构建供 skill 条件注册使用） ──
+    balance_checker = build_balance_checker(
+        config=config,
+        notification_hub=notification_hub,
+        logger_factory=logger_factory,
+    )
     skill_manager = build_skill_manager(
         config=config,
         adapter=adapter,
@@ -323,6 +328,7 @@ def create_application() -> NeoBotApplication:
         group_message_queue=group_queue,
         friend_message_queue=friend_queue,
         data_dir=DATA_DIR,
+        balance_checker=balance_checker,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
@@ -353,11 +359,6 @@ def create_application() -> NeoBotApplication:
         skill_manager=skill_manager,
     )
     tts_service = build_tts_service(config=config, logger_factory=logger_factory)
-    balance_checker = build_balance_checker(
-        config=config,
-        notification_hub=notification_hub,
-        logger_factory=logger_factory,
-    )
 
     # ── 自修复 Agent 装配 ──
     project_root = _get_project_root()

@@ -37,6 +37,7 @@ def build_skill_manager(
     group_message_queue: Any = None,
     friend_message_queue: Any = None,
     data_dir: Path = Path("."),
+    balance_checker: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -66,6 +67,7 @@ def build_skill_manager(
         group_message_queue=group_message_queue,
         friend_message_queue=friend_message_queue,
         data_dir=data_dir,
+        balance_checker=balance_checker,
     )
 
 
