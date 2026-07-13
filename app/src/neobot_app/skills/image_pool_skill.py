@@ -35,7 +35,8 @@ class ImagePoolSkill(SkillModule):
 
             "【source 格式】\n"
             "  image_pool__put 的 source 参数支持以下格式：\n"
-            "    chat:<msg_id>:<img_index>  — 聊天消息中的图片（index 默认 1）\n"
+            "    chat:<msg_id>:<img_index>  — 聊天消息中的图片（index 默认 1）；\n"
+            "                                 ⚠️ 用户回复引用图片时，msg_id 取被回复消息编号（[被回复消息]行）\n"
             "    chat:<msg_id>:1,2,3        — 批量：一次将多张图片入池，返回 keys 列表\n"
             "    gallery:<编号>              — 图库中的图片\n"
             "    emoji:<编号>                — 表情包中的图片\n"

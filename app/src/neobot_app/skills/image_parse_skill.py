@@ -91,6 +91,18 @@ class ImageParseSkill(SkillModule):
             "  - msg_number — **推荐**，聊天记录中显示的消息编号（如「75: 用户名: [图片]」中的 75）\n"
             "  - chat_flow_id + image_index — 通过聊天流 ID 和图片编号定位\n"
             "  - message_id — OneBot 消息 ID（不常用，勿将显示编号当作 message_id 传入）\n\n"
+            "【msg_number 选择规则 — 关键，请认真阅读】\n"
+            "  1. 如果用户**回复了某条消息**（聊天记录中形如\"N: [被回复消息] 发送者: [图片]\"),\n"
+            "     请使用 **被回复消息的编号 N**，而非用户回复消息的编号!\n"
+            "     用户回复消息的编号对应的是用户发送的文字（无图片），解析它是没有意义的。\n"
+            "     示例：聊天记录中显示：\n"
+            "       1: [被回复消息] 小明: [图片]\n"
+            "       6: 唐天: [回复:消息ID=xxx] @bot 解析这张图\n"
+            "     → 正确做法: msg_number=1（被回复消息，含图片）\n"
+            "     → 错误做法: msg_number=6（唐天的消息，仅含文字回复引用的内容）\n"
+            "  2. 如果用户直接发了一张图（聊天记录中形如\"N: 用户名: [图片]\"),\n"
+            "     直接用该消息的编号 N。\n"
+            "  3. 如果消息中含多张图片，用 image_indices 数组（0-based）而非多次调用。\n\n"
             "parse_image 为会话工具(session模式)：\n"
             "  - 调用后立即返回 session_submitted，实际解析在后台进行\n"
             "  - timeout_seconds 默认为 300 秒（5分钟），agent 可按需设置，最长 1800 秒（30分钟）\n"
@@ -129,6 +141,8 @@ class ImageParseSkill(SkillModule):
             self._tool_def(
                 "parse_image",
                 "【会话工具】解析一张或多张图片的内容。"
+                "⚠️ 用户回复某条消息要求「解析这张图」时，msg_number 应为"
+                "**被回复消息**（带\"[被回复消息]\"前缀的那行）的编号，而非用户自己的回复编号!\n"
                 "支持 image_path（本地图片路径）、image_url（HTTP/data/file URL）、image_base64（base64编码）、"
                 "msg_number（聊天记录中的消息编号，如「75: 用户名: [图片]」中的 75）、"
                 "chat_flow_id+image_index（聊天流ID+图片编号）。\n"
@@ -155,7 +169,7 @@ class ImageParseSkill(SkillModule):
                             "description": "可选，一次解析多个图片 URL",
                         },
                         "mime_type": {"type": "string", "description": "可选，图片 MIME 类型，默认 image/png"},
-                        "msg_number": {"type": "integer", "description": "可选，聊天记录中的消息编号（如「75: xxx: [图片]」中的75），用于定位图片"},
+                        "msg_number": {"type": "integer", "description": "可选，聊天记录中的消息编号（如「75: xxx: [图片]」中的75）。用户回复引用图片时，请使用被回复消息（[被回复消息]行）的编号，不是用户回复的编号。"},
                         "message_id": {"type": "integer", "description": "可选，OneBot 消息 ID（不常用，优先使用 msg_number）"},
                         "chat_flow_id": {"type": "string", "description": "可选，聊天流 ID（如 Group_12345），与 image_index 配合使用"},
                         "image_index": {"type": "integer", "description": "可选，图片编号（从0开始），与 chat_flow_id / msg_number / message_id 配合使用", "default": 0},
