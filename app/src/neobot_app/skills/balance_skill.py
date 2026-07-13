@@ -43,6 +43,7 @@ class BalanceSkill(SkillModule):
                 "query_balance",
                 "查询 DeepSeek 账户当前余额（CNY），返回总余额和余额明细。",
                 {
+                    "type": "object",
                     "properties": {},
                     "required": [],
                 },
@@ -80,11 +81,14 @@ class BalanceSkill(SkillModule):
     def _tool_def(
         name: str, description: str, parameters: dict | None = None
     ) -> dict:
+        params = parameters or {}
+        if "type" not in params:
+            params = {"type": "object", **params}
         return {
             "type": "function",
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": parameters or {"type": "object", "properties": {}},
+                "parameters": params,
             },
         }
