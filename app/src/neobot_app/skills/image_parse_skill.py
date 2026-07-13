@@ -386,7 +386,7 @@ class ImageParseSkill(SkillModule):
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
         numbering_mapping: dict[int, int] | None = None,
         timeout: float = 30.0,
-    ) -> bytes | None:
+    ) -> tuple[bytes | None, str | None]:
         """通过显示消息编号（如 "75: 用户名: [图片]" 中的 75）获取图片字节。
 
         优先使用 Agent 注入的 numbering_mapping（与 prompt 编号一致），
@@ -394,17 +394,17 @@ class ImageParseSkill(SkillModule):
         """
         parts = pipeline_key.split(":", 1)
         if len(parts) != 2:
-            return None
+            return None, "pipeline_key 格式错误"
         conv_kind, conv_id = parts
         if conv_kind == "group":
             queue = self._group_queue
         elif conv_kind in ("private", "friend"):
             queue = self._friend_queue
         else:
-            return None
+            return None, f"未知会话类型: {conv_kind}"
 
         if queue is None or not conv_id:
-            return None
+            return None, "消息队列未配置"
 
         # 优先使用 Agent 注入的编号映射（保证与 prompt 一致）
         if numbering_mapping:
@@ -413,9 +413,9 @@ class ImageParseSkill(SkillModule):
             try:
                 entries = queue.entries(conv_id)
             except KeyError:
-                return None
+                return None, f"队列不存在 key={conv_id}"
             if not entries:
-                return None
+                return None, "队列为空"
             numbering = MessageNumbering()
             for entry in entries:
                 from neobot_app.message.queue import QueueEntryType
@@ -431,16 +431,15 @@ class ImageParseSkill(SkillModule):
             real_message_id = numbering.get_message_id(msg_number)
 
         if real_message_id is None:
-            return None
+            return None, f"消息编号 {msg_number} 无法映射到真实消息ID"
 
         message = queue.find_by_message_id(conv_id, real_message_id)
         if message is None:
             message = _find_in_replied(queue, conv_id, real_message_id)
         if message is None:
-            return None
+            return None, f"消息 {real_message_id} 不在队列或replied_messages中（编号={msg_number}）"
 
-        result, _ = await self._extract_image_from_message(message, image_index, timeout=timeout)
-        return result
+        return await self._extract_image_from_message(message, image_index, timeout=timeout)
 
     async def _resolve_many_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_indices: list[int],
@@ -637,12 +636,12 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                         errors.append({"index": i, "ok": False, "error": err or f"无法从消息编号 {msg_number}（第 {i} 张图片）获取图片"})
             else:
                 image_index = int(args.get("image_index", 0))
-                image_bytes = await self._resolve_by_msg_number(
+                image_bytes, err_reason = await self._resolve_by_msg_number(
                     pipeline_key, int(msg_number), image_index,
                     numbering_mapping=numbering_mapping, timeout=timeout_seconds,
                 )
                 if image_bytes is None:
-                    return _json({"ok": False, "error": f"无法从消息编号 {msg_number}（第 {image_index} 张图片）获取图片，请尝试用 msg_number 指定正确的消息编号"})
+                    return _json({"ok": False, "error": err_reason or f"无法从消息编号 {msg_number}（第 {image_index} 张图片）获取图片"})
                 single_image = image_bytes
         elif message_id:
             if image_indices_arg and isinstance(image_indices_arg, list):
