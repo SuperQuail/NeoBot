@@ -15,6 +15,42 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
+def _response_data_for_get_image(response: Any) -> dict | None:
+    """从 get_image API 响应中提取 data 字典。"""
+    if response is None:
+        return None
+    if isinstance(response, dict):
+        data = response.get("data", {})
+        return data if isinstance(data, dict) else None
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if hasattr(data, "model_dump"):
+        return data.model_dump(exclude_none=True)
+    return None
+
+
+async def _read_image_ref(ref: str) -> bytes | None:
+    """读取图片引用（base64 / file / URL / 路径）。"""
+    import base64 as _base64
+
+    if ref.startswith("base64://"):
+        return _base64.b64decode(ref[9:])
+    if ref.startswith("file://"):
+        return Path(ref[7:]).expanduser().read_bytes()
+    path = Path(ref).expanduser()
+    if path.exists() and path.is_file():
+        return path.read_bytes()
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(ref)
+            resp.raise_for_status()
+            return resp.content
+    except Exception:
+        return None
+
+
 def _find_in_replied(queue: Any, conv_id: str, message_id: int) -> Any:
     """在队列所有条目的 replied_messages 中查找指定消息。"""
     from neobot_app.message.queue import QueueEntryType
@@ -206,10 +242,7 @@ class ImageParseSkill(SkillModule):
             else:
                 seg_data = getattr(seg, "data", None)
             seg_data = self._seg_data_to_dict(seg_data)
-            url = seg_data.get("url")
-            if not url:
-                return None
-            return await self._download_image(url, timeout=timeout)
+            return await self._download_image_segment(seg_data, timeout=timeout)
         return None
 
     async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
@@ -246,9 +279,7 @@ class ImageParseSkill(SkillModule):
                     else:
                         seg_data = getattr(seg, "data", None)
                     seg_data = self._seg_data_to_dict(seg_data)
-                    url = seg_data.get("url")
-                    if url:
-                        return await self._download_image(url, timeout=timeout)
+                    return await self._download_image_segment(seg_data, timeout=timeout)
             return None
         except Exception:
             return None
@@ -300,16 +331,41 @@ class ImageParseSkill(SkillModule):
         except Exception:
             return [None] * len(image_indices)
 
-    async def _download_image(self, url: str, timeout: float = 30.0) -> bytes | None:
-        """下载图片字节。"""
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.content
-        except Exception:
-            return None
+    async def _download_image_segment(self, seg_data: dict, *, timeout: float = 30.0) -> bytes | None:
+        """从 segment data 下载图片字节。
+
+        先尝试 URL 直下，失败/缺失时 fallback 到 file 字段走 get_image API
+        （旧消息的 URL 可能已过期，但 file 字段可用于 OneBot get_image 重新获取）。
+        """
+        import httpx
+
+        url = seg_data.get("url")
+        if url:
+            try:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    resp = await client.get(str(url))
+                    resp.raise_for_status()
+                    return resp.content
+            except Exception:
+                pass
+
+        file_name = seg_data.get("file")
+        if file_name and self._adapter is not None:
+            try:
+                from neobot_adapter.request.message import get_image
+
+                result = await get_image(str(file_name), timeout=timeout)
+                img_data = _response_data_for_get_image(result)
+                if isinstance(img_data, dict):
+                    img_ref = img_data.get("file") or img_data.get("url")
+                    if img_ref:
+                        content = await _read_image_ref(str(img_ref))
+                        if content is not None:
+                            return content
+            except Exception:
+                pass
+
+        return None
 
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
@@ -436,8 +492,7 @@ class ImageParseSkill(SkillModule):
             return seg_data.model_dump(exclude_none=True) or {}
         return {}
 
-    @staticmethod
-    async def _extract_image_from_message(message: Any, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
+    async def _extract_image_from_message(self, message: Any, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
         if not segments:
@@ -457,18 +512,8 @@ class ImageParseSkill(SkillModule):
                 seg_data = seg.get("data", {}) or {}
             else:
                 seg_data = getattr(seg, "data", None)
-            seg_data = ImageParseSkill._seg_data_to_dict(seg_data)
-            url = seg_data.get("url")
-            if not url:
-                return None
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    return resp.content
-            except Exception:
-                return None
+            seg_data = self._seg_data_to_dict(seg_data)
+            return await self._download_image_segment(seg_data, timeout=timeout)
 
         return None
 
