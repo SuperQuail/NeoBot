@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from pathlib import Path
 from typing import Any
 
 from neobot_app.message.numbering import MessageNumbering
@@ -304,15 +306,27 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
         return _json({"ok": False, "error": "请提供 image_path、image_url、image_base64、msg_number、message_id 或 chat_flow_id 中的至少一种"})
 
     try:
-        content_parts = [{"type": "text", "text": requirement}]
+        content_parts: list[dict] = [{"type": "text", "text": requirement}]
+
+        from neobot_app.image.parser import _build_vision_image_part
+
+        def _add_image_part(raw: bytes) -> None:
+            content_parts.append(_build_vision_image_part(raw))
 
         if image_path:
-            content_parts.append({"type": "image", "source": {"type": "local", "path": image_path}})
+            try:
+                raw = Path(str(image_path)).expanduser().read_bytes()
+            except Exception as exc:
+                return _json({"ok": False, "error": f"读取本地图片失败: {exc}"})
+            _add_image_part(raw)
         elif image_url:
-            content_parts.append({"type": "image", "source": {"type": "url", "url": image_url}})
+            content_parts.append({"type": "image_url", "image_url": {"url": str(image_url)}})
         elif image_base64:
-            mime = args.get("mime_type", "image/png")
-            content_parts.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_base64}})
+            try:
+                raw = base64.b64decode(str(image_base64))
+            except Exception as exc:
+                return _json({"ok": False, "error": f"base64 解码失败: {exc}"})
+            _add_image_part(raw)
         elif msg_number:
             image_index = int(args.get("image_index", 0))
             numbering_mapping = args.get("_numbering_mapping")
@@ -326,28 +340,25 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
             )
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从消息编号 {msg_number}（第 {image_index} 张图片）获取图片，请尝试用 msg_number 指定正确的消息编号"})
-            import base64
-            content_parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}})
+            _add_image_part(image_bytes)
         elif message_id:
             image_index = int(args.get("image_index", 0))
             image_bytes = await self._resolve_by_message_id(int(message_id), image_index, timeout=timeout_seconds)
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从消息 {message_id} 获取第 {image_index} 张图片"})
-            import base64
-            content_parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}})
+            _add_image_part(image_bytes)
         elif chat_flow_id:
             image_index = int(args.get("image_index", 0))
             image_bytes = await self._resolve_by_chat_flow(chat_flow_id, image_index, timeout=timeout_seconds)
             if image_bytes is None:
                 return _json({"ok": False, "error": f"无法从 {chat_flow_id} 获取第 {image_index} 张图片"})
-            import base64
-            content_parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}})
+            _add_image_part(image_bytes)
 
         result = await self._vision_provider.chat([{"role": "user", "content": content_parts}])
         text = result.get("content", "") if isinstance(result, dict) else str(result)
         return _json({"ok": True, "description": text[:2000]})
     except Exception as e:
-        return _json({"ok": False, "error": str(e)})
+        return _json({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 _HANDLERS = {
     "parse_image": _handle_parse_image,

@@ -17,6 +17,16 @@ from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 _runtime_event_dispatcher: Any = None
 _self_heal_manager: Any = None
 
+# These module-name prefixes produce ERROR-level logs that are transient /
+# external-dependency hiccups, not Bot bugs. Filter them out of self-heal
+# error accumulation so a flaky OneBot HTTP / vision provider / image fetch
+# path does NOT wake the self-heal agent. They still get logged normally.
+_SELF_HEAL_EXCLUDE_MODULES = (
+    "adapter_receiver",   # API 调用超时 / 没有活跃连接 / 迟到 echo 回填
+    "app.image_parse",    # 视觉模型超时 / ReadError / 下载失败
+    "app.self_heal",      # 自身日志，避免自激
+)
+
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
     global _runtime_event_dispatcher
@@ -75,6 +85,15 @@ def _loguru_self_heal_sink(message: Any) -> None:
     module = str(record["extra"].get("module_name", ""))
     if module.startswith("app.self_heal"):
         return
+    # 偶发性/外部依赖抖动的错误不应累积进自修复判定。
+    # adapter_receiver：API 调用超时 / 没有活跃连接 / 迟到 echo 回填
+    #   均为 OneBot 上游瞬时问题，本身已有降级/重连兜底。
+    # app.image_parse：视觉模型超时/ReadError/下载失败属于上游抖动或
+    #   大图误码，不构成可自愈的 Bug。
+    excluded = _SELF_HEAL_EXCLUDE_MODULES
+    for prefix in excluded:
+        if module.startswith(prefix):
+            return
     exc = record.get("exception")
     from neobot_app.time_context import monotonic_seconds as _monotonic
     payload = {

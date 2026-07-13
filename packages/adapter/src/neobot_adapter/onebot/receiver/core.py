@@ -188,25 +188,49 @@ class AdapterCore:
                 if "echo" in data:
                     echo = data["echo"]
                     logger.debug(f"收到echo响应: echo={echo}")
-                    if echo in self._pending:
-                        self._pending[echo].set_result(data)
-                        # 移除echo映射
-                        async with self._connections_lock:
-                            self._echo_to_conn.pop(echo, None)
-                            conn_echo_set = self._conn_to_echo.get(websocket)
-                            if conn_echo_set and echo in conn_echo_set:
-                                conn_echo_set.remove(echo)
-                    else:
-                        logger.warning(f"未匹配的 echo: {echo}")
+                    await self._fulfill_echo(websocket, echo, data)
                 else:
                     # 事件处理
                     await self._handle_event(websocket, data)
         except websockets.exceptions.ConnectionClosed:
             logger.info("框架连接断开")
         except Exception as e:
-            logger.error(f"处理异常: {e}")
+            logger.warning(f"处理异常: {type(e).__name__}: {e}")
         finally:
             await self._remove_connection(websocket)
+
+    async def _fulfill_echo(self, websocket, echo: str, data: dict[str, Any]) -> None:
+        """将 echo 响应回填给等待中的 future。
+
+        对迟到/重复的 echo 必须幂等：future 可能已被超时取消或被连接回收
+        清理，此时 set_result/set_exception 会抛 InvalidStateError —— 这里吞掉，
+        绝不让回显处理协程异常退出（否则会触发 _handle_client 异常分支并
+        回收连接，造成“没有活跃连接”连锁故障）。
+        """
+        async with self._connections_lock:
+            fut = self._pending.get(echo)
+            conn_echo_set = self._conn_to_echo.get(websocket)
+        try:
+            if fut is None:
+                logger.debug(f"未匹配的 echo（已取消/清理）: {echo}")
+                return
+            if fut.cancelled():
+                logger.debug(f"echo {echo} 对应的 future 已被取消，丢弃迟到响应")
+                return
+            if fut.done():
+                logger.debug(f"echo {echo} 对应的 future 已完成，丢弃重复响应")
+                return
+            fut.set_result(data)
+        except asyncio.InvalidStateError:
+            logger.debug(f"echo {echo} future 状态非法，丢弃响应")
+        except Exception as exc:
+            logger.warning(f"回填 echo {echo} 失败: {exc}")
+        else:
+            async with self._connections_lock:
+                self._echo_to_conn.pop(echo, None)
+                conn_echo_set = self._conn_to_echo.get(websocket)
+                if conn_echo_set and echo in conn_echo_set:
+                    conn_echo_set.remove(echo)
 
     async def _handle_event(self, websocket, event):
         # 放入队列（原始事件）
@@ -308,7 +332,11 @@ class AdapterCore:
             logger.warning(f"API调用失败: {retcode} - {message}")
             return response
         except asyncio.TimeoutError:
-            logger.error(f"API 调用超时: {action}")
+            # 取消等待中的 future，使后续迟到 echo 被 _fulfill_echo 当作 cancelled 安全丢弃，
+            # 而不是触发 InvalidStateError。降级到 WARNING：偶发取图/慢响应不应进入自修复判定。
+            if not fut.done():
+                fut.cancel()
+            logger.warning(f"API 调用超时: {action}")
             return None
         finally:
             async with self._connections_lock:
@@ -323,7 +351,9 @@ class AdapterCore:
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
-                    logger.error("没有活跃连接，无法调用 API")
+                    # 降级为 DEBUG：上游短暂断连时会被高频打出，属于偶发性而非系统异常，
+                    # 不应进入自修复 Agent 的错误累积判定。
+                    logger.debug("没有活跃连接，无法调用 API")
                     return None
                 websocket = next(iter(self.active_connections))  # 选择第一个连接
         return await self._call_action(websocket, action, params, timeout)

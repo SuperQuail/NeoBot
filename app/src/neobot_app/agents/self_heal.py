@@ -1388,14 +1388,11 @@ class SelfHealToolExecutor(ToolExecutor):
                     "error": f"文件不是图片（检测为 {info['type']}）",
                 })
             data = path.read_bytes()
+            from neobot_app.image.parser import _build_vision_image_part
+            part = _build_vision_image_part(data, logger=self._logger)
             content_parts = [
                 {"type": "text", "text": requirement},
-                {"type": "image", "source": {
-                    "type": "base64",
-                    "media_type": f"image/{info.get('format', 'PNG').lower()}"
-                    if info.get("format") else "image/png",
-                    "data": base64.b64encode(data).decode("utf-8"),
-                }},
+                part,
             ]
             result = await self._vision_provider.chat([
                 {"role": "user", "content": content_parts}

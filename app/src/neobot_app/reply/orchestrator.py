@@ -478,6 +478,11 @@ class ReplyOrchestrator:
     def _get_dependency_timeout_seconds(self) -> float:
         return 10.0
 
+    def _get_private_image_wait_timeout_seconds(self) -> float:
+        # 视觉模型单次调用上限 60s；图片解析可能含下载(≤30s)+推理(≤60s)，
+        # 取 90s 作为私聊回复等待图片解析的上限，避免无限阻塞。
+        return 90.0
+
     def _get_prompt_timeout_seconds(self) -> float:
         return 30.0
 
@@ -2131,9 +2136,14 @@ class ReplyOrchestrator:
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
-            image_wait_timeout = None
+            image_wait_timeout: float | None = None
             if event.conversation_ref is not None and event.conversation_ref.kind == "group":
                 image_wait_timeout = self._get_group_agent_silent_timeout_seconds()
+            else:
+                # 私聊不能无限等：视觉模型慢/抖动时会把整条私聊回复卡在 prompt
+                # 构建阶段。给一个有限上限（与视觉模型调用超时 60s 对齐并留余量），
+                # 超时后未替换的图片段按原始“图片 [url]”占位进 prompt 即可。
+                image_wait_timeout = self._get_private_image_wait_timeout_seconds()
             await self._image_parse_service.wait_for_queue(
                 queue_key,
                 timeout=image_wait_timeout,
