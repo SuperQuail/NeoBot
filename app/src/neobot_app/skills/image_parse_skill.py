@@ -30,7 +30,7 @@ def _response_data_for_get_image(response: Any) -> dict | None:
     return None
 
 
-async def _read_image_ref(ref: str) -> bytes | None:
+async def _read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
     """读取图片引用（base64 / file / URL / 路径）。"""
     import base64 as _base64
 
@@ -43,7 +43,7 @@ async def _read_image_ref(ref: str) -> bytes | None:
         return path.read_bytes()
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(ref)
             resp.raise_for_status()
             return resp.content
@@ -242,7 +242,8 @@ class ImageParseSkill(SkillModule):
             else:
                 seg_data = getattr(seg, "data", None)
             seg_data = self._seg_data_to_dict(seg_data)
-            return await self._download_image_segment(seg_data, timeout=timeout)
+            result, _ = await self._download_image_segment(seg_data, timeout=timeout)
+            return result
         return None
 
     async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
@@ -279,7 +280,9 @@ class ImageParseSkill(SkillModule):
                     else:
                         seg_data = getattr(seg, "data", None)
                     seg_data = self._seg_data_to_dict(seg_data)
-                    return await self._download_image_segment(seg_data, timeout=timeout)
+                    result, _ = await self._download_image_segment(seg_data, timeout=timeout)
+                    if result is not None:
+                        return result
             return None
         except Exception:
             return None
@@ -331,11 +334,15 @@ class ImageParseSkill(SkillModule):
         except Exception:
             return [None] * len(image_indices)
 
-    async def _download_image_segment(self, seg_data: dict, *, timeout: float = 30.0) -> bytes | None:
+    async def _download_image_segment(self, seg_data: dict, *, timeout: float = 30.0) -> tuple[bytes | None, str | None]:
         """从 segment data 下载图片字节。
 
         先尝试 URL 直下，失败/缺失时 fallback 到 file 字段走 get_image API
         （旧消息的 URL 可能已过期，但 file 字段可用于 OneBot get_image 重新获取）。
+
+        Returns:
+            (image_bytes, None) 成功
+            (None, error_reason) 失败 — error_reason 形如 "超时(30s)" / "URL过期且无file字段" / "下载失败"
         """
         import httpx
 
@@ -345,7 +352,9 @@ class ImageParseSkill(SkillModule):
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
-                    return resp.content
+                    return resp.content, None
+            except httpx.TimeoutException:
+                pass  # fall through to file fallback
             except Exception:
                 pass
 
@@ -359,13 +368,19 @@ class ImageParseSkill(SkillModule):
                 if isinstance(img_data, dict):
                     img_ref = img_data.get("file") or img_data.get("url")
                     if img_ref:
-                        content = await _read_image_ref(str(img_ref))
+                        content = await _read_image_ref(str(img_ref), timeout=timeout)
                         if content is not None:
-                            return content
-            except Exception:
-                pass
+                            return content, None
+                        return None, f"get_image 返回的图片引用下载失败(file={file_name}, timeout={timeout}s)"
+                return None, f"get_image 返回无效数据(file={file_name})"
+            except Exception as exc:
+                return None, f"get_image API 异常(file={file_name}): {exc}"
 
-        return None
+        if url and file_name:
+            return None, f"URL下载和get_image均失败(url={str(url)[:60]}, file={file_name}, timeout={timeout}s)"
+        if url:
+            return None, f"URL下载失败且无file字段(url={str(url)[:60]}, timeout={timeout}s)"
+        return None, "segment data 既无url也无file字段"
 
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
@@ -424,27 +439,31 @@ class ImageParseSkill(SkillModule):
         if message is None:
             return None
 
-        return await self._extract_image_from_message(message, image_index, timeout=timeout)
+        result, _ = await self._extract_image_from_message(message, image_index, timeout=timeout)
+        return result
 
     async def _resolve_many_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_indices: list[int],
         numbering_mapping: dict[int, int] | None = None,
         timeout: float = 30.0,
-    ) -> list[bytes | None]:
-        """通过显示消息编号一次拉取多张图片字节（共用同一次消息查找）。"""
+    ) -> list[tuple[bytes | None, str | None]]:
+        """通过显示消息编号一次拉取多张图片字节（共用同一次消息查找）。
+        Returns: [(bytes_or_None, error_reason_or_None), ...]
+        """
+        _n = len(image_indices)
         parts = pipeline_key.split(":", 1)
         if len(parts) != 2:
-            return [None] * len(image_indices)
+            return [(None, "pipeline_key 格式错误")] * _n
         conv_kind, conv_id = parts
         if conv_kind == "group":
             queue = self._group_queue
         elif conv_kind in ("private", "friend"):
             queue = self._friend_queue
         else:
-            return [None] * len(image_indices)
+            return [(None, f"未知会话类型: {conv_kind}")] * _n
 
         if queue is None or not conv_id:
-            return [None] * len(image_indices)
+            return [(None, "消息队列未配置")] * _n
 
         if numbering_mapping:
             real_message_id = numbering_mapping.get(msg_number)
@@ -452,9 +471,9 @@ class ImageParseSkill(SkillModule):
             try:
                 entries = queue.entries(conv_id)
             except KeyError:
-                return [None] * len(image_indices)
+                return [(None, f"队列不存在 key={conv_id}")] * _n
             if not entries:
-                return [None] * len(image_indices)
+                return [(None, "队列为空")] * _n
             numbering = MessageNumbering()
             for entry in entries:
                 from neobot_app.message.queue import QueueEntryType
@@ -470,15 +489,15 @@ class ImageParseSkill(SkillModule):
             real_message_id = numbering.get_message_id(msg_number)
 
         if real_message_id is None:
-            return [None] * len(image_indices)
+            return [(None, f"消息编号 {msg_number} 无法映射到真实消息ID")] * _n
 
         message = queue.find_by_message_id(conv_id, real_message_id)
         if message is None:
             message = _find_in_replied(queue, conv_id, real_message_id)
         if message is None:
-            return [None] * len(image_indices)
+            return [(None, f"消息 {real_message_id} 不在队列或replied_messages中")] * _n
 
-        results: list[bytes | None] = []
+        results: list[tuple[bytes | None, str | None]] = []
         for idx in image_indices:
             results.append(await self._extract_image_from_message(message, idx, timeout=timeout))
         return results
@@ -492,7 +511,7 @@ class ImageParseSkill(SkillModule):
             return seg_data.model_dump(exclude_none=True) or {}
         return {}
 
-    async def _extract_image_from_message(self, message: Any, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
+    async def _extract_image_from_message(self, message: Any, image_index: int = 0, timeout: float = 30.0) -> tuple[bytes | None, str | None]:
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
         if not segments:
@@ -515,7 +534,7 @@ class ImageParseSkill(SkillModule):
             seg_data = self._seg_data_to_dict(seg_data)
             return await self._download_image_segment(seg_data, timeout=timeout)
 
-        return None
+        return None, f"消息中找不到第 {image_index} 张图片（图片总数不足）"
 
 # ── Handler ──
 
@@ -612,10 +631,10 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                     pipeline_key, int(msg_number), indices,
                     numbering_mapping=numbering_mapping, timeout=timeout_seconds,
                 )
-                for i, raw in zip(indices, results):
+                for i, (raw, err) in zip(indices, results):
                     multi_images.append(raw)
                     if raw is None:
-                        errors.append({"index": i, "ok": False, "error": f"无法从消息编号 {msg_number}（第 {i} 张图片）获取图片"})
+                        errors.append({"index": i, "ok": False, "error": err or f"无法从消息编号 {msg_number}（第 {i} 张图片）获取图片"})
             else:
                 image_index = int(args.get("image_index", 0))
                 image_bytes = await self._resolve_by_msg_number(
