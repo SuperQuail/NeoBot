@@ -10,6 +10,7 @@ from neobot_contracts.ports.clock import SystemClock
 from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
+from neobot_app.console import ConsoleService
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import (
@@ -444,7 +445,14 @@ def create_application() -> NeoBotApplication:
             )
         )
 
-    # ── 管线 / 网关 / 应用 ──
+    # ── 内置控制台 / 管线 / 网关 / 应用 ──
+    console_service = ConsoleService(
+        config=config,
+        data_dir=DATA_DIR,
+        logger=logger_factory.get_logger("app.console"),
+        group_queue=group_queue,
+        friend_queue=friend_queue,
+    )
     return build_pipelines_and_app(
         adapter=adapter,
         memory=memory_svcs["memory"],
@@ -474,4 +482,5 @@ def create_application() -> NeoBotApplication:
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
         background_coros=maintenance_coros,
         self_heal_manager=self_heal_manager,
+        console_service=console_service,
     )

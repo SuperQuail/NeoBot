@@ -690,6 +690,60 @@ class Debug:
 
 
 @dataclass
+class Console:
+    """内置网页控制台配置。"""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"description": "是否启用可从外网访问的调试控制台"},
+    )
+    host: str = field(
+        default="0.0.0.0",
+        metadata={"description": "调试控制台监听地址；外网访问通常使用 0.0.0.0"},
+    )
+    port: int = field(
+        default=9981,
+        metadata={"description": "调试控制台首选端口；占用时自动向后查找"},
+    )
+    admin_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用仅本机可访问的管理员控制台"},
+    )
+    admin_port: int = field(
+        default=9891,
+        metadata={"description": "管理员控制台首选端口；占用时自动向后查找"},
+    )
+    port_search_limit: int = field(
+        default=100,
+        metadata={"description": "从首选端口开始查找的端口数量，最大 100"},
+    )
+    session_timeout_minutes: int = field(
+        default=60,
+        metadata={"description": "控制台无操作会话过期时间（分钟）"},
+    )
+    secure_cookies: bool = field(
+        default=False,
+        metadata={"description": "仅通过 HTTPS 发送登录 Cookie；使用反向代理 HTTPS 时开启"},
+    )
+    trust_proxy_headers: bool = field(
+        default=False,
+        metadata={"description": "是否信任反向代理提供的客户端地址头"},
+    )
+
+    def __post_init__(self) -> None:
+        for name in ("port", "admin_port"):
+            value = getattr(self, name)
+            if not 1 <= value <= 65535:
+                raise ValueError(f"console.{name} 必须在 1 到 65535 之间")
+        if not 1 <= self.port_search_limit <= 100:
+            raise ValueError("console.port_search_limit 必须在 1 到 100 之间")
+        if not 5 <= self.session_timeout_minutes <= 1440:
+            raise ValueError("console.session_timeout_minutes 必须在 5 到 1440 之间")
+        if not self.host.strip():
+            raise ValueError("console.host 不能为空")
+
+
+@dataclass
 class ScheduledTask:
     """定时任务系统配置。"""
 
@@ -1143,6 +1197,7 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
+    console: Console = field(default_factory=Console)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)

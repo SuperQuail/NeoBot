@@ -50,6 +50,7 @@ class NeoBotApplication(Generic[T]):
         browser_lifecycle_manager: Any = None,
         background_coros: list | None = None,
         self_heal_manager: Any = None,
+        console_service: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -84,6 +85,9 @@ class NeoBotApplication(Generic[T]):
         self._background_coros = background_coros or []
         self._background_tasks: list[asyncio.Task] = []
         self._self_heal_manager = self_heal_manager
+        self._console_service = console_service
+        if self._console_service is not None:
+            self._console_service.bind_application(self)
 
     async def start(self) -> None:
         if self._started:
@@ -143,6 +147,11 @@ class NeoBotApplication(Generic[T]):
         if self._report_service is not None:
             self._report_task = asyncio.create_task(self._run_report_loop())
         self._started = True
+        if self._console_service is not None:
+            try:
+                await self._console_service.start()
+            except Exception as exc:
+                self._logger.error("内置控制台启动失败", error=str(exc))
 
     async def run_forever(self) -> None:
         """Run until a shutdown signal is received, then stop gracefully."""
@@ -161,6 +170,8 @@ class NeoBotApplication(Generic[T]):
         if not self._started:
             return
         self._shutdown_event.set()
+        if self._console_service is not None:
+            await self._console_service.stop()
         # Shut down self-heal manager first: cancel any in-flight heal task
         # so it doesn't spawn LLM calls or notifications during teardown.
         if self._self_heal_manager is not None:
