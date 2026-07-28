@@ -1,7 +1,8 @@
-from gengeral import General
-from basic import PostRequestType
 from enum import Enum
 from typing import Optional
+
+from .basic import PostRequestType
+from .gengeral import General
 
 class Request(General):
     """请求上报"""

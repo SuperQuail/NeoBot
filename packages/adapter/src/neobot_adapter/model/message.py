@@ -144,17 +144,17 @@ class Message(BaseModel):
 
     class dice(BaseModel):
         """骰子结构 - 不支持"""
-        # type: Literal[MessageType.dice] = MessageType.dice
         # class data(BaseModel):
         #     """骰子数据结构"""
         #     pass
+        pass
 
     class shake(BaseModel):
         """窗口抖动结构 - 不支持 - 发"""
-        # type: Literal[MessageType.shake] = MessageType.shake
         # class data(BaseModel):
         #     """窗口抖动数据结构"""
         #     pass
+        pass
 
     class anonymous(BaseModel):
         """匿名发消息结构 - 发"""

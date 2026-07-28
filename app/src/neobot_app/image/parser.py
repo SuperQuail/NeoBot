@@ -8,7 +8,7 @@ import hashlib
 import math
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from PIL import Image
@@ -21,7 +21,9 @@ if TYPE_CHECKING:
     from neobot_chat.providers.base import Provider
     from neobot_memory import ImageAnalysisService
 
-ChatMessage = "PrivateMessage | GroupMessage"
+    ChatMessage = PrivateMessage | GroupMessage
+else:
+    ChatMessage = Any
 
 
 class ImageParseService:

@@ -272,7 +272,7 @@ class EventPipeline:
             if user_id in self._warmed_up_friends:
                 return
             count = getattr(self._config.chat, "private_chat_warmup_history_count", 100)
-            self._logger.info(f"私聊动态预热开始", user_id=user_id, history_count=count)
+            self._logger.info("私聊动态预热开始", user_id=user_id, history_count=count)
             try:
                 result = await asyncio.wait_for(
                     self.adapter.get_friend_msg_history(
@@ -295,7 +295,7 @@ class EventPipeline:
                                 error=str(exc),
                             )
                     self._logger.info(
-                        f"私聊动态预热完成",
+                        "私聊动态预热完成",
                         user_id=user_id,
                         message_count=len(result.data.messages),
                     )
@@ -307,7 +307,7 @@ class EventPipeline:
                 )
             except Exception as exc:
                 self._logger.warning(
-                    f"私聊动态预热失败",
+                    "私聊动态预热失败",
                     user_id=user_id,
                     error=str(exc),
                 )
@@ -323,7 +323,7 @@ class EventPipeline:
                 delay = float(val)
 
         if delay > 0:
-            self._logger.debug(f"私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
+            self._logger.debug("私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
             await asyncio.sleep(delay)
 
         if self._reply_orchestrator is None:
@@ -335,10 +335,10 @@ class EventPipeline:
             manager_name="private_direct",
             probability=1.0,
             should_reply=True,
-            reasons=["私聊直接回复（跳过意愿管理器）"],
+            reasons=("私聊直接回复（跳过意愿管理器）",),
         )
         self._logger.info(
-            f"私聊触发回复",
+            "私聊触发回复",
             queue_key=queue_key,
             delay_seconds=delay,
         )
@@ -588,6 +588,9 @@ class EventPipeline:
         decision: WillingDecision,
     ) -> bool:
         """发起回复并设置回复状态追踪与完成后回调。"""
+        if self._reply_orchestrator is None:
+            return False
+
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
         self._replying_queues.add(queue_key)
 
@@ -909,7 +912,7 @@ class EventPipeline:
         if group_id is not None:
             try:
                 resp = await asyncio.wait_for(
-                    self._adapter.get_group_member_info(group_id, user_id),
+                    self.adapter.get_group_member_info(group_id, user_id),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:
@@ -926,7 +929,7 @@ class EventPipeline:
         else:
             try:
                 resp = await asyncio.wait_for(
-                    self._adapter.get_stranger_info(user_id),
+                    self.adapter.get_stranger_info(user_id),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:

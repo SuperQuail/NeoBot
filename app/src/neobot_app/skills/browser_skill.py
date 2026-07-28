@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 from datetime import datetime
@@ -543,7 +542,7 @@ async def _handle_new_tab(self: BrowserSkill, args: dict) -> str:
     url = args.get("url", "")
     if hasattr(self._browser, "new_tab"):
         await self._browser.new_tab(url)
-    return _json({"ok": True, "note": f"已打开新标签页"})
+    return _json({"ok": True, "note": "已打开新标签页"})
 
 async def _handle_switch_tab(self: BrowserSkill, args: dict) -> str:
     index = int(args.get("index", 0))

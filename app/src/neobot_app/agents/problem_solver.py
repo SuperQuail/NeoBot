@@ -571,6 +571,9 @@ class ProblemSolverToolExecutor(ToolExecutor):
         """复位搜索会话计数器，每次解题任务启动时调用。"""
         self._search.reset()
 
+    async def close(self) -> None:
+        """Release executor resources."""
+
     def definitions(self) -> list[ToolDefinition]:
         tools = [
             _tool_def(
@@ -1114,7 +1117,7 @@ class ProblemSolverAgent:
             system_prompt=_build_system_prompt(cfg, peer_descriptions=peer_descriptions),
             on_model_usage=_record_usage,
             max_iterations=20,
-            command_timeout=cfg.timeout_seconds,
+            command_timeout=int(cfg.timeout_seconds),
             logger=logger or NullLogger(),
         )
 

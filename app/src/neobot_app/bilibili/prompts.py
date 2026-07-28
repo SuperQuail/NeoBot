@@ -12,10 +12,8 @@ B站交互提示词组装器 — 严格参考 NeoBot QQ 群聊/私聊提示词�
 """
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
-from typing import Optional
-
-import _datetime as datetime
 
 
 # ── 数据模型 ──

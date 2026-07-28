@@ -7,19 +7,16 @@ from typing import Any
 
 from neobot_memory import MemoryService
 from neobot_memory.defaults import InMemoryMemoryRepository
-from neobot_storage import run_migrations, sqlite_url
-
 from neobot_app.assembly.adapter import build_adapter
 from neobot_app.assembly.memory import (
     build_archive_memory_service,
     build_image_analysis_service,
 )
-from neobot_app.assembly.storage import build_storage
 from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.bot_detect import BotDetector
 from neobot_app.config.schemas.env import EnvConfig
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
-from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.core import DATA_DIR
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.emoji.service import EmojiService
 from neobot_app.image import ImageParseService

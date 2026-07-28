@@ -7,7 +7,6 @@ from typing import Any
 
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.config.schemas.env import EnvConfig
-from neobot_app.core import DATA_DIR
 from neobot_app.image_pool import ImageStagingPool
 from neobot_app.runtime.notifications import BackgroundNotificationHub
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager

@@ -39,8 +39,6 @@ class BilibiliEventBridge:
 
         构建 CommentContext 并提交给 ReplyOrchestrator。
         """
-        from .prompts import CommentContext, CommentNode
-
         bilibili_cfg = getattr(self._config, "bilibili", None)
         if bilibili_cfg is None or not bilibili_cfg.comment_reply_enabled:
             return
@@ -86,8 +84,6 @@ class BilibiliEventBridge:
 
     async def _enrich_dynamic_context(self, ctx: Any) -> None:
         """补充动态详情。"""
-        from bilibili_api import sync as _sync
-
         # 策略1: 从 uri 提取 dynamic_id
         dynamic_id = 0
         uri = ctx.target_url or ""
@@ -132,8 +128,6 @@ class BilibiliEventBridge:
 
     async def handle_new_private_message(self, msg, session) -> None:
         """处理一条新私信。"""
-        from .prompts import PrivateMessageContext
-
         bilibili_cfg = getattr(self._config, "bilibili", None)
         if bilibili_cfg is None or not bilibili_cfg.private_message_enabled:
             return

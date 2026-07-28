@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import glob as glob_module
-import os
 import shutil
 from pathlib import Path
 from typing import Any

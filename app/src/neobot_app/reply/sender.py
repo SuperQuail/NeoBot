@@ -15,11 +15,6 @@ from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
-from neobot_app.statistics.tracker import (
-    get_usage_tracker,
-)
-
-
 class ReplySender:
     """Formats reply text into message segments and sends them with cooldown pacing.
 

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Awaitable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from neobot_app.web_search import SearchResult, SearchSession
+from neobot_app.web_search import SearchSession
 
 ToolDefinition = dict[str, Any]
 ToolExecutorFn = Callable[[str, dict[str, Any]], Awaitable[str]]

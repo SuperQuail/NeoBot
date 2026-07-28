@@ -46,9 +46,9 @@ class SqlAlchemyBilibiliLinkAccess:
         result = await self._session.execute(stmt)
         links = result.scalars().all()
         return [
-            {"bilibili_uid": l.bilibili_uid, "qq_number": l.qq_number,
-             "created_at": l.created_at.isoformat() if l.created_at else None}
-            for l in links
+            {"bilibili_uid": link.bilibili_uid, "qq_number": link.qq_number,
+             "created_at": link.created_at.isoformat() if link.created_at else None}
+            for link in links
         ]
 
     async def find_by_qq(self, qq_number: str) -> list[dict]:
@@ -59,9 +59,9 @@ class SqlAlchemyBilibiliLinkAccess:
         result = await self._session.execute(stmt)
         links = result.scalars().all()
         return [
-            {"bilibili_uid": l.bilibili_uid, "qq_number": l.qq_number,
-             "created_at": l.created_at.isoformat() if l.created_at else None}
-            for l in links
+            {"bilibili_uid": link.bilibili_uid, "qq_number": link.qq_number,
+             "created_at": link.created_at.isoformat() if link.created_at else None}
+            for link in links
         ]
 
     async def delete_one(self, bilibili_uid: int, qq_number: str) -> int:

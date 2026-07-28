@@ -266,8 +266,6 @@ def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
 
 def _build_message_id_context(numbering: Any) -> str:
     """构建消息编号 → 真实 message_id 的映射文本，嵌入 prompt 供 Agent 查阅。"""
-    from neobot_app.message.numbering import MessageNumbering
-
     if numbering is None:
         return ""
     mapping = numbering.mapping

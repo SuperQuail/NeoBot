@@ -321,7 +321,6 @@ class ImageParseSkill(SkillModule):
             collected: dict[int, bytes | None] = {}
             for idx in ordered_indices:
                 collected[idx] = None
-            img_idx = 0
             found_msg_segments = None
             for msg in queue.iterate_from_newest(queue_key):
                 message_segments = getattr(msg, "message", None) or getattr(msg, "content", None)
@@ -528,7 +527,7 @@ class ImageParseSkill(SkillModule):
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
         if not segments:
-            return None
+            return None, "消息中没有可解析的内容段"
 
         img_idx = 0
         for seg in segments:

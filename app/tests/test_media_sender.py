@@ -48,6 +48,7 @@ async def test_send_image_enabled_true(tmp_path: Path) -> None:
 
     result = await send_image(fs, adapter, conv, path)
 
+    assert result is adapter.send.return_value
     fs.register_file.assert_called_once_with(path)
     adapter.send.assert_called_once()
     args, _ = adapter.send.call_args
@@ -68,6 +69,7 @@ async def test_send_image_enabled_false(tmp_path: Path) -> None:
 
     result = await send_image(fs, adapter, conv, path)
 
+    assert result is adapter.send.return_value
     fs.register_file.assert_not_called()
     adapter.send.assert_called_once()
     args, _ = adapter.send.call_args
@@ -102,6 +104,7 @@ async def test_send_audio(tmp_path: Path) -> None:
 
     result = await send_audio(fs, adapter, conv, path)
 
+    assert result is adapter.send.return_value
     fs.register_file.assert_called_once_with(path)
     adapter.send.assert_called_once()
     args, _ = adapter.send.call_args
@@ -137,3 +140,14 @@ def test_prepare_image_segment_disabled(tmp_path: Path) -> None:
     assert segment["type"] == "image"
     assert segment["data"]["file"].startswith("file:///")
     fs.register_file.assert_not_called()
+
+
+def test_prepare_audio_segment_enabled(tmp_path: Path) -> None:
+    fs = _make_file_server(enabled=True)
+    path = tmp_path / "voice.amr"
+    path.write_bytes(b"fake audio data")
+
+    segment = prepare_audio_segment(fs, path)
+
+    assert segment["type"] == "record"
+    assert segment["data"]["file"].endswith("/voice.amr?token=faketoken")

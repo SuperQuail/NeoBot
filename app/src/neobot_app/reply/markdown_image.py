@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image
 import markdown as md_lib
 import pillowmd
 
@@ -298,7 +297,7 @@ class MarkdownImageConverter:
         for child in self._output_dir.iterdir():
             if not child.is_file():
                 continue
-            if not child.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".html"):
+            if child.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".html"):
                 continue
             try:
                 mtime = child.stat().st_mtime

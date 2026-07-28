@@ -146,7 +146,6 @@ class GroupData(BaseModel):
     group_memo : Optional[str] = None # 群介绍
     group_create_time : Optional[int] = None
     member_count : Optional[int] = None
-    member_count : Optional[int] = None
     max_member_count : Optional[int] = None
     remark_name : Optional[str] = None # 群备注
     avatar_url : Optional[str] = None
@@ -334,7 +333,6 @@ class AlbumCoverData(BaseModel):
     """群组相册封面模型"""
     type : Optional[int] = None
     image : Optional[AlbumCoverImageData] = None
-    video : Optional[None] = None
     video : Optional[None] = None
     desc : Optional[str] = None
     lbs : Optional[None] = None

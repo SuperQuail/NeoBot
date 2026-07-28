@@ -4,17 +4,11 @@ import os
 import queue
 import threading
 import time
-from typing import Any, Callable, AsyncIterator, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import websockets
 
-from neobot_adapter.model.basic import PostMetaEventType, PostType
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
-from neobot_adapter.utils.env import (
-    get_websocket_host,
-    get_websocket_port,
-    get_websocket_url,
-)
 from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.utils.parse import safe_parse_model
 
@@ -169,7 +163,7 @@ class AdapterCore:
                 logger.warning("服务器关闭超时，强制退出")
 
     async def _handle_client(self, websocket):
-        logger.info(f"框架已连接")
+        logger.info("框架已连接")
         async with self._connections_lock:
             self.active_connections.add(websocket)
             self._conn_to_echo[websocket] = set()
@@ -357,6 +351,31 @@ class AdapterCore:
                     return None
                 websocket = next(iter(self.active_connections))  # 选择第一个连接
         return await self._call_action(websocket, action, params, timeout)
+
+    async def send_message(self, data, websocket=None):
+        """Send a raw OneBot payload through an active WebSocket connection."""
+        if websocket is None:
+            async with self._connections_lock:
+                if not self.active_connections:
+                    logger.debug("没有活跃连接，无法发送原始消息")
+                    return False
+                websocket = next(iter(self.active_connections))
+        await websocket.send(json.dumps(data, ensure_ascii=False))
+        return True
+
+    def send_message_sync(self, data, websocket=None, timeout=5):
+        """Synchronously send a raw OneBot payload through the receiver loop."""
+        if not self.loop or not self.loop.is_running():
+            logger.error("事件循环未运行")
+            return False
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_message(data, websocket), self.loop
+        )
+        try:
+            return bool(future.result(timeout))
+        except Exception as exc:
+            logger.error(f"发送原始消息失败: {exc}")
+            return False
 
     def call_api_sync(self, action, params, timeout=5, websocket=None):
         """同步调用 API"""

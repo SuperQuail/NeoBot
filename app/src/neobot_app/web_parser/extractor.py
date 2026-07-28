@@ -11,8 +11,6 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime as dt
-from typing import Optional
-
 from bs4 import BeautifulSoup
 
 from neobot_app.web_parser.models import PageMetadata, ParsedPage

@@ -203,8 +203,6 @@ class BilibiliCookieProvider:
         2. 解密后得到 AES-256-GCM 密钥，用于解密 cookie
         """
         import platform
-        import base64
-
         if platform.system() != "Windows":
             return None
 

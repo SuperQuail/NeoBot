@@ -313,13 +313,11 @@ def _apply_todo_update(content: str, entry: str, action: str) -> str:
     lines = content.split("\n")
     new_lines = []
     in_pending = False
-    in_done = False
     applied = False
 
     for line in lines:
         if line.strip().startswith("## Pending"):
             in_pending = True
-            in_done = False
             new_lines.append(line)
             if action == "add":
                 new_lines.append(entry)
@@ -330,7 +328,6 @@ def _apply_todo_update(content: str, entry: str, action: str) -> str:
                 new_lines.append(entry.replace("[ ]", "[x]"))
                 applied = True
             in_pending = False
-            in_done = True
             new_lines.append(line)
             continue
         if in_pending and action == "complete":

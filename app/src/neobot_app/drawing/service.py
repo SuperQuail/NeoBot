@@ -8,7 +8,6 @@ import hashlib
 import json
 import mimetypes
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -35,7 +34,6 @@ from neobot_app.drawing.config import (
     ImageGenerationError,
 )
 from neobot_app.message.image_pipeline import prepare_local_image
-from neobot_app.time_context import monotonic_seconds
 from neobot_app.utils.media_sender import send_image as _media_send_image
 
 if TYPE_CHECKING:

@@ -9,17 +9,15 @@ from uuid import uuid4
 
 import httpx
 
-from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.drawing.config import DrawServiceConfig, ImageGenerationError
+from neobot_app.drawing.service import _record_payload
 from neobot_app.drawing.tasks import DrawTask
 from neobot_app.time_context import monotonic_seconds
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-from neobot_app.drawing.service import _record_payload
 
 if TYPE_CHECKING:
     from neobot_app.drawing.service import CreatorImageService

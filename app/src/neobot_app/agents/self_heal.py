@@ -26,19 +26,17 @@ import re
 import subprocess
 import sys
 import tempfile
-import traceback as _traceback
 from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from neobot_chat import Agent
 from neobot_chat.providers.base import Provider
 from neobot_chat.schema.protocol import ToolExecutor
 from neobot_chat.schema.types import (
-    ChatChunk,
     State,
     ToolAccessPolicy,
     ToolAccessRule,
@@ -56,9 +54,6 @@ from neobot_app.statistics.tracker import (
 )
 from neobot_app.time_context import monotonic_seconds
 from neobot_app.web_search_package import WebSearchExecutor
-
-if TYPE_CHECKING:
-    from neobot_app.config.schemas.bot import BotConfig
 
 EXPOSED_TO_MAIN_AGENT_NAME = "self_heal"
 EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
@@ -695,6 +690,9 @@ class SelfHealToolExecutor(ToolExecutor):
 
     def reset_search(self) -> None:
         self._search.reset()
+
+    async def close(self) -> None:
+        """Release executor resources."""
 
     def definitions(self) -> list[ToolDefinition]:
         tools = [
