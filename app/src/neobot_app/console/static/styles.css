@@ -103,6 +103,12 @@ input:focus, select:focus { border-color: var(--mint); box-shadow: 0 0 0 3px rgb
 .text-button, .icon-button { border: 0; background: none; cursor: pointer; }
 .icon-button { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; }
 .form-error { min-height: 24px; color: var(--danger) !important; font-size: 13px; }
+.password-file-card { display: grid; gap: 7px; margin-top: 18px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02); }
+.password-file-card span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.password-file-card code { color: var(--cyan); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+.password-file-card.prominent { margin-top: 20px; border-color: rgba(247,199,106,.24); background: rgba(247,199,106,.05); }
+.forgot-button { display: block; margin: 14px auto 0; border: 0; background: none; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.forgot-button:hover { color: var(--text); }
 .notice { margin-top: 22px; padding: 14px; border-radius: 12px; line-height: 1.55; font-size: 13px; }
 .notice.warning { border: 1px solid rgba(247, 199, 106, .25); background: rgba(247, 199, 106, .08); color: #f8daa0; }
 
@@ -231,14 +237,14 @@ td code { color: var(--cyan); }
 .secret-row { grid-template-columns: minmax(0,1.2fr) minmax(140px,.8fr) 180px auto; }
 .secret-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .danger-button { min-height: 38px; padding: 0 12px; border: 1px solid rgba(255,122,133,.25); border-radius: 9px; background: rgba(255,122,133,.06); color: var(--danger); cursor: pointer; }
-.stack-form { max-width: 560px; }.stack-form .primary-button { margin-top: 6px; }
-.security-notes ul { padding-left: 20px; color: var(--muted); line-height: 2.2; }
-
 dialog { width: min(92vw, 520px); border: 1px solid var(--line); border-radius: 18px; padding: 0; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(2,7,5,.74); backdrop-filter: blur(5px); }
 dialog form { padding: 24px; }.dialog-heading, .dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .dialog-heading h3 { margin: 0; }.dialog-actions { margin-top: 24px; justify-content: flex-end; }
 dialog p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.recovery-dialog { padding: 24px; }
+.recovery-steps { margin: 22px 0; padding-left: 24px; color: #c7d9d2; line-height: 1.85; }
+.recovery-steps li::marker { color: var(--lime); font-weight: 800; }
 .toast-region { position: fixed; z-index: 100; right: 22px; bottom: 22px; display: grid; gap: 10px; }
 .toast { max-width: 380px; padding: 14px 17px; border: 1px solid var(--line); border-radius: 12px; background: #12241f; box-shadow: var(--shadow); animation: enter .2s ease; }
 .toast.error { border-color: rgba(255,122,133,.28); color: #ffb0b7; }

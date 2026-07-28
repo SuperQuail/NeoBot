@@ -159,7 +159,11 @@ def test_http_auth_csrf_config_and_role_isolation(
                 status = await client.get(f"{service.admin_url}/api/auth/status")
                 assert status.status == 200
                 assert status.headers["X-Frame-Options"] == "DENY"
-                assert (await status.json())["setup_allowed"] is True
+                status_payload = await status.json()
+                assert status_payload["setup_allowed"] is True
+                assert status_payload["password_file"] == str(
+                    (tmp_path / "console" / "auth.json").resolve()
+                )
 
                 weak = await client.post(
                     f"{service.admin_url}/api/auth/setup",
@@ -216,6 +220,16 @@ def test_http_auth_csrf_config_and_role_isolation(
                     },
                 )
                 assert invalid.status == 400
+
+                password_change = await client.post(
+                    f"{service.admin_url}/api/auth/password",
+                    headers={
+                        "X-CSRF-Token": csrf,
+                        "Origin": service.admin_url,
+                    },
+                    json={"new_password": "No-Web-Password-Change-42!"},
+                )
+                assert password_change.status == 404
 
                 public_admin = await client.get(
                     f"{service.public_url}/api/admin/config"

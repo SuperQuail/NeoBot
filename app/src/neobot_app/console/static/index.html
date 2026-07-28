@@ -43,6 +43,11 @@
           </label>
           <button id="auth-submit" class="primary-button" type="submit">进入控制台</button>
         </form>
+        <div id="password-file-card" class="password-file-card">
+          <span>密码文件位置</span>
+          <code id="password-file-path">正在读取…</code>
+        </div>
+        <button id="forgot-password" class="forgot-button" type="button" hidden>忘记密码？</button>
         <div id="auth-local-warning" class="notice warning" hidden>
           首次密码只能从运行 NeoBot 的本机设置。请打开本机管理员控制台完成初始化。
         </div>
@@ -66,7 +71,6 @@
         <button class="nav-item" data-page="diagnostics"><span>06</span>诊断报告</button>
         <button class="nav-item admin-only" data-page="config"><span>07</span>配置中心</button>
         <button class="nav-item admin-only" data-page="secrets"><span>08</span>密钥保险箱</button>
-        <button class="nav-item admin-only" data-page="security"><span>09</span>访问安全</button>
       </nav>
       <div class="sidebar-footer">
         <div class="live-pill"><span></span>LIVE</div>
@@ -171,33 +175,31 @@
           <div id="secret-grid" class="secret-grid"></div>
         </section>
 
-        <section id="page-security" class="page admin-only">
-          <div class="content-grid">
-            <article class="panel span-7">
-              <div class="panel-heading"><div><p class="eyebrow">CREDENTIAL</p><h3>更换控制台密码</h3></div></div>
-              <form id="password-form" class="stack-form">
-                <label><span>当前密码</span><input name="current_password" type="password" autocomplete="current-password" required></label>
-                <label><span>新密码</span><input name="new_password" type="password" autocomplete="new-password" required></label>
-                <label><span>确认新密码</span><input name="confirmation" type="password" autocomplete="new-password" required></label>
-                <button class="primary-button" type="submit">更新密码并注销全部会话</button>
-              </form>
-            </article>
-            <article class="panel span-5 security-notes">
-              <div class="panel-heading"><div><p class="eyebrow">SECURITY BASELINE</p><h3>当前保护措施</h3></div></div>
-              <ul>
-                <li>管理员服务固定绑定 127.0.0.1</li>
-                <li>scrypt 加盐密码校验</li>
-                <li>HttpOnly / SameSite 会话</li>
-                <li>CSRF 令牌与来源校验</li>
-                <li>登录失败滑动窗口限速</li>
-                <li>敏感字段自动脱敏</li>
-              </ul>
-            </article>
-          </div>
-        </section>
       </div>
     </section>
   </div>
+
+  <dialog id="forgot-dialog">
+    <div class="recovery-dialog">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">PASSWORD RECOVERY</p><h3>重置控制台密码</h3></div>
+        <button type="button" class="icon-button forgot-close" aria-label="关闭">×</button>
+      </div>
+      <div class="notice warning">出于安全考虑，网页不能修改或删除密码文件。</div>
+      <ol class="recovery-steps">
+        <li>停止正在运行的 NeoBot。</li>
+        <li>在 NeoBot 所在服务器上删除下方密码文件。</li>
+        <li>重新启动 NeoBot，并从本机打开管理员控制台设置新密码。</li>
+      </ol>
+      <div class="password-file-card prominent">
+        <span>需要删除的文件</span>
+        <code id="recovery-password-file"></code>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="primary-button forgot-close">我知道了</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="secret-dialog">
     <form id="secret-form" method="dialog">

@@ -30,7 +30,6 @@ from neobot_app.console.security import (
     is_loopback,
     mask_secret,
     redact,
-    validate_password,
 )
 from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, ENV_FILE
 
@@ -168,7 +167,6 @@ class ConsoleService:
         app.router.add_post("/api/auth/setup", self._auth_setup)
         app.router.add_post("/api/auth/login", self._auth_login)
         app.router.add_post("/api/auth/logout", self._auth_logout)
-        app.router.add_post("/api/auth/password", self._change_password)
         app.router.add_get("/api/overview", self._overview)
         app.router.add_get("/api/services", self._services)
         app.router.add_get("/api/tasks", self._tasks)
@@ -214,8 +212,8 @@ class ConsoleService:
                     return self._json_error("请求来源不可信", status=403)
         try:
             response = await handler(request)
-        except web.HTTPException as exc:
-            response = exc
+        except web.HTTPException:
+            raise
         except json.JSONDecodeError:
             response = self._json_error("请求体不是有效 JSON", status=400)
         except Exception as exc:
@@ -266,6 +264,11 @@ class ConsoleService:
                 "role": request.app[_ROLE_KEY],
                 "csrf_token": session.csrf_token if session else None,
                 "session_timeout_seconds": self.sessions.timeout_seconds,
+                "password_file": (
+                    str(self.credentials.path.resolve())
+                    if is_loopback(self._client_ip(request))
+                    else "<NeoBot 数据目录>/console/auth.json"
+                ),
             }
         )
 
@@ -319,23 +322,6 @@ class ConsoleService:
         response = web.json_response({"ok": True})
         response.del_cookie(_COOKIE_NAME, path="/")
         return response
-
-    async def _change_password(self, request: web.Request) -> web.Response:
-        payload = await request.json()
-        current = str(payload.get("current_password", ""))
-        new_password = str(payload.get("new_password", ""))
-        confirmation = str(payload.get("confirmation", ""))
-        if not await asyncio.to_thread(self.credentials.verify, current):
-            return self._json_error("当前密码错误", status=401)
-        if new_password != confirmation:
-            return self._json_error("两次输入的新密码不一致", status=400)
-        try:
-            validate_password(new_password)
-            await asyncio.to_thread(self.credentials.set_password, new_password)
-        except ValueError as exc:
-            return self._json_error(str(exc), status=400)
-        self.sessions.revoke_all()
-        return web.json_response({"ok": True, "login_required": True})
 
     async def _overview(self, request: web.Request) -> web.Response:
         disk = shutil.disk_usage(self.data_dir)

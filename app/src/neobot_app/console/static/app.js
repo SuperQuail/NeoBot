@@ -7,6 +7,7 @@ const state = {
   config: [],
   changes: new Map(),
   logSource: null,
+  passwordFile: "<NeoBot 数据目录>/console/auth.json",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -79,6 +80,10 @@ function configureRole() {
 
 function configureAuth(status) {
   const form = $("#auth-form");
+  state.passwordFile = status.password_file || state.passwordFile;
+  $("#password-file-path").textContent = state.passwordFile;
+  $("#recovery-password-file").textContent = state.passwordFile;
+  $("#forgot-password").hidden = !status.configured;
   form.hidden = false;
   if (!status.configured) {
     if (!status.setup_allowed) {
@@ -148,7 +153,7 @@ function updateClock() {
 const titles = {
   overview: "运行总览", services: "服务健康", logs: "实时日志", tasks: "异步任务",
   debug: "调试记录", diagnostics: "诊断报告", config: "配置中心",
-  secrets: "密钥保险箱", security: "访问安全",
+  secrets: "密钥保险箱",
 };
 
 $$(".nav-item").forEach((button) => button.addEventListener("click", async () => {
@@ -409,16 +414,6 @@ async function deleteSecret(key) {
   } catch (error) { toast(error.message, true); }
 }
 
-$("#password-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  try {
-    await api("/api/auth/password", {method: "POST", body: JSON.stringify(Object.fromEntries(form))});
-    toast("密码已更新，请重新登录。");
-    setTimeout(showAuth, 700);
-  } catch (error) { toast(error.message, true); }
-});
-
 $("#logout-button").addEventListener("click", async () => {
   try { await api("/api/auth/logout", {method: "POST"}); } catch (_) {}
   state.csrf = null;
@@ -426,6 +421,8 @@ $("#logout-button").addEventListener("click", async () => {
 });
 $("#refresh-button").addEventListener("click", () => loadPage(state.currentPage));
 $("#mobile-menu").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#forgot-password").addEventListener("click", () => $("#forgot-dialog").showModal());
+$$(".forgot-close").forEach((button) => button.addEventListener("click", () => $("#forgot-dialog").close()));
 
 function debounce(fn, delay) {
   let timer;
