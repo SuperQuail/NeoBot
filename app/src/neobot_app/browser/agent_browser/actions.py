@@ -7,7 +7,6 @@ agent-browser — AI 代理浏览器操作层
 from __future__ import annotations
 
 import asyncio
-import base64
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -106,20 +105,6 @@ class AgentBrowser:
                 "title": title,
                 "text_length": total,
                 "text_preview": preview,
-            })
-        except Exception as e:
-            return self._result(False, error=str(e))
-
-    async def wait(self, seconds: float = 2.0) -> dict:
-        """等待页面加载/渲染，完成后返回页面信息。"""
-        mgr = await self._ensure()
-        try:
-            info = await mgr.wait(seconds)
-            return self._result(True, {
-                "action": "wait",
-                "title": info["title"],
-                "url": info["url"],
-                "text_length": info["text_length"],
             })
         except Exception as e:
             return self._result(False, error=str(e))
@@ -534,13 +519,16 @@ class AgentBrowser:
 
     async def wait(
         self,
-        condition: str = "timeout",
+        condition: str | int | float = "timeout",
         value: str = "",
         timeout: int = 20,
     ) -> dict:
-        """等待页面条件满足。"""
+        """等待页面条件满足，也兼容 ``wait(seconds)`` 的旧调用方式。"""
         mgr = await self._ensure()
-        return await mgr.wait(condition, value, timeout)
+        result = await mgr.wait(condition, value, timeout)
+        if result.get("success"):
+            return self._result(True, result)
+        return self._result(False, result, error=str(result.get("error", "")))
 
     # ── 浏览器设置 ──
 

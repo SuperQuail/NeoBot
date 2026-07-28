@@ -7,9 +7,14 @@ from __future__ import annotations
 
 from loguru import logger
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-
+if TYPE_CHECKING:
+    from .client import BilibiliClient
+    from .comment_monitor import BilibiliCommentMonitor
+    from .cookie_provider import BilibiliCookieProvider
+    from .event_bridge import BilibiliEventBridge
+    from .private_monitor import BilibiliPrivateMonitor
 
 @dataclass
 class BilibiliModule:

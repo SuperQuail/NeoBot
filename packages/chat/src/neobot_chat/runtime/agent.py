@@ -4,12 +4,9 @@ import inspect
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
-
-SILENT_HEARTBEAT: ContextVar[Callable[[], None] | None] = ContextVar(
-    "silent_heartbeat", default=None
-)
 
 from neobot_chat.providers.base import Provider
 from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
@@ -31,6 +28,10 @@ from neobot_chat.tools.builtin import build_builtin_toolset
 from neobot_chat.tools.registry import AgentRegistry
 from neobot_chat.tools.toolset import Toolset
 from neobot_chat.utils import parse_tool_args
+
+SILENT_HEARTBEAT: ContextVar[Callable[[], None] | None] = ContextVar(
+    "silent_heartbeat", default=None
+)
 
 
 class Agent:

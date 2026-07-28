@@ -6,8 +6,9 @@ import asyncio
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from neobot_contracts.models.memory import EmojiRecord
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.message.image_pipeline import prepare_local_image
@@ -351,7 +352,7 @@ class EmojiService:
         prepared = prepare_local_image(new_path)
         try:
             async with self._uow_factory() as uow:
-                await uow.emojis.rename(
+                renamed = await uow.emojis.rename(
                     prepared.file_hash,
                     new_file_name=safe_name,
                     new_file_path=str(new_path.relative_to(self._emoji_dir)),
@@ -367,7 +368,11 @@ class EmojiService:
             file_name=safe_name,
             file_path=new_path,
             analysis_text=entry.analysis_text,
-            use_count=entry.use_count,
+            use_count=renamed.use_count,
+            file_hash=renamed.file_hash,
+            image_source=renamed.image_source,
+            created_at=renamed.created_at,
+            updated_at=renamed.updated_at,
         )
         self._entries[number] = updated
         return updated
@@ -419,6 +424,7 @@ class EmojiService:
 
         existing: dict[str, str] = {}
         use_counts: dict[str, int] = {}
+        records_by_hash: dict[str, EmojiRecord] = {}
         to_parse: list[tuple[str, Path]] = []
 
         async with self._uow_factory() as uow:
@@ -429,8 +435,13 @@ class EmojiService:
 
                 prepared = prepare_local_image(file_path)
                 txt_text = _read_sidecar_text(file_path)
+                try:
+                    record = await uow.emojis.get_by_hash(file_hash)
+                except Exception as exc:
+                    self._logger.error(f"查询表情包数据库失败: {exc}")
+                    record = None
                 if txt_text:
-                    await uow.emojis.set(
+                    record = await uow.emojis.set(
                         file_hash,
                         file_name=file_path.name,
                         file_path=str(file_path.relative_to(self._emoji_dir)),
@@ -438,25 +449,31 @@ class EmojiService:
                         original_width=prepared.original_width,
                         original_height=prepared.original_height,
                         analysis_text=txt_text,
-                        image_source="部署者提供",
+                        image_source=(
+                            record.image_source
+                            if record is not None and record.image_source
+                            else "部署者提供"
+                        ),
                     )
                     existing[file_hash] = txt_text
-                    continue
-
-                try:
-                    record = await uow.emojis.get_by_hash(file_hash)
-                except Exception as exc:
-                    self._logger.error(f"查询表情包数据库失败: {exc}")
-                    record = None
-                db_text = (getattr(record, "analysis_text", None) or "").strip() if record else ""
-                if db_text:
-                    file_path.with_suffix(".txt").write_text(db_text, encoding="utf-8")
-                    existing[file_hash] = db_text
                 else:
-                    to_parse.append((file_hash, file_path))
+                    db_text = (
+                        (getattr(record, "analysis_text", None) or "").strip()
+                        if record
+                        else ""
+                    )
+                    if db_text:
+                        file_path.with_suffix(".txt").write_text(
+                            db_text,
+                            encoding="utf-8",
+                        )
+                        existing[file_hash] = db_text
+                    else:
+                        to_parse.append((file_hash, file_path))
 
                 if record is not None:
-                    use_counts[file_hash] = getattr(record, "use_count", 0)
+                    records_by_hash[file_hash] = record
+                    use_counts[file_hash] = record.use_count
 
             await uow.commit()
 
@@ -468,7 +485,7 @@ class EmojiService:
                     for file_hash, file_path, analysis_text in new_results:
                         prepared = prepare_local_image(file_path)
                         file_path.with_suffix(".txt").write_text(analysis_text, encoding="utf-8")
-                        await uow.emojis.set(
+                        record = await uow.emojis.set(
                             file_hash,
                             file_name=file_path.name,
                             file_path=str(file_path.relative_to(self._emoji_dir)),
@@ -478,12 +495,20 @@ class EmojiService:
                             analysis_text=analysis_text,
                             image_source="部署者提供",
                         )
+                        records_by_hash[file_hash] = record
+                        use_counts[file_hash] = record.use_count
                         existing[file_hash] = analysis_text
                     await uow.commit()
             except Exception as exc:
                 self._logger.error(f"保存表情包解析结果失败: {exc}")
 
-        self._rebuild_mapping(image_files, existing, path_to_hash, use_counts)
+        self._rebuild_mapping(
+            image_files,
+            existing,
+            path_to_hash,
+            use_counts,
+            records_by_hash,
+        )
         await self._cleanup_stale_emoji_records(hash_to_path)
 
     async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
@@ -567,9 +592,11 @@ class EmojiService:
         analysis_map: dict[str, str],
         path_to_hash: dict[Path, str],
         use_counts: dict[str, int] | None = None,
+        records_by_hash: dict[str, EmojiRecord] | None = None,
     ) -> None:
         """根据当前文件列表和分析结果重建编号映射"""
         counts = use_counts or {}
+        records = records_by_hash or {}
         # 保留仍存在的旧条目编号
         old_by_name: dict[str, tuple[int, EmojiEntry]] = {}
         for number, entry in self._entries.items():
@@ -591,15 +618,28 @@ class EmojiService:
                     else old_by_name[name][1].analysis_text
                 )
                 old_entry = self._entries.get(num)
+                record = records.get(file_hash) if file_hash is not None else None
                 new_entries[num] = EmojiEntry(
                     file_name=name,
                     file_path=file_path,
                     analysis_text=analysis_text,
                     use_count=entry_use_count,
-                    file_hash=getattr(old_entry, "file_hash", ""),
-                    image_source=getattr(old_entry, "image_source", None),
-                    created_at=getattr(old_entry, "created_at", None),
-                    updated_at=getattr(old_entry, "updated_at", None),
+                    file_hash=file_hash or getattr(old_entry, "file_hash", ""),
+                    image_source=(
+                        record.image_source
+                        if record is not None
+                        else getattr(old_entry, "image_source", None)
+                    ),
+                    created_at=(
+                        record.created_at
+                        if record is not None
+                        else getattr(old_entry, "created_at", None)
+                    ),
+                    updated_at=(
+                        record.updated_at
+                        if record is not None
+                        else getattr(old_entry, "updated_at", None)
+                    ),
                 )
                 if num > max_existing_number:
                     max_existing_number = num
@@ -614,15 +654,28 @@ class EmojiService:
                 else:
                     max_existing_number += 1
                     num = max_existing_number
+                record = records.get(file_hash) if file_hash is not None else None
                 new_entries[num] = EmojiEntry(
                     file_name=name,
                     file_path=file_path,
                     analysis_text=analysis_text,
                     use_count=entry_use_count,
-                    file_hash=getattr(old_entry, "file_hash", ""),
-                    image_source=getattr(old_entry, "image_source", None),
-                    created_at=getattr(old_entry, "created_at", None),
-                    updated_at=getattr(old_entry, "updated_at", None),
+                    file_hash=file_hash or getattr(old_entry, "file_hash", ""),
+                    image_source=(
+                        record.image_source
+                        if record is not None
+                        else getattr(old_entry, "image_source", None)
+                    ),
+                    created_at=(
+                        record.created_at
+                        if record is not None
+                        else getattr(old_entry, "created_at", None)
+                    ),
+                    updated_at=(
+                        record.updated_at
+                        if record is not None
+                        else getattr(old_entry, "updated_at", None)
+                    ),
                 )
 
         removed = set(self._entries) - set(new_entries)
@@ -681,6 +734,7 @@ def _read_sidecar_text(file_path: Path) -> str | None:
 
 
 def _safe_emoji_file_name(file_name: str | None, suffix: str) -> str:
+    suffix = suffix.lstrip(".").lower() or "png"
     raw_name = Path(str(file_name or "")).name.strip()
     if not raw_name:
         from uuid import uuid4

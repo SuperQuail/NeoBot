@@ -18,7 +18,6 @@ from typing import Any, Optional
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 from DrissionPage._pages.chromium_base import ChromiumBase
-from DrissionPage._pages.chromium_tab import ChromiumTab
 from DrissionPage.errors import PageDisconnectedError
 
 _MAX_RETRIES = 2
@@ -341,14 +340,6 @@ class BrowserManager:
     async def current_url(self) -> str:
         return self.page.url
 
-    async def wait(self, seconds: float = 2.0) -> dict:
-        """等待指定秒数，让页面加载/渲染完成后返回页面信息。"""
-        await asyncio.sleep(seconds)
-        title = await self.get_title()
-        url = self.page.url
-        length = await self.get_text_length()
-        return {"title": title, "url": url, "text_length": length}
-
     async def get_text(self) -> str:
         text = await asyncio.to_thread(self.page.run_js, "return document.body.innerText || ''")
         return text or ""
@@ -529,7 +520,6 @@ class BrowserManager:
             tag = await asyncio.to_thread(lambda: el.tag)
             text = await asyncio.to_thread(lambda: el.text)
             url_before = page.url
-            title_before = await asyncio.to_thread(lambda: page.title)
             tab_ids_before = len(page._browser.tab_ids)
 
             # Phase 1: 原生 DrissionPage click
@@ -1121,18 +1111,49 @@ class BrowserManager:
 
     # ── 等待操作 ──
 
-    async def wait(self, condition: str = "timeout", value: str = "", timeout: int = 20) -> dict:
+    async def wait(
+        self,
+        condition: str | int | float = "timeout",
+        value: str = "",
+        timeout: int = 20,
+    ) -> dict:
+        """等待页面条件满足，并兼容以秒数作为首参数的旧调用方式。"""
         try:
             page = await self._ensure_page()
+            if isinstance(condition, (int, float)):
+                seconds = min(max(float(condition), 0.0), 30.0)
+                await asyncio.sleep(seconds)
+                return {
+                    "success": True,
+                    "condition": "timeout",
+                    "value": str(seconds),
+                    "title": await self.get_title(),
+                    "url": page.url,
+                    "text_length": await self.get_text_length(),
+                }
             if condition == "selector":
-                await asyncio.to_thread(page.wait.ele_displayed, value, timeout=timeout)
+                matched = await asyncio.to_thread(
+                    page.wait.ele_displayed,
+                    value,
+                    timeout=timeout,
+                )
+                if matched is False:
+                    return {"success": False, "error": f"等待元素超时: {value}"}
             elif condition == "text":
-                await asyncio.to_thread(page.wait.text_displayed, value, timeout=timeout)
+                matched = await asyncio.to_thread(
+                    page.wait.text_displayed,
+                    value,
+                    timeout=timeout,
+                )
+                if matched is False:
+                    return {"success": False, "error": f"等待文本超时: {value}"}
             elif condition == "url":
-                for _ in range(timeout):
+                for _ in range(max(timeout, 0)):
                     if value in page.url:
                         break
                     await asyncio.sleep(1)
+                else:
+                    return {"success": False, "error": f"等待 URL 超时: {value}"}
             elif condition == "network_idle":
                 await asyncio.to_thread(page.wait.load_complete, timeout=timeout)
                 await asyncio.sleep(1)
@@ -1144,7 +1165,10 @@ class BrowserManager:
                     await asyncio.sleep(0.5)
                 return {"success": False, "error": f"JS 条件超时: {value}"}
             elif condition == "timeout":
-                await asyncio.sleep(min(int(value or "2"), 30))
+                seconds = min(max(float(value or "2"), 0.0), 30.0)
+                await asyncio.sleep(seconds)
+            else:
+                return {"success": False, "error": f"未知等待条件: {condition}"}
             return {"success": True, "condition": condition, "value": value}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1187,7 +1211,7 @@ class BrowserManager:
             )
             ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
-                  f"Mobile/15E148 Safari/604.1" if spec["mobile"] else "")
+                  "Mobile/15E148 Safari/604.1" if spec["mobile"] else "")
             if ua:
                 await asyncio.to_thread(page.run_cdp, "Network.setUserAgentOverride", userAgent=ua)
             return {"success": True, "device": name}
