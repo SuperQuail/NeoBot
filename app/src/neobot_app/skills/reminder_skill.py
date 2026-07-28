@@ -10,6 +10,7 @@ from uuid import uuid4
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.models.scheduled_task import ScheduledTaskRecurrence, ScheduledTaskState
 from neobot_app.skills.base import SkillModule
+from neobot_app.time_context import to_utc
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -74,6 +75,20 @@ class ReminderSkill(SkillModule):
     def __init__(self, uow_factory: Any = None, config: Any = None) -> None:
         self._uow_factory = uow_factory
         self._config = config
+
+    def _default_one_shot_notification(self) -> bool:
+        scheduled_task_config = getattr(self._config, "scheduled_task", None)
+        configured = getattr(
+            scheduled_task_config,
+            "default_one_shot_notification",
+            True,
+        )
+        return True if configured is None else bool(configured)
+
+    def _max_repeating_tasks(self) -> int:
+        scheduled_task_config = getattr(self._config, "scheduled_task", None)
+        configured = getattr(scheduled_task_config, "max_repeating_tasks", 15)
+        return max(int(15 if configured is None else configured), 0)
 
     def reset(self) -> None:
         pass
@@ -214,8 +229,8 @@ async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
     start_at_str = str(args.get("start_at", "")).strip()
     end_at_str = str(args.get("end_at", "")).strip()
     try:
-        start_at = datetime.fromisoformat(start_at_str)
-        end_at = datetime.fromisoformat(end_at_str)
+        start_at = to_utc(datetime.fromisoformat(start_at_str))
+        end_at = to_utc(datetime.fromisoformat(end_at_str))
     except (ValueError, TypeError):
         return _json({"ok": False, "error": "start_at/end_at 格式错误，需为 ISO 8601 格式"})
     if end_at <= start_at:
@@ -226,9 +241,24 @@ async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
     metadata = args.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
         metadata = None
+    metadata = dict(metadata or {})
+    metadata["one_shot_notification"] = bool(
+        args.get(
+            "one_shot_notification",
+            self._default_one_shot_notification(),
+        )
+    )
     task_uuid = str(uuid4())
     try:
         async with self._uow_factory() as uow:
+            if recurrence != ScheduledTaskRecurrence.ONCE:
+                count = await uow.scheduled_tasks.count_repeating_active()
+                limit = self._max_repeating_tasks()
+                if count >= limit:
+                    return _json({
+                        "ok": False,
+                        "error": f"重复定时任务数量已达上限: {limit}",
+                    })
             record = await uow.scheduled_tasks.create(
                 task_uuid=task_uuid,
                 title=title,
@@ -239,6 +269,7 @@ async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
                 bindings=tuple(bindings),
                 metadata=metadata,
             )
+            await uow.commit()
         return _json({"ok": True, "status": "created", "task": {
             "task_uuid": record.task_uuid,
             "title": record.title,
@@ -295,25 +326,40 @@ async def _handle_update_scheduled_task(self: ReminderSkill, args: dict) -> str:
             return _json({"ok": False, "error": f"无效的 recurrence: {args['recurrence']}"})
     if "start_at" in args:
         try:
-            kwargs["start_at"] = datetime.fromisoformat(str(args["start_at"]).strip())
+            kwargs["start_at"] = to_utc(
+                datetime.fromisoformat(str(args["start_at"]).strip())
+            )
         except (ValueError, TypeError):
             return _json({"ok": False, "error": "start_at 格式错误"})
     if "end_at" in args:
         try:
-            kwargs["end_at"] = datetime.fromisoformat(str(args["end_at"]).strip())
+            kwargs["end_at"] = to_utc(
+                datetime.fromisoformat(str(args["end_at"]).strip())
+            )
         except (ValueError, TypeError):
             return _json({"ok": False, "error": "end_at 格式错误"})
     if "bindings" in args:
         bindings = _resolve_bindings(args)
         if bindings:
             kwargs["bindings"] = tuple(bindings)
-    if "metadata" in args and isinstance(args["metadata"], dict):
-        kwargs["metadata"] = args["metadata"]
-    if not kwargs:
+    metadata_update = args.get("metadata") if isinstance(args.get("metadata"), dict) else None
+    one_shot_update = args.get("one_shot_notification")
+    if not kwargs and metadata_update is None and one_shot_update is None:
         return _json({"ok": False, "error": "没有提供需要修改的字段"})
     try:
         async with self._uow_factory() as uow:
+            if metadata_update is not None or one_shot_update is not None:
+                current = await uow.scheduled_tasks.get(task_uuid)
+                if current is None:
+                    raise LookupError(task_uuid)
+                metadata = dict(current.metadata)
+                if metadata_update is not None:
+                    metadata.update(metadata_update)
+                if one_shot_update is not None:
+                    metadata["one_shot_notification"] = bool(one_shot_update)
+                kwargs["metadata"] = metadata
             record = await uow.scheduled_tasks.update(task_uuid, **kwargs)
+            await uow.commit()
         return _json({"ok": True, "status": "updated", "task": {
             "task_uuid": record.task_uuid,
             "title": record.title,
@@ -339,6 +385,7 @@ async def _handle_set_scheduled_task_state(self: ReminderSkill, args: dict) -> s
     try:
         async with self._uow_factory() as uow:
             record = await uow.scheduled_tasks.update(task_uuid, state=state)
+            await uow.commit()
         return _json({"ok": True, "status": "state_changed", "task": {
             "task_uuid": record.task_uuid,
             "state": record.state.value,
@@ -360,10 +407,14 @@ async def _handle_set_scheduled_task_notification_policy(self: ReminderSkill, ar
             record = await uow.scheduled_tasks.get(task_uuid)
             if record is None:
                 return _json({"ok": False, "error": f"未找到任务: {task_uuid}"})
-            if one_shot:
-                await uow.scheduled_tasks.update(task_uuid, completed_window_keys=[])
-            else:
-                await uow.scheduled_tasks.update(task_uuid, completed_window_keys=[])
+            metadata = dict(record.metadata)
+            metadata["one_shot_notification"] = one_shot
+            await uow.scheduled_tasks.update(
+                task_uuid,
+                metadata=metadata,
+                completed_window_keys=[],
+            )
+            await uow.commit()
         return _json({"ok": True, "status": "policy_updated", "one_shot_notification": one_shot})
     except LookupError:
         return _json({"ok": False, "error": f"未找到任务: {task_uuid}"})
@@ -379,6 +430,8 @@ async def _handle_delete_scheduled_task(self: ReminderSkill, args: dict) -> str:
     try:
         async with self._uow_factory() as uow:
             ok = await uow.scheduled_tasks.delete(task_uuid)
+            if ok:
+                await uow.commit()
         if ok:
             return _json({"ok": True, "status": "deleted"})
         return _json({"ok": False, "error": f"未找到任务: {task_uuid}"})

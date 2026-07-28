@@ -25,6 +25,9 @@ def create_engine(db_url: str, **kwargs) -> AsyncEngine:
 
 def _enable_wal_if_sqlite(engine: AsyncEngine) -> None:
     """Enable WAL mode + busy_timeout when the engine targets SQLite."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
     @event.listens_for(engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()

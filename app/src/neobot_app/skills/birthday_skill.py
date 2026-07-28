@@ -10,6 +10,7 @@ from uuid import uuid4
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.models.scheduled_task import ScheduledTaskRecurrence
 from neobot_app.skills.base import SkillModule
+from neobot_app.time_context import combine_local, now_local, to_utc
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -57,8 +58,14 @@ class BirthdaySkill(SkillModule):
             "注意：有人提出生日、生日祝福偏好、庆祝方式变更时应先记录或更新。"
         )
 
-    def __init__(self, uow_factory: Any = None) -> None:
+    def __init__(self, uow_factory: Any = None, config: Any = None) -> None:
         self._uow_factory = uow_factory
+        self._config = config
+
+    def _max_repeating_tasks(self) -> int:
+        scheduled_task_config = getattr(self._config, "scheduled_task", None)
+        configured = getattr(scheduled_task_config, "max_repeating_tasks", 15)
+        return max(int(15 if configured is None else configured), 0)
 
     def reset(self) -> None:
         pass
@@ -118,7 +125,7 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
     birthday_raw = str(args.get("birthday", "")).strip()
     try:
         if len(birthday_raw) == 5 and birthday_raw[2] == "-":
-            birthday_date = date(datetime.now().year, int(birthday_raw[:2]), int(birthday_raw[3:]))
+            birthday_date = date(now_local().year, int(birthday_raw[:2]), int(birthday_raw[3:]))
         elif len(birthday_raw) == 10:
             birthday_date = date.fromisoformat(birthday_raw)
         else:
@@ -134,13 +141,28 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
     except (ValueError, AttributeError):
         return _json({"ok": False, "error": "start_time/end_time 格式错误，需为 HH:MM"})
 
-    this_year = datetime.now().year
-    year = this_year if birthday_date.month > datetime.now().month or (
-        birthday_date.month == datetime.now().month and birthday_date.day >= datetime.now().day
+    local_now = now_local()
+    this_year = local_now.year
+    year = this_year if birthday_date.month > local_now.month or (
+        birthday_date.month == local_now.month and birthday_date.day >= local_now.day
     ) else this_year + 1
 
-    start_at = datetime(year, birthday_date.month, birthday_date.day, start_h, start_m)
-    end_at = start_at + timedelta(days=1)
+    try:
+        occurrence_date = date(year, birthday_date.month, birthday_date.day)
+        start_at = combine_local(
+            occurrence_date,
+            datetime.min.replace(hour=start_h, minute=start_m).time(),
+        )
+        end_at = combine_local(
+            occurrence_date,
+            datetime.min.replace(hour=end_h, minute=end_m).time(),
+        )
+    except ValueError:
+        return _json({"ok": False, "error": "start_time/end_time 超出有效范围"})
+    if end_at <= start_at:
+        end_at += timedelta(days=1)
+    start_at = to_utc(start_at)
+    end_at = to_utc(end_at)
 
     bindings = _resolve_bindings(args)
     if not bindings:
@@ -162,11 +184,19 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
         "birthday": f"{birthday_date.month:02d}-{birthday_date.day:02d}",
         "celebration_style": celebration_style,
         "relationship_context": relationship,
+        "one_shot_notification": bool(args.get("one_shot_notification", True)),
     }
 
     task_uuid = str(uuid4())
     try:
         async with self._uow_factory() as uow:
+            count = await uow.scheduled_tasks.count_repeating_active()
+            limit = self._max_repeating_tasks()
+            if count >= limit:
+                return _json({
+                    "ok": False,
+                    "error": f"重复定时任务数量已达上限: {limit}",
+                })
             record = await uow.scheduled_tasks.create(
                 task_uuid=task_uuid,
                 title=title,
@@ -177,6 +207,7 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
                 bindings=tuple(bindings),
                 metadata=metadata,
             )
+            await uow.commit()
         return _json({"ok": True, "status": "birthday_task_created", "task": {
             "task_uuid": record.task_uuid,
             "title": record.title,

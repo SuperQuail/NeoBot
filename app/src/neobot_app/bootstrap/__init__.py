@@ -308,6 +308,7 @@ def create_application() -> NeoBotApplication:
         adapter=adapter,
         archive_memory_service=memory_svcs["archive_memory_service"],
         profile_service=memory_svcs["profile_service"],
+        uow_factory=uow_factory,
         emoji_service=emoji_service,
         vision_provider=vision_provider,
         file_server=file_server,

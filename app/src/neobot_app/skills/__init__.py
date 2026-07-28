@@ -195,7 +195,7 @@ def build_all_skills(
         )
 
     if "birthday" not in disabled:
-        skills_to_register.append(BirthdaySkill(uow_factory=uow_factory))
+        skills_to_register.append(BirthdaySkill(uow_factory=uow_factory, config=config))
 
     if "cross_chat" not in disabled:
         skills_to_register.append(
