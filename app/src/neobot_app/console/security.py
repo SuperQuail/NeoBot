@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 
-_PASSWORD_MIN_LENGTH = 12
 _SCRYPT_N = 2**15
 _SCRYPT_R = 8
 _SCRYPT_P = 1
@@ -48,7 +47,6 @@ class CredentialStore:
         return self.path.is_file()
 
     def set_password(self, password: str) -> None:
-        validate_password(password)
         salt = secrets.token_bytes(32)
         digest = _derive_password(password, salt)
         payload = {
@@ -161,24 +159,6 @@ class LoginLimiter:
 
     def record_success(self, client: str) -> None:
         self._attempts.pop(client, None)
-
-
-def validate_password(password: str) -> None:
-    if len(password) < _PASSWORD_MIN_LENGTH:
-        raise ValueError(f"密码至少需要 {_PASSWORD_MIN_LENGTH} 个字符")
-    if len(password) > 256:
-        raise ValueError("密码不能超过 256 个字符")
-    categories = sum(
-        bool(pattern.search(password))
-        for pattern in (
-            re.compile(r"[a-z]"),
-            re.compile(r"[A-Z]"),
-            re.compile(r"\d"),
-            re.compile(r"[^A-Za-z0-9]"),
-        )
-    )
-    if categories < 3:
-        raise ValueError("密码需包含大小写字母、数字、符号中的至少三类")
 
 
 def is_loopback(value: str | None) -> bool:

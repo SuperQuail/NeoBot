@@ -42,16 +42,23 @@ def test_console_config_rejects_unsafe_ranges() -> None:
         raise AssertionError("invalid console port search limit was accepted")
 
 
-def test_credential_store_hashes_and_verifies_password(tmp_path: Path) -> None:
+def test_credential_store_accepts_any_password_and_hashes_it(tmp_path: Path) -> None:
     store = CredentialStore(tmp_path / "console" / "auth.json")
-    password = "Correct-Horse-42!"
+    password = ""
 
     store.set_password(password)
 
     content = store.path.read_text(encoding="utf-8")
-    assert password not in content
+    assert '"algorithm": "scrypt"' in content
     assert store.verify(password) is True
     assert store.verify("incorrect-password") is False
+
+    store.set_password("1")
+    assert store.verify("1") is True
+
+    store.set_password("中文 密码")
+    assert "中文 密码" not in store.path.read_text(encoding="utf-8")
+    assert store.verify("中文 密码") is True
 
 
 def test_session_store_expires_idle_sessions(monkeypatch) -> None:
@@ -202,18 +209,9 @@ def test_http_auth_csrf_config_and_role_isolation(
                     (tmp_path / "console" / "auth.json").resolve()
                 )
 
-                weak = await client.post(
-                    f"{service.admin_url}/api/auth/setup",
-                    json={"password": "weak", "confirmation": "weak"},
-                )
-                assert weak.status == 400
-
                 setup = await client.post(
                     f"{service.admin_url}/api/auth/setup",
-                    json={
-                        "password": "Strong-Console-42!",
-                        "confirmation": "Strong-Console-42!",
-                    },
+                    json={"password": "", "confirmation": ""},
                 )
                 assert setup.status == 200
                 csrf = (await setup.json())["csrf_token"]

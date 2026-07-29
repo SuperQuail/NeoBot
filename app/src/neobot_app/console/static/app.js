@@ -88,10 +88,10 @@ function configureAuth(status) {
   form.hidden = false;
   if (!status.configured) {
     $("#auth-title").textContent = "创建控制台密码";
-    $("#auth-description").textContent = "这是首次访问。请设置至少 12 位、包含三类字符的强密码。";
+    $("#auth-description").textContent = "这是首次访问。密码不限制长度、字符或格式。";
     $("#password").autocomplete = "new-password";
     $("#confirmation-field").hidden = false;
-    $("#confirmation").required = true;
+    $("#confirmation").required = false;
     $("#auth-submit").textContent = "设置密码并进入";
     form.dataset.mode = "setup";
   } else {

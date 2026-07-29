@@ -297,10 +297,7 @@ class ConsoleService:
         confirmation = str(payload.get("confirmation", ""))
         if password != confirmation:
             return self._json_error("两次输入的密码不一致", status=400)
-        try:
-            self.credentials.set_password(password)
-        except ValueError as exc:
-            return self._json_error(str(exc), status=400)
+        self.credentials.set_password(password)
         token, session = self.sessions.create()
         response = web.json_response({"ok": True, "csrf_token": session.csrf_token})
         self._set_cookie(response, token)
