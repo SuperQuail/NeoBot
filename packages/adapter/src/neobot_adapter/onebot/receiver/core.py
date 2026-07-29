@@ -47,6 +47,7 @@ class AdapterCore:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._async_stop_event: Optional[asyncio.Event] = None
         self.message_queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self._pending = {}  # echo -> asyncio.Future
         self.active_connections = set()
@@ -110,14 +111,35 @@ class AdapterCore:
         self.thread.start()
         logger.info("接收器已启动")
 
-    def stop(self):
+    def stop(self, timeout: float = 8.0) -> bool:
+        """Stop the receiver thread within a bounded amount of time.
+
+        The normal path wakes the receiver loop immediately.  If a third-party
+        WebSocket implementation is stuck during cleanup, cancel its remaining
+        loop tasks as a final fallback and leave the daemon thread isolated
+        rather than blocking application shutdown forever.
+        """
         logger.info("正在停止接收器...")
         self._stop_event.set()
-        if self.thread:
-            self.thread.join(timeout=5)
-            if self.thread.is_alive():
-                logger.warning("接收器停止超时，后台线程仍未退出")
+        loop = self.loop
+        async_stop_event = self._async_stop_event
+        if loop is not None and loop.is_running() and async_stop_event is not None:
+            loop.call_soon_threadsafe(async_stop_event.set)
+
+        thread = self.thread
+        if thread is None:
+            return True
+        thread.join(timeout=max(0.0, timeout))
+        if thread.is_alive() and loop is not None and loop.is_running():
+            logger.warning("接收器正常停止超时，正在取消残留任务")
+            loop.call_soon_threadsafe(self._cancel_loop_tasks)
+            thread.join(timeout=1.0)
+        stopped = not thread.is_alive()
+        if not stopped:
+            logger.error("接收器停止兜底超时，后台守护线程将由进程退出时回收")
+        else:
             self.thread = None
+        return stopped
 
     def get_message(self, block: bool = True, timeout: Optional[float] = None):
         try:
@@ -129,38 +151,64 @@ class AdapterCore:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_until_complete(self._run_server())
+            try:
+                self.loop.run_until_complete(self._run_server())
+            except asyncio.CancelledError:
+                logger.warning("接收器事件循环已由停止兜底取消")
         finally:
+            self._async_stop_event = None
             self.loop.close()
             self.loop = None
+
+    def _cancel_loop_tasks(self) -> None:
+        current = asyncio.current_task(self.loop)
+        for task in asyncio.all_tasks(self.loop):
+            if task is not current and not task.done():
+                task.cancel()
 
     async def _run_server(self):
         host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
         port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
+        self._async_stop_event = asyncio.Event()
         # 监听指定路径 /onebot
         server = await websockets.serve(self._handle_client, host, port)
         logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
         try:
-            # 等待停止信号
-            while not self._stop_event.is_set():
-                await asyncio.sleep(1)
+            if not self._stop_event.is_set():
+                await self._async_stop_event.wait()
         finally:
+            heartbeat_task = self._heartbeat_checker_task
+            self._heartbeat_checker_task = None
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+
             # 关闭服务器（不再接受新连接）
             server.close()
             # 显式关闭所有活跃连接，避免 wait_closed 无限等待
-            for ws in list(self.active_connections):
+            connections = list(self.active_connections)
+            for ws in connections:
+                ws.close_timeout = 1
+            if connections:
+                close_tasks = [
+                    ws.close(1011, "Server shutting down") for ws in connections
+                ]
                 try:
-                    ws.close_timeout = 1
                     await asyncio.wait_for(
-                        ws.close(1011, "Server shutting down"), timeout=2,
+                        asyncio.gather(*close_tasks, return_exceptions=True),
+                        timeout=2,
                     )
-                except Exception:
-                    pass
+                except asyncio.TimeoutError:
+                    logger.warning("活跃连接关闭超时，继续回收服务器")
             # 等待 handler 清理（最多 2 秒）
             try:
                 await asyncio.wait_for(server.wait_closed(), timeout=2)
-            except (asyncio.TimeoutError, Exception):
+            except asyncio.TimeoutError:
                 logger.warning("服务器关闭超时，强制退出")
+            except Exception as exc:
+                logger.warning(f"服务器关闭异常: {exc}")
+            self.active_connections.clear()
+            self._connection_established.clear()
 
     async def _handle_client(self, websocket):
         logger.info("框架已连接")

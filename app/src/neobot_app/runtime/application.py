@@ -22,6 +22,8 @@ class ConnectionTimeoutError(RuntimeError):
 
 
 class NeoBotApplication(Generic[T]):
+    _ADAPTER_STOP_TIMEOUT_SECONDS = 12.0
+
     def __init__(
         self,
         adapter: T,
@@ -60,6 +62,7 @@ class NeoBotApplication(Generic[T]):
         self._emoji_service = emoji_service
         self._logger = logger or NullLogger()
         self._shutdown_event = asyncio.Event()
+        self._restart_requested = False
         self._started = False
         if file_server is not None:
             self.file_server = file_server
@@ -110,7 +113,7 @@ class NeoBotApplication(Generic[T]):
                 await self.file_server.stop()
                 if self.tts_service is not None:
                     await self.tts_service.close()
-                await self.adapter.stop()
+                await self._stop_adapter_with_timeout()
                 raise ConnectionTimeoutError(
                     "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
                 )
@@ -164,6 +167,16 @@ class NeoBotApplication(Generic[T]):
             await self.stop()
 
     def request_stop(self) -> None:
+        self._restart_requested = False
+        self._shutdown_event.set()
+
+    @property
+    def restart_requested(self) -> bool:
+        return self._restart_requested
+
+    def request_restart(self) -> None:
+        """Request a full in-process rebuild after graceful core shutdown."""
+        self._restart_requested = True
         self._shutdown_event.set()
 
     async def stop(self) -> None:
@@ -214,7 +227,7 @@ class NeoBotApplication(Generic[T]):
             await self._browser_lifecycle_manager.stop()
         if self._vision_provider is not None:
             await self._vision_provider.close()
-        await self.adapter.stop()
+        await self._stop_adapter_with_timeout()
         if self.tts_service is not None:
             await self.tts_service.close()
         await self.file_server.stop()
@@ -222,6 +235,24 @@ class NeoBotApplication(Generic[T]):
             await self._engine.dispose()
         self._started = False
         self._logger.info("NeoBot已停止")
+
+    async def _stop_adapter_with_timeout(self) -> None:
+        """Bound only adapter cleanup; core/memory shutdown remains unbounded."""
+        try:
+            await asyncio.wait_for(
+                self.adapter.stop(),
+                timeout=self._ADAPTER_STOP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            self._logger.error(
+                "适配器停止超时，已触发兜底并继续关闭",
+                timeout_seconds=self._ADAPTER_STOP_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            self._logger.error(
+                "适配器停止异常，已触发兜底并继续关闭",
+                error=str(exc),
+            )
 
     async def _run_report_loop(self) -> None:
         while True:

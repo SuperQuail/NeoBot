@@ -121,6 +121,7 @@ uv.lock
 /test/
 /dev-test/
 /.claude/
+/scripts/deepseek_v3_tokenizer/
 
 .kagent/
 /.cursor/

@@ -14,11 +14,13 @@ from neobot_app.runtime.application import ConnectionTimeoutError
 
 
 async def run() -> None:
-    application = create_application()
     loop = asyncio.get_running_loop()
+    current_application = {"value": None}
 
     def request_stop() -> None:
-        application.request_stop()
+        application = current_application["value"]
+        if application is not None:
+            application.request_stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -30,7 +32,13 @@ async def run() -> None:
                     lambda _signum, _frame: loop.call_soon_threadsafe(request_stop),
                 )
 
-    await application.run_forever()
+    while True:
+        application = create_application()
+        current_application["value"] = application
+        await application.run_forever()
+        if not application.restart_requested:
+            break
+    current_application["value"] = None
 
 
 def cmd_run(args: argparse.Namespace) -> None:

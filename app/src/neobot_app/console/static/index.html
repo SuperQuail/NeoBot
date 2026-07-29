@@ -48,9 +48,6 @@
           <code id="password-file-path">正在读取…</code>
         </div>
         <button id="forgot-password" class="forgot-button" type="button" hidden>忘记密码？</button>
-        <div id="auth-local-warning" class="notice warning" hidden>
-          首次密码只能从运行 NeoBot 的本机设置。请打开本机管理员控制台完成初始化。
-        </div>
         <p id="auth-error" class="form-error" role="alert"></p>
       </div>
     </section>
@@ -64,13 +61,14 @@
       </div>
       <nav id="main-nav" aria-label="主导航">
         <button class="nav-item active" data-page="overview"><span>01</span>运行总览</button>
-        <button class="nav-item" data-page="services"><span>02</span>服务健康</button>
-        <button class="nav-item" data-page="logs"><span>03</span>实时日志</button>
-        <button class="nav-item" data-page="tasks"><span>04</span>异步任务</button>
-        <button class="nav-item" data-page="debug"><span>05</span>调试记录</button>
-        <button class="nav-item" data-page="diagnostics"><span>06</span>诊断报告</button>
-        <button class="nav-item admin-only" data-page="config"><span>07</span>配置中心</button>
-        <button class="nav-item admin-only" data-page="secrets"><span>08</span>密钥保险箱</button>
+        <button class="nav-item" data-page="preview"><span>02</span>运行预览</button>
+        <button class="nav-item" data-page="services"><span>03</span>服务健康</button>
+        <button class="nav-item" data-page="logs"><span>04</span>实时日志</button>
+        <button class="nav-item" data-page="tasks"><span>05</span>异步任务</button>
+        <button class="nav-item" data-page="debug"><span>06</span>调试记录</button>
+        <button class="nav-item" data-page="diagnostics"><span>07</span>诊断报告</button>
+        <button class="nav-item admin-only" data-page="config"><span>08</span>配置中心</button>
+        <button class="nav-item admin-only" data-page="secrets"><span>09</span>密钥保险箱</button>
       </nav>
       <div class="sidebar-footer">
         <div class="live-pill"><span></span>LIVE</div>
@@ -111,6 +109,18 @@
               <div class="panel-heading"><div><p class="eyebrow">ADAPTER</p><h3>连接通道</h3></div></div>
               <div id="adapter-card"></div>
             </article>
+          </div>
+        </section>
+
+        <section id="page-preview" class="page">
+          <div class="toolbar between">
+            <p>服务器时间：<strong id="preview-time">—</strong></p>
+            <label class="switch-label"><input id="live-preview" type="checkbox" checked><span></span>每 3 秒刷新</label>
+          </div>
+          <div class="preview-layout">
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">CHAT TIMELINE</p><h3>当前聊天</h3></div></div><div id="chat-preview" class="preview-stack"></div></article>
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">MODEL I/O</p><h3>AI 输入 / 输出</h3></div></div><div id="ai-preview" class="preview-stack"></div></article>
+            <article class="panel preview-wide"><div class="panel-heading"><div><p class="eyebrow">BACKGROUND</p><h3>后台工作</h3></div></div><div id="background-preview"></div></article>
           </div>
         </section>
 
@@ -161,6 +171,8 @@
             </div>
             <div class="row-actions">
               <input id="config-search" type="search" placeholder="搜索配置项…" aria-label="搜索配置">
+              <button id="restart-core" class="secondary-button">重启 Bot 核心</button>
+              <button id="save-restart-config" class="secondary-button" disabled>保存并重载</button>
               <button id="save-config" class="primary-button" disabled>保存更改 <span id="change-count">0</span></button>
             </div>
           </div>
@@ -189,7 +201,7 @@
       <ol class="recovery-steps">
         <li>停止正在运行的 NeoBot。</li>
         <li>在 NeoBot 所在服务器上删除下方密码文件。</li>
-        <li>重新启动 NeoBot，并从本机打开管理员控制台设置新密码。</li>
+        <li>重新启动 NeoBot，再次打开控制台设置新密码。</li>
       </ol>
       <div class="password-file-card prominent">
         <span>需要删除的文件</span>
@@ -209,6 +221,17 @@
       <p>已有值不会显示。提交新值会完整替换该变量。</p>
       <div class="dialog-actions"><button type="button" class="secondary-button dialog-close">取消</button><button id="secret-submit" type="submit" class="primary-button">安全保存</button></div>
     </form>
+  </dialog>
+
+  <dialog id="restart-dialog">
+    <div class="recovery-dialog restart-dialog">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">CORE RELOAD</p><h3>正在重载 Bot 核心</h3></div>
+      </div>
+      <p id="restart-status">正在提交重启请求…</p>
+      <div class="restart-pulse" aria-hidden="true"><span></span></div>
+      <div class="notice warning">记忆系统会完整保存后再关闭，因此核心重载不设置超时。控制台恢复后页面会自动刷新。</div>
+    </div>
   </dialog>
 
   <script src="/assets/app.js" defer></script>

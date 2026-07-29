@@ -14,7 +14,6 @@ from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
 
 import tomlkit
 from aiohttp import web
@@ -54,6 +53,11 @@ class ConsoleService:
         logger: Any,
         group_queue: Any = None,
         friend_queue: Any = None,
+        telemetry: Any = None,
+        reply_orchestrator: Any = None,
+        drawing_manager: Any = None,
+        scheduled_task_manager: Any = None,
+        problem_solver_manager: Any = None,
         service_probe: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.config = config
@@ -66,10 +70,16 @@ class ConsoleService:
         self.login_limiter = LoginLimiter()
         self.group_queue = group_queue
         self.friend_queue = friend_queue
+        self.telemetry = telemetry
+        self.reply_orchestrator = reply_orchestrator
+        self.drawing_manager = drawing_manager
+        self.scheduled_task_manager = scheduled_task_manager
+        self.problem_solver_manager = problem_solver_manager
         self.service_probe = service_probe
         self.started_at = time.time()
         self.application: Any = None
         self.public_url: str | None = None
+        self.public_port: int | None = None
         self.admin_url: str | None = None
         self._runners: list[web.AppRunner] = []
         self._sites: list[web.BaseSite] = []
@@ -100,9 +110,15 @@ class ConsoleService:
                 preferred_port=int(getattr(settings, "port", 9981)),
                 limit=limit,
             )
-            display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+            display_host = "<服务器IP>" if host in {"0.0.0.0", "::"} else host
             self.public_url = f"http://{display_host}:{port}"
-            self.logger.info("调试控制台已启动", url=self.public_url, listen_host=host)
+            self.public_port = port
+            self.logger.info(
+                "调试控制台已启动",
+                url=self.public_url,
+                local_url=f"http://127.0.0.1:{port}",
+                listen_host=host,
+            )
 
     async def stop(self) -> None:
         for runner in reversed(self._runners):
@@ -113,6 +129,7 @@ class ConsoleService:
         self._sites.clear()
         self._runners.clear()
         self.public_url = None
+        self.public_port = None
         self.admin_url = None
 
     async def _start_site(
@@ -170,6 +187,7 @@ class ConsoleService:
         app.router.add_get("/api/overview", self._overview)
         app.router.add_get("/api/services", self._services)
         app.router.add_get("/api/tasks", self._tasks)
+        app.router.add_get("/api/runtime-preview", self._runtime_preview)
         app.router.add_get("/api/logs", self._logs)
         app.router.add_get("/api/logs/stream", self._log_stream)
         app.router.add_get("/api/debug-files", self._debug_files)
@@ -177,6 +195,7 @@ class ConsoleService:
         app.router.add_get("/api/diagnostics/export", self._diagnostics_export)
         app.router.add_get("/api/admin/config", self._admin_config)
         app.router.add_patch("/api/admin/config", self._admin_update_config)
+        app.router.add_post("/api/admin/restart", self._admin_restart)
         app.router.add_get("/api/admin/environment", self._admin_environment)
         app.router.add_put("/api/admin/environment/{key}", self._admin_update_environment)
         app.router.add_delete("/api/admin/environment/{key}", self._admin_delete_environment)
@@ -207,9 +226,6 @@ class ConsoleService:
                 supplied = request.headers.get("X-CSRF-Token", "")
                 if not supplied or not secrets_compare(supplied, session.csrf_token):
                     return self._json_error("CSRF 校验失败", status=403)
-                origin = request.headers.get("Origin")
-                if origin and urlsplit(origin).netloc.casefold() != request.host.casefold():
-                    return self._json_error("请求来源不可信", status=403)
         try:
             response = await handler(request)
         except web.HTTPException:
@@ -251,6 +267,7 @@ class ConsoleService:
                 "service": "NeoBot Console",
                 "role": request.app[_ROLE_KEY],
                 "configured": self.credentials.configured,
+                "instance": f"{self.started_at:.6f}",
             }
         )
 
@@ -260,7 +277,7 @@ class ConsoleService:
             {
                 "configured": self.credentials.configured,
                 "authenticated": session is not None,
-                "setup_allowed": is_loopback(self._client_ip(request)),
+                "setup_allowed": True,
                 "role": request.app[_ROLE_KEY],
                 "csrf_token": session.csrf_token if session else None,
                 "session_timeout_seconds": self.sessions.timeout_seconds,
@@ -275,8 +292,6 @@ class ConsoleService:
     async def _auth_setup(self, request: web.Request) -> web.Response:
         if self.credentials.configured:
             return self._json_error("控制台密码已经设置", status=409)
-        if not is_loopback(self._client_ip(request)):
-            return self._json_error("首次密码只能在本机设置", status=403)
         payload = await request.json()
         password = str(payload.get("password", ""))
         confirmation = str(payload.get("confirmation", ""))
@@ -289,12 +304,12 @@ class ConsoleService:
         token, session = self.sessions.create()
         response = web.json_response({"ok": True, "csrf_token": session.csrf_token})
         self._set_cookie(response, token)
-        self.logger.info("控制台初始密码已从本机设置")
+        self.logger.info("控制台初始密码已设置")
         return response
 
     async def _auth_login(self, request: web.Request) -> web.Response:
         if not self.credentials.configured:
-            return self._json_error("请先从本机设置控制台密码", status=428)
+            return self._json_error("请先设置控制台密码", status=428)
         client = self._client_ip(request)
         retry_after = self.login_limiter.retry_after(client)
         if retry_after:
@@ -355,7 +370,11 @@ class ConsoleService:
                     "public_enabled": bool(
                         getattr(getattr(self.config, "console", None), "enabled", False)
                     ),
-                    "public_url": self.public_url,
+                    "public_url": (
+                        f"{request.scheme}://{request.host}"
+                        if request.app[_ROLE_KEY] == "debug"
+                        else self.public_url
+                    ),
                     "admin_url": self.admin_url
                     if request.app[_ROLE_KEY] == "admin"
                     else None,
@@ -408,6 +427,20 @@ class ConsoleService:
             )
         rows.sort(key=lambda row: (row["done"], row["name"]))
         return web.json_response({"tasks": rows[:500], "total": len(rows)})
+
+    async def _runtime_preview(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "server_time": datetime.now().astimezone().isoformat(),
+                "chats": self._chat_snapshot(),
+                "ai_calls": (
+                    self.telemetry.snapshot(30)
+                    if self.telemetry is not None
+                    else []
+                ),
+                "background": self._background_snapshot(),
+            }
+        )
 
     async def _logs(self, request: web.Request) -> web.Response:
         raw_limit = request.query.get("limit", "250")
@@ -568,6 +601,20 @@ class ConsoleService:
             }
         )
 
+    async def _admin_restart(self, request: web.Request) -> web.Response:
+        restart = getattr(self.application, "request_restart", None)
+        if not callable(restart):
+            return self._json_error("当前启动方式不支持热重载", status=409)
+        asyncio.get_running_loop().call_later(0.25, restart)
+        self.logger.info("管理员控制台请求重启 Bot 核心")
+        return web.json_response(
+            {
+                "ok": True,
+                "message": "Bot 核心将完整关闭后重新创建；记忆保存可能需要较长时间。",
+            },
+            status=202,
+        )
+
     async def _admin_environment(self, request: web.Request) -> web.Response:
         records = self._read_environment()
         return web.json_response(
@@ -654,6 +701,149 @@ class ConsoleService:
             "group": summarize(self.group_queue),
             "friend": summarize(self.friend_queue),
         }
+
+    def _chat_snapshot(self) -> list[dict[str, Any]]:
+        conversations: list[dict[str, Any]] = []
+        for queue_kind, queue in (
+            ("group", self.group_queue),
+            ("friend", self.friend_queue),
+        ):
+            if queue is None:
+                continue
+            for key in queue.get_all_keys():
+                messages: list[dict[str, Any]] = []
+                for entry in queue.entries(key):
+                    message = getattr(entry, "message", None)
+                    if message is None:
+                        continue
+                    occurred_at = getattr(entry, "occurred_at", None)
+                    timestamp = (
+                        datetime.fromtimestamp(occurred_at)
+                        .astimezone()
+                        .isoformat()
+                        if isinstance(occurred_at, (int, float))
+                        else None
+                    )
+                    sender = getattr(message, "sender", None)
+                    sender_name = (
+                        getattr(sender, "card", "")
+                        or getattr(sender, "nickname", "")
+                        or str(getattr(message, "user_id", ""))
+                    )
+                    content = getattr(message, "raw_message", None)
+                    if content is None:
+                        content = getattr(message, "message", "")
+                    messages.append(
+                        {
+                            "time": timestamp,
+                            "sender": str(sender_name),
+                            "user_id": getattr(message, "user_id", None),
+                            "message_id": getattr(message, "message_id", None),
+                            "content": str(content)[:4000],
+                        }
+                    )
+                if messages:
+                    conversations.append(
+                        {
+                            "kind": queue_kind,
+                            "key": str(key),
+                            "last_time": messages[-1]["time"],
+                            "messages": messages[-20:],
+                        }
+                    )
+        conversations.sort(key=lambda item: item["last_time"] or "", reverse=True)
+        return conversations[:50]
+
+    def _background_snapshot(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        app = self.application
+        for task in getattr(app, "_background_tasks", ()):
+            coroutine = task.get_coro()
+            rows.append(
+                {
+                    "type": "application",
+                    "name": task.get_name(),
+                    "detail": getattr(
+                        coroutine, "__qualname__", type(coroutine).__name__
+                    ),
+                    "status": (
+                        "cancelled"
+                        if task.cancelled()
+                        else "done"
+                        if task.done()
+                        else "running"
+                    ),
+                }
+            )
+        for task in getattr(self.drawing_manager, "_tasks", {}).values():
+            rows.append(
+                {
+                    "type": "drawing",
+                    "name": str(getattr(task, "task_id", "")),
+                    "detail": str(getattr(task, "prompt", ""))[:500],
+                    "status": self._enum_text(getattr(task, "status", "unknown")),
+                    "conversation": str(getattr(task, "pipeline_key", "")),
+                    "error": getattr(task, "error", None),
+                }
+            )
+        problem_solver = self.problem_solver_manager or getattr(
+            app, "_problem_solver_manager", None
+        )
+        for task in getattr(problem_solver, "_tasks", {}).values():
+            rows.append(
+                {
+                    "type": "problem_solver",
+                    "name": str(getattr(task, "task_id", "")),
+                    "detail": str(
+                        getattr(task, "problem", None)
+                        or getattr(task, "description", "")
+                    )[:500],
+                    "status": self._enum_text(getattr(task, "status", "unknown")),
+                    "error": getattr(task, "error", None),
+                }
+            )
+        orchestrator = self.reply_orchestrator or getattr(
+            app, "_reply_orchestrator", None
+        )
+        for key, task in getattr(orchestrator, "_active_pipelines", {}).items():
+            rows.append(
+                {
+                    "type": "reply",
+                    "name": str(key),
+                    "detail": "回复管线",
+                    "status": (
+                        "cancelled"
+                        if task.cancelled()
+                        else "done"
+                        if task.done()
+                        else "running"
+                    ),
+                }
+            )
+        scheduled = self.scheduled_task_manager or getattr(
+            app, "_scheduled_task_manager", None
+        )
+        runner = getattr(scheduled, "_runner", None)
+        if runner is not None:
+            rows.append(
+                {
+                    "type": "scheduled",
+                    "name": runner.get_name(),
+                    "detail": "定时任务调度循环",
+                    "status": (
+                        "cancelled"
+                        if runner.cancelled()
+                        else "done"
+                        if runner.done()
+                        else "running"
+                    ),
+                }
+            )
+        return rows[:100]
+
+    @staticmethod
+    def _enum_text(value: Any) -> str:
+        return str(getattr(value, "value", value))
 
     def _safe_config_summary(self) -> dict[str, Any]:
         config = self.config
@@ -779,6 +969,10 @@ class ConsoleService:
                     return bool(value())
                 except Exception:
                     pass
+        core = getattr(adapter, "core", None)
+        active_connections = getattr(core, "active_connections", None)
+        if active_connections is not None:
+            return bool(active_connections)
         if not getattr(adapter, "requires_connection_wait", True):
             return True
         return bool(getattr(adapter, "_started", False))

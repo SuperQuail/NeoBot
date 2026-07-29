@@ -207,6 +207,18 @@ input:focus, select:focus { border-color: var(--mint); box-shadow: 0 0 0 3px rgb
 .terminal-top strong { margin-left: 10px; color: var(--muted); font: 500 11px/1 monospace; }
 #log-output { height: calc(100vh - 260px); min-height: 420px; margin: 0; padding: 18px; overflow: auto; color: #b7cdc5; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .table-panel { overflow-x: auto; }
+.preview-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.preview-wide { grid-column: 1 / -1; overflow-x: auto; }
+.preview-stack { display: grid; gap: 10px; max-height: 68vh; overflow: auto; }
+.preview-card { border: 1px solid var(--line); border-radius: 12px; background: rgba(4, 12, 10, .35); overflow: hidden; }
+.preview-card > summary { display: flex; justify-content: space-between; gap: 15px; padding: 15px; cursor: pointer; }
+.preview-card > summary small { color: var(--muted); white-space: nowrap; }
+.timeline-row { display: grid; grid-template-columns: 90px 120px minmax(0, 1fr); gap: 10px; padding: 11px 15px; border-top: 1px solid var(--line); }
+.timeline-row time, .timeline-row strong { color: var(--muted); font-size: 11px; }
+.timeline-row p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.io-block { padding: 0 15px 15px; }
+.io-block h4 { margin: 15px 0 7px; color: var(--mint); font-size: 11px; text-transform: uppercase; }
+.io-block pre { max-height: 330px; margin: 0; padding: 12px; overflow: auto; border-radius: 8px; background: #030907; color: #bad0c7; font: 11px/1.55 monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 14px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; }
 th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
@@ -243,6 +255,18 @@ dialog form { padding: 24px; }.dialog-heading, .dialog-actions { display: flex; 
 .dialog-heading h3 { margin: 0; }.dialog-actions { margin-top: 24px; justify-content: flex-end; }
 dialog p { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .recovery-dialog { padding: 24px; }
+.restart-dialog { text-align: center; }
+.restart-dialog .dialog-heading { justify-content: center; }
+.restart-dialog > p { margin: 18px 0; color: var(--text); font-size: 14px; }
+.restart-pulse { display: grid; place-items: center; height: 80px; }
+.restart-pulse span {
+  width: 20px; height: 20px; border-radius: 50%; background: var(--lime);
+  box-shadow: 0 0 0 0 rgba(183,243,107,.45);
+  animation: restart-pulse 1.4s ease-out infinite;
+}
+@keyframes restart-pulse {
+  75%, 100% { box-shadow: 0 0 0 30px rgba(183,243,107,0); }
+}
 .recovery-steps { margin: 22px 0; padding-left: 24px; color: #c7d9d2; line-height: 1.85; }
 .recovery-steps li::marker { color: var(--lime); font-weight: 800; }
 .toast-region { position: fixed; z-index: 100; right: 22px; bottom: 22px; display: grid; gap: 10px; }
@@ -253,6 +277,8 @@ dialog p { color: var(--muted); font-size: 12px; line-height: 1.5; }
 @media (max-width: 1050px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .service-grid { grid-template-columns: repeat(2, 1fr); }
+  .preview-layout { grid-template-columns: 1fr; }
+  .preview-wide { grid-column: auto; }
   .config-layout { grid-template-columns: 1fr; }
 }
 @media (max-width: 820px) {
@@ -280,6 +306,8 @@ dialog p { color: var(--muted); font-size: 12px; line-height: 1.5; }
   .file-row, .secret-row { grid-template-columns: 1fr; gap: 7px; }
   .secret-actions { justify-content: flex-start; }
   .config-field { grid-template-columns: 1fr; }
+  .timeline-row { grid-template-columns: 72px minmax(0, 1fr); }
+  .timeline-row p { grid-column: 1 / -1; }
   .row-actions { flex-direction: column; }
 }
 

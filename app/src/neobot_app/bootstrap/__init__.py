@@ -10,7 +10,7 @@ from neobot_contracts.ports.clock import SystemClock
 from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
-from neobot_app.console import ConsoleService
+from neobot_app.console import ConsoleService, ConsoleTelemetry
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import (
@@ -421,6 +421,14 @@ def create_application() -> NeoBotApplication:
         hook_bus=plugin["hook_bus"],
         file_server=file_server,
     )
+    console_telemetry = ConsoleTelemetry()
+    plugin["hook_bus"].subscribe_runtime(
+        console_telemetry.capture,
+        kind="reply_lifecycle",
+        stage="model.call.after",
+        priority=-100,
+        logger=logger_factory.get_logger("app.console.telemetry"),
+    )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
     if scheduled_task_manager is not None:
@@ -452,6 +460,11 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.console"),
         group_queue=group_queue,
         friend_queue=friend_queue,
+        telemetry=console_telemetry,
+        reply_orchestrator=reply_orchestrator,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
     )
     return build_pipelines_and_app(
         adapter=adapter,

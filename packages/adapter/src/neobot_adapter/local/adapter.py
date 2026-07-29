@@ -60,6 +60,11 @@ class LocalAdapter:
         return False
 
     @property
+    def connected(self) -> bool:
+        """Whether the embedded local HTTP/WebSocket service is running."""
+        return self._core._started.is_set()
+
+    @property
     def http_url(self) -> str:
         return self._core.http_url
 

@@ -14,6 +14,8 @@ from neobot_app.config.proxy import ConfigProxy
 from neobot_app.config.schemas.bot import BotConfig, Console
 from neobot_app.console.security import CredentialStore, SessionStore, redact
 from neobot_app.console.service import ConsoleService
+from neobot_app.console.telemetry import ConsoleTelemetry
+from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 from neobot_contracts.ports.logging import NullLogger
 
 
@@ -77,6 +79,32 @@ def test_redact_hides_nested_and_inline_secrets() -> None:
     assert "hunter2" not in str(redacted)
 
 
+def test_console_telemetry_captures_redacted_model_io() -> None:
+    async def run() -> None:
+        telemetry = ConsoleTelemetry()
+        await telemetry.capture(
+            RuntimeEnvelope(
+                kind="reply_lifecycle",
+                stage="model.call.after",
+                target="private:42",
+                context={"event_id": "evt-1", "mode": "agent"},
+                payload={
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "response": {
+                        "content": "world",
+                        "api_key": "sk-do-not-leak",
+                    },
+                },
+            )
+        )
+        snapshot = telemetry.snapshot()
+        assert snapshot[0]["target"] == "private:42"
+        assert snapshot[0]["input"][0]["content"] == "hello"
+        assert "do-not-leak" not in str(snapshot)
+
+    asyncio.run(run())
+
+
 def test_console_falls_back_from_occupied_port(tmp_path: Path) -> None:
     async def run() -> None:
         occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -132,6 +160,13 @@ def test_http_auth_csrf_config_and_role_isolation(
     monkeypatch,
 ) -> None:
     async def run() -> None:
+        class FakeApplication:
+            def __init__(self) -> None:
+                self.restart_requested = False
+
+            def request_restart(self) -> None:
+                self.restart_requested = True
+
         config_path = tmp_path / "config.toml"
         backup_dir = tmp_path / "config_backup"
         document, _required, _optional = dataclass_to_toml(BotConfig)
@@ -150,6 +185,8 @@ def test_http_auth_csrf_config_and_role_isolation(
             data_dir=tmp_path,
             logger=NullLogger(),
         )
+        application = FakeApplication()
+        service.bind_application(application)
         await service.start()
         assert service.admin_url is not None
         assert service.public_url is not None
@@ -189,6 +226,22 @@ def test_http_auth_csrf_config_and_role_isolation(
                     section["path"] == "console"
                     for section in (await config_response.json())["sections"]
                 )
+
+                preview = await client.get(
+                    f"{service.admin_url}/api/runtime-preview"
+                )
+                assert preview.status == 200
+                preview_payload = await preview.json()
+                assert preview_payload["chats"] == []
+                assert preview_payload["ai_calls"] == []
+
+                restart = await client.post(
+                    f"{service.admin_url}/api/admin/restart",
+                    headers={"X-CSRF-Token": csrf},
+                )
+                assert restart.status == 202
+                await asyncio.sleep(0.3)
+                assert application.restart_requested is True
 
                 rejected = await client.patch(
                     f"{service.admin_url}/api/admin/config",
@@ -235,6 +288,49 @@ def test_http_auth_csrf_config_and_role_isolation(
                     f"{service.public_url}/api/admin/config"
                 )
                 assert public_admin.status == 403
+        finally:
+            await service.stop()
+
+    asyncio.run(run())
+
+
+def test_public_console_allows_remote_initial_password_setup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        config = ConfigProxy(BotConfig())
+        config.console.admin_enabled = False
+        config.console.enabled = True
+        config.console.host = "0.0.0.0"
+        config.console.port = _available_port()
+        service = ConsoleService(
+            config=config,
+            data_dir=tmp_path,
+            logger=NullLogger(),
+        )
+        monkeypatch.setattr(
+            service,
+            "_client_ip",
+            lambda _request: "203.0.113.42",
+        )
+        await service.start()
+        try:
+            public_base = f"http://127.0.0.1:{service.public_port}"
+            async with ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                status = await client.get(f"{public_base}/api/auth/status")
+                assert status.status == 200
+                assert (await status.json())["setup_allowed"] is True
+
+                setup = await client.post(
+                    f"{public_base}/api/auth/setup",
+                    json={
+                        "password": "Remote-Console-42!",
+                        "confirmation": "Remote-Console-42!",
+                    },
+                )
+                assert setup.status == 200
+                assert service.credentials.configured is True
         finally:
             await service.stop()
 

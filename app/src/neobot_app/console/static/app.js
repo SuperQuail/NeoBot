@@ -7,6 +7,7 @@ const state = {
   config: [],
   changes: new Map(),
   logSource: null,
+  previewTimer: null,
   passwordFile: "<NeoBot 数据目录>/console/auth.json",
 };
 
@@ -86,13 +87,6 @@ function configureAuth(status) {
   $("#forgot-password").hidden = !status.configured;
   form.hidden = false;
   if (!status.configured) {
-    if (!status.setup_allowed) {
-      form.hidden = true;
-      $("#auth-local-warning").hidden = false;
-      $("#auth-title").textContent = "需要在本机初始化";
-      $("#auth-description").textContent = "公网控制台尚未设置访问凭据。";
-      return;
-    }
     $("#auth-title").textContent = "创建控制台密码";
     $("#auth-description").textContent = "这是首次访问。请设置至少 12 位、包含三类字符的强密码。";
     $("#password").autocomplete = "new-password";
@@ -133,6 +127,10 @@ $("#auth-form").addEventListener("submit", async (event) => {
 
 function showAuth() {
   if (state.logSource) state.logSource.close();
+  if (state.previewTimer) {
+    clearInterval(state.previewTimer);
+    state.previewTimer = null;
+  }
   $("#app-view").hidden = true;
   $("#auth-view").hidden = false;
   api("/api/auth/status").then(configureAuth).catch(() => {});
@@ -151,7 +149,7 @@ function updateClock() {
 }
 
 const titles = {
-  overview: "运行总览", services: "服务健康", logs: "实时日志", tasks: "异步任务",
+  overview: "运行总览", preview: "运行预览", services: "服务健康", logs: "实时日志", tasks: "异步任务",
   debug: "调试记录", diagnostics: "诊断报告", config: "配置中心",
   secrets: "密钥保险箱",
 };
@@ -163,13 +161,17 @@ $$(".nav-item").forEach((button) => button.addEventListener("click", async () =>
 
 async function loadPage(page) {
   if (state.logSource && page !== "logs") { state.logSource.close(); state.logSource = null; }
+  if (state.previewTimer && page !== "preview") {
+    clearInterval(state.previewTimer);
+    state.previewTimer = null;
+  }
   state.currentPage = page;
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   $$(".page").forEach((item) => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = titles[page] || "Console";
   try {
     const loaders = {
-      overview: loadOverview, services: loadServices, logs: loadLogs, tasks: loadTasks,
+      overview: loadOverview, preview: loadPreview, services: loadServices, logs: loadLogs, tasks: loadTasks,
       debug: loadDebugFiles, diagnostics: loadDiagnostics, config: loadConfig,
       secrets: loadSecrets,
     };
@@ -178,6 +180,38 @@ async function loadPage(page) {
     toast(error.message, true);
   }
 }
+
+async function loadPreview() {
+  const data = await api("/api/runtime-preview");
+  $("#preview-time").textContent = new Date(data.server_time).toLocaleString("zh-CN");
+  $("#chat-preview").innerHTML = data.chats.length ? data.chats.map((chat) => `
+    <details class="preview-card">
+      <summary><strong>${chat.kind === "group" ? "群聊" : "私聊"} ${escapeHtml(chat.key)}</strong><small>${chat.last_time ? new Date(chat.last_time).toLocaleString("zh-CN") : "—"}</small></summary>
+      <div>${chat.messages.map((message) => `<div class="timeline-row"><time>${message.time ? new Date(message.time).toLocaleTimeString("zh-CN") : "—"}</time><strong>${escapeHtml(message.sender)}</strong><p>${escapeHtml(message.content)}</p></div>`).join("")}</div>
+    </details>`).join("") : `<div class="empty-state">当前消息队列中没有聊天记录。</div>`;
+  $("#ai-preview").innerHTML = data.ai_calls.length ? data.ai_calls.map((call) => `
+    <details class="preview-card">
+      <summary><strong>${escapeHtml(call.target || call.event_id || "AI 调用")}</strong><small>${new Date(call.captured_at).toLocaleString("zh-CN")}</small></summary>
+      <div class="io-block"><h4>输入</h4><pre>${escapeHtml(JSON.stringify(call.input, null, 2))}</pre><h4>输出</h4><pre>${escapeHtml(JSON.stringify(call.output, null, 2))}</pre></div>
+    </details>`).join("") : `<div class="empty-state">尚未捕获到本次启动后的 AI 调用。</div>`;
+  $("#background-preview").innerHTML = data.background.length ? `<table><thead><tr><th>类型</th><th>任务</th><th>内容</th><th>状态</th></tr></thead><tbody>${data.background.map((item) =>
+    `<tr><td>${escapeHtml(item.type)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.detail || "")}</td><td class="${item.status === "running" || item.status === "drawing" ? "ok" : "warn"}">${escapeHtml(item.status)}</td></tr>`
+  ).join("")}</tbody></table>` : `<div class="empty-state">当前没有可展示的后台工作。</div>`;
+  if ($("#live-preview").checked && !state.previewTimer && state.currentPage === "preview") {
+    state.previewTimer = setInterval(() => {
+      if (state.currentPage === "preview") loadPreview().catch((error) => toast(error.message, true));
+    }, 3000);
+  }
+}
+
+$("#live-preview").addEventListener("change", () => {
+  if (!$("#live-preview").checked && state.previewTimer) {
+    clearInterval(state.previewTimer);
+    state.previewTimer = null;
+  } else if (state.currentPage === "preview") {
+    loadPreview().catch((error) => toast(error.message, true));
+  }
+});
 
 async function loadOverview() {
   const data = await api("/api/overview");
@@ -353,20 +387,68 @@ function onConfigChange(event) {
 function updateChangeCount() {
   $("#change-count").textContent = state.changes.size;
   $("#save-config").disabled = state.changes.size === 0;
+  $("#save-restart-config").disabled = state.changes.size === 0;
 }
 
 $("#config-search").addEventListener("input", debounce(renderConfig, 180));
-$("#save-config").addEventListener("click", async () => {
+async function saveConfig() {
   if (!state.changes.size) return;
-  const button = $("#save-config");
-  button.disabled = true;
+  const updates = [...state.changes].map(([path, value]) => ({path, value}));
+  const result = await api("/api/admin/config", {method: "PATCH", body: JSON.stringify({updates})});
+  await loadConfig(true);
+  return result;
+}
+
+$("#save-config").addEventListener("click", async () => {
   try {
-    const updates = [...state.changes].map(([path, value]) => ({path, value}));
-    const result = await api("/api/admin/config", {method: "PATCH", body: JSON.stringify({updates})});
-    toast(`已保存 ${result.changed.length} 项配置；请重启 NeoBot 使其完全生效。`);
-    await loadConfig(true);
+    const result = await saveConfig();
+    if (result) toast(`已保存 ${result.changed.length} 项配置；可使用“重启 Bot 核心”立即生效。`);
   } catch (error) { toast(error.message, true); }
   finally { updateChangeCount(); }
+});
+
+async function restartCore() {
+  if (!confirm("将完整关闭并重新创建 Bot 核心。记忆保存可能很久，页面会持续等待且不会判定超时。是否继续？")) return false;
+  const initialResponse = await fetch("/healthz", {cache: "no-store", credentials: "same-origin"});
+  const initialHealth = initialResponse.ok ? await initialResponse.json() : {};
+  const dialog = $("#restart-dialog");
+  $("#restart-status").textContent = "正在提交重启请求…";
+  dialog.showModal();
+  try {
+    await api("/api/admin/restart", {method: "POST"});
+  } catch (error) {
+    dialog.close();
+    throw error;
+  }
+  $("#restart-status").textContent = "正在等待核心完成关闭流程…";
+  let observedOffline = false;
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch("/healthz", {cache: "no-store", credentials: "same-origin"});
+      if (!response.ok) throw new Error("console unavailable");
+      const health = await response.json();
+      if (
+        (initialHealth.instance && health.instance !== initialHealth.instance)
+        || (!initialHealth.instance && observedOffline)
+      ) {
+        $("#restart-status").textContent = "新核心已启动，正在刷新控制台…";
+        location.reload();
+        return true;
+      }
+    } catch (_) {
+      observedOffline = true;
+      $("#restart-status").textContent = "核心正在保存记忆并关闭；将持续等待，不设超时…";
+    }
+  }
+}
+
+$("#restart-core").addEventListener("click", () => restartCore().catch((error) => toast(error.message, true)));
+$("#save-restart-config").addEventListener("click", async () => {
+  try {
+    const result = await saveConfig();
+    if (result) await restartCore();
+  } catch (error) { toast(error.message, true); }
 });
 
 async function loadSecrets() {
