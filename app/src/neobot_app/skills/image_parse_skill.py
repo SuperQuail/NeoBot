@@ -220,45 +220,158 @@ class ImageParseSkill(SkillModule):
             return data.get("message")
         return None
 
-    async def _resolve_by_message_id(self, message_id: int, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
+    @staticmethod
+    def _segment_type(segment: Any) -> str:
+        """统一读取 dict / Pydantic / Enum 消息段类型。"""
+        value = (
+            segment.get("type")
+            if isinstance(segment, dict)
+            else getattr(segment, "type", None)
+        )
+        value = getattr(value, "value", value)
+        return str(value or "")
+
+    @classmethod
+    def _image_count(cls, segments: list | None) -> int:
+        return sum(
+            1
+            for segment in segments or []
+            if cls._segment_type(segment) in ("image", "cardimage")
+        )
+
+    @classmethod
+    def _may_be_auto_parsed_image(cls, segments: list | None) -> bool:
+        """识别已被自动解析服务替换成描述文本的图片段。"""
+        for segment in segments or []:
+            if cls._segment_type(segment) != "text":
+                continue
+            data = (
+                segment.get("data", {})
+                if isinstance(segment, dict)
+                else getattr(segment, "data", None)
+            )
+            text = str(cls._seg_data_to_dict(data).get("text") or "")
+            if text.startswith("[图片"):
+                return True
+        return False
+
+    async def _resolve_by_message_id_with_error(
+        self,
+        message_id: int,
+        image_index: int = 0,
+        timeout: float = 30.0,
+    ) -> tuple[bytes | None, str | None]:
+        """通过 Adapter 回源消息，并返回第 N 张图片及具体失败原因。"""
+        segments = await self._fetch_segments_by_message_id(message_id)
+        if segments is None:
+            return None, f"Adapter 无法获取消息 {message_id}"
+        if not segments:
+            return None, f"消息 {message_id} 没有可解析的内容段"
+        return await self._download_from_segments_with_error(
+            segments,
+            image_index,
+            timeout=timeout,
+        )
+
+    async def _resolve_by_message_id(
+        self,
+        message_id: int,
+        image_index: int = 0,
+        timeout: float = 30.0,
+    ) -> bytes | None:
         """通过消息 ID 获取第 N 张图片的字节。"""
-        segments = await self._fetch_segments_by_message_id(message_id)
-        if not segments:
-            return None
-        return await self._download_from_segments(segments, image_index, timeout=timeout)
+        result, _ = await self._resolve_by_message_id_with_error(
+            message_id,
+            image_index,
+            timeout=timeout,
+        )
+        return result
 
-    async def _resolve_many_by_message_id(self, message_id: int, image_indices: list[int], timeout: float = 30.0) -> list[bytes | None]:
+    async def _resolve_many_by_message_id_with_errors(
+        self,
+        message_id: int,
+        image_indices: list[int],
+        timeout: float = 30.0,
+    ) -> list[tuple[bytes | None, str | None]]:
+        """通过消息 ID 一次回源多张图片，并保留每张图的失败原因。"""
+        segments = await self._fetch_segments_by_message_id(message_id)
+        if segments is None:
+            reason = f"Adapter 无法获取消息 {message_id}"
+            return [(None, reason) for _ in image_indices]
+        if not segments:
+            reason = f"消息 {message_id} 没有可解析的内容段"
+            return [(None, reason) for _ in image_indices]
+        return [
+            await self._download_from_segments_with_error(
+                segments,
+                index,
+                timeout=timeout,
+            )
+            for index in image_indices
+        ]
+
+    async def _resolve_many_by_message_id(
+        self,
+        message_id: int,
+        image_indices: list[int],
+        timeout: float = 30.0,
+    ) -> list[bytes | None]:
         """通过消息 ID 一次性获取多张图片字节（一次 API 调用，多次下载）。"""
-        segments = await self._fetch_segments_by_message_id(message_id)
-        if not segments:
-            return [None] * len(image_indices)
-        results: list[bytes | None] = []
-        for idx in image_indices:
-            results.append(await self._download_from_segments(segments, idx, timeout=timeout))
-        return results
+        results = await self._resolve_many_by_message_id_with_errors(
+            message_id,
+            image_indices,
+            timeout=timeout,
+        )
+        return [result for result, _ in results]
 
-    async def _download_from_segments(self, segments: list, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
-        """从 segments 列表中找第 image_index 张图片并下载。"""
+    async def _download_from_segments_with_error(
+        self,
+        segments: list,
+        image_index: int = 0,
+        timeout: float = 30.0,
+    ) -> tuple[bytes | None, str | None]:
+        """从 segments 中下载指定图片，并返回可用于诊断的错误。"""
+        if image_index < 0:
+            return None, f"图片编号不能为负数: {image_index}"
         if not segments:
-            return None
-        img_idx = 0
-        for seg in segments:
-            seg_type = seg.get("type") if isinstance(seg, dict) else getattr(seg, "type", None)
-            if isinstance(seg_type, type) and hasattr(seg_type, "value"):
-                seg_type = seg_type.value
-            if str(seg_type) not in ("image", "cardimage"):
-                continue
-            if img_idx != image_index:
-                img_idx += 1
-                continue
-            if isinstance(seg, dict):
-                seg_data = seg.get("data", {}) or {}
-            else:
-                seg_data = getattr(seg, "data", None)
-            seg_data = self._seg_data_to_dict(seg_data)
-            result, _ = await self._download_image_segment(seg_data, timeout=timeout)
-            return result
-        return None
+            return None, "消息中没有可解析的内容段"
+
+        image_segments = [
+            segment
+            for segment in segments
+            if self._segment_type(segment) in ("image", "cardimage")
+        ]
+        if image_index >= len(image_segments):
+            return (
+                None,
+                f"消息中找不到第 {image_index} 张图片"
+                f"（图片总数 {len(image_segments)}）",
+            )
+
+        segment = image_segments[image_index]
+        data = (
+            segment.get("data", {})
+            if isinstance(segment, dict)
+            else getattr(segment, "data", None)
+        )
+        return await self._download_image_segment(
+            self._seg_data_to_dict(data),
+            timeout=timeout,
+        )
+
+    async def _download_from_segments(
+        self,
+        segments: list,
+        image_index: int = 0,
+        timeout: float = 30.0,
+    ) -> bytes | None:
+        """从 segments 列表中找第 image_index 张图片并下载。"""
+        result, _ = await self._download_from_segments_with_error(
+            segments,
+            image_index,
+            timeout=timeout,
+        )
+        return result
 
     async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
         """通过聊天流 ID 和图片编号获取图片字节。"""
@@ -275,28 +388,49 @@ class ImageParseSkill(SkillModule):
             return None
 
         try:
-            img_idx = 0
+            remaining_index = image_index
             for msg in queue.iterate_from_newest(queue_key):
-                message_segments = getattr(msg, "message", None) or getattr(msg, "content", None)
-                if not message_segments:
+                local_segments = (
+                    getattr(msg, "message", None)
+                    or getattr(msg, "content", None)
+                    or []
+                )
+                segments = local_segments
+                message_id = getattr(msg, "message_id", None)
+
+                # 自动解析会原地把 image 段替换为 "[图片：...]" 文本。
+                # 主动解析遇到这种标记时，通过 get_msg 恢复原始消息段。
+                if (
+                    self._image_count(local_segments) == 0
+                    and self._may_be_auto_parsed_image(local_segments)
+                    and message_id is not None
+                ):
+                    fetched = await self._fetch_segments_by_message_id(message_id)
+                    if fetched is not None:
+                        segments = fetched
+
+                image_count = self._image_count(segments)
+                if remaining_index >= image_count:
+                    remaining_index -= image_count
                     continue
-                for seg in message_segments:
-                    seg_type = seg.get("type") if isinstance(seg, dict) else getattr(seg, "type", None)
-                    if isinstance(seg_type, type) and hasattr(seg_type, "value"):
-                        seg_type = seg_type.value
-                    if str(seg_type) not in ("image", "cardimage"):
-                        continue
-                    if img_idx != image_index:
-                        img_idx += 1
-                        continue
-                    if isinstance(seg, dict):
-                        seg_data = seg.get("data", {}) or {}
-                    else:
-                        seg_data = getattr(seg, "data", None)
-                    seg_data = self._seg_data_to_dict(seg_data)
-                    result, _ = await self._download_image_segment(seg_data, timeout=timeout)
-                    if result is not None:
-                        return result
+
+                result, _ = await self._download_from_segments_with_error(
+                    segments,
+                    remaining_index,
+                    timeout=timeout,
+                )
+                if result is not None:
+                    return result
+
+                # 队列中的原始 URL 也可能过期，再回源一次获取新 URL/file。
+                if message_id is not None and segments is local_segments:
+                    result, _ = await self._resolve_by_message_id_with_error(
+                        message_id,
+                        remaining_index,
+                        timeout=timeout,
+                    )
+                    return result
+                return None
             return None
         except Exception:
             return None
@@ -322,20 +456,30 @@ class ImageParseSkill(SkillModule):
             for idx in ordered_indices:
                 collected[idx] = None
             found_msg_segments = None
+            found_message_id = None
+            found_from_local = False
             for msg in queue.iterate_from_newest(queue_key):
-                message_segments = getattr(msg, "message", None) or getattr(msg, "content", None)
-                if not message_segments:
+                local_segments = (
+                    getattr(msg, "message", None)
+                    or getattr(msg, "content", None)
+                    or []
+                )
+                if not local_segments:
                     continue
-                has_image = False
-                for seg in message_segments:
-                    seg_type = seg.get("type") if isinstance(seg, dict) else getattr(seg, "type", None)
-                    if isinstance(seg_type, type) and hasattr(seg_type, "value"):
-                        seg_type = seg_type.value
-                    if str(seg_type) in ("image", "cardimage"):
-                        has_image = True
-                        break
-                if has_image:
+                message_segments = local_segments
+                message_id = getattr(msg, "message_id", None)
+                if (
+                    self._image_count(local_segments) == 0
+                    and self._may_be_auto_parsed_image(local_segments)
+                    and message_id is not None
+                ):
+                    fetched = await self._fetch_segments_by_message_id(message_id)
+                    if fetched is not None:
+                        message_segments = fetched
+                if self._image_count(message_segments):
                     found_msg_segments = message_segments
+                    found_message_id = message_id
+                    found_from_local = message_segments is local_segments
                     break
 
             if found_msg_segments is None:
@@ -343,6 +487,25 @@ class ImageParseSkill(SkillModule):
 
             for idx in ordered_indices:
                 collected[idx] = await self._download_from_segments(found_msg_segments, idx, timeout=timeout)
+
+            # 若队列保留的是原始图片但 URL 已失效，用同一条消息的一次
+            # Adapter 回源刷新所有失败图片，避免每张图片分别请求 get_msg。
+            failed_indices = [
+                idx
+                for idx in ordered_indices
+                if collected[idx] is None
+            ]
+            if failed_indices and found_from_local and found_message_id is not None:
+                refreshed = await self._fetch_segments_by_message_id(
+                    found_message_id
+                )
+                if refreshed is not None:
+                    for idx in failed_indices:
+                        collected[idx] = await self._download_from_segments(
+                            refreshed,
+                            idx,
+                            timeout=timeout,
+                        )
             return [collected.get(idx) for idx in image_indices]
         except Exception:
             return [None] * len(image_indices)
@@ -449,10 +612,36 @@ class ImageParseSkill(SkillModule):
         message = queue.find_by_message_id(conv_id, real_message_id)
         if message is None:
             message = _find_in_replied(queue, conv_id, real_message_id)
-        if message is None:
-            return None, f"消息 {real_message_id} 不在队列或replied_messages中（编号={msg_number}）"
 
-        return await self._extract_image_from_message(message, image_index, timeout=timeout)
+        queue_reason: str
+        if message is None:
+            queue_reason = (
+                f"消息 {real_message_id} 不在队列或 replied_messages 中"
+                f"（编号={msg_number}）"
+            )
+        else:
+            queue_result, queue_error = await self._extract_image_from_message(
+                message,
+                image_index,
+                timeout=timeout,
+            )
+            if queue_result is not None:
+                return queue_result, None
+            queue_reason = queue_error or "队列中的图片下载失败"
+
+        # 自动图片解析会原地替换队列中的 image 段。编号映射已经给出了
+        # OneBot message_id，因此队列副本不可用时应从 Adapter 获取原始消息。
+        api_result, api_error = await self._resolve_by_message_id_with_error(
+            real_message_id,
+            image_index,
+            timeout=timeout,
+        )
+        if api_result is not None:
+            return api_result, None
+        return (
+            None,
+            f"{queue_reason}；Adapter 回源失败：{api_error or '未知错误'}",
+        )
 
     async def _resolve_many_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_indices: list[int],
@@ -506,12 +695,46 @@ class ImageParseSkill(SkillModule):
         message = queue.find_by_message_id(conv_id, real_message_id)
         if message is None:
             message = _find_in_replied(queue, conv_id, real_message_id)
-        if message is None:
-            return [(None, f"消息 {real_message_id} 不在队列或replied_messages中")] * _n
 
-        results: list[tuple[bytes | None, str | None]] = []
-        for idx in image_indices:
-            results.append(await self._extract_image_from_message(message, idx, timeout=timeout))
+        if message is None:
+            queue_reason = f"消息 {real_message_id} 不在队列或 replied_messages 中"
+            results = [(None, queue_reason) for _ in image_indices]
+        else:
+            results = [
+                await self._extract_image_from_message(
+                    message,
+                    index,
+                    timeout=timeout,
+                )
+                for index in image_indices
+            ]
+
+        failed_positions = [
+            position
+            for position, (raw, _) in enumerate(results)
+            if raw is None
+        ]
+        if not failed_positions:
+            return results
+
+        # 只回源一次消息，批量补齐所有在队列副本中失败的图片。
+        api_results = await self._resolve_many_by_message_id_with_errors(
+            real_message_id,
+            [image_indices[position] for position in failed_positions],
+            timeout=timeout,
+        )
+        for position, (api_result, api_error) in zip(
+            failed_positions,
+            api_results,
+        ):
+            if api_result is not None:
+                results[position] = (api_result, None)
+                continue
+            queue_error = results[position][1] or "队列中的图片下载失败"
+            results[position] = (
+                None,
+                f"{queue_error}；Adapter 回源失败：{api_error or '未知错误'}",
+            )
         return results
 
     @staticmethod
@@ -531,10 +754,7 @@ class ImageParseSkill(SkillModule):
 
         img_idx = 0
         for seg in segments:
-            seg_type = seg.get("type") if isinstance(seg, dict) else getattr(seg, "type", None)
-            if isinstance(seg_type, type) and hasattr(seg_type, "value"):
-                seg_type = seg_type.value
-            if str(seg_type) not in ("image", "cardimage"):
+            if self._segment_type(seg) not in ("image", "cardimage"):
                 continue
             if img_idx != image_index:
                 img_idx += 1
@@ -659,16 +879,31 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
         elif message_id:
             if image_indices_arg and isinstance(image_indices_arg, list):
                 indices = [int(i) for i in image_indices_arg]
-                results = await self._resolve_many_by_message_id(int(message_id), indices, timeout=timeout_seconds)
-                for i, raw in zip(indices, results):
+                results = await self._resolve_many_by_message_id_with_errors(
+                    int(message_id),
+                    indices,
+                    timeout=timeout_seconds,
+                )
+                for i, (raw, err) in zip(indices, results):
                     multi_images.append(raw)
                     if raw is None:
-                        errors.append({"index": i, "ok": False, "error": f"无法从消息 {message_id} 获取第 {i} 张图片"})
+                        errors.append({
+                            "index": i,
+                            "ok": False,
+                            "error": err or f"无法从消息 {message_id} 获取第 {i} 张图片",
+                        })
             else:
                 image_index = int(args.get("image_index", 0))
-                image_bytes = await self._resolve_by_message_id(int(message_id), image_index, timeout=timeout_seconds)
+                image_bytes, err_reason = await self._resolve_by_message_id_with_error(
+                    int(message_id),
+                    image_index,
+                    timeout=timeout_seconds,
+                )
                 if image_bytes is None:
-                    return _json({"ok": False, "error": f"无法从消息 {message_id} 获取第 {image_index} 张图片"})
+                    return _json({
+                        "ok": False,
+                        "error": err_reason or f"无法从消息 {message_id} 获取第 {image_index} 张图片",
+                    })
                 single_image = image_bytes
         elif chat_flow_id:
             if image_indices_arg and isinstance(image_indices_arg, list):
