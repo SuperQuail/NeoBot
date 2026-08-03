@@ -108,6 +108,14 @@ class NeoBotApplication(Generic[T]):
         try:
             await self.file_server.start()
             started.append("file_server")
+            # 内置控制台独立于 QQ 连接, 必须提前启动:
+            # 即使后续步骤 (adapter 连接/插件/聊天流) 失败, 控制台也保持可用以排查问题
+            if self._console_service is not None:
+                try:
+                    await self._console_service.start()
+                    started.append("console")
+                except Exception as exc:
+                    self._logger.error("内置控制台启动失败", error=str(exc))
             if self.tts_service is not None:
                 await self.tts_service.initialize()
                 started.append("tts")
@@ -165,11 +173,6 @@ class NeoBotApplication(Generic[T]):
                 self._report_task = asyncio.create_task(self._run_report_loop())
                 started.append("report_task")
             self._started = True
-            if self._console_service is not None:
-                try:
-                    await self._console_service.start()
-                except Exception as exc:
-                    self._logger.error("内置控制台启动失败", error=str(exc))
         except Exception:
             await self._rollback_start(started)
             raise
@@ -238,6 +241,12 @@ class NeoBotApplication(Generic[T]):
                 await self.file_server.stop()
             except Exception as exc:
                 self._logger.warning("file server stop failed on rollback", error=str(exc))
+        if "console" in started:
+            if self._console_service is not None:
+                try:
+                    await self._console_service.stop()
+                except Exception as exc:
+                    self._logger.warning("console stop failed on rollback", error=str(exc))
         self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
 
     async def run_forever(self) -> None:
