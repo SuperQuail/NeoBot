@@ -1,4 +1,4 @@
-"""Markdown to image converter - browser rendering with pillowmd fallback."""
+"""Markdown 转图片转换器 —— 优先浏览器渲染，失败时回退到 pillowmd。"""
 
 from __future__ import annotations
 

@@ -141,7 +141,7 @@ class EventPipeline:
         self._logger.info("实时事件管线已停止")
 
     async def flush_pending_summaries(self) -> None:
-        """Trigger summarisation for all counters that have pending messages below the threshold."""
+        """对所有未达到阈值但有待处理消息的计数器触发摘要。"""
         if self._archive_summary_service is not None:
             await self._archive_summary_service.flush_all()
 
@@ -924,12 +924,12 @@ class EventPipeline:
             queue.push_poke(queue_key, poke)
 
     async def _resolve_name(self, user_id: int, group_id: int | None = None) -> str:
-        """Resolve a user's display name.
+        """解析用户的显示名称。
 
-        Priority:
-        1. Database (user_profiles.nick_name / remark)
-        2. API: group member info (card > nickname) for group, stranger info for private
-        3. Fallback to QQ:xxx
+        优先级：
+        1. 数据库（user_profiles.nick_name / remark）
+        2. API：群聊取群成员信息（card > nickname），私聊取陌生人信息
+        3. 兜底返回 QQ:xxx
         """
         if not user_id:
             return ""

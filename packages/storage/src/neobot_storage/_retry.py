@@ -1,4 +1,4 @@
-"""Retry helpers for transient SQLite locking errors."""
+"""针对 SQLite 瞬时锁错误的重试辅助工具。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _LOCKED_MESSAGES = (
 
 
 def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield *exc* and its ``__cause__``/``__context__`` chain, cycle-safe."""
+    """按顺序产出 *exc* 及其 ``__cause__``/``__context__`` 异常链，循环安全。"""
     seen: set[int] = set()
     link: BaseException | None = exc
     while link is not None and id(link) not in seen:
@@ -47,28 +47,28 @@ async def retry_on_lock(
     max_delay: float = 2.0,
     on_retry: Callable[[], Awaitable[None]] | None = None,
 ) -> T:
-    """Execute *coro_factory* and retry with exponential backoff + jitter
-    when SQLite reports a locked-database error.
+    """执行 *coro_factory*，当 SQLite 报告数据库被锁定时，
+    按指数退避 + 随机抖动重试。
 
     Parameters
     ----------
     coro_factory : callable returning awaitable
-        A thunk that returns a new coroutine each call (so we can retry).
+        每次调用都返回新协程的工厂函数（以便重试）。
     max_retries : int
-        How many times to retry before re-raising the last error.
+        重试次数上限，超过后抛出最后一次异常。
     base_delay : float
-        Initial delay in seconds (doubled each retry).
+        初始延迟（秒），每次重试翻倍。
     max_delay : float
-        Upper bound for delay.
+        延迟上限。
     on_retry : optional callable returning awaitable
-        Invoked right before each retry attempt (after the backoff delay).
-        A failed flush leaves the SQLAlchemy session in a rolled-back state,
-        so pass something like ``session.rollback`` to restore it; the retried
-        transaction body then re-executes on a fresh transaction.
+        每次重试尝试前（退避延迟之后）调用。失败的 flush
+        会让 SQLAlchemy 会话处于已回滚状态，可传入类似
+        ``session.rollback`` 的调用以恢复会话；重试的事务体
+        将在全新事务上重新执行。
 
     Raises
     ------
-    The last encountered exception if all retries are exhausted.
+    重试全部耗尽时抛出最后遇到的异常。
     """
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):

@@ -1,4 +1,4 @@
-"""DebugHelper — lightweight wrapper for recording reply lifecycle events."""
+"""DebugHelper —— 轻量包装器，用于记录回复生命周期事件。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 
 class DebugHelper:
-    """Encapsulates debug recording and runtime event emission for the reply pipeline."""
+    """封装回复流水线的调试记录与运行时事件上报。"""
 
     def __init__(
         self,

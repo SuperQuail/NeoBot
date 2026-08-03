@@ -1,4 +1,4 @@
-"""Web search ToolPackage — wraps SearchSession as a lockable tool package."""
+"""Web 搜索工具包——将 SearchSession 封装为可加锁的工具包。"""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def _build_status_tool() -> ToolDefinition:
 
 
 class WebSearchExecutor:
-    """Executes web search tools within a SearchSession."""
+    """在 SearchSession 内执行网页搜索工具。"""
 
     def __init__(
         self,
@@ -132,7 +132,7 @@ class WebSearchExecutor:
         return self._session
 
     def reset(self) -> None:
-        """Reset the search session for a new conversation turn."""
+        """重置搜索会话，开启新一轮对话。"""
         self._session = None
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> str:

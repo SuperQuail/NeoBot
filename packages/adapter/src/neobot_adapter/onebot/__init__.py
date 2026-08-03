@@ -1,4 +1,4 @@
-"""OneBot adapter implementation."""
+"""OneBot 适配器实现。"""
 
 from __future__ import annotations
 

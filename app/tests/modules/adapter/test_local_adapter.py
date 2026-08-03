@@ -124,7 +124,7 @@ def _message_payload(
 
 @pytest.mark.asyncio
 async def test_event_gateway_honors_local_skip_ai_reply_marker() -> None:
-    """Verify that _neobot_skip_ai_reply is stripped and passed as skip_ai_reply."""
+    """验证 _neobot_skip_ai_reply 被剥离并作为 skip_ai_reply 传递。"""
     hooks = _HookBus()
     legacy = _LegacyPipeline()
     notice = _NoticeHandler()
@@ -157,7 +157,7 @@ async def test_event_gateway_honors_local_skip_ai_reply_marker() -> None:
 
 @pytest.mark.asyncio
 async def test_event_gateway_local_conversation_name_stripped() -> None:
-    """Verify _local_conversation_name is stripped from the event and stored in metadata."""
+    """验证 _local_conversation_name 从事件中剥离并存入 metadata。"""
     hooks = _HookBus()
     legacy = _LegacyPipeline()
     notice = _NoticeHandler()
@@ -187,7 +187,7 @@ async def test_event_gateway_local_conversation_name_stripped() -> None:
 
 @pytest.mark.asyncio
 async def test_event_gateway_routes_notice_events() -> None:
-    """Verify notice events are routed to the notice handler."""
+    """验证通知事件被路由到通知处理器。"""
     hooks = _HookBus()
     legacy = _LegacyPipeline()
     notice = _NoticeHandler()
@@ -217,7 +217,7 @@ async def test_event_gateway_routes_notice_events() -> None:
 
 @pytest.mark.asyncio
 async def test_event_gateway_respects_consumed_flag() -> None:
-    """Verify consumed events are not routed to handlers."""
+    """验证 consumed 事件不会被路由到处理器。"""
     hooks = _HookBus()
     legacy = _LegacyPipeline()
     notice = _NoticeHandler()

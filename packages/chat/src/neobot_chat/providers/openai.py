@@ -9,7 +9,7 @@ from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinitio
 
 
 class OpenAIProvider(BaseHTTPProvider):
-    """OpenAI Chat Completions API"""
+    """OpenAI Chat Completions API 实现"""
 
     def __init__(
         self,

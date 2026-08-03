@@ -1214,7 +1214,7 @@ class BotConfig:
 
 @dataclass
 class EnhancedChat(Chat):
-    """Chat config with queue timestamp support."""
+    """支持消息队列时间戳的聊天配置。"""
 
     message_timestamp_interval_seconds: Optional[int] = field(
         default=300,
@@ -1438,7 +1438,7 @@ class EnhancedChat(Chat):
 
 @dataclass
 class EnhancedBotConfig(BotConfig):
-    """Bot config using the enhanced chat schema."""
+    """采用增强聊天配置结构的机器人配置。"""
 
     chat: EnhancedChat = field(default_factory=EnhancedChat)
 

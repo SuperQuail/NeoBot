@@ -240,7 +240,7 @@ class EmojiService:
         analysis_text: str | None = None,
         image_source: str | None = None,
     ) -> EmojiImportResult:
-        """Add one image file to the emoji folder and refresh the in-memory index."""
+        """向表情文件夹添加一张图片文件，并刷新内存索引。"""
         if not image_bytes:
             raise ValueError("图片内容为空")
 

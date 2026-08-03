@@ -1,4 +1,4 @@
-"""Image generation, storage, and reference resolution service."""
+"""图片生成、存储与参考图解析服务。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ _MAX_REMOTE_FETCH_BYTES = 100 * 1024 * 1024
 
 
 def _read_sidecar_description(file_path: str | Path) -> str | None:
-    """Read .txt sidecar file for image description, or None."""
+    """读取图片同名的 .txt 伴生文件获取描述，不存在时返回 None。"""
     path = Path(file_path)
     txt_path = path.with_suffix(".txt")
     if not txt_path.exists():
@@ -78,7 +78,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 class CreatorImageService:
-    """Generate, store, and send Creator Agent images."""
+    """生成、存储并发送 Creator Agent 图片。"""
 
     _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
     _TMP_MAX_AGE_SECONDS = 12 * 60 * 60
@@ -255,7 +255,7 @@ class CreatorImageService:
             self._cleanup_task = None
 
     async def cleanup_tmp(self) -> None:
-        """Delete all files in the tmp directory and remove corresponding DB records."""
+        """删除 tmp 目录中的全部文件，并移除对应的数据库记录。"""
         deleted_count = 0
         if self._tmp_dir.exists():
             for child in self._tmp_dir.iterdir():

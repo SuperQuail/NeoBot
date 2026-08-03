@@ -1,7 +1,7 @@
-"""EventGateway — unified event ingress, routing, and message dispatch.
+"""EventGateway —— 统一的事件入口、路由与消息分发。
 
-Combines the former EventIngress, EventRouter, and MessagePipeline thin layers
-into a single ~120-line module.  The real processing logic stays in EventPipeline.
+将原 EventIngress、EventRouter、MessagePipeline 三个薄层合并为约 120 行的
+单一模块。真正的处理逻辑仍在 EventPipeline 中。
 """
 
 from __future__ import annotations
@@ -14,16 +14,15 @@ from neobot_app.runtime.event_context import EventContext
 
 
 class EventGateway:
-    """Ingest raw events, run plugin hooks, then route by post_type.
+    """接收原始事件，运行插件钩子，然后按 post_type 路由。
 
-    Replaces the three-class pipeline::
+    取代三阶段管线::
 
         EventIngress → EventRouter → MessagePipeline
 
-    The merged class has fewer internal hand-offs, but the same observable
-    behaviour: subscribe to ``message`` / ``notice`` / ``request`` /
-    ``meta_event``, push each event through the plugin hook bus, then
-    dispatch to the appropriate handler.
+    合并后的类减少了内部交接，但对外行为一致：订阅 ``message`` /
+    ``notice`` / ``request`` / ``meta_event``，将每个事件推入插件钩子总线，
+    再分发到对应的处理器。
     """
 
     def __init__(

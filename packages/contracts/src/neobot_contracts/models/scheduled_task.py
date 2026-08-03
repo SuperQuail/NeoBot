@@ -1,4 +1,4 @@
-"""Scheduled task domain models."""
+"""定时任务领域模型。"""
 
 from __future__ import annotations
 

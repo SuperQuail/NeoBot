@@ -1,4 +1,4 @@
-"""Background drawing task manager — submission, cooldown, notification, retry."""
+"""后台绘图任务管理器——负责任务提交、冷却、通知与重试。"""
 
 from __future__ import annotations
 

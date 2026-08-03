@@ -1,4 +1,4 @@
-"""rename_cost_usd_to_cny
+"""cost_usd 重命名为 cny
 
 Revision ID: 0018
 Revises: 017c3c17654f

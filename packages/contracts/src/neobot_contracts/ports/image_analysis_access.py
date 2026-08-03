@@ -1,4 +1,4 @@
-"""Image analysis cache access port."""
+"""图片分析缓存访问端口。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class ImageAnalysisAccess(Protocol):
-    """Persistence access for cached image analysis results."""
+    """图片分析结果缓存的持久化访问接口。"""
 
     async def get(self, file_hash: str) -> Optional[ImageAnalysis]: ...
 

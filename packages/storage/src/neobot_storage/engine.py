@@ -1,4 +1,4 @@
-"""Async engine factory."""
+"""异步引擎工厂。"""
 
 from __future__ import annotations
 
@@ -10,13 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine as _create
 
 
 def create_engine(db_url: str, **kwargs) -> AsyncEngine:
-    """Create an async SQLAlchemy engine.
+    """创建异步 SQLAlchemy 引擎。
 
-    For SQLite, pass a URL like ``sqlite+aiosqlite:///path/to/db.sqlite3``.
+    对 SQLite，传入形如 ``sqlite+aiosqlite:///path/to/db.sqlite3`` 的 URL。
 
-    When the backend is SQLite, WAL journal mode and a 5-second busy timeout
-    are automatically enabled to reduce "database is locked" errors under
-    concurrent async task access.
+    当后端为 SQLite 时，自动启用 WAL 日志模式与 5 秒 busy_timeout，
+    以减少并发异步任务访问时的 "database is locked" 错误。
     """
     engine = _create(db_url, **kwargs)
     _enable_wal_if_sqlite(engine)
@@ -24,7 +23,7 @@ def create_engine(db_url: str, **kwargs) -> AsyncEngine:
 
 
 def _enable_wal_if_sqlite(engine: AsyncEngine) -> None:
-    """Enable WAL mode + busy_timeout when the engine targets SQLite."""
+    """当引擎面向 SQLite 时启用 WAL 模式与 busy_timeout。"""
     if engine.url.get_backend_name() != "sqlite":
         return
 
@@ -43,7 +42,7 @@ def _enable_wal_if_sqlite(engine: AsyncEngine) -> None:
 
 
 def sqlite_url(path: Union[str, Path]) -> str:
-    """Build a normalized sqlite+aiosqlite URL from a filesystem path."""
+    """根据文件系统路径构建规范化的 sqlite+aiosqlite URL。"""
     resolved = Path(path).expanduser().resolve()
     return f"sqlite+aiosqlite:///{resolved.as_posix()}"
 

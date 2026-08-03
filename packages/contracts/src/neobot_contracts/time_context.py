@@ -1,4 +1,4 @@
-"""Shared UTC time helpers for contracts and lower-level packages."""
+"""供契约与底层包共用的 UTC 时间工具函数。"""
 
 from __future__ import annotations
 

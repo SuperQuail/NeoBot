@@ -1,4 +1,4 @@
-"""BUG-0038 guard tests: self-heal single-flight, daily budget, source glob confinement."""
+"""BUG-0038 防护测试: self-heal 单飞、每日预算、源码 glob 越界限制。"""
 from __future__ import annotations
 
 import asyncio

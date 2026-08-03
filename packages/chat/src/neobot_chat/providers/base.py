@@ -99,8 +99,9 @@ class BaseHTTPProvider:
         check_status: Callable[[httpx.Response], Awaitable[None]] | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Retry transport errors and retryable 5xx statuses with exponential
-        backoff; 4xx and other errors are raised immediately."""
+        """以指数退避重试传输错误与可重试的 5xx 状态码；
+
+        4xx 及其他错误会立即抛出。"""
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -134,8 +135,9 @@ class BaseHTTPProvider:
         check_status: Callable[[httpx.Response], Awaitable[None]] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Retry only until the first bytes of the response body arrive;
-        once the stream has started, errors propagate without retrying."""
+        """仅在响应体首个字节到达前重试；
+
+        一旦流开始，错误将直接向上传播而不重试。"""
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             started = False

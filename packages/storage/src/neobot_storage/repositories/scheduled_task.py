@@ -1,4 +1,4 @@
-"""SqlAlchemy scheduled task repository."""
+"""SqlAlchemy 定时任务仓库。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Aiohttp-powered built-in debug and administration consoles."""
+"""基于 Aiohttp 的内置调试与管理员控制台。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ _ROLE_KEY = web.AppKey("console_role", str)
 
 
 class ConsoleService:
-    """Owns the public debug console and loopback-only administration console."""
+    """负责公开调试控制台与仅回环访问的管理员控制台。"""
 
     def __init__(
         self,

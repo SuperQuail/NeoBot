@@ -17,7 +17,7 @@ MessagePayload = str | list[dict[str, Any]]
 
 
 class RuntimePluginContext:
-    """Internal runtime context for the new Plugin API."""
+    """新 Plugin API 的内部运行时上下文。"""
 
     def __init__(
         self,

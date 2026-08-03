@@ -1,4 +1,4 @@
-"""add unique constraint on completed_scheduled_tasks.task_uuid
+"""为 completed_scheduled_tasks.task_uuid 增加唯一约束
 
 Revision ID: 0021
 Revises: 0020

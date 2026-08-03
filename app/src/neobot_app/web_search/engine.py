@@ -1,8 +1,8 @@
-"""Search engine implementations.
+"""搜索引擎实现。
 
-Supported engines (prioritizing China-direct-connect):
-- Bing: web scraping, no API key needed
-- DuckDuckGo: via duckduckgo_search library
+支持的引擎（优先国内可直连）:
+- Bing: HTML 抓取，无需 API key
+- DuckDuckGo: 通过 duckduckgo_search 库
 """
 
 from __future__ import annotations
@@ -16,13 +16,13 @@ from neobot_app.web_search.models import SearchResponse, SearchResult
 
 
 class BaseSearchEngine(ABC):
-    """Abstract base for search engines."""
+    """搜索引擎的抽象基类。"""
 
     name: str
 
     @abstractmethod
     async def search(self, query: str, num_results: int = 10) -> SearchResponse:
-        """Execute a search and return structured results."""
+        """执行搜索并返回结构化结果。"""
         ...
 
     def __repr__(self) -> str:
@@ -30,7 +30,7 @@ class BaseSearchEngine(ABC):
 
 
 class BingSearchEngine(BaseSearchEngine):
-    """Bing search via HTML scraping. No API key required."""
+    """通过 HTML 抓取实现 Bing 搜索，无需 API key。"""
 
     name = "bing"
     base_url = "https://www.bing.com/search"
@@ -101,7 +101,7 @@ class BingSearchEngine(BaseSearchEngine):
 
 
 class DuckDuckGoSearchEngine(BaseSearchEngine):
-    """DuckDuckGo search via duckduckgo_search library."""
+    """通过 duckduckgo_search 库实现 DuckDuckGo 搜索。"""
 
     name = "duckduckgo"
 
@@ -165,7 +165,7 @@ ENGINE_REGISTRY: dict[str, type[BaseSearchEngine]] = {
 
 
 def get_engine(name: str, **kwargs) -> BaseSearchEngine:
-    """Create an engine instance by name."""
+    """按名称创建引擎实例。"""
     cls = ENGINE_REGISTRY.get(name)
     if cls is None:
         raise ValueError(f"未知搜索引擎: {name}，可用: {list(ENGINE_REGISTRY)}")

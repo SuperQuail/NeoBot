@@ -61,7 +61,7 @@ class LocalAdapter:
 
     @property
     def connected(self) -> bool:
-        """Whether the embedded local HTTP/WebSocket service is running."""
+        """内嵌的本地 HTTP/WebSocket 服务是否正在运行。"""
         return self._core._started.is_set()
 
     @property

@@ -1,4 +1,4 @@
-"""Scheduled task persistence access port."""
+"""定时任务持久化访问端口。"""
 
 from __future__ import annotations
 

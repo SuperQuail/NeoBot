@@ -1,4 +1,4 @@
-"""Reply-related tools exposed to the main reply agent."""
+"""暴露给主回复代理的回复相关工具。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _tool_def(name: str, description: str, parameters: dict) -> ToolDefinition:
 
 
 class ReplyToolExecutor(ToolExecutor):
-    """Executor for reply-mode tools."""
+    """回复模式工具的执行器。"""
 
     def __init__(
         self,

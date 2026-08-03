@@ -1,4 +1,4 @@
-"""initial schema
+"""初始表结构
 
 Revision ID: 0001
 Revises:

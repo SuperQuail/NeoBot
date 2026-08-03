@@ -1,4 +1,4 @@
-"""Image analysis cache service."""
+"""图片分析缓存服务。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 
 class ImageAnalysisService:
-    """Service for cached image analysis CRUD and lookup operations."""
+    """图片分析结果的缓存 CRUD 与查询服务。"""
 
     def __init__(self, uow_factory: UnitOfWorkFactory, logger: Logger) -> None:
         self._uow_factory = uow_factory

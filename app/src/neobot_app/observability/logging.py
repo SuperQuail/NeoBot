@@ -86,11 +86,10 @@ def set_runtime_event_dispatcher(dispatcher: Any) -> None:
 
 
 def register_self_heal_manager(manager: Any) -> None:
-    """Register the SelfHealManager so the loguru ERROR sink can feed it.
+    """注册 SelfHealManager，使 loguru 的 ERROR sink 能够向它投递记录。
 
-    The sink hands off each record via call_soon_threadsafe (from loguru's
-    logging thread) to the running event loop.  Until a manager is registered
-    the sink is a no-op.
+    sink 通过 call_soon_threadsafe（在 loguru 的日志线程中）把每条记录
+    交给运行中的事件循环；在注册管理器之前，sink 为空操作。
     """
     global _self_heal_manager
     _self_heal_manager = manager

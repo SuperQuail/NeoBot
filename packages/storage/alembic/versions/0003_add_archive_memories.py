@@ -1,4 +1,4 @@
-"""add archive_memories table
+"""新增 archive_memories 表
 
 Revision ID: 0003
 Revises: 0002

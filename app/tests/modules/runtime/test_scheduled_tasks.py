@@ -228,8 +228,7 @@ async def _list_archived(engine) -> list[Any]:
 
 @pytest.mark.asyncio
 async def test_scan_due_tasks_notifies_expired_short_window_once_task(tmp_path):
-    """BUG-0002: an ONCE task whose window is shorter than the poll interval
-    must still be reminded instead of being silently archived as expired."""
+    """BUG-0002: 窗口短于轮询间隔的 ONCE 任务仍应收到提醒，而非被静默归档为过期。"""
     engine, uow_factory = await _make_storage(tmp_path)
     hub = _FakeHub()
     manager = _make_manager(uow_factory, hub)
@@ -258,8 +257,7 @@ async def test_scan_due_tasks_notifies_expired_short_window_once_task(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scan_due_tasks_backfills_overdue_repeating_window(tmp_path):
-    """BUG-0002: a repeating window that ended before any scan reached it is
-    back-filled with a reminder, then marked completed."""
+    """BUG-0002: 早于任何扫描就已结束的重复窗口应补发提醒，再标记完成。"""
     engine, uow_factory = await _make_storage(tmp_path)
     hub = _FakeHub()
     manager = _make_manager(uow_factory, hub)
@@ -294,8 +292,7 @@ async def test_scan_due_tasks_backfills_overdue_repeating_window(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scan_due_tasks_isolates_binding_failures(tmp_path):
-    """BUG-0012: a failing notification for one task must not roll back or
-    block the completion of other tasks."""
+    """BUG-0012: 单个任务通知失败不得回滚或阻塞其他任务的完成。"""
     engine, uow_factory = await _make_storage(tmp_path)
     hub = _FakeHub(fail_bindings={"group:111"})
     manager = _make_manager(uow_factory, hub)
@@ -349,7 +346,7 @@ def _make_record(
 
 
 def test_occurrence_start_clamps_feb29_in_non_leap_year():
-    """BUG-0023: 02-29 yearly recurrence falls back to 02-28 outside leap years."""
+    """BUG-0023: 02-29 年度复现在非闰年回退到 02-28。"""
     task = _make_record(
         start_at=datetime(2024, 2, 29, 10, 0, tzinfo=timezone.utc),
         recurrence=ScheduledTaskRecurrence.YEARLY,
@@ -377,7 +374,7 @@ def test_occurrence_start_clamps_monthly_31st_to_short_month():
 
 
 def test_current_window_duration_has_poll_interval_floor():
-    """BUG-0002: window duration is never shorter than 2x the poll interval."""
+    """BUG-0002: 窗口时长不得短于 2 倍轮询间隔。"""
     manager = ScheduledTaskManager(config=ScheduledTaskConfig(poll_interval_seconds=60))
     start_at = datetime(2026, 8, 3, 9, 0, 0, tzinfo=timezone.utc)
     task = ScheduledTaskRecord(
@@ -397,8 +394,7 @@ def test_current_window_duration_has_poll_interval_floor():
 
 @pytest.mark.asyncio
 async def test_birthday_skill_accepts_feb29(tmp_path):
-    """BUG-0023: creating a birthday on 02-29 must succeed; the yearly
-    recurrence clamps to 02-28 in non-leap years."""
+    """BUG-0023: 创建 02-29 生日必须成功；年度复现在非闰年钳位到 02-28。"""
     engine, uow_factory = await _make_storage(tmp_path)
     skill = BirthdaySkill(uow_factory=uow_factory)
 
@@ -426,8 +422,7 @@ async def test_birthday_skill_accepts_feb29(tmp_path):
 
 @pytest.mark.asyncio
 async def test_birthday_skill_feb29_occurrence_respects_leap_year(tmp_path, monkeypatch):
-    """BUG-0023: 02-29 keeps Feb 29 when the occurrence year is a leap year
-    and falls back to Feb 28 otherwise."""
+    """BUG-0023: 闰年保留 02-29，非闰年回退到 02-28。"""
     from neobot_app.skills import birthday_skill
 
     engine, uow_factory = await _make_storage(tmp_path)

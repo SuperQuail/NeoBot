@@ -1,4 +1,4 @@
-"""Automatic archive-memory summarization for live chat messages."""
+"""对实时聊天消息进行档案记忆自动摘要。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ MAX_STORED_MESSAGE_CHARS = 800
 
 
 class ArchiveMemoryAutoSummaryService:
-    """Count live messages and periodically update archive profiles via tools."""
+    """统计实时消息数量，并按配置间隔通过工具定期更新档案画像。"""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class ArchiveMemoryAutoSummaryService:
         sender_id: str | None = None,
         sender_name: str | None = None,
     ) -> None:
-        """Record one live message and trigger summarization at the configured interval."""
+        """记录一条实时消息，并在达到配置间隔时触发摘要。"""
         if conversation_kind not in {"group", "private"}:
             return
         interval = self._interval_for(conversation_kind)
@@ -234,11 +234,10 @@ class ArchiveMemoryAutoSummaryService:
         )
 
     async def flush_all(self) -> None:
-        """Flush all pending counters on shutdown concurrently.
+        """关闭时并发刷新所有待处理的计数器。
 
-        Iterates every counter that has unsummarized messages (count > 0) but
-        hasn't reached the configured interval yet, and triggers summarisation
-        immediately so no messages are lost on exit.
+        遍历每个存在未摘要消息（count > 0）但尚未达到配置间隔的计数器，
+        立即触发摘要，确保退出时消息不丢失。
         """
         try:
             items = await self._archive.list(

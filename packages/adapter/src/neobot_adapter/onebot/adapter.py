@@ -48,7 +48,7 @@ class OneBotAdapter:
 
     @property
     def connected(self) -> bool:
-        """Whether at least one OneBot reverse WebSocket is currently active."""
+        """当前是否至少有一条 OneBot 反向 WebSocket 连接处于活跃状态。"""
         return bool(self._core.active_connections)
 
     @property

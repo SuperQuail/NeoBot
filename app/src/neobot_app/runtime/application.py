@@ -241,7 +241,7 @@ class NeoBotApplication(Generic[T]):
         self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
 
     async def run_forever(self) -> None:
-        """Run until a shutdown signal is received, then stop gracefully."""
+        """持续运行直到收到关闭信号，然后优雅停止。"""
         await self.start()
         try:
             await self._shutdown_event.wait()
@@ -259,7 +259,7 @@ class NeoBotApplication(Generic[T]):
         return self._restart_requested
 
     def request_restart(self) -> None:
-        """Request a full in-process rebuild after graceful core shutdown."""
+        """在核心优雅关闭后，请求完整的进程内重建。"""
         self._restart_requested = True
         self._shutdown_event.set()
 
@@ -364,7 +364,7 @@ class NeoBotApplication(Generic[T]):
                         pass
 
     async def _stop_adapter_with_timeout(self) -> None:
-        """Bound only adapter cleanup; core/memory shutdown remains unbounded."""
+        """仅对适配器清理设置超时上限；核心/记忆关闭不设超时。"""
         try:
             await asyncio.wait_for(
                 self.adapter.stop(),

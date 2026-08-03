@@ -113,12 +113,11 @@ class AdapterCore:
         logger.info("接收器已启动")
 
     def stop(self, timeout: float = 8.0) -> bool:
-        """Stop the receiver thread within a bounded amount of time.
+        """在有限时间内停止接收线程。
 
-        The normal path wakes the receiver loop immediately.  If a third-party
-        WebSocket implementation is stuck during cleanup, cancel its remaining
-        loop tasks as a final fallback and leave the daemon thread isolated
-        rather than blocking application shutdown forever.
+        正常路径会立即唤醒接收循环；若第三方 WebSocket 实现在清理时卡住，
+        则最终兜底取消其残留的事件循环任务，让守护线程保持隔离，
+        避免阻塞应用永久无法退出。
         """
         logger.info("正在停止接收器...")
         self._stop_event.set()
@@ -413,7 +412,7 @@ class AdapterCore:
         return await self._call_action(websocket, action, params, timeout)
 
     async def send_message(self, data, websocket=None):
-        """Send a raw OneBot payload through an active WebSocket connection."""
+        """通过一条活跃的 WebSocket 连接发送原始 OneBot 数据。"""
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
@@ -424,7 +423,7 @@ class AdapterCore:
         return True
 
     def send_message_sync(self, data, websocket=None, timeout=5):
-        """Synchronously send a raw OneBot payload through the receiver loop."""
+        """通过接收循环同步发送原始 OneBot 数据。"""
         if not self.loop or not self.loop.is_running():
             logger.error("事件循环未运行")
             return False

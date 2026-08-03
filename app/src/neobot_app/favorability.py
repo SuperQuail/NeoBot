@@ -31,7 +31,7 @@ FAVORABILITY_MAX = 1000
 
 
 def favorability_to_text(value: int) -> str:
-    """Map a favorability score to a human-readable level label."""
+    """将好感度数值映射为人类可读的等级标签。"""
     for lo, hi, label in _FAVORABILITY_LEVELS:
         if lo <= value <= hi:
             return label
@@ -46,7 +46,7 @@ def clamp_favorability(
     min_val: int = FAVORABILITY_MIN,
     max_val: int = FAVORABILITY_MAX,
 ) -> int:
-    """Clamp a favorability value to the valid range."""
+    """将好感度数值限制在有效范围内。"""
     lo = min(min_val, max_val)
     hi = max(min_val, max_val)
     return max(lo, min(hi, value))

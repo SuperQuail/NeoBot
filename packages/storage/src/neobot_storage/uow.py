@@ -1,4 +1,4 @@
-"""SqlAlchemyUnitOfWork — implements contracts.UnitOfWork."""
+"""SqlAlchemyUnitOfWork —— 实现 contracts 定义的 UnitOfWork 接口。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from neobot_storage.repositories.bilibili_link import SqlAlchemyBilibiliLinkAcce
 
 
 class SqlAlchemyUnitOfWork:
-    """Async unit of work backed by a SQLAlchemy AsyncSession."""
+    """基于 SQLAlchemy AsyncSession 的异步工作单元。"""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = session_factory
@@ -64,7 +64,7 @@ class SqlAlchemyUnitOfWork:
 
 
 def make_uow_factory(engine: AsyncEngine):
-    """Return a callable that produces SqlAlchemyUnitOfWork instances."""
+    """返回一个可生成 SqlAlchemyUnitOfWork 实例的可调用对象。"""
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     def factory() -> UnitOfWork:

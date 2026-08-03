@@ -1,4 +1,4 @@
-"""Message numbering for agent-mode message references."""
+"""为 agent 模式的消息引用提供消息编号。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class MessageNumbering:
-    """Manage number <-> message_id mapping and formatted numbered text."""
+    """管理编号与 message_id 的映射，并生成带编号的格式化文本。"""
 
     def __init__(self) -> None:
         self._mapping: dict[int, int] = {}
@@ -24,7 +24,7 @@ class MessageNumbering:
         *,
         all_new: bool = False,
     ) -> str:
-        """Number all messages in one queue and render them as text."""
+        """为一个队列中的所有消息编号并将其渲染为文本。"""
         lines: list[str] = []
         entries = queue.entries(queue_key)
         sender_labels = queue._build_sender_labels(entries)
@@ -92,7 +92,7 @@ class MessageNumbering:
         context_entries: list | None = None,
         previous_entries: list | None = None,
     ) -> str:
-        """Number newly arrived queue entries and render them as text."""
+        """为新到达的队列条目编号并将其渲染为文本。"""
         from neobot_app.message.queue import QueueEntryType
 
         render_context = context_entries or messages
@@ -137,7 +137,7 @@ class MessageNumbering:
         return "\n".join(lines)
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:
-        """Number raw message objects and render them as text."""
+        """为原始消息对象编号并将其渲染为文本。"""
         from neobot_app.message.queue import QueueEntry, QueueEntryType
 
         entries = [QueueEntry(kind=QueueEntryType.MESSAGE, message=msg) for msg in messages]

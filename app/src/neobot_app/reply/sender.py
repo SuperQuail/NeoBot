@@ -1,4 +1,4 @@
-"""ReplySender — formats and sends reply messages with cooldown, segmentation, and image support."""
+"""ReplySender —— 负责格式化并发送回复消息，支持冷却、分段与图片。"""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ _MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
 
 
 class ReplySender:
-    """Formats reply text into message segments and sends them with cooldown pacing.
+    """将回复文本格式化为消息分段，并按冷却节奏发送。
 
-    Extracted from ReplyOrchestrator to separate the sending concern from
-    scheduling, engine logic, and debug recording.
+    从 ReplyOrchestrator 中抽取而来，以便将发送职责与调度、
+    引擎逻辑和调试记录相分离。
     """
 
     def __init__(

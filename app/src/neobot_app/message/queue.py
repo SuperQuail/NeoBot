@@ -36,7 +36,7 @@ class MessageQueueType(Enum):
 
 
 class QueueEntryType(Enum):
-    """Queue entry kind."""
+    """队列条目类型。"""
 
     MESSAGE = "message"
     TIMESTAMP = "timestamp"
@@ -47,7 +47,7 @@ class QueueEntryType(Enum):
 
 @dataclass
 class QueueStats:
-    """Per-queue stats."""
+    """单队列统计信息。"""
 
     total_messages: int = 0
     oldest_message_id: Optional[int] = None
@@ -57,7 +57,7 @@ class QueueStats:
 
 @dataclass
 class ReactionEntry:
-    """Emoji reaction on a message."""
+    """消息上的表情回应事件。"""
 
     target_message_id: int
     emoji_id: int
@@ -81,7 +81,7 @@ class PokeEntry:
 
 @dataclass
 class QueueEntry:
-    """Single queue event."""
+    """单条队列事件。"""
 
     kind: QueueEntryType
     occurred_at: Optional[int] = None
@@ -94,7 +94,7 @@ class QueueEntry:
 
 
 class MessageQueue:
-    """Queue with timestamps, recall events, and text/diff rendering."""
+    """带时间戳、撤回事件及文本/差异渲染的消息队列。"""
 
     def __init__(
         self,

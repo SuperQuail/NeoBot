@@ -1,4 +1,4 @@
-"""Drawing configuration and exceptions."""
+"""绘图配置与异常定义。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
 class ImageGenerationError(Exception):
-    """Drawing API error carrying full error info for agent diagnostics."""
+    """绘图 API 错误，携带完整错误信息以供 agent 诊断。"""
 
     def __init__(self, error_info: dict[str, Any]) -> None:
         self.error_info = error_info

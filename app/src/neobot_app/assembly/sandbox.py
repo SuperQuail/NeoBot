@@ -1,4 +1,4 @@
-"""Local adapter sandbox composition helpers."""
+"""本地适配器沙箱组装辅助函数。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from neobot_adapter.local.store import InMemorySandboxDataStore
 
 
 class JsonSandboxDataStore(InMemorySandboxDataStore):
-    """JSON-backed sandbox store for local adapter mode."""
+    """本地适配器模式下基于 JSON 文件的沙箱数据存储。"""
 
     def __init__(
         self,

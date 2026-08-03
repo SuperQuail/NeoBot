@@ -1,4 +1,4 @@
-"""Unified plugin-facing host contracts: facade, commands, queries, capabilities, lifecycle."""
+"""统一面向插件的宿主契约：门面、命令、查询、能力与生命周期。"""
 
 from __future__ import annotations
 

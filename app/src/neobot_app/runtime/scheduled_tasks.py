@@ -1,9 +1,7 @@
-"""Scheduled task reminder runtime.
+"""定时任务提醒运行时。
 
-This module provides the dormant runtime manager used by the scheduled-task
-agent.  It is not wired into application startup yet, but it already uses the
-database-backed scheduled task repository and can be enabled later without
-changing the agent or storage contracts.
+本模块提供定时任务 Agent 使用的休眠运行时管理器。它尚未接入应用启动流程，
+但已使用基于数据库的定时任务仓库，之后无需改动 Agent 或存储契约即可启用。
 """
 
 from __future__ import annotations
@@ -76,7 +74,7 @@ class ScheduledTaskWindow:
 
 @dataclass
 class _ScanPlan:
-    """Per-task action plan computed before any async delivery happens."""
+    """在任何异步投递之前为每个任务预先计算的动作计划。"""
 
     task: ScheduledTaskRecord
     window: ScheduledTaskWindow
@@ -88,7 +86,7 @@ class _ScanPlan:
 
 
 class ScheduledTaskManager:
-    """Database-backed reminder scanner for scheduled tasks."""
+    """基于数据库的定时任务提醒扫描器。"""
 
     def __init__(
         self,
@@ -261,14 +259,13 @@ class ScheduledTaskManager:
             await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def scan_due_tasks(self, now: datetime | None = None) -> None:
-        """Scan active tasks and deliver due reminders.
+        """扫描活跃任务并投递到期提醒。
 
-        The scan is split into short transactions so no SQLite write lock is
-        held across the async notification publishes:
+        扫描被拆分为短事务，避免在异步通知发布期间持有 SQLite 写锁：
 
-        1. read-only transaction: load active tasks and plan every action
-        2. sequential notification publishes outside any transaction
-        3. short per-task transactions persisting the final state
+        1. 只读事务：加载活跃任务并规划每个动作
+        2. 在事务之外顺序发布通知
+        3. 每个任务使用短事务持久化最终状态
         """
         self._require_storage()
         now = _normalize_datetime(now or now_utc())

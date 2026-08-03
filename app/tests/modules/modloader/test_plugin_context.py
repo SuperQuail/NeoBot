@@ -1,4 +1,4 @@
-"""Tests for plugin context integration."""
+"""插件上下文集成的测试。"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def mock_logger() -> MagicMock:
 
 @pytest.fixture
 def mock_media_sender(mock_adapter: MagicMock, mock_file_server: MagicMock) -> MagicMock:
-    """MediaSender mock that simulates disabled FileServer (file:/// URLs)."""
+    """模拟 FileServer 禁用状态（file:/// URL）的 MediaSender 假对象。"""
     ms = MagicMock()
 
     async def _send_image(
@@ -77,7 +77,7 @@ def ctx(
 
 
 class TestSendImageByPath:
-    """Tests for send_image with a local file path."""
+    """send_image 使用本地文件路径发送图片的测试。"""
 
     async def test_send_image_by_path(
         self,
@@ -86,7 +86,7 @@ class TestSendImageByPath:
         conversation: ConversationRef,
         tmp_path: Path,
     ) -> None:
-        """Mock adapter+FileServer, verify send_image(path=...) calls adapter.send."""
+        """使用假 adapter+FileServer，验证 send_image(path=...) 会调用 adapter.send。"""
         img_path = tmp_path / "test_image.png"
         img_path.write_bytes(b"fake png content")
 
@@ -100,7 +100,7 @@ class TestSendImageByPath:
 
 
 class TestSendImageByBinary:
-    """Tests for send_image with raw binary data."""
+    """send_image 使用原始二进制数据发送图片的测试。"""
 
     async def test_send_image_by_binary(
         self,
@@ -108,7 +108,7 @@ class TestSendImageByBinary:
         mock_adapter: MagicMock,
         conversation: ConversationRef,
     ) -> None:
-        """Binary data writes a temp file, sends it, then cleans up."""
+        """二进制数据先写临时文件、发送后清理。"""
         png_header = b"\x89PNG\r\n\x1a\n"
 
         await ctx.send_image(conversation, data=png_header, filename="test.png")
@@ -132,7 +132,7 @@ class TestSendImageByBinary:
         ctx: RuntimePluginContext,
         conversation: ConversationRef,
     ) -> None:
-        """>30MB binary data raises ValueError."""
+        """超过 30MB 的二进制数据应抛出 ValueError。"""
         large_data = b"x" * 31_000_000
         with pytest.raises(ValueError, match="30MB"):
             await ctx.send_image(conversation, data=large_data, filename="large.png")
@@ -143,7 +143,7 @@ class TestSendImageByBinary:
         mock_media_sender: MagicMock,
         conversation: ConversationRef,
     ) -> None:
-        """When media_sender.send_image fails, the temp file is still cleaned up."""
+        """media_sender.send_image 失败时临时文件仍应被清理。"""
         mock_media_sender.send_image.side_effect = RuntimeError("send failed")
         data = b"\x89PNG\r\n\x1a\n"
 
@@ -157,13 +157,13 @@ class TestSendImageByBinary:
 
 
 class TestSendImageMissingArgs:
-    """Tests for send_image with missing/invalid arguments."""
+    """send_image 缺少/非法参数的测试。"""
 
     async def test_send_image_missing_args(
         self,
         ctx: RuntimePluginContext,
         conversation: ConversationRef,
     ) -> None:
-        """Calling with neither path nor data raises ValueError."""
+        """path 与 data 均未提供时抛出 ValueError。"""
         with pytest.raises(ValueError, match="Must provide path or data"):
             await ctx.send_image(conversation)

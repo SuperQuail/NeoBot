@@ -1,4 +1,4 @@
-"""Small, bounded runtime snapshot store used by the built-in console."""
+"""内置控制台使用的小型有界运行时快照存储。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from neobot_app.console.security import redact
 
 
 class ConsoleTelemetry:
-    """Capture recent model calls without retaining an unbounded chat history."""
+    """捕获最近的模型调用，不保留无界的聊天历史。"""
 
     def __init__(self, max_calls: int = 100) -> None:
         self._calls: deque[dict[str, Any]] = deque(maxlen=max(10, max_calls))

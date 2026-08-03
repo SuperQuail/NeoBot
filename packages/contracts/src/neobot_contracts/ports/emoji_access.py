@@ -1,4 +1,4 @@
-"""Emoji analysis cache access port."""
+"""表情包分析缓存访问端口。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class EmojiAccess(Protocol):
-    """Persistence access for cached emoji analysis results."""
+    """表情包分析结果缓存的持久化访问接口。"""
 
     async def get_by_hash(self, file_hash: str) -> Optional[EmojiRecord]: ...
 

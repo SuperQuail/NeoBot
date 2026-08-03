@@ -1,4 +1,4 @@
-"""Authentication and request-security primitives for the built-in consoles."""
+"""内置控制台的认证与请求安全基础组件。"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class Session:
 
 
 class CredentialStore:
-    """Persist only a salted scrypt verifier; plaintext is never stored."""
+    """仅持久化加盐 scrypt 校验值；明文密码永不落盘。"""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -138,7 +138,7 @@ class SessionStore:
 
 
 class LoginLimiter:
-    """Small in-memory sliding-window limiter for password attempts."""
+    """针对密码尝试的内存滑动窗口限流器。"""
 
     def __init__(self, attempts: int = 5, window_seconds: int = 300) -> None:
         self.attempts = attempts
@@ -174,7 +174,7 @@ def is_loopback(value: str | None) -> bool:
 
 
 def redact(value: Any, key: str = "") -> Any:
-    """Recursively redact common credential fields and inline secret values."""
+    """递归脱敏常见凭据字段及行内密钥值。"""
 
     if _SECRET_PATTERN.search(key):
         return mask_secret(value)

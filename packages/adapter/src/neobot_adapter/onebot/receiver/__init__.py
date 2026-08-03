@@ -1,4 +1,4 @@
-"""OneBot reverse WebSocket receiver."""
+"""OneBot 反向 WebSocket 接收器。"""
 
 from __future__ import annotations
 

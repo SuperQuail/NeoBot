@@ -1,20 +1,18 @@
-"""Self-healing Agent: monitors accumulated errors, diagnoses and (when safe)
-attempts recovery, then notifies the admin via the background notification hub.
+"""自修复 Agent：监控累积的异常，进行诊断并在安全的前提下尝试恢复，
+然后通过后台通知中枢告知管理员。
 
-Architecture mirrors ProblemSolverManager/Agent (see problem_solver.py):
-  SelfHealManager   — error aggregation, throttled submission, notification
-  SelfHealAgent     — LLM-driven diagnostic agent with a toolset
-  SelfHealToolExecutor — read errors / logs / own source code, write debug
-                      reports, run_python, search_web, parse_image, and a few
-                      safe repair hooks (clear drawing cooldown, trigger image
-                      cleanup).
+架构与 ProblemSolverManager/Agent 保持一致（参见 problem_solver.py）：
+  SelfHealManager   — 异常聚合、节流提交、通知
+  SelfHealAgent     — 由 LLM 驱动的诊断 Agent，携带工具集
+  SelfHealToolExecutor — 读取错误 / 日志 / 自身源码，写调试报告，
+                      运行 run_python、search_web、parse_image，以及少量
+                      安全的修复钩子（清除绘图冷却、触发图片清理）。
 
-Notifications are split into two phases:
-  1. submit() fires immediately  -> source="self_heal_start" («已开始工作»)
-  2. heal task resolves          -> source="self_heal_result" (诊断 + debug_file)
+通知分两个阶段：
+  1. submit() 立即触发        -> source="self_heal_start"（「已开始工作」）
+  2. heal 任务结束时          -> source="self_heal_result"（诊断 + debug_file）
 
-The admin chat flow is the private conversation with `admin_account` (falls
-back to chat.admin_accounts[0]).
+管理员聊天流程使用与 `admin_account` 的私聊（回退到 chat.admin_accounts[0]）。
 """
 
 from __future__ import annotations
@@ -101,7 +99,7 @@ def _json(data: dict[str, Any]) -> str:
 
 
 class SelfHealAgentConfig:
-    """Self-heal Agent runtime config (from BotConfig.agent.self_healing)."""
+    """自修复 Agent 的运行时配置（来自 BotConfig.agent.self_healing）。"""
 
     def __init__(
         self,
@@ -160,7 +158,7 @@ class SelfHealAgentConfig:
 
 @dataclass
 class HealTask:
-    """A running self-heal invocation."""
+    """一次正在进行的自修复调用记录。"""
 
     task_id: str
     admin_account: str
@@ -181,17 +179,16 @@ class HealTask:
 
 
 class SelfHealManager:
-    """Aggregates errors from the loguru ERROR sink and dispatches a self-heal
-    agent invocation when thresholds are reached.
+    """聚合 loguru ERROR sink 捕获的错误，当达到阈值时派发一次自修复
+    Agent 调用。
 
-    Lifecycle:
-      * record(payload)   — called by the logging sink (on logging thread →
-        handed off to the running event loop via call_soon_threadsafe by the
-        sink itself; this method just collects and runs throttle logic).
-      * submit(...)       — spawns a background heal task; immediately fires
-        the start notification.
-      * trigger_now(...)  — manual entry point (no skill wiring yet).
-      * shutdown()        — cancels any running task.
+    生命周期：
+      * record(payload)   — 由日志 sink 调用（sink 运行在日志线程 → 由
+        sink 自身通过 call_soon_threadsafe 转交到运行中的事件循环；
+        本方法只负责收集并执行节流逻辑）。
+      * submit(...)       — 启动一个后台修复任务，并立即发出开始通知。
+      * trigger_now(...)  — 手动触发入口（暂未接入技能）。
+      * shutdown()        — 取消所有运行中的任务。
     """
 
     def __init__(
@@ -255,10 +252,10 @@ class SelfHealManager:
     # ── error ingestion ──
 
     async def record(self, error_payload: dict[str, Any]) -> None:
-        """Append an error to the ring buffer and evaluate throttles.
+        """把一条错误追加进环形缓冲区并评估节流条件。
 
-        Safe to call from any coroutine in the main event loop (the loguru
-        sink should hand off via call_soon_threadsafe to the loop).
+        可在主事件循环中的任意协程内安全调用（loguru sink 应通过
+        call_soon_threadsafe 转交到事件循环）。
         """
         if not self._config.enabled:
             return
@@ -321,9 +318,9 @@ class SelfHealManager:
         return self._trigger_count_today
 
     async def trigger_now(self, *, reason: str = "manual") -> str:
-        """Manual trigger entry. Skips throttle but still respects running task.
+        """手动触发入口。跳过节流，但仍会检查是否有任务正在运行。
 
-        Returns JSON status string.
+        返回 JSON 状态字符串。
         """
         if not self._config.enabled:
             return _json({"ok": False, "error": "self_heal disabled"})
@@ -348,9 +345,9 @@ class SelfHealManager:
         })
 
     async def _dispatch(self, *, reason: str) -> bool:
-        """Start a heal task if none is running and the daily budget allows it.
+        """当没有任务在运行且今日预算允许时，启动一个修复任务。
 
-        Returns True when a heal task was started, False otherwise.
+        启动成功返回 True，否则返回 False。
         """
         if self._running_task is not None and not self._running_task.done():
             self._logger.debug(
@@ -449,7 +446,7 @@ class SelfHealManager:
         return "\n".join(lines) if lines else "(无样本)"
 
     async def _run_heal(self, heal: HealTask) -> None:
-        """Run the self-heal agent invocation in the background."""
+        """在后台运行自修复 Agent 调用。"""
         if self._agent is None:
             heal.status = "failed"
             return
@@ -640,7 +637,7 @@ _FORBIDDEN_SOURCE_SUFFIXES = {".key", ".pem", ".crt", ".p12", ".keystore"}
 
 
 def _is_within_any_root(path: Path, roots: list[Path]) -> Path | None:
-    """Return the matching root if `path` lives under one of `roots`, else None."""
+    """若 `path` 位于某个 `roots` 之下，返回匹配的根目录；否则返回 None。"""
     try:
         resolved = path.resolve()
     except OSError:
@@ -659,7 +656,7 @@ def _is_within_any_root(path: Path, roots: list[Path]) -> Path | None:
 
 
 def _common_project_root(roots: list[Path]) -> Path | None:
-    """Return the deepest common ancestor directory of all `roots`, else None."""
+    """返回所有 `roots` 的最深公共祖先目录；若不存在则返回 None。"""
     if not roots:
         return None
     try:
@@ -678,28 +675,28 @@ def _common_project_root(roots: list[Path]) -> Path | None:
 
 
 class SelfHealToolExecutor(ToolExecutor):
-    """Tools available to the self-heal Agent.
+    """自修复 Agent 可用的工具集。
 
-    Read tools:
-      - read_errors          : errors snapshot captured by the sink
-      - read_log_tail        : tail of neobot.log
-      - read_source_code     : read bot source files (whitelisted)
-      - search_source_code   : regex search across app/packages
+    读取类工具：
+      - read_errors          : sink 捕获的错误快照
+      - read_log_tail        : neobot.log 文件尾部
+      - read_source_code     : 读取 Bot 源码文件（白名单）
+      - search_source_code   : 在 app/packages 中按正则搜索
       - list_files / read_file / write_debug_report / list_debug_reports /
-        read_debug_report : sandbox file I/O (debug reports live in sandbox)
-      - run_python / parse_image : diagnosis helpers
+        read_debug_report : 沙箱文件读写（调试报告存放在沙箱内）
+      - run_python / parse_image : 诊断辅助工具
 
-    Repair hooks (safe subset):
+    修复钩子（安全子集）：
       - clear_drawing_cooldown
       - trigger_image_cleanup
 
-    Web:
-      - search_web            : WebSearchExecutor (research mode)
-      - read_search_result    : read indexed page
-      - search_status         : web search session status
+    Web：
+      - search_web            : WebSearchExecutor（研究模式）
+      - read_search_result    : 读取已索引页面
+      - search_status         : 网页搜索会话状态
 
-    Final:
-      - submit_resolution      : commits the diagnosis (mirrors submit_solution)
+    收尾：
+      - submit_resolution      : 提交诊断结论（对应 submit_solution）
     """
 
     REQUEST_SOURCE_DIRS = ["app", "packages"]
@@ -744,7 +741,7 @@ class SelfHealToolExecutor(ToolExecutor):
         self._search.reset()
 
     async def close(self) -> None:
-        """Release executor resources."""
+        """释放执行器资源。"""
 
     def definitions(self) -> list[ToolDefinition]:
         tools = [
@@ -1146,8 +1143,8 @@ class SelfHealToolExecutor(ToolExecutor):
         return _json({"ok": True, "path": str(path), "size": size, "content": text})
 
     def _confine_glob(self, path_glob: str) -> str | None:
-        """Anchor a project-relative glob to the project root iff it stays
-        within a source root. Returns the anchored glob string or None."""
+        """当项目相对 glob 保持在某个源码根目录内时，将其锚定到项目根。
+        返回锚定后的 glob 字符串；否则返回 None。"""
         p = Path(path_glob)
         if p.is_absolute() or ".." in p.parts or not self._source_roots:
             return None
@@ -1554,7 +1551,7 @@ def _build_system_prompt(
 
 
 class SelfHealAgent:
-    """LLM-backed self-heal agent. Mirrors ProblemSolverAgent structure."""
+    """由 LLM 驱动的自修复 Agent，结构上镜像 ProblemSolverAgent。"""
 
     def __init__(
         self,
@@ -1624,7 +1621,7 @@ class SelfHealAgent:
         return Toolset(executor=executor, specs=specs, policy=ToolAccessPolicy())
 
     async def _invoke_direct(self, state: State) -> State:
-        """Direct invocation (called by SelfHealManager from a background task)."""
+        """直接调用入口（由 SelfHealManager 在后台任务中调用）。"""
         self._toolset.executor.reset_search()
         token_m = CURRENT_USAGE_MODULE.set("agent:self_heal")
         try:

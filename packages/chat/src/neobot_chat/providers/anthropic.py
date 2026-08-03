@@ -10,7 +10,7 @@ from neobot_chat.utils import parse_tool_args
 
 
 class AnthropicProvider(BaseHTTPProvider):
-    """Anthropic Messages API"""
+    """Anthropic Messages API 实现"""
 
     def __init__(
         self,

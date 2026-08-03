@@ -2200,11 +2200,11 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
     ) -> tuple[int | None, bool]:
-        """Return (last_reply_message_id, all_new) for the given queue key.
+        """返回指定队列键对应的 (last_reply_message_id, all_new)。
 
-        Returns (None, False) when tracking is disabled.
-        Returns (None, True) when tracking is enabled but no position has been recorded.
-        Returns (message_id, False) when a last-reply position exists.
+        跟踪被禁用时返回 (None, False)。
+        跟踪启用但尚未记录位置时返回 (None, True)。
+        已存在最后回复位置时返回 (message_id, False)。
         """
         enable_tracking = (
             getattr(getattr(self._config, "chat", None), "enable_last_reply_tracking", True)

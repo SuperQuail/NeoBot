@@ -1,4 +1,4 @@
-"""add creator images table
+"""新增 creator_images 表
 
 Revision ID: 0007
 Revises: 0006

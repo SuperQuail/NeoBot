@@ -1,4 +1,4 @@
-"""Tests for the media sender module."""
+"""媒体发送器模块的测试。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from neobot_app.utils.media_sender import (
 
 
 def _make_file_server(enabled: bool = True) -> MagicMock:
-    """Create a mock FileServer with a controllable _enabled flag."""
+    """创建带可控 _enabled 标志的假 FileServer。"""
     fs = MagicMock()
     fs._enabled = enabled
 
@@ -28,7 +28,7 @@ def _make_file_server(enabled: bool = True) -> MagicMock:
 
 
 def _make_adapter() -> AsyncMock:
-    """Create a mock async adapter."""
+    """创建假异步 adapter。"""
     adapter = AsyncMock()
     adapter.send.return_value = MagicMock()
     return adapter
@@ -39,7 +39,7 @@ def _make_adapter() -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_send_image_enabled_true(tmp_path: Path) -> None:
-    """send_image with enabled FileServer calls register_file and adapter.send."""
+    """FileServer 启用时 send_image 会调用 register_file 与 adapter.send。"""
     fs = _make_file_server(enabled=True)
     adapter = _make_adapter()
     conv = MagicMock()
@@ -60,7 +60,7 @@ async def test_send_image_enabled_true(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_send_image_enabled_false(tmp_path: Path) -> None:
-    """send_image with disabled FileServer uses file:/// path."""
+    """FileServer 禁用时 send_image 使用 file:/// 路径。"""
     fs = _make_file_server(enabled=False)
     adapter = _make_adapter()
     conv = MagicMock()
@@ -80,7 +80,7 @@ async def test_send_image_enabled_false(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_send_image_file_not_found(tmp_path: Path) -> None:
-    """send_image with non-existent path raises FileNotFoundError."""
+    """send_image 传入不存在的路径应抛出 FileNotFoundError。"""
     fs = _make_file_server(enabled=True)
     adapter = _make_adapter()
     conv = MagicMock()
@@ -95,7 +95,7 @@ async def test_send_image_file_not_found(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_send_audio(tmp_path: Path) -> None:
-    """send_audio produces a segment with type='record'."""
+    """send_audio 生成 type='record' 的消息段。"""
     fs = _make_file_server(enabled=True)
     adapter = _make_adapter()
     conv = MagicMock()
@@ -117,7 +117,7 @@ async def test_send_audio(tmp_path: Path) -> None:
 
 
 def test_prepare_image_segment_enabled(tmp_path: Path) -> None:
-    """prepare_image_segment with enabled FileServer returns HTTP URL."""
+    """FileServer 启用时 prepare_image_segment 返回 HTTP URL。"""
     fs = _make_file_server(enabled=True)
     path = tmp_path / "photo.jpg"
     path.write_bytes(b"fake photo data")
@@ -130,7 +130,7 @@ def test_prepare_image_segment_enabled(tmp_path: Path) -> None:
 
 
 def test_prepare_image_segment_disabled(tmp_path: Path) -> None:
-    """prepare_image_segment with disabled FileServer returns file:/// path."""
+    """FileServer 禁用时 prepare_image_segment 返回 file:/// 路径。"""
     fs = _make_file_server(enabled=False)
     path = tmp_path / "photo.jpg"
     path.write_bytes(b"fake photo data")

@@ -1,4 +1,4 @@
-"""Tests for the file server module."""
+"""文件服务器模块的测试。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from neobot_app.image.parser import ImageParseService
 
 
 def test_enabled_true_register_returns_url(tmp_path: Path) -> None:
-    """register_file returns HTTP URL when enabled=True."""
+    """enabled=True 时 register_file 返回 HTTP URL。"""
     file_path = tmp_path / "test.txt"
     file_path.write_text("hello world")
 
@@ -30,7 +30,7 @@ def test_enabled_true_register_returns_url(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_enabled_false_skip_server(tmp_path: Path) -> None:
-    """start() does not start server when enabled=False."""
+    """enabled=False 时 start() 不启动服务器。"""
     fs = FileServer(data_dir=tmp_path, enabled=False)
     await fs.start()
 
@@ -39,7 +39,7 @@ async def test_enabled_false_skip_server(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_enabled_false_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """warning log emitted when enabled=False."""
+    """enabled=False 时输出警告日志。"""
     caplog.set_level(logging.WARNING)
 
     fs = FileServer(data_dir=tmp_path, enabled=False)
@@ -50,14 +50,14 @@ async def test_enabled_false_logs_warning(tmp_path: Path, caplog: pytest.LogCapt
 
 @pytest.mark.asyncio
 async def test_stop_noop_when_not_running(tmp_path: Path) -> None:
-    """stop() is safe when server never started."""
+    """服务器从未启动时 stop() 应安全无副作用。"""
     fs = FileServer(data_dir=tmp_path, enabled=True)
     await fs.stop()  # should not raise any exception
 
 
 @pytest.mark.asyncio
 async def test_upload_image_returns_registered_segment(tmp_path: Path) -> None:
-    """POST /files stores an uploaded image and returns a OneBot image segment."""
+    """POST /files 保存上传图片并返回 OneBot 图片消息段。"""
     fs = FileServer(data_dir=tmp_path, port=0, enabled=True)
     await fs.start()
     try:
@@ -100,7 +100,7 @@ async def test_upload_image_returns_registered_segment(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_uploaded_image_segment_can_be_read_by_image_parser(tmp_path: Path) -> None:
-    """The returned segment URL is directly usable by ImageParseService."""
+    """返回的消息段 URL 可直接被 ImageParseService 使用。"""
     fs = FileServer(data_dir=tmp_path, port=0, enabled=True)
     await fs.start()
     try:
@@ -126,7 +126,7 @@ async def test_uploaded_image_segment_can_be_read_by_image_parser(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_upload_image_rejects_non_image(tmp_path: Path) -> None:
-    """POST /files only accepts real image payloads."""
+    """POST /files 仅接受真正的图片内容。"""
     fs = FileServer(data_dir=tmp_path, port=0, enabled=True)
     await fs.start()
     try:

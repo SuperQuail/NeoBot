@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class PromptBuilder:
-    """Assemble prompt text from queues plus stored profile information."""
+    """从消息队列与已保存的用户资料信息组装提示词文本。"""
 
     def __init__(
         self,

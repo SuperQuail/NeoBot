@@ -1,8 +1,7 @@
-"""Shared background notification delivery.
+"""共享的后台通知投递。
 
-Background systems publish notifications to this hub.  The hub either starts a
-background reply pipeline immediately or queues the notification for injection
-into an already-active pipeline.
+后台系统将通知发布到该中枢。中枢要么立即启动后台回复管线，
+要么将通知排队以注入到已活跃的管线中。
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""add_model_usage_records
+"""新增模型用量记录表
 
 Revision ID: 017c3c17654f
 Revises: 0012

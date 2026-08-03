@@ -1,7 +1,7 @@
-"""Problem Solver agent and background task manager.
+"""Problem Solver 智能体与后台任务管理器。
 
-Receives complex reasoning problems from the main agent, runs them as background
-tasks, converts the solution to a Markdown image, and notifies the main agent.
+接收主 Agent 下发的复杂推理问题，将其作为后台任务运行，把解答结果
+转换为 Markdown 图片，并通知主 Agent。
 """
 
 from __future__ import annotations
@@ -585,7 +585,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
         self._search.reset()
 
     async def close(self) -> None:
-        """Release executor resources."""
+        """释放执行器资源。"""
 
     def definitions(self) -> list[ToolDefinition]:
         tools = [

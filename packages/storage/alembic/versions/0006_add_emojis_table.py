@@ -1,4 +1,4 @@
-"""add emojis table
+"""新增 emojis 表
 
 Revision ID: 0006
 Revises: 0005

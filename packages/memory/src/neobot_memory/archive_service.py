@@ -1,4 +1,4 @@
-"""Archive memory service."""
+"""归档记忆服务。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 
 
 class ArchiveMemoryService:
-    """Service for archive memory CRUD and query operations."""
+    """归档记忆的增删改查与查询操作服务。"""
 
     def __init__(self, uow_factory: UnitOfWorkFactory, logger: Logger) -> None:
         self._uow_factory = uow_factory
