@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from neobot_app.skills.file_storage_skill import (
     FileStorageSkill,
     _apply_storage_update,
@@ -110,12 +108,8 @@ async def test_read_todo_returns_default_when_missing(make_sandbox):
     assert "# 待实现工具" in result["content"]
 
 
-@pytest.mark.xfail(
-    reason="BUG-0022 _extract_filename 只匹配反引号格式，文档规定的 TODO 条目格式（- [ ] tool_name.py — ...）无反引号，complete 不会移除 Pending 原条目",
-    strict=False,
-)
 async def test_update_todo_add_and_complete_flow(make_sandbox):
-    """正常路径：update_todo add 进 Pending、complete 移到 Done 并勾选（文档格式下 complete 重复保留 Pending 条目，当前失败）。"""
+    """正常路径：update_todo add 进 Pending、complete 移到 Done 并勾选。"""
     sandbox = make_sandbox()
     skill = _make_skill(sandbox)
 
@@ -209,12 +203,8 @@ def test_apply_storage_update_add_to_unknown_section_appends_end():
     assert result.rstrip().endswith("- `d.py` — 文档")
 
 
-@pytest.mark.xfail(
-    reason="BUG-0022 _extract_filename 只匹配反引号格式，无反引号的 TODO 条目在 complete 时不会被移除",
-    strict=False,
-)
 def test_apply_todo_update_complete_moves_entry():
-    """正常路径：纯函数 complete 应把 Pending 中匹配条目移到 Done 并勾选（文档格式下 Pending 条目残留，当前失败）。"""
+    """正常路径：纯函数 complete 应把 Pending 中匹配条目移到 Done 并勾选。"""
     content = "# 待实现工具\n\n## Pending\n- [ ] batch.py — 批量\n- [ ] other.py — 其他\n\n## Done\n（暂无已完成项）\n"
 
     result = _apply_todo_update(content, "- [ ] batch.py — 批量", "complete")

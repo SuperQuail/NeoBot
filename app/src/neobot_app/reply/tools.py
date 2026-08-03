@@ -1277,7 +1277,15 @@ class ReplyToolExecutor(ToolExecutor):
             return None
         if not isinstance(value, list):
             return None
-        segments = [str(item).strip() for item in value if str(item).strip()]
+        segments = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, (dict, list)) and not item:
+                continue
+            text = str(item).strip()
+            if text:
+                segments.append(text)
         return segments or None
 
     def _build_ai_check_prompt(self, result: ReplyPostProcessResult) -> str:

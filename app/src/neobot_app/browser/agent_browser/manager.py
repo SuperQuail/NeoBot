@@ -160,6 +160,7 @@ class BrowserManager:
         self._recording = False
         self._recording_frames: list[bytes] = []
         self._recording_task: asyncio.Task | None = None
+        self._recording_lock = asyncio.Lock()
         self._tabs: dict[int, Any] = {}
         self._tab_labels: dict[str, str] = {}
         self._init_scripts: dict[str, str] = {}
@@ -1972,58 +1973,61 @@ class BrowserManager:
 
     async def record_start(self, filepath: str = "") -> dict:
         """开始录屏。"""
-        try:
-            if self._recording:
-                return {"success": False, "error": "已在录制中"}
-            await self._ensure_page()
-            self._recording = True
-            self._recording_frames = []
-            self._record_path = filepath or str(Path(self._user_data_dir) / f"recording_{int(time.time())}.gif")
-            self._recording_task = asyncio.create_task(self._record_loop())
-            return {"success": True, "output": self._record_path}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        async with self._recording_lock:
+            try:
+                if self._recording:
+                    return {"success": False, "error": "已在录制中"}
+                await self._ensure_page()
+                self._recording = True
+                self._recording_frames = []
+                self._record_path = filepath or str(Path(self._user_data_dir) / f"recording_{int(time.time())}.gif")
+                self._recording_task = asyncio.create_task(self._record_loop())
+                return {"success": True, "output": self._record_path}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
     async def record_stop(self) -> dict:
         """停止录屏并保存。"""
-        if not self._recording:
-            return {"success": False, "error": "未在录制"}
-        self._recording = False
-        if self._recording_task:
-            self._recording_task.cancel()
-            self._recording_task = None
-        frames = self._recording_frames
-        self._recording_frames = []
-        if not frames:
-            return {"success": True, "frames": 0, "path": ""}
-        try:
-            from PIL import Image
-            import io
-            images = [Image.open(io.BytesIO(f)) for f in frames]
-            out_path = self._record_path
-            if out_path.endswith(".gif"):
-                images[0].save(out_path, save_all=True, append_images=images[1:],
-                               duration=500, loop=0, optimize=False)
-            else:
-                out_path = out_path.rsplit(".", 1)[0] + ".gif"
-                images[0].save(out_path, save_all=True, append_images=images[1:],
-                               duration=500, loop=0, optimize=False)
-            return {"success": True, "frames": len(frames), "path": out_path}
-        except ImportError:
-            meta_path = self._record_path + ".json"
-            Path(meta_path).write_text(json.dumps({"frames": len(frames)}), encoding="utf-8")
-            return {"success": True, "frames": len(frames), "path": meta_path,
-                    "note": "PIL not available, saved frame count only"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        async with self._recording_lock:
+            if not self._recording:
+                return {"success": False, "error": "未在录制"}
+            self._recording = False
+            if self._recording_task:
+                self._recording_task.cancel()
+                self._recording_task = None
+            frames = self._recording_frames
+            self._recording_frames = []
+            if not frames:
+                return {"success": True, "frames": 0, "path": ""}
+            try:
+                from PIL import Image
+                import io
+                images = [Image.open(io.BytesIO(f)) for f in frames]
+                out_path = self._record_path
+                if out_path.endswith(".gif"):
+                    images[0].save(out_path, save_all=True, append_images=images[1:],
+                                   duration=500, loop=0, optimize=False)
+                else:
+                    out_path = out_path.rsplit(".", 1)[0] + ".gif"
+                    images[0].save(out_path, save_all=True, append_images=images[1:],
+                                   duration=500, loop=0, optimize=False)
+                return {"success": True, "frames": len(frames), "path": out_path}
+            except ImportError:
+                meta_path = self._record_path + ".json"
+                Path(meta_path).write_text(json.dumps({"frames": len(frames)}), encoding="utf-8")
+                return {"success": True, "frames": len(frames), "path": meta_path,
+                        "note": "PIL not available, saved frame count only"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
     async def _recording_stop(self) -> None:
         """内部停止录屏（不返回结果）。"""
-        self._recording = False
-        if self._recording_task:
-            self._recording_task.cancel()
-            self._recording_task = None
-        self._recording_frames = []
+        async with self._recording_lock:
+            self._recording = False
+            if self._recording_task:
+                self._recording_task.cancel()
+                self._recording_task = None
+            self._recording_frames = []
 
     async def _record_loop(self) -> None:
         """后台录屏循环。"""

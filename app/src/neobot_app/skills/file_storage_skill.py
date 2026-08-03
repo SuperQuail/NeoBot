@@ -342,10 +342,20 @@ def _apply_todo_update(content: str, entry: str, action: str) -> str:
     return "\n".join(new_lines)
 
 def _extract_filename(entry: str) -> str:
-    """从条目中提取文件名，如 '- `script.py` — ...' -> 'script.py'。"""
+    """从条目中提取文件名。
+
+    支持两种条目格式：
+      '- `script.py` — 用途'       -> 'script.py'
+      '- [ ] tool_name.py — 说明'  -> 'tool_name.py'
+    """
     import re
     m = re.search(r"`([^`]+)`", entry)
-    return m.group(1) if m else ""
+    if m:
+        return m.group(1)
+    m = re.search(r"-\s*\[[ xX]\]\s*(.+?)\s*—", entry)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 _HANDLERS = {
     "read_storage_doc": _handle_read_storage_doc,

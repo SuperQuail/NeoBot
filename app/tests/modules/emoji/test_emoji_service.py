@@ -315,14 +315,6 @@ async def test_list_entries_sorted_by_use_count_ascending(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-EMOJI-001 _rebuild_mapping 编号分配冲突：max_existing_number 从 0 重新计数"
-        "而未考虑已有条目的编号，新增文件名排序早于已有文件时会覆盖其编号，"
-        "新文件彻底丢失编号并抛 LookupError"
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_add_image_bytes_with_filename_sorting_before_existing_assigns_number(tmp_path):
     """Arrange: 已存在 z.png 的服务；Act: 新增文件名排序更早的 a.png；Assert: 两个表情都能获得不冲突的编号。"""

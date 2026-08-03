@@ -104,64 +104,141 @@ class NeoBotApplication(Generic[T]):
             return
         self._logger.info("NeoBot启动中")
         self._shutdown_event.clear()
-        await self.file_server.start()
-        if self.tts_service is not None:
-            await self.tts_service.initialize()
-        self._logger.info("文件服务器启动完成")
-        if self._plugin_runtime is not None:
-            await self._plugin_runtime.load_registered()
-            self._logger.info("插件加载完成")
-        await self.adapter.start()
-        if getattr(self.adapter, "requires_connection_wait", True):
-            connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
-            if not connected:
-                if self._plugin_runtime is not None:
-                    await self._plugin_runtime.stop_all()
-                await self.file_server.stop()
-                if self.tts_service is not None:
-                    await self.tts_service.close()
-                await self._stop_adapter_with_timeout()
-                raise ConnectionTimeoutError(
-                    "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
-                )
-        else:
-            http_url = getattr(self.adapter, "http_url", "")
-            ws_url = getattr(self.adapter, "ws_url", "")
-            if http_url:
-                self._logger.info(f"本地适配器 HTTP 地址: {http_url}")
-            if ws_url:
-                self._logger.info(f"本地适配器 WebSocket 地址: {ws_url}")
-        self._logger.info("NeoBot适配器启动完成")
-        if self._bot_detector is not None:
-            await self._bot_detector.refresh()
-            self._logger.info("官方Bot检测范围已加载")
-        if self._plugin_runtime is not None:
-            await self._plugin_runtime.start_all()
-            self._logger.info("插件系统启动完成")
-        await self.chat_stream.initialize()
-        self._logger.info("NeoBot聊天流初始化完成")
-        if self._emoji_service is not None:
-            await self._emoji_service.start()
-            self._logger.info("表情包服务启动完成")
-        for coro in self._background_coros:
-            self._background_tasks.append(asyncio.create_task(coro))
-            self._logger.debug(f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}")
-        if self._browser_lifecycle_manager is not None:
-            await self._browser_lifecycle_manager.start()
-            self._logger.info("浏览器生命周期管理器启动完成")
-        self.event_ingress.start()
-        if self._scheduled_task_manager is not None:
-            await self._scheduled_task_manager.start()
-        if self._markdown_image_converter is not None:
-            await self._markdown_image_converter.start()
-        if self._report_service is not None:
-            self._report_task = asyncio.create_task(self._run_report_loop())
-        self._started = True
-        if self._console_service is not None:
+        started: list[str] = []
+        try:
+            await self.file_server.start()
+            started.append("file_server")
+            if self.tts_service is not None:
+                await self.tts_service.initialize()
+                started.append("tts")
+            self._logger.info("文件服务器启动完成")
+            if self._plugin_runtime is not None:
+                await self._plugin_runtime.load_registered()
+                started.append("plugin")
+                self._logger.info("插件加载完成")
+            await self.adapter.start()
+            started.append("adapter")
+            if getattr(self.adapter, "requires_connection_wait", True):
+                connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
+                if not connected:
+                    raise ConnectionTimeoutError(
+                        "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
+                    )
+            else:
+                http_url = getattr(self.adapter, "http_url", "")
+                ws_url = getattr(self.adapter, "ws_url", "")
+                if http_url:
+                    self._logger.info(f"本地适配器 HTTP 地址: {http_url}")
+                if ws_url:
+                    self._logger.info(f"本地适配器 WebSocket 地址: {ws_url}")
+            self._logger.info("NeoBot适配器启动完成")
+            if self._bot_detector is not None:
+                await self._bot_detector.refresh()
+                self._logger.info("官方Bot检测范围已加载")
+            if self._plugin_runtime is not None:
+                await self._plugin_runtime.start_all()
+                self._logger.info("插件系统启动完成")
+            await self.chat_stream.initialize()
+            self._logger.info("NeoBot聊天流初始化完成")
+            if self._emoji_service is not None:
+                await self._emoji_service.start()
+                started.append("emoji")
+                self._logger.info("表情包服务启动完成")
+            for coro in self._background_coros:
+                self._background_tasks.append(asyncio.create_task(coro))
+                self._logger.debug(f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}")
+            if self._background_tasks:
+                started.append("background")
+            if self._browser_lifecycle_manager is not None:
+                await self._browser_lifecycle_manager.start()
+                started.append("browser")
+                self._logger.info("浏览器生命周期管理器启动完成")
+            self.event_ingress.start()
+            started.append("event_ingress")
+            if self._scheduled_task_manager is not None:
+                await self._scheduled_task_manager.start()
+                started.append("scheduled_task_manager")
+            if self._markdown_image_converter is not None:
+                await self._markdown_image_converter.start()
+                started.append("markdown_image_converter")
+            if self._report_service is not None:
+                self._report_task = asyncio.create_task(self._run_report_loop())
+                started.append("report_task")
+            self._started = True
+            if self._console_service is not None:
+                try:
+                    await self._console_service.start()
+                except Exception as exc:
+                    self._logger.error("内置控制台启动失败", error=str(exc))
+        except Exception:
+            await self._rollback_start(started)
+            raise
+
+    async def _rollback_start(self, started: list[str]) -> None:
+        """start 中途失败时逆序回滚已启动的组件；单个组件清理失败只记日志，不掩盖原始异常。"""
+        if "report_task" in started and self._report_task is not None:
+            self._report_task.cancel()
             try:
-                await self._console_service.start()
+                await self._report_task
+            except asyncio.CancelledError:
+                pass
+            self._report_task = None
+        if "event_ingress" in started:
+            self.event_ingress.stop()
+        if "markdown_image_converter" in started:
+            try:
+                await self._markdown_image_converter.stop()
             except Exception as exc:
-                self._logger.error("内置控制台启动失败", error=str(exc))
+                self._logger.warning("markdown image converter stop failed on rollback", error=str(exc))
+        if "scheduled_task_manager" in started:
+            try:
+                await self._scheduled_task_manager.shutdown()
+            except Exception as exc:
+                self._logger.warning("scheduled task manager shutdown failed on rollback", error=str(exc))
+        if "browser" in started:
+            if self._browser_lifecycle_manager is not None:
+                try:
+                    await self._browser_lifecycle_manager.stop()
+                except Exception as exc:
+                    self._logger.warning("browser lifecycle manager stop failed on rollback", error=str(exc))
+            if self._browser_instance is not None:
+                try:
+                    await self._browser_instance.close()
+                except Exception as exc:
+                    self._logger.warning("browser close failed on rollback", error=str(exc))
+            self._cleanup_browser_artifacts()
+        if "background" in started:
+            for task in self._background_tasks:
+                task.cancel()
+            for task in self._background_tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            self._background_tasks.clear()
+        if "emoji" in started:
+            try:
+                await self._emoji_service.stop()
+            except Exception as exc:
+                self._logger.warning("emoji service stop failed on rollback", error=str(exc))
+        if "plugin" in started:
+            try:
+                await self._plugin_runtime.stop_all()
+            except Exception as exc:
+                self._logger.warning("plugin runtime stop failed on rollback", error=str(exc))
+        if "adapter" in started:
+            await self._stop_adapter_with_timeout()
+        if "tts" in started:
+            try:
+                await self.tts_service.close()
+            except Exception as exc:
+                self._logger.warning("tts close failed on rollback", error=str(exc))
+        if "file_server" in started:
+            try:
+                await self.file_server.stop()
+            except Exception as exc:
+                self._logger.warning("file server stop failed on rollback", error=str(exc))
+        self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
 
     async def run_forever(self) -> None:
         """Run until a shutdown signal is received, then stop gracefully."""

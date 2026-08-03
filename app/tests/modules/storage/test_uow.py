@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import random
 
 import aiosqlite
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from neobot_contracts.models import ConversationRef, IncomingMessage
 from neobot_contracts.time_context import now_utc
 from neobot_storage.engine import create_engine, sqlite_url
 from neobot_storage.models import Base
-from neobot_storage.uow import make_uow_factory
+from neobot_storage.uow import SqlAlchemyUnitOfWork, make_uow_factory
 
 
 @pytest_asyncio.fixture
@@ -127,18 +127,10 @@ async def test_uow_factory_produces_independent_sessions(uow_factory):
         assert await reader.profiles.user_exists("u2")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-001: UoW.commit 的 retry_on_lock 在 flush 阶段锁冲突后调用 "
-        "session.rollback 丢弃了待持久化对象，重试的 commit 为空事务，"
-        "数据静默丢失（已实测复现）"
-    ),
-    strict=False,
-)
-async def test_uow_commit_retries_and_persists_after_lock_contention(tmp_path, monkeypatch):
-    """锁冲突导致 flush 失败时，commit 重试后 on_retry 恢复 session 且数据必须完整落库。"""
+async def test_uow_commit_flush_lock_conflict_raises_without_silent_loss(tmp_path):
+    """flush 阶段锁冲突时 commit 必须显式抛错，且不得静默成功留下空事务。"""
 
-    # Arrange: 短 busy_timeout 引擎 + 持写锁的连接, 禁用随机抖动使时序确定
+    # Arrange: 短 busy_timeout 引擎 + 持写锁的连接
     db = tmp_path / "locked.db"
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{db.as_posix()}", connect_args={"timeout": 0.2}
@@ -150,7 +142,6 @@ async def test_uow_commit_retries_and_persists_after_lock_contention(tmp_path, m
         locker = await aiosqlite.connect(db.as_posix())
         await locker.execute("BEGIN IMMEDIATE")
         await locker.execute("INSERT INTO user_data (user_id, favorability) VALUES ('locker', 0)")
-        monkeypatch.setattr(random, "uniform", lambda a, b: 0.0)
         factory = make_uow_factory(engine)
 
         async def release_lock() -> None:
@@ -159,20 +150,61 @@ async def test_uow_commit_retries_and_persists_after_lock_contention(tmp_path, m
 
         release_task = asyncio.create_task(release_lock())
 
-        # Act
+        # Act: 写操作因写锁在 flush 阶段失败，写入已丢失
         async with factory() as uow:
             await uow.messages.save_message(_make_message("e1"))
-            await uow.commit()
+            with pytest.raises(RuntimeError, match="未持久化"):
+                await uow.commit()
         await release_task
 
-        # Assert
+        # Assert: 显式失败而非静默成功，消息不得被持久化
         async with factory() as reader:
             history = await reader.messages.get_history(
                 ConversationRef(kind="private", id="c1"), limit=50
             )
-            assert [m.event_id for m in history] == ["e1"]
+            assert history == []
     finally:
         if locker is not None:
             await locker.commit()
             await locker.close()
         await engine.dispose()
+
+
+async def test_uow_commit_pure_commit_phase_lock_conflict_retries():
+    """无未刷写变更时（纯 commit 阶段）的锁冲突必须重试成功，不丢数据。"""
+
+    class _FakeProxied:
+        @staticmethod
+        def _is_clean() -> bool:
+            return True
+
+    class _FlakySession:
+        def __init__(self) -> None:
+            self._proxied = _FakeProxied()
+            self.attempts = 0
+            self.rollbacks = 0
+
+        async def commit(self) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OperationalError(
+                    "COMMIT", (), Exception("database is locked")
+                )
+
+        async def rollback(self) -> None:
+            self.rollbacks += 1
+
+        async def close(self) -> None:
+            pass
+
+    # Act
+    uow = SqlAlchemyUnitOfWork(lambda: _FlakySession())
+    await uow.__aenter__()
+    try:
+        await uow.commit()
+    finally:
+        await uow.__aexit__(None, None, None)
+
+    # Assert
+    assert uow._session.attempts == 2
+    assert uow._session.rollbacks == 1

@@ -1,8 +1,4 @@
-"""GiftSkill 测试 — 路径安全（当前 src 已回归，标 xfail）、定时任务集成与并发查重。
-
-注意：当前 src 的 _user_gift_dir 已不再做越界校验、create 不再回写任务 UUID，
-相关用例以 xfail(strict=False) 标注，避免破坏套件绿色。
-"""
+"""GiftSkill 测试 — 路径安全、定时任务集成与并发查重。"""
 
 from __future__ import annotations
 
@@ -42,10 +38,6 @@ async def _make_gift_skill(tmp_path):
     return skill, engine, uow_factory
 
 
-@pytest.mark.xfail(
-    reason="BUG-0006 create_gift 不再校验 user_id，'..' 可绕过沙箱创建目录",
-    strict=False,
-)
 async def test_path_traversal_create_rejected(tmp_path):
     """异常路径：user_id='..' 时创建礼物必须被拒绝且不产生目录（当前 src 已回归）。"""
     skill, engine, _ = await _make_gift_skill(tmp_path)
@@ -69,10 +61,6 @@ async def test_path_traversal_create_rejected(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0006 cancel_gift 不再校验 user_id，'..' 会递归删除沙箱根目录",
-    strict=False,
-)
 async def test_path_traversal_cancel_rejected(tmp_path):
     """异常路径：user_id='..' 时取消礼物必须被拒绝且不删除越界目录（当前 src 已回归）。"""
     skill, engine, _ = await _make_gift_skill(tmp_path)
@@ -89,10 +77,6 @@ async def test_path_traversal_cancel_rejected(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0006 mark_gift_sent 不再校验 user_id，'..' 会递归删除沙箱根目录",
-    strict=False,
-)
 async def test_path_traversal_mark_sent_rejected(tmp_path):
     """异常路径：user_id='../..' 时标记发送必须被拒绝且不删除越界目录（当前 src 已回归）。"""
     skill, engine, _ = await _make_gift_skill(tmp_path)
@@ -109,10 +93,6 @@ async def test_path_traversal_mark_sent_rejected(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0008 cancel_gift 不再校验 user_id 必须为纯数字",
-    strict=False,
-)
 async def test_non_digit_user_id_rejected_for_cancel(tmp_path):
     """异常路径：非数字 user_id 取消礼物时应被拒绝（当前 src 仅按不存在处理）。"""
     skill, engine, _ = await _make_gift_skill(tmp_path)
@@ -124,10 +104,6 @@ async def test_non_digit_user_id_rejected_for_cancel(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0007 _user_gift_dir 不再做 resolve/relative_to 越界校验",
-    strict=False,
-)
 def test_user_gift_dir_defends_against_traversal(tmp_path):
     """边界：_user_gift_dir 必须拒绝越界 user_id（当前 src 已移除防护）。"""
     sandbox = SandboxService(sandbox_root=tmp_path / "sandbox")
@@ -143,10 +119,6 @@ def test_user_gift_dir_defends_against_traversal(tmp_path):
     )
 
 
-@pytest.mark.xfail(
-    reason="BUG-0007 创建礼物后不再把任务 UUID 回写到 gift.md，cancel 无法定位并删除任务",
-    strict=False,
-)
 async def test_create_writes_task_uuid_into_gift_md_and_cancel_deletes(tmp_path):
     """正常路径：创建后 gift.md 应含任务 UUID，取消应删除任务与目录（当前 src 已回归）。"""
     skill, engine, uow_factory = await _make_gift_skill(tmp_path)
@@ -180,10 +152,6 @@ async def test_create_writes_task_uuid_into_gift_md_and_cancel_deletes(tmp_path)
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0007 gift.md 缺失 UUID 时不再按 metadata 反查删除任务，任务泄漏",
-    strict=False,
-)
 async def test_cancel_deletes_task_by_metadata_when_uuid_missing(tmp_path):
     """异常路径：gift.md 无 UUID 时应按 metadata 反查删除定时任务（当前 src 已回归）。"""
     skill, engine, uow_factory = await _make_gift_skill(tmp_path)
@@ -228,10 +196,6 @@ async def test_cancel_deletes_task_by_metadata_when_uuid_missing(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0007 gift.md 缺失 UUID 时不再按 metadata 反查删除任务，任务泄漏",
-    strict=False,
-)
 async def test_mark_sent_deletes_task_when_uuid_missing(tmp_path):
     """异常路径：gift.md 无 UUID 时标记发送应反查删除定时任务（当前 src 已回归）。"""
     skill, engine, uow_factory = await _make_gift_skill(tmp_path)

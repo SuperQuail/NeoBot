@@ -101,6 +101,7 @@ class AgentBrowser:
                 headless=False,
                 port=self._manager._port,
                 user_data_dir=self._manager.user_data_dir,
+                browser_path=self._manager._browser_path,
                 operation_lock=self._manager._operation_lock,
             )
             result = await self._manager.launch_headed(url)

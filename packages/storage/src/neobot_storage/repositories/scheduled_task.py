@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 from typing import Any
 
-from sqlalchemy import delete as sql_delete, func, select
+from sqlalchemy import delete as sql_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models import ConversationRef
@@ -193,6 +193,9 @@ class SqlAlchemyScheduledTaskAccess:
             return None
         completed_at = self._normalize_datetime(completed_at)
         payload = self._scheduled_payload(row)
+        claimed = await self._claim_active_row(task_uuid)
+        if not claimed:
+            return None
         archived = CompletedScheduledTaskData(
             task_uuid=row.task_uuid,
             title=row.title,
@@ -210,6 +213,23 @@ class SqlAlchemyScheduledTaskAccess:
         await self._session.delete(row)
         await self._session.flush()
         return self._to_completed_domain(archived)
+
+    async def _claim_active_row(self, task_uuid: str) -> bool:
+        stmt = (
+            update(ScheduledTaskData)
+            .where(
+                ScheduledTaskData.task_uuid == task_uuid,
+                ScheduledTaskData.state == ScheduledTaskState.ACTIVE.value,
+            )
+            .values(
+                state="completed",
+                updated_at=now_utc(),
+                version=ScheduledTaskData.version + 1,
+            )
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount == 1
 
     async def _get_optional_row(self, task_uuid: str) -> ScheduledTaskData | None:
         stmt = select(ScheduledTaskData).where(ScheduledTaskData.task_uuid == task_uuid)

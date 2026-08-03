@@ -257,7 +257,10 @@ class FileServer:
             self._save_metadata()
             return web.Response(status=404, text="文件已过期")
 
-        file_path = Path(meta.path)
+        file_path = self._allowed_path(meta.path)
+        if file_path is None:
+            logging.warning("拒绝越界文件请求: %s", meta.path)
+            return web.Response(status=403, text="文件路径越界")
         if not file_path.exists():
             return web.Response(status=404, text="文件已被删除")
         suffix = file_path.suffix.lower()
@@ -338,16 +341,49 @@ class FileServer:
         except (OSError, ValueError):
             pass
 
+    def _allowed_path(self, raw_path: str) -> Path | None:
+        """校验并规范化文件路径：resolve 后必须位于 data_dir 内，越界返回 None。
+
+        兼容旧元数据中的相对路径：以 data_dir 为基准解析（上传文件存于
+        data_dir/tmp 下，图库/下载等注册文件也在 data_dir 内）。resolve
+        失败（非法路径）同样视为越界。
+        """
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = self._data_dir / path
+        try:
+            resolved = path.resolve()
+            root = self._data_dir.resolve()
+        except (OSError, ValueError):
+            return None
+        if resolved != root and root not in resolved.parents:
+            return None
+        return resolved
+
     def _load_metadata(self) -> None:
-        """加载元数据"""
+        """加载元数据；path 越界（resolve 后不在 data_dir 内）或文件不存在的条目丢弃。"""
         if not self._metadata_file.exists():
             return
         try:
             with open(self._metadata_file) as f:
                 data = json.load(f)
-            self._files = {k: FileMetadata(**v) for k, v in data.items()}
         except Exception:
-            pass
+            return
+        loaded: Dict[str, FileMetadata] = {}
+        for key, value in data.items():
+            try:
+                meta = FileMetadata(**value)
+            except Exception:
+                continue
+            path = self._allowed_path(meta.path)
+            if path is None:
+                logging.warning("丢弃越界文件元数据条目 %s: %s", key, meta.path)
+                continue
+            if not path.exists():
+                continue
+            meta.path = str(path)
+            loaded[key] = meta
+        self._files = loaded
 
     def _save_metadata(self) -> None:
         """保存元数据"""

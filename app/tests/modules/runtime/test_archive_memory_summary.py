@@ -153,10 +153,6 @@ async def test_record_message_increments_counter_and_triggers_at_interval():
     assert state == {"count": 0, "messages": []}
 
 
-@pytest.mark.xfail(
-    reason="BUG-0036 摘要失败后计数器被清空为 0，已累计消息永久丢失，无法保留待重试",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_summary_failure_keeps_counter_for_retry():
     """Arrange provider 必然失败的间隔 3 服务并累计三条消息，Act 触发摘要失败，
@@ -278,7 +274,7 @@ async def test_flush_all_concurrent_calls_summarize_each_counter_once():
 @pytest.mark.asyncio
 async def test_lock_is_released_after_summarize():
     """Arrange 间隔 2 的服务，Act 两条消息触发摘要后再连记两条消息，
-    Assert 摘要完成后 per-key 锁已释放，后续消息可继续计数并可再次触发。"""
+    Assert 摘要完成后 per-key 锁已释放且已从注册表回收，后续消息可继续计数并可再次触发。"""
     archive = _FakeArchive()
     provider = _FakeProvider()
     service = _make_service(archive=archive, provider=provider, group_interval=2)
@@ -287,8 +283,7 @@ async def test_lock_is_released_after_summarize():
     await service.record_message(conversation_kind="group", conversation_id="333", message_text="二")
 
     assert len(provider.calls) == 1
-    lock = service._locks["group:333"]
-    assert not lock.locked()
+    assert service._locks == {}
 
     await service.record_message(conversation_kind="group", conversation_id="333", message_text="三")
     assert len(provider.calls) == 1
@@ -296,10 +291,6 @@ async def test_lock_is_released_after_summarize():
     assert len(provider.calls) == 2
 
 
-@pytest.mark.xfail(
-    reason="BUG-0036 _locks 注册表随会话数无限增长，摘要完成后从不回收锁",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_locks_registry_is_cleaned_after_summarize():
     """Arrange 三个会话各触发一次摘要，Act 全部完成后检查注册表，

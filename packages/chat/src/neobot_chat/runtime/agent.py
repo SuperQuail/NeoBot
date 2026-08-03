@@ -90,7 +90,13 @@ class Agent:
 
         for i in range(self.max_iterations):
             self._emit("llm_start", {"iteration": i})
-            response = await self.provider.chat(messages, tools=tools)
+            try:
+                response = await self.provider.chat(messages, tools=tools)
+            except Exception as exc:
+                error_text = f"Error: {type(exc).__name__}: {exc}"
+                self._emit("error", {"provider": True, "error": error_text})
+                messages.append({"role": "assistant", "content": error_text})
+                break
             if heartbeat:
                 heartbeat()
             messages.append(response)
@@ -124,15 +130,22 @@ class Agent:
             self._emit("llm_start", {"iteration": i, "stream": True})
 
             response: Message | None = None
-            async for chunk in self.provider.stream(messages, tools=tools):
-                if chunk.reasoning_delta:
-                    yield ChatChunk(reasoning_delta=chunk.reasoning_delta)
-                if chunk.delta:
-                    yield ChatChunk(delta=chunk.delta)
-                chunk_message = chunk.message
-                if chunk_message is not None:
-                    response = chunk_message
-                    yield ChatChunk(message=chunk_message)
+            try:
+                async for chunk in self.provider.stream(messages, tools=tools):
+                    if chunk.reasoning_delta:
+                        yield ChatChunk(reasoning_delta=chunk.reasoning_delta)
+                    if chunk.delta:
+                        yield ChatChunk(delta=chunk.delta)
+                    chunk_message = chunk.message
+                    if chunk_message is not None:
+                        response = chunk_message
+                        yield ChatChunk(message=chunk_message)
+            except Exception as exc:
+                error_text = f"Error: {type(exc).__name__}: {exc}"
+                self._emit("error", {"provider": True, "error": error_text})
+                messages.append({"role": "assistant", "content": error_text})
+                yield ChatChunk(state={**state, "messages": messages})
+                return
 
             if response is None:
                 break

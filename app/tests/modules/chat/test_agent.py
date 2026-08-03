@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from neobot_chat.runtime.agent import Agent
 from neobot_chat.schema.exceptions import ProviderError
 from neobot_chat.schema.types import ChatChunk, ToolAccessPolicy, ToolGuardContext
@@ -271,10 +269,6 @@ async def test_invoke_reports_unknown_tool_error_in_messages(tmp_path: Path):
         await agent.close()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0102 Agent.invoke 未捕获 provider 异常，异常直接向调用方传播而非返回兜底状态",
-    strict=False,
-)
 async def test_invoke_returns_fallback_state_on_provider_error(tmp_path: Path):
     """provider.chat 抛异常时 invoke 必须返回兜底状态而不向调用方抛错。"""
     # Arrange
@@ -287,6 +281,9 @@ async def test_invoke_returns_fallback_state_on_provider_error(tmp_path: Path):
         # Assert
         assert isinstance(state, dict)
         assert "messages" in state
+        last = state["messages"][-1]
+        assert last["role"] == "assistant"
+        assert last["content"].startswith("Error: ProviderError: API down")
     finally:
         await agent.close()
 

@@ -56,13 +56,6 @@ async def test_history_message_to_text_renders_common_segments() -> None:
     assert text == "QQ:123: 你好图片 [a.jpg]未知消息类型 [mystery]"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-PROC-001 history_message_to_text 遇到 at 消息段时崩溃：BasicMessageData"
-        " 没有 name/qq 字段，item.data.name 触发 AttributeError"
-    ),
-    strict=False,
-)
 async def test_history_message_to_text_renders_at_segment_without_crash() -> None:
     """Arrange: 含 at 消息段的历史消息；Act: history_message_to_text；Assert: 不崩溃且输出包含被 @ 的用户名。"""
     message = _signal_data(("at", {"qq": 888, "name": "小群"}))

@@ -3,8 +3,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
 from neobot_app.config.loader.env import load_env
 from neobot_app.config.schemas.env import EnvConfig
 
@@ -99,13 +97,6 @@ def test_load_env_missing_file_generates_template(monkeypatch, tmp_path):
         assert not any(actual.casefold() == key.casefold() for actual in os.environ)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0071 'KEY = value' 写法未 strip：键尾/值首空白被原样写入 os.environ，"
-        "导致 EnvConfig 按正确键名读取不到且文件被重复补全"
-    ),
-    strict=False,
-)
 def test_load_env_key_value_whitespace_is_stripped(monkeypatch, tmp_path):
     """.env 中等号两侧空白（'KEY = value'）必须被 strip 后以正确键名与干净值写入。"""
     # Arrange
@@ -119,7 +110,7 @@ def test_load_env_key_value_whitespace_is_stripped(monkeypatch, tmp_path):
 
         # Assert
         assert os.environ["DeepSeek_APIKey"] == "sk-ds-space"
-        assert env_file.read_text(encoding="utf-8").count("DeepSeek_APIKey=") == 1
+        assert env_file.read_text(encoding="utf-8").count("DeepSeek_APIKey") == 1
     finally:
         os.environ.pop("DeepSeek_APIKey ", None)
         os.environ.pop("DeepSeek_APIKey", None)

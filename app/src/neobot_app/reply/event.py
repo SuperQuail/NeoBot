@@ -29,7 +29,7 @@ class ReplyState(Enum):
 _VALID_TRANSITIONS: dict[ReplyState, set[ReplyState]] = {
     ReplyState.PENDING: {ReplyState.BUILDING_PROMPT, ReplyState.FAILED, ReplyState.CANCELLED},
     ReplyState.BUILDING_PROMPT: {ReplyState.GENERATING, ReplyState.FAILED, ReplyState.CANCELLED},
-    ReplyState.GENERATING: {ReplyState.SENDING, ReplyState.FAILED, ReplyState.CANCELLED},
+    ReplyState.GENERATING: {ReplyState.SENDING, ReplyState.COMPLETED, ReplyState.FAILED, ReplyState.CANCELLED},
     ReplyState.SENDING: {ReplyState.COMPLETED, ReplyState.GENERATING, ReplyState.FAILED, ReplyState.CANCELLED},
 }
 

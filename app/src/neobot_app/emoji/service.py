@@ -654,7 +654,9 @@ class EmojiService:
             old_by_name[entry.file_name] = (number, entry)
 
         new_entries: dict[int, EmojiEntry] = {}
-        max_existing_number = 0
+        # 从已有条目的真实编号集合计算，新编号必须避开已占用编号且不复用已删除编号
+        used_numbers = set(self._entries.keys())
+        max_existing_number = max(used_numbers, default=0)
 
         for file_path in image_files:
             name = file_path.name

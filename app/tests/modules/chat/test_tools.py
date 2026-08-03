@@ -115,10 +115,6 @@ async def test_builtin_read_write_list_files_roundtrip(tmp_path: Path):
     await toolset.executor.close()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0103 BuiltinTools.execute 缺少必需参数时泄漏 TypeError 而非抛出 ToolError",
-    strict=False,
-)
 async def test_builtin_execute_validates_missing_required_param(tmp_path: Path):
     """read_file 缺 path 参数时 execute 必须抛出明确的 ToolError 进行参数校验。"""
     # Arrange

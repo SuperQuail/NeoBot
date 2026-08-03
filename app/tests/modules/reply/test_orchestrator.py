@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from neobot_adapter.model.basic import PostMessageMessagesender
 from neobot_adapter.model.message import (
     GroupMessage,
@@ -262,14 +260,6 @@ async def test_wait_tool_agent_loop_previous_entries_initialized(monkeypatch):
     await orch.shutdown()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0001 状态机缺 GENERATING->COMPLETED：私聊回复管线结束后事件停留在 "
-        "GENERATING 且 completed_at 为 None，orchestrator.py:1623-1627 的 "
-        "except RuntimeError 吞掉了非法转换异常"
-    ),
-    strict=False,
-)
 async def test_private_pipeline_event_reaches_completed_state(monkeypatch):
     """私聊回复管线结束后事件必须进入 COMPLETED 终态并写入 completed_at。"""
     provider = _ScriptedProvider([{"content": "你好", "tool_calls": []}])

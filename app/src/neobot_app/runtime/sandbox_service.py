@@ -193,13 +193,20 @@ class SandboxService:
     # ── 文件操作 ──
 
     async def read_file(self, path: Path) -> bytes:
-        """读取文件内容。"""
+        """读取文件内容。
+
+        文本文件超过 MAX_TEXT_READ_BYTES 时仅返回前 MAX_TEXT_READ_BYTES 字节；
+        二进制/未知类型文件保持完整读取（不对二进制做截断）。
+        """
         resolved = path.resolve()
         if not self.is_path_allowed(resolved):
             raise PermissionError(f"路径不允许: {path}")
         if not resolved.is_file():
             raise FileNotFoundError(f"文件不存在: {path}")
-        return resolved.read_bytes()
+        data = resolved.read_bytes()
+        if len(data) > MAX_TEXT_READ_BYTES and detect_file_type(resolved)["type"] == "text":
+            data = data[:MAX_TEXT_READ_BYTES]
+        return data
 
     async def write_file(self, path: Path, data: bytes) -> None:
         """写入文件。父目录自动创建。"""
@@ -306,9 +313,21 @@ class SandboxService:
             return False
 
     @staticmethod
-    def _sanitize_flow_id(chat_flow_id: str) -> str:
-        """清理聊天流 ID，防止路径遍历。"""
+    def _sanitize_flow_id(chat_flow_id: str | None) -> str:
+        """清理聊天流 ID，防止路径遍历与 Windows 非法字符。
+
+        聊天流 ID 常见格式为 ``group:12345`` 或裸 ID；Windows 下 ``:`` 等字符
+        不能出现在目录名中，否则 mkdir 抛 WinError 267。
+        """
+        if not chat_flow_id:
+            return "unknown"
         sanitized = chat_flow_id.replace("..", "").replace("/", "").replace("\\", "")
+        # Windows 路径非法字符 (<>:"|?*) 与控制字符 → 下划线
+        sanitized = "".join(
+            "_" if ch in '<>:"|?*' or ord(ch) < 32 else ch
+            for ch in sanitized
+        )
+        sanitized = sanitized.strip(" .")
         return sanitized or "unknown"
 
     # ── 容量管理 ──

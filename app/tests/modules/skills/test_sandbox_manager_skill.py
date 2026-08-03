@@ -638,10 +638,6 @@ async def test_hold_temp_ensures_temp_dir(make_sandbox):
     assert sandbox.get_temp_dir("flow9").is_dir()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0021 _sanitize_flow_id 不清理 Windows 非法字符 ':'，文档格式 group:12345 无法创建临时目录（WinError 267）",
-    strict=False,
-)
 async def test_write_file_with_documented_pipeline_key_format(make_sandbox):
     """正常路径：文档规定 chat_flow_id 取 pipeline_key（格式 group:12345），该格式应可写入临时目录（Windows 上当前失败）。"""
     sandbox = make_sandbox()
@@ -655,10 +651,6 @@ async def test_write_file_with_documented_pipeline_key_format(make_sandbox):
     assert (sandbox.get_temp_dir("group:12345") / "a.txt").read_text("utf-8") == "x"
 
 
-@pytest.mark.xfail(
-    reason="BUG-0021 _sanitize_flow_id 不清理 Windows 非法字符 ':'，hold_temp 对 group:9 创建目录失败（WinError 267）",
-    strict=False,
-)
 async def test_hold_temp_with_documented_pipeline_key_format(make_sandbox):
     """正常路径：hold_temp 对文档格式 chat_flow_id（group:9）应能创建临时目录（Windows 上当前失败）。"""
     sandbox = make_sandbox()

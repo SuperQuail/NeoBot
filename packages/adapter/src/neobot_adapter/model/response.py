@@ -433,6 +433,8 @@ class BasicMessageData(BaseModel):
     path : Optional[str] = None
     result : Optional[str] = None
     file_id : Optional[str] = None
+    qq : Optional[int] = None
+    name : Optional[str] = None
 
 class MessageData(BaseModel):
     """消息模型"""

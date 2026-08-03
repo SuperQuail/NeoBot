@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from neobot_app.reply.tools import ReplyToolExecutor
 
 
@@ -206,13 +204,6 @@ def test_normalize_segments_cleans_and_returns_none_for_empty():
     assert ReplyToolExecutor._normalize_segments([" 第一句 ", "第二句"]) == ["第一句", "第二句"]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0002 _normalize_segments 把 None 条目转成字符串 'None'（str(None).strip()），"
-        "LLM 传入 null 段会被当作 'None' 文本发送"
-    ),
-    strict=False,
-)
 def test_normalize_segments_drops_none_items():
     """_normalize_segments 遇到 None 条目必须丢弃，不得转为字符串 'None'。"""
     assert ReplyToolExecutor._normalize_segments(["有效", None]) == ["有效"]

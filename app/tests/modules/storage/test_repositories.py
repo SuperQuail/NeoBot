@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -169,13 +168,6 @@ async def test_scheduled_task_archive_completed_returns_none_for_unknown_task(uo
     assert result is None
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-002: archive_completed 为读-写非串行实现且 completed 表无 task_uuid "
-        "唯一约束，双 UoW 并发归档同一任务时偶发写入两条 completed 记录（实测 10 次中约 4 次）"
-    ),
-    strict=False,
-)
 async def test_scheduled_task_archive_completed_concurrent_only_archives_once(engine, uow_factory):
     """双 UoW 并发归档同一任务时 completed 表必须只产生一条记录。"""
 

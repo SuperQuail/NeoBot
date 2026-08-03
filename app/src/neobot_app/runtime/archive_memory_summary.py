@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
@@ -79,12 +80,8 @@ class ArchiveMemoryAutoSummaryService:
             return
 
         counter_key = self._counter_key(conversation_kind, conversation_id)
-        lock = self._locks.setdefault(counter_key, asyncio.Lock())
-        async with lock:
+        async with self._counter_lock(counter_key):
             state = await self._load_counter(counter_key)
-            # 防止残留的高计数（如之前摘要失败未复位）导致一条消息就触发
-            if int(state.get("count", 0)) >= interval:
-                state = {"count": 0, "messages": []}
             messages = list(state.get("messages", []))
             messages.append(
                 {
@@ -179,12 +176,33 @@ class ArchiveMemoryAutoSummaryService:
             )
         except Exception as exc:
             self._logger.warning(
-                "archive auto summary failed",
+                "archive auto summary failed, counter preserved for retry",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 error=str(exc),
             )
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+
+    @asynccontextmanager
+    async def _counter_lock(self, counter_key: str) -> AsyncIterator[asyncio.Lock]:
+        """按 counter_key 分片的计数锁：get-or-create，释放后从注册表回收 key。
+
+        回收时检查注册表中仍是本锁才删除，防止等待者与新建锁并发持有。
+        """
+        while True:
+            lock = self._locks.get(counter_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[counter_key] = lock
+            await lock.acquire()
+            if self._locks.get(counter_key) is lock:
+                break
+            lock.release()
+        try:
+            yield lock
+        finally:
+            if self._locks.get(counter_key) is lock:
+                del self._locks[counter_key]
+            lock.release()
 
     async def _load_counter(self, key: str) -> dict[str, Any]:
         item = await self._archive.get(COUNTER_TABLE, key)
@@ -257,9 +275,8 @@ class ArchiveMemoryAutoSummaryService:
                     return False
 
                 counter_key = item.key
-                lock = self._locks.setdefault(counter_key, asyncio.Lock())
                 async with semaphore:
-                    async with lock:
+                    async with self._counter_lock(counter_key):
                         current = await self._load_counter(counter_key)
                         current_count = int(current.get("count", 0))
                         if current_count <= 0 or current_count >= interval:

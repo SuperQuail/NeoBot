@@ -206,6 +206,7 @@ class CompletedScheduledTaskData(Base):
     __table_args__ = (
         Index("ix_completed_scheduled_tasks_completed_at", "completed_at"),
         Index("ix_completed_scheduled_tasks_task_uuid", "task_uuid"),
+        UniqueConstraint("task_uuid", name="uq_completed_scheduled_tasks_task_uuid"),
     )
 
 

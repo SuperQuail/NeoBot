@@ -234,15 +234,8 @@ async def test_expired_token_returns_404_and_removes_metadata(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0002 FileServer 元数据 path 未校验：篡改 .file_metadata.json 的 path 指向 "
-        "数据目录外文件后，/files 接口仍会 200 直接返回该文件内容"
-    ),
-    strict=False,
-)
 async def test_metadata_path_outside_data_dir_rejected(tmp_path: Path) -> None:
-    """元数据 path 越界（指向数据目录外）时文件请求必须被拒绝且不泄露外部文件。"""
+    """元数据 path 越界（指向数据目录外）时文件请求必须被拒绝且不泄露外部文件（修复 BUG-0002）。"""
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP-SECRET-CONTENT", encoding="utf-8")
     fs = FileServer(data_dir=tmp_path / "data", port=0, enabled=True)

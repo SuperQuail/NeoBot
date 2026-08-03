@@ -34,6 +34,15 @@ def test_transition_sending_back_to_generating_allowed():
     assert event.state == ReplyState.GENERATING
 
 
+def test_transition_generating_to_completed_allowed():
+    """回复管线结束场景：GENERATING 直接进入 COMPLETED 必须合法并写入 completed_at。"""
+    event = _walk(event := ReplyEvent(), ReplyState.BUILDING_PROMPT, ReplyState.GENERATING)
+    event.transition(ReplyState.COMPLETED)
+    assert event.state == ReplyState.COMPLETED
+    assert event.completed_at is not None
+    assert event.is_terminal is True
+
+
 def test_transition_pending_to_sending_raises():
     """PENDING 直接跳转 SENDING（跳过中间态）必须抛 RuntimeError 且状态不变。"""
     event = ReplyEvent()

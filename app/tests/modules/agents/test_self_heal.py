@@ -5,8 +5,6 @@ import asyncio
 import json
 from pathlib import Path
 
-import pytest
-
 from neobot_app.agents.self_heal import (
     SelfHealAgentConfig,
     SelfHealManager,
@@ -252,10 +250,6 @@ async def test_run_heal_exception_marks_failed_and_recovers_state() -> None:
     assert manager._current_heal is None
 
 
-@pytest.mark.xfail(
-    reason="BUG-0102 self_heal _run_heal 收尾时 _running_task.done() 恒为 False，完成/失败后 _running_task 引用未置空",
-    strict=False,
-)
 async def test_run_heal_completion_clears_running_task() -> None:
     """自修复任务结束后 manager._running_task 必须恢复为 None。"""
     manager = _make_manager()

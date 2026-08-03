@@ -412,11 +412,6 @@ async def test_record_start_rejects_second_recording_sequentially(
     await mgr.record_stop()
 
 
-@pytest.mark.xfail(
-    reason="BUG-002 record_start 的录制状态检查与状态设置之间没有任何锁或 await 屏障，"
-    "asyncio.gather 并发双任务可同时通过检查并双双进入录制态",
-    strict=False,
-)
 async def test_concurrent_record_start_is_serialized(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):

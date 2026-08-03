@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from neobot_contracts.ports.unit_of_work import UnitOfWork
 
-from neobot_storage._retry import retry_on_lock
+from neobot_storage._retry import _is_locked_error, retry_on_lock
 from neobot_storage.repositories.memory import SqlAlchemyMemoryRepository
 from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
@@ -43,10 +43,21 @@ class SqlAlchemyUnitOfWork:
         await self._session.close()
 
     async def commit(self) -> None:
-        await retry_on_lock(
-            self._session.commit,
-            on_retry=self._session.rollback,
-        )
+        if self._session._proxied._is_clean():
+            await retry_on_lock(
+                self._session.commit,
+                on_retry=self._session.rollback,
+            )
+            return
+        try:
+            await self._session.commit()
+        except Exception as exc:
+            if not _is_locked_error(exc):
+                raise
+            await self._session.rollback()
+            raise RuntimeError(
+                "事务因锁冲突已回滚，写入未持久化，请重试整个事务"
+            ) from exc
 
     async def rollback(self) -> None:
         await self._session.rollback()

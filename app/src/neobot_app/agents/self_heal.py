@@ -529,9 +529,8 @@ class SelfHealManager:
                 CURRENT_USAGE_MODULE.reset(token_m)
             if self._current_heal is heal:
                 self._current_heal = None
-            if self._running_task is not None and self._running_task.done():
-                if self._running_task is asyncio.current_task():
-                    self._running_task = None
+            if self._running_task is asyncio.current_task():
+                self._running_task = None
 
     async def _publish_result_notification(self, heal: HealTask) -> None:
         if heal.notified_final:

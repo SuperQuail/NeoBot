@@ -4,7 +4,6 @@ import asyncio
 import sys
 
 import loguru
-import pytest
 
 from neobot_app.observability.logging import (
     configure_loguru,
@@ -80,7 +79,8 @@ def test_file_sink_output_is_redacted(tmp_path) -> None:
 
 
 def test_redacting_filter_redacts_traceback_in_exception_records() -> None:
-    """带异常的日志记录经 _redacting_filter 后，message 必须追加脱敏 traceback 且无密钥。"""
+    """带异常的日志记录经 _redacting_filter 后，message 必须追加脱敏 traceback 且无密钥，
+    同时保留结构化 exception（值已脱敏、traceback 对象保留）供后续 sink 使用。"""
     try:
         raise ValueError("连接失败 api_key=sk-traceback12345678xyz")
     except ValueError:
@@ -93,10 +93,17 @@ def test_redacting_filter_redacts_traceback_in_exception_records() -> None:
 
     assert _redacting_filter(record) is True
 
-    assert record["exception"] is None
     assert "sk-traceback12345678xyz" not in record["message"]
     assert "***REDACTED***" in record["message"]
     assert "Traceback" in record["message"]
+
+    exc = record["exception"]
+    assert exc is not None
+    assert exc[0] is exc_type
+    assert exc[2] is exc_tb
+    assert "sk-traceback12345678xyz" not in str(exc[1])
+    assert "api_key" not in str(exc[1])
+    assert "***REDACTED***" in str(exc[1])
 
 
 async def test_self_heal_sink_forwards_redacted_records_with_traceback() -> None:
@@ -154,16 +161,8 @@ async def test_self_heal_sink_is_noop_without_manager() -> None:
         loguru.logger.remove()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0001 启用文件 sink（configure_loguru(log_dir)）时，文件 sink 的 _redacting_filter "
-        "将共享 record 的 exception 置为 None，导致自修复 sink 拿不到结构化 traceback "
-        "（payload['traceback'] 为 None），自修复 traceback 计数/判定失效"
-    ),
-    strict=False,
-)
 async def test_self_heal_sink_keeps_traceback_when_file_sink_enabled(tmp_path) -> None:
-    """文件 sink 启用时自修复记录仍必须携带结构化 traceback（当前实现丢失，BUG-0001）。"""
+    """文件 sink 启用时自修复记录仍必须携带结构化 traceback（修复 BUG-0001）。"""
     manager = _FakeSelfHealManager()
     register_self_heal_manager(manager)
     configure_loguru(tmp_path / "logs")

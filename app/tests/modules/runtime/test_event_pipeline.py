@@ -304,11 +304,6 @@ async def test_image_willing_lock_does_not_block_different_queue_key():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="BUG-2026-001 私聊预热失败时 finally 仍将 user_id 加入 _warmed_up_friends，"
-    "导致后续消息不再重试预热",
-    strict=False,
-)
 async def test_private_warmup_failure_does_not_mark_user_warmed():
     """私聊历史预热失败后该用户不应被标记为已预热，以便后续消息重试预热。"""
     # Arrange

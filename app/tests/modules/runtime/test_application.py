@@ -189,11 +189,6 @@ async def test_stop_closes_browser_instance(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="BUG-2026-002 start 中途失败（adapter.start 抛错）时不回滚已启动的 "
-    "file_server，异常直接传播导致资源泄漏",
-    strict=False,
-)
 async def test_start_partial_failure_cleans_up_started_components() -> None:
     """start 中途失败时必须回滚已启动的组件并向上传播异常，避免资源泄漏。"""
     # Arrange

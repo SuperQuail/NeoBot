@@ -8,8 +8,6 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 from neobot_app.skills.reminder_skill import ReminderSkill
 from neobot_contracts.models.scheduled_task import (
     ScheduledTaskRecurrence,
@@ -464,12 +462,8 @@ class _FakeUow:
         return None
 
 
-@pytest.mark.xfail(
-    reason="BUG-0003 并发创建时 count 与 create 非原子，可突破 max_repeating_tasks 上限",
-    strict=False,
-)
 async def test_concurrent_create_can_exceed_repeating_limit():
-    """并发：limit=2 时同时创建 3 个重复任务，成功数不得超过上限（当前实现存在竞态）。"""
+    """并发：limit=2 时同时创建 3 个重复任务，成功数不得超过上限。"""
     repo = _FakeRepo()
     skill = ReminderSkill(uow_factory=lambda: _FakeUow(repo), config=_config(max_repeating_tasks=2))
     args = _create_args(recurrence="daily")

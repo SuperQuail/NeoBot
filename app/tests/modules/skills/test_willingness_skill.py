@@ -161,10 +161,6 @@ async def test_service_blacklist_blocks_and_unblocks_runtime_reply(willing_servi
     assert willing_service.block_reason_for_message(message=message, queue_key="456789") == ""
 
 
-@pytest.mark.xfail(
-    reason="BUG-0004 add_session_blacklist 忽略 pipeline_key 参数，硬编码 'current'，无法屏蔽真实会话",
-    strict=False,
-)
 async def test_add_session_blacklist_should_block_given_pipeline_key(willing_service):
     """异常路径：带 pipeline_key 调用 add_session_blacklist 后该会话应被屏蔽。"""
     skill = _skill(willing_service)
@@ -180,10 +176,6 @@ async def test_add_session_blacklist_should_block_given_pipeline_key(willing_ser
     )
 
 
-@pytest.mark.xfail(
-    reason="BUG-0005 黑名单/系数存储时剥离 kind: 前缀，但 block_reason 与 evaluate 用未归一化的 queue_key 比对，前缀键永不命中",
-    strict=False,
-)
 async def test_blacklist_with_prefixed_key_should_block_conversation(willing_service):
     """异常路径：以 group:xxx 前缀键加入黑名单后，该会话消息应被完全屏蔽。"""
     queue = MessageQueue()
@@ -242,10 +234,6 @@ async def test_get_status_summary_contains_all_sections(willing_service):
     assert "临时黑名单" in summary
 
 
-@pytest.mark.xfail(
-    reason="BUG-0001 空 user_id 时 ValueError 直接上抛而非返回 ok=False 的 JSON",
-    strict=False,
-)
 async def test_empty_user_id_should_return_json_error_not_raise(willing_service):
     """异常路径：user_id 为空时应返回 JSON 错误，而不是向调用方抛出 ValueError。"""
     skill = _skill(willing_service)
@@ -257,10 +245,6 @@ async def test_empty_user_id_should_return_json_error_not_raise(willing_service)
     assert result["ok"] is False
 
 
-@pytest.mark.xfail(
-    reason="BUG-0002 非数字 value 时 float() 转换异常直接上抛而非返回 JSON 错误",
-    strict=False,
-)
 async def test_non_numeric_value_should_return_json_error_not_raise(willing_service):
     """异常路径：value 非数字时应返回 JSON 错误，而不是向调用方抛出 ValueError。"""
     skill = _skill(willing_service)

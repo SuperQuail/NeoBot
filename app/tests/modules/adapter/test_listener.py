@@ -49,7 +49,6 @@ async def test_listener_dispatches_event_to_matching_async_handler() -> None:
     assert seen == [event]
 
 
-@pytest.mark.xfail(reason="BUG-01 EventHandler.__post_init__ 包装了 func，unregister 按原函数比较永远不相等，注销必然失败", strict=False)
 @pytest.mark.asyncio
 async def test_listener_unregister_removes_handler() -> None:
     """unregister 后处理器必须不再接收事件，并返回 True 表示注销成功。"""

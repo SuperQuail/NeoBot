@@ -109,14 +109,8 @@ def test_dict_to_dataclass_invalid_value_falls_back_to_default():
     assert result.ratio == 0.5
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0066 任意 int 被强转为 bool（2→True），应拒绝或回退默认值而非静默接受"
-    ),
-    strict=False,
-)
-def test_dict_to_dataclass_bool_from_arbitrary_int_is_rejected():
-    """非 0/1 的 int 值写入 bool 字段必须被拒绝或回退默认值，不得强转为 True。"""
+def test_dict_to_dataclass_bool_from_arbitrary_int_is_clamped():
+    """非 0/1 的 int 值写入 bool 字段必须钳位为 True/False（2→True、-1→False）且不抛异常。"""
     # Arrange
     raw = {"off_flag": 2}
 
@@ -124,7 +118,7 @@ def test_dict_to_dataclass_bool_from_arbitrary_int_is_rejected():
     result = dict_to_dataclass(raw, _RootConfig)
 
     # Assert
-    assert result.off_flag is False
+    assert result.off_flag is True
 
 
 def test_dict_to_dataclass_enum_member_passthrough_and_string_fallback():
@@ -188,15 +182,8 @@ def test_dict_to_dataclass_probability_out_of_range_passes_through():
     assert result_negative.deepseek_random_thinking_probability == -0.5
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0066 group_chat_chance 等概率字段无范围校验，5.0 被静默接受"
-        "（0~1 之外应拒绝或回退默认值）"
-    ),
-    strict=False,
-)
-def test_dict_to_dataclass_group_chat_chance_range_unvalidated():
-    """群聊回复概率超出 0~1 范围必须被拒绝或回退默认值，不得原样保留。"""
+def test_dict_to_dataclass_group_chat_chance_clamped_to_range():
+    """群聊回复概率超出 0~1 范围必须钳位到边界（5.0→1.0），不得原样保留。"""
     # Arrange
     raw = {"group_chat_chance": 5.0}
 
@@ -204,7 +191,7 @@ def test_dict_to_dataclass_group_chat_chance_range_unvalidated():
     result = dict_to_dataclass(raw, Chat)
 
     # Assert
-    assert result.group_chat_chance == 0.5
+    assert result.group_chat_chance == 1.0
 
 
 def test_dict_to_dataclass_nested_structure_and_subclass_detection():

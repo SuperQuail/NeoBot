@@ -117,7 +117,6 @@ async def test_adapter_core_drops_event_when_queue_full() -> None:
 # ─────────────────────────── JSON 解析容错 / 断连 ───────────────────────────
 
 
-@pytest.mark.xfail(reason="BUG-03 畸形 JSON 帧会使 _handle_client 的 async-for 循环直接终止，该连接后续帧全部丢失；叠加 BUG-02 时还会抛 AttributeError", strict=False)
 @pytest.mark.asyncio
 async def test_adapter_core_tolerates_malformed_json_frame() -> None:
     """畸形 JSON 帧必须被吞掉并记录日志，连接清理后该连接上的后续帧仍应被处理。"""
@@ -131,7 +130,6 @@ async def test_adapter_core_tolerates_malformed_json_frame() -> None:
     assert core.get_message(block=False)["message"] == "ok"
 
 
-@pytest.mark.xfail(reason="BUG-02 websockets 16 懒加载下 websockets.exceptions 属性缺失，连接断开异常在 except 子句匹配时变成 AttributeError", strict=False)
 @pytest.mark.asyncio
 async def test_adapter_core_logs_graceful_disconnect() -> None:
     """正常连接断开必须走 ConnectionClosed 分支优雅退出，而不是泄漏 AttributeError。"""
@@ -144,7 +142,6 @@ async def test_adapter_core_logs_graceful_disconnect() -> None:
     assert not core.active_connections
 
 
-@pytest.mark.xfail(reason="BUG-02 websockets.exceptions 属性缺失导致 _remove_connection 无法构造 ConnectionClosed 异常，pending future 得不到异常回填", strict=False)
 @pytest.mark.asyncio
 async def test_adapter_core_remove_connection_fails_pending_echo() -> None:
     """连接断开时等待中的 echo future 必须收到 ConnectionClosed 异常。"""

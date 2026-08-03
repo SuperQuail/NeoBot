@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Iterator, Optional
 
 import websockets
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
 from neobot_adapter.utils.logger import get_module_logger
@@ -225,7 +226,11 @@ class AdapterCore:
                 self._connection_established.set()
         try:
             async for message in websocket:
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("收到畸形 JSON 帧，已跳过")
+                    continue
                 if self._packet_callback is not None:
                     try:
                         self._packet_callback(data)
@@ -239,9 +244,9 @@ class AdapterCore:
                 else:
                     # 事件处理
                     await self._handle_event(websocket, data)
-        except websockets.exceptions.ConnectionClosedError as exc:
+        except ConnectionClosedError as exc:
             logger.warning(f"框架连接异常断开（{exc}）")
-        except websockets.exceptions.ConnectionClosed:
+        except ConnectionClosed:
             logger.info("框架连接断开")
         except Exception as e:
             logger.warning(f"处理异常: {type(e).__name__}: {e}")
@@ -298,7 +303,7 @@ class AdapterCore:
                 self._echo_to_conn.pop(echo, None)
                 fut = self._pending.pop(echo, None)
                 if fut and not fut.done():
-                    fut.set_exception(websockets.exceptions.ConnectionClosed(0, ""))
+                    fut.set_exception(ConnectionClosed(None, None))
 
     async def _handle_meta_event(self, event):
         """处理元事件，使用 Pydantic 模型解析"""

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -14,6 +16,9 @@ from neobot_app.time_context import to_utc
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+# 进程内互斥锁：将「计数检查 + 创建」串行化，避免并发创建突破 max_repeating_tasks 上限。
+_CREATE_LOCK = asyncio.Lock()
 
 def _parse_pipeline_key(pipeline_key: str) -> tuple[str, str]:
     """从 pipeline_key 中提取 (kind, id)。"""
@@ -249,27 +254,29 @@ async def _handle_create_scheduled_task(self: ReminderSkill, args: dict) -> str:
         )
     )
     task_uuid = str(uuid4())
+    guard = _CREATE_LOCK if recurrence != ScheduledTaskRecurrence.ONCE else nullcontext()
     try:
-        async with self._uow_factory() as uow:
-            if recurrence != ScheduledTaskRecurrence.ONCE:
-                count = await uow.scheduled_tasks.count_repeating_active()
-                limit = self._max_repeating_tasks()
-                if count >= limit:
-                    return _json({
-                        "ok": False,
-                        "error": f"重复定时任务数量已达上限: {limit}",
-                    })
-            record = await uow.scheduled_tasks.create(
-                task_uuid=task_uuid,
-                title=title,
-                detail=detail,
-                recurrence=recurrence,
-                start_at=start_at,
-                end_at=end_at,
-                bindings=tuple(bindings),
-                metadata=metadata,
-            )
-            await uow.commit()
+        async with guard:
+            async with self._uow_factory() as uow:
+                if recurrence != ScheduledTaskRecurrence.ONCE:
+                    count = await uow.scheduled_tasks.count_repeating_active()
+                    limit = self._max_repeating_tasks()
+                    if count >= limit:
+                        return _json({
+                            "ok": False,
+                            "error": f"重复定时任务数量已达上限: {limit}",
+                        })
+                record = await uow.scheduled_tasks.create(
+                    task_uuid=task_uuid,
+                    title=title,
+                    detail=detail,
+                    recurrence=recurrence,
+                    start_at=start_at,
+                    end_at=end_at,
+                    bindings=tuple(bindings),
+                    metadata=metadata,
+                )
+                await uow.commit()
         return _json({"ok": True, "status": "created", "task": {
             "task_uuid": record.task_uuid,
             "title": record.title,

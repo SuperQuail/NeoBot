@@ -47,6 +47,12 @@ def _redacting_filter(record: dict[str, Any]) -> bool:
     （用 stdlib 格式化 traceback 后脱敏，避免 loguru 在诊断模式输出含密钥的
     源码行），后续所有读取该记录的 sink（文件/运行时事件/自修复）都会得到
     脱敏文本。
+
+    不要把 record["exception"] 置 None：文件 sink 之后的自修复 sink 需要
+    结构化 traceback（payload["traceback"]）。这里重建一个值已脱敏的异常
+    （保留原 traceback 对象）挂回 record；文件 sink 使用 _file_sink_format
+    （函数式 format，不含 {exception}）避免 loguru 渲染原始 traceback 的
+    未脱敏源码行，密钥不再泄露。
     """
     record["message"] = redact_sensitive(record["message"])
     exc = record.get("exception")
@@ -56,13 +62,11 @@ def _redacting_filter(record: dict[str, Any]) -> bool:
     if exc_type and exc_tb:
         tb_text = "".join(_traceback.format_exception(exc_type, exc_value, exc_tb))
         record["message"] += "\n" + redact_sensitive(tb_text)
-        record["exception"] = None
-    else:
-        try:
-            redacted_value = exc_type(redact_sensitive(str(exc_value)))
-        except Exception:
-            redacted_value = RuntimeError(redact_sensitive(str(exc_value)))
-        record["exception"] = (exc_type, redacted_value, exc_tb)
+    try:
+        redacted_value = exc_type(redact_sensitive(str(exc_value)))
+    except Exception:
+        redacted_value = RuntimeError(redact_sensitive(str(exc_value)))
+    record["exception"] = (exc_type, redacted_value, exc_tb)
     return True
 
 # These module-name prefixes produce ERROR-level logs that are transient /
@@ -200,6 +204,22 @@ class _InterceptHandler(stdlib_logging.Handler):
         ).log(level, record.getMessage())
 
 
+def _file_sink_format(record: dict[str, Any]) -> str:
+    """文件 sink 的格式：以函数形式返回，避免 loguru 对字符串 format 自动追加
+    "{exception}"（loguru 渲染原始 traceback 会带未脱敏的源码行）。
+
+    异常信息已由 _redacting_filter 脱敏后追加到 message；record["exception"]
+    保持非 None，供文件 sink 之后的自修复 sink 消费结构化 traceback。
+    """
+    return (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{extra[module_name]: <24}</cyan> | "
+        "<level>{message}</level>"
+        " ({elapsed})\n"
+    )
+
+
 def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = False) -> None:
     """配置 Loguru 输出格式。
 
@@ -218,7 +238,6 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
         "<cyan>{extra[module_name]: <24}</cyan> | "
         "<level>{message}</level>"
     )
-    file_format = console_format + " ({elapsed})"
 
     loguru.logger.add(
         sys.stderr,
@@ -231,7 +250,7 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
         log_dir.mkdir(parents=True, exist_ok=True)
         loguru.logger.add(
             log_dir / "neobot.log",
-            format=file_format,
+            format=_file_sink_format,
             level="DEBUG",
             rotation="10 MB",
             retention="7 days",

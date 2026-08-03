@@ -327,14 +327,15 @@ class EventPipeline:
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
+                return
             except Exception as exc:
                 self._logger.warning(
                     "私聊动态预热失败",
                     user_id=user_id,
                     error=str(exc),
                 )
-            finally:
-                self._warmed_up_friends.add(user_id)
+                return
+            self._warmed_up_friends.add(user_id)
 
     async def _handle_private_reply(self, message: Any, queue_key: str) -> None:
         """私聊直接触发回复（跳过意愿管理器），延迟指定秒数以收集后续消息。"""

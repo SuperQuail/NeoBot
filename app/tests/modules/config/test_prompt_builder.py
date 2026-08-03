@@ -3,8 +3,6 @@
 import os
 from types import SimpleNamespace
 
-import pytest
-
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.prompt.builder import PromptBuilder
 
@@ -124,13 +122,6 @@ async def test_build_group_prompt_appends_extra_fragments_when_placeholders_miss
     assert "你可以反问对方是不是叫夏亚" in prompt
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0102 群聊模板缺少 {memory_list} 占位符时 memory_list 内容被静默丢弃，"
-        "与私聊路径的追加行为不一致"
-    ),
-    strict=False,
-)
 async def test_build_group_prompt_appends_memory_list_without_placeholder():
     """群聊模板缺少 {memory_list} 占位符时，传入的记忆片段必须追加到提示词（与私聊行为一致）。"""
     # Arrange
@@ -146,12 +137,6 @@ async def test_build_group_prompt_appends_memory_list_without_placeholder():
     assert "小明生日是明天" in prompt
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-0060 模板含未知占位符时 str.format 抛 KeyError，自定义模板直接导致回复构建失败"
-    ),
-    strict=False,
-)
 async def test_build_group_prompt_tolerates_unknown_placeholder():
     """模板包含未知占位符时不得抛异常，未知占位符应原样保留或忽略。"""
     # Arrange

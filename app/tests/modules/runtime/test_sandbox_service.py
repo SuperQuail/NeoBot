@@ -123,10 +123,6 @@ async def test_delete_file_rejects_path_outside_sandbox(tmp_path):
     assert victim.is_file()
 
 
-@pytest.mark.xfail(
-    reason="BUG-0084 read_file 不按 MAX_TEXT_READ_BYTES 限长，整文件 read_bytes 返回",
-    strict=False,
-)
 async def test_read_file_truncates_to_max_text_read_bytes(tmp_path):
     """Arrange 一个 2×MAX_TEXT_READ_BYTES 的文本文件，Act read_file 读取，
     Assert 返回内容不超过 MAX_TEXT_READ_BYTES 字节。"""

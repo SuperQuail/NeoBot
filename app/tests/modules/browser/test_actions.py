@@ -92,11 +92,6 @@ async def test_ensure_concurrent_calls_start_browser_once():
 # ── launch_headed ──
 
 
-@pytest.mark.xfail(
-    reason="BUG-001 AgentBrowser.launch_headed 重建 BrowserManager 时未传递 browser_path，"
-    "自定义浏览器路径会在有头重启后丢失",
-    strict=False,
-)
 async def test_launch_headed_preserves_custom_browser_path(fake_manager_factory, tmp_path):
     """launch_headed 重建 manager 时必须保留原 browser_path，不得回退到默认查找。"""
     agent = AgentBrowser(

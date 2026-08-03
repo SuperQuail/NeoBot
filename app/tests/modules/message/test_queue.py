@@ -68,13 +68,6 @@ def test_poke_entries_use_low_weight_and_never_trigger_drop() -> None:
     assert queue.get_stats("g").dropped_messages == 0
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-QUEUE-001 容量上限在单次丢弃不足以恢复时失效：max_size=1 时 forward 消息（权重 2）"
-        "使 _weighted_counts 恒超过 max_size（空队列 append 不丢弃、每次 push 只丢一条）"
-    ),
-    strict=False,
-)
 def test_weighted_count_never_exceeds_max_size_even_for_oversized_entry() -> None:
     """Arrange: max_size=1 的队列；Act: push 权重为 2 的 forward 消息；Assert: 加权计数必须不超过容量上限。"""
     queue = MessageQueue(max_size=1)
