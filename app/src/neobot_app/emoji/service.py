@@ -56,6 +56,8 @@ class EmojiService:
         max_concurrency: int = 20,
         page_size: int = 50,
         logger: Logger | None = None,
+        adapter: Any = None,
+        file_server: Any = None,
     ) -> None:
         self._emoji_dir = data_dir / self._EMOJI_DIR_NAME
         self._uow_factory = uow_factory
@@ -66,6 +68,13 @@ class EmojiService:
         self._entries: dict[int, EmojiEntry] = {}
         self._next_number: int = 1
         self._refresh_task: asyncio.Task[None] | None = None
+        self._adapter = adapter
+        self._file_server = file_server
+
+    def bind_send_dependencies(self, adapter: Any, file_server: Any) -> None:
+        """注入发送能力（适配器与文件服务器），供 send_sticker 使用。"""
+        self._adapter = adapter
+        self._file_server = file_server
 
     @property
     def emoji_count(self) -> int:
@@ -139,6 +148,48 @@ class EmojiService:
             if offset + limit < total:
                 header += f"，往后翻页使用 offset={offset + limit}"
         return header + "\n" + "\n".join(lines)
+
+    async def send_sticker(
+        self,
+        number: int,
+        *,
+        text: str = "",
+        group_id: Any = None,
+        user_id: Any = None,
+    ) -> Any:
+        """发送指定编号的表情包到群聊或私聊，成功后记录使用次数。
+
+        group_id 与 user_id 至少提供一个；两者都有时优先群聊。
+        """
+        if self._adapter is None or self._file_server is None:
+            raise RuntimeError("表情包发送能力未注入（缺少 adapter/file_server）")
+        entry = self.get_entry(number)
+        if entry is None:
+            raise LookupError(f"表情包编号 {number} 不存在")
+        if not entry.file_path.exists():
+            raise FileNotFoundError(f"表情包文件不存在: {entry.file_path}")
+
+        group_id = str(group_id or "").strip()
+        user_id = str(user_id or "").strip()
+        if not group_id and not user_id:
+            raise ValueError("缺少 group_id 或 user_id")
+
+        from neobot_app.utils.media_sender import prepare_image_segment
+        from neobot_contracts.models import ConversationRef
+
+        if group_id:
+            conv_ref = ConversationRef(kind="group", id=group_id)
+        else:
+            conv_ref = ConversationRef(kind="private", id=user_id)
+
+        segments: list[dict] = []
+        if text:
+            segments.append({"type": "text", "data": {"text": text}})
+        segments.append(prepare_image_segment(self._file_server, entry.file_path))
+
+        resp = await self._adapter.send(conv_ref, segments)
+        await self.record_usage(number)
+        return resp
 
     async def record_usage(self, number: int) -> None:
         """记录一次表情包使用，递增 use_count。"""

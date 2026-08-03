@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging as stdlib_logging
+import re
 import sys
 import traceback as _traceback
 from pathlib import Path
@@ -16,6 +17,53 @@ from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 _runtime_event_dispatcher: Any = None
 _self_heal_manager: Any = None
+
+_REDACTED = "***REDACTED***"
+
+# 敏感信息脱敏模式：sk- 前缀的 OpenAI 风格 Key，以及常见键值形式的
+# key/token/password/secret/authorization/bearer。值边界限定为空白/逗号/分号，
+# 避免吞掉相邻内容；纯单词 "token" 等不会被误伤。
+_REDACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)"
+        r"\b\s*[=:]\s*(?:(?:bearer|token)\s+)?[^\s,;]+"
+    ),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+)
+
+
+def redact_sensitive(text: str) -> str:
+    """将文本中的常见敏感信息（API Key / token / password 等）替换为 ***REDACTED***。"""
+    for pattern in _REDACTION_PATTERNS:
+        text = pattern.sub(_REDACTED, text)
+    return text
+
+
+def _redacting_filter(record: dict[str, Any]) -> bool:
+    """loguru filter：在格式化前改写记录，使日志文件输出经过脱敏。
+
+    record 是 loguru 每条日志的共享记录字典；此处替换 message 并接管异常渲染
+    （用 stdlib 格式化 traceback 后脱敏，避免 loguru 在诊断模式输出含密钥的
+    源码行），后续所有读取该记录的 sink（文件/运行时事件/自修复）都会得到
+    脱敏文本。
+    """
+    record["message"] = redact_sensitive(record["message"])
+    exc = record.get("exception")
+    if not exc:
+        return True
+    exc_type, exc_value, exc_tb = exc
+    if exc_type and exc_tb:
+        tb_text = "".join(_traceback.format_exception(exc_type, exc_value, exc_tb))
+        record["message"] += "\n" + redact_sensitive(tb_text)
+        record["exception"] = None
+    else:
+        try:
+            redacted_value = exc_type(redact_sensitive(str(exc_value)))
+        except Exception:
+            redacted_value = RuntimeError(redact_sensitive(str(exc_value)))
+        record["exception"] = (exc_type, redacted_value, exc_tb)
+    return True
 
 # These module-name prefixes produce ERROR-level logs that are transient /
 # external-dependency hiccups, not Bot bugs. Filter them out of self-heal
@@ -55,7 +103,7 @@ def _loguru_runtime_sink(message: Any) -> None:
         stage=record["level"].name.lower(),
         source=str(record["extra"].get("module_name", "")),
         payload={
-            "message": record["message"],
+            "message": redact_sensitive(record["message"]),
             "level": record["level"].name,
             "time": str(record["time"]),
             "module": str(record["extra"].get("module_name", "")),
@@ -96,6 +144,13 @@ def _loguru_self_heal_sink(message: Any) -> None:
             return
     exc = record.get("exception")
     from neobot_app.time_context import monotonic_seconds as _monotonic
+    traceback_text: str | None = None
+    if exc:
+        exc_type, exc_value, exc_tb = exc
+        if exc_type and exc_tb:
+            traceback_text = redact_sensitive(
+                "".join(_traceback.format_exception(exc_type, exc_value, exc_tb))
+            )
     payload = {
         "time": str(record["time"]),
         "level": record["level"].name,
@@ -103,12 +158,8 @@ def _loguru_self_heal_sink(message: Any) -> None:
         "file": record["file"].name,
         "line": record["line"],
         "function": record["function"],
-        "message": record["message"],
-        "traceback": (
-            "".join(_traceback.format_exception(exc.type, exc.value, exc.tb))
-            if exc and exc.type and exc.tb
-            else None
-        ),
+        "message": redact_sensitive(record["message"]),
+        "traceback": traceback_text,
         "_monotonic": _monotonic(),
     }
     try:
@@ -186,7 +237,8 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
             retention="7 days",
             encoding="utf-8",
             backtrace=True,
-            diagnose=True,
+            diagnose=False,
+            filter=_redacting_filter,
         )
 
     if runtime_events:

@@ -170,8 +170,13 @@ class AdapterCore:
         host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
         port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
         self._async_stop_event = asyncio.Event()
-        # 监听指定路径 /onebot
-        server = await websockets.serve(self._handle_client, host, port)
+        # 监听指定路径 /onebot；10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载
+        server = await websockets.serve(
+            self._handle_client,
+            host,
+            port,
+            max_size=10 * 2**20,
+        )
         logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
         try:
             if not self._stop_event.is_set():
@@ -234,6 +239,8 @@ class AdapterCore:
                 else:
                     # 事件处理
                     await self._handle_event(websocket, data)
+        except websockets.exceptions.ConnectionClosedError as exc:
+            logger.warning(f"框架连接异常断开（{exc}）")
         except websockets.exceptions.ConnectionClosed:
             logger.info("框架连接断开")
         except Exception as e:

@@ -43,7 +43,10 @@ class SqlAlchemyUnitOfWork:
         await self._session.close()
 
     async def commit(self) -> None:
-        await retry_on_lock(self._session.commit)
+        await retry_on_lock(
+            self._session.commit,
+            on_retry=self._session.rollback,
+        )
 
     async def rollback(self) -> None:
         await self._session.rollback()

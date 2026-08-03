@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -50,6 +51,9 @@ class NeoBotApplication(Generic[T]):
         archive_summary_service: Any = None,
         file_server: FileServer | None = None,
         browser_lifecycle_manager: Any = None,
+        browser_instance: Any = None,
+        creator_image_service: Any = None,
+        drawing_manager: Any = None,
         background_coros: list | None = None,
         self_heal_manager: Any = None,
         console_service: Any = None,
@@ -85,6 +89,9 @@ class NeoBotApplication(Generic[T]):
         self._vision_provider = vision_provider
         self._archive_summary_service = archive_summary_service
         self._browser_lifecycle_manager = browser_lifecycle_manager
+        self._browser_instance = browser_instance
+        self._creator_image_service = creator_image_service
+        self._drawing_manager = drawing_manager
         self._background_coros = background_coros or []
         self._background_tasks: list[asyncio.Task] = []
         self._self_heal_manager = self_heal_manager
@@ -211,6 +218,16 @@ class NeoBotApplication(Generic[T]):
             await self._scheduled_task_manager.shutdown()
         if self._problem_solver_manager is not None:
             await self._problem_solver_manager.shutdown()
+        if self._drawing_manager is not None:
+            try:
+                await self._drawing_manager.shutdown()
+            except Exception as exc:
+                self._logger.warning("drawing manager shutdown failed", error=str(exc))
+        if self._creator_image_service is not None:
+            try:
+                await self._creator_image_service.close()
+            except Exception as exc:
+                self._logger.warning("creator image service close failed", error=str(exc))
         if self._markdown_image_converter is not None:
             await self._markdown_image_converter.stop()
         if self._emoji_service is not None:
@@ -224,7 +241,16 @@ class NeoBotApplication(Generic[T]):
                 pass
         self._background_tasks.clear()
         if self._browser_lifecycle_manager is not None:
-            await self._browser_lifecycle_manager.stop()
+            try:
+                await self._browser_lifecycle_manager.stop()
+            except Exception as exc:
+                self._logger.warning("browser lifecycle manager stop failed", error=str(exc))
+        if self._browser_instance is not None:
+            try:
+                await self._browser_instance.close()
+            except Exception as exc:
+                self._logger.warning("browser close failed", error=str(exc))
+        self._cleanup_browser_artifacts()
         if self._vision_provider is not None:
             await self._vision_provider.close()
         await self._stop_adapter_with_timeout()
@@ -235,6 +261,30 @@ class NeoBotApplication(Generic[T]):
             await self._engine.dispose()
         self._started = False
         self._logger.info("NeoBot已停止")
+
+    def _cleanup_browser_artifacts(self) -> None:
+        """删除浏览器截图/录屏产物（screenshots/*.jpg|png、annotated_*.png、recording_*.gif）。"""
+        browser = self._browser_instance
+        if browser is None:
+            return
+        browser_dir = Path(getattr(browser, "user_data_dir", "") or "")
+        if not browser_dir.is_dir():
+            return
+        shot_dir = browser_dir / "screenshots"
+        if shot_dir.is_dir():
+            for child in shot_dir.iterdir():
+                if child.is_file() and child.suffix.lower() in (".jpg", ".png"):
+                    try:
+                        child.unlink()
+                    except OSError:
+                        pass
+        for pattern in ("annotated_*.png", "recording_*.gif"):
+            for child in browser_dir.glob(pattern):
+                if child.is_file():
+                    try:
+                        child.unlink()
+                    except OSError:
+                        pass
 
     async def _stop_adapter_with_timeout(self) -> None:
         """Bound only adapter cleanup; core/memory shutdown remains unbounded."""

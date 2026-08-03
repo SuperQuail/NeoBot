@@ -190,6 +190,10 @@ def build_tts_service(*, config: BotConfigSchema, logger_factory: Any) -> Any:
 
     if provider != "siliconflow":
         tts_logger.warning(f"未知的 tts_provider '{provider}'，回退到硅基流动 TTS")
+    from neobot_chat import get_model_registry
+    if "tts_model" not in get_model_registry().names:
+        tts_logger.error("TTS 模型未注册（缺少 SiliconFlow_APIKey 环境变量），TTS 已禁用")
+        return None
     tts_logger.info("TTS 提供商: 硅基流动 (SiliconFlow)")
     return TTSService(config=config.tts, logger=tts_logger)
 

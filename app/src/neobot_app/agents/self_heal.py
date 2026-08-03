@@ -52,7 +52,7 @@ from neobot_app.statistics.tracker import (
     CURRENT_USAGE_MODULE,
     get_usage_tracker,
 )
-from neobot_app.time_context import monotonic_seconds
+from neobot_app.time_context import monotonic_seconds, today_local
 from neobot_app.web_search_package import WebSearchExecutor
 
 EXPOSED_TO_MAIN_AGENT_NAME = "self_heal"
@@ -113,6 +113,7 @@ class SelfHealAgentConfig:
         rate_window_seconds: int = 60,
         min_interval_seconds: int = 300,
         buffer_size: int = 200,
+        daily_limit: int = 5,
         timeout_seconds: float = 300.0,
         max_tokens: int = 8192,
         reasoning_effort: str = "high",
@@ -125,6 +126,7 @@ class SelfHealAgentConfig:
         self.rate_window_seconds = max(1, int(rate_window_seconds))
         self.min_interval_seconds = max(0, int(min_interval_seconds))
         self.buffer_size = max(10, int(buffer_size))
+        self.daily_limit = max(1, int(daily_limit))
         self.timeout_seconds = float(timeout_seconds)
         self.max_tokens = int(max_tokens)
         self.reasoning_effort = str(reasoning_effort)
@@ -144,6 +146,7 @@ class SelfHealAgentConfig:
             rate_window_seconds=int(getattr(config, "rate_window_seconds", 60) or 60),
             min_interval_seconds=int(getattr(config, "min_interval_seconds", 300) or 300),
             buffer_size=int(getattr(config, "buffer_size", 200) or 200),
+            daily_limit=int(getattr(config, "daily_limit", 5) or 5),
             timeout_seconds=float(getattr(config, "timeout_seconds", 300) or 300),
             max_tokens=int(getattr(config, "max_tokens", 8192) or 8192),
             reasoning_effort=str(getattr(config, "reasoning_effort", "high") or "high"),
@@ -224,6 +227,8 @@ class SelfHealManager:
         self._agent: Any = None  # SelfHealAgent; set via set_agent
         self._orchestrator: Any = None
         self._web_search_config = web_search_config or {}
+        self._trigger_date_today: str = ""
+        self._trigger_count_today: int = 0
 
     # ── wiring ──
 
@@ -308,6 +313,13 @@ class SelfHealManager:
         reason = "；".join(reason_parts) or "累积异常"
         await self._dispatch(reason=reason)
 
+    def _daily_trigger_count(self) -> int:
+        today = str(today_local())
+        if self._trigger_date_today != today:
+            self._trigger_date_today = today
+            self._trigger_count_today = 0
+        return self._trigger_count_today
+
     async def trigger_now(self, *, reason: str = "manual") -> str:
         """Manual trigger entry. Skips throttle but still respects running task.
 
@@ -323,25 +335,45 @@ class SelfHealManager:
                 "status": "busy",
                 "task_id": self._current_heal.task_id if self._current_heal else None,
             })
-        await self._dispatch(reason=reason)
-        if self._current_heal is not None:
+        started = await self._dispatch(reason=reason)
+        if started and self._current_heal is not None:
             return _json({
                 "ok": True,
                 "status": "started",
                 "task_id": self._current_heal.task_id,
             })
-        return _json({"ok": False, "error": "未生成任务（无 admin account 或缺少配置）"})
+        return _json({
+            "ok": False,
+            "error": "触发被拒绝（已有任务在运行、已达每日上限或缺少配置）",
+        })
 
-    async def _dispatch(self, *, reason: str) -> None:
+    async def _dispatch(self, *, reason: str) -> bool:
+        """Start a heal task if none is running and the daily budget allows it.
+
+        Returns True when a heal task was started, False otherwise.
+        """
+        if self._running_task is not None and not self._running_task.done():
+            self._logger.debug(
+                "self_heal dispatch skipped: 已有任务运行中",
+                reason=reason,
+            )
+            return False
+        if self._daily_trigger_count() >= self._config.daily_limit:
+            self._logger.warning(
+                "self_heal trigger skipped: 今日触发次数已达上限",
+                limit=self._config.daily_limit,
+                count=self._daily_trigger_count(),
+            )
+            return False
         admin = self.resolve_admin_account()
         if not admin:
             self._logger.warning(
                 "self_heal trigger skipped: admin account 未配置"
             )
-            return
+            return False
         snapshot = list(self._buffer)
         if not snapshot:
-            return
+            return False
         first = snapshot[0].get("time", "")
         last = snapshot[-1].get("time", "")
         heal = HealTask(
@@ -352,14 +384,16 @@ class SelfHealManager:
             first_error_time=first,
             last_error_time=last,
         )
+        self._trigger_count_today += 1
         self._current_heal = heal
         self._last_trigger_monotonic = monotonic_seconds()
         self._buffer.clear()
-        await self._publish_start_notification(heal)
 
         bg_task = asyncio.create_task(self._run_heal(heal))
         bg_task.add_done_callback(lambda _: None)
         self._running_task = bg_task
+        await self._publish_start_notification(heal)
+        return True
 
     async def _publish_start_notification(self, heal: HealTask) -> None:
         """Send the «已开始工作» notification to the admin private chat."""
@@ -625,6 +659,25 @@ def _is_within_any_root(path: Path, roots: list[Path]) -> Path | None:
     return None
 
 
+def _common_project_root(roots: list[Path]) -> Path | None:
+    """Return the deepest common ancestor directory of all `roots`, else None."""
+    if not roots:
+        return None
+    try:
+        parts_list = [root.resolve().parts for root in roots]
+    except OSError:
+        return None
+    common = list(parts_list[0])
+    for parts in parts_list[1:]:
+        i = 0
+        while i < len(common) and i < len(parts) and common[i] == parts[i]:
+            i += 1
+        del common[i:]
+    if not common:
+        return None
+    return Path(*common)
+
+
 class SelfHealToolExecutor(ToolExecutor):
     """Tools available to the self-heal Agent.
 
@@ -748,7 +801,9 @@ class SelfHealToolExecutor(ToolExecutor):
                         "path_glob": {
                             "type": "string",
                             "description": (
-                                "可选路径 glob，默认 app/**/*.py 与 packages/**/*.py"
+                                "可选路径 glob（项目内相对路径，如 app/src/**/*.py），"
+                                "默认 app/**/*.py 与 packages/**/*.py；"
+                                "禁止绝对路径与 ../ 越界"
                             ),
                         },
                     },
@@ -1091,6 +1146,28 @@ class SelfHealToolExecutor(ToolExecutor):
             })
         return _json({"ok": True, "path": str(path), "size": size, "content": text})
 
+    def _confine_glob(self, path_glob: str) -> str | None:
+        """Anchor a project-relative glob to the project root iff it stays
+        within a source root. Returns the anchored glob string or None."""
+        p = Path(path_glob)
+        if p.is_absolute() or ".." in p.parts or not self._source_roots:
+            return None
+        prefix: list[str] = []
+        for part in p.parts:
+            if any(c in part for c in "*?["):
+                break
+            prefix.append(part)
+        project_root = _common_project_root(self._source_roots)
+        if project_root is None:
+            return None
+        try:
+            base = project_root.joinpath(*prefix).resolve()
+        except OSError:
+            return None
+        if _is_within_any_root(base, self._source_roots) is None:
+            return None
+        return str(project_root.joinpath(*p.parts))
+
     async def _execute_search_source_code(self, args: dict) -> str:
         pattern = str(args.get("pattern", "")).strip()
         if not pattern:
@@ -1105,7 +1182,16 @@ class SelfHealToolExecutor(ToolExecutor):
             # source_roots are already e.g. <project>/app and <project>/packages
             globs = [str(root / "**" / "*.py") for root in self._source_roots]
         else:
-            globs = [path_glob]
+            anchored = self._confine_glob(path_glob)
+            if anchored is None:
+                return _json({
+                    "ok": False,
+                    "error": (
+                        "path_glob 越界：仅允许项目内源码子树（app/、packages/）"
+                        "内的相对 glob，禁止绝对路径与 ../"
+                    ),
+                })
+            globs = [anchored]
         seen_files = 0
         total_matches = 0
         results: list[dict[str, Any]] = []
@@ -1121,6 +1207,8 @@ class SelfHealToolExecutor(ToolExecutor):
                 if p.name in _FORBIDDEN_SOURCE_BASENAMES:
                     continue
                 if p.suffix.lower() in _FORBIDDEN_SOURCE_SUFFIXES:
+                    continue
+                if _is_within_any_root(p, self._source_roots) is None:
                     continue
                 seen_files += 1
                 try:

@@ -113,6 +113,11 @@ class ConsoleService:
             display_host = "<服务器IP>" if host in {"0.0.0.0", "::"} else host
             self.public_url = f"http://{display_host}:{port}"
             self.public_port = port
+            from neobot_app.utils.ssrf import allow_private_endpoint
+
+            allow_private_endpoint("127.0.0.1", port)
+            if host not in {"0.0.0.0", "::"}:
+                allow_private_endpoint(host, port)
             self.logger.info(
                 "调试控制台已启动",
                 url=self.public_url,

@@ -282,11 +282,12 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
     async def chat(
         self, messages: list[Message], tools: list[ToolDefinition] | None = None
     ) -> Message:
-        resp = await self.client.post(
+        resp = await self._request_with_retry(
+            "POST",
             "/chat/completions",
             json=self._build_payload(messages, tools, stream=False),
+            check_status=self._raise_for_status_with_body,
         )
-        await self._raise_for_status_with_body(resp)
         data = resp.json()
         result = self._parse_message(data["choices"][0]["message"])
 
@@ -314,66 +315,69 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         tool_calls_map: dict[int, ToolCall] = {}
         stream_usage: dict[str, Any] | None = None
 
-        async with self.client.stream(
+        async for line in self._stream_with_retry(
             "POST",
             "/chat/completions",
             json=self._build_payload(messages, tools, stream=True),
-        ) as resp:
-            await self._raise_for_status_with_body(resp)
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-
+            check_status=self._raise_for_status_with_body,
+        ):
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                break
+            if not data_str or not data_str.startswith("{"):
+                continue
+            try:
                 data = json.loads(data_str)
-                choices = data.get("choices", [])
-                usage_data = data.get("usage")
-                if isinstance(usage_data, dict):
-                    stream_usage = {
-                        "input_tokens": usage_data.get("prompt_tokens", 0),
-                        "output_tokens": usage_data.get("completion_tokens", 0),
-                        "cache_hit_tokens": usage_data.get("prompt_cache_hit_tokens", 0),
-                        "cache_miss_tokens": usage_data.get("prompt_cache_miss_tokens", 0),
-                    }
-                    completion_tokens_details = usage_data.get("completion_tokens_details")
-                    if isinstance(completion_tokens_details, dict):
-                        stream_usage["completion_tokens_details"] = completion_tokens_details
-                if not choices:
+            except json.JSONDecodeError:
+                continue
+            choices = data.get("choices", [])
+            usage_data = data.get("usage")
+            if isinstance(usage_data, dict):
+                stream_usage = {
+                    "input_tokens": usage_data.get("prompt_tokens", 0),
+                    "output_tokens": usage_data.get("completion_tokens", 0),
+                    "cache_hit_tokens": usage_data.get("prompt_cache_hit_tokens", 0),
+                    "cache_miss_tokens": usage_data.get("prompt_cache_miss_tokens", 0),
+                }
+                completion_tokens_details = usage_data.get("completion_tokens_details")
+                if isinstance(completion_tokens_details, dict):
+                    stream_usage["completion_tokens_details"] = completion_tokens_details
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            reasoning_content = delta.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                reasoning_parts.append(reasoning_content)
+                yield ChatChunk(reasoning_delta=reasoning_content)
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+                yield ChatChunk(delta=content)
+
+            for tc_delta in delta.get("tool_calls", []):
+                idx = tc_delta.get("index")
+                if not isinstance(idx, int):
                     continue
-                delta = choices[0].get("delta", {})
-                reasoning_content = delta.get("reasoning_content")
-                if isinstance(reasoning_content, str) and reasoning_content:
-                    reasoning_parts.append(reasoning_content)
-                    yield ChatChunk(reasoning_delta=reasoning_content)
-
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    content_parts.append(content)
-                    yield ChatChunk(delta=content)
-
-                for tc_delta in delta.get("tool_calls", []):
-                    idx = tc_delta.get("index")
-                    if not isinstance(idx, int):
+                if idx not in tool_calls_map:
+                    tool_call = self._build_tool_call(
+                        tool_id=tc_delta.get("id", ""),
+                        tool_name="",
+                        arguments="",
+                    )
+                    if tool_call is None:
                         continue
-                    if idx not in tool_calls_map:
-                        tool_call = self._build_tool_call(
-                            tool_id=tc_delta.get("id", ""),
-                            tool_name="",
-                            arguments="",
-                        )
-                        if tool_call is None:
-                            continue
-                        tool_calls_map[idx] = tool_call
-                    entry = tool_calls_map[idx]
-                    fn = tc_delta.get("function", {})
-                    name = fn.get("name")
-                    if isinstance(name, str) and name:
-                        entry["function"]["name"] += name
-                    arguments = fn.get("arguments")
-                    if isinstance(arguments, str) and arguments:
-                        entry["function"]["arguments"] += arguments
+                    tool_calls_map[idx] = tool_call
+                entry = tool_calls_map[idx]
+                fn = tc_delta.get("function", {})
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    entry["function"]["name"] += name
+                arguments = fn.get("arguments")
+                if isinstance(arguments, str) and arguments:
+                    entry["function"]["arguments"] += arguments
 
         message: Message = {
             "role": "assistant",
@@ -391,8 +395,11 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
 
     async def get_balance(self) -> dict[str, Any]:
         """查询 DeepSeek 账户余额。"""
-        resp = await self.client.get("/user/balance")
-        await self._raise_for_status_with_body(resp)
+        resp = await self._request_with_retry(
+            "GET",
+            "/user/balance",
+            check_status=self._raise_for_status_with_body,
+        )
         return resp.json()
 
 

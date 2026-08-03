@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -125,9 +126,22 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
     birthday_raw = str(args.get("birthday", "")).strip()
     try:
         if len(birthday_raw) == 5 and birthday_raw[2] == "-":
-            birthday_date = date(now_local().year, int(birthday_raw[:2]), int(birthday_raw[3:]))
+            birthday_month = int(birthday_raw[:2])
+            birthday_day = int(birthday_raw[3:])
+            if not (1 <= birthday_month <= 12) or not (1 <= birthday_day <= 31):
+                raise ValueError
+            parse_year = now_local().year
+            max_day = calendar.monthrange(parse_year, birthday_month)[1]
+            if birthday_day > max_day:
+                if not (birthday_month == 2 and birthday_day == 29):
+                    raise ValueError
+                birthday_date = date(parse_year, birthday_month, max_day)
+            else:
+                birthday_date = date(parse_year, birthday_month, birthday_day)
         elif len(birthday_raw) == 10:
             birthday_date = date.fromisoformat(birthday_raw)
+            birthday_month = birthday_date.month
+            birthday_day = birthday_date.day
         else:
             return _json({"ok": False, "error": f"birthday 格式错误: {birthday_raw}，需为 YYYY-MM-DD 或 MM-DD"})
     except (ValueError, IndexError):
@@ -143,12 +157,16 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
 
     local_now = now_local()
     this_year = local_now.year
-    year = this_year if birthday_date.month > local_now.month or (
-        birthday_date.month == local_now.month and birthday_date.day >= local_now.day
+    year = this_year if birthday_month > local_now.month or (
+        birthday_month == local_now.month and birthday_day >= local_now.day
     ) else this_year + 1
 
     try:
-        occurrence_date = date(year, birthday_date.month, birthday_date.day)
+        occurrence_day = min(
+            birthday_day,
+            calendar.monthrange(year, birthday_month)[1],
+        )
+        occurrence_date = date(year, birthday_month, occurrence_day)
         start_at = combine_local(
             occurrence_date,
             datetime.min.replace(hour=start_h, minute=start_m).time(),
@@ -158,7 +176,7 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
             datetime.min.replace(hour=end_h, minute=end_m).time(),
         )
     except ValueError:
-        return _json({"ok": False, "error": "start_time/end_time 超出有效范围"})
+        return _json({"ok": False, "error": "生日日期超出有效范围，请检查日期格式"})
     if end_at <= start_at:
         end_at += timedelta(days=1)
     start_at = to_utc(start_at)
@@ -181,7 +199,7 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
     metadata = {
         "type": "birthday",
         "person_name": person_name,
-        "birthday": f"{birthday_date.month:02d}-{birthday_date.day:02d}",
+        "birthday": f"{birthday_month:02d}-{birthday_day:02d}",
         "celebration_style": celebration_style,
         "relationship_context": relationship,
         "one_shot_notification": bool(args.get("one_shot_notification", True)),
@@ -212,7 +230,7 @@ async def _handle_create_birthday_task(self: BirthdaySkill, args: dict) -> str:
             "task_uuid": record.task_uuid,
             "title": record.title,
             "person_name": person_name,
-            "birthday": f"{birthday_date.month:02d}-{birthday_date.day:02d}",
+            "birthday": f"{birthday_month:02d}-{birthday_day:02d}",
             "next_occurrence": start_at.isoformat(),
         }})
     except Exception as exc:

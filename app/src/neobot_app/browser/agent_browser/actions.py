@@ -18,8 +18,21 @@ from .snapshot import snapshot_page
 class AgentBrowser:
     """AI 代理浏览器 — 高级操作接口。"""
 
-    def __init__(self, headless: bool = True, port: int = 0, user_data_dir: str | Path | None = None, browser_path: str = ""):
-        self._manager = BrowserManager(headless=headless, port=port, user_data_dir=user_data_dir, browser_path=browser_path)
+    def __init__(
+        self,
+        headless: bool = True,
+        port: int = 0,
+        user_data_dir: str | Path | None = None,
+        browser_path: str = "",
+        operation_lock: asyncio.Lock | None = None,
+    ):
+        self._manager = BrowserManager(
+            headless=headless,
+            port=port,
+            user_data_dir=user_data_dir,
+            browser_path=browser_path,
+            operation_lock=operation_lock,
+        )
         self._started = False
 
     async def start(self) -> None:
@@ -35,6 +48,11 @@ class AgentBrowser:
     def user_data_dir(self) -> str:
         return self._manager.user_data_dir
 
+    @property
+    def operation_lock(self) -> asyncio.Lock:
+        """跨聊天流共享的页面操作锁（与 BrowserManager 上的是同一把）。"""
+        return self._manager._operation_lock
+
     # ── 内部辅助 ──
 
     def _result(
@@ -48,9 +66,11 @@ class AgentBrowser:
         return result
 
     async def _ensure(self) -> BrowserManager:
-        if not self._started:
-            await self.start()
-        return self._manager
+        lock = self.__dict__.setdefault("_ensure_lock", asyncio.Lock())
+        async with lock:
+            if not self._started:
+                await self.start()
+            return self._manager
 
     # ── 生命周期 ──
 
@@ -77,7 +97,12 @@ class AgentBrowser:
         try:
             await self.close()
             self._started = False
-            self._manager = BrowserManager(headless=False, port=self._manager._port, user_data_dir=self._manager.user_data_dir)
+            self._manager = BrowserManager(
+                headless=False,
+                port=self._manager._port,
+                user_data_dir=self._manager.user_data_dir,
+                operation_lock=self._manager._operation_lock,
+            )
             result = await self._manager.launch_headed(url)
             self._started = True
             return self._result(result["success"], result)

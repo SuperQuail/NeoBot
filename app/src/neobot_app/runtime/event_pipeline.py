@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from collections import deque
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
@@ -97,7 +99,9 @@ class EventPipeline:
         self._replying_queues: set[str] = set()
         self._post_reply_willing: dict[str, list] = {}
         self._pending_image_willing: dict[str, list] = {}
-        self._image_willing_lock = asyncio.Lock()
+        self._recent_message_ids: deque[int] = deque(maxlen=200)
+        self._recent_message_ids_lock = asyncio.Lock()
+        self._image_willing_locks: dict[str, asyncio.Lock] = {}
 
     def start(self) -> None:
         if self._started:
@@ -220,6 +224,17 @@ class EventPipeline:
 
         task.add_done_callback(_done)
 
+    async def _is_duplicate_message(self, message: PrivateMessage | GroupMessage) -> bool:
+        """按 message_id 对真实消息去重：断线重连重投的同一条消息直接丢弃。"""
+        message_id = getattr(message, "message_id", None)
+        if message_id is None:
+            return False
+        async with self._recent_message_ids_lock:
+            if message_id in self._recent_message_ids:
+                return True
+            self._recent_message_ids.append(message_id)
+        return False
+
     async def handle_private_message_event(
         self,
         event: Dict[str, Any],
@@ -227,6 +242,13 @@ class EventPipeline:
         skip_ai_reply: bool = False,
     ) -> None:
         message = safe_parse_model(event, PrivateMessage)
+        if await self._is_duplicate_message(message):
+            self._logger.debug(
+                "重复消息已丢弃（message_id 去重）",
+                message_id=message.message_id,
+                user_id=message.user_id,
+            )
+            return
         queue_key = str(message.user_id or "")
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
@@ -356,6 +378,13 @@ class EventPipeline:
         skip_ai_reply: bool = False,
     ) -> None:
         message = safe_parse_model(event, GroupMessage)
+        if await self._is_duplicate_message(message):
+            self._logger.debug(
+                "重复消息已丢弃（message_id 去重）",
+                message_id=message.message_id,
+                group_id=message.group_id,
+            )
+            return
         queue_key = str(message.group_id or "")
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._group_queue, queue_key)
@@ -622,6 +651,25 @@ class EventPipeline:
             return False
         return True
 
+    @asynccontextmanager
+    async def _image_willing_lock(self, queue_key: str) -> AsyncIterator[asyncio.Lock]:
+        """按 queue_key 分片的图片意愿处理锁：只保护取列表/清理阶段。"""
+        while True:
+            lock = self._image_willing_locks.get(queue_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._image_willing_locks[queue_key] = lock
+            await lock.acquire()
+            if self._image_willing_locks.get(queue_key) is lock:
+                break
+            lock.release()
+        try:
+            yield lock
+        finally:
+            if self._image_willing_locks.get(queue_key) is lock:
+                del self._image_willing_locks[queue_key]
+            lock.release()
+
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
         if self._image_parse_service is not None:
@@ -630,34 +678,34 @@ class EventPipeline:
                 timeout=self._get_group_agent_silent_timeout_seconds(),
             )
 
-        async with self._image_willing_lock:
+        async with self._image_willing_lock(queue_key):
             pending = self._pending_image_willing.pop(queue_key, [])
-            if not pending:
-                return
+        if not pending:
+            return
 
-            for msg in pending:
-                if (
-                    queue_key in self._replying_queues
-                    and not self._has_active_reply_pipeline("group", queue_key)
-                ):
-                    self._logger.warning(
-                        "stale replying queue state cleared",
-                        queue_key=queue_key,
-                        kind="group",
-                    )
-                    self._replying_queues.discard(queue_key)
-                if queue_key in self._replying_queues:
-                    # 已在回复中，剩余消息放入 post-reply 队列
-                    idx = pending.index(msg)
-                    if idx >= 0:
-                        self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
-                    break
-
-                triggered = await self._handle_willing_decision(
-                    message=msg, queue=self._group_queue, queue_key=queue_key
+        for msg in pending:
+            if (
+                queue_key in self._replying_queues
+                and not self._has_active_reply_pipeline("group", queue_key)
+            ):
+                self._logger.warning(
+                    "stale replying queue state cleared",
+                    queue_key=queue_key,
+                    kind="group",
                 )
-                if triggered:
-                    break
+                self._replying_queues.discard(queue_key)
+            if queue_key in self._replying_queues:
+                # 已在回复中，剩余消息放入 post-reply 队列
+                idx = pending.index(msg)
+                if idx >= 0:
+                    self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
+                break
+
+            triggered = await self._handle_willing_decision(
+                message=msg, queue=self._group_queue, queue_key=queue_key
+            )
+            if triggered:
+                break
 
     async def _process_post_reply_queue(self, queue_key: str) -> None:
         """回复结束后依次处理期间收到的新消息。"""

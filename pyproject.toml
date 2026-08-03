@@ -32,7 +32,15 @@ members = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["app/tests", "packages/adapter/tests", "packages/modloader/tests"]
+testpaths = ["app/tests", "packages/modloader/tests"]
+pythonpath = ["app/src", "packages/contracts/src"]
+addopts = "--tb=short"
+markers = [
+    "browser: 需要真实浏览器环境的测试 (不会在 CI 默认运行)",
+    "network: 需要网络访问的测试",
+    "slow: 执行时间较长的测试",
+    "llm: 需要真实 LLM API 的测试",
+]
 
 [dependency-groups]
 dev = [

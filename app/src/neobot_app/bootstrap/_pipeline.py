@@ -20,8 +20,11 @@ from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.utils.data_sync import sync_data_files
+from neobot_app.utils.logger import get_module_logger
 
 from neobot_app.bootstrap._providers import build_optional_agent_provider
+
+logger = get_module_logger("bootstrap.pipeline")
 
 
 def build_plugin_host(
@@ -54,13 +57,29 @@ def register_config_reload_command(
     config: Any,
 ) -> None:
     from neobot_app.bootstrap._config import _load_config
+    from neobot_app.config.loader.manager import ConfigLoadError
 
     async def _reload_config(**kwargs: Any) -> dict[str, Any]:
-        new_config = _load_config()
+        try:
+            new_config = _load_config()
+        except ConfigLoadError as exc:
+            message = f"配置重载失败，保持旧配置生效：{exc}"
+            logger.error(message)
+            return {"status": "error", "message": message}
         config.reload(new_config)
         sync_data_files(SRC_DATA_DIR, DATA_DIR)
         await host_facade.lifecycle.fire("config.changed")
-        return {"status": "ok", "message": "配置已重载，所有服务下次访问配置时将看到新值"}
+        return {
+            "status": "ok",
+            "message": (
+                "配置已重载（部分生效）。"
+                "已生效：运行时按需读取的配置（提示词模板、概率系数、冷却时间、"
+                "名单等，含模型注册表——新建的 Provider 请求将使用新值）。"
+                "需重启 NeoBot 后生效：运行中的 LLM Provider（模型名/API Key/"
+                "base_url 已固化在现有实例中）、关键词规则（KeywordReactionBuilder "
+                "持有构建时快照）、TTS/表情包等构建期组件。"
+            ),
+        }
 
     host_facade.commands.register(
         "config.reload",
@@ -132,6 +151,9 @@ def build_reply_orchestrator(
     hook_bus: Any,
     file_server: Any,
 ) -> ReplyOrchestrator:
+    bind_send = getattr(emoji_service, "bind_send_dependencies", None)
+    if callable(bind_send):
+        bind_send(adapter, file_server)
     return ReplyOrchestrator(
         adapter=adapter,
         prompt_builder=prompt_builder,
@@ -187,6 +209,9 @@ def build_pipelines_and_app(
     _engine: Any,
     vision_provider: Any,
     browser_lifecycle_manager: Any,
+    browser_instance: Any = None,
+    creator_image_service: Any = None,
+    drawing_manager: Any = None,
     background_coros: list | None = None,
     self_heal_manager: Any = None,
     console_service: Any = None,
@@ -250,6 +275,9 @@ def build_pipelines_and_app(
         vision_provider=vision_provider,
         archive_summary_service=archive_summary_service,
         browser_lifecycle_manager=browser_lifecycle_manager,
+        browser_instance=browser_instance,
+        creator_image_service=creator_image_service,
+        drawing_manager=drawing_manager,
         background_coros=background_coros,
         self_heal_manager=self_heal_manager,
         console_service=console_service,

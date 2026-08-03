@@ -238,25 +238,40 @@ class SandboxService:
             search_path = str(resolved / pattern)
             for p in glob_module.iglob(search_path, recursive=True):
                 fp = Path(p)
-                if fp.is_file():
-                    stat = fp.stat()
-                    result.append({
-                        "name": fp.name,
-                        "path": str(fp.relative_to(self._root)),
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
+                if not fp.is_file():
+                    continue
+                if not self.is_path_allowed(fp):
+                    continue
+                stat = fp.stat()
+                result.append({
+                    "name": fp.name,
+                    "path": self._display_path(fp),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
         else:
             for fp in sorted(resolved.iterdir()):
                 stat = fp.stat()
                 result.append({
                     "name": fp.name,
-                    "path": str(fp.relative_to(self._root)) if fp.is_file() else "",
+                    "path": self._display_path(fp) if fp.is_file() else "",
                     "size": stat.st_size if fp.is_file() else 0,
                     "mtime": stat.st_mtime,
                     "is_dir": fp.is_dir(),
                 })
         return result
+
+    def _display_path(self, path: Path) -> str:
+        """返回相对于沙箱根（或只读目录）的展示路径。"""
+        try:
+            return str(path.relative_to(self._root))
+        except ValueError:
+            for ad in self._allowed_read_dirs:
+                try:
+                    return str(path.relative_to(ad))
+                except ValueError:
+                    continue
+        return str(path)
 
     async def move_file(self, src: Path, dst: Path) -> None:
         """移动文件或目录。"""

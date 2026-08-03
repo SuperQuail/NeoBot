@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from neobot_app.bootstrap import create_application
+from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 
@@ -45,6 +46,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人主程序。"""
     try:
         asyncio.run(run())
+    except ConfigLoadError as exc:
+        print(f"配置加载失败，无法启动机器人：\n{exc}")
+        print("请补充上述缺失的环境变量（或禁用对应功能）后重新启动。")
+        sys.exit(1)
     except ConnectionTimeoutError as exc:
         print(f"错误: {exc}")
     except KeyboardInterrupt:
@@ -203,7 +208,11 @@ async def _run_sandbox_cleanup() -> int:
     print()
 
     # 1. 加载配置
-    config = build_config()
+    try:
+        config = build_config()
+    except ConfigLoadError as exc:
+        print(f"配置加载失败：\n{exc}")
+        return 1
     sandbox_cfg = getattr(config.agent, "sandbox", None)
     if not sandbox_cfg or not sandbox_cfg.enabled:
         print("错误: 沙箱功能未启用 (agent.sandbox.enabled = false)")

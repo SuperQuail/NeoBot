@@ -1142,6 +1142,7 @@ class ReplyOrchestrator:
             await self._send_reply(event, pre_hook_text)
             return
 
+        previous_entries = queue_copy.entries(queue_key)
         while True:
             reply_sent = False
             cancelled = False

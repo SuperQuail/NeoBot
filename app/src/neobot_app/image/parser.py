@@ -71,7 +71,16 @@ class ImageParseService:
             self._parse_and_replace(message, image_indices)
         )
         self._pending.setdefault(queue_key, set()).add(task)
-        task.add_done_callback(lambda t: self._pending.get(queue_key, set()).discard(t))
+        task.add_done_callback(lambda t: self._cleanup_pending_task(queue_key, t))
+
+    def _cleanup_pending_task(self, queue_key: str, task: asyncio.Task[None]) -> None:
+        """任务完成后从集合移除；集合变空时删除 key，避免无界增长。"""
+        tasks = self._pending.get(queue_key)
+        if tasks is None:
+            return
+        tasks.discard(task)
+        if not tasks:
+            del self._pending[queue_key]
 
     async def wait_for_queue(self, queue_key: str, timeout: float | None = None) -> None:
         """等待指定队列的所有待处理图片解析完成"""

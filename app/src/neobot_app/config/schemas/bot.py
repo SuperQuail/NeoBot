@@ -1142,6 +1142,15 @@ class AgentSelfHeal:
         default="debug/self_heal",
         metadata={"description": "沙箱内 debug 报告子目录（相对沙箱根）"},
     )
+    daily_limit: Optional[int] = field(
+        default=5,
+        metadata={
+            "description": (
+                "自修复任务每日（自然日，进程内计数）最大触发次数；默认 5，"
+                "防止异常风暴导致 LLM 费用失控"
+            )
+        },
+    )
 
 
 @dataclass

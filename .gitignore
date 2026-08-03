@@ -125,3 +125,6 @@ uv.lock
 
 .kagent/
 /.cursor/
+
+# local bug tracker tool
+/bug_tracker/

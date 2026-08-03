@@ -160,6 +160,7 @@ class ProblemSolverManager:
         self._logger = logger or NullLogger()
         self._notification_hub = notification_hub
         self._tasks: dict[str, SolveTask] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None
         self._agent: Any = None
@@ -174,6 +175,12 @@ class ProblemSolverManager:
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
+
+    def _spawn_bg_task(self, coro: Any) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     def _pipeline_key(self, kind: str, conv_id: str) -> str:
         return f"{kind}:{conv_id}"
@@ -278,7 +285,7 @@ class ProblemSolverManager:
         self._tasks[task.task_id] = task
         self._enforce_task_limit(pipeline_key)
 
-        bg = asyncio.create_task(self._run_solve(task))
+        bg = self._spawn_bg_task(self._run_solve(task))
         bg.add_done_callback(lambda _: None)
 
         grace = self._config.startup_grace_seconds
@@ -440,7 +447,7 @@ class ProblemSolverManager:
                 started_pipeline=started,
             )
             if not started and not task.notified and task.notification_count == 0:
-                asyncio.create_task(self._retry_notification(task))
+                self._spawn_bg_task(self._retry_notification(task))
             return
 
         if self._orchestrator is None:
@@ -469,7 +476,7 @@ class ProblemSolverManager:
         await queue.put(notification)
 
         if not task.notified and task.notification_count == 0:
-            asyncio.create_task(self._retry_notification(task))
+            self._spawn_bg_task(self._retry_notification(task))
 
     async def _publish_hub_notification(
         self, task: SolveTask, notification: str
@@ -542,6 +549,12 @@ class ProblemSolverManager:
             if task.status == "solving":
                 task.status = "failed"
                 task.error = "系统关闭，任务被取消"
+        pending = list(self._bg_tasks)
+        for bg_task in pending:
+            bg_task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._bg_tasks.clear()
         self._tasks.clear()
         self._notification_queues.clear()
 

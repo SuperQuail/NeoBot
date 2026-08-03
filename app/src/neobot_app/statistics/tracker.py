@@ -94,8 +94,12 @@ class UsageTracker:
 
         async with self._session_factory() as session:
             repo = SqlAlchemyUsageRepository(session)
-            await repo.add(record_obj)
-            await retry_on_lock(session.commit)
+
+            async def _flush() -> None:
+                await repo.add(record_obj)
+                await session.commit()
+
+            await retry_on_lock(_flush, on_retry=session.rollback)
 
         self._logger.debug(
             "usage recorded",

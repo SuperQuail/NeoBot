@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +43,11 @@ class BackgroundNotificationHub:
         self._orchestrator = orchestrator
         self._logger = logger or NullLogger()
         self._queues: dict[str, asyncio.Queue[BackgroundNotification]] = {}
+        self._last_used: dict[str, float] = {}
+        self._last_sweep = 0.0
+        self._queue_max_size = 100
+        self._queue_idle_ttl_seconds = 1800.0
+        self._queue_sweep_interval_seconds = 300.0
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
@@ -92,14 +98,30 @@ class BackgroundNotificationHub:
             )
             return True
 
-        queue = self._queues.setdefault(pipeline_key, asyncio.Queue())
-        await queue.put(notification)
+        queue = self._queues.get(pipeline_key)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._queue_max_size)
+            self._queues[pipeline_key] = queue
+        self._last_used[pipeline_key] = time.monotonic()
+        if queue.full():
+            try:
+                dropped = queue.get_nowait()
+                self._logger.warning(
+                    "hub.publish() 通知队列已满，丢弃最旧通知",
+                    source=source,
+                    pipeline_key=pipeline_key,
+                    dropped_source=dropped.source,
+                )
+            except asyncio.QueueEmpty:
+                pass
+        queue.put_nowait(notification)
         self._logger.info(
             "hub.publish() 通知已入队",
             source=source,
             pipeline_key=pipeline_key,
             pending=queue.qsize(),
         )
+        self._sweep_idle_queues()
         return False
 
     async def poll(
@@ -123,6 +145,7 @@ class BackgroundNotificationHub:
 
         await self._consume(notification)
 
+        self._last_used[pipeline_key] = time.monotonic()
         self._logger.info(
             "hub.poll() 取出通知",
             source=notification.source,
@@ -130,7 +153,29 @@ class BackgroundNotificationHub:
             notification_preview=notification.content[:120],
             remaining_in_queue=queue.qsize(),
         )
+        if queue.empty() and not getattr(queue, "_getters", None):
+            self._queues.pop(pipeline_key, None)
+            self._last_used.pop(pipeline_key, None)
         return notification
+
+    def _sweep_idle_queues(self) -> None:
+        """惰性清理长期无人轮询的通知队列，防止 key 无限增长。"""
+        now = time.monotonic()
+        if now - self._last_sweep < self._queue_sweep_interval_seconds:
+            return
+        self._last_sweep = now
+        idle_keys = [
+            key
+            for key, last_used in self._last_used.items()
+            if now - last_used > self._queue_idle_ttl_seconds
+        ]
+        for key in idle_keys:
+            self._queues.pop(key, None)
+            self._last_used.pop(key, None)
+            self._logger.debug(
+                "hub 清理空闲通知队列",
+                pipeline_key=key,
+            )
 
     def get_pipeline_status(self, pipeline_key: str) -> dict[str, Any]:
         queue = self._queues.get(pipeline_key)
@@ -145,6 +190,7 @@ class BackgroundNotificationHub:
 
     def clear(self) -> None:
         self._queues.clear()
+        self._last_used.clear()
 
     async def _try_start_background_reply(self, notification: BackgroundNotification) -> bool:
         if self._orchestrator is None:

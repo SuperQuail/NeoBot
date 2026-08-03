@@ -11,7 +11,9 @@ import json
 import os
 import platform
 import shutil
+import threading
 import time
+import weakref
 from pathlib import Path
 import glob as _glob
 from typing import Any, Optional
@@ -24,6 +26,49 @@ _MAX_RETRIES = 2
 _RETRY_INTERVAL = 1.0
 
 _WINDOWS = platform.system() == "Windows"
+
+# 本进程内所有存活 BrowserManager 实例的注册表（按 user_data_dir 小写分组）。
+# DrissionPage 某些版本取不到 chrome 主进程 pid，因此无法按 pid 判定归属；
+# 这里用实例弱引用判定"该用户数据目录是否仍有存活实例持有"。
+# _kill_orphaned_chrome 只清理"没有任何存活实例"的目录下的残留进程，
+# 避免并发/先后启动的实例互相杀死对方刚启动的浏览器。
+_INSTANCE_REGISTRY: dict[str, set[weakref.ReferenceType]] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _register_instance(manager: "BrowserManager") -> None:
+    with _REGISTRY_LOCK:
+        _INSTANCE_REGISTRY.setdefault(manager._user_data_dir.lower(), set()).add(
+            weakref.ref(manager)
+        )
+
+
+def _unregister_instance(manager: "BrowserManager") -> None:
+    with _REGISTRY_LOCK:
+        refs = _INSTANCE_REGISTRY.get(manager._user_data_dir.lower())
+        if refs is None:
+            return
+        for ref in list(refs):
+            if ref() is manager:
+                refs.discard(ref)
+        if not refs:
+            _INSTANCE_REGISTRY.pop(manager._user_data_dir.lower(), None)
+
+
+def _has_other_live_instances(manager: "BrowserManager") -> bool:
+    """该用户数据目录下是否存在除 manager 之外仍存活的实例。"""
+    with _REGISTRY_LOCK:
+        ud = manager._user_data_dir.lower()
+        refs = _INSTANCE_REGISTRY.get(ud)
+        if not refs:
+            return False
+        live = {ref for ref in refs if ref() is not None}
+        if len(live) != len(refs):
+            if live:
+                _INSTANCE_REGISTRY[ud] = live
+            else:
+                _INSTANCE_REGISTRY.pop(ud, None)
+        return any(ref() is not manager for ref in live)
 
 
 def _playwright_chromium_path() -> str:
@@ -101,11 +146,13 @@ class BrowserManager:
         user_data_dir: str | Path | None = None,
         port: int = 0,
         browser_path: str = "",
+        operation_lock: asyncio.Lock | None = None,
     ):
         self._headless = headless
         self._user_data_dir = str(user_data_dir or Path.cwd() / "browser_user_data")
         self._port = port
         self._browser_path = browser_path or _find_chrome_binary()
+        self._operation_lock = operation_lock if operation_lock is not None else asyncio.Lock()
         self._page: ChromiumBase | None = None
         self._session_page: ChromiumPage | None = None
         self._chrome_pid: Optional[int] = None
@@ -118,6 +165,7 @@ class BrowserManager:
         self._init_scripts: dict[str, str] = {}
         Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
         self._cleanup_locks()
+        _register_instance(self)
 
     def _cleanup_locks(self):
         """清理用户数据目录中 Chrome 残留的锁文件。"""
@@ -132,12 +180,16 @@ class BrowserManager:
                     pass
 
     def _kill_orphaned_chrome(self) -> None:
-        """杀死使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
+        """清理使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
 
         浏览器关闭后 Chrome 进程可能未完全退出，导致新实例初始化时出现
         'Chromium' object has no attribute '_dl_mgr' 等异常。
+        若该用户数据目录仍有其他存活实例（并发/先后启动的共享实例），
+        则不清理任何进程，避免互相误杀。
         """
         if not _WINDOWS:
+            return
+        if _has_other_live_instances(self):
             return
         try:
             import psutil as _psutil
@@ -274,7 +326,8 @@ class BrowserManager:
                         )
                     except Exception:
                         pass
-                self._chrome_pid = None
+            self._chrome_pid = None
+        _unregister_instance(self)
         self._page = None
         self._session_page = None
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -8,6 +9,12 @@ import httpx
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_chat.schema.types import ChatChunk, Message, ToolDefinition
+
+_RETRYABLE_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
 
 class Provider(Protocol):
@@ -81,6 +88,81 @@ class BaseHTTPProvider:
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             )
         return self._client
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_retries: int = 2,
+        base_delay: float = 0.5,
+        check_status: Callable[[httpx.Response], Awaitable[None]] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Retry transport errors and retryable 5xx statuses with exponential
+        backoff; 4xx and other errors are raised immediately."""
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self.client.request(method, url, **kwargs)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                if attempt >= max_retries:
+                    raise
+                await asyncio.sleep(base_delay * (2**attempt))
+                continue
+            if (
+                resp.status_code in _RETRYABLE_HTTP_STATUSES
+                and attempt < max_retries
+            ):
+                await asyncio.sleep(base_delay * (2**attempt))
+                continue
+            if check_status is not None:
+                await check_status(resp)
+            else:
+                resp.raise_for_status()
+            return resp
+        raise last_exc  # type: ignore[misc]
+
+    async def _stream_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_retries: int = 2,
+        base_delay: float = 0.5,
+        check_status: Callable[[httpx.Response], Awaitable[None]] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Retry only until the first bytes of the response body arrive;
+        once the stream has started, errors propagate without retrying."""
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            started = False
+            try:
+                async with self.client.stream(method, url, **kwargs) as resp:
+                    if (
+                        resp.status_code in _RETRYABLE_HTTP_STATUSES
+                        and attempt < max_retries
+                    ):
+                        await asyncio.sleep(base_delay * (2**attempt))
+                        continue
+                    if check_status is not None:
+                        await check_status(resp)
+                    else:
+                        resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        started = True
+                        yield line
+                    return
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                if started:
+                    raise
+                if attempt >= max_retries:
+                    raise
+                await asyncio.sleep(base_delay * (2**attempt))
+        raise last_exc  # type: ignore[misc]
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
