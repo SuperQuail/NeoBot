@@ -124,6 +124,17 @@ class ConsoleService:
                 local_url=f"http://127.0.0.1:{port}",
                 listen_host=host,
             )
+            # 外网可访问性检查: Windows 防火墙按程序路径拦截入站时给出明确指引
+            try:
+                from neobot_app.console.firewall import (
+                    check_console_firewall,
+                    firewall_warning_message,
+                )
+
+                if not check_console_firewall(port):
+                    self.logger.warning(firewall_warning_message(port))
+            except Exception:
+                pass
 
     async def stop(self) -> None:
         for runner in reversed(self._runners):
