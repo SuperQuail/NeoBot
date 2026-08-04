@@ -1,4 +1,4 @@
-"""SqlAlchemy emoji analysis repository."""
+"""SqlAlchemy 表情分析仓库。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from neobot_storage.models import EmojiData
 
 
 class SqlAlchemyEmojiAccess:
-    """SqlAlchemy implementation of EmojiAccess protocol."""
+    """EmojiAccess 协议的 SqlAlchemy 实现。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session

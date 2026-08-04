@@ -1,4 +1,4 @@
-"""add image_source column"""
+"""新增 image_source 列"""
 
 from typing import Sequence, Union
 

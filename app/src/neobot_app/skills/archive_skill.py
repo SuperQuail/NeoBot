@@ -176,7 +176,6 @@ class ArchiveSkill(SkillModule):
             ".tar.bz2": "w:bz2",
             ".tar.xz": "w:xz",
         }
-        output_lower = output.name.lower() if output.suffix else output.name.lower()
         # 处理双重后缀如 .tar.gz
         output_str = str(output).lower()
         mode = "w:gz"

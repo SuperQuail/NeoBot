@@ -1,6 +1,5 @@
 """配置加载器"""
 
-import sys
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type, TypeVar
@@ -14,6 +13,14 @@ from neobot_app.utils.logger import get_module_logger
 
 T = TypeVar("T")
 logger = get_module_logger("config_loader")
+
+
+class ConfigLoadError(RuntimeError):
+    """配置加载失败（缺失必需配置项、无法生成配置文件等）。
+
+    由调用方决定处理方式：启动路径可以打印清单后退出，
+    reload 路径应记录错误并保持旧配置生效。
+    """
 
 
 def _build_provider_extra_body(
@@ -116,7 +123,13 @@ class Config:
 
     @classmethod
     def register_models(cls, config_obj: Any):
-        """根据配置自动注册模型。"""
+        """根据配置自动注册模型。
+
+        未启用功能的模型（creator_image_model、tts_model）跳过注册与 Key 校验；
+        无启用开关的模型（vision_model）缺 Key 时降级跳过并警告；
+        必需对话模型（primary_chat_model、agent_model_1..3）缺 Key 时
+        收集全部缺失项后抛出 ConfigLoadError，不直接退出进程。
+        """
         models_config = getattr(config_obj, "models", None)
         if models_config is None:
             return None
@@ -132,20 +145,34 @@ class Config:
             get_model_registry,
         )
 
-        registry = get_model_registry()
-        registry.clear()
+        # 无独立 enabled 开关、缺 Key 时可降级跳过的模型字段
+        degradable_fields = {"vision_model", "tts_model"}
 
-        registered_count = 0
+        def _feature_enabled(model_field_name: str) -> bool:
+            if model_field_name == "tts_model":
+                return bool(getattr(getattr(config_obj, "tts", None), "enabled", False))
+            if model_field_name == "creator_image_model":
+                return bool(
+                    getattr(getattr(config_obj, "agent", None), "creator", None)
+                    and getattr(
+                        getattr(config_obj, "agent", None).creator, "enabled", False
+                    )
+                )
+            return True
+
+        registry = get_model_registry()
+
+        pending: list[tuple] = []
+        missing_items: list[str] = []
+
         for model_field in fields(models_config):
             model_config = getattr(models_config, model_field.name)
             if not is_dataclass(model_config):
                 continue
-            creator_config = getattr(getattr(config_obj, "agent", None), "creator", None)
-            if (
-                model_field.name == "creator_image_model"
-                and not getattr(creator_config, "enabled", False)
-            ):
-                logger.info("图像创作功能未启用，跳过注册 creator_image_model")
+            if not _feature_enabled(model_field.name):
+                logger.info(
+                    f"{model_field.name} 对应功能未启用，跳过注册与校验"
+                )
                 continue
 
             provider_name = getattr(model_config, "provider", "").strip()
@@ -156,20 +183,28 @@ class Config:
                 and "模型编号0" not in description
             ):
                 description = f"{description}（Agent模型编号0）"
-            if not provider_name:
-                raise ValueError(f"模型 {model_field.name} 缺少 provider 配置")
-            if not model_name:
-                raise ValueError(f"模型 {model_field.name} 缺少 model_name 配置")
 
-            platform_config = EnvConfig.get_api_platform_config(provider_name)
-            if not platform_config.url:
-                raise ValueError(
-                    f"模型 {model_field.name} 缺少平台 {provider_name}_URL 配置"
-                )
-            if not platform_config.api_key:
-                raise ValueError(
-                    f"模型 {model_field.name} 缺少平台 {provider_name}_APIKey 配置"
-                )
+            missing: list[str] = []
+            if not provider_name:
+                missing.append("provider 配置")
+            if not model_name:
+                missing.append("model_name 配置")
+
+            platform_config = None
+            if provider_name:
+                platform_config = EnvConfig.get_api_platform_config(provider_name)
+                if not platform_config.url:
+                    missing.append(f"平台 {provider_name}_URL 配置")
+                if not platform_config.api_key:
+                    missing.append(f"平台 {provider_name}_APIKey 配置")
+
+            if missing:
+                detail = f"模型 {model_field.name} 缺少: " + "、".join(missing)
+                if model_field.name in degradable_fields:
+                    logger.warning(f"{detail}，该功能将被降级禁用")
+                    continue
+                missing_items.append(detail)
+                continue
 
             pricing_config = getattr(model_config, "pricing", None)
             settings_config = getattr(model_config, "settings", None)
@@ -196,10 +231,25 @@ class Config:
                 presence_penalty=getattr(settings_config, "presence_penalty", None),
                 extra_body=_build_provider_extra_body(provider_name, settings_config),
             )
+            pending.append(
+                (model_field.name, description, provider_name, model_name, platform_config, pricing, settings)
+            )
 
+        if missing_items:
+            message = (
+                "配置校验失败，以下必需配置缺失（请补充对应平台的环境变量）：\n"
+                + "\n".join(f"  - {item}" for item in missing_items)
+            )
+            logger.error(message)
+            raise ConfigLoadError(message)
+
+        registry.clear()
+
+        registered_count = 0
+        for name, description, provider_name, model_name, platform_config, pricing, settings in pending:
             registry.register(
                 RegisteredModel(
-                    name=model_field.name,
+                    name=name,
                     description=description,
                     provider_name=provider_name,
                     model_name=model_name,
@@ -211,7 +261,7 @@ class Config:
             )
             registered_count += 1
             logger.info(
-                f"已注册模型: {model_field.name} -> {provider_name}/{model_name}"
+                f"已注册模型: {name} -> {provider_name}/{model_name}"
             )
 
         logger.info(f"模型注册完成，共注册 {registered_count} 个模型")
@@ -276,8 +326,10 @@ class Config:
             except Exception as e:
                 logger.error(f"写入配置文件失败: {e}")
                 if not file_exists:
-                    logger.error("无法生成配置文件，程序退出")
-                    sys.exit(1)
+                    logger.error("无法生成配置文件")
+                    raise ConfigLoadError(
+                        f"无法生成配置文件 {file_path}，请检查目录写入权限"
+                    ) from e
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -294,6 +346,8 @@ class Config:
             logger.info("配置文件加载成功")
             cls.register_models(config_obj)
             return config_obj
+        except ConfigLoadError:
+            raise
         except Exception as e:
             logger.error(f"解析配置文件失败: {e}")
-            sys.exit(1)
+            raise

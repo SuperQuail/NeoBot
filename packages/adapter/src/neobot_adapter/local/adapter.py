@@ -60,6 +60,11 @@ class LocalAdapter:
         return False
 
     @property
+    def connected(self) -> bool:
+        """内嵌的本地 HTTP/WebSocket 服务是否正在运行。"""
+        return self._core._started.is_set()
+
+    @property
     def http_url(self) -> str:
         return self._core.http_url
 

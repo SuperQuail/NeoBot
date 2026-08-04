@@ -1,4 +1,4 @@
-"""SqlAlchemy archive memory repository."""
+"""SqlAlchemy 归档记忆仓库。"""
 
 from __future__ import annotations
 
@@ -18,13 +18,13 @@ from neobot_storage.models import ArchiveMemoryData
 
 
 class SqlAlchemyArchiveMemoryAccess:
-    """SqlAlchemy implementation of ArchiveMemoryAccess protocol."""
+    """ArchiveMemoryAccess 协议的 SqlAlchemy 实现。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get(self, table_name: str, key: str) -> Optional[ArchiveMemory]:
-        """Get archive memory entry by table name and key."""
+        """按表名与键获取归档记忆条目。"""
         stmt = select(ArchiveMemoryData).where(
             ArchiveMemoryData.table_name == table_name,
             ArchiveMemoryData.key == key,
@@ -37,7 +37,7 @@ class SqlAlchemyArchiveMemoryAccess:
         return None
 
     async def set(self, table_name: str, key: str, value: str, tags: list[str]) -> ArchiveMemory:
-        """Create or update archive memory entry."""
+        """创建或更新归档记忆条目。"""
         now = now_utc()
         serialized_tags = self._tags_to_string(tags)
 
@@ -87,7 +87,7 @@ class SqlAlchemyArchiveMemoryAccess:
         return self._to_domain(row)
 
     async def delete(self, table_name: str, key: str) -> bool:
-        """Delete archive memory entry."""
+        """删除归档记忆条目。"""
         row = await self._get_optional_row(table_name, key)
         if row:
             await self._session.delete(row)
@@ -96,7 +96,7 @@ class SqlAlchemyArchiveMemoryAccess:
         return False
 
     async def exists(self, table_name: str, key: str) -> bool:
-        """Check if archive memory entry exists."""
+        """检查归档记忆条目是否存在。"""
         stmt = select(ArchiveMemoryData.id).where(
             ArchiveMemoryData.table_name == table_name,
             ArchiveMemoryData.key == key,
@@ -114,7 +114,7 @@ class SqlAlchemyArchiveMemoryAccess:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArchiveMemory]:
-        """List archive entries for a table with filtering and pagination."""
+        """列出指定表的归档条目，支持筛选与分页。"""
         stmt = select(ArchiveMemoryData).where(ArchiveMemoryData.table_name == table_name)
 
         if key_query:
@@ -149,7 +149,7 @@ class SqlAlchemyArchiveMemoryAccess:
         return row
 
     def _to_domain(self, row: ArchiveMemoryData) -> ArchiveMemory:
-        """Convert SQLAlchemy model to domain model."""
+        """将 SQLAlchemy 模型转换为领域模型。"""
         return ArchiveMemory(
             id=row.id,
             table_name=row.table_name,
@@ -163,20 +163,20 @@ class SqlAlchemyArchiveMemoryAccess:
 
     @staticmethod
     def _tags_to_string(tags: list[str]) -> str:
-        """Convert tags to a reversible serialized string."""
+        """将标签转换为可逆的序列化字符串。"""
         return json.dumps(tags, ensure_ascii=True)
 
     @staticmethod
     def _serialize_tag(tag: str) -> str:
-        """Serialize a single tag so text filtering matches exact JSON entries."""
+        """序列化单个标签，使文本筛选能精确匹配 JSON 条目。"""
         return json.dumps(tag, ensure_ascii=True)
 
     @staticmethod
     def _string_to_tags(tags_string: Optional[str]) -> list[str]:
-        """Convert serialized tags back to a list.
+        """将序列化字符串还原为标签列表。
 
-        Falls back to the legacy comma-separated format so existing rows
-        remain readable after upgrading the repository implementation.
+        兼容解析旧的逗号分隔格式，使仓库实现升级后
+        已有的数据行仍可正常读取。
         """
         if not tags_string:
             return []
@@ -193,13 +193,13 @@ class SqlAlchemyArchiveMemoryAccess:
 
     @staticmethod
     def _string_to_legacy_tags(tags_string: str) -> list[str]:
-        """Decode the previous comma-separated tag format."""
+        """解析旧的逗号分隔标签格式。"""
         tags = tags_string.split(",")
         return [tag.replace(";", ",") for tag in tags if tag]
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
-        """Always expose archive timestamps as UTC-aware datetimes."""
+        """始终将归档时间戳暴露为带 UTC 时区的 datetime。"""
         return to_utc(value)
 
 

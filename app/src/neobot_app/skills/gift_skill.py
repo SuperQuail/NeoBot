@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,16 @@ _STORAGE_DOC = "文件存储.md"
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+_USER_ID_RE = re.compile(r"^\d+$")
+
+def _validate_user_id(user_id: str) -> str | None:
+    """校验 user_id 为纯数字 QQ 号；合法返回 None，否则返回错误描述。"""
+    if not user_id:
+        return "user_id 不能为空"
+    if _USER_ID_RE.match(user_id) is None:
+        return f"user_id 非法: {user_id}"
+    return None
 
 class GiftSkill(SkillModule):
     """礼物管理 Skill — 创建、列表、取消礼物，与定时任务集成。"""
@@ -74,7 +85,12 @@ class GiftSkill(SkillModule):
         return Path(GIFT_DIR)
 
     def _user_gift_dir(self, user_id: str) -> Path:
-        return self._gift_root() / user_id
+        user_dir = self._gift_root() / user_id
+        try:
+            user_dir.resolve().relative_to(self._gift_root().resolve())
+        except ValueError:
+            raise PermissionError(f"路径越界: {user_id}")
+        return user_dir
 
     def get_tools(self) -> list[dict]:
         return [
@@ -160,6 +176,10 @@ async def _handle_create_gift(self: GiftSkill, args: dict) -> str:
     if not user_id or not idea or not trigger_date_str:
         return _json({"ok": False, "error": "缺少必要参数 user_id/idea/trigger_date"})
 
+    error = _validate_user_id(user_id)
+    if error is not None:
+        return _json({"ok": False, "error": error})
+
     # 查重
     gift_root = self._gift_root()
     gift_root.mkdir(parents=True, exist_ok=True)
@@ -235,9 +255,19 @@ async def _handle_create_gift(self: GiftSkill, args: dict) -> str:
         )
     except Exception as e:
         # 回滚：删除已创建的目录
-        import shutil
-        shutil.rmtree(str(user_dir), ignore_errors=True)
+        try:
+            await self._sandbox.delete_file(user_dir)
+        except Exception:
+            pass
         return _json({"ok": False, "error": f"创建定时任务失败: {e}"})
+
+    # 回写定时任务 UUID 到 gift.md（保留其余内容）
+    try:
+        current = await self._sandbox.read_file(gift_md_path)
+        updated = _update_gift_md_task_uuid(current.decode("utf-8"), task.task_uuid)
+        await self._sandbox.write_file(gift_md_path, updated.encode("utf-8"))
+    except Exception:
+        pass
 
     # 如果选择立即准备，发布通知
     prepare_status = "not_prepared"
@@ -321,33 +351,22 @@ async def _handle_cancel_gift(self: GiftSkill, args: dict) -> str:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
 
     user_id = str(args.get("user_id", "")).strip()
-    if not user_id:
-        return _json({"ok": False, "error": "user_id 不能为空"})
+    error = _validate_user_id(user_id)
+    if error is not None:
+        return _json({"ok": False, "error": error})
 
     user_dir = self._user_gift_dir(user_id)
     if not user_dir.exists():
         return _json({"ok": False, "error": f"用户 {user_id} 没有活跃的礼物"})
 
-    # 尝试获取定时任务 UUID 并删除
-    task_deleted = False
-    gift_md_path = user_dir / GIFT_MD
-    if gift_md_path.is_file() and self._scheduled_tasks is not None:
-        try:
-            content = gift_md_path.read_text("utf-8")
-            import re
-            m = re.search(r"定时任务UUID[：:]\s*(\S+)", content)
-            if m:
-                task_uuid = m.group(1)
-                async with self._scheduled_tasks._uow_factory() as uow:
-                    await uow.scheduled_tasks.delete(task_uuid)
-                    await uow.commit()
-                    task_deleted = True
-        except Exception:
-            pass
+    # 删除定时任务（优先 gift.md 中的 UUID，否则按 metadata 反查）
+    task_deleted = await _delete_gift_task(self, user_id, _read_gift_md_task_uuid(user_dir))
 
     # 删除礼物文件夹
-    import shutil
-    shutil.rmtree(str(user_dir), ignore_errors=True)
+    try:
+        await self._sandbox.delete_file(user_dir)
+    except (FileNotFoundError, OSError):
+        pass
 
     return _json({
         "ok": True,
@@ -360,33 +379,22 @@ async def _handle_mark_gift_sent(self: GiftSkill, args: dict) -> str:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
 
     user_id = str(args.get("user_id", "")).strip()
-    if not user_id:
-        return _json({"ok": False, "error": "user_id 不能为空"})
+    error = _validate_user_id(user_id)
+    if error is not None:
+        return _json({"ok": False, "error": error})
 
     user_dir = self._user_gift_dir(user_id)
     if not user_dir.exists():
         return _json({"ok": True, "note": f"用户 {user_id} 的礼物文件夹已不存在"})
 
-    # 删除定时任务
-    task_deleted = False
-    gift_md_path = user_dir / GIFT_MD
-    if gift_md_path.is_file() and self._scheduled_tasks is not None:
-        try:
-            content = gift_md_path.read_text("utf-8")
-            import re
-            m = re.search(r"定时任务UUID[：:]\s*(\S+)", content)
-            if m:
-                task_uuid = m.group(1)
-                async with self._scheduled_tasks._uow_factory() as uow:
-                    await uow.scheduled_tasks.delete(task_uuid)
-                    await uow.commit()
-                    task_deleted = True
-        except Exception:
-            pass
+    # 删除定时任务（优先 gift.md 中的 UUID，否则按 metadata 反查）
+    task_deleted = await _delete_gift_task(self, user_id, _read_gift_md_task_uuid(user_dir))
 
     # 删除礼物文件夹
-    import shutil
-    shutil.rmtree(str(user_dir), ignore_errors=True)
+    try:
+        await self._sandbox.delete_file(user_dir)
+    except (FileNotFoundError, OSError):
+        pass
 
     return _json({
         "ok": True,
@@ -394,6 +402,65 @@ async def _handle_mark_gift_sent(self: GiftSkill, args: dict) -> str:
         "cleaned": True,
         "task_deleted": task_deleted,
     })
+
+def _read_gift_md_task_uuid(user_dir: Path) -> str | None:
+    """从 gift.md 反查定时任务 UUID；无文件或无 UUID 时返回 None。"""
+    gift_md_path = user_dir / GIFT_MD
+    if not gift_md_path.is_file():
+        return None
+    try:
+        content = gift_md_path.read_text("utf-8")
+    except OSError:
+        return None
+    for line in content.splitlines():
+        if "定时任务UUID" not in line:
+            continue
+        _, _, value = line.partition("定时任务UUID")
+        value = value.lstrip("：:").strip()
+        return value or None
+    return None
+
+def _update_gift_md_task_uuid(content: str, task_uuid: str) -> str:
+    """回写 gift.md 中的定时任务 UUID 行，保留其余内容。"""
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if "定时任务UUID" in line:
+            prefix = line.split("定时任务UUID", 1)[0]
+            lines[i] = f"{prefix}定时任务UUID：{task_uuid}"
+            return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+    return content.rstrip("\n") + f"\n- 定时任务UUID：{task_uuid}\n"
+
+async def _delete_gift_task(
+    self: GiftSkill,
+    user_id: str,
+    task_uuid: str | None = None,
+) -> bool:
+    """删除礼物对应的定时任务；优先按 UUID，找不到时按 metadata 反查。"""
+    if self._scheduled_tasks is None:
+        return False
+    uow_factory = getattr(self._scheduled_tasks, "_uow_factory", None)
+    if uow_factory is None:
+        return False
+    try:
+        async with uow_factory() as uow:
+            deleted = False
+            if task_uuid:
+                deleted = await uow.scheduled_tasks.delete(task_uuid)
+            if not deleted:
+                gift_dir = f"gift/{user_id}"
+                for task in await uow.scheduled_tasks.list_active(limit=1000):
+                    metadata = task.metadata or {}
+                    if (
+                        metadata.get("type") == "gift"
+                        and metadata.get("gift_dir") == gift_dir
+                    ):
+                        await uow.scheduled_tasks.delete(task.task_uuid)
+                        deleted = True
+                        break
+            await uow.commit()
+            return deleted
+    except Exception:
+        return False
 
 def _build_gift_md(
     user_id: str,

@@ -16,7 +16,7 @@ from neobot_app.utils.file_helper import create_audio_segment
 
 @dataclass(frozen=True)
 class VoiceRegistrationResult:
-    """Reference voice registration result."""
+    """参考音色注册结果。"""
 
     uploaded: bool
     skipped: bool
@@ -26,7 +26,7 @@ class VoiceRegistrationResult:
 
 
 class TTSService:
-    """SiliconFlow TTS service with optional reference voice registration."""
+    """SiliconFlow TTS 服务，支持可选的参考音色注册。"""
 
     def __init__(
         self,

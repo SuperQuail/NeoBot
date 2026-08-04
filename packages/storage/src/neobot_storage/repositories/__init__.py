@@ -1,4 +1,4 @@
-"""Repositories sub-package."""
+"""repositories 子包。"""
 
 from neobot_storage.repositories.archive import SqlAlchemyArchiveMemoryAccess
 from neobot_storage.repositories.creator_image import SqlAlchemyCreatorImageAccess

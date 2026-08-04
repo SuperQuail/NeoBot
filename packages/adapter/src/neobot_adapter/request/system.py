@@ -51,10 +51,10 @@ async def clean_cache(timeout=5) -> response.BaseResponse:
 
 async def get_cookies(domain : str = None, timeout=5) -> response.GetCookiesResponse:
     """
-    获取cookies
-    :param domain:
-    :param timeout:
-    :return:
+    获取 cookies
+    :param domain: 指定域名，仅获取该域名下的 cookies
+    :param timeout: 超时时间（秒）
+    :return: cookies 响应结果
     """
     action = "get_cookies"
     param = {

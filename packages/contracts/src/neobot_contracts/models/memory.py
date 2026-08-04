@@ -45,7 +45,7 @@ class TopicNode:
 
 @dataclass(frozen=True, slots=True)
 class ImageAnalysis:
-    """Cached image analysis metadata and text result."""
+    """缓存的图片分析元数据与文本结果。"""
 
     id: int
     file_hash: str
@@ -82,7 +82,7 @@ class EmojiRecord:
 
 @dataclass(frozen=True, slots=True)
 class CreatorImageRecord:
-    """Creator Agent image metadata."""
+    """Creator Agent 图片元数据。"""
 
     id: int
     image_id: str

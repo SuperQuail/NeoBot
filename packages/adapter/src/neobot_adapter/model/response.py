@@ -146,7 +146,6 @@ class GroupData(BaseModel):
     group_memo : Optional[str] = None # 群介绍
     group_create_time : Optional[int] = None
     member_count : Optional[int] = None
-    member_count : Optional[int] = None
     max_member_count : Optional[int] = None
     remark_name : Optional[str] = None # 群备注
     avatar_url : Optional[str] = None
@@ -335,7 +334,6 @@ class AlbumCoverData(BaseModel):
     type : Optional[int] = None
     image : Optional[AlbumCoverImageData] = None
     video : Optional[None] = None
-    video : Optional[None] = None
     desc : Optional[str] = None
     lbs : Optional[None] = None
     uploader : Optional[str] = None
@@ -435,6 +433,8 @@ class BasicMessageData(BaseModel):
     path : Optional[str] = None
     result : Optional[str] = None
     file_id : Optional[str] = None
+    qq : Optional[int] = None
+    name : Optional[str] = None
 
 class MessageData(BaseModel):
     """消息模型"""

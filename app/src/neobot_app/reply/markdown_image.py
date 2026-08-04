@@ -1,4 +1,4 @@
-"""Markdown to image converter - browser rendering with pillowmd fallback."""
+"""Markdown 转图片转换器 —— 优先浏览器渲染，失败时回退到 pillowmd。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image
 import markdown as md_lib
 import pillowmd
 
@@ -119,6 +118,7 @@ class MarkdownImageConverter:
     _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60   # 每 6 小时清理一次
     _TMP_MAX_AGE_SECONDS = 24 * 60 * 60       # 超过 24 小时的文件视为过期
     _CLEANUP_ALL_ON_STOP = True                # 关闭时删除所有文件
+    _RENDER_TIMEOUT_SECONDS = 60               # 渲染总超时（防浏览器卡死挂起回复管线）
 
     def __init__(
         self,
@@ -177,7 +177,12 @@ class MarkdownImageConverter:
 
         if self._browser_available and not force_pillowmd:
             try:
-                return await self._render_with_browser(markdown_text, filename)
+                return await asyncio.wait_for(
+                    self._render_with_browser(markdown_text, filename),
+                    timeout=self._RENDER_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                raise
             except Exception as exc:
                 self._logger.warning("浏览器渲染失败，降级到 pillowmd", error=str(exc))
 
@@ -298,7 +303,7 @@ class MarkdownImageConverter:
         for child in self._output_dir.iterdir():
             if not child.is_file():
                 continue
-            if not child.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".html"):
+            if child.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".html"):
                 continue
             try:
                 mtime = child.stat().st_mtime

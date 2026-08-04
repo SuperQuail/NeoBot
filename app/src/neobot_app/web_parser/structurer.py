@@ -1,4 +1,4 @@
-"""Content structurer — organize extracted content into a unified format."""
+"""内容结构化器 — 将提取的内容整理为统一格式。"""
 
 from __future__ import annotations
 
@@ -21,14 +21,14 @@ AGENT_FORMAT = """## {title}
 
 
 class ContentStructurer:
-    """Structures and formats parsed page content for downstream use."""
+    """将解析后的页面内容结构化并格式化，供下游使用。"""
 
     def structure(self, page: ParsedPage) -> ParsedPage:
-        """Normalize a ParsedPage."""
+        """规范化一个 ParsedPage。"""
         return page
 
     def to_agent_context(self, page: ParsedPage) -> str:
-        """Format a ParsedPage as context for an LLM agent."""
+        """将 ParsedPage 格式化为供 LLM 智能体使用的上下文。"""
         meta = page.metadata
         date_str = meta.publish_date.strftime("%Y-%m-%d") if meta.publish_date else "未知"
         return AGENT_FORMAT.format(
@@ -41,7 +41,7 @@ class ContentStructurer:
         )
 
     def to_compact(self, page: ParsedPage, max_chars: int = 4000) -> str:
-        """Format as compact agent context, truncating body to max_chars."""
+        """格式化为紧凑的智能体上下文，正文截断至 max_chars。"""
         meta = page.metadata
         date_str = meta.publish_date.strftime("%Y-%m-%d") if meta.publish_date else "?"
 
@@ -63,7 +63,7 @@ class ContentStructurer:
 
 
 def format_pages_for_agent(pages: list[ParsedPage], compact: bool = True) -> str:
-    """Format multiple parsed pages as a single agent context string."""
+    """将多个解析页面格式化为单个智能体上下文字符串。"""
     struct = ContentStructurer()
     parts = []
     for i, page in enumerate(pages, 1):

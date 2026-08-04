@@ -1,4 +1,4 @@
-"""Reply module internal utilities (fingerprinting, message-id extraction)."""
+"""回复模块内部工具（指纹生成、消息 ID 提取）。"""
 
 from __future__ import annotations
 

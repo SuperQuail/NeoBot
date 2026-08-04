@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging as stdlib_logging
+import re
 import sys
+import traceback as _traceback
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +16,83 @@ from neobot_contracts.ports.logging import Logger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 _runtime_event_dispatcher: Any = None
+_self_heal_manager: Any = None
+
+_REDACTED = "***REDACTED***"
+
+# 敏感信息脱敏模式：sk- 前缀的 OpenAI 风格 Key，以及常见键值形式的
+# key/token/password/secret/authorization/bearer。值边界限定为空白/逗号/分号，
+# 避免吞掉相邻内容；纯单词 "token" 等不会被误伤。
+_REDACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)"
+        r"\b\s*[=:]\s*(?:(?:bearer|token)\s+)?[^\s,;]+"
+    ),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+)
+
+
+def redact_sensitive(text: str) -> str:
+    """将文本中的常见敏感信息（API Key / token / password 等）替换为 ***REDACTED***。"""
+    for pattern in _REDACTION_PATTERNS:
+        text = pattern.sub(_REDACTED, text)
+    return text
+
+
+def _redacting_filter(record: dict[str, Any]) -> bool:
+    """loguru filter：在格式化前改写记录，使日志文件输出经过脱敏。
+
+    record 是 loguru 每条日志的共享记录字典；此处替换 message 并接管异常渲染
+    （用 stdlib 格式化 traceback 后脱敏，避免 loguru 在诊断模式输出含密钥的
+    源码行），后续所有读取该记录的 sink（文件/运行时事件/自修复）都会得到
+    脱敏文本。
+
+    不要把 record["exception"] 置 None：文件 sink 之后的自修复 sink 需要
+    结构化 traceback（payload["traceback"]）。这里重建一个值已脱敏的异常
+    （保留原 traceback 对象）挂回 record；文件 sink 使用 _file_sink_format
+    （函数式 format，不含 {exception}）避免 loguru 渲染原始 traceback 的
+    未脱敏源码行，密钥不再泄露。
+    """
+    record["message"] = redact_sensitive(record["message"])
+    exc = record.get("exception")
+    if not exc:
+        return True
+    exc_type, exc_value, exc_tb = exc
+    if exc_type and exc_tb:
+        tb_text = "".join(_traceback.format_exception(exc_type, exc_value, exc_tb))
+        record["message"] += "\n" + redact_sensitive(tb_text)
+    try:
+        redacted_value = exc_type(redact_sensitive(str(exc_value)))
+    except Exception:
+        redacted_value = RuntimeError(redact_sensitive(str(exc_value)))
+    record["exception"] = (exc_type, redacted_value, exc_tb)
+    return True
+
+# These module-name prefixes produce ERROR-level logs that are transient /
+# external-dependency hiccups, not Bot bugs. Filter them out of self-heal
+# error accumulation so a flaky OneBot HTTP / vision provider / image fetch
+# path does NOT wake the self-heal agent. They still get logged normally.
+_SELF_HEAL_EXCLUDE_MODULES = (
+    "adapter_receiver",   # API 调用超时 / 没有活跃连接 / 迟到 echo 回填
+    "app.image_parse",    # 视觉模型超时 / ReadError / 下载失败
+    "app.self_heal",      # 自身日志，避免自激
+)
 
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
     global _runtime_event_dispatcher
     _runtime_event_dispatcher = dispatcher
+
+
+def register_self_heal_manager(manager: Any) -> None:
+    """注册 SelfHealManager，使 loguru 的 ERROR sink 能够向它投递记录。
+
+    sink 通过 call_soon_threadsafe（在 loguru 的日志线程中）把每条记录
+    交给运行中的事件循环；在注册管理器之前，sink 为空操作。
+    """
+    global _self_heal_manager
+    _self_heal_manager = manager
 
 
 def _loguru_runtime_sink(message: Any) -> None:
@@ -32,7 +106,7 @@ def _loguru_runtime_sink(message: Any) -> None:
         stage=record["level"].name.lower(),
         source=str(record["extra"].get("module_name", "")),
         payload={
-            "message": record["message"],
+            "message": redact_sensitive(record["message"]),
             "level": record["level"].name,
             "time": str(record["time"]),
             "module": str(record["extra"].get("module_name", "")),
@@ -46,6 +120,69 @@ def _loguru_runtime_sink(message: Any) -> None:
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(dispatch(envelope)))
     except RuntimeError:
         pass
+
+
+def _loguru_self_heal_sink(message: Any) -> None:
+    """loguru sink: 捕获 ERROR 及以上日志并推入 SelfHealManager。
+
+    在 loguru 的 logging 线程中执行（同步），通过 call_soon_threadsafe
+    安全转交主事件循环。自修复 agent 自身日志（module_name 前缀
+    'app.self_heal'）会被跳过，避免自激循环。
+    """
+    mgr = _self_heal_manager
+    if mgr is None:
+        return
+    record = message.record
+    module = str(record["extra"].get("module_name", ""))
+    if module.startswith("app.self_heal"):
+        return
+    # 偶发性/外部依赖抖动的错误不应累积进自修复判定。
+    # adapter_receiver：API 调用超时 / 没有活跃连接 / 迟到 echo 回填
+    #   均为 OneBot 上游瞬时问题，本身已有降级/重连兜底。
+    # app.image_parse：视觉模型超时/ReadError/下载失败属于上游抖动或
+    #   大图误码，不构成可自愈的 Bug。
+    excluded = _SELF_HEAL_EXCLUDE_MODULES
+    for prefix in excluded:
+        if module.startswith(prefix):
+            return
+    exc = record.get("exception")
+    from neobot_app.time_context import monotonic_seconds as _monotonic
+    traceback_text: str | None = None
+    if exc:
+        exc_type, exc_value, exc_tb = exc
+        if exc_type and exc_tb:
+            traceback_text = redact_sensitive(
+                "".join(_traceback.format_exception(exc_type, exc_value, exc_tb))
+            )
+    payload = {
+        "time": str(record["time"]),
+        "level": record["level"].name,
+        "module": module,
+        "file": record["file"].name,
+        "line": record["line"],
+        "function": record["function"],
+        "message": redact_sensitive(record["message"]),
+        "traceback": traceback_text,
+        "_monotonic": _monotonic(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread — loguru calls us from its own
+        # worker thread. Try to obtain the main event loop via the asyncio
+        # policy fallback.
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+    if loop is None:
+        return
+    try:
+        loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(mgr.record(payload))
+        )
+    except RuntimeError:
+        return
 
 
 class _InterceptHandler(stdlib_logging.Handler):
@@ -66,6 +203,22 @@ class _InterceptHandler(stdlib_logging.Handler):
         ).log(level, record.getMessage())
 
 
+def _file_sink_format(record: dict[str, Any]) -> str:
+    """文件 sink 的格式：以函数形式返回，避免 loguru 对字符串 format 自动追加
+    "{exception}"（loguru 渲染原始 traceback 会带未脱敏的源码行）。
+
+    异常信息已由 _redacting_filter 脱敏后追加到 message；record["exception"]
+    保持非 None，供文件 sink 之后的自修复 sink 消费结构化 traceback。
+    """
+    return (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{extra[module_name]: <24}</cyan> | "
+        "<level>{message}</level>"
+        " ({elapsed})\n"
+    )
+
+
 def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = False) -> None:
     """配置 Loguru 输出格式。
 
@@ -84,7 +237,6 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
         "<cyan>{extra[module_name]: <24}</cyan> | "
         "<level>{message}</level>"
     )
-    file_format = console_format + " ({elapsed})"
 
     loguru.logger.add(
         sys.stderr,
@@ -97,13 +249,14 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
         log_dir.mkdir(parents=True, exist_ok=True)
         loguru.logger.add(
             log_dir / "neobot.log",
-            format=file_format,
+            format=_file_sink_format,
             level="DEBUG",
             rotation="10 MB",
             retention="7 days",
             encoding="utf-8",
             backtrace=True,
-            diagnose=True,
+            diagnose=False,
+            filter=_redacting_filter,
         )
 
     if runtime_events:
@@ -111,6 +264,13 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
             _loguru_runtime_sink,
             level="DEBUG",
         )
+
+    # Self-heal error ingestion sink: feeds the SelfHealManager with ERROR
+    # level logs (and above). No-op when no manager has been registered.
+    loguru.logger.add(
+        _loguru_self_heal_sink,
+        level="ERROR",
+    )
 
 
 class LoguruLoggerAdapter:

@@ -1,4 +1,4 @@
-"""Image generation, storage, and reference resolution service."""
+"""图片生成、存储与参考图解析服务。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import hashlib
 import json
 import mimetypes
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -35,7 +34,6 @@ from neobot_app.drawing.config import (
     ImageGenerationError,
 )
 from neobot_app.message.image_pipeline import prepare_local_image
-from neobot_app.time_context import monotonic_seconds
 from neobot_app.utils.media_sender import send_image as _media_send_image
 
 if TYPE_CHECKING:
@@ -49,8 +47,11 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
+_MAX_REMOTE_FETCH_BYTES = 100 * 1024 * 1024
+
+
 def _read_sidecar_description(file_path: str | Path) -> str | None:
-    """Read .txt sidecar file for image description, or None."""
+    """读取图片同名的 .txt 伴生文件获取描述，不存在时返回 None。"""
     path = Path(file_path)
     txt_path = path.with_suffix(".txt")
     if not txt_path.exists():
@@ -77,7 +78,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 class CreatorImageService:
-    """Generate, store, and send Creator Agent images."""
+    """生成、存储并发送 Creator Agent 图片。"""
 
     _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
     _TMP_MAX_AGE_SECONDS = 12 * 60 * 60
@@ -118,12 +119,17 @@ class CreatorImageService:
             headers={"Authorization": f"Bearer {self._model.api_key}"},
             timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
         )
+        # 用户可控 URL 下载使用无凭据 client，避免 API Key 外发
+        self._public_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
+        )
         self._cleanup_task: asyncio.Task[None] | None = None
 
     async def close(self) -> None:
         await self._stop_cleanup_task()
         await self.cleanup_tmp()
         await self._client.aclose()
+        await self._public_client.aclose()
 
     async def start(self) -> None:
         self._start_cleanup_task()
@@ -136,6 +142,29 @@ class CreatorImageService:
 
     def _get_vision_timeout_seconds(self) -> float:
         return 60.0
+
+    async def _read_limited(self, response: Any) -> bytes:
+        """分块读取响应体，超过上限即中止。"""
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                declared = 0
+            if declared > _MAX_REMOTE_FETCH_BYTES:
+                raise ValueError(
+                    f"下载内容过大（{declared} 字节），超过上限 {_MAX_REMOTE_FETCH_BYTES} 字节"
+                )
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_REMOTE_FETCH_BYTES:
+                raise ValueError(
+                    f"下载内容过大，超过上限 {_MAX_REMOTE_FETCH_BYTES} 字节，已中止"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await asyncio.wait_for(
@@ -150,10 +179,10 @@ class CreatorImageService:
         )
 
     async def _cleanup_stale_records(self) -> None:
-        """删除数据库中文件已不存在的记录，更新文件已重命名的记录，并对各目录内哈希重复的文件去重（保留最旧）。"""
+        """删除数据库中文件已不存在的记录，更新文件已重命名的记录，并对各目录内哈希重复的文件去重（保留最新）。"""
         disk_files: set[str] = set()
 
-        # 逐目录去重：同一目录内哈希相同的文件只保留最旧的
+        # 逐目录去重：同一目录内哈希相同的文件只保留最新的
         for directory in (self._tmp_dir, self._gallery_dir):
             if not directory.exists():
                 continue
@@ -173,10 +202,10 @@ class CreatorImageService:
                 if len(files) <= 1:
                     continue
                 files.sort(key=lambda f: f.stat().st_mtime)
-                keeper = files[0]
-                for dup in files[1:]:
+                keeper = files[-1]
+                for dup in files[:-1]:
                     self._logger.info(
-                        f"图库去重: 保留较旧文件 {keeper.name}，删除重复文件 {dup.name}"
+                        f"图库去重: 保留较新文件 {keeper.name}，删除重复文件 {dup.name}"
                     )
                     dup.unlink(missing_ok=True)
                     dup.with_suffix(".txt").unlink(missing_ok=True)
@@ -200,19 +229,12 @@ class CreatorImageService:
                 await uow.creator_images.delete(record.image_id)
             await uow.commit()
 
-    async def _maybe_cleanup(self) -> None:
-        """每次工具查询/检索前强制执行全量清理（无冷却）。"""
-        self._start_cleanup_task()
-        try:
-            await self._cleanup_stale_records()
-        except Exception as exc:
-            self._logger.error(f"图库清理失败: {exc}")
-
     async def _cleanup_loop(self) -> None:
         while True:
             try:
                 await asyncio.sleep(self._CLEANUP_INTERVAL_SECONDS)
                 await self._cleanup_stale_records()
+                await self._sync_image_sidecars()
                 await self._cleanup_expired_tmp_files()
             except asyncio.CancelledError:
                 raise
@@ -233,7 +255,7 @@ class CreatorImageService:
             self._cleanup_task = None
 
     async def cleanup_tmp(self) -> None:
-        """Delete all files in the tmp directory and remove corresponding DB records."""
+        """删除 tmp 目录中的全部文件，并移除对应的数据库记录。"""
         deleted_count = 0
         if self._tmp_dir.exists():
             for child in self._tmp_dir.iterdir():
@@ -400,12 +422,11 @@ class CreatorImageService:
         offset: int = 0,
     ) -> list[CreatorImageRecord]:
         normalized = self._normalize_source(source) if source else None
-        await self._maybe_cleanup()
-        await self._sync_image_sidecars(source=normalized)
+        self._start_cleanup_task()
         return await self._list_image_records(source=normalized, limit=limit, offset=offset)
 
     async def count_images(self, *, source: str | None = None) -> int:
-        await self._maybe_cleanup()
+        self._start_cleanup_task()
         async with self._uow_factory() as uow:
             return await uow.creator_images.count(source=source)
 
@@ -417,15 +438,16 @@ class CreatorImageService:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[CreatorImageRecord]:
-        await self._maybe_cleanup()
+        self._start_cleanup_task()
         limit = limit if limit is not None else self._config.gallery_page_size
         async with self._uow_factory() as uow:
-            return await uow.creator_images.search(
+            records = await uow.creator_images.search(
                 keyword,
                 source=source,
                 limit=limit,
                 offset=offset,
             )
+        return [record for record in records if Path(record.file_path).is_file()]
 
     async def _list_image_records(
         self,
@@ -436,7 +458,8 @@ class CreatorImageService:
     ) -> list[CreatorImageRecord]:
         limit = limit if limit is not None else self._config.gallery_page_size
         async with self._uow_factory() as uow:
-            return await uow.creator_images.list(source=source, limit=limit, offset=offset)
+            records = await uow.creator_images.list(source=source, limit=limit, offset=offset)
+        return [record for record in records if Path(record.file_path).is_file()]
 
     async def gallery_add(
         self, *, image_id: str, description: str | None = None, name: str | None = None
@@ -703,6 +726,96 @@ class CreatorImageService:
                 record = await self.gallery_rename(image_id=record.image_id, new_name=safe_name)
         return {"target": target, "image": _record_payload(record)}
 
+    async def import_chat_images(
+        self,
+        *,
+        message_id: int,
+        image_indices: list[int] | None = None,
+        target: str = TMP_SOURCE,
+        description: str | None = None,
+        name: str | None = None,
+        image_source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """一次从同一条消息导入多张图片到 tmp/gallery/emoji。
+
+        Args:
+            image_indices: 1-based 索引列表（保持与 import_chat_image 一致）；None 表示全部 image 段
+            其他参数与 import_chat_image 一致；name 仅 multi 时不适用（每张图自动生成名）
+
+        Returns:
+            每张图的结果列表：成功 {"ok": True, "index": int, "target": ..., "image": ...}，
+            失败 {"ok": False, "index": int, "error": ...}。
+        """
+        target = target.strip().lower()
+        if target not in {TMP_SOURCE, GALLERY_SOURCE, "emoji"}:
+            raise ValueError("target 必须为 tmp、gallery 或 emoji")
+
+        if target == GALLERY_SOURCE:
+            self._ensure_gallery_enabled()
+
+        # 一次 get_msg 拉取 segments
+        result = await self._call_api_with_timeout("get_msg", {"message_id": message_id})
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, dict):
+            raise LookupError(f"无法读取消息 {message_id}")
+        segments = data.get("message")
+        if not isinstance(segments, list):
+            raise LookupError(f"消息 {message_id} 不包含消息段")
+        image_segments = [
+            segment
+            for segment in segments
+            if isinstance(segment, dict) and str(segment.get("type")) in {"image", "cardimage"}
+        ]
+        if not image_segments:
+            raise LookupError(f"消息 {message_id} 没有图片")
+
+        if image_indices is None:
+            indices = list(range(1, len(image_segments) + 1))
+        else:
+            indices = [int(i) for i in image_indices if int(i) > 0]
+
+        results: list[dict[str, Any]] = []
+        for idx in indices:
+            if idx > len(image_segments):
+                results.append({"ok": False, "index": idx, "error": f"消息 {message_id} 没有第 {idx} 张图片"})
+                continue
+            segment_data = image_segments[idx - 1].get("data") or {}
+            if not isinstance(segment_data, dict):
+                results.append({"ok": False, "index": idx, "error": "图片段无效"})
+                continue
+            try:
+                image_bytes = await self._download_image_segment(segment_data)
+            except Exception as exc:
+                results.append({"ok": False, "index": idx, "error": f"下载失败: {exc}"})
+                continue
+
+            try:
+                if target == "emoji":
+                    rec = await self.add_emoji_bytes(
+                        image_bytes,
+                        file_name=name or f"chat_{message_id}_{idx}",
+                        description=description,
+                    )
+                    results.append({"ok": True, "index": idx, "target": target, "image": rec})
+                    continue
+                if target == GALLERY_SOURCE:
+                    await self._ensure_gallery_capacity()
+                record = await self._save_image_bytes(
+                    image_bytes,
+                    source=target,
+                    prompt=None,
+                    description=description,
+                    image_source=image_source,
+                )
+                if name and target == GALLERY_SOURCE:
+                    safe_name = _sanitize_filename(f"{name}_{idx}")
+                    if safe_name:
+                        record = await self.gallery_rename(image_id=record.image_id, new_name=safe_name)
+                results.append({"ok": True, "index": idx, "target": target, "image": _record_payload(record)})
+            except Exception as exc:
+                results.append({"ok": False, "index": idx, "error": f"{type(exc).__name__}: {exc}"})
+        return results
+
     async def add_emoji_from_image(
         self,
         *,
@@ -900,9 +1013,9 @@ class CreatorImageService:
         if ref.startswith("file://"):
             return Path(ref[7:]).read_bytes()
         if ref.startswith(("http://", "https://")):
-            response = await self._client.get(ref)
+            response = await self._public_client.get(ref)
             response.raise_for_status()
-            return response.content
+            return await self._read_limited(response)
         path = Path(ref)
         if path.exists() and path.is_file():
             return path.read_bytes()
@@ -1165,7 +1278,7 @@ class CreatorImageService:
                 return await self._download_as_data_url(value)
 
             if prefix == "file":
-                path = Path(value)
+                path = await self._resolve_creator_path(value)
                 if not path.is_file():
                     raise FileNotFoundError(f"文件不存在: {value}")
                 mime = mimetypes.guess_type(path.name)[0] or "image/png"
@@ -1239,7 +1352,11 @@ class CreatorImageService:
             return entry.file_path
 
         if prefix == "url":
-            response = await self._client.get(value)
+            from neobot_app.utils.ssrf import validate_public_url_async
+
+            if not await validate_public_url_async(value):
+                raise ValueError(f"不允许下载非公网地址: {value}")
+            response = await self._public_client.get(value)
             response.raise_for_status()
             content_type = response.headers.get("content-type", "")
             ext = ".png"
@@ -1250,11 +1367,12 @@ class CreatorImageService:
             elif "webp" in content_type:
                 ext = ".webp"
             path = self._tmp_dir / f"pool_url_{hashlib.md5(value.encode()).hexdigest()[:12]}{ext}"
-            path.write_bytes(response.content)
+            data = await self._read_limited(response)
+            path.write_bytes(data)
             return path
 
         if prefix == "file":
-            path = Path(value)
+            path = await self._resolve_creator_path(value)
             if not path.is_file():
                 raise FileNotFoundError(f"文件不存在: {value}")
             return path
@@ -1262,12 +1380,27 @@ class CreatorImageService:
         raise ValueError(f"不支持的 source 格式: {source}")
 
     async def _download_as_data_url(self, url: str) -> str:
-        response = await self._client.get(url)
+        from neobot_app.utils.ssrf import validate_public_url_async
+
+        if not await validate_public_url_async(url):
+            raise ValueError(f"不允许下载非公网地址: {url}")
+        response = await self._public_client.get(url)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "image/png")
         mime = content_type.split(";")[0].strip()
-        b64 = base64.b64encode(response.content).decode("utf-8")
+        data = await self._read_limited(response)
+        b64 = base64.b64encode(data).decode("utf-8")
         return f"data:{mime};base64,{b64}"
+
+    async def _resolve_creator_path(self, value: str) -> Path:
+        """限定 file: 引用必须位于 creator 数据目录（tmp/gallery）内。"""
+        path = Path(value).expanduser().resolve()
+        base = self._base_dir.resolve()
+        try:
+            path.relative_to(base)
+        except ValueError:
+            raise PermissionError(f"文件引用越界: {value}")
+        return path
 
     async def _extract_image_bytes(self, data: dict[str, Any]) -> bytes:
         items = data.get("data")
@@ -1282,9 +1415,9 @@ class CreatorImageService:
         url = first.get("url")
         if not isinstance(url, str) or not url.strip():
             raise ValueError("生图接口未返回 url 或 b64_json")
-        response = await self._client.get(url)
+        response = await self._public_client.get(url)
         response.raise_for_status()
-        return response.content
+        return await self._read_limited(response)
 
     def _copy_to_gallery(self, source_path: str, image_id: str) -> Path:
         source = Path(source_path)

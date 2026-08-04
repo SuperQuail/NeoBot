@@ -1,9 +1,9 @@
-"""Content extraction from HTML pages.
+"""从 HTML 页面提取内容。
 
-Strategy (priority order):
-1. readability-lxml — best results for article-like pages
-2. trafilatura — good general-purpose extraction
-3. BeautifulSoup fallback — basic <article>/<main>/<body> extraction
+策略（按优先级）:
+1. readability-lxml — 对文章类页面效果最佳
+2. trafilatura — 通用提取表现良好
+3. BeautifulSoup 兜底 — 基础 <article>/<main>/<body> 提取
 """
 
 from __future__ import annotations
@@ -11,8 +11,6 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime as dt
-from typing import Optional
-
 from bs4 import BeautifulSoup
 
 from neobot_app.web_parser.models import PageMetadata, ParsedPage
@@ -30,13 +28,13 @@ REMOVE_IDS_RE = re.compile(
 
 
 class ContentExtractor:
-    """Extract main content from HTML."""
+    """从 HTML 中提取正文内容。"""
 
     def __init__(self, fallback_to_bs4: bool = True) -> None:
         self._fallback_to_bs4 = fallback_to_bs4
 
     def extract(self, html: str, url: str = "") -> ParsedPage:
-        """Extract content from raw HTML."""
+        """从原始 HTML 中提取内容。"""
         t0 = time.perf_counter()
 
         try:

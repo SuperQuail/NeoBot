@@ -1,7 +1,7 @@
-"""Dynamic page renderer using Playwright.
+"""基于 Playwright 的动态页面渲染器。
 
-Supports:
-- Render JavaScript-heavy pages and capture as rendered HTML or full-page screenshot
+支持:
+- 渲染 JS 重页面，捕获渲染后的 HTML 或整页截图
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Optional
 
 @dataclass
 class RenderedPage:
-    """Result of dynamic page rendering."""
+    """动态页面渲染的结果。"""
 
     url: str
     html: str = ""
@@ -28,7 +28,7 @@ class RenderedPage:
 
 
 class DynamicRenderer:
-    """Render dynamic pages using a Playwright browser."""
+    """使用 Playwright 浏览器渲染动态页面。"""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class DynamicRenderer:
         self._context = None
 
     async def start(self) -> None:
-        """Launch browser. Call once before rendering."""
+        """启动浏览器。渲染前调用一次。"""
         try:
             from playwright.async_api import async_playwright
         except ImportError:
@@ -61,7 +61,7 @@ class DynamicRenderer:
         self._context = await self._browser.new_context(viewport=self._viewport)
 
     async def stop(self) -> None:
-        """Close browser and release resources."""
+        """关闭浏览器并释放资源。"""
         if self._context:
             await self._context.close()
         if self._browser:
@@ -77,7 +77,7 @@ class DynamicRenderer:
         screenshot_path: str = "",
         inject_stealth: bool = True,
     ) -> RenderedPage:
-        """Render a page and optionally capture a screenshot."""
+        """渲染页面，并可选地捕获截图。"""
         import time
 
         if self._browser is None or self._context is None:
@@ -119,7 +119,7 @@ class DynamicRenderer:
             await page.close()
 
     async def render_as_image(self, url: str, save_path: str = "") -> RenderedPage:
-        """Convenience: render page as screenshot only."""
+        """便捷方法：仅将页面渲染为截图。"""
         return await self.render(url, screenshot=True, screenshot_path=save_path)
 
     async def _inject_stealth(self, page) -> None:

@@ -1,14 +1,13 @@
-"""Scheduled task reminder runtime.
+"""定时任务提醒运行时。
 
-This module provides the dormant runtime manager used by the scheduled-task
-agent.  It is not wired into application startup yet, but it already uses the
-database-backed scheduled task repository and can be enabled later without
-changing the agent or storage contracts.
+本模块提供定时任务 Agent 使用的休眠运行时管理器。它尚未接入应用启动流程，
+但已使用基于数据库的定时任务仓库，之后无需改动 Agent 或存储契约即可启用。
 """
 
 from __future__ import annotations
 
 import asyncio
+import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import json
@@ -73,8 +72,21 @@ class ScheduledTaskWindow:
         return self.start <= now < self.end
 
 
+@dataclass
+class _ScanPlan:
+    """在任何异步投递之前为每个任务预先计算的动作计划。"""
+
+    task: ScheduledTaskRecord
+    window: ScheduledTaskWindow
+    remind: bool = False
+    finalize: str = "none"
+    finalize_reason: str | None = None
+    finalize_requires_notified: bool = True
+    notified: bool = False
+
+
 class ScheduledTaskManager:
-    """Database-backed reminder scanner for scheduled tasks."""
+    """基于数据库的定时任务提醒扫描器。"""
 
     def __init__(
         self,
@@ -247,54 +259,180 @@ class ScheduledTaskManager:
             await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def scan_due_tasks(self, now: datetime | None = None) -> None:
+        """扫描活跃任务并投递到期提醒。
+
+        扫描被拆分为短事务，避免在异步通知发布期间持有 SQLite 写锁：
+
+        1. 只读事务：加载活跃任务并规划每个动作
+        2. 在事务之外顺序发布通知
+        3. 每个任务使用短事务持久化最终状态
+        """
         self._require_storage()
         now = _normalize_datetime(now or now_utc())
-        async with self._uow_factory() as uow:
-            tasks = await uow.scheduled_tasks.list_active(limit=500)
-            for task in tasks:
-                if task.recurrence == ScheduledTaskRecurrence.ONCE and now >= task.end_at:
-                    await uow.scheduled_tasks.archive_completed(
-                        task.task_uuid,
-                        completed_at=now,
-                        completion_reason="expired_auto_completed",
-                    )
-                    continue
-                window = self._current_window(task, now)
-                if window is None:
-                    continue
-                if now >= window.end:
-                    if (
-                        task.recurrence != ScheduledTaskRecurrence.ONCE
-                        and window.key not in task.completed_window_keys
-                    ):
-                        await uow.scheduled_tasks.update(
-                            task.task_uuid,
-                            completed_window_keys=[*task.completed_window_keys, window.key],
-                        )
-                    continue
-                if not window.contains(now):
-                    continue
-                if window.key in task.completed_window_keys:
-                    continue
-                notified = False
-                for binding in task.bindings:
-                    notified = (
-                        await self._remind_if_due(task, binding, window, now)
-                        or notified
-                    )
-                if notified and self._is_one_shot_notification(task):
-                    if task.recurrence == ScheduledTaskRecurrence.ONCE:
+        tasks = await self._list_active_tasks()
+        if not tasks:
+            return
+
+        plans: list[_ScanPlan] = []
+        for task in tasks:
+            try:
+                plan = self._plan_task_scan(task, now)
+            except Exception as exc:
+                self._logger.warning(
+                    "Scheduled task scan planning failed",
+                    task_id=task.task_uuid,
+                    error=str(exc),
+                )
+                continue
+            if plan is not None:
+                plans.append(plan)
+
+        for plan in plans:
+            if not plan.remind:
+                continue
+            try:
+                plan.notified = await self._remind_bindings(plan.task, plan.window, now)
+            except Exception as exc:
+                self._logger.warning(
+                    "Scheduled task reminder dispatch failed",
+                    task_id=plan.task.task_uuid,
+                    error=str(exc),
+                )
+                plan.notified = False
+
+        for plan in plans:
+            if plan.finalize == "none":
+                continue
+            if plan.finalize_requires_notified and not plan.notified:
+                self._logger.info(
+                    "Skipping scheduled task finalize: reminder not delivered",
+                    task_id=plan.task.task_uuid,
+                    window_key=plan.window.key,
+                )
+                continue
+            try:
+                async with self._uow_factory() as uow:
+                    if plan.finalize == "archive":
                         await uow.scheduled_tasks.archive_completed(
-                            task.task_uuid,
+                            plan.task.task_uuid,
                             completed_at=now,
-                            completion_reason="one_shot_notification_sent",
+                            completion_reason=plan.finalize_reason or "completed",
                         )
-                    else:
+                    elif plan.finalize == "mark_completed":
                         await uow.scheduled_tasks.update(
-                            task.task_uuid,
-                            completed_window_keys=[*task.completed_window_keys, window.key],
+                            plan.task.task_uuid,
+                            completed_window_keys=[
+                                *plan.task.completed_window_keys,
+                                plan.window.key,
+                            ],
                         )
-            await uow.commit()
+                    await uow.commit()
+            except Exception as exc:
+                self._logger.warning(
+                    "Scheduled task finalize failed",
+                    task_id=plan.task.task_uuid,
+                    error=str(exc),
+                )
+
+    async def _list_active_tasks(self) -> list[ScheduledTaskRecord]:
+        async with self._uow_factory() as uow:
+            return await uow.scheduled_tasks.list_active(limit=500)
+
+    def _plan_task_scan(
+        self,
+        task: ScheduledTaskRecord,
+        now: datetime,
+    ) -> _ScanPlan | None:
+        if task.recurrence == ScheduledTaskRecurrence.ONCE and now >= task.end_at:
+            window = self._current_window(task, now)
+            if window is None:
+                return None
+            if self._was_notified(task):
+                return _ScanPlan(
+                    task=task,
+                    window=window,
+                    finalize="archive",
+                    finalize_reason="expired_auto_completed",
+                    finalize_requires_notified=False,
+                )
+            return _ScanPlan(
+                task=task,
+                window=window,
+                remind=True,
+                finalize="archive",
+                finalize_reason="one_shot_notification_sent",
+            )
+        window = self._current_window(task, now)
+        if window is None:
+            return None
+        if now >= window.end:
+            if window.key in task.completed_window_keys:
+                return None
+            return _ScanPlan(
+                task=task,
+                window=window,
+                remind=True,
+                finalize=(
+                    "archive"
+                    if task.recurrence == ScheduledTaskRecurrence.ONCE
+                    else "mark_completed"
+                ),
+                finalize_reason=(
+                    "one_shot_notification_sent"
+                    if task.recurrence == ScheduledTaskRecurrence.ONCE
+                    else None
+                ),
+            )
+        if not window.contains(now):
+            return None
+        if window.key in task.completed_window_keys:
+            return None
+        if not self._is_one_shot_notification(task):
+            return _ScanPlan(task=task, window=window, remind=True)
+        if task.recurrence == ScheduledTaskRecurrence.ONCE:
+            return _ScanPlan(
+                task=task,
+                window=window,
+                remind=True,
+                finalize="archive",
+                finalize_reason="one_shot_notification_sent",
+            )
+        return _ScanPlan(
+            task=task,
+            window=window,
+            remind=True,
+            finalize="mark_completed",
+        )
+
+    def _was_notified(self, task: ScheduledTaskRecord) -> bool:
+        if task.completed_window_keys:
+            return True
+        for binding in task.bindings:
+            reminder_key = (task.task_uuid, f"{binding.kind}:{binding.id}")
+            if reminder_key in self._last_reminder_at:
+                return True
+        return False
+
+    async def _remind_bindings(
+        self,
+        task: ScheduledTaskRecord,
+        window: ScheduledTaskWindow,
+        now: datetime,
+    ) -> bool:
+        notified = False
+        for binding in task.bindings:
+            try:
+                reminded = await self._remind_if_due(task, binding, window, now)
+            except Exception as exc:
+                self._logger.warning(
+                    "Scheduled task reminder failed for binding",
+                    task_id=task.task_uuid,
+                    pipeline_key=f"{binding.kind}:{binding.id}",
+                    error=str(exc),
+                )
+                reminded = False
+            notified = reminded or notified
+        return notified
 
     async def _remind_if_due(
         self,
@@ -317,16 +455,28 @@ class ScheduledTaskManager:
         prompt = self._build_reminder_prompt(task, binding, window, attempt)
 
         if self._notification_hub is not None:
-            await self._notification_hub.publish(
-                source="scheduled_task",
-                kind=binding.kind,
-                conversation_id=str(binding.id),
-                content=prompt,
-                manager_name="scheduled_task",
-                reasons=["scheduled task reminder"],
-                metadata={"task_uuid": task.task_uuid, "window_key": window.key},
-            )
-            return True
+            try:
+                await self._notification_hub.publish(
+                    source="scheduled_task",
+                    kind=binding.kind,
+                    conversation_id=str(binding.id),
+                    content=prompt,
+                    manager_name="scheduled_task",
+                    reasons=["scheduled task reminder"],
+                    metadata={"task_uuid": task.task_uuid, "window_key": window.key},
+                )
+                return True
+            except Exception as exc:
+                self._logger.warning(
+                    "Scheduled task notification publish failed",
+                    task_id=task.task_uuid,
+                    pipeline_key=pipeline_key,
+                    error=str(exc),
+                )
+                # Do not treat a failed delivery as a successful reminder; clear
+                # the cooldown marker so the next scan retries this binding.
+                self._last_reminder_at.pop(reminder_key, None)
+                return False
 
         if self._orchestrator is not None:
             if not self._orchestrator.is_pipeline_key_active(pipeline_key):
@@ -433,7 +583,10 @@ class ScheduledTaskManager:
         start = _occurrence_start(task, now)
         if start is None:
             return None
-        duration = max((task.end_at - task.start_at).total_seconds(), 1)
+        duration = max(
+            (task.end_at - task.start_at).total_seconds(),
+            2 * self._config.poll_interval_seconds,
+        )
         end = start + timedelta(seconds=duration)
         return ScheduledTaskWindow(
             key=f"{task.task_uuid}:{start.isoformat()}",
@@ -464,17 +617,13 @@ def _occurrence_start(task: ScheduledTaskRecord, now: datetime) -> datetime | No
             return None
         return _combine_date_time(start_at.date() + timedelta(days=(days_since // 7) * 7), start_at)
     if task.recurrence == ScheduledTaskRecurrence.MONTHLY:
-        try:
-            candidate = _combine_date_time(date(now.year, now.month, start_at.day), start_at)
-        except ValueError:
-            return None
-        return candidate
+        max_day = calendar.monthrange(now.year, now.month)[1]
+        day = min(start_at.day, max_day)
+        return _combine_date_time(date(now.year, now.month, day), start_at)
     if task.recurrence == ScheduledTaskRecurrence.YEARLY:
-        try:
-            candidate = _combine_date_time(date(now.year, start_at.month, start_at.day), start_at)
-        except ValueError:
-            return None
-        return candidate
+        max_day = calendar.monthrange(now.year, start_at.month)[1]
+        day = min(start_at.day, max_day)
+        return _combine_date_time(date(now.year, start_at.month, day), start_at)
     return None
 
 

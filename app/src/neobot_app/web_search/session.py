@@ -1,4 +1,4 @@
-"""SearchSession — multi-turn retrieve-read workflow with diversity & dedup."""
+"""SearchSession — 多轮检索-阅读工作流，支持多样性排序与去重。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from neobot_app.web_search.models import SearchResponse, SearchResult
 
 @dataclass
 class SearchRound:
-    """A single search round within a session."""
+    """会话中的单轮搜索。"""
 
     round_num: int
     query: str
@@ -26,7 +26,7 @@ class SearchRound:
 
 
 class SearchSession:
-    """Manages a multi-round search-and-read conversation."""
+    """管理多轮搜索与阅读对话。"""
 
     MAX_PAGE_SIZE = 500_000       # 500KB limit per page
     MAX_RESULTS_PER_SEARCH = 20   # cap results per search round
@@ -91,11 +91,11 @@ class SearchSession:
 
     @property
     def all_results(self) -> list[SearchResult]:
-        """All search results across all rounds, indexed globally."""
+        """所有轮次的全部搜索结果，全局统一编号。"""
         return sorted(self._results_index.values(), key=lambda r: r.index)
 
     async def search(self, query: str, num_results: int = 10) -> SearchResponse:
-        """Execute a new search round."""
+        """执行新一轮搜索。"""
         resp = await self._execute_search(query, num_results)
         if resp.success:
             self._rounds.append(
@@ -104,7 +104,7 @@ class SearchSession:
         return resp
 
     async def read(self, indices: list[int]) -> list[SearchResult]:
-        """Fetch full page content for the given result indices."""
+        """获取指定结果索引对应的完整页面内容。"""
         results_to_fetch = []
         for idx in indices:
             r = self._results_index.get(idx)
@@ -129,12 +129,12 @@ class SearchSession:
         return [self._results_index[idx] for idx in indices if idx in self._results_index]
 
     async def read_single(self, index: int) -> Optional[SearchResult]:
-        """Read a single result by index."""
+        """按索引读取单条结果。"""
         results = await self.read([index])
         return results[0] if results else None
 
     def get_summary_for_agent(self) -> str:
-        """Generate a summary of the session state for the agent."""
+        """为智能体生成会话状态摘要。"""
         lines = [f"===== 搜索会话 (共 {self.current_round} 轮) ====="]
         unread = [r for r in self._results_index.values() if not r.content_fetched]
         read_count = len(self._results_index) - len(unread)
@@ -241,7 +241,7 @@ class SearchSession:
     async def _execute_search(
         self, query: str, num_results: int
     ) -> SearchResponse:
-        """Core search pipeline: fetch → dedup → diversity → index."""
+        """核心搜索流水线：抓取 → 去重 → 多样性排序 → 编号。"""
         if self.current_round >= self._max_rounds:
             return SearchResponse(
                 query=query,
@@ -294,7 +294,7 @@ class SearchSession:
 
     @staticmethod
     def _rerank_by_diversity(results: list[SearchResult]) -> list[SearchResult]:
-        """Re-rank results to promote domain diversity via round-robin interleaving."""
+        """通过轮询交错重排结果，提升域名多样性。"""
         if len(results) <= 1:
             return list(results)
 

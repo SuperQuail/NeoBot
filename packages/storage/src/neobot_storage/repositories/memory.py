@@ -1,4 +1,4 @@
-"""SqlAlchemy memory repository."""
+"""SqlAlchemy 记忆仓库。"""
 
 from __future__ import annotations
 

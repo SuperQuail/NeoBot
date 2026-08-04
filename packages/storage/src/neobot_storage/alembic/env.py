@@ -1,4 +1,4 @@
-"""Alembic environment for async SQLAlchemy."""
+"""面向异步 SQLAlchemy 的 Alembic 环境。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Web search data models."""
+"""Web 搜索数据模型。"""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -7,7 +7,7 @@ from typing import Optional
 
 @dataclass
 class SearchResult:
-    """A single search result."""
+    """单条搜索结果。"""
 
     index: int
     title: str
@@ -22,7 +22,7 @@ class SearchResult:
 
 @dataclass
 class SearchResponse:
-    """Response from a search query."""
+    """一次搜索查询的响应。"""
 
     query: str
     results: list[SearchResult]
@@ -36,7 +36,7 @@ class SearchResponse:
         return self.error is None
 
     def summary(self) -> str:
-        """Format results for agent to review and select."""
+        """将结果格式化为供智能体审阅与选择的内容。"""
         if not self.success:
             return f"[错误] 搜索 '{self.query}' 失败: {self.error}"
         if not self.results:

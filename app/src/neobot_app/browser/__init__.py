@@ -34,25 +34,34 @@ class BrowserAgentWrapper:
         self._browser_path = browser_path
         self._lifecycle = lifecycle_manager
         self._agent: AgentBrowser | None = None
+        self._init_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
 
     @property
     def user_data_dir(self) -> str:
         return str(self._data_dir)
 
+    @property
+    def operation_lock(self) -> asyncio.Lock:
+        """跨聊天流共享的页面操作锁（串行化对共享标签页的操作）。"""
+        return self._operation_lock
+
     # ── 生命周期 ──
 
     async def _ensure(self) -> AgentBrowser:
-        if self._agent is None:
-            self._agent = AgentBrowser(
-                headless=self._headless,
-                port=self._port,
-                user_data_dir=str(self._data_dir),
-                browser_path=self._browser_path,
-            )
-        if not self._agent._started:
-            await self._agent.start()
-            if self._lifecycle:
-                self._lifecycle.set_browser_instance(self)
+        async with self._init_lock:
+            if self._agent is None:
+                self._agent = AgentBrowser(
+                    headless=self._headless,
+                    port=self._port,
+                    user_data_dir=str(self._data_dir),
+                    browser_path=self._browser_path,
+                    operation_lock=self._operation_lock,
+                )
+            if not self._agent._started:
+                await self._agent.start()
+                if self._lifecycle:
+                    self._lifecycle.set_browser_instance(self)
         return self._agent
 
     async def open(self, url: str = "") -> dict:
@@ -62,9 +71,10 @@ class BrowserAgentWrapper:
         return result
 
     async def close(self) -> dict:
-        if self._agent is not None:
-            await self._agent.close()
-            self._agent = None
+        async with self._init_lock:
+            if self._agent is not None:
+                await self._agent.close()
+                self._agent = None
         return {"success": True, "action": "close"}
 
     async def _notify_lifecycle(self) -> None:

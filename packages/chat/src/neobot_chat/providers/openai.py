@@ -9,7 +9,7 @@ from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinitio
 
 
 class OpenAIProvider(BaseHTTPProvider):
-    """OpenAI Chat Completions API"""
+    """OpenAI Chat Completions API 实现"""
 
     def __init__(
         self,
@@ -93,8 +93,9 @@ class OpenAIProvider(BaseHTTPProvider):
     ) -> Message:
         payload = self._build_payload(messages, tools, stream=False)
 
-        resp = await self.client.post("/chat/completions", json=payload)
-        resp.raise_for_status()
+        resp = await self._request_with_retry(
+            "POST", "/chat/completions", json=payload
+        )
         data = resp.json()
 
         choice = data["choices"][0]["message"]
@@ -139,49 +140,51 @@ class OpenAIProvider(BaseHTTPProvider):
         content_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}
 
-        async with self.client.stream(
+        async for line in self._stream_with_retry(
             "POST", "/chat/completions", json=payload
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-
+        ):
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                break
+            if not data_str or not data_str.startswith("{"):
+                continue
+            try:
                 data = json.loads(data_str)
-                choices = data.get("choices", [])
-                if not choices:
+            except json.JSONDecodeError:
+                continue
+            choices = data.get("choices", [])
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+                yield ChatChunk(delta=content)
+
+            for tc_delta in delta.get("tool_calls", []):
+                idx = tc_delta.get("index")
+                if not isinstance(idx, int):
                     continue
-                delta = choices[0].get("delta", {})
-
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    content_parts.append(content)
-                    yield ChatChunk(delta=content)
-
-                for tc_delta in delta.get("tool_calls", []):
-                    idx = tc_delta.get("index")
-                    if not isinstance(idx, int):
+                if idx not in tool_calls_map:
+                    tool_call = self._build_tool_call(
+                        tool_id=tc_delta.get("id", ""),
+                        tool_name="",
+                        arguments="",
+                    )
+                    if tool_call is None:
                         continue
-                    if idx not in tool_calls_map:
-                        tool_call = self._build_tool_call(
-                            tool_id=tc_delta.get("id", ""),
-                            tool_name="",
-                            arguments="",
-                        )
-                        if tool_call is None:
-                            continue
-                        tool_calls_map[idx] = tool_call
-                    entry = tool_calls_map[idx]
-                    fn = tc_delta.get("function", {})
-                    name = fn.get("name")
-                    if isinstance(name, str) and name:
-                        entry["function"]["name"] += name
-                    arguments = fn.get("arguments")
-                    if isinstance(arguments, str) and arguments:
-                        entry["function"]["arguments"] += arguments
+                    tool_calls_map[idx] = tool_call
+                entry = tool_calls_map[idx]
+                fn = tc_delta.get("function", {})
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    entry["function"]["name"] += name
+                arguments = fn.get("arguments")
+                if isinstance(arguments, str) and arguments:
+                    entry["function"]["arguments"] += arguments
 
         message: Message = {
             "role": "assistant",

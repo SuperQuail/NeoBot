@@ -93,15 +93,15 @@ class Chat:
         ),
         metadata={"description": "群聊提示词模板，非开发者不建议修改"},
     )
-    max_group_chat_observations: int = field(
+    max_group_chat_observations: Optional[int] = field(
         default=100,
         metadata={"description": "群聊观察上限"},
     )
-    group_chat_chance: float = field(
+    group_chat_chance: Optional[float] = field(
         default=0.5,
         metadata={"description": "群聊基础回复概率"},
     )
-    group_use_black_list: bool = field(
+    group_use_black_list: Optional[bool] = field(
         default=True,
         metadata={"description": "群聊名单是否使用黑名单模式"},
     )
@@ -152,11 +152,11 @@ class Chat:
         ),
         metadata={"description": "私聊提示词模板，非开发者不建议修改"},
     )
-    max_friend_chat_observations: int = field(
+    max_friend_chat_observations: Optional[int] = field(
         default=100,
         metadata={"description": "私聊观察上限"},
     )
-    friend_use_black_list: bool = field(
+    friend_use_black_list: Optional[bool] = field(
         default=True,
         metadata={"description": "私聊名单是否使用黑名单模式"},
     )
@@ -510,6 +510,10 @@ class AgentModelRouting:
         default=1,
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
+    self_heal: int = field(
+        default=3,
+        metadata={"description": "自修复 Agent 使用的模型编号，0-3；默认 3（低成本非推理模型）"},
+    )
 
 
 @dataclass
@@ -604,11 +608,11 @@ class TTS:
 class Willing:
     """回复意愿管理器配置。"""
 
-    manager_name: str = field(
+    manager_name: Optional[str] = field(
         default="Quail",
         metadata={"description": "回复意愿管理器名称"},
     )
-    observe_window: int = field(
+    observe_window: Optional[int] = field(
         default=5,
         metadata={"description": "意愿计算观察窗口"},
     )
@@ -686,30 +690,84 @@ class Debug:
 
 
 @dataclass
+class Console:
+    """内置网页控制台配置。"""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"description": "是否启用可从外网访问的调试控制台"},
+    )
+    host: str = field(
+        default="0.0.0.0",
+        metadata={"description": "调试控制台监听地址；外网访问通常使用 0.0.0.0"},
+    )
+    port: int = field(
+        default=9981,
+        metadata={"description": "调试控制台首选端口；占用时自动向后查找"},
+    )
+    admin_enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用仅本机可访问的管理员控制台"},
+    )
+    admin_port: int = field(
+        default=9891,
+        metadata={"description": "管理员控制台首选端口；占用时自动向后查找"},
+    )
+    port_search_limit: int = field(
+        default=100,
+        metadata={"description": "从首选端口开始查找的端口数量，最大 100"},
+    )
+    session_timeout_minutes: int = field(
+        default=60,
+        metadata={"description": "控制台无操作会话过期时间（分钟）"},
+    )
+    secure_cookies: bool = field(
+        default=False,
+        metadata={"description": "仅通过 HTTPS 发送登录 Cookie；使用反向代理 HTTPS 时开启"},
+    )
+    trust_proxy_headers: bool = field(
+        default=False,
+        metadata={"description": "是否信任反向代理提供的客户端地址头"},
+    )
+
+    def __post_init__(self) -> None:
+        for name in ("port", "admin_port"):
+            value = getattr(self, name)
+            if not 1 <= value <= 65535:
+                raise ValueError(f"console.{name} 必须在 1 到 65535 之间")
+        if not 1 <= self.port_search_limit <= 100:
+            raise ValueError("console.port_search_limit 必须在 1 到 100 之间")
+        if not 5 <= self.session_timeout_minutes <= 1440:
+            raise ValueError("console.session_timeout_minutes 必须在 5 到 1440 之间")
+        if not self.host.strip():
+            raise ValueError("console.host 不能为空")
+
+
+@dataclass
 class ScheduledTask:
     """定时任务系统配置。"""
 
-    enabled: bool = field(
+    enabled: Optional[bool] = field(
         default=True,
         metadata={"description": "是否启用定时任务系统；关闭后定时任务 agent 不会注册"},
     )
-    reminder_cooldown_seconds: int = field(
+    reminder_cooldown_seconds: Optional[int] = field(
         default=300,
         metadata={"description": "同一定时任务在触发时间窗口内重复提醒的冷却秒数，默认300秒"},
     )
-    poll_interval_seconds: int = field(
+    poll_interval_seconds: Optional[int] = field(
         default=10,
         metadata={"description": "定时任务扫描间隔秒数，默认每分钟扫描一次"},
     )
-    default_window_seconds: int = field(
+    default_window_seconds: Optional[int] = field(
         default=3600,
         metadata={"description": "任务未指定时间窗口时使用的默认窗口秒数"},
     )
-    max_repeating_tasks: int = field(
+    max_repeating_tasks: Optional[int] = field(
         default=15,
         metadata={"description": "重复定时任务数量上限；一次性任务不计入此上限"},
     )
-    default_one_shot_notification: bool = field(
+    default_one_shot_notification: Optional[bool] = field(
         default=True,
         metadata={
             "description": "新建定时任务默认是否使用一次性通知；一次性通知指每个触发窗口只通知一次并自动完成该窗口，不等同于 once 一次性任务"
@@ -721,11 +779,11 @@ class ScheduledTask:
 class GalleryConfig:
     """图库配置。"""
 
-    capacity: int = field(
+    capacity: Optional[int] = field(
         default=10,
         metadata={"description": "图库容量上限；为0时禁用图库管理工具"},
     )
-    page_size: int = field(
+    page_size: Optional[int] = field(
         default=50,
         metadata={"description": "图库列表每页显示数量；图片总数超过此值时分页展示"},
     )
@@ -735,11 +793,11 @@ class GalleryConfig:
 class CreatorEmojiConfig:
     """表情包管理配置。"""
 
-    allow_add: bool = field(
+    allow_add: Optional[bool] = field(
         default=False,
         metadata={"description": "是否允许 Creator Agent 增加表情包"},
     )
-    allow_delete: bool = field(
+    allow_delete: Optional[bool] = field(
         default=False,
         metadata={"description": "是否允许 Creator Agent 删除表情包"},
     )
@@ -753,27 +811,27 @@ class CreatorEmojiConfig:
 class BackgroundDrawConfig:
     """后台绘图配置。"""
 
-    background_enabled: bool = field(
+    background_enabled: Optional[bool] = field(
         default=True,
         metadata={"description": "是否启用后台绘图；关闭则回退到同步阻塞模式"},
     )
-    cooldown_seconds: int = field(
+    cooldown_seconds: Optional[int] = field(
         default=60,
         metadata={"description": "绘图冷却秒数；同一管线上次绘图开始后此时间内不可再次提交"},
     )
-    notification_retry_seconds: int = field(
+    notification_retry_seconds: Optional[int] = field(
         default=30,
         metadata={"description": "绘图完成后通知主Agent，若无回应此秒数后重试"},
     )
-    max_retries: int = field(
+    max_retries: Optional[int] = field(
         default=1,
         metadata={"description": "通知最大重试次数（不含首次）；默认1表示首次通知后重试1次"},
     )
-    startup_grace_seconds: float = field(
+    startup_grace_seconds: Optional[float] = field(
         default=3.0,
         metadata={"description": "后台绘图启动宽限期（秒）；此时间内若API报错则立即返回失败并取消冷却"},
     )
-    max_tasks_per_pipeline: int = field(
+    max_tasks_per_pipeline: Optional[int] = field(
         default=20,
         metadata={"description": "每个聊天流最多保留的后台绘图任务数；超出后自动销毁最旧的非活跃任务"},
     )
@@ -804,11 +862,11 @@ class AgentSystem:
 
 @dataclass
 class AgentMemoryTrigger:
-    group_interval: int = field(
+    group_interval: Optional[int] = field(
         default=300,
         metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
     )
-    private_interval: int = field(
+    private_interval: Optional[int] = field(
         default=100,
         metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
     )
@@ -820,15 +878,15 @@ class AgentMemoryArchive:
         default=False,
         metadata={"description": "是否允许 delete_archive 删除档案记忆"},
     )
-    allowed_tables: List[str] = field(
+    allowed_tables: Optional[List[str]] = field(
         default_factory=list,
         metadata={"description": "允许访问的档案表名列表；留空表示不限制"},
     )
-    auto_compact_chars: int = field(
+    auto_compact_chars: Optional[int] = field(
         default=200,
         metadata={"description": "单条档案超过此字符数时触发一次 AI 自动精简；0表示禁用"},
     )
-    max_chars: int = field(
+    max_chars: Optional[int] = field(
         default=300,
         metadata={"description": "单条档案最大字符数；超过后截断写入"},
     )
@@ -838,15 +896,15 @@ class AgentMemoryArchive:
 class AgentMemoryFavorability:
     """好感度系统配置。"""
 
-    max_change_per_summary: int = field(
+    max_change_per_summary: Optional[int] = field(
         default=5,
         metadata={"description": "每次档案总结时好感度单次变更上限"},
     )
-    min_value: int = field(
+    min_value: Optional[int] = field(
         default=-1000,
         metadata={"description": "好感度下限"},
     )
-    max_value: int = field(
+    max_value: Optional[int] = field(
         default=1000,
         metadata={"description": "好感度上限"},
     )
@@ -866,7 +924,7 @@ class AgentMemoryItemArchive:
         default=True,
         metadata={"description": "是否启用物品/事件关键词档案"},
     )
-    table_name: str = field(
+    table_name: Optional[str] = field(
         default="item_archive",
         metadata={"description": "物品/事件档案表名；Agent 使用此表名存储和检索关键词档案"},
     )
@@ -899,11 +957,11 @@ class AgentProblemSolver:
         default=True,
         metadata={"description": "是否启用解题 Agent"},
     )
-    timeout_seconds: float = field(
+    timeout_seconds: Optional[float] = field(
         default=600.0,
         metadata={"description": "解题超时时间（秒），默认 10 分钟"},
     )
-    max_tokens: int = field(
+    max_tokens: Optional[int] = field(
         default=20480,
         metadata={"description": "最大输出 Token 数，默认 20K"},
     )
@@ -911,7 +969,7 @@ class AgentProblemSolver:
         default=30,
         metadata={"description": "解题完成后通知重试间隔（秒）"},
     )
-    allow_sandbox_output: bool = field(
+    allow_sandbox_output: Optional[bool] = field(
         default=True,
         metadata={"description": "是否允许解题结果保存到沙箱并返回文件路径"},
     )
@@ -927,7 +985,7 @@ class AgentProblemSolver:
         default=5,
         metadata={"description": "每个聊天流最多保留的后台解题任务数"},
     )
-    reasoning_effort: str = field(
+    reasoning_effort: Optional[str] = field(
         default="max",
         metadata={"description": "推理强度：high 或 max"},
     )
@@ -941,19 +999,19 @@ class AgentBrowser:
         default=True,
         metadata={"description": "是否启用浏览器 Agent"},
     )
-    hold_max_minutes: int = field(
+    hold_max_minutes: Optional[int] = field(
         default=120,
         metadata={"description": "浏览器页面保活最大分钟数，默认 120（2 小时）"},
     )
-    auto_close_idle_seconds: int = field(
+    auto_close_idle_seconds: Optional[int] = field(
         default=600,
         metadata={"description": "空闲自动关闭秒数，默认 600（10 分钟）"},
     )
-    data_dir: str = field(
+    data_dir: Optional[str] = field(
         default="./data/browser/",
         metadata={"description": "浏览器数据目录"},
     )
-    browser_path: str = field(
+    browser_path: Optional[str] = field(
         default="",
         metadata={"description": "Chrome/Chromium 可执行路径，留空则自动检测"},
     )
@@ -967,7 +1025,7 @@ class SandboxMaintenance:
         default=True,
         metadata={"description": "是否启用定时维护"},
     )
-    interval_seconds: int = field(
+    interval_seconds: Optional[int] = field(
         default=10800,
         metadata={"description": "维护间隔秒数，默认 10800（3 小时）"},
     )
@@ -981,23 +1039,23 @@ class AgentSandbox:
         default=True,
         metadata={"description": "是否启用沙箱系统"},
     )
-    max_total_size_bytes: int = field(
+    max_total_size_bytes: Optional[int] = field(
         default=2 * 1024 * 1024 * 1024,
         metadata={"description": "沙箱整体最大总容量（字节），默认 2GB。写入前检查，超出则拒绝"},
     )
-    temp_max_age_seconds: int = field(
+    temp_max_age_seconds: Optional[int] = field(
         default=1800,
         metadata={"description": "临时文件最大存活秒数，默认 1800（30 分钟）"},
     )
-    temp_hold_max_minutes: int = field(
+    temp_hold_max_minutes: Optional[int] = field(
         default=120,
         metadata={"description": "临时文件保活最大分钟数，默认 120（2 小时）"},
     )
-    scan_interval_seconds: int = field(
+    scan_interval_seconds: Optional[int] = field(
         default=300,
         metadata={"description": "临时文件清理扫描间隔秒数，默认 300（5 分钟）"},
     )
-    allowed_read_dirs: list[str] = field(
+    allowed_read_dirs: Optional[list[str]] = field(
         default_factory=lambda: ["./data/emoji/", "./data/creator/gallery/"],
         metadata={"description": "允许文件操作 agent 只读访问的目录列表"},
     )
@@ -1011,7 +1069,7 @@ class AgentSandbox:
 class AgentSkill:
     """Skill 系统全局配置。"""
 
-    disabled_skills: list[str] = field(
+    disabled_skills: Optional[list[str]] = field(
         default_factory=list,
         metadata={"description": "禁用的 skill 名称列表（黑名单模式），空列表表示全部启用"},
     )
@@ -1028,6 +1086,74 @@ class AgentFileOperation:
 
 
 @dataclass
+class AgentSelfHeal:
+    """自修复 Agent 配置。
+
+    通过 loguru ERROR sink 累积异常，触发后自动唤起 Agent 进行诊断、
+    尝试安全修复并写 debug 报告，最终通过通知系统向管理员私聊推送。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用自修复 Agent"},
+    )
+    admin_account: Optional[str] = field(
+        default="",
+        metadata={
+            "description": (
+                "接收自修复通知的管理员 QQ；留空时回退到 chat.admin_accounts[0]。"
+                "若两者都未配置则不会触发自修复任务"
+            )
+        },
+    )
+    traceback_threshold: Optional[int] = field(
+        default=3,
+        metadata={"description": "累积带 traceback 的异常数阈值；满足后立即触发"},
+    )
+    rate_threshold: Optional[int] = field(
+        default=10,
+        metadata={"description": "60 秒内错误速率阈值；满足后立即触发"},
+    )
+    rate_window_seconds: Optional[int] = field(
+        default=60,
+        metadata={"description": "错误速率统计窗口（秒）"},
+    )
+    min_interval_seconds: Optional[int] = field(
+        default=300,
+        metadata={"description": "两次自动触发的最小间隔（秒），避免短期内重复唤起；手动触发不受此限制"},
+    )
+    buffer_size: Optional[int] = field(
+        default=200,
+        metadata={"description": "异常环形缓冲区大小"},
+    )
+    timeout_seconds: float = field(
+        default=300.0,
+        metadata={"description": "自修复 Agent 单次诊断超时（秒）"},
+    )
+    max_tokens: int = field(
+        default=8192,
+        metadata={"description": "自修复 Agent 最大输出 Token 数"},
+    )
+    reasoning_effort: str = field(
+        default="high",
+        metadata={"description": "推理强度：high 或 max"},
+    )
+    sandbox_debug_dir: Optional[str] = field(
+        default="debug/self_heal",
+        metadata={"description": "沙箱内 debug 报告子目录（相对沙箱根）"},
+    )
+    daily_limit: Optional[int] = field(
+        default=5,
+        metadata={
+            "description": (
+                "自修复任务每日（自然日，进程内计数）最大触发次数；默认 5，"
+                "防止异常风暴导致 LLM 费用失控"
+            )
+        },
+    )
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -1039,6 +1165,7 @@ class Agent:
     sandbox: AgentSandbox = field(default_factory=AgentSandbox)
     skill: AgentSkill = field(default_factory=AgentSkill)
     file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
+    self_healing: AgentSelfHeal = field(default_factory=AgentSelfHeal)
 
 
 @dataclass
@@ -1049,15 +1176,15 @@ class WebSearchConfig:
         default=True,
         metadata={"description": "是否启用联网搜索工具包；关闭后搜索工具不会注册"},
     )
-    preview_pages_limit: int = field(
+    preview_pages_limit: Optional[int] = field(
         default=30,
         metadata={"description": "单次搜索返回结果总数上限（含主查询+所有变体），默认 30"},
     )
-    max_search_rounds: int = field(
+    max_search_rounds: Optional[int] = field(
         default=5,
         metadata={"description": "单次会话最多搜索轮次，默认 5"},
     )
-    variant_result_limit: int = field(
+    variant_result_limit: Optional[int] = field(
         default=6,
         metadata={"description": "研究模式中每个变体查询返回的最大结果数，默认 6"},
     )
@@ -1079,6 +1206,7 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
+    console: Console = field(default_factory=Console)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
@@ -1086,191 +1214,191 @@ class BotConfig:
 
 @dataclass
 class EnhancedChat(Chat):
-    """Chat config with queue timestamp support."""
+    """支持消息队列时间戳的聊天配置。"""
 
-    message_timestamp_interval_seconds: int = field(
+    message_timestamp_interval_seconds: Optional[int] = field(
         default=300,
         metadata={"description": "消息队列时间戳插入间隔，单位秒"},
     )
-    enable_periodic_user_info_update: bool = field(
+    enable_periodic_user_info_update: Optional[bool] = field(
         default=True,
         metadata={"description": "是否定时更新用户信息"},
     )
-    user_info_update_interval_days: int = field(
+    user_info_update_interval_days: Optional[int] = field(
         default=7,
         metadata={"description": "用户信息更新时间，单位天"},
     )
-    reply_mode: str = field(
+    reply_mode: Optional[str] = field(
         default="agent",
         metadata={"description": "回复模式：common(只有基础回复功能,不推荐) 或 agent(推荐)"},
     )
-    at_mention_guaranteed_reply: bool = field(
+    at_mention_guaranteed_reply: Optional[bool] = field(
         default=True,
         metadata={"description": "@ 时是否必回"},
     )
-    at_mention_reply_delay_seconds: float = field(
+    at_mention_reply_delay_seconds: Optional[float] = field(
         default=5.0,
         metadata={"description": "@ 提及时的回复延迟秒数；在此期间收集后续群消息后再生成回复"},
     )
-    willing_global_coefficient: float = field(
+    willing_global_coefficient: Optional[float] = field(
         default=1.0,
         metadata={"description": "common 模式全局回复概率系数"},
     )
-    willing_agent_global_coefficient: float = field(
+    willing_agent_global_coefficient: Optional[float] = field(
         default=1.0,
         metadata={"description": "agent 模式全局回复概率系数"},
     )
-    enable_group_startup_history_warmup: bool = field(
+    enable_group_startup_history_warmup: Optional[bool] = field(
         default=False,
         metadata={"description": "是否在启动时读取群聊历史消息预热队列"},
     )
-    enable_friend_startup_history_warmup: bool = field(
+    enable_friend_startup_history_warmup: Optional[bool] = field(
         default=False,
         metadata={"description": "是否在启动时读取私聊历史消息预热队列"},
     )
-    startup_history_group_whitelist: List[str] = field(
+    startup_history_group_whitelist: Optional[List[str]] = field(
         default_factory=list,
         metadata={"description": "启动历史预热群聊白名单"},
     )
-    startup_history_friend_whitelist: List[str] = field(
+    startup_history_friend_whitelist: Optional[List[str]] = field(
         default_factory=list,
         metadata={"description": "启动历史预热私聊白名单"},
     )
-    reply_cooldown_seconds: int = field(
+    reply_cooldown_seconds: Optional[int] = field(
         default=0,
         metadata={"description": "回复冷却时间，单位秒；距上次回复结束不足此时间则不触发新回复"},
     )
-    reply_sentence_cooldown_seconds: float = field(
+    reply_sentence_cooldown_seconds: Optional[float] = field(
         default=2.0,
         metadata={"description": "群聊每条回复短句之间的冷却时间，单位秒；用于模拟打字间隔"},
     )
-    private_chat_sentence_cooldown_seconds: float = field(
+    private_chat_sentence_cooldown_seconds: Optional[float] = field(
         default=2.0,
         metadata={"description": "私聊每条回复短句之间的冷却时间，单位秒"},
     )
-    agent_wait_max_seconds: int = field(
+    agent_wait_max_seconds: Optional[int] = field(
         default=60,
         metadata={"description": "Agent wait 工具单次最大等待秒数"},
     )
-    agent_max_iterations: int = field(
+    agent_max_iterations: Optional[int] = field(
         default=200,
         metadata={"description": "Agent 模式单轮回复最大工具调用迭代次数"},
     )
-    group_agent_silent_timeout_seconds: float = field(
+    group_agent_silent_timeout_seconds: Optional[float] = field(
         default=60.0,
         metadata={
             "description": "群聊 agent 回复管线最长静默时间；超过后强制关闭管线。wait 工具等待时间不计入静默时间，0 表示禁用"
         },
     )
-    random_sticker_probability: float = field(
+    random_sticker_probability: Optional[float] = field(
         default=0.1,
         metadata={"description": "回复事件中随机触发聊天互动agent发送表情包的概率，范围0.0~1.0"},
     )
-    ai_reply_check: bool = field(
+    ai_reply_check: Optional[bool] = field(
         default=False,
         metadata={"description": "AI回复检查；开启后 send_reply 会先返回切分结果供主Agent确认"},
     )
-    ai_reply_check_lightweight: bool = field(
+    ai_reply_check_lightweight: Optional[bool] = field(
         default=True,
         metadata={
             "description": "AI回复轻量检查；仅在回复触发过长/过多拦截时才提示AI检查切分结果。"
             "当 ai_reply_check 全量检查开启后，此开关被忽略"
         },
     )
-    long_reply_fallback_template: str = field(
+    long_reply_fallback_template: Optional[str] = field(
         default="{bot_name}懒得和你说道理，你不配听",
         metadata={"description": "回复过长或切分条数过多时使用的默认回复，支持 {bot_name} 占位符"},
     )
-    long_reply_max_length: int = field(
+    long_reply_max_length: Optional[int] = field(
         default=300,
         metadata={"description": "回复最大字符数，超过此长度将触发 fallback 回复"},
     )
-    long_reply_max_sentence_count: int = field(
+    long_reply_max_sentence_count: Optional[int] = field(
         default=12,
         metadata={"description": "回复自动切分后允许的最大消息条数，超过此数量将触发 fallback 回复"},
     )
-    enable_ai_reply_regenerate_on_length_limit: bool = field(
+    enable_ai_reply_regenerate_on_length_limit: Optional[bool] = field(
         default=True,
         metadata={
             "description": "当回复超过长度/句数限制时，是否让 AI 重新生成更简短的版本，"
             "而非直接使用 fallback 模板"
         },
     )
-    emoji_page_size: int = field(
+    emoji_page_size: Optional[int] = field(
         default=50,
         metadata={"description": "表情包列表每页显示数量；总数超过此值时分页展示，agent 可使用翻页参数查看"},
     )
-    enable_last_reply_tracking: bool = field(
+    enable_last_reply_tracking: Optional[bool] = field(
         default=True,
         metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置并在提示词中显示"},
     )
-    archive_fetch_window: int = field(
+    archive_fetch_window: Optional[int] = field(
         default=20,
         metadata={"description": "档案获取窗口；只对消息队列中最新的此数量消息的发送者获取个人档案，戳一戳等同0.2条消息"},
     )
-    poke_weight: float = field(
+    poke_weight: Optional[float] = field(
         default=0.2,
         metadata={"description": "戳一戳事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个戳一戳等同1条消息）"},
     )
-    reaction_weight: float = field(
+    reaction_weight: Optional[float] = field(
         default=0.2,
         metadata={"description": "表情回应事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个表情回应等同1条消息）"},
     )
-    official_bot_reply_coefficient: float = field(
+    official_bot_reply_coefficient: Optional[float] = field(
         default=0.05,
         metadata={"description": "官方Bot回复概率系数，识别到消息发送者为官方Bot时，基础概率乘以此系数"},
     )
-    private_chat_suspend_wait_seconds: int = field(
+    private_chat_suspend_wait_seconds: Optional[int] = field(
         default=300,
         metadata={"description": "私聊回复后挂起等待秒数；超时无新消息则结束会话，默认300秒（5分钟）"},
     )
-    private_chat_max_tokens: int = field(
+    private_chat_max_tokens: Optional[int] = field(
         default=50000,
         metadata={"description": "私聊会话最大token数；超过后重启聊天管线"},
     )
-    private_chat_dynamic_warmup: bool = field(
+    private_chat_dynamic_warmup: Optional[bool] = field(
         default=True,
         metadata={"description": "首次收到私聊消息时是否动态预热历史消息"},
     )
-    private_chat_warmup_history_count: int = field(
+    private_chat_warmup_history_count: Optional[int] = field(
         default=100,
         metadata={"description": "私聊动态预热时拉取的历史消息条数"},
     )
-    private_chat_new_message_collect_seconds: float = field(
+    private_chat_new_message_collect_seconds: Optional[float] = field(
         default=5.0,
         metadata={"description": "私聊挂起期间收到首条新消息后继续收集新消息的时间窗口（秒）"},
     )
-    private_chat_reply_delay_seconds: float = field(
+    private_chat_reply_delay_seconds: Optional[float] = field(
         default=5.0,
         metadata={"description": "私聊收到消息后延迟多少秒再触发回复（在此期间收集后续消息）"},
     )
-    post_reply_message_timeout_seconds: float = field(
+    post_reply_message_timeout_seconds: Optional[float] = field(
         default=60.0,
         metadata={"description": "群聊回复期间收集的消息超时秒数；超过此时间的消息不触发回复意愿判断"},
     )
-    forward_message_display_threshold: int = field(
+    forward_message_display_threshold: Optional[int] = field(
         default=50,
         metadata={"description": "合并转发消息节点数阈值；小于此值直接显示内容，大于等于此值仅显示ID并提供读取工具"},
     )
-    forward_message_queue_weight: int = field(
+    forward_message_queue_weight: Optional[int] = field(
         default=2,
         metadata={"description": "合并转发消息在队列中的容量权重；一个合并转发消息占用此数量的队列位置"},
     )
-    forward_message_max_nesting: int = field(
+    forward_message_max_nesting: Optional[int] = field(
         default=10,
         metadata={"description": "合并转发消息最大嵌套层级；支持最多10层转发嵌套"},
     )
-    wait_cooldown_seconds: int = field(
+    wait_cooldown_seconds: Optional[int] = field(
         default=60,
         metadata={"description": "wait 工具调用冷却秒数；同一会话在一次 wait 调用后需等待此秒数才可再次调用"},
     )
-    group_chat_reply_lifespan: int = field(
+    group_chat_reply_lifespan: Optional[int] = field(
         default=5,
         metadata={
             "description": "群聊回复管线寿命；每次回复-1，归零则销毁管线。设为0禁用寿命机制，回复结束后立即销毁管线"
         },
     )
-    group_chat_resume_prompt_template: str = field(
+    group_chat_resume_prompt_template: Optional[str] = field(
         default=(
             (
 """
@@ -1286,15 +1414,15 @@ class EnhancedChat(Chat):
         ),
         metadata={"description": "群聊回复管线续接提示词模板；{new_messages}新消息 {new_member_profiles}新成员档案 {current_time}当前时间"},
     )
-    group_chat_suspend_wait_seconds: int = field(
+    group_chat_suspend_wait_seconds: Optional[int] = field(
         default=3600,
         metadata={"description": "群聊回复后挂起等待秒数；超时无新消息则结束会话，默认3600秒（1小时）"},
     )
-    enable_balance_check: bool = field(
+    enable_balance_check: Optional[bool] = field(
         default=False,
         metadata={"description": "是否启用DeepSeek余额检查与低余额预警；仅在主模型使用DeepSeek且配置了管理员账户时生效"},
     )
-    balance_threshold: float = field(
+    balance_threshold: Optional[float] = field(
         default=1.0,
         metadata={"description": "余额预警阈值（CNY），低于此值时发送私聊通知；默认1.0"},
     )
@@ -1302,7 +1430,7 @@ class EnhancedChat(Chat):
         default_factory=list,
         metadata={"description": "管理员QQ号列表，用于接收余额不足等系统通知"},
     )
-    balance_check_cooldown_seconds: int = field(
+    balance_check_cooldown_seconds: Optional[int] = field(
         default=300,
         metadata={"description": "余额检查冷却秒数；每次检查后至少间隔此秒数才会再次查询；默认300秒"},
     )
@@ -1310,7 +1438,7 @@ class EnhancedChat(Chat):
 
 @dataclass
 class EnhancedBotConfig(BotConfig):
-    """Bot config using the enhanced chat schema."""
+    """采用增强聊天配置结构的机器人配置。"""
 
     chat: EnhancedChat = field(default_factory=EnhancedChat)
 

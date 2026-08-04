@@ -119,12 +119,12 @@ class LocalAdapterServer:
 
     async def _handle_create_message(self, request: web.Request) -> web.Response:
         data = await self._read_json(request)
-        result = await self._core.create_message(data)
+        result = await self._core.create_message(data, await_dispatch=False)
         return self._ok(result)
 
     async def _handle_create_event(self, request: web.Request) -> web.Response:
         data = await self._read_json(request)
-        result = await self._core.create_event(data)
+        result = await self._core.create_event(data, await_dispatch=False)
         return self._ok(result)
 
     async def _handle_list_conversations(self, request: web.Request) -> web.Response:

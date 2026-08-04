@@ -45,6 +45,8 @@ class LocalCore:
             auth_token=auth_token,
         )
         self._started = asyncio.Event()
+        self._dispatch_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._dispatch_task: asyncio.Task | None = None
 
     @property
     def store(self) -> Any:
@@ -60,11 +62,17 @@ class LocalCore:
 
     async def start(self) -> None:
         await self._server.start()
+        self._ensure_dispatch_task()
         self._started.set()
         self._logger.info(f"本地适配器 HTTP 服务已启动: {self.http_url}")
         self._logger.info(f"本地适配器 WebSocket 服务已启动: {self.ws_url}")
 
     async def stop(self) -> None:
+        task = self._dispatch_task
+        self._dispatch_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await self._hub.close()
         await self._server.stop()
         self._started.clear()
@@ -84,9 +92,14 @@ class LocalCore:
             "websocket_clients": self._hub.client_count,
         }
 
-    async def create_message(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def create_message(
+        self,
+        data: dict[str, Any],
+        *,
+        await_dispatch: bool = True,
+    ) -> dict[str, Any]:
         event = self._event_from_message_payload(data)
-        stored = await self.ingest_event(event)
+        stored = await self.ingest_event(event, await_dispatch=await_dispatch)
         if stored is None:
             raise ValueError("message payload did not create a message event")
         return {
@@ -94,8 +107,13 @@ class LocalCore:
             "message_id": stored.message_id,
         }
 
-    async def create_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        stored = await self.ingest_event(dict(event))
+    async def create_event(
+        self,
+        event: dict[str, Any],
+        *,
+        await_dispatch: bool = True,
+    ) -> dict[str, Any]:
+        stored = await self.ingest_event(dict(event), await_dispatch=await_dispatch)
         message_id = stored.message_id if stored is not None else event.get("message_id")
         return {
             "event_id": f"local_evt_{int(time.time())}_{message_id or 0}",
@@ -110,7 +128,12 @@ class LocalCore:
         stored = await self.send(conversation, message)
         return {"message_id": stored.message_id}
 
-    async def ingest_event(self, event: dict[str, Any]) -> Any:
+    async def ingest_event(
+        self,
+        event: dict[str, Any],
+        *,
+        await_dispatch: bool = True,
+    ) -> Any:
         event.setdefault("time", int(time.time()))
         event.setdefault("self_id", self._store.bot_user_id)
         stored = None
@@ -126,8 +149,30 @@ class LocalCore:
         else:
             await self._hub.broadcast("event.received", {"event": event})
         self._record_packet(event)
-        await self._dispatcher.publish(event)
+        await self._dispatch_event(event, await_dispatch=await_dispatch)
         return stored
+
+    def _ensure_dispatch_task(self) -> None:
+        task = self._dispatch_task
+        if task is None or task.done():
+            self._dispatch_task = asyncio.create_task(self._dispatch_worker())
+
+    async def _dispatch_worker(self) -> None:
+        while True:
+            event = await self._dispatch_queue.get()
+            try:
+                await self._dispatcher.publish(event)
+            except Exception as exc:
+                self._logger.error("本地适配器事件分发失败", error=str(exc))
+            finally:
+                self._dispatch_queue.task_done()
+
+    async def _dispatch_event(self, event: dict[str, Any], *, await_dispatch: bool) -> None:
+        if await_dispatch:
+            await self._dispatcher.publish(event)
+            return
+        self._dispatch_queue.put_nowait(event)
+        self._ensure_dispatch_task()
 
     async def send(
         self,

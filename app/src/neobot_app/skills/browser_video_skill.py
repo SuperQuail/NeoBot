@@ -72,6 +72,13 @@ class BrowserVideoSkill(SkillModule):
         if err:
             return _json({"ok": False, "error": f"浏览器不可用: {err}"})
 
+        op_lock = getattr(self._browser, "operation_lock", None)
+        if op_lock is not None:
+            async with op_lock:
+                return await self._run_tool(tool_name, args)
+        return await self._run_tool(tool_name, args)
+
+    async def _run_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         pipeline_key = str(args.get("pipeline_key", "")).strip()
         if pipeline_key and self._lifecycle is not None:
             self._lifecycle.touch(pipeline_key)

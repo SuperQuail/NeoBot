@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from neobot_app.core.constants import DATA_DIR
 from neobot_contracts.ports.logging import Logger, NullLogger

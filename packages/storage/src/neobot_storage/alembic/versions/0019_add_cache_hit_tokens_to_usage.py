@@ -1,4 +1,4 @@
-"""add_cache_hit_tokens_to_usage
+"""用量表新增缓存命中 token 字段
 
 Revision ID: 0019
 Revises: 0018

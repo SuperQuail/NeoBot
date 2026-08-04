@@ -1,4 +1,4 @@
-"""SqlAlchemy scheduled task repository."""
+"""SqlAlchemy 定时任务仓库。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 from typing import Any
 
-from sqlalchemy import delete as sql_delete, func, select
+from sqlalchemy import delete as sql_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models import ConversationRef
@@ -43,13 +43,21 @@ class SqlAlchemyScheduledTaskAccess:
         metadata: dict[str, Any] | None = None,
     ) -> ScheduledTaskRecord:
         now = now_utc()
+        normalized_start = self._normalize_datetime(start_at)
+        normalized_end = self._normalize_datetime(end_at)
+        self._validate_fields(
+            title=title,
+            start_at=normalized_start,
+            end_at=normalized_end,
+            bindings=bindings,
+        )
         row = ScheduledTaskData(
             task_uuid=task_uuid,
             title=title,
             detail=detail,
             recurrence=ScheduledTaskRecurrence(recurrence).value,
-            start_at=self._normalize_datetime(start_at),
-            end_at=self._normalize_datetime(end_at),
+            start_at=normalized_start,
+            end_at=normalized_end,
             bindings_json=self._dump_bindings(bindings),
             metadata_json=json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True),
             completed_window_keys_json="[]",
@@ -77,6 +85,22 @@ class SqlAlchemyScheduledTaskAccess:
         completed_window_keys: list[str] | tuple[str, ...] | None = None,
     ) -> ScheduledTaskRecord:
         row = await self._get_row(task_uuid)
+        normalized_start = (
+            self._normalize_datetime(start_at)
+            if start_at is not None
+            else self._normalize_datetime(row.start_at)
+        )
+        normalized_end = (
+            self._normalize_datetime(end_at)
+            if end_at is not None
+            else self._normalize_datetime(row.end_at)
+        )
+        self._validate_fields(
+            title=title if title is not None else row.title,
+            start_at=normalized_start,
+            end_at=normalized_end,
+            bindings=bindings if bindings is not None else self._load_bindings(row.bindings_json),
+        )
         if title is not None:
             row.title = title
         if detail is not None:
@@ -84,9 +108,9 @@ class SqlAlchemyScheduledTaskAccess:
         if recurrence is not None:
             row.recurrence = ScheduledTaskRecurrence(recurrence).value
         if start_at is not None:
-            row.start_at = self._normalize_datetime(start_at)
+            row.start_at = normalized_start
         if end_at is not None:
-            row.end_at = self._normalize_datetime(end_at)
+            row.end_at = normalized_end
         if bindings is not None:
             row.bindings_json = self._dump_bindings(bindings)
         if metadata is not None:
@@ -169,6 +193,9 @@ class SqlAlchemyScheduledTaskAccess:
             return None
         completed_at = self._normalize_datetime(completed_at)
         payload = self._scheduled_payload(row)
+        claimed = await self._claim_active_row(task_uuid)
+        if not claimed:
+            return None
         archived = CompletedScheduledTaskData(
             task_uuid=row.task_uuid,
             title=row.title,
@@ -186,6 +213,23 @@ class SqlAlchemyScheduledTaskAccess:
         await self._session.delete(row)
         await self._session.flush()
         return self._to_completed_domain(archived)
+
+    async def _claim_active_row(self, task_uuid: str) -> bool:
+        stmt = (
+            update(ScheduledTaskData)
+            .where(
+                ScheduledTaskData.task_uuid == task_uuid,
+                ScheduledTaskData.state == ScheduledTaskState.ACTIVE.value,
+            )
+            .values(
+                state="completed",
+                updated_at=now_utc(),
+                version=ScheduledTaskData.version + 1,
+            )
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount == 1
 
     async def _get_optional_row(self, task_uuid: str) -> ScheduledTaskData | None:
         stmt = select(ScheduledTaskData).where(ScheduledTaskData.task_uuid == task_uuid)
@@ -244,6 +288,21 @@ class SqlAlchemyScheduledTaskAccess:
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:
         return to_utc(value)
+
+    @staticmethod
+    def _validate_fields(
+        *,
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        bindings: list[ConversationRef] | tuple[ConversationRef, ...],
+    ) -> None:
+        if not title.strip():
+            raise ValueError("scheduled task title must not be empty")
+        if end_at <= start_at:
+            raise ValueError("scheduled task end_at must be later than start_at")
+        if not bindings:
+            raise ValueError("scheduled task must have at least one binding")
 
     @classmethod
     def _to_domain(cls, row: ScheduledTaskData) -> ScheduledTaskRecord:

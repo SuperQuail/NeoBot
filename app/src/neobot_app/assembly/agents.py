@@ -1,4 +1,4 @@
-"""Agent model name resolution helpers and peer descriptions."""
+"""Agent 模型名称解析辅助函数与同伴描述。"""
 
 from __future__ import annotations
 

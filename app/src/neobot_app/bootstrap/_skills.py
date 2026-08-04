@@ -17,6 +17,7 @@ def build_skill_manager(
     adapter: Any,
     archive_memory_service: Any,
     profile_service: Any,
+    uow_factory: Any,
     emoji_service: Any,
     vision_provider: Any,
     file_server: Any,
@@ -37,6 +38,7 @@ def build_skill_manager(
     group_message_queue: Any = None,
     friend_message_queue: Any = None,
     data_dir: Path = Path("."),
+    balance_checker: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -46,6 +48,7 @@ def build_skill_manager(
         adapter=adapter,
         archive_memory_service=archive_memory_service,
         profile_service=profile_service,
+        uow_factory=uow_factory,
         emoji_service=emoji_service,
         vision_provider=vision_provider,
         file_server=file_server,
@@ -66,6 +69,7 @@ def build_skill_manager(
         group_message_queue=group_message_queue,
         friend_message_queue=friend_message_queue,
         data_dir=data_dir,
+        balance_checker=balance_checker,
     )
 
 

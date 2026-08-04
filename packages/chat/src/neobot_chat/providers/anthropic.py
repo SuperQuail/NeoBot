@@ -10,7 +10,7 @@ from neobot_chat.utils import parse_tool_args
 
 
 class AnthropicProvider(BaseHTTPProvider):
-    """Anthropic Messages API"""
+    """Anthropic Messages API 实现"""
 
     def __init__(
         self,
@@ -125,8 +125,7 @@ class AnthropicProvider(BaseHTTPProvider):
         if tools:
             payload["tools"] = self._convert_tools(tools)
 
-        resp = await self.client.post("/v1/messages", json=payload)
-        resp.raise_for_status()
+        resp = await self._request_with_retry("POST", "/v1/messages", json=payload)
         data = resp.json()
         result = self._parse_response(data)
 
@@ -210,46 +209,52 @@ class AnthropicProvider(BaseHTTPProvider):
         tool_calls: list[ToolCall] = []
         current_tool: ToolCall | None = None
 
-        async with self.client.stream("POST", "/v1/messages", json=payload) as resp:
-            resp.raise_for_status()
-            event_type = ""
-            async for line in resp.aiter_lines():
-                if line.startswith("event: "):
-                    event_type = line[7:]
-                    continue
-                if not line.startswith("data: "):
-                    continue
-                data = json.loads(line[6:])
+        event_type = ""
+        async for line in self._stream_with_retry(
+            "POST", "/v1/messages", json=payload
+        ):
+            if line.startswith("event: "):
+                event_type = line[7:]
+                continue
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if not data_str or not data_str.startswith("{"):
+                continue
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
 
-                match event_type:
-                    case "content_block_start":
-                        block = data.get("content_block", {})
-                        if block.get("type") == "tool_use":
-                            current_tool = self._build_tool_call(
-                                tool_id=block.get("id"),
-                                tool_name=block.get("name"),
-                                arguments="",
-                            )
+            match event_type:
+                case "content_block_start":
+                    block = data.get("content_block", {})
+                    if block.get("type") == "tool_use":
+                        current_tool = self._build_tool_call(
+                            tool_id=block.get("id"),
+                            tool_name=block.get("name"),
+                            arguments="",
+                        )
 
-                    case "content_block_delta":
-                        delta = data.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text")
-                            if isinstance(text, str) and text:
-                                content_parts.append(text)
-                                yield ChatChunk(delta=text)
-                        elif delta.get("type") == "input_json_delta" and current_tool:
-                            partial_json = delta.get("partial_json")
-                            if isinstance(partial_json, str):
-                                current_tool["function"]["arguments"] += partial_json
+                case "content_block_delta":
+                    delta = data.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text")
+                        if isinstance(text, str) and text:
+                            content_parts.append(text)
+                            yield ChatChunk(delta=text)
+                    elif delta.get("type") == "input_json_delta" and current_tool:
+                        partial_json = delta.get("partial_json")
+                        if isinstance(partial_json, str):
+                            current_tool["function"]["arguments"] += partial_json
 
-                    case "content_block_stop":
-                        if current_tool:
-                            tool_calls.append(current_tool)
-                            current_tool = None
+                case "content_block_stop":
+                    if current_tool:
+                        tool_calls.append(current_tool)
+                        current_tool = None
 
-                    case "message_stop":
-                        break
+                case "message_stop":
+                    break
 
         message: Message = {
             "role": "assistant",

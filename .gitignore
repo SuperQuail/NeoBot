@@ -121,6 +121,10 @@ uv.lock
 /test/
 /dev-test/
 /.claude/
+/scripts/deepseek_v3_tokenizer/
 
 .kagent/
 /.cursor/
+
+# local bug tracker tool
+/bug_tracker/

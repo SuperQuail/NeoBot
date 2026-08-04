@@ -66,6 +66,7 @@ __all__ = [
     "ToolAccessPolicy",
     "ToolAccessRule",
     "ToolGuardContext",
+    "Toolset",
     "StreamableRunnable",
     "ToolExecutor",
     "Workflow",

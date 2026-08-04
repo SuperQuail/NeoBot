@@ -1,4 +1,4 @@
-"""SqlAlchemy message repository."""
+"""SqlAlchemy 消息仓库。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""SqlAlchemy creator image repository."""
+"""SqlAlchemy 创作者图片仓库。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from neobot_storage.models import CreatorImageData
 
 
 class SqlAlchemyCreatorImageAccess:
-    """SqlAlchemy implementation of CreatorImageAccess protocol."""
+    """CreatorImageAccess 协议的 SqlAlchemy 实现。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session

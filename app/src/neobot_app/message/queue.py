@@ -36,7 +36,7 @@ class MessageQueueType(Enum):
 
 
 class QueueEntryType(Enum):
-    """Queue entry kind."""
+    """队列条目类型。"""
 
     MESSAGE = "message"
     TIMESTAMP = "timestamp"
@@ -47,7 +47,7 @@ class QueueEntryType(Enum):
 
 @dataclass
 class QueueStats:
-    """Per-queue stats."""
+    """单队列统计信息。"""
 
     total_messages: int = 0
     oldest_message_id: Optional[int] = None
@@ -57,7 +57,7 @@ class QueueStats:
 
 @dataclass
 class ReactionEntry:
-    """Emoji reaction on a message."""
+    """消息上的表情回应事件。"""
 
     target_message_id: int
     emoji_id: int
@@ -81,7 +81,7 @@ class PokeEntry:
 
 @dataclass
 class QueueEntry:
-    """Single queue event."""
+    """单条队列事件。"""
 
     kind: QueueEntryType
     occurred_at: Optional[int] = None
@@ -94,7 +94,7 @@ class QueueEntry:
 
 
 class MessageQueue:
-    """Queue with timestamps, recall events, and text/diff rendering."""
+    """带时间戳、撤回事件及文本/差异渲染的消息队列。"""
 
     def __init__(
         self,
@@ -213,25 +213,32 @@ class MessageQueue:
             return float(self.forward_weight)
         return 1.0
 
-    def _ensure_capacity_for_non_timestamp_entry(self, key: str, entry_weight: float = 1.0) -> None:
+    def _ensure_capacity_for_non_timestamp_entry(self, key: str, entry_weight: float = 1.0) -> bool:
+        """按需丢弃最旧的非时间戳条目，直到新条目能放入 max_size 容量内。
+
+        返回 True 表示新条目可以插入；当新条目权重本身超过 max_size（即使空队列
+        也放不下）时返回 False，此时调用方应放弃插入并将该条目视为被丢弃。
+        """
         queue = self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
 
         weighted_count = self._weighted_counts.get(key, 0.0)
-        if weighted_count + entry_weight <= self.max_size:
-            return
-
-        while queue:
+        while queue and weighted_count + entry_weight > self.max_size:
             dropped_entry = queue.popleft()
             if dropped_entry.kind == QueueEntryType.TIMESTAMP:
                 continue
 
+            weighted_count -= self._get_entry_weight(dropped_entry.kind)
             self._message_counts[key] -= 1
-            self._weighted_counts[key] -= self._get_entry_weight(dropped_entry.kind)
             stats.dropped_messages += 1
-            break
 
+        self._weighted_counts[key] = weighted_count
         self._refresh_oldest_message_id(key)
+
+        if weighted_count + entry_weight > self.max_size:
+            stats.dropped_messages += 1
+            return False
+        return True
 
     def _refresh_oldest_message_id(self, key: str) -> None:
         stats = self._get_or_create_stats(key)
@@ -260,13 +267,15 @@ class MessageQueue:
         self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
 
+        entry_weight = self._compute_message_weight(converted_message)
+        if not self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight):
+            return
+
         self._append_timestamp_if_needed(
             key,
             resolved_time,
             include_on_empty=include_initial_timestamp,
         )
-        entry_weight = self._compute_message_weight(converted_message)
-        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight)
 
         self._queues[key].append(
             QueueEntry(

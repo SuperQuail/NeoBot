@@ -1,8 +1,7 @@
-"""Central time helpers for NeoBot application code.
+"""为 NeoBot 应用代码提供统一的时间辅助函数。
 
-Application code should use this module for wall-clock time so prompts,
-scheduled tasks, debug records, and runtime expiry checks share the same
-timezone and formatting assumptions.
+应用代码应使用本模块获取墙钟时间，使提示词、定时任务、
+调试记录和运行期过期检查共享相同的时区与格式假设。
 """
 
 from __future__ import annotations

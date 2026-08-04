@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 from datetime import datetime
@@ -272,6 +271,13 @@ class BrowserSkill(SkillModule):
                 return await handler(self, args)
             return _json({"ok": False, "error": f"浏览器不可用: {err}"})
 
+        op_lock = getattr(self._browser, "operation_lock", None)
+        if op_lock is not None:
+            async with op_lock:
+                return await self._run_tool(tool_name, args)
+        return await self._run_tool(tool_name, args)
+
+    async def _run_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         pipeline_key = str(args.get("pipeline_key", "")).strip()
         if pipeline_key and self._lifecycle is not None:
             self._lifecycle.touch(pipeline_key)
@@ -336,20 +342,36 @@ async def _handle_open(self: BrowserSkill, args: dict) -> str:
 async def _handle_close(self: BrowserSkill, args: dict) -> str:
     pipeline_key = str(args.get("pipeline_key", "")).strip()
 
-    if pipeline_key and self._lifecycle is not None:
+    if pipeline_key:
+        if self._lifecycle is None:
+            return _json({"ok": False, "error": "无法仅关闭当前流，浏览器为共享实例，已拒绝全量关闭"})
         tab_ids = self._lifecycle.get_tab_ids(pipeline_key)
-        if tab_ids:
+        if not tab_ids:
+            self._lifecycle.reset_flow(pipeline_key)
+            return _json({"ok": True, "note": "该聊天流没有打开的浏览器页面"})
+        try:
             tabs = self._parse_tabs(await self._browser.list_tabs())
-            id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
-            indices = sorted(
-                (id_to_index[tid] for tid in tab_ids if tid in id_to_index),
-                reverse=True,
-            )
-            for idx in indices:
-                try:
-                    await self._browser.close_tab(idx)
-                except Exception:
-                    pass
+        except Exception:
+            return _json({"ok": False, "error": "无法仅关闭当前流，浏览器为共享实例，已拒绝全量关闭"})
+        id_to_index = {t["tab_id"]: t["index"] for t in tabs if "tab_id" in t and "index" in t}
+        indices = sorted(
+            (id_to_index[tid] for tid in tab_ids if tid in id_to_index),
+            reverse=True,
+        )
+        if not indices:
+            self._lifecycle.reset_flow(pipeline_key)
+            return _json({"ok": True, "note": "该聊天流的标签页已不存在，无需关闭"})
+        closed = 0
+        for idx in indices:
+            try:
+                result = await self._browser.close_tab(idx)
+                if isinstance(result, dict) and not result.get("success"):
+                    continue
+                closed += 1
+            except Exception:
+                pass
+        if closed == 0:
+            return _json({"ok": False, "error": "无法仅关闭当前流，浏览器为共享实例，已拒绝全量关闭"})
         self._lifecycle.reset_flow(pipeline_key)
         return _json({"ok": True, "note": "浏览器页面已关闭"})
 
@@ -543,7 +565,7 @@ async def _handle_new_tab(self: BrowserSkill, args: dict) -> str:
     url = args.get("url", "")
     if hasattr(self._browser, "new_tab"):
         await self._browser.new_tab(url)
-    return _json({"ok": True, "note": f"已打开新标签页"})
+    return _json({"ok": True, "note": "已打开新标签页"})
 
 async def _handle_switch_tab(self: BrowserSkill, args: dict) -> str:
     index = int(args.get("index", 0))

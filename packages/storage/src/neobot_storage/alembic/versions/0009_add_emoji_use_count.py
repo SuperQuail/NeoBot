@@ -1,4 +1,4 @@
-"""add emoji use_count
+"""新增 emoji use_count
 
 Revision ID: 0009
 Revises: 0008
