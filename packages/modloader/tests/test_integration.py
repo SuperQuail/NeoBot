@@ -137,6 +137,41 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.mock_adapter.send.assert_called_once()
         self.assertEqual(self.mock_adapter.send.call_args.args[1], [{"type": "image", "data": {"url": "https://example/image.png"}}])
 
+    async def test_e2e_command_with_at_segment(self) -> None:
+        self._write_pkg(
+            "callout",
+            textwrap.dedent(
+                """\
+                from neobot_modloader import AtSegment, Plugin, Reply
+
+                plugin = Plugin("callout")
+
+                @plugin.command("点名 <user:at>")
+                async def callout(user: AtSegment, reply: Reply):
+                    await reply.send(f"@{user.qq}")
+                """
+            ),
+        )
+
+        self.runtime.load_all()
+        await self.runtime.load_registered()
+        await self.runtime.start_all()
+
+        await self._dispatch(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 12345,
+                "message": [
+                    {"type": "text", "data": {"text": "/点名"}},
+                    {"type": "at", "data": {"qq": 888, "name": "小明"}},
+                ],
+            }
+        )
+
+        self.mock_adapter.send.assert_called_once()
+        self.assertEqual(self.mock_adapter.send.call_args.args[1], "@888")
+
     async def test_e2e_config_injection(self) -> None:
         self._write_pkg(
             "ping",

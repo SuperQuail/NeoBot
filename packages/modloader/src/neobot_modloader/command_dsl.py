@@ -4,7 +4,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from neobot_modloader.message import ImageSegment, Message, MessageSegment
+from neobot_modloader.message import AtSegment, ImageSegment, Message, MessageSegment
 
 
 class PatternError(ValueError):
@@ -137,7 +137,7 @@ def _parse_param(raw: str, *, optional: bool) -> PatternElement:
     list_value = value_type.startswith("list[") and value_type.endswith("]")
     if list_value:
         value_type = value_type[5:-1].strip()
-    if value_type not in {"str", "int", "float", "bool", "rest", "image"}:
+    if value_type not in {"str", "int", "float", "bool", "rest", "image", "at"}:
         raise PatternError(f"unsupported parameter type: {value_type}")
     return PatternElement(
         kind="param",
@@ -206,6 +206,8 @@ def _capture(
 ) -> tuple[Any, int]:
     if element.value_type == "image":
         return _capture_image(element, tokens, start)
+    if element.value_type == "at":
+        return _capture_at(element, tokens, start)
     if element.value_type == "rest":
         rest = " ".join(token for token in tokens[start:] if isinstance(token, str))
         if not rest and not element.optional:
@@ -248,6 +250,34 @@ def _capture_image(
             return None, start
         raise PatternMatchError(f"missing required image parameter {element.name}")
     return images[0], last_index
+
+
+def _capture_at(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
+    ats: list[AtSegment] = []
+    first_index: int | None = None
+    last_index = start
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        if isinstance(token, AtSegment):
+            if first_index is None:
+                first_index = index
+            ats.append(token)
+            last_index = index + 1
+            if not element.list_value:
+                break
+    if element.list_value:
+        if not ats and not element.optional:
+            raise PatternMatchError(f"missing required at parameter {element.name}")
+        return ats, last_index if ats else start
+    if first_index is None:
+        if element.optional:
+            return None, start
+        raise PatternMatchError(f"missing required at parameter {element.name}")
+    return ats[0], last_index
 
 
 def _next_text_token(tokens: list[str | MessageSegment], start: int) -> int | None:

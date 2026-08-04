@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from neobot_modloader.command_dsl import MessagePattern, PatternError
-from neobot_modloader.message import ImageSegment, Message
+from neobot_modloader.message import AtSegment, ImageSegment, Message
 
 
 class CommandDslTest(unittest.TestCase):
@@ -69,6 +69,93 @@ class CommandDslTest(unittest.TestCase):
         self.assertFalse(result.matched)
         self.assertTrue(result.command_matched)
         self.assertIn("missing required image", result.error or "")
+
+    def test_command_captures_at_segment(self) -> None:
+        pattern = MessagePattern("点名 <user:at>", command=True)
+        message = Message(
+            {
+                "message": [
+                    {"type": "text", "data": {"text": "/点名"}},
+                    {"type": "at", "data": {"qq": 123, "name": "小明"}},
+                ]
+            }
+        )
+
+        result = pattern.match(message)
+
+        self.assertTrue(result.matched)
+        self.assertIsInstance(result.values["user"], AtSegment)
+        self.assertEqual(result.values["user"].qq, "123")
+        self.assertEqual(result.values["user"].name, "小明")
+
+    def test_optional_at_returns_none_when_missing(self) -> None:
+        pattern = MessagePattern("点名 [user:at]", command=True)
+
+        result = pattern.match(Message({"raw_message": "/点名"}))
+
+        self.assertTrue(result.matched)
+        self.assertIsNone(result.values["user"])
+
+    def test_missing_required_at_reports_parse_error(self) -> None:
+        pattern = MessagePattern("点名 <user:at>", command=True)
+
+        result = pattern.match(Message({"raw_message": "/点名"}))
+
+        self.assertFalse(result.matched)
+        self.assertTrue(result.command_matched)
+        self.assertIn("missing required at", result.error or "")
+
+    def test_captures_list_of_at_segments(self) -> None:
+        pattern = MessagePattern("点名 <users:list[at]>", command=True)
+        message = Message(
+            {
+                "message": [
+                    {"type": "text", "data": {"text": "/点名"}},
+                    {"type": "at", "data": {"qq": 111, "name": "甲"}},
+                    {"type": "at", "data": {"qq": 222, "name": "乙"}},
+                ]
+            }
+        )
+
+        result = pattern.match(message)
+
+        self.assertTrue(result.matched)
+        self.assertEqual([at_segment.qq for at_segment in result.values["users"]], ["111", "222"])
+
+    def test_at_captures_across_surrounding_text(self) -> None:
+        pattern = MessagePattern("点名 <user:at>", command=True)
+        message = Message(
+            {
+                "message": [
+                    {"type": "text", "data": {"text": "/点名 请"}},
+                    {"type": "at", "data": {"qq": 123, "name": "小明"}},
+                    {"type": "text", "data": {"text": " 来一下"}},
+                ]
+            }
+        )
+
+        result = pattern.match(message)
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.values["user"].qq, "123")
+
+    def test_at_and_image_coexist_in_same_pattern(self) -> None:
+        pattern = MessagePattern("汇报 <user:at> <img:image>", command=True)
+        message = Message(
+            {
+                "message": [
+                    {"type": "text", "data": {"text": "/汇报"}},
+                    {"type": "at", "data": {"qq": 123, "name": "小明"}},
+                    {"type": "image", "data": {"file": "a.image"}},
+                ]
+            }
+        )
+
+        result = pattern.match(message)
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.values["user"].qq, "123")
+        self.assertIsInstance(result.values["img"], ImageSegment)
 
     def test_rejects_unknown_param_type(self) -> None:
         with self.assertRaises(PatternError):

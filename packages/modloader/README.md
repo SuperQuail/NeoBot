@@ -70,6 +70,9 @@ message.text
 message.images
 message.first_image
 message.has_image
+message.ats
+message.first_at
+message.has_at
 message.of_type("at")
 ```
 
@@ -92,6 +95,19 @@ async def vision(img: ImageSegment, reply: Reply):
 
 这段代码可以匹配类似 `/识图 + 图片` 的消息链，并把图片段注入到 `img` 参数。
 
+`at` 段同样可以捕获注入：
+
+```python
+from neobot_modloader import AtSegment, MessageChain, Plugin, Reply
+
+plugin = Plugin("callout")
+
+
+@plugin.command("点名 <user:at>")
+async def callout(user: AtSegment, reply: Reply):
+    await reply.send(MessageChain().text("请 ").at("123456"))
+```
+
 支持的捕获写法：
 
 | 模式 | 注入结果 |
@@ -105,6 +121,9 @@ async def vision(img: ImageSegment, reply: Reply):
 | `<img:image>` | 一个图片段 |
 | `[img:image]` | 可选图片段 |
 | `<imgs:list[image]>` | 一个或多个图片段 |
+| `<name:at>` | 一个 @ 段 |
+| `[name:at]` | 可选 @ 段 |
+| `<names:list[at]>` | 一个或多个 @ 段 |
 
 如果不想要求 slash 命令，可以用 message 模式：
 
@@ -159,6 +178,14 @@ await reply.send(
     MessageChain()
     .text("收到图片: ")
     .image(url=img.url, file=img.file)
+)
+```
+
+```python
+await reply.send(
+    MessageChain()
+    .text("请 ")
+    .at("123456")
 )
 ```
 
@@ -433,6 +460,7 @@ ctx.plugin_control.snapshot()
 ```python
 from neobot_modloader import (
     AgentRequest,
+    AtSegment,
     Bot,
     DefaultPluginManager,
     DiscoveredPlugin,
@@ -451,6 +479,7 @@ from neobot_modloader import (
     PythonDependencyInstaller,
     Reply,
     RuntimePluginContext,
+    at,
     image,
     text,
 )
