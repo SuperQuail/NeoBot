@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -72,7 +73,11 @@ class NeoBotApplication(Generic[T]):
             self.file_server = file_server
         else:
             self.file_server = FileServer(
-                get_data_dir(), file_server_port, file_server_host, expiration_config, file_server_public_url,
+                get_data_dir(),
+                file_server_port,
+                file_server_host,
+                expiration_config,
+                file_server_public_url,
                 enabled=file_server_enabled,
             )
         self.tts_service = tts_service
@@ -106,28 +111,30 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event.clear()
         started: list[str] = []
         try:
-            await self.file_server.start()
             started.append("file_server")
+            await self.file_server.start()
             # 内置控制台独立于 QQ 连接, 必须提前启动:
             # 即使后续步骤 (adapter 连接/插件/聊天流) 失败, 控制台也保持可用以排查问题
             if self._console_service is not None:
+                started.append("console")
                 try:
                     await self._console_service.start()
-                    started.append("console")
                 except Exception as exc:
                     self._logger.error("内置控制台启动失败", error=str(exc))
             if self.tts_service is not None:
-                await self.tts_service.initialize()
                 started.append("tts")
+                await self.tts_service.initialize()
             self._logger.info("文件服务器启动完成")
             if self._plugin_runtime is not None:
-                await self._plugin_runtime.load_registered()
                 started.append("plugin")
+                await self._plugin_runtime.load_registered()
                 self._logger.info("插件加载完成")
-            await self.adapter.start()
             started.append("adapter")
+            await self.adapter.start()
             if getattr(self.adapter, "requires_connection_wait", True):
-                connected = await asyncio.to_thread(self.adapter.wait_for_connection, 30)
+                connected = await asyncio.to_thread(
+                    self.adapter.wait_for_connection, 30
+                )
                 if not connected:
                     raise ConnectionTimeoutError(
                         "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
@@ -149,105 +156,194 @@ class NeoBotApplication(Generic[T]):
             await self.chat_stream.initialize()
             self._logger.info("NeoBot聊天流初始化完成")
             if self._emoji_service is not None:
-                await self._emoji_service.start()
                 started.append("emoji")
+                await self._emoji_service.start()
                 self._logger.info("表情包服务启动完成")
+            if self._background_coros:
+                started.append("background")
             for coro in self._background_coros:
                 self._background_tasks.append(asyncio.create_task(coro))
-                self._logger.debug(f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}")
-            if self._background_tasks:
-                started.append("background")
+                self._logger.debug(
+                    f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}"
+                )
             if self._browser_lifecycle_manager is not None:
-                await self._browser_lifecycle_manager.start()
                 started.append("browser")
+                await self._browser_lifecycle_manager.start()
                 self._logger.info("浏览器生命周期管理器启动完成")
-            self.event_ingress.start()
             started.append("event_ingress")
+            self.event_ingress.start()
             if self._scheduled_task_manager is not None:
-                await self._scheduled_task_manager.start()
                 started.append("scheduled_task_manager")
+                await self._scheduled_task_manager.start()
             if self._markdown_image_converter is not None:
-                await self._markdown_image_converter.start()
                 started.append("markdown_image_converter")
+                await self._markdown_image_converter.start()
             if self._report_service is not None:
                 self._report_task = asyncio.create_task(self._run_report_loop())
                 started.append("report_task")
             self._started = True
-        except Exception:
-            await self._rollback_start(started)
+        except BaseException:
+            deferred = await self._rollback_start(started)
+            self._started = False
+            if deferred is not None:
+                raise deferred
             raise
 
-    async def _rollback_start(self, started: list[str]) -> None:
-        """start 中途失败时逆序回滚已启动的组件；单个组件清理失败只记日志，不掩盖原始异常。"""
-        if "report_task" in started and self._report_task is not None:
-            self._report_task.cancel()
-            try:
-                await self._report_task
-            except asyncio.CancelledError:
-                pass
-            self._report_task = None
+    async def _rollback_start(self, started: list[str]) -> BaseException | None:
+        """Rollback startup without letting one cleanup failure skip later resources."""
+        steps: list[tuple[str, Callable[[], Any]]] = []
+        if "report_task" in started:
+            steps.append(("report task", self._cancel_report_task))
         if "event_ingress" in started:
-            self.event_ingress.stop()
+            steps.append(("event ingress", self.event_ingress.stop))
         if "markdown_image_converter" in started:
-            try:
-                await self._markdown_image_converter.stop()
-            except Exception as exc:
-                self._logger.warning("markdown image converter stop failed on rollback", error=str(exc))
-        if "scheduled_task_manager" in started:
-            try:
-                await self._scheduled_task_manager.shutdown()
-            except Exception as exc:
-                self._logger.warning("scheduled task manager shutdown failed on rollback", error=str(exc))
-        if "browser" in started:
-            if self._browser_lifecycle_manager is not None:
-                try:
-                    await self._browser_lifecycle_manager.stop()
-                except Exception as exc:
-                    self._logger.warning("browser lifecycle manager stop failed on rollback", error=str(exc))
-            if self._browser_instance is not None:
-                try:
-                    await self._browser_instance.close()
-                except Exception as exc:
-                    self._logger.warning("browser close failed on rollback", error=str(exc))
-            self._cleanup_browser_artifacts()
-        if "background" in started:
-            for task in self._background_tasks:
-                task.cancel()
-            for task in self._background_tasks:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            self._background_tasks.clear()
-        if "emoji" in started:
-            try:
-                await self._emoji_service.stop()
-            except Exception as exc:
-                self._logger.warning("emoji service stop failed on rollback", error=str(exc))
-        if "plugin" in started:
-            try:
-                await self._plugin_runtime.stop_all()
-            except Exception as exc:
-                self._logger.warning("plugin runtime stop failed on rollback", error=str(exc))
+            steps.append(
+                ("markdown image converter", self._markdown_image_converter.stop)
+            )
+
+        # These managers own providers/agents created before start(), so they
+        # must be closed even when no explicit start marker exists.
+        if self._self_heal_manager is not None:
+            steps.append(("self heal manager", self._self_heal_manager.shutdown))
+        if self._problem_solver_manager is not None:
+            steps.append(
+                ("problem solver manager", self._problem_solver_manager.shutdown)
+            )
+        if self._reply_orchestrator is not None:
+            steps.append(("reply orchestrator", self._reply_orchestrator.shutdown))
+        elif "scheduled_task_manager" in started:
+            steps.append(
+                ("scheduled task manager", self._scheduled_task_manager.shutdown)
+            )
+        if self._reply_orchestrator is None and self._drawing_manager is not None:
+            steps.append(("drawing manager", self._drawing_manager.shutdown))
+        if self._creator_image_service is not None:
+            steps.append(("creator image service", self._creator_image_service.close))
+
+        if "browser" in started and self._browser_lifecycle_manager is not None:
+            steps.append(
+                ("browser lifecycle manager", self._browser_lifecycle_manager.stop)
+            )
+        if self._browser_instance is not None:
+            steps.append(("browser instance", self._browser_instance.close))
+            steps.append(("browser artifacts", self._cleanup_browser_artifacts))
+        if "background" in started or self._background_tasks:
+            steps.append(("background tasks", self._cancel_background_tasks))
+        if "emoji" in started and self._emoji_service is not None:
+            steps.append(("emoji service", self._emoji_service.stop))
+        if "plugin" in started and self._plugin_runtime is not None:
+            steps.append(("plugin runtime", self._plugin_runtime.stop_all))
+
+        # Registry closure follows reply/session cancellation so in-flight
+        # delegate calls observe cancellation rather than a synthetic result.
+        if self._plugin_runtime is not None:
+            steps.append(("agent registry", self._close_agent_registry))
         if "adapter" in started:
-            await self._stop_adapter_with_timeout()
-        if "tts" in started:
-            try:
-                await self.tts_service.close()
-            except Exception as exc:
-                self._logger.warning("tts close failed on rollback", error=str(exc))
+            steps.append(("adapter", self._stop_adapter_with_timeout))
+        if "tts" in started and self.tts_service is not None:
+            steps.append(("tts service", self.tts_service.close))
+        if self._archive_summary_service is not None:
+            steps.append(
+                ("archive summary service", self._archive_summary_service.close)
+            )
+        if self._vision_provider is not None:
+            steps.append(("vision provider", self._vision_provider.close))
         if "file_server" in started:
-            try:
-                await self.file_server.stop()
-            except Exception as exc:
-                self._logger.warning("file server stop failed on rollback", error=str(exc))
-        if "console" in started:
-            if self._console_service is not None:
-                try:
-                    await self._console_service.stop()
-                except Exception as exc:
-                    self._logger.warning("console stop failed on rollback", error=str(exc))
+            steps.append(("file server", self.file_server.stop))
+        if self._engine is not None:
+            steps.append(("database engine", self._engine.dispose))
+        if "console" in started and self._console_service is not None:
+            steps.append(("console service", self._console_service.stop))
+
+        deferred = await self._run_cleanup_steps("startup rollback", steps)
         self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
+        return deferred
+
+    async def _run_cleanup_steps(
+        self,
+        phase: str,
+        steps: list[tuple[str, Callable[[], Any]]],
+    ) -> BaseException | None:
+        """Run all cleanup steps, shielding each from caller cancellation."""
+        deferred: BaseException | None = None
+        for label, action in steps:
+            candidate = await self._run_cleanup_step(phase, label, action)
+            if candidate is None:
+                continue
+            if deferred is None or isinstance(
+                candidate, (KeyboardInterrupt, SystemExit)
+            ):
+                deferred = candidate
+        return deferred
+
+    async def _run_cleanup_step(
+        self,
+        phase: str,
+        label: str,
+        action: Callable[[], Any],
+    ) -> BaseException | None:
+        deferred_cancel: asyncio.CancelledError | None = None
+        cleanup_task: asyncio.Future[Any] | None = None
+        try:
+            result = action()
+            if inspect.isawaitable(result):
+                cleanup_task = asyncio.ensure_future(result)
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError as exc:
+                        current = asyncio.current_task()
+                        if current is not None and current.cancelling():
+                            deferred_cancel = deferred_cancel or exc
+                            continue
+                        raise
+                cleanup_task.result()
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                self._logger.error(
+                    f"{label} interrupted during {phase}",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                return exc
+            if isinstance(exc, asyncio.CancelledError):
+                self._logger.warning(
+                    f"{label} cancelled during {phase}",
+                    error_type=type(exc).__name__,
+                )
+                current = asyncio.current_task()
+                if deferred_cancel is not None:
+                    return deferred_cancel
+                if current is not None and current.cancelling():
+                    return exc
+                return None
+            self._logger.warning(
+                f"{label} failed during {phase}",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        return deferred_cancel
+
+    async def _cancel_report_task(self) -> None:
+        task = self._report_task
+        self._report_task = None
+        if task is None:
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _cancel_background_tasks(self) -> None:
+        tasks = list(self._background_tasks)
+        self._background_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _close_agent_registry(self) -> None:
+        registry = getattr(self._plugin_runtime, "agent_registry", None)
+        if registry is not None:
+            await registry.close()
 
     async def run_forever(self) -> None:
         """持续运行直到收到关闭信号，然后优雅停止。"""
@@ -259,8 +355,9 @@ class NeoBotApplication(Generic[T]):
         finally:
             await self.stop()
 
-    def request_stop(self) -> None:
-        self._restart_requested = False
+    def request_stop(self, *, clear_restart: bool = False) -> None:
+        if clear_restart:
+            self._restart_requested = False
         self._shutdown_event.set()
 
     @property
@@ -275,78 +372,82 @@ class NeoBotApplication(Generic[T]):
     async def stop(self) -> None:
         if not self._started:
             return
+        deferred: BaseException | None = None
+        try:
+            deferred = await self._stop_components()
+        finally:
+            self._started = False
+            self._logger.info("NeoBot已停止")
+        if deferred is not None:
+            raise deferred
+
+    async def _stop_components(self) -> BaseException | None:
         self._shutdown_event.set()
+        steps: list[tuple[str, Callable[[], Any]]] = []
         if self._console_service is not None:
-            await self._console_service.stop()
-        # Shut down self-heal manager first: cancel any in-flight heal task
-        # so it doesn't spawn LLM calls or notifications during teardown.
+            steps.append(("console service", self._console_service.stop))
         if self._self_heal_manager is not None:
-            try:
-                await self._self_heal_manager.shutdown()
-            except Exception as exc:
-                self._logger.warning("self heal manager shutdown failed", error=str(exc))
-        if self._report_task is not None:
-            self._report_task.cancel()
-            try:
-                await self._report_task
-            except asyncio.CancelledError:
-                pass
-        self.event_ingress.stop()
-        if self._message_pipeline is not None:
-            await self._message_pipeline.flush_pending_summaries()
-        if self._archive_summary_service is not None:
-            await self._archive_summary_service.close()
-        if self._plugin_runtime is not None:
-            await self._plugin_runtime.stop_all()
-        if self._reply_orchestrator is not None:
-            await self._reply_orchestrator.shutdown()
-        elif self._scheduled_task_manager is not None:
-            await self._scheduled_task_manager.shutdown()
+            steps.append(("self heal manager", self._self_heal_manager.shutdown))
         if self._problem_solver_manager is not None:
-            await self._problem_solver_manager.shutdown()
-        if self._drawing_manager is not None:
-            try:
-                await self._drawing_manager.shutdown()
-            except Exception as exc:
-                self._logger.warning("drawing manager shutdown failed", error=str(exc))
+            steps.append(
+                ("problem solver manager", self._problem_solver_manager.shutdown)
+            )
+        if self._report_task is not None:
+            steps.append(("report task", self._cancel_report_task))
+
+        steps.append(("event ingress", self.event_ingress.stop))
+        if self._reply_orchestrator is not None:
+            steps.append(("reply orchestrator", self._reply_orchestrator.shutdown))
+        else:
+            if self._scheduled_task_manager is not None:
+                steps.append(
+                    ("scheduled task manager", self._scheduled_task_manager.shutdown)
+                )
+            if self._drawing_manager is not None:
+                steps.append(("drawing manager", self._drawing_manager.shutdown))
+        if self._message_pipeline is not None:
+            steps.append(
+                (
+                    "message pipeline summaries",
+                    self._message_pipeline.flush_pending_summaries,
+                )
+            )
+        if self._archive_summary_service is not None:
+            steps.append(
+                ("archive summary service", self._archive_summary_service.close)
+            )
+        if self._plugin_runtime is not None:
+            steps.append(("plugin runtime", self._plugin_runtime.stop_all))
         if self._creator_image_service is not None:
-            try:
-                await self._creator_image_service.close()
-            except Exception as exc:
-                self._logger.warning("creator image service close failed", error=str(exc))
+            steps.append(("creator image service", self._creator_image_service.close))
         if self._markdown_image_converter is not None:
-            await self._markdown_image_converter.stop()
+            steps.append(
+                ("markdown image converter", self._markdown_image_converter.stop)
+            )
         if self._emoji_service is not None:
-            await self._emoji_service.stop()
-        for task in self._background_tasks:
-            task.cancel()
-        for task in self._background_tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._background_tasks.clear()
+            steps.append(("emoji service", self._emoji_service.stop))
+        if self._background_tasks:
+            steps.append(("background tasks", self._cancel_background_tasks))
+
+        # Reply/session work is gone before the shared registry begins draining.
+        if self._plugin_runtime is not None:
+            steps.append(("agent registry", self._close_agent_registry))
         if self._browser_lifecycle_manager is not None:
-            try:
-                await self._browser_lifecycle_manager.stop()
-            except Exception as exc:
-                self._logger.warning("browser lifecycle manager stop failed", error=str(exc))
+            steps.append(
+                ("browser lifecycle manager", self._browser_lifecycle_manager.stop)
+            )
         if self._browser_instance is not None:
-            try:
-                await self._browser_instance.close()
-            except Exception as exc:
-                self._logger.warning("browser close failed", error=str(exc))
-        self._cleanup_browser_artifacts()
+            steps.append(("browser instance", self._browser_instance.close))
+            steps.append(("browser artifacts", self._cleanup_browser_artifacts))
         if self._vision_provider is not None:
-            await self._vision_provider.close()
-        await self._stop_adapter_with_timeout()
+            steps.append(("vision provider", self._vision_provider.close))
+        steps.append(("adapter", self._stop_adapter_with_timeout))
         if self.tts_service is not None:
-            await self.tts_service.close()
-        await self.file_server.stop()
+            steps.append(("tts service", self.tts_service.close))
+        steps.append(("file server", self.file_server.stop))
         if self._engine is not None:
-            await self._engine.dispose()
-        self._started = False
-        self._logger.info("NeoBot已停止")
+            steps.append(("database engine", self._engine.dispose))
+        return await self._run_cleanup_steps("shutdown", steps)
 
     def _cleanup_browser_artifacts(self) -> None:
         """删除浏览器截图/录屏产物（screenshots/*.jpg|png、annotated_*.png、recording_*.gif）。"""

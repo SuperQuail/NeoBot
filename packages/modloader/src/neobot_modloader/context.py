@@ -16,6 +16,43 @@ from neobot_modloader.plugins.agents import PluginAgentRegistrar
 MessagePayload = str | list[dict[str, Any]]
 
 
+class MarkdownSkillRegistrar:
+    """插件 Markdown Skill 注册器（owner 为插件名，卸载时自动清理）。"""
+
+    def __init__(
+        self,
+        *,
+        plugin_name: str,
+        registry: Any | None,
+        record_cleanup: Any | None,
+    ) -> None:
+        self._plugin_name = plugin_name
+        self._registry = registry
+        self._record_cleanup = record_cleanup
+        self._registered = False
+
+    @property
+    def available(self) -> bool:
+        """共享 Skill 注册表是否已注入。"""
+        return self._registry is not None
+
+    def register(self, skills: list[Any]) -> None:
+        if self._registry is None:
+            raise RuntimeError("Markdown skill registry is not available")
+        if not skills:
+            return
+        self._registry.register_many(self._plugin_name, skills)
+        self._registered = True
+        if self._record_cleanup is not None:
+            self._record_cleanup(self.unregister_all)
+
+    def unregister_all(self) -> None:
+        if self._registry is None or not self._registered:
+            return
+        self._registry.unregister_owner(self._plugin_name)
+        self._registered = False
+
+
 class RuntimePluginContext:
     """新 Plugin API 的内部运行时上下文。"""
 
@@ -38,6 +75,8 @@ class RuntimePluginContext:
         file_server: Any | None = None,
         media_sender: Any | None = None,
         plugin_control: PluginControlFacade | None = None,
+        markdown_skill_registry: Any | None = None,
+        record_skill_cleanup: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -58,6 +97,11 @@ class RuntimePluginContext:
             plugin_name=plugin_name,
             registry=agent_registry,
             record_registration=record_agent_registration,
+        )
+        self.markdown_skills = MarkdownSkillRegistrar(
+            plugin_name=plugin_name,
+            registry=markdown_skill_registry,
+            record_cleanup=record_skill_cleanup,
         )
 
     @property

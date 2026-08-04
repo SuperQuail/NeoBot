@@ -150,6 +150,7 @@ def build_reply_orchestrator(
     balance_checker: Any,
     hook_bus: Any,
     file_server: Any,
+    skills_registry: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -178,6 +179,7 @@ def build_reply_orchestrator(
         balance_checker=balance_checker,
         runtime_events=hook_bus,
         file_server=file_server,
+        skills_registry=skills_registry,
     )
 
 

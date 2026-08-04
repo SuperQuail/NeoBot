@@ -34,7 +34,13 @@ class PatternMatch:
 
 
 class MessagePattern:
-    def __init__(self, pattern: str | None = None, *, command: bool = False, aliases: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        pattern: str | None = None,
+        *,
+        command: bool = False,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
         self.pattern = (pattern or "").strip()
         self.command = command
         self.aliases = tuple(aliases)
@@ -49,8 +55,20 @@ class MessagePattern:
             self.body = self.elements
 
     @property
+    def capture_names(self) -> tuple[str, ...]:
+        return tuple(
+            element.name
+            for element in self.elements
+            if element.kind == "param" and element.name is not None
+        )
+
+    @property
     def usage(self) -> str:
-        return f"/{self.pattern}" if self.command and not self.pattern.startswith("/") else self.pattern
+        return (
+            f"/{self.pattern}"
+            if self.command and not self.pattern.startswith("/")
+            else self.pattern
+        )
 
     def match(self, message: Message) -> PatternMatch:
         tokens = _message_tokens(message)
@@ -61,7 +79,10 @@ class MessagePattern:
             raw = tokens[command_index]
             assert isinstance(raw, str)
             command_name = raw.lstrip("/")
-            allowed = {self.command_name.lower(), *(alias.lower().lstrip("/") for alias in self.aliases)}
+            allowed = {
+                self.command_name.lower(),
+                *(alias.lower().lstrip("/") for alias in self.aliases),
+            }
             if command_name.lower() not in allowed:
                 return PatternMatch(False, {}, command_matched=False)
             try:
@@ -88,13 +109,19 @@ def _parse_pattern(pattern: str) -> list[PatternElement]:
         raise PatternError(str(exc)) from exc
 
     elements: list[PatternElement] = []
+    capture_names: set[str] = set()
     for token in tokens:
         if token.startswith("<") and token.endswith(">"):
-            elements.append(_parse_param(token[1:-1], optional=False))
+            element = _parse_param(token[1:-1], optional=False)
         elif token.startswith("[") and token.endswith("]"):
-            elements.append(_parse_param(token[1:-1], optional=True))
+            element = _parse_param(token[1:-1], optional=True)
         else:
-            elements.append(PatternElement(kind="literal", value=token))
+            element = PatternElement(kind="literal", value=token)
+        if element.name is not None:
+            if element.name in capture_names:
+                raise PatternError(f"duplicate parameter name: {element.name}")
+            capture_names.add(element.name)
+        elements.append(element)
     return elements
 
 
@@ -146,7 +173,9 @@ def _find_command(tokens: list[str | MessageSegment]) -> int | None:
     return None
 
 
-def _match_elements(elements: list[PatternElement], tokens: list[str | MessageSegment]) -> dict[str, Any]:
+def _match_elements(
+    elements: list[PatternElement], tokens: list[str | MessageSegment]
+) -> dict[str, Any]:
     values: dict[str, Any] = {}
     index = 0
     for element in elements:
@@ -170,7 +199,11 @@ def _match_literal(literal: str, tokens: list[str | MessageSegment], start: int)
     raise PatternMatchError(f"expected {literal!r}")
 
 
-def _capture(element: PatternElement, tokens: list[str | MessageSegment], start: int) -> tuple[Any, int]:
+def _capture(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
     if element.value_type == "image":
         return _capture_image(element, tokens, start)
     if element.value_type == "rest":
@@ -189,7 +222,11 @@ def _capture(element: PatternElement, tokens: list[str | MessageSegment], start:
     return _coerce_text(token, element), index + 1
 
 
-def _capture_image(element: PatternElement, tokens: list[str | MessageSegment], start: int) -> tuple[Any, int]:
+def _capture_image(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
     images: list[ImageSegment] = []
     first_index: int | None = None
     last_index = start

@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "neobot-adapter",
     "neobot-contracts",
+    "pyyaml>=6.0",
 ]
 
 [tool.uv.sources]

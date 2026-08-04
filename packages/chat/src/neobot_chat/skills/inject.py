@@ -19,9 +19,13 @@ def inject_skills(skills: SkillRegistry | None, state: State) -> State:
         if isinstance(content, str) and content
     ]
     if not user_msgs:
-        return state
+        # 无用户消息时同样清理旧匹配，避免上一轮遗留的 _matched_skills 污染本轮
+        next_state = dict(state)
+        next_state.pop("_matched_skills", None)
+        return next_state
 
-    matched = skills.match(user_msgs[-1])
+    # 与 README「最多 3 个」一致：注入全部命中技能会挤占上下文窗口
+    matched = skills.match(user_msgs[-1], limit=3)
     next_state = dict(state)
     if matched:
         next_state["_matched_skills"] = matched

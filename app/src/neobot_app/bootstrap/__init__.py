@@ -129,6 +129,7 @@ def _make_maintenance_coro(
     async def _loop() -> None:
         await asyncio.sleep(60)
         while True:
+            agent: Agent | None = None
             try:
                 logger.info("沙箱维护 Agent 开始执行")
                 agent = Agent(
@@ -162,6 +163,14 @@ def _make_maintenance_coro(
                 raise
             except Exception as exc:
                 logger.warning(f"沙箱维护 Agent 异常: {exc}")
+            finally:
+                if agent is not None:
+                    try:
+                        await agent.close()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(f"沙箱维护 Agent 关闭异常: {exc}")
             try:
                 await asyncio.sleep(10800)  # 3 小时
             except asyncio.CancelledError:
@@ -299,6 +308,14 @@ def create_application() -> NeoBotApplication:
     )
 
     # ── Skill 系统（balance_checker 先构建供 skill 条件注册使用） ──
+    from neobot_chat.skills import SkillRegistry
+    from neobot_chat.tools import AgentRegistry
+
+    agent_registry = AgentRegistry()
+    # discover() 加载 data/skills 目录下所有 SKILL.md（目录不存在时内部安全返回），
+    # 否则该目录是死配置；discover 以裸 name 为 key，插件技能经 register_many
+    # 以 owner:name 为 key，二者互不冲突（同名裸名与限定名也不会撞）
+    markdown_skill_registry = SkillRegistry(root=DATA_DIR / "skills").discover()
     balance_checker = build_balance_checker(
         config=config,
         notification_hub=notification_hub,
@@ -331,6 +348,7 @@ def create_application() -> NeoBotApplication:
         friend_message_queue=friend_queue,
         data_dir=DATA_DIR,
         balance_checker=balance_checker,
+        agent_registry=agent_registry,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
@@ -343,6 +361,8 @@ def create_application() -> NeoBotApplication:
         runtime_output=plugin["runtime_output"],
         host_facade=plugin["host_facade"],
         file_server=file_server,
+        agent_registry=agent_registry,
+        skills_registry=markdown_skill_registry,
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -420,6 +440,7 @@ def create_application() -> NeoBotApplication:
         balance_checker=balance_checker,
         hook_bus=plugin["hook_bus"],
         file_server=file_server,
+        skills_registry=markdown_skill_registry,
     )
     console_telemetry = ConsoleTelemetry()
     plugin["hook_bus"].subscribe_runtime(

@@ -13,15 +13,19 @@ from neobot_modloader.message import Message
 from neobot_modloader.plugins.agents import bind_agents
 from neobot_modloader.plugins.dispatch import bind_handlers
 from neobot_modloader.plugins.injection import resolve_handler_kwargs
+from neobot_modloader.plugins.markdown_skills import bind_markdown_skills
 from neobot_modloader.plugins.registration import (
     AgentRegistration,
     Handler,
     HandlerRegistration,
+    ToolRegistration,
     looks_like_context,
     validate_agent_name,
     validate_parse_error,
     validate_plugin_name,
+    validate_tool_name,
 )
+from neobot_modloader.plugins.tools import bind_tools
 
 
 class Plugin:
@@ -54,6 +58,7 @@ class Plugin:
         self._startup_handlers: list[Handler] = []
         self._shutdown_handlers: list[Handler] = []
         self._agent_registrations: list[AgentRegistration] = []
+        self._tool_registrations: list[ToolRegistration] = []
         self._context: Any | None = None
         self._config: BaseModel | None = None
         self._bound = False
@@ -68,6 +73,12 @@ class Plugin:
         timeout: float | None = None,
         parse_error: str = "reply",
     ) -> Callable[[Handler], Handler]:
+        """Register a slash command handler.
+
+        With ``parse_error="ignore"``, a matching command whose arguments do
+        not parse is treated as unhandled: it neither runs the handler nor
+        applies this registration's block settings.
+        """
         compiled = MessagePattern(pattern, command=True, aliases=tuple(aliases or ()))
         validate_parse_error(parse_error)
 
@@ -165,17 +176,57 @@ class Plugin:
 
         return decorate
 
+    def tool(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        parameters: dict[str, Any] | None = None,
+    ) -> Callable[[Handler], Handler]:
+        """注册一个可被主 Agent 调用的工具。
+
+        处理器参数会从模型传入的 JSON 参数中解析（参数 schema 由签名自动生成，
+        也可通过 ``parameters=`` 显式覆盖）。类型注解优先：例如
+        ``config: dict`` 和 ``ctx: str`` 是模型参数；仅无注解的约定名称或
+        ``Config``/context/``Logger`` 等 DI 注解会由运行时注入。
+
+        Tool 没有入站事件。``Reply`` DI 会在绑定时被拒绝；``Message`` DI
+        只能得到空的合成消息。如需响应当前消息，请使用 command/message handler。
+        """
+        validate_tool_name(name)
+
+        def decorate(handler: Handler) -> Handler:
+            self._tool_registrations.append(
+                ToolRegistration(
+                    name=name,
+                    description=str(description),
+                    handler=handler,
+                    parameters=dict(parameters) if parameters is not None else None,
+                )
+            )
+            return handler
+
+        return decorate
+
     def on_load(self, value: Any) -> Any:
+        """Register a load hook, or load the plugin when passed a context.
+
+        Lifecycle hooks have no inbound event. Message DI receives an empty
+        synthetic message and Reply.send cannot infer a conversation; use the
+        runtime context or Bot for lifecycle-originated work instead.
+        """
         if callable(value) and not looks_like_context(value):
             self._load_handlers.append(value)
             return value
         return self._load(value)
 
     def on_startup(self, handler: Handler) -> Handler:
+        """Register a startup hook; lifecycle hooks have no inbound event."""
         self._startup_handlers.append(handler)
         return handler
 
     def on_shutdown(self, handler: Handler) -> Handler:
+        """Register a shutdown hook; lifecycle hooks have no inbound event."""
         self._shutdown_handlers.append(handler)
         return handler
 
@@ -184,16 +235,32 @@ class Plugin:
             await self._call_lifecycle(handler)
 
     async def on_stop(self) -> None:
-        for handler in reversed(self._shutdown_handlers):
-            await self._call_lifecycle(handler)
-        self._bound = False
+        errors: list[Exception] = []
+        try:
+            for handler in reversed(self._shutdown_handlers):
+                try:
+                    await self._call_lifecycle(handler)
+                except Exception as exc:
+                    errors.append(exc)
+        finally:
+            self._bound = False
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("插件关闭处理器执行失败", errors)
 
     async def _load(self, context: Any) -> None:
         self._context = context
-        self._config = self.config_model.model_validate(dict(context.config)) if self.config_model is not None else None
+        self._config = (
+            self.config_model.model_validate(dict(context.config))
+            if self.config_model is not None
+            else None
+        )
         if not self._bound:
-            # 订阅和 Agent 只绑定一次；reload/stop 会由 manager 清理旧绑定。
+            # 订阅、Tool、SKILL.md 和 Agent 只绑定一次；reload/stop 会由 manager 清理旧绑定。
             bind_handlers(self, self._registrations, context)
+            await bind_tools(self, self._tool_registrations, context)
+            await bind_markdown_skills(self, context)
             await bind_agents(self, self._agent_registrations, context)
             self._bound = True
         for handler in self._load_handlers:

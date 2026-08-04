@@ -86,7 +86,7 @@ class BuiltinTools(ToolExecutor):
         allowed_commands: list[str] | None = None,
         output: Any | None = None,
     ):
-        self.agent_registry = agent_registry or AgentRegistry()
+        self.agent_registry = agent_registry if agent_registry is not None else AgentRegistry()
         self.cwd = Path(cwd or os.getcwd()).resolve()
         self.command_timeout = command_timeout
         self.allowed_paths = [self.cwd] + (allowed_paths or [])
@@ -178,9 +178,17 @@ class BuiltinTools(ToolExecutor):
                                     "properties": {
                                         "agent": {"type": "string", "enum": names},
                                         "task": {"type": "string"},
+                                        "previous_response": {"type": "string"},
+                                        "session_id": {"type": "string"},
                                     },
                                     "required": ["agent", "task"],
                                 },
+                            },
+                            "previous_response": {"type": "string"},
+                            "session_id": {"type": "string"},
+                            "context": {
+                                "type": "string",
+                                "description": "Optional context to provide to the delegated agent",
                             },
                         },
                     },
@@ -204,6 +212,21 @@ class BuiltinTools(ToolExecutor):
         if handler is None:
             raise ToolError(f"Unknown tool: {name}")
         args = dict(args or {})
+        if name == "delegate":
+            args = {
+                key: value
+                for key, value in args.items()
+                if key
+                in {
+                    "agent",
+                    "task",
+                    "tasks",
+                    "previous_response",
+                    "session_id",
+                    "context",
+                    "_delegate_context",
+                }
+            }
         missing = self._missing_required_args(name, args)
         if missing:
             raise ToolError(
@@ -300,8 +323,26 @@ class BuiltinTools(ToolExecutor):
     async def _list_agents(self, agent: str | None = None) -> str:
         return self.agent_registry.list_agents(agent)
 
-    async def _delegate(self, agent: str | None = None, task: str | None = None, tasks: list[dict] | None = None) -> str:
-        return await self.agent_registry.delegate(agent=agent, task=task, tasks=tasks)
+    async def _delegate(
+        self,
+        agent: str | None = None,
+        task: str | None = None,
+        tasks: list[dict] | None = None,
+        previous_response: str | None = None,
+        session_id: str | None = None,
+        context: str | None = None,
+        _delegate_context: str | None = None,
+    ) -> str:
+        if _delegate_context is not None:
+            context = _delegate_context
+        return await self.agent_registry.delegate(
+            agent=agent,
+            task=task,
+            tasks=tasks,
+            previous_response=previous_response,
+            session_id=session_id,
+            context=context,
+        )
 
 
 def build_builtin_toolset(

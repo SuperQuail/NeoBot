@@ -250,6 +250,117 @@ def build_worker() -> Workflow:
 
 子 Agent 默认不直接发消息，而是把结果返回给主 Agent。需要直接回复用户时，仍使用 `@plugin.command` 或 `@plugin.message`。
 
+主 Agent 通过 `agents__list` / `agents__delegate` 工具发现并委托插件子 Agent。
+
+## 注册 Tool
+
+插件可以声明可被主 Agent 直接调用的工具。处理器参数来自模型传入的 JSON 参数，
+参数 schema 由函数签名自动生成（也可用 `parameters=` 显式覆盖）。
+
+```python
+from neobot_modloader import Plugin
+
+plugin = Plugin("weather")
+
+
+@plugin.tool("query", description="查询指定城市天气")
+async def query(city: str, days: int = 1) -> str:
+    return f"{city} 未来 {days} 天晴，22-28 度。"
+```
+
+全局工具名为 `{plugin_name}__{tool_name}`，例如 `weather__query`。
+
+支持的类型注解：`str` / `int` / `float` / `bool` / `list[...]` / `dict` / Pydantic `BaseModel`。
+带默认值的参数可选，无默认值的参数进入 `required`。
+
+处理器同样支持 DI 注入，以下参数不会暴露给模型：
+
+```python
+@plugin.tool("save", description="保存笔记")
+async def save(text: str, config: Config, ctx, logger) -> str:
+    ...
+```
+
+支持：`config: Config`（插件配置）、`ctx` / `context`、`logger`、`data_dir: Path`、
+`plugin_dir: Path`、`host`、`plugins`、`plugin_control`。
+
+> 注：`Reply` 仅建议在命令/消息处理器中注入（此时携带当前事件上下文）。
+> 工具处理器中的 `reply` 参数没有可用的回复事件，行为不可依赖；
+> 工具如需发送消息，请使用自身能力或其他处理器完成。
+
+## Markdown 技能（SKILL.md）
+
+插件目录下的 `skills/**/SKILL.md` 会被自动发现并注册为 Markdown 技能：
+
+```text
+plugins/
+  weather/
+    __init__.py
+    plugin.toml
+    skills/
+      weather-guide/
+        SKILL.md
+        references/
+          cities.md
+```
+
+`SKILL.md` 使用 frontmatter 声明元数据：
+
+```markdown
+---
+name: weather-guide
+description: 查询天气及提供出行建议
+keywords: 天气 气温 下雨 出行
+allowed-tools: weather__query weather__alert
+---
+
+处理天气问题时：
+
+1. 先调用 weather__query 查询天气。
+2. 根据降雨概率提供携带雨具建议。
+3. 不确定城市时先询问用户。
+```
+
+技能全局名为 `{plugin_name}:{local_name}`（例如 `weather:weather-guide`）。
+
+### allowed-tools：技能激活时的工具白名单
+
+`allowed-tools` 字段声明技能激活时允许主 Agent 使用的工具白名单。支持三种写法：
+空格分隔字符串（如上面的示例）、逗号分隔字符串、或 YAML 列表（例如
+`allowed-tools: [weather__query, weather__alert]`）。值按空白/逗号切分后去空去重；
+空字符串/空列表等价于未声明。
+
+限制的生效规则：
+
+- **仅当本轮所有命中技能都声明了非空 `allowed-tools` 时限制才生效**，
+  生效时限制集为各命中技能声明集的**并集**；
+- 任一命中技能未声明（或声明为空）则不限制，避免未声明技能的工具被其他技能的声明误伤；
+- 存在**不可被限制的基础白名单**：基础回复工具（cancel / split_reply / send_reply /
+  send_emoji / send_long_reply / wait / speak）+ 技能读取工具
+  （skills__read_manifest / skills__read_resource）+ 代理工具
+  （agents__list / agents__delegate）+ 后台任务工具
+  （check_background_tasks / cancel_task / check_last_drawing /
+  mark_scheduled_task_complete）。技能作者无需、也无法把基础设施写进白名单。
+
+### 读取授权边界
+
+`skills__read_manifest` / `skills__read_resource` 可读取**任意已注册技能**的正文与
+技能目录内资源，不限于本轮注入提示词的 3 个技能（技能 id 由主 Agent 自选）。
+`skills__read_resource` 的路径严格限制在目标技能目录内：禁止绝对路径、
+`..` 越界以及 symlink/junction 组件逃逸，单文件大小上限 1MB。
+
+### data/skills：应用级技能
+
+非插件自带的应用级 SKILL.md 放在 `data/skills` 目录（结构同插件侧：
+`data/skills/<技能名>/SKILL.md`），启动时由主应用自动发现注册。要求与插件技能一致：
+`name` 必须与目录名一致且为 kebab-case、`description` 必填。
+
+主聊天在 Agent 模式下会按最新用户消息匹配关键词，把最多 3 个相关技能
+以 `<可用技能>` 元数据注入提示词。模型通过 `skills__read_manifest` 读取技能正文，
+通过 `skills__read_resource` 读取技能目录内的参考资料（相对路径，禁止越界）。
+
+技能仅作为文档注入，不会自动执行脚本；文件读取限制在技能目录内。
+
 ## 生命周期
 
 ```python
