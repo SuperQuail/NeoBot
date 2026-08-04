@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import glob as glob_module
-import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -194,13 +193,20 @@ class SandboxService:
     # ── 文件操作 ──
 
     async def read_file(self, path: Path) -> bytes:
-        """读取文件内容。"""
+        """读取文件内容。
+
+        文本文件超过 MAX_TEXT_READ_BYTES 时仅返回前 MAX_TEXT_READ_BYTES 字节；
+        二进制/未知类型文件保持完整读取（不对二进制做截断）。
+        """
         resolved = path.resolve()
         if not self.is_path_allowed(resolved):
             raise PermissionError(f"路径不允许: {path}")
         if not resolved.is_file():
             raise FileNotFoundError(f"文件不存在: {path}")
-        return resolved.read_bytes()
+        data = resolved.read_bytes()
+        if len(data) > MAX_TEXT_READ_BYTES and detect_file_type(resolved)["type"] == "text":
+            data = data[:MAX_TEXT_READ_BYTES]
+        return data
 
     async def write_file(self, path: Path, data: bytes) -> None:
         """写入文件。父目录自动创建。"""
@@ -239,25 +245,40 @@ class SandboxService:
             search_path = str(resolved / pattern)
             for p in glob_module.iglob(search_path, recursive=True):
                 fp = Path(p)
-                if fp.is_file():
-                    stat = fp.stat()
-                    result.append({
-                        "name": fp.name,
-                        "path": str(fp.relative_to(self._root)),
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
+                if not fp.is_file():
+                    continue
+                if not self.is_path_allowed(fp):
+                    continue
+                stat = fp.stat()
+                result.append({
+                    "name": fp.name,
+                    "path": self._display_path(fp),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
         else:
             for fp in sorted(resolved.iterdir()):
                 stat = fp.stat()
                 result.append({
                     "name": fp.name,
-                    "path": str(fp.relative_to(self._root)) if fp.is_file() else "",
+                    "path": self._display_path(fp) if fp.is_file() else "",
                     "size": stat.st_size if fp.is_file() else 0,
                     "mtime": stat.st_mtime,
                     "is_dir": fp.is_dir(),
                 })
         return result
+
+    def _display_path(self, path: Path) -> str:
+        """返回相对于沙箱根（或只读目录）的展示路径。"""
+        try:
+            return str(path.relative_to(self._root))
+        except ValueError:
+            for ad in self._allowed_read_dirs:
+                try:
+                    return str(path.relative_to(ad))
+                except ValueError:
+                    continue
+        return str(path)
 
     async def move_file(self, src: Path, dst: Path) -> None:
         """移动文件或目录。"""
@@ -292,9 +313,21 @@ class SandboxService:
             return False
 
     @staticmethod
-    def _sanitize_flow_id(chat_flow_id: str) -> str:
-        """清理聊天流 ID，防止路径遍历。"""
+    def _sanitize_flow_id(chat_flow_id: str | None) -> str:
+        """清理聊天流 ID，防止路径遍历与 Windows 非法字符。
+
+        聊天流 ID 常见格式为 ``group:12345`` 或裸 ID；Windows 下 ``:`` 等字符
+        不能出现在目录名中，否则 mkdir 抛 WinError 267。
+        """
+        if not chat_flow_id:
+            return "unknown"
         sanitized = chat_flow_id.replace("..", "").replace("/", "").replace("\\", "")
+        # Windows 路径非法字符 (<>:"|?*) 与控制字符 → 下划线
+        sanitized = "".join(
+            "_" if ch in '<>:"|?*' or ord(ch) < 32 else ch
+            for ch in sanitized
+        )
+        sanitized = sanitized.strip(" .")
         return sanitized or "unknown"
 
     # ── 容量管理 ──

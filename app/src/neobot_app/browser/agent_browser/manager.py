@@ -11,20 +11,64 @@ import json
 import os
 import platform
 import shutil
+import threading
 import time
+import weakref
 from pathlib import Path
 import glob as _glob
 from typing import Any, Optional
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 from DrissionPage._pages.chromium_base import ChromiumBase
-from DrissionPage._pages.chromium_tab import ChromiumTab
 from DrissionPage.errors import PageDisconnectedError
 
 _MAX_RETRIES = 2
 _RETRY_INTERVAL = 1.0
 
 _WINDOWS = platform.system() == "Windows"
+
+# 本进程内所有存活 BrowserManager 实例的注册表（按 user_data_dir 小写分组）。
+# DrissionPage 某些版本取不到 chrome 主进程 pid，因此无法按 pid 判定归属；
+# 这里用实例弱引用判定"该用户数据目录是否仍有存活实例持有"。
+# _kill_orphaned_chrome 只清理"没有任何存活实例"的目录下的残留进程，
+# 避免并发/先后启动的实例互相杀死对方刚启动的浏览器。
+_INSTANCE_REGISTRY: dict[str, set[weakref.ReferenceType]] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _register_instance(manager: "BrowserManager") -> None:
+    with _REGISTRY_LOCK:
+        _INSTANCE_REGISTRY.setdefault(manager._user_data_dir.lower(), set()).add(
+            weakref.ref(manager)
+        )
+
+
+def _unregister_instance(manager: "BrowserManager") -> None:
+    with _REGISTRY_LOCK:
+        refs = _INSTANCE_REGISTRY.get(manager._user_data_dir.lower())
+        if refs is None:
+            return
+        for ref in list(refs):
+            if ref() is manager:
+                refs.discard(ref)
+        if not refs:
+            _INSTANCE_REGISTRY.pop(manager._user_data_dir.lower(), None)
+
+
+def _has_other_live_instances(manager: "BrowserManager") -> bool:
+    """该用户数据目录下是否存在除 manager 之外仍存活的实例。"""
+    with _REGISTRY_LOCK:
+        ud = manager._user_data_dir.lower()
+        refs = _INSTANCE_REGISTRY.get(ud)
+        if not refs:
+            return False
+        live = {ref for ref in refs if ref() is not None}
+        if len(live) != len(refs):
+            if live:
+                _INSTANCE_REGISTRY[ud] = live
+            else:
+                _INSTANCE_REGISTRY.pop(ud, None)
+        return any(ref() is not manager for ref in live)
 
 
 def _playwright_chromium_path() -> str:
@@ -102,11 +146,13 @@ class BrowserManager:
         user_data_dir: str | Path | None = None,
         port: int = 0,
         browser_path: str = "",
+        operation_lock: asyncio.Lock | None = None,
     ):
         self._headless = headless
         self._user_data_dir = str(user_data_dir or Path.cwd() / "browser_user_data")
         self._port = port
         self._browser_path = browser_path or _find_chrome_binary()
+        self._operation_lock = operation_lock if operation_lock is not None else asyncio.Lock()
         self._page: ChromiumBase | None = None
         self._session_page: ChromiumPage | None = None
         self._chrome_pid: Optional[int] = None
@@ -114,11 +160,13 @@ class BrowserManager:
         self._recording = False
         self._recording_frames: list[bytes] = []
         self._recording_task: asyncio.Task | None = None
+        self._recording_lock = asyncio.Lock()
         self._tabs: dict[int, Any] = {}
         self._tab_labels: dict[str, str] = {}
         self._init_scripts: dict[str, str] = {}
         Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
         self._cleanup_locks()
+        _register_instance(self)
 
     def _cleanup_locks(self):
         """清理用户数据目录中 Chrome 残留的锁文件。"""
@@ -133,12 +181,16 @@ class BrowserManager:
                     pass
 
     def _kill_orphaned_chrome(self) -> None:
-        """杀死使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
+        """清理使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
 
         浏览器关闭后 Chrome 进程可能未完全退出，导致新实例初始化时出现
         'Chromium' object has no attribute '_dl_mgr' 等异常。
+        若该用户数据目录仍有其他存活实例（并发/先后启动的共享实例），
+        则不清理任何进程，避免互相误杀。
         """
         if not _WINDOWS:
+            return
+        if _has_other_live_instances(self):
             return
         try:
             import psutil as _psutil
@@ -275,7 +327,8 @@ class BrowserManager:
                         )
                     except Exception:
                         pass
-                self._chrome_pid = None
+            self._chrome_pid = None
+        _unregister_instance(self)
         self._page = None
         self._session_page = None
 
@@ -340,14 +393,6 @@ class BrowserManager:
 
     async def current_url(self) -> str:
         return self.page.url
-
-    async def wait(self, seconds: float = 2.0) -> dict:
-        """等待指定秒数，让页面加载/渲染完成后返回页面信息。"""
-        await asyncio.sleep(seconds)
-        title = await self.get_title()
-        url = self.page.url
-        length = await self.get_text_length()
-        return {"title": title, "url": url, "text_length": length}
 
     async def get_text(self) -> str:
         text = await asyncio.to_thread(self.page.run_js, "return document.body.innerText || ''")
@@ -529,7 +574,6 @@ class BrowserManager:
             tag = await asyncio.to_thread(lambda: el.tag)
             text = await asyncio.to_thread(lambda: el.text)
             url_before = page.url
-            title_before = await asyncio.to_thread(lambda: page.title)
             tab_ids_before = len(page._browser.tab_ids)
 
             # Phase 1: 原生 DrissionPage click
@@ -1121,18 +1165,49 @@ class BrowserManager:
 
     # ── 等待操作 ──
 
-    async def wait(self, condition: str = "timeout", value: str = "", timeout: int = 20) -> dict:
+    async def wait(
+        self,
+        condition: str | int | float = "timeout",
+        value: str = "",
+        timeout: int = 20,
+    ) -> dict:
+        """等待页面条件满足，并兼容以秒数作为首参数的旧调用方式。"""
         try:
             page = await self._ensure_page()
+            if isinstance(condition, (int, float)):
+                seconds = min(max(float(condition), 0.0), 30.0)
+                await asyncio.sleep(seconds)
+                return {
+                    "success": True,
+                    "condition": "timeout",
+                    "value": str(seconds),
+                    "title": await self.get_title(),
+                    "url": page.url,
+                    "text_length": await self.get_text_length(),
+                }
             if condition == "selector":
-                await asyncio.to_thread(page.wait.ele_displayed, value, timeout=timeout)
+                matched = await asyncio.to_thread(
+                    page.wait.ele_displayed,
+                    value,
+                    timeout=timeout,
+                )
+                if matched is False:
+                    return {"success": False, "error": f"等待元素超时: {value}"}
             elif condition == "text":
-                await asyncio.to_thread(page.wait.text_displayed, value, timeout=timeout)
+                matched = await asyncio.to_thread(
+                    page.wait.text_displayed,
+                    value,
+                    timeout=timeout,
+                )
+                if matched is False:
+                    return {"success": False, "error": f"等待文本超时: {value}"}
             elif condition == "url":
-                for _ in range(timeout):
+                for _ in range(max(timeout, 0)):
                     if value in page.url:
                         break
                     await asyncio.sleep(1)
+                else:
+                    return {"success": False, "error": f"等待 URL 超时: {value}"}
             elif condition == "network_idle":
                 await asyncio.to_thread(page.wait.load_complete, timeout=timeout)
                 await asyncio.sleep(1)
@@ -1144,7 +1219,10 @@ class BrowserManager:
                     await asyncio.sleep(0.5)
                 return {"success": False, "error": f"JS 条件超时: {value}"}
             elif condition == "timeout":
-                await asyncio.sleep(min(int(value or "2"), 30))
+                seconds = min(max(float(value or "2"), 0.0), 30.0)
+                await asyncio.sleep(seconds)
+            else:
+                return {"success": False, "error": f"未知等待条件: {condition}"}
             return {"success": True, "condition": condition, "value": value}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1187,7 +1265,7 @@ class BrowserManager:
             )
             ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
-                  f"Mobile/15E148 Safari/604.1" if spec["mobile"] else "")
+                  "Mobile/15E148 Safari/604.1" if spec["mobile"] else "")
             if ua:
                 await asyncio.to_thread(page.run_cdp, "Network.setUserAgentOverride", userAgent=ua)
             return {"success": True, "device": name}
@@ -1895,58 +1973,61 @@ class BrowserManager:
 
     async def record_start(self, filepath: str = "") -> dict:
         """开始录屏。"""
-        try:
-            if self._recording:
-                return {"success": False, "error": "已在录制中"}
-            await self._ensure_page()
-            self._recording = True
-            self._recording_frames = []
-            self._record_path = filepath or str(Path(self._user_data_dir) / f"recording_{int(time.time())}.gif")
-            self._recording_task = asyncio.create_task(self._record_loop())
-            return {"success": True, "output": self._record_path}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        async with self._recording_lock:
+            try:
+                if self._recording:
+                    return {"success": False, "error": "已在录制中"}
+                await self._ensure_page()
+                self._recording = True
+                self._recording_frames = []
+                self._record_path = filepath or str(Path(self._user_data_dir) / f"recording_{int(time.time())}.gif")
+                self._recording_task = asyncio.create_task(self._record_loop())
+                return {"success": True, "output": self._record_path}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
     async def record_stop(self) -> dict:
         """停止录屏并保存。"""
-        if not self._recording:
-            return {"success": False, "error": "未在录制"}
-        self._recording = False
-        if self._recording_task:
-            self._recording_task.cancel()
-            self._recording_task = None
-        frames = self._recording_frames
-        self._recording_frames = []
-        if not frames:
-            return {"success": True, "frames": 0, "path": ""}
-        try:
-            from PIL import Image
-            import io
-            images = [Image.open(io.BytesIO(f)) for f in frames]
-            out_path = self._record_path
-            if out_path.endswith(".gif"):
-                images[0].save(out_path, save_all=True, append_images=images[1:],
-                               duration=500, loop=0, optimize=False)
-            else:
-                out_path = out_path.rsplit(".", 1)[0] + ".gif"
-                images[0].save(out_path, save_all=True, append_images=images[1:],
-                               duration=500, loop=0, optimize=False)
-            return {"success": True, "frames": len(frames), "path": out_path}
-        except ImportError:
-            meta_path = self._record_path + ".json"
-            Path(meta_path).write_text(json.dumps({"frames": len(frames)}), encoding="utf-8")
-            return {"success": True, "frames": len(frames), "path": meta_path,
-                    "note": "PIL not available, saved frame count only"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        async with self._recording_lock:
+            if not self._recording:
+                return {"success": False, "error": "未在录制"}
+            self._recording = False
+            if self._recording_task:
+                self._recording_task.cancel()
+                self._recording_task = None
+            frames = self._recording_frames
+            self._recording_frames = []
+            if not frames:
+                return {"success": True, "frames": 0, "path": ""}
+            try:
+                from PIL import Image
+                import io
+                images = [Image.open(io.BytesIO(f)) for f in frames]
+                out_path = self._record_path
+                if out_path.endswith(".gif"):
+                    images[0].save(out_path, save_all=True, append_images=images[1:],
+                                   duration=500, loop=0, optimize=False)
+                else:
+                    out_path = out_path.rsplit(".", 1)[0] + ".gif"
+                    images[0].save(out_path, save_all=True, append_images=images[1:],
+                                   duration=500, loop=0, optimize=False)
+                return {"success": True, "frames": len(frames), "path": out_path}
+            except ImportError:
+                meta_path = self._record_path + ".json"
+                Path(meta_path).write_text(json.dumps({"frames": len(frames)}), encoding="utf-8")
+                return {"success": True, "frames": len(frames), "path": meta_path,
+                        "note": "PIL not available, saved frame count only"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
     async def _recording_stop(self) -> None:
         """内部停止录屏（不返回结果）。"""
-        self._recording = False
-        if self._recording_task:
-            self._recording_task.cancel()
-            self._recording_task = None
-        self._recording_frames = []
+        async with self._recording_lock:
+            self._recording = False
+            if self._recording_task:
+                self._recording_task.cancel()
+                self._recording_task = None
+            self._recording_frames = []
 
     async def _record_loop(self) -> None:
         """后台录屏循环。"""

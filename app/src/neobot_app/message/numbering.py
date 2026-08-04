@@ -1,4 +1,4 @@
-"""Message numbering for agent-mode message references."""
+"""为 agent 模式的消息引用提供消息编号。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class MessageNumbering:
-    """Manage number <-> message_id mapping and formatted numbered text."""
+    """管理编号与 message_id 的映射，并生成带编号的格式化文本。"""
 
     def __init__(self) -> None:
         self._mapping: dict[int, int] = {}
@@ -24,7 +24,7 @@ class MessageNumbering:
         *,
         all_new: bool = False,
     ) -> str:
-        """Number all messages in one queue and render them as text."""
+        """为一个队列中的所有消息编号并将其渲染为文本。"""
         lines: list[str] = []
         entries = queue.entries(queue_key)
         sender_labels = queue._build_sender_labels(entries)
@@ -92,7 +92,7 @@ class MessageNumbering:
         context_entries: list | None = None,
         previous_entries: list | None = None,
     ) -> str:
-        """Number newly arrived queue entries and render them as text."""
+        """为新到达的队列条目编号并将其渲染为文本。"""
         from neobot_app.message.queue import QueueEntryType
 
         render_context = context_entries or messages
@@ -137,7 +137,7 @@ class MessageNumbering:
         return "\n".join(lines)
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:
-        """Number raw message objects and render them as text."""
+        """为原始消息对象编号并将其渲染为文本。"""
         from neobot_app.message.queue import QueueEntry, QueueEntryType
 
         entries = [QueueEntry(kind=QueueEntryType.MESSAGE, message=msg) for msg in messages]
@@ -168,7 +168,11 @@ class MessageNumbering:
         return (
             "消息格式说明：每条消息以“编号: 用户名: 消息内容”的格式呈现，"
             "编号可用于 reply_to 参数指定回复目标消息。\n"
-            "例如：1: 小明: 你好"
+            "例如：1: 小明: 你好\n"
+            "当有人回复消息时，被回复的消息会以“[被回复消息]”前缀单独显示（有自己的编号）：\n"
+            "例如：1: [被回复消息] 小红: [图片]\n"
+            "     6: 唐天: [回复:消息ID=xxx] @bot 解析这张\n"
+            "→ 要解析图片，应使用 msg_number=1（被回复消息），非 msg_number=6（回复文字）。"
         )
 
     def _assign_number(self, message_id: int) -> int:

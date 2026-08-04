@@ -5,6 +5,7 @@ from typing import Any
 
 from neobot_chat.models import model_registry as _global_model_registry
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_storage._retry import retry_on_lock
 from neobot_storage.models import ModelUsageRecord
 from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
 
@@ -21,6 +22,7 @@ _VALID_MODULES = frozenset({
     "agent:willingness",
     "agent:scheduled_task",
     "agent:problem_solver",
+    "agent:self_heal",
     "memory_compaction",
 })
 
@@ -92,8 +94,12 @@ class UsageTracker:
 
         async with self._session_factory() as session:
             repo = SqlAlchemyUsageRepository(session)
-            await repo.add(record_obj)
-            await session.commit()
+
+            async def _flush() -> None:
+                await repo.add(record_obj)
+                await session.commit()
+
+            await retry_on_lock(_flush, on_retry=session.rollback)
 
         self._logger.debug(
             "usage recorded",

@@ -1,4 +1,4 @@
-"""Inbound pipeline for normalized incoming messages."""
+"""规范化入站消息的入站管线。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class InboundPipeline:
-    """Normalize inbound messages and persist short-term memory."""
+    """规范化入站消息并持久化短期记忆。"""
 
     def __init__(
         self,

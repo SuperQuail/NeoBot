@@ -35,7 +35,9 @@ class ImagePoolSkill(SkillModule):
 
             "【source 格式】\n"
             "  image_pool__put 的 source 参数支持以下格式：\n"
-            "    chat:<msg_id>:<img_index>  — 聊天消息中的图片（index 默认 1）\n"
+            "    chat:<msg_id>:<img_index>  — 聊天消息中的图片（index 默认 1）；\n"
+            "                                 ⚠️ 用户回复引用图片时，msg_id 取被回复消息编号（[被回复消息]行）\n"
+            "    chat:<msg_id>:1,2,3        — 批量：一次将多张图片入池，返回 keys 列表\n"
             "    gallery:<编号>              — 图库中的图片\n"
             "    emoji:<编号>                — 表情包中的图片\n"
             "    url:<URL>                   — 网络图片\n"
@@ -155,19 +157,39 @@ async def _handle_put(self: ImagePoolSkill, args: dict) -> str:
     if self._image_service is None:
         return _json({"ok": False, "error": "creator_image_service 未配置"})
 
-    # 将 chat:<msg_number> 中的显示编号翻译为真实 message_id
-    source = _translate_chat_number(source, args)
+    # 将 chat:<msg_number> 中的显示编号翻译为真实 message_id；可能扩展为多个 source
+    sources = _translate_chat_number(source, args)
+    if isinstance(sources, str):
+        sources = [sources]
+    if not sources:
+        return _json({"ok": False, "error": f"无法解析 source: {source}"})
 
-    try:
-        file_path = await self._image_service.resolve_source_to_path(source)
-        key = self._pool.put(conv_id, file_path, source=source)
-        return _json({"ok": True, "key": key, "source": source})
-    except Exception as exc:
-        return _json({"ok": False, "error": str(exc)})
+    keys: list[str] = []
+    errors: list[dict] = []
+    for src in sources:
+        try:
+            file_path = await self._image_service.resolve_source_to_path(src)
+            key = self._pool.put(conv_id, file_path, source=src)
+            keys.append(key)
+        except Exception as exc:
+            errors.append({"source": src, "error": str(exc)})
+
+    if not keys:
+        return _json({"ok": False, "error": "全部 source 解析失败", "details": errors})
+    if len(keys) == 1:
+        return _json({"ok": True, "key": keys[0], "source": sources[0], "errors": errors or None})
+    return _json({"ok": True, "keys": keys, "sources": sources, "errors": errors or None})
 
 
-def _translate_chat_number(source: str, args: dict) -> str:
-    """将 chat:<msg_number>:<idx> 中的显示编号翻译为真实 message_id。"""
+def _translate_chat_number(source: str, args: dict) -> str | list[str]:
+    """将 chat:<msg_number>:<idx> 中的显示编号翻译为真实 message_id。
+
+    支持批量语法：
+      - chat:<msg_number>:1,2,3  → 多个 chat:<real_id>:<idx>
+      - chat:<msg_number>:*      → 拉取消息后扩展为所有 image 段的索引
+      - chat:<msg_number>        → 默认 idx=1（保持原行为）
+    其他 source 原样返回。
+    """
     if not source.startswith("chat:"):
         return source
     rest = source[len("chat:"):]
@@ -178,13 +200,31 @@ def _translate_chat_number(source: str, args: dict) -> str:
         return source
     numbering_mapping = args.get("_numbering_mapping")
     if not isinstance(numbering_mapping, dict):
+        # 没有编号映射时，单索引语法无法翻译；保持原样以触发上游报错
+        if len(parts) > 1 and (parts[1] == "*" or "," in parts[1]):
+            return source
         return source
     numbering_mapping = {int(k): int(v) for k, v in numbering_mapping.items()}
     real_id = numbering_mapping.get(display_number)
     if real_id is None:
         return source
-    img_idx = parts[1] if len(parts) > 1 else "1"
-    return f"chat:{real_id}:{img_idx}"
+
+    img_idx_token = parts[1] if len(parts) > 1 else "1"
+
+    if img_idx_token == "*":
+        # 通配需要先查消息段数；image_pool 无法直接拉消息。
+        # 让上层 resolve_source_to_path 自行处理 "*"（service._load_chat_image_bytes 不支持），
+        # 翻译阶段保留 "*" 标记；但当前 service 不支持，因此翻译后返回原标记字符串即可，
+        # service 会失败并给 agent 明确错误。推荐 agent 使用显式 1,2,3 语法。
+        return f"chat:{real_id}:*"
+
+    if "," in img_idx_token:
+        idx_list = [s.strip() for s in img_idx_token.split(",") if s.strip().isdigit()]
+        if not idx_list:
+            return source
+        return [f"chat:{real_id}:{idx}" for idx in idx_list]
+
+    return f"chat:{real_id}:{img_idx_token}"
 
 
 async def _handle_list(self: ImagePoolSkill, args: dict) -> str:

@@ -406,11 +406,17 @@ def _write_dataclass_field_default(
         return len(encoded[:byte_offset].decode("utf-8"))
 
     start_offset = _byte_to_char(
-        sum(len(l.encode("utf-8")) for l in lines[: default_kw_value.lineno - 1])
+        sum(
+            len(line.encode("utf-8"))
+            for line in lines[: default_kw_value.lineno - 1]
+        )
         + default_kw_value.col_offset,
     )
     end_offset = _byte_to_char(
-        sum(len(l.encode("utf-8")) for l in lines[: default_kw_value.end_lineno - 1])
+        sum(
+            len(line.encode("utf-8"))
+            for line in lines[: default_kw_value.end_lineno - 1]
+        )
         + default_kw_value.end_col_offset,
     )
 
@@ -931,8 +937,6 @@ def _extract_image_parse_prompt(file_path: Path) -> str | None:
     """Extract the inline prompt from ImageParseAgent's _call_vision_model."""
     if not file_path.exists():
         return None
-    with open(file_path, "r", encoding="utf-8") as f:
-        source = f.read()
 
     # Find the messages content block — the text field in the user message
     # Pattern: "text": ( "..." "..." f"..." )
@@ -1285,7 +1289,6 @@ def get_config_value(config: dict[str, Any], key_path: str) -> str:
 def build_real_config_vars(config: dict[str, Any], is_group: bool) -> dict[str, str]:
     """Build a dict of real config values for variable substitution."""
     bot = config.get("bot", {})
-    chat = config.get("chat", {})
 
     bot_name = str(bot.get("nick_name", "Neo Bot"))
     bot_account = str(bot.get("account", 0))
@@ -1732,13 +1735,11 @@ def simulate_cache_hits(
         total_tokens = count_tokens(prompt)
 
         # Find best (longest) matching cache prefix
-        best_match_text = ""
         best_match_tokens = 0
         best_match_source = "miss"
         for cached_text, cached_tokens, source in cache_units:
             if prompt.startswith(cached_text) and cached_tokens > best_match_tokens:
                 best_match_tokens = cached_tokens
-                best_match_text = cached_text
                 best_match_source = source
 
         uncached_tokens = total_tokens - best_match_tokens
@@ -1746,11 +1747,6 @@ def simulate_cache_hits(
 
         # Collect hit details
         hit_sources: dict[str, int] = {}
-        for cached_text, cached_tokens, source in cache_units:
-            if prompt.startswith(cached_text) and cached_tokens <= best_match_tokens:
-                # Only count sources that contribute uniquely
-                pass
-        # Simplified: just report the best match
         if best_match_source != "miss":
             hit_sources[best_match_source] = best_match_tokens
 
@@ -2552,7 +2548,6 @@ class PromptBuilderApp:
 
         if source_id == "main_group":
             self._update_schema_btn_label()
-            is_group = True
             if self._current_mode == "schema":
                 prompt = read_schema_default(source_id) or (
                     self.config.get("chat", {}).get("group_prompt_template", "")
@@ -2564,7 +2559,6 @@ class PromptBuilderApp:
             self._current_save_target = "main_group"
         elif source_id == "main_friend":
             self._update_schema_btn_label()
-            is_group = False
             if self._current_mode == "schema":
                 prompt = read_schema_default(source_id) or (
                     self.config.get("chat", {}).get("friend_prompt_template", "")
@@ -2629,7 +2623,7 @@ class PromptBuilderApp:
         self._refresh_tool_info()
 
         mode_label = (
-            f" [Schema默认值]" if self._current_mode == "schema" and
+            " [Schema默认值]" if self._current_mode == "schema" and
             source_id in ("main_group", "main_friend")
             else ""
         )
@@ -3227,13 +3221,21 @@ class PromptBuilderApp:
 
     def _on_sub_agent_saved(self) -> None:
         """Called when a sub-agent prompt is saved from the editor."""
+        status_message = "子Agent 提示词已保存"
         # Clear caches
         self._prompt_cache.clear()
         # Refresh if currently viewing a sub-agent
         if self._current_source_id.startswith("agent_"):
             self._load_source(self._current_source_id)
-        self._update_status("子Agent 提示词已保存")
-        self.root.after(5000, lambda: self._status_var.set("就绪") if self._status_var.get() == msg else None)
+        self._update_status(status_message)
+        self.root.after(
+            5000,
+            lambda: (
+                self._status_var.set("就绪")
+                if self._status_var.get() == status_message
+                else None
+            ),
+        )
 
     def _on_close(self) -> None:
         if self._modified:

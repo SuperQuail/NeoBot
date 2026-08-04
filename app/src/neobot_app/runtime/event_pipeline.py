@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from collections import deque
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
@@ -97,7 +99,9 @@ class EventPipeline:
         self._replying_queues: set[str] = set()
         self._post_reply_willing: dict[str, list] = {}
         self._pending_image_willing: dict[str, list] = {}
-        self._image_willing_lock = asyncio.Lock()
+        self._recent_message_ids: deque[int] = deque(maxlen=200)
+        self._recent_message_ids_lock = asyncio.Lock()
+        self._image_willing_locks: dict[str, asyncio.Lock] = {}
 
     def start(self) -> None:
         if self._started:
@@ -137,7 +141,7 @@ class EventPipeline:
         self._logger.info("实时事件管线已停止")
 
     async def flush_pending_summaries(self) -> None:
-        """Trigger summarisation for all counters that have pending messages below the threshold."""
+        """对所有未达到阈值但有待处理消息的计数器触发摘要。"""
         if self._archive_summary_service is not None:
             await self._archive_summary_service.flush_all()
 
@@ -220,6 +224,17 @@ class EventPipeline:
 
         task.add_done_callback(_done)
 
+    async def _is_duplicate_message(self, message: PrivateMessage | GroupMessage) -> bool:
+        """按 message_id 对真实消息去重：断线重连重投的同一条消息直接丢弃。"""
+        message_id = getattr(message, "message_id", None)
+        if message_id is None:
+            return False
+        async with self._recent_message_ids_lock:
+            if message_id in self._recent_message_ids:
+                return True
+            self._recent_message_ids.append(message_id)
+        return False
+
     async def handle_private_message_event(
         self,
         event: Dict[str, Any],
@@ -227,6 +242,13 @@ class EventPipeline:
         skip_ai_reply: bool = False,
     ) -> None:
         message = safe_parse_model(event, PrivateMessage)
+        if await self._is_duplicate_message(message):
+            self._logger.debug(
+                "重复消息已丢弃（message_id 去重）",
+                message_id=message.message_id,
+                user_id=message.user_id,
+            )
+            return
         queue_key = str(message.user_id or "")
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
@@ -272,7 +294,7 @@ class EventPipeline:
             if user_id in self._warmed_up_friends:
                 return
             count = getattr(self._config.chat, "private_chat_warmup_history_count", 100)
-            self._logger.info(f"私聊动态预热开始", user_id=user_id, history_count=count)
+            self._logger.info("私聊动态预热开始", user_id=user_id, history_count=count)
             try:
                 result = await asyncio.wait_for(
                     self.adapter.get_friend_msg_history(
@@ -295,7 +317,7 @@ class EventPipeline:
                                 error=str(exc),
                             )
                     self._logger.info(
-                        f"私聊动态预热完成",
+                        "私聊动态预热完成",
                         user_id=user_id,
                         message_count=len(result.data.messages),
                     )
@@ -305,14 +327,15 @@ class EventPipeline:
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
+                return
             except Exception as exc:
                 self._logger.warning(
-                    f"私聊动态预热失败",
+                    "私聊动态预热失败",
                     user_id=user_id,
                     error=str(exc),
                 )
-            finally:
-                self._warmed_up_friends.add(user_id)
+                return
+            self._warmed_up_friends.add(user_id)
 
     async def _handle_private_reply(self, message: Any, queue_key: str) -> None:
         """私聊直接触发回复（跳过意愿管理器），延迟指定秒数以收集后续消息。"""
@@ -323,7 +346,7 @@ class EventPipeline:
                 delay = float(val)
 
         if delay > 0:
-            self._logger.debug(f"私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
+            self._logger.debug("私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
             await asyncio.sleep(delay)
 
         if self._reply_orchestrator is None:
@@ -335,10 +358,10 @@ class EventPipeline:
             manager_name="private_direct",
             probability=1.0,
             should_reply=True,
-            reasons=["私聊直接回复（跳过意愿管理器）"],
+            reasons=("私聊直接回复（跳过意愿管理器）",),
         )
         self._logger.info(
-            f"私聊触发回复",
+            "私聊触发回复",
             queue_key=queue_key,
             delay_seconds=delay,
         )
@@ -356,6 +379,13 @@ class EventPipeline:
         skip_ai_reply: bool = False,
     ) -> None:
         message = safe_parse_model(event, GroupMessage)
+        if await self._is_duplicate_message(message):
+            self._logger.debug(
+                "重复消息已丢弃（message_id 去重）",
+                message_id=message.message_id,
+                group_id=message.group_id,
+            )
+            return
         queue_key = str(message.group_id or "")
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(message, self._group_queue, queue_key)
@@ -588,6 +618,9 @@ class EventPipeline:
         decision: WillingDecision,
     ) -> bool:
         """发起回复并设置回复状态追踪与完成后回调。"""
+        if self._reply_orchestrator is None:
+            return False
+
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
         self._replying_queues.add(queue_key)
 
@@ -619,6 +652,25 @@ class EventPipeline:
             return False
         return True
 
+    @asynccontextmanager
+    async def _image_willing_lock(self, queue_key: str) -> AsyncIterator[asyncio.Lock]:
+        """按 queue_key 分片的图片意愿处理锁：只保护取列表/清理阶段。"""
+        while True:
+            lock = self._image_willing_locks.get(queue_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._image_willing_locks[queue_key] = lock
+            await lock.acquire()
+            if self._image_willing_locks.get(queue_key) is lock:
+                break
+            lock.release()
+        try:
+            yield lock
+        finally:
+            if self._image_willing_locks.get(queue_key) is lock:
+                del self._image_willing_locks[queue_key]
+            lock.release()
+
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
         if self._image_parse_service is not None:
@@ -627,34 +679,34 @@ class EventPipeline:
                 timeout=self._get_group_agent_silent_timeout_seconds(),
             )
 
-        async with self._image_willing_lock:
+        async with self._image_willing_lock(queue_key):
             pending = self._pending_image_willing.pop(queue_key, [])
-            if not pending:
-                return
+        if not pending:
+            return
 
-            for msg in pending:
-                if (
-                    queue_key in self._replying_queues
-                    and not self._has_active_reply_pipeline("group", queue_key)
-                ):
-                    self._logger.warning(
-                        "stale replying queue state cleared",
-                        queue_key=queue_key,
-                        kind="group",
-                    )
-                    self._replying_queues.discard(queue_key)
-                if queue_key in self._replying_queues:
-                    # 已在回复中，剩余消息放入 post-reply 队列
-                    idx = pending.index(msg)
-                    if idx >= 0:
-                        self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
-                    break
-
-                triggered = await self._handle_willing_decision(
-                    message=msg, queue=self._group_queue, queue_key=queue_key
+        for msg in pending:
+            if (
+                queue_key in self._replying_queues
+                and not self._has_active_reply_pipeline("group", queue_key)
+            ):
+                self._logger.warning(
+                    "stale replying queue state cleared",
+                    queue_key=queue_key,
+                    kind="group",
                 )
-                if triggered:
-                    break
+                self._replying_queues.discard(queue_key)
+            if queue_key in self._replying_queues:
+                # 已在回复中，剩余消息放入 post-reply 队列
+                idx = pending.index(msg)
+                if idx >= 0:
+                    self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
+                break
+
+            triggered = await self._handle_willing_decision(
+                message=msg, queue=self._group_queue, queue_key=queue_key
+            )
+            if triggered:
+                break
 
     async def _process_post_reply_queue(self, queue_key: str) -> None:
         """回复结束后依次处理期间收到的新消息。"""
@@ -872,12 +924,12 @@ class EventPipeline:
             queue.push_poke(queue_key, poke)
 
     async def _resolve_name(self, user_id: int, group_id: int | None = None) -> str:
-        """Resolve a user's display name.
+        """解析用户的显示名称。
 
-        Priority:
-        1. Database (user_profiles.nick_name / remark)
-        2. API: group member info (card > nickname) for group, stranger info for private
-        3. Fallback to QQ:xxx
+        优先级：
+        1. 数据库（user_profiles.nick_name / remark）
+        2. API：群聊取群成员信息（card > nickname），私聊取陌生人信息
+        3. 兜底返回 QQ:xxx
         """
         if not user_id:
             return ""
@@ -909,7 +961,7 @@ class EventPipeline:
         if group_id is not None:
             try:
                 resp = await asyncio.wait_for(
-                    self._adapter.get_group_member_info(group_id, user_id),
+                    self.adapter.get_group_member_info(group_id, user_id),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:
@@ -926,7 +978,7 @@ class EventPipeline:
         else:
             try:
                 resp = await asyncio.wait_for(
-                    self._adapter.get_stranger_info(user_id),
+                    self.adapter.get_stranger_info(user_id),
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:

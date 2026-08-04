@@ -1,4 +1,4 @@
-"""Web search module — multi-engine search with retrieve-read workflow."""
+"""Web 搜索模块 — 多引擎搜索，支持检索-阅读工作流。"""
 
 from neobot_app.web_search.engine import (
     BingSearchEngine,

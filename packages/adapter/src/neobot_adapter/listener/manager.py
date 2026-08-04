@@ -178,7 +178,10 @@ class ListenerManager:
         """
         with self._handlers_lock:
             initial_count = len(self._handlers)
-            self._handlers = [h for h in self._handlers if h.func != func]
+            self._handlers = [
+                h for h in self._handlers
+                if getattr(h.func, "__wrapped__", h.func) != func
+            ]
             removed = len(self._handlers) < initial_count
             if removed:
                 logger.debug(f"注销事件处理器: {func.__name__}")

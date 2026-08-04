@@ -13,17 +13,12 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
-from neobot_app.reply._utils import entry_fingerprint, msg_id_of
+from neobot_app.reply._utils import entry_fingerprint
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.reply.sender import ReplySender
-from neobot_app.statistics.tracker import (
-    CURRENT_USAGE_MODULE,
-    CURRENT_CONVERSATION_KIND,
-    CURRENT_CONVERSATION_ID,
-    get_usage_tracker,
-)
+from neobot_app.statistics.tracker import get_usage_tracker
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
@@ -33,7 +28,7 @@ if TYPE_CHECKING:
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
     from neobot_chat.providers.base import Provider
     from neobot_app.config.schemas.bot import BotConfig
-    from neobot_app.emoji.service import EmojiEntry, EmojiService
+    from neobot_app.emoji.service import EmojiService
     from neobot_app.observability.debug import DebugRecorder
     from neobot_app.message.numbering import MessageNumbering
     from neobot_app.message.queue import MessageQueue
@@ -254,9 +249,9 @@ class ReplyOrchestrator:
             if self._active_pipelines.get(pipeline_key) is task:
                 self._active_pipelines.pop(pipeline_key, None)
             if on_reply_done is not None:
-                callback_task = asyncio.create_task(on_reply_done())
+                callback_task = asyncio.ensure_future(on_reply_done())
 
-                def _callback_done(done_task: asyncio.Task[None]) -> None:
+                def _callback_done(done_task: asyncio.Future[None]) -> None:
                     try:
                         done_task.result()
                     except asyncio.CancelledError:
@@ -342,8 +337,6 @@ class ReplyOrchestrator:
             return None
 
         # 将通知内容推入消息队列作为触发消息
-        from neobot_app.message.queue import QueueEntryType
-
         @dataclass
         class _SyntheticSender:
             card: str = ""
@@ -373,7 +366,7 @@ class ReplyOrchestrator:
             manager_name=manager_name,
             probability=1.0,
             should_reply=True,
-            reasons=reasons or ["后台绘图任务完成通知"],
+            reasons=tuple(reasons) if reasons else ("后台绘图任务完成通知",),
         )
 
         self._logger.info(
@@ -477,6 +470,11 @@ class ReplyOrchestrator:
 
     def _get_dependency_timeout_seconds(self) -> float:
         return 10.0
+
+    def _get_private_image_wait_timeout_seconds(self) -> float:
+        # 视觉模型单次调用上限 60s；图片解析可能含下载(≤30s)+推理(≤60s)，
+        # 取 90s 作为私聊回复等待图片解析的上限，避免无限阻塞。
+        return 90.0
 
     def _get_prompt_timeout_seconds(self) -> float:
         return 30.0
@@ -903,7 +901,6 @@ class ReplyOrchestrator:
             max_wait = self._get_max_wait_seconds()
             wait_time = max(1, min(seconds, max_wait))
             await asyncio.sleep(wait_time)
-            previous_entries = queue_copy.entries(queue_key)
             new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
             if new_entries:
                 new_text = numbering.apply_new(
@@ -1145,6 +1142,7 @@ class ReplyOrchestrator:
             await self._send_reply(event, pre_hook_text)
             return
 
+        previous_entries = queue_copy.entries(queue_key)
         while True:
             reply_sent = False
             cancelled = False
@@ -2055,7 +2053,6 @@ class ReplyOrchestrator:
 
         # 新消息文本
         if numbering is not None:
-            previous_entries = queue_copy.entries(queue_key)
             # 先回退快照以获取未包含新条目的状态
             new_text = numbering.apply_new(
                 new_entries,
@@ -2074,7 +2071,7 @@ class ReplyOrchestrator:
                     sender_name = getattr(sender, "nickname", None) or getattr(entry.message, "user_id", "?")
                     new_text_lines.append(f"{sender_name}: {text}")
             if new_text_lines:
-                new_messages_text = f"[收到新消息]\n" + "\n".join(new_text_lines)
+                new_messages_text = "[收到新消息]\n" + "\n".join(new_text_lines)
 
         # 新成员档案
         if new_user_ids and self._prompt_builder is not None:
@@ -2131,9 +2128,14 @@ class ReplyOrchestrator:
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
-            image_wait_timeout = None
+            image_wait_timeout: float | None = None
             if event.conversation_ref is not None and event.conversation_ref.kind == "group":
                 image_wait_timeout = self._get_group_agent_silent_timeout_seconds()
+            else:
+                # 私聊不能无限等：视觉模型慢/抖动时会把整条私聊回复卡在 prompt
+                # 构建阶段。给一个有限上限（与视觉模型调用超时 60s 对齐并留余量），
+                # 超时后未替换的图片段按原始“图片 [url]”占位进 prompt 即可。
+                image_wait_timeout = self._get_private_image_wait_timeout_seconds()
             await self._image_parse_service.wait_for_queue(
                 queue_key,
                 timeout=image_wait_timeout,
@@ -2198,11 +2200,11 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
     ) -> tuple[int | None, bool]:
-        """Return (last_reply_message_id, all_new) for the given queue key.
+        """返回指定队列键对应的 (last_reply_message_id, all_new)。
 
-        Returns (None, False) when tracking is disabled.
-        Returns (None, True) when tracking is enabled but no position has been recorded.
-        Returns (message_id, False) when a last-reply position exists.
+        跟踪被禁用时返回 (None, False)。
+        跟踪启用但尚未记录位置时返回 (None, True)。
+        已存在最后回复位置时返回 (message_id, False)。
         """
         enable_tracking = (
             getattr(getattr(self._config, "chat", None), "enable_last_reply_tracking", True)

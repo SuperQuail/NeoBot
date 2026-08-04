@@ -9,13 +9,14 @@ from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.prompt.keyword_reaction import KeywordReactionBuilder
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.time_context import get_current_time_and_lunar_date
+from neobot_app.utils.formater import safe_format
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
 
 
 class PromptBuilder:
-    """Assemble prompt text from queues plus stored profile information."""
+    """从消息队列与已保存的用户资料信息组装提示词文本。"""
 
     def __init__(
         self,
@@ -121,7 +122,8 @@ class PromptBuilder:
             keyword_reaction_text,
         )
 
-        prompt = self._config.chat.group_prompt_template.format(
+        prompt = safe_format(
+            self._config.chat.group_prompt_template,
             current_time=current_time,
             group_name=group_name,
             group_id=group_id,
@@ -144,6 +146,8 @@ class PromptBuilder:
             prompt = _merge_prompt_fragments(prompt, group_info)
         if keyword_reaction_text and "{key_word_reaction_list}" not in self._config.chat.group_prompt_template:
             prompt = _merge_prompt_fragments(prompt, keyword_reaction_text)
+        if memory_list and "{memory_list}" not in self._config.chat.group_prompt_template:
+            prompt = _merge_prompt_fragments(prompt, memory_list)
         adaptive = self._get_adaptive_prompt()
         if adaptive:
             prompt += f"\n<自适应提示词>\n{adaptive}\n</自适应提示词>"
@@ -200,7 +204,8 @@ class PromptBuilder:
             ("既有记忆", memory_list),
         )
 
-        prompt = self._config.chat.friend_prompt_template.format(
+        prompt = safe_format(
+            self._config.chat.friend_prompt_template,
             current_time=current_time,
             friend_name=friend_name,
             remark=remark,
@@ -266,8 +271,6 @@ def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
 
 def _build_message_id_context(numbering: Any) -> str:
     """构建消息编号 → 真实 message_id 的映射文本，嵌入 prompt 供 Agent 查阅。"""
-    from neobot_app.message.numbering import MessageNumbering
-
     if numbering is None:
         return ""
     mapping = numbering.mapping

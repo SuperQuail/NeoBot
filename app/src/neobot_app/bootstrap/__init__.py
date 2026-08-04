@@ -10,10 +10,13 @@ from neobot_contracts.ports.clock import SystemClock
 from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
+from neobot_app.console import ConsoleService, ConsoleTelemetry
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import (
     LoguruLoggerFactory,
     configure_loguru,
+    register_self_heal_manager,
 )
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.utils.data_sync import sync_data_files
@@ -45,6 +48,8 @@ from neobot_app.bootstrap._runtime import (
     build_problem_solver_manager,
     build_sandbox_components,
     build_scheduled_task_manager,
+    build_self_heal_agent_wiring,
+    build_self_heal_manager,
 )
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.bootstrap._skills import build_plugin_runtime, build_skill_manager
@@ -256,17 +261,20 @@ def create_application() -> NeoBotApplication:
         logger_factory=logger_factory,
     )
 
-    creator_image_service = build_creator_image_service(
-        uow_factory=uow_factory,
-        adapter=adapter,
-        config=config,
-        emoji_service=emoji_service,
-        vision_provider=vision_provider,
-        file_server=file_server,
-        image_pool=image_pool,
-        logger_factory=logger_factory,
-    )
-    drawing_manager.set_image_service(creator_image_service)
+    if getattr(config.agent.creator, "enabled", False):
+        creator_image_service = build_creator_image_service(
+            uow_factory=uow_factory,
+            adapter=adapter,
+            config=config,
+            emoji_service=emoji_service,
+            vision_provider=vision_provider,
+            file_server=file_server,
+            image_pool=image_pool,
+            logger_factory=logger_factory,
+        )
+        drawing_manager.set_image_service(creator_image_service)
+    else:
+        creator_image_service = None
 
     sandbox = build_sandbox_components(
         config=config,
@@ -290,12 +298,18 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
     )
 
-    # ── Skill 系统 ──
+    # ── Skill 系统（balance_checker 先构建供 skill 条件注册使用） ──
+    balance_checker = build_balance_checker(
+        config=config,
+        notification_hub=notification_hub,
+        logger_factory=logger_factory,
+    )
     skill_manager = build_skill_manager(
         config=config,
         adapter=adapter,
         archive_memory_service=memory_svcs["archive_memory_service"],
         profile_service=memory_svcs["profile_service"],
+        uow_factory=uow_factory,
         emoji_service=emoji_service,
         vision_provider=vision_provider,
         file_server=file_server,
@@ -316,6 +330,7 @@ def create_application() -> NeoBotApplication:
         group_message_queue=group_queue,
         friend_message_queue=friend_queue,
         data_dir=DATA_DIR,
+        balance_checker=balance_checker,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
@@ -346,11 +361,39 @@ def create_application() -> NeoBotApplication:
         skill_manager=skill_manager,
     )
     tts_service = build_tts_service(config=config, logger_factory=logger_factory)
-    balance_checker = build_balance_checker(
+
+    # ── 自修复 Agent 装配 ──
+    project_root = _get_project_root()
+    source_roots = [project_root / "app", project_root / "packages"]
+    log_file_path = DATA_DIR / "logs" / "neobot.log"
+    self_heal_manager = build_self_heal_manager(
         config=config,
-        notification_hub=notification_hub,
         logger_factory=logger_factory,
+        notification_hub=notification_hub,
+        sandbox_service=sandbox["sandbox_service"],
+        drawing_manager=drawing_manager,
+        creator_image_service=creator_image_service,
+        data_dir=DATA_DIR,
+        source_roots=source_roots,
+        log_file=log_file_path,
+        web_search_config={},
+        vision_provider=vision_provider,
     )
+    if self_heal_manager is not None:
+        register_self_heal_manager(self_heal_manager)
+        build_self_heal_agent_wiring(
+            config=config,
+            manager=self_heal_manager,
+            provider=provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            data_dir=DATA_DIR,
+            source_roots=source_roots,
+            log_file=log_file_path,
+            vision_provider=vision_provider,
+            web_search_config={},
+        )
 
     # ── 回复编排器 + 交叉注入 ──
     reply_orchestrator = build_reply_orchestrator(
@@ -378,12 +421,22 @@ def create_application() -> NeoBotApplication:
         hook_bus=plugin["hook_bus"],
         file_server=file_server,
     )
+    console_telemetry = ConsoleTelemetry()
+    plugin["hook_bus"].subscribe_runtime(
+        console_telemetry.capture,
+        kind="reply_lifecycle",
+        stage="model.call.after",
+        priority=-100,
+        logger=logger_factory.get_logger("app.console.telemetry"),
+    )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
     if scheduled_task_manager is not None:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
+    if self_heal_manager is not None:
+        self_heal_manager.set_orchestrator(reply_orchestrator)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []
@@ -400,7 +453,19 @@ def create_application() -> NeoBotApplication:
             )
         )
 
-    # ── 管线 / 网关 / 应用 ──
+    # ── 内置控制台 / 管线 / 网关 / 应用 ──
+    console_service = ConsoleService(
+        config=config,
+        data_dir=DATA_DIR,
+        logger=logger_factory.get_logger("app.console"),
+        group_queue=group_queue,
+        friend_queue=friend_queue,
+        telemetry=console_telemetry,
+        reply_orchestrator=reply_orchestrator,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
+    )
     return build_pipelines_and_app(
         adapter=adapter,
         memory=memory_svcs["memory"],
@@ -428,5 +493,10 @@ def create_application() -> NeoBotApplication:
         _engine=_engine,
         vision_provider=vision_provider,
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
+        browser_instance=browser["browser_instance"],
+        creator_image_service=creator_image_service,
+        drawing_manager=drawing_manager,
         background_coros=maintenance_coros,
+        self_heal_manager=self_heal_manager,
+        console_service=console_service,
     )

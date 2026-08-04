@@ -1,4 +1,4 @@
-"""SqlAlchemy image analysis repository."""
+"""SqlAlchemy 图片分析仓库。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from neobot_storage.models import ImageAnalysisData
 
 
 class SqlAlchemyImageAnalysisAccess:
-    """SqlAlchemy implementation of ImageAnalysisAccess protocol."""
+    """ImageAnalysisAccess 协议的 SqlAlchemy 实现。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session

@@ -82,7 +82,7 @@ class PluginRegistry(Protocol):
 
 @runtime_checkable
 class RuntimePluginContext(Protocol):
-    """Internal runtime context passed to plugin objects by the loader."""
+    """加载器传递给插件对象的内部运行时上下文。"""
 
     @property
     def plugin_name(self) -> str: ...

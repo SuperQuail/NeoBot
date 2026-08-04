@@ -47,6 +47,11 @@ class OneBotAdapter:
         return True
 
     @property
+    def connected(self) -> bool:
+        """当前是否至少有一条 OneBot 反向 WebSocket 连接处于活跃状态。"""
+        return bool(self._core.active_connections)
+
+    @property
     def core(self) -> AdapterCore:
         return self._core
 
@@ -114,10 +119,26 @@ class OneBotAdapter:
     async def stop(self) -> None:
         self._stopping.set()
         if self._dispatch_task is not None:
-            await self._dispatch_task
+            try:
+                await asyncio.wait_for(self._dispatch_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                self._logger.warning("adapter dispatch loop stop timed out; cancelling")
+                self._dispatch_task.cancel()
+                await asyncio.gather(self._dispatch_task, return_exceptions=True)
+            except Exception as exc:
+                self._logger.warning(
+                    "adapter dispatch loop failed during shutdown",
+                    error=str(exc),
+                )
             self._dispatch_task = None
-        self._core.stop()
-        unbind_core()
+        try:
+            stopped = await asyncio.to_thread(self._core.stop, 8.0)
+            if not stopped:
+                self._logger.error(
+                    "adapter receiver used shutdown fallback; daemon thread remains"
+                )
+        finally:
+            unbind_core()
 
     def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
         return self._core.wait_for_connection(timeout)

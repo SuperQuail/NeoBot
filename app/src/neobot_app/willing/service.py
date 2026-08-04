@@ -78,7 +78,11 @@ class WillingService:
         allowed, block_reason = self._is_conversation_allowed(conversation_type, queue_key)
         if not allowed:
             return block_reason
-        if queue_key in self._runtime_config.blacklisted_conversations:
+        try:
+            normalized_key = self._normalize_conversation_id(queue_key)
+        except ValueError:
+            return ""
+        if normalized_key in self._runtime_config.blacklisted_conversations:
             return "runtime_blacklisted"
         return ""
 
@@ -297,10 +301,15 @@ class WillingService:
             getattr(self._config.chat, "official_bot_reply_coefficient", 0.05) or 0.05
         )
 
+        try:
+            conversation_id = self._normalize_conversation_id(queue_key)
+        except ValueError:
+            conversation_id = queue_key
+
         return WillingContext(
             manager_name=self._manager.name,
             conversation_type=conversation_type,
-            conversation_id=queue_key,
+            conversation_id=conversation_id,
             sender_id=str(message.user_id or ""),
             message_id=message.message_id,
             text=text,

@@ -1,4 +1,4 @@
-"""Web parser data models."""
+"""Web 解析数据模型。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Optional
 
 @dataclass
 class PageMetadata:
-    """Extracted page metadata."""
+    """提取到的页面元数据。"""
 
     title: str = ""
     author: str = ""
@@ -32,7 +32,7 @@ class PageMetadata:
 
 @dataclass
 class ParsedPage:
-    """Result of parsing a web page."""
+    """解析网页的结果。"""
 
     url: str
     metadata: PageMetadata = field(default_factory=PageMetadata)

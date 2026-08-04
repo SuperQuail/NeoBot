@@ -1,4 +1,4 @@
-"""Utilities for preparing images before prompt assembly."""
+"""提示词组装前准备图片的工具集。"""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ DEFAULT_MAX_IMAGE_PIXELS = 1024 * 1024
 
 
 class ImagePreparationError(ValueError):
-    """Raised when a local image cannot be prepared."""
+    """本地图片无法处理时抛出的异常。"""
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedImage:
-    """Prepared image payload ready for a future vision-model request."""
+    """已处理好的图片载荷，可直接用于后续视觉模型请求。"""
 
     source_path: Path
     file_hash: str
@@ -40,7 +40,7 @@ class PreparedImage:
 
 @dataclass(frozen=True, slots=True)
 class ImagePromptResolution:
-    """Result of resolving a local image against the cache."""
+    """本地图片与缓存比对后的解析结果。"""
 
     prepared: PreparedImage
     cached_analysis: Optional[ImageAnalysis]
@@ -57,7 +57,7 @@ class ImagePromptResolution:
 
 
 class ImagePromptPreparer:
-    """Prepare local images and reuse cached analysis results when available."""
+    """准备本地图片，并在可用时复用缓存的解析结果。"""
 
     def __init__(
         self,
@@ -89,7 +89,7 @@ class ImagePromptPreparer:
 
 
 def prepare_local_image(image_path: str | Path, *, max_pixels: int = DEFAULT_MAX_IMAGE_PIXELS) -> PreparedImage:
-    """Read a local image, hash it, and downscale proportionally if needed."""
+    """读取本地图片、计算哈希，并在需要时按比例缩小尺寸。"""
     if max_pixels <= 0:
         raise ValueError("max_pixels must be greater than 0")
 

@@ -1,4 +1,4 @@
-"""add images table
+"""新增 images 表
 
 Revision ID: 0004
 Revises: 0003

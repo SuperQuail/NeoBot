@@ -1,4 +1,4 @@
-"""Example plugin for delegated sub-agents."""
+"""委托子 Agent 的示例插件。"""
 
 from typing import Any
 

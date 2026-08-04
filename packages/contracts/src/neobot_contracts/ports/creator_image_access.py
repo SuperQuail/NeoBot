@@ -1,4 +1,4 @@
-"""Creator image gallery access port."""
+"""Creator 图片图库访问端口。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class CreatorImageAccess(Protocol):
-    """Persistence access for Creator Agent images."""
+    """Creator Agent 图片的持久化访问接口。"""
 
     async def get(self, image_id: str) -> Optional[CreatorImageRecord]: ...
 

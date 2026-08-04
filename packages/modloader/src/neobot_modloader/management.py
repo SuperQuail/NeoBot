@@ -32,7 +32,7 @@ class PluginSnapshot:
 
 
 class PluginControlFacade:
-    """Narrow runtime management facade exposed to plugins."""
+    """向插件暴露的窄化运行时管理门面。"""
 
     def __init__(self, runtime: Any) -> None:
         self._runtime = runtime

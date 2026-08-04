@@ -1,4 +1,4 @@
-"""add_bilibili_links
+"""新增 bilibili 关联表
 
 Revision ID: 0020
 Revises: 0019

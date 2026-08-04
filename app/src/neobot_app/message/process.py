@@ -19,6 +19,13 @@ logger = get_module_logger(__name__)
 StrangerInfoGetter = Callable[[int], Awaitable[object]]
 
 
+def _segment_data_value(data: object, key: str, default: object = None) -> object:
+    """从消息段 data（pydantic 模型或 dict）中安全取值，缺失字段时返回 default。"""
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return getattr(data, key, default)
+
+
 async def history_message_to_text(
     message: GetSignalMsgResponse | GetSignalMsgData,
     get_stranger_info: Optional[StrangerInfoGetter] = None,
@@ -79,11 +86,15 @@ async def history_message_to_text(
         elif msg_type == "video":
             message_str += f"视频消息 [{item.data.file or item.data.url or '未知'}]"
         elif msg_type == "at":
-            message_str += f"@{(item.data.name or '某人')}(QQ:{item.data.qq or '未知'})"
+            name = _segment_data_value(item.data, "name") or "某人"
+            qq = _segment_data_value(item.data, "qq") or "未知"
+            message_str += f"@{name}(QQ:{qq})"
         elif msg_type == "image":
             message_str += f"图片 [{item.data.file or item.data.url or '未知'}]"
         elif msg_type == "share":
-            message_str += f"分享 [{item.data.title or item.data.url or '未知链接'}]"
+            title = _segment_data_value(item.data, "title")
+            url = _segment_data_value(item.data, "url")
+            message_str += f"分享 [{title or url or '未知链接'}]"
         elif msg_type == "reply":
             message_str += f"回复 [消息 ID:{item.data.id}]"
         elif msg_type == "redbag":
@@ -94,15 +105,20 @@ async def history_message_to_text(
             else:
                 message_str += "红包 [恭喜发财，大吉大利]"
         elif msg_type == "poke":
-            poke_type = getattr(item.data, 'type', '') if item.data else ''
+            poke_type = _segment_data_value(item.data, "type", "")
             action_desc = _poke_sub_type_text(str(poke_type))
-            message_str += f"{action_desc} [QQ:{item.data.qq}]"
+            qq = _segment_data_value(item.data, "qq") or "未知"
+            message_str += f"{action_desc} [QQ:{qq}]"
         elif msg_type == "gift":
-            message_str += f"礼物 [QQ:{item.data.qq}, ID:{item.data.id}]"
+            qq = _segment_data_value(item.data, "qq") or "未知"
+            gift_id = _segment_data_value(item.data, "id") or "未知"
+            message_str += f"礼物 [QQ:{qq}, ID:{gift_id}]"
         elif msg_type == "forward":
             message_str += f"合并转发 [ID:{item.data.id}（使用 read_forward_msg 工具查看内容）]"
         elif msg_type == "node":
-            message_str += f"转发节点 [ID:{item.data.id}, 发送者:{item.data.name}]"
+            node_id = _segment_data_value(item.data, "id") or "未知"
+            node_name = _segment_data_value(item.data, "name") or "未知"
+            message_str += f"转发节点 [ID:{node_id}, 发送者:{node_name}]"
         elif msg_type == "xml":
             message_str += f"XML 消息 [{item.data.data or 'XML 内容'}]"
         elif msg_type == "json":
@@ -122,9 +138,12 @@ async def history_message_to_text(
         elif msg_type == "contact":
             message_str += f"推荐联系人/群 [ID:{item.data.id}]"
         elif msg_type == "location":
-            message_str += f"位置 [{item.data.title or '未知位置'}]"
+            title = _segment_data_value(item.data, "title")
+            message_str += f"位置 [{title or '未知位置'}]"
         elif msg_type == "music":
-            message_str += f"音乐 [{item.data.title or item.data.type or '未知音乐'}]"
+            title = _segment_data_value(item.data, "title")
+            music_type = _segment_data_value(item.data, "type")
+            message_str += f"音乐 [{title or music_type or '未知音乐'}]"
         else:
             # 未知类型，尝试显示基本信息
             message_str += f"未知消息类型 [{msg_type}]"

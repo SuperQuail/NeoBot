@@ -13,6 +13,9 @@ from neobot_app.skills.base import SkillModule
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
+MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+MAX_DOWNLOAD_REDIRECTS = 3
+
 class SandboxManagerSkill(SkillModule):
     """沙箱文件操作 Skill — 沙箱内文件读写/编辑/搜索/删列移拷贝及发送到聊天。"""
 
@@ -757,6 +760,47 @@ async def _handle_hold_temp(self: SandboxManagerSkill, args: dict) -> str:
     self._sandbox.ensure_temp_dir(chat_flow_id)
     return _json({"ok": True, "note": f"临时目录 {chat_flow_id} 已保活 {minutes} 分钟"})
 
+async def _read_download_limited(response: Any) -> bytes:
+    """分块读取下载响应体，超过上限即中止。"""
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = 0
+        if declared > MAX_DOWNLOAD_BYTES:
+            raise ValueError(f"文件过大（{declared} 字节），超过上限 {MAX_DOWNLOAD_BYTES} 字节")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > MAX_DOWNLOAD_BYTES:
+            raise ValueError(f"文件过大，超过上限 {MAX_DOWNLOAD_BYTES} 字节，下载已中止")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _download_with_redirects(client: Any, url: str) -> bytes:
+    """流式下载并手动跟随重定向，每跳重新做 SSRF 校验。"""
+    from neobot_app.utils.ssrf import validate_public_url_async
+
+    current_url = url
+    for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
+        response = await client.get(current_url)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location")
+            if not location:
+                raise ValueError(f"重定向响应缺少 Location（{response.status_code}）")
+            import httpx
+            current_url = str(httpx.URL(current_url).join(location))
+            if not await validate_public_url_async(current_url):
+                raise ValueError("重定向目标不允许下载（内网/非公网地址）")
+            continue
+        response.raise_for_status()
+        return await _read_download_limited(response)
+    raise ValueError(f"重定向次数超过限制（{MAX_DOWNLOAD_REDIRECTS} 次）")
+
+
 async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
@@ -769,32 +813,17 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
     timeout_seconds = int(args.get("timeout_seconds", 300) or 300)
     timeout_seconds = max(1, min(timeout_seconds, 1800))
 
-    # 安全检查：禁止非 HTTP(S) 协议
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return _json({"ok": False, "error": f"不支持的协议: {parsed.scheme}，仅允许 http/https"})
+    from neobot_app.utils.ssrf import validate_public_url_async
 
-    # 安全检查：禁止回环地址
-    hostname = (parsed.hostname or "").lower()
-    if hostname in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
-        return _json({"ok": False, "error": "禁止下载回环地址"})
-
-    # 安全检查：禁止内网地址
-    if hostname.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                            "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                            "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                            "172.30.", "172.31.", "192.168.")):
-        return _json({"ok": False, "error": "禁止下载内网地址"})
+    if not await validate_public_url_async(url):
+        return _json({"ok": False, "error": "禁止下载内网/非公网地址"})
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=float(timeout_seconds), follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.content
+        async with httpx.AsyncClient(timeout=float(timeout_seconds), follow_redirects=False) as client:
+            data = await _download_with_redirects(client, url)
 
-        # 检查沙箱总容量（不限制单文件大小）
+        # 检查沙箱总容量
         remaining = self._sandbox.check_capacity(len(data))
         if remaining is not None and remaining < 0:
             current = self._sandbox.get_total_size()
@@ -811,6 +840,8 @@ async def _handle_download_file(self: SandboxManagerSkill, args: dict) -> str:
         path = self._sandbox.resolve_path(save_name, chat_flow_id)
         await self._sandbox.write_file(path, data)
         return _json({"ok": True, "path": str(path), "size": len(data)})
+    except ValueError as e:
+        return _json({"ok": False, "error": str(e)})
     except Exception as e:
         return _json({"ok": False, "error": f"下载失败: {e}"})
 

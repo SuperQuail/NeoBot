@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Any, Optional, Union, List, Literal, ClassVar
 
 from neobot_adapter.model.basic import PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from neobot_adapter.model.gengeral import General
 
 #文档:https://docs.go-cqhttp.org/cqcode/#%E5%90%88%E5%B9%B6%E8%BD%AC%E5%8F%91%E6%B6%88%E6%81%AF%E8%8A%82%E7%82%B9
@@ -92,6 +92,13 @@ class gift_id(Enum):
 
 class Message(BaseModel):
     """消息结构"""
+    class text(BaseModel):
+        """文本结构 - 收/发"""
+        type: Literal[MessageType.text] = MessageType.text
+
+        class data(BaseModel):
+            text: str = ""
+
     class face(BaseModel):
         """表情结构 - 收/发"""
         type: Literal[MessageType.face] = MessageType.face
@@ -137,17 +144,17 @@ class Message(BaseModel):
 
     class dice(BaseModel):
         """骰子结构 - 不支持"""
-        # type: Literal[MessageType.dice] = MessageType.dice
         # class data(BaseModel):
         #     """骰子数据结构"""
         #     pass
+        pass
 
     class shake(BaseModel):
         """窗口抖动结构 - 不支持 - 发"""
-        # type: Literal[MessageType.shake] = MessageType.shake
         # class data(BaseModel):
         #     """窗口抖动数据结构"""
         #     pass
+        pass
 
     class anonymous(BaseModel):
         """匿名发消息结构 - 发"""
@@ -335,7 +342,7 @@ class MessageSubType(Enum):
 class MessageSegment(BaseModel):
     """OneBot 消息段，对应协议中 message 数组的每个元素"""
     type: str
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class GeneralMessage(General):

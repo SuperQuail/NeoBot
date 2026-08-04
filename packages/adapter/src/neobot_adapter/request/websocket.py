@@ -3,7 +3,6 @@ from typing import Any, Dict, Optional, Union
 from pydantic import BaseModel
 
 from neobot_adapter.onebot.receiver.core import AdapterCore
-from neobot_adapter.model.basic import *
 
 
 class WebSocketAPI:
@@ -105,8 +104,7 @@ class WebSocketAPI:
         else:
             raise TypeError(f"数据必须是字典或 Pydantic 模型，实际类型: {type(data)}")
 
-        await self._core.send_message(data_dict, websocket)
-        return True
+        return await self._core.send_message(data_dict, websocket)
 
     def send_message_sync(self, data: Union[Dict[str, Any], BaseModel], websocket: Any = None, timeout: float = 5.0) -> bool:
         """

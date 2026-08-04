@@ -1,4 +1,4 @@
-"""add user profile refresh fields
+"""新增用户画像刷新字段
 
 Revision ID: 0005
 Revises: 0004

@@ -1,10 +1,11 @@
-"""Automatic archive-memory summarization for live chat messages."""
+"""对实时聊天消息进行档案记忆自动摘要。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
@@ -22,7 +23,7 @@ MAX_STORED_MESSAGE_CHARS = 800
 
 
 class ArchiveMemoryAutoSummaryService:
-    """Count live messages and periodically update archive profiles via tools."""
+    """统计实时消息数量，并按配置间隔通过工具定期更新档案画像。"""
 
     def __init__(
         self,
@@ -60,7 +61,7 @@ class ArchiveMemoryAutoSummaryService:
         sender_id: str | None = None,
         sender_name: str | None = None,
     ) -> None:
-        """Record one live message and trigger summarization at the configured interval."""
+        """记录一条实时消息，并在达到配置间隔时触发摘要。"""
         if conversation_kind not in {"group", "private"}:
             return
         interval = self._interval_for(conversation_kind)
@@ -79,12 +80,8 @@ class ArchiveMemoryAutoSummaryService:
             return
 
         counter_key = self._counter_key(conversation_kind, conversation_id)
-        lock = self._locks.setdefault(counter_key, asyncio.Lock())
-        async with lock:
+        async with self._counter_lock(counter_key):
             state = await self._load_counter(counter_key)
-            # 防止残留的高计数（如之前摘要失败未复位）导致一条消息就触发
-            if int(state.get("count", 0)) >= interval:
-                state = {"count": 0, "messages": []}
             messages = list(state.get("messages", []))
             messages.append(
                 {
@@ -179,12 +176,33 @@ class ArchiveMemoryAutoSummaryService:
             )
         except Exception as exc:
             self._logger.warning(
-                "archive auto summary failed",
+                "archive auto summary failed, counter preserved for retry",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 error=str(exc),
             )
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+
+    @asynccontextmanager
+    async def _counter_lock(self, counter_key: str) -> AsyncIterator[asyncio.Lock]:
+        """按 counter_key 分片的计数锁：get-or-create，释放后从注册表回收 key。
+
+        回收时检查注册表中仍是本锁才删除，防止等待者与新建锁并发持有。
+        """
+        while True:
+            lock = self._locks.get(counter_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[counter_key] = lock
+            await lock.acquire()
+            if self._locks.get(counter_key) is lock:
+                break
+            lock.release()
+        try:
+            yield lock
+        finally:
+            if self._locks.get(counter_key) is lock:
+                del self._locks[counter_key]
+            lock.release()
 
     async def _load_counter(self, key: str) -> dict[str, Any]:
         item = await self._archive.get(COUNTER_TABLE, key)
@@ -216,11 +234,10 @@ class ArchiveMemoryAutoSummaryService:
         )
 
     async def flush_all(self) -> None:
-        """Flush all pending counters on shutdown concurrently.
+        """关闭时并发刷新所有待处理的计数器。
 
-        Iterates every counter that has unsummarized messages (count > 0) but
-        hasn't reached the configured interval yet, and triggers summarisation
-        immediately so no messages are lost on exit.
+        遍历每个存在未摘要消息（count > 0）但尚未达到配置间隔的计数器，
+        立即触发摘要，确保退出时消息不丢失。
         """
         try:
             items = await self._archive.list(
@@ -257,9 +274,8 @@ class ArchiveMemoryAutoSummaryService:
                     return False
 
                 counter_key = item.key
-                lock = self._locks.setdefault(counter_key, asyncio.Lock())
                 async with semaphore:
-                    async with lock:
+                    async with self._counter_lock(counter_key):
                         current = await self._load_counter(counter_key)
                         current_count = int(current.get("count", 0))
                         if current_count <= 0 or current_count >= interval:

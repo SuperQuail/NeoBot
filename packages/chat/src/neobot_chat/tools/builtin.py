@@ -188,10 +188,27 @@ class BuiltinTools(ToolExecutor):
             )
         return tools
 
+    def _missing_required_args(self, name: str, args: dict) -> list[str]:
+        parameters = next(
+            (
+                definition["function"].get("parameters", {})
+                for definition in self.definitions()
+                if definition["function"]["name"] == name
+            ),
+            {},
+        )
+        return [field for field in parameters.get("required", []) if field not in args]
+
     async def execute(self, name: str, args: dict) -> str:
         handler = self._dispatch.get(name)
         if handler is None:
             raise ToolError(f"Unknown tool: {name}")
+        args = dict(args or {})
+        missing = self._missing_required_args(name, args)
+        if missing:
+            raise ToolError(
+                f"Missing required argument(s) for tool '{name}': {', '.join(sorted(missing))}"
+            )
         result = await handler(**args)
         if name != "execute_command":
             self._write_output(result, tool=name)
