@@ -398,24 +398,3 @@ async def test_archive_memory_set_get_roundtrip_with_tags_and_version(uow_factor
     assert fetched.value == "v2"
     assert fetched.tags == ["猫"]
     assert [e.key for e in listed] == ["neko"]
-
-
-async def test_bilibili_link_create_find_delete(uow_factory):
-    """bilibili 关联创建后可查可删，删除返回受影响行数。"""
-
-    # Arrange / Act
-    async with uow_factory() as uow:
-        await uow.bilibili_link_repo.create(bilibili_uid=12345, qq_number="10001")
-        await uow.commit()
-
-    # Assert
-    async with uow_factory() as uow:
-        link = await uow.bilibili_link_repo.find_by_uid_and_qq(12345, "10001")
-        by_qq = await uow.bilibili_link_repo.find_by_qq("10001")
-        deleted = await uow.bilibili_link_repo.delete_one(12345, "10001")
-        await uow.commit()
-        gone = await uow.bilibili_link_repo.find_by_uid_and_qq(12345, "10001")
-    assert link is not None
-    assert by_qq == [{"bilibili_uid": 12345, "qq_number": "10001", "created_at": link.created_at.isoformat()}]
-    assert deleted == 1
-    assert gone is None

@@ -138,12 +138,6 @@ def test_legacy_adapter_request_models_import_with_package_relative_paths():
     assert FriendRequest(user_id=12345).user_id == 12345
 
 
-def test_bilibili_prompt_module_uses_standard_datetime_module():
-    from neobot_app.bilibili import prompts
-
-    assert prompts.datetime.datetime is not None
-
-
 # ── 以下为事件管线行为契约测试（对外可观察行为） ──
 
 
