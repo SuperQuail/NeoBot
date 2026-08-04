@@ -1,4 +1,4 @@
-"""Post-process LLM replies before sending."""
+"""发送前对 LLM 回复进行后处理。"""
 
 from __future__ import annotations
 

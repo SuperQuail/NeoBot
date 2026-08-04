@@ -1,4 +1,4 @@
-"""Concrete host facade and registries for modloader/runtime."""
+"""供 modloader/runtime 使用的具体宿主门面与注册表。"""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class DefaultLifecycleHooks:
 
 
 class TrackedPluginHostFacade:
-    """Plugin-scoped host facade that records registrations for cleanup."""
+    """插件作用域宿主门面，记录注册项以便卸载时清理。"""
 
     def __init__(self, host: "PluginHostFacade", record_cleanup: Callable[[Callable[[], None]], None]) -> None:
         self._host = host

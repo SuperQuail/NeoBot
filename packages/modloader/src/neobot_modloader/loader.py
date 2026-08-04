@@ -4,8 +4,6 @@ import importlib.metadata
 import re
 from pathlib import Path
 from types import ModuleType
-from typing import Any
-
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_modloader.loading.importer import PluginModuleImporter

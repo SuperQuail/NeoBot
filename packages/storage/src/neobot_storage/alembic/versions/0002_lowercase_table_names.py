@@ -1,4 +1,4 @@
-"""lowercase table names
+"""表名转小写
 
 Revision ID: 0002
 Revises: 0001

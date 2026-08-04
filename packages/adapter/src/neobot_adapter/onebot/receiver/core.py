@@ -4,17 +4,12 @@ import os
 import queue
 import threading
 import time
-from typing import Any, Callable, AsyncIterator, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import websockets
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from neobot_adapter.model.basic import PostMetaEventType, PostType
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
-from neobot_adapter.utils.env import (
-    get_websocket_host,
-    get_websocket_port,
-    get_websocket_url,
-)
 from neobot_adapter.utils.logger import get_module_logger
 from neobot_adapter.utils.parse import safe_parse_model
 
@@ -53,6 +48,7 @@ class AdapterCore:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._async_stop_event: Optional[asyncio.Event] = None
         self.message_queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self._pending = {}  # echo -> asyncio.Future
         self.active_connections = set()
@@ -116,14 +112,34 @@ class AdapterCore:
         self.thread.start()
         logger.info("接收器已启动")
 
-    def stop(self):
+    def stop(self, timeout: float = 8.0) -> bool:
+        """在有限时间内停止接收线程。
+
+        正常路径会立即唤醒接收循环；若第三方 WebSocket 实现在清理时卡住，
+        则最终兜底取消其残留的事件循环任务，让守护线程保持隔离，
+        避免阻塞应用永久无法退出。
+        """
         logger.info("正在停止接收器...")
         self._stop_event.set()
-        if self.thread:
-            self.thread.join(timeout=5)
-            if self.thread.is_alive():
-                logger.warning("接收器停止超时，后台线程仍未退出")
+        loop = self.loop
+        async_stop_event = self._async_stop_event
+        if loop is not None and loop.is_running() and async_stop_event is not None:
+            loop.call_soon_threadsafe(async_stop_event.set)
+
+        thread = self.thread
+        if thread is None:
+            return True
+        thread.join(timeout=max(0.0, timeout))
+        if thread.is_alive() and loop is not None and loop.is_running():
+            logger.warning("接收器正常停止超时，正在取消残留任务")
+            loop.call_soon_threadsafe(self._cancel_loop_tasks)
+            thread.join(timeout=1.0)
+        stopped = not thread.is_alive()
+        if not stopped:
+            logger.error("接收器停止兜底超时，后台守护线程将由进程退出时回收")
+        else:
             self.thread = None
+        return stopped
 
     def get_message(self, block: bool = True, timeout: Optional[float] = None):
         try:
@@ -135,41 +151,72 @@ class AdapterCore:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_until_complete(self._run_server())
+            try:
+                self.loop.run_until_complete(self._run_server())
+            except asyncio.CancelledError:
+                logger.warning("接收器事件循环已由停止兜底取消")
         finally:
+            self._async_stop_event = None
             self.loop.close()
             self.loop = None
+
+    def _cancel_loop_tasks(self) -> None:
+        current = asyncio.current_task(self.loop)
+        for task in asyncio.all_tasks(self.loop):
+            if task is not current and not task.done():
+                task.cancel()
 
     async def _run_server(self):
         host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
         port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
-        # 监听指定路径 /onebot
-        server = await websockets.serve(self._handle_client, host, port)
+        self._async_stop_event = asyncio.Event()
+        # 监听指定路径 /onebot；10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载
+        server = await websockets.serve(
+            self._handle_client,
+            host,
+            port,
+            max_size=10 * 2**20,
+        )
         logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
         try:
-            # 等待停止信号
-            while not self._stop_event.is_set():
-                await asyncio.sleep(1)
+            if not self._stop_event.is_set():
+                await self._async_stop_event.wait()
         finally:
+            heartbeat_task = self._heartbeat_checker_task
+            self._heartbeat_checker_task = None
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+
             # 关闭服务器（不再接受新连接）
             server.close()
             # 显式关闭所有活跃连接，避免 wait_closed 无限等待
-            for ws in list(self.active_connections):
+            connections = list(self.active_connections)
+            for ws in connections:
+                ws.close_timeout = 1
+            if connections:
+                close_tasks = [
+                    ws.close(1011, "Server shutting down") for ws in connections
+                ]
                 try:
-                    ws.close_timeout = 1
                     await asyncio.wait_for(
-                        ws.close(1011, "Server shutting down"), timeout=2,
+                        asyncio.gather(*close_tasks, return_exceptions=True),
+                        timeout=2,
                     )
-                except Exception:
-                    pass
+                except asyncio.TimeoutError:
+                    logger.warning("活跃连接关闭超时，继续回收服务器")
             # 等待 handler 清理（最多 2 秒）
             try:
                 await asyncio.wait_for(server.wait_closed(), timeout=2)
-            except (asyncio.TimeoutError, Exception):
+            except asyncio.TimeoutError:
                 logger.warning("服务器关闭超时，强制退出")
+            except Exception as exc:
+                logger.warning(f"服务器关闭异常: {exc}")
+            self.active_connections.clear()
+            self._connection_established.clear()
 
     async def _handle_client(self, websocket):
-        logger.info(f"框架已连接")
+        logger.info("框架已连接")
         async with self._connections_lock:
             self.active_connections.add(websocket)
             self._conn_to_echo[websocket] = set()
@@ -178,7 +225,11 @@ class AdapterCore:
                 self._connection_established.set()
         try:
             async for message in websocket:
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("收到畸形 JSON 帧，已跳过")
+                    continue
                 if self._packet_callback is not None:
                     try:
                         self._packet_callback(data)
@@ -188,25 +239,51 @@ class AdapterCore:
                 if "echo" in data:
                     echo = data["echo"]
                     logger.debug(f"收到echo响应: echo={echo}")
-                    if echo in self._pending:
-                        self._pending[echo].set_result(data)
-                        # 移除echo映射
-                        async with self._connections_lock:
-                            self._echo_to_conn.pop(echo, None)
-                            conn_echo_set = self._conn_to_echo.get(websocket)
-                            if conn_echo_set and echo in conn_echo_set:
-                                conn_echo_set.remove(echo)
-                    else:
-                        logger.warning(f"未匹配的 echo: {echo}")
+                    await self._fulfill_echo(websocket, echo, data)
                 else:
                     # 事件处理
                     await self._handle_event(websocket, data)
-        except websockets.exceptions.ConnectionClosed:
+        except ConnectionClosedError as exc:
+            logger.warning(f"框架连接异常断开（{exc}）")
+        except ConnectionClosed:
             logger.info("框架连接断开")
         except Exception as e:
-            logger.error(f"处理异常: {e}")
+            logger.warning(f"处理异常: {type(e).__name__}: {e}")
         finally:
             await self._remove_connection(websocket)
+
+    async def _fulfill_echo(self, websocket, echo: str, data: dict[str, Any]) -> None:
+        """将 echo 响应回填给等待中的 future。
+
+        对迟到/重复的 echo 必须幂等：future 可能已被超时取消或被连接回收
+        清理，此时 set_result/set_exception 会抛 InvalidStateError —— 这里吞掉，
+        绝不让回显处理协程异常退出（否则会触发 _handle_client 异常分支并
+        回收连接，造成“没有活跃连接”连锁故障）。
+        """
+        async with self._connections_lock:
+            fut = self._pending.get(echo)
+            conn_echo_set = self._conn_to_echo.get(websocket)
+        try:
+            if fut is None:
+                logger.debug(f"未匹配的 echo（已取消/清理）: {echo}")
+                return
+            if fut.cancelled():
+                logger.debug(f"echo {echo} 对应的 future 已被取消，丢弃迟到响应")
+                return
+            if fut.done():
+                logger.debug(f"echo {echo} 对应的 future 已完成，丢弃重复响应")
+                return
+            fut.set_result(data)
+        except asyncio.InvalidStateError:
+            logger.debug(f"echo {echo} future 状态非法，丢弃响应")
+        except Exception as exc:
+            logger.warning(f"回填 echo {echo} 失败: {exc}")
+        else:
+            async with self._connections_lock:
+                self._echo_to_conn.pop(echo, None)
+                conn_echo_set = self._conn_to_echo.get(websocket)
+                if conn_echo_set and echo in conn_echo_set:
+                    conn_echo_set.remove(echo)
 
     async def _handle_event(self, websocket, event):
         # 放入队列（原始事件）
@@ -225,7 +302,7 @@ class AdapterCore:
                 self._echo_to_conn.pop(echo, None)
                 fut = self._pending.pop(echo, None)
                 if fut and not fut.done():
-                    fut.set_exception(websockets.exceptions.ConnectionClosed(0, ""))
+                    fut.set_exception(ConnectionClosed(None, None))
 
     async def _handle_meta_event(self, event):
         """处理元事件，使用 Pydantic 模型解析"""
@@ -308,7 +385,11 @@ class AdapterCore:
             logger.warning(f"API调用失败: {retcode} - {message}")
             return response
         except asyncio.TimeoutError:
-            logger.error(f"API 调用超时: {action}")
+            # 取消等待中的 future，使后续迟到 echo 被 _fulfill_echo 当作 cancelled 安全丢弃，
+            # 而不是触发 InvalidStateError。降级到 WARNING：偶发取图/慢响应不应进入自修复判定。
+            if not fut.done():
+                fut.cancel()
+            logger.warning(f"API 调用超时: {action}")
             return None
         finally:
             async with self._connections_lock:
@@ -323,10 +404,37 @@ class AdapterCore:
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
-                    logger.error("没有活跃连接，无法调用 API")
+                    # 降级为 DEBUG：上游短暂断连时会被高频打出，属于偶发性而非系统异常，
+                    # 不应进入自修复 Agent 的错误累积判定。
+                    logger.debug("没有活跃连接，无法调用 API")
                     return None
                 websocket = next(iter(self.active_connections))  # 选择第一个连接
         return await self._call_action(websocket, action, params, timeout)
+
+    async def send_message(self, data, websocket=None):
+        """通过一条活跃的 WebSocket 连接发送原始 OneBot 数据。"""
+        if websocket is None:
+            async with self._connections_lock:
+                if not self.active_connections:
+                    logger.debug("没有活跃连接，无法发送原始消息")
+                    return False
+                websocket = next(iter(self.active_connections))
+        await websocket.send(json.dumps(data, ensure_ascii=False))
+        return True
+
+    def send_message_sync(self, data, websocket=None, timeout=5):
+        """通过接收循环同步发送原始 OneBot 数据。"""
+        if not self.loop or not self.loop.is_running():
+            logger.error("事件循环未运行")
+            return False
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_message(data, websocket), self.loop
+        )
+        try:
+            return bool(future.result(timeout))
+        except Exception as exc:
+            logger.error(f"发送原始消息失败: {exc}")
+            return False
 
     def call_api_sync(self, action, params, timeout=5, websocket=None):
         """同步调用 API"""

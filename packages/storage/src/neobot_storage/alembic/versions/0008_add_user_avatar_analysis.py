@@ -1,4 +1,4 @@
-"""add user avatar analysis
+"""新增用户头像分析
 
 Revision ID: 0008
 Revises: 0007

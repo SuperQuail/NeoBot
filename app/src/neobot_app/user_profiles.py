@@ -1,4 +1,4 @@
-"""User profile refresh and prompt-text assembly helpers."""
+"""用户资料刷新与提示词文本组装辅助工具。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _normalize_datetime(value: object) -> datetime | None:
 
 
 class UserProfileService:
-    """Keep user profiles fresh and render them into prompt-ready text."""
+    """保持用户资料为最新状态，并将其渲染为可直接用于提示词的文本。"""
 
     def __init__(
         self,
@@ -555,9 +555,9 @@ class UserProfileService:
 
     @staticmethod
     def _build_qq_profile_segment(profile: Any | None) -> str | None:
-        """Build a compact QQ profile info segment with a disclaimer.
+        """构建带免责声明的精简 QQ 资料信息片段。
 
-        These fields are set by the QQ user themselves and may not be accurate.
+        这些字段由 QQ 用户自行填写，可能不准确。
         """
         if profile is None:
             return None

@@ -1,4 +1,4 @@
-"""Web parser module — content extraction, structuring, and dynamic rendering."""
+"""Web 解析模块 — 内容提取、结构化与动态渲染。"""
 
 from neobot_app.web_parser.extractor import ContentExtractor
 from neobot_app.web_parser.models import PageMetadata, ParsedPage

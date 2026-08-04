@@ -1,4 +1,4 @@
-"""Drawing package — background drawing manager, image service, config, and tasks."""
+"""绘图包——包含后台绘图管理器、图片服务、配置与任务定义。"""
 
 from neobot_app.drawing.config import (
     DEFAULT_IMAGE_SIZE,

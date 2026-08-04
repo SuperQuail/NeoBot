@@ -1,4 +1,4 @@
-"""neobot_storage public API."""
+"""neobot_storage 公共 API。"""
 
 from neobot_storage.engine import create_engine, run_migrations, sqlite_url
 from neobot_storage.models import Base, ModelUsageRecord

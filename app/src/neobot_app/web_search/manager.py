@@ -1,4 +1,4 @@
-"""SearchManager — multi-engine orchestration with rate limiting and retry."""
+"""SearchManager — 多引擎编排，支持限速与重试。"""
 
 from __future__ import annotations
 
@@ -12,21 +12,21 @@ from neobot_app.web_search.models import SearchResponse
 
 
 class SearchManager:
-    """Manages multiple search engines with rate limiting, retry, and fallback.
+    """管理多个搜索引擎，支持限速、重试与故障回退。
 
-    Features:
-    - Multi-engine search with priority ordering
-    - Per-engine rate limiting (token bucket)
-    - Global concurrency limit (semaphore) to avoid triggering anti-bot defenses
-    - Exponential backoff retry
-    - Automatic fallback on engine failure
+    特性:
+    - 多引擎搜索，按优先级排序
+    - 每引擎独立限速（令牌桶）
+    - 全局并发限制（信号量），避免触发反爬防御
+    - 指数退避重试
+    - 引擎失败时自动回退
     """
 
     _global_semaphore: asyncio.Semaphore | None = None
 
     @classmethod
     def set_global_concurrency(cls, max_concurrent: int) -> None:
-        """Limit total concurrent search requests across all SearchManager instances."""
+        """限制所有 SearchManager 实例的总并发搜索请求数。"""
         cls._global_semaphore = asyncio.Semaphore(max_concurrent)
 
     def __init__(
@@ -38,11 +38,11 @@ class SearchManager:
     ) -> None:
         """
         Args:
-            engines: Ordered list of engine names to use (first = primary).
-                     Default: ["bing", "duckduckgo"]
-            min_delay: Minimum seconds between requests to the same engine.
-            max_retries: Maximum retry attempts per engine.
-            default_num_results: Default number of results per search.
+            engines: 按顺序使用的引擎名称列表（第一个为主引擎）。
+                     默认: ["bing", "duckduckgo"]
+            min_delay: 同一引擎两次请求之间的最小间隔秒数。
+            max_retries: 每个引擎的最大重试次数。
+            default_num_results: 每次搜索的默认返回结果数。
         """
         if engines is None:
             engines = ["bing", "duckduckgo"]
@@ -60,7 +60,7 @@ class SearchManager:
         return self._engines[name]
 
     async def _rate_limit(self, engine_name: str) -> None:
-        """Enforce minimum delay between requests to the same engine."""
+        """强制同一引擎两次请求之间保持最小间隔。"""
         elapsed = time.monotonic() - self._last_request[engine_name]
         if elapsed < self._min_delay:
             await asyncio.sleep(self._min_delay - elapsed)
@@ -73,7 +73,7 @@ class SearchManager:
         *,
         engine: Optional[str] = None,
     ) -> SearchResponse:
-        """Search using a specific engine or the primary engine."""
+        """使用指定引擎或主引擎执行搜索。"""
         if num_results is None:
             num_results = self._default_num_results
 
@@ -113,7 +113,7 @@ class SearchManager:
         query: str,
         num_results: Optional[int] = None,
     ) -> SearchResponse:
-        """Search across engines, falling back on failure."""
+        """依次搜索各引擎，失败时自动回退。"""
         if num_results is None:
             num_results = self._default_num_results
 
@@ -137,7 +137,7 @@ class SearchManager:
         query: str,
         num_results: Optional[int] = None,
     ) -> list[SearchResponse]:
-        """Search all engines concurrently and return all responses."""
+        """并发搜索所有引擎并返回全部响应。"""
         if num_results is None:
             num_results = self._default_num_results
 

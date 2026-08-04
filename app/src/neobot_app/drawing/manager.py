@@ -1,4 +1,4 @@
-"""Background drawing task manager — submission, cooldown, notification, retry."""
+"""后台绘图任务管理器——负责任务提交、冷却、通知与重试。"""
 
 from __future__ import annotations
 
@@ -9,17 +9,15 @@ from uuid import uuid4
 
 import httpx
 
-from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.drawing.config import DrawServiceConfig, ImageGenerationError
+from neobot_app.drawing.service import _record_payload
 from neobot_app.drawing.tasks import DrawTask
 from neobot_app.time_context import monotonic_seconds
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-from neobot_app.drawing.service import _record_payload
 
 if TYPE_CHECKING:
     from neobot_app.drawing.service import CreatorImageService
@@ -39,6 +37,7 @@ class BackgroundDrawingManager:
         self._config = config or DrawServiceConfig()
         self._logger = logger or NullLogger()
         self._tasks: dict[str, DrawTask] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
         self._cooldowns: dict[str, float] = {}  # pipeline_key -> monotonic end time
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None  # ReplyOrchestrator reference, set after creation
@@ -58,6 +57,12 @@ class BackgroundDrawingManager:
     @property
     def background_enabled(self) -> bool:
         return self._config.draw_background_enabled and self._service is not None
+
+    def _spawn_bg_task(self, coro: Any) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     def _pipeline_key(self, kind: str, conv_id: str) -> str:
         return f"{kind}:{conv_id}"
@@ -231,7 +236,7 @@ class BackgroundDrawingManager:
         self._enforce_task_limit(pipeline_key)
         self._set_cooldown(pipeline_key)
 
-        bg_task = asyncio.create_task(self._run_draw(task))
+        bg_task = self._spawn_bg_task(self._run_draw(task))
         bg_task.add_done_callback(lambda _: None)  # prevent "task not awaited" warning
 
         grace = self._config.draw_startup_grace_seconds
@@ -387,7 +392,7 @@ class BackgroundDrawingManager:
                 started_pipeline=started,
             )
             if not started and not task.notified and task.notification_count == 0:
-                asyncio.create_task(self._retry_notification(task))
+                self._spawn_bg_task(self._retry_notification(task))
             return
 
         if self._orchestrator is None:
@@ -437,7 +442,7 @@ class BackgroundDrawingManager:
         )
 
         if not task.notified and task.notification_count == 0:
-            asyncio.create_task(self._retry_notification(task))
+            self._spawn_bg_task(self._retry_notification(task))
 
     async def _retry_notification(self, task: DrawTask) -> None:
         """通知重试定时器。"""
@@ -571,6 +576,12 @@ class BackgroundDrawingManager:
             if task.status == "drawing":
                 task.status = "timeout"
                 self.cancel_cooldown(task.pipeline_key)
+        pending = list(self._bg_tasks)
+        for bg_task in pending:
+            bg_task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._bg_tasks.clear()
         self._notification_queues.clear()
         self._logger.info("BackgroundDrawingManager 已关闭")
 

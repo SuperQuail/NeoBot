@@ -8,7 +8,7 @@ import hashlib
 import math
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from PIL import Image
@@ -21,7 +21,9 @@ if TYPE_CHECKING:
     from neobot_chat.providers.base import Provider
     from neobot_memory import ImageAnalysisService
 
-ChatMessage = "PrivateMessage | GroupMessage"
+    ChatMessage = PrivateMessage | GroupMessage
+else:
+    ChatMessage = Any
 
 
 class ImageParseService:
@@ -69,7 +71,16 @@ class ImageParseService:
             self._parse_and_replace(message, image_indices)
         )
         self._pending.setdefault(queue_key, set()).add(task)
-        task.add_done_callback(lambda t: self._pending.get(queue_key, set()).discard(t))
+        task.add_done_callback(lambda t: self._cleanup_pending_task(queue_key, t))
+
+    def _cleanup_pending_task(self, queue_key: str, task: asyncio.Task[None]) -> None:
+        """任务完成后从集合移除；集合变空时删除 key，避免无界增长。"""
+        tasks = self._pending.get(queue_key)
+        if tasks is None:
+            return
+        tasks.discard(task)
+        if not tasks:
+            del self._pending[queue_key]
 
     async def wait_for_queue(self, queue_key: str, timeout: float | None = None) -> None:
         """等待指定队列的所有待处理图片解析完成"""
@@ -184,7 +195,11 @@ class ImageParseService:
         if file_name:
             try:
                 from neobot_adapter.request.message import get_image
-                result = await asyncio.wait_for(get_image(str(file_name)), timeout=30.0)
+                # 将下载超时直接传给 get_image（进 call_api 的 timeout），
+                # 不再外层包 asyncio.wait_for —— 双层 wait_for 时，内层超时
+                # 与外层 cancel 互相竞争，迟到 echo 容易击中已取消 future 触发
+                # InvalidStateError，进而回收连接。单层 + 直接取图超时足够。
+                result = await get_image(str(file_name), timeout=30.0)
                 img_data = _response_data(result)
                 if isinstance(img_data, dict):
                     img_file = img_data.get("file") or img_data.get("url")
@@ -200,28 +215,18 @@ class ImageParseService:
 
     async def _call_vision_model(self, image_bytes: bytes) -> str | None:
         """调用视觉模型获取图片描述"""
-        import base64
-
-        mime_type = _detect_image_mime(image_bytes)
-        # GIF 转 PNG：多数视觉 API 不支持 GIF，尤其是动图
-        if mime_type == "image/gif":
-            try:
-                buf = BytesIO()
-                img = Image.open(BytesIO(image_bytes))
-                img.save(buf, format="PNG")
-                image_bytes = buf.getvalue()
-                mime_type = "image/png"
-            except Exception:
-                pass
-        base64_data = base64.b64encode(image_bytes).decode("utf-8")
-        image_url = f"data:{mime_type};base64,{base64_data}"
+        try:
+            part = _build_vision_image_part(image_bytes, logger=self._logger)
+        except Exception as exc:
+            self._logger.warning("准备视觉模型图片失败", error=str(exc))
+            return None
 
         messages: list[dict] = [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": self._PARSE_PROMPT},
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                    part,
                 ],
             }
         ]
@@ -235,11 +240,10 @@ class ImageParseService:
             text = content.strip() if isinstance(content, str) else str(content)
             return text if text else None
         except asyncio.TimeoutError:
-            self._logger.error(
+            self._logger.warning(
                 "vision model call timed out",
-                mime=mime_type,
-                image_bytes_len=len(image_bytes),
                 timeout_seconds=60.0,
+                image_bytes_len=len(image_bytes),
             )
             return None
         except Exception as exc:
@@ -249,11 +253,10 @@ class ImageParseService:
                     resp_body = exc.response.text[:500]
                 except Exception:
                     pass
-            self._logger.error(
+            self._logger.warning(
                 "视觉模型调用失败",
                 exc_type=type(exc).__name__,
                 error=str(exc),
-                mime=mime_type,
                 image_bytes_len=len(image_bytes),
                 api_response=resp_body,
             )
@@ -354,6 +357,98 @@ def _resize_image_if_too_small(image_bytes: bytes, logger: Logger | None = None)
     out = BytesIO()
     resized.save(out, format=save_format)
     return out.getvalue()
+
+
+_VISION_MAX_IMAGE_PIXELS = 1024 * 1024
+
+
+def _build_vision_image_part(image_bytes: bytes, *, logger: Logger | None = None) -> dict:
+    """把图片字节编码成 OpenAI 兼容的 image_url content part。
+
+    处理流程：
+      1. 按 magic 数检测 MIME（无法识别则按 image/png 兜底）。
+      2. GIF → PNG：多数视觉 API（含 SiliconFlow Qwen-VL）不支持 GIF。
+      3. 若任一边 < _MIN_IMAGE_DIMENSION 则等比放大；若总像素超过
+         _VISION_MAX_IMAGE_PIXELS 则按 LANCZOS 等比缩小。
+    返回形如 {"type":"image_url","image_url":{"url":"data:...;base64,..."}}，
+    可直接放进 user content 列表。
+
+    为什么是 OpenAI 格式而非 Anthropic 原生格式：视觉模型走 SiliconFlow/
+    OpenAI 兼容端点，端点只认 image_url（见 self_heal/image_parse 故障）。
+    """
+    out_bytes, mime_type = _normalize_for_vision(image_bytes, logger=logger)
+    data_url = f"data:{mime_type};base64,{base64.b64encode(out_bytes).decode('ascii')}"
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _normalize_for_vision(
+    image_bytes: bytes, *, logger: Logger | None = None
+) -> tuple[bytes, str]:
+    """规范化图片为视觉模型可接受的字节 + MIME。GIF→PNG，超尺寸压图。"""
+    mime_type = _detect_image_mime(image_bytes)
+
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+    except Exception as exc:
+        if logger:
+            logger.debug("图片无法解码，按原样发送给视觉模型", error=str(exc))
+        return image_bytes, mime_type
+
+    w, h = img.size
+
+    need_resize = False
+    new_w, new_h = w, h
+
+    if w < _MIN_IMAGE_DIMENSION or h < _MIN_IMAGE_DIMENSION:
+        scale = _MIN_IMAGE_DIMENSION / max(1, min(w, h))
+        new_w = max(1, math.ceil(w * scale))
+        new_h = max(1, math.ceil(h * scale))
+        need_resize = True
+
+    if new_w * new_h > _VISION_MAX_IMAGE_PIXELS:
+        scale = math.sqrt(_VISION_MAX_IMAGE_PIXELS / (new_w * new_h))
+        new_w = max(1, int(new_w * scale))
+        new_h = max(1, int(new_h * scale))
+        while new_w * new_h > _VISION_MAX_IMAGE_PIXELS:
+            if new_w >= new_h and new_w > 1:
+                new_w -= 1
+            elif new_h > 1:
+                new_h -= 1
+            else:
+                break
+        need_resize = True
+
+    out_format = (img.format or "PNG").upper()
+    if out_format not in {"JPEG", "PNG", "WEBP", "BMP"}:
+        out_format = "PNG"
+
+    # GIF 强制转 PNG：多数视觉 API 不支持 GIF（动图尤甚）
+    if mime_type == "image/gif":
+        out_format = "PNG"
+        need_resize = True if (new_w, new_h) == (w, h) else need_resize  # flag: 需重编码
+        gif_recode = True
+    else:
+        gif_recode = False
+
+    if not need_resize and not gif_recode:
+        return image_bytes, mime_type
+
+    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS) if need_resize else img
+    if out_format == "JPEG" and resized.mode not in ("RGB", "L"):
+        resized = resized.convert("RGB")
+
+    if logger and need_resize:
+        logger.debug(
+            "视觉模型图片已压图",
+            original=f"{w}x{h}",
+            scaled=f"{new_w}x{new_h}",
+            fmt=out_format,
+        )
+
+    buf = BytesIO()
+    resized.save(buf, format=out_format)
+    return buf.getvalue(), Image.MIME.get(out_format, "image/png")
 
 
 _VALID_IMAGE_MAGIC = (

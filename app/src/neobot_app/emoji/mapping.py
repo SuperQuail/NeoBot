@@ -1,9 +1,9 @@
-"""QQ emoji ID to name/description mapping.
+"""QQ 表情 ID 到名称/描述的映射表。
 
-Data source: https://koishi.js.org/QFace/#/qqnt
+数据来源：https://koishi.js.org/QFace/#/qqnt
 
-This mapping is NOT injected into the system prompt (token optimization).
-Agents query emoji via the ``search_qq_emoji`` tool on demand.
+该映射不会注入系统提示词（为节省 token）。
+智能体按需通过 ``search_qq_emoji`` 工具查询表情。
 """
 
 from __future__ import annotations
@@ -300,17 +300,17 @@ QQ_EMOJI_MAP: dict[int, tuple[str, str]] = {
 
 
 def lookup_emoji(emoji_id: int) -> tuple[str, str] | None:
-    """Look up a QQ emoji by numeric ID.
+    """按数字 ID 查询 QQ 表情。
 
-    Returns ``(name, display_hint)`` or ``None``.
+    返回 ``(name, display_hint)`` 或 ``None``。
     """
     return QQ_EMOJI_MAP.get(emoji_id)
 
 
 def search_emoji(keyword: str) -> list[dict[str, Any]]:
-    """Search QQ emoji by keyword (matched against name and display_hint).
+    """按关键字搜索 QQ 表情（与名称和 display_hint 匹配）。
 
-    Returns a list of ``{"id": int, "name": str, "hint": str}`` dicts.
+    返回 ``{"id": int, "name": str, "hint": str}`` 字典列表。
     """
     kw = keyword.strip().lower()
     if not kw:
@@ -323,5 +323,5 @@ def search_emoji(keyword: str) -> list[dict[str, Any]]:
 
 
 def list_all_emoji() -> dict[int, tuple[str, str]]:
-    """Return the full emoji map (defensive copy)."""
+    """返回完整表情映射表（防御性副本）。"""
     return dict(QQ_EMOJI_MAP)

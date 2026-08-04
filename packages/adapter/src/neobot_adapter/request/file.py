@@ -65,12 +65,12 @@ async def delete_group_file(group_id : int,file_id : str,timeout=5) -> response.
 async def move_group_file(group_id : int,file_id : str,parent_directory : str,target_directory :  str ,timeout=5) -> response.BaseResponse:
     """
     移动群文件
-    :param group_id:
-    :param file_id:
-    :param parent_directory:
-    :param target_directory:
-    :param timeout:
-    :return:
+    :param group_id: 群号
+    :param file_id: 文件 ID
+    :param parent_directory: 源目录路径
+    :param target_directory: 目标目录路径
+    :param timeout: 超时时间（秒）
+    :return: API 响应结果
     """
     action = "move_group_file"
     param = {

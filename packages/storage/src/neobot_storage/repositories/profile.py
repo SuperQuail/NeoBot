@@ -1,4 +1,4 @@
-"""SqlAlchemy profile repository (users + groups)."""
+"""SqlAlchemy 档案仓库（用户 + 群组）。"""
 
 from __future__ import annotations
 

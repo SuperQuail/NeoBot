@@ -1,6 +1,6 @@
-"""Backward-compatible exports for time helpers.
+"""时间工具函数的向后兼容导出。
 
-New application code should import from ``neobot_app.time_context`` directly.
+新应用代码应直接从 ``neobot_app.time_context`` 导入。
 """
 
 from neobot_app.time_context import (

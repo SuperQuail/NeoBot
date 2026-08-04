@@ -1,4 +1,4 @@
-"""Image staging pool — per-conversation in-memory image cache with TTL."""
+"""图片暂存池 —— 按会话隔离的内存图片缓存，带 TTL 过期机制。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 @dataclass
 class StagedImage:
-    """A single staged image entry."""
+    """单条已暂存的图片记录。"""
 
     key: str
     file_path: Path
@@ -23,10 +23,10 @@ class StagedImage:
 
 
 class ImageStagingPool:
-    """Per-conversation image staging pool with lazy TTL expiration.
+    """按会话隔离的图片暂存池，采用惰性 TTL 过期机制。
 
-    Each conv_id maintains an independent ``dict[str, StagedImage]``.
-    Keys are 8-char hex strings, unique only within the conversation.
+    每个 conv_id 维护独立的 ``dict[str, StagedImage]``。
+    键为 8 位十六进制字符串，仅在会话内部唯一。
     """
 
     def __init__(self, ttl_seconds: int = 300) -> None:
@@ -35,7 +35,7 @@ class ImageStagingPool:
 
     @property
     def ttl(self) -> int:
-        """TTL in seconds."""
+        """TTL 时长（秒）。"""
         return self._ttl
 
     def put(
@@ -46,9 +46,9 @@ class ImageStagingPool:
         key: str | None = None,
         source: str = "",
     ) -> str:
-        """Store an image in the pool for *conv_id*. Returns the assigned key.
+        """将图片存入 *conv_id* 对应的暂存池，返回分配的键。
 
-        If *key* is ``None``, an 8-character hex key is auto-generated.
+        若 *key* 为 ``None``，则自动生成 8 位十六进制键。
         """
         self._cleanup_expired(conv_id)
         if conv_id not in self._pools:
@@ -73,7 +73,7 @@ class ImageStagingPool:
         return key
 
     def get(self, conv_id: str, key: str) -> StagedImage | None:
-        """Get a staged image by key. Returns ``None`` if expired or missing."""
+        """按键获取已暂存的图片，过期或不存在时返回 ``None``。"""
         self._cleanup_expired(conv_id)
         pool = self._pools.get(conv_id)
         if pool is None:
@@ -81,7 +81,7 @@ class ImageStagingPool:
         return pool.get(key)
 
     def list(self, conv_id: str) -> list[StagedImage]:
-        """List all valid staged images for *conv_id* (newest first)."""
+        """列出 *conv_id* 下所有有效的暂存图片（新的在前）。"""
         self._cleanup_expired(conv_id)
         pool = self._pools.get(conv_id)
         if pool is None:
@@ -89,21 +89,21 @@ class ImageStagingPool:
         return sorted(pool.values(), key=lambda x: x.created_at, reverse=True)
 
     def remove(self, conv_id: str, key: str) -> bool:
-        """Remove a specific image. Returns ``True`` if it was removed."""
+        """移除指定图片，成功移除时返回 ``True``。"""
         pool = self._pools.get(conv_id)
         if pool is None:
             return False
         return pool.pop(key, None) is not None
 
     def clear(self, conv_id: str) -> int:
-        """Clear all images for a conversation. Returns the count removed."""
+        """清空某会话的所有图片，返回移除数量。"""
         pool = self._pools.pop(conv_id, None)
         if pool is None:
             return 0
         return len(pool)
 
     def clear_all(self) -> int:
-        """Clear all pools. Returns the total count removed."""
+        """清空所有暂存池，返回移除的总数量。"""
         total = sum(len(pool) for pool in self._pools.values())
         self._pools.clear()
         return total

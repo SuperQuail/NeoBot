@@ -44,7 +44,8 @@ class GallerySkill(SkillModule):
             "  gallery_add — 将图片加入图库（需指定 name）\n"
             "  gallery_update — 更新图库图片的描述信息\n"
             "  gallery_delete — 删除图库图片\n"
-            "  gallery_rename — 重命名图库图片\n\n"
+            "  gallery_rename — 重命名图库图片\n"
+            "  gallery_batch_add_from_chat — 批量从聊天消息导入多张图片到图库（一次 API 调用）\n\n"
 
             "【查找图库图片（操作指导）】\n"
             "  1. 如果用户提到了具体的图片描述、角色名、风格等，优先用 gallery_search\n"
@@ -67,7 +68,14 @@ class GallerySkill(SkillModule):
             "  对于角色立绘类图片，建议命名包含角色特征便于搜索：\n"
             "    - 格式：<角色/特征>_<姿势/场景>_<序号>\n"
             "    - 示例：'sakura_standing_01'、'swimsuit_sitting_02'、'uniform_front_view'\n"
-            "    - 这样后续用 gallery_search 搜索 'sakura' 或 'standing' 都能找到\n"
+            "    - 这样后续用 gallery_search 搜索 'sakura' 或 'standing' 都能找到\n\n"
+
+            "【批量从聊天导入】\n"
+            "  当用户一条消息发了多张图片并希望全部加入图库时，用 gallery_batch_add_from_chat：\n"
+            "    - 必填 msg_number 或 message_id\n"
+            "    - image_indices 不填则导入消息中所有图片\n"
+            "    - name_prefix 可选，最终图片名 = name_prefix + '_' + 索引\n"
+            "    - 单次工具调用完成全部入库，避免多次 import_chat_image\n"
         )
 
     def __init__(
@@ -154,6 +162,33 @@ class GallerySkill(SkillModule):
                         "name": {"type": "string", "description": "新的图片名称"},
                     },
                     "required": ["image_id", "name"],
+                },
+            ),
+            self._tool_def(
+                "gallery_batch_add_from_chat",
+                "批量从聊天消息导入多张图片到图库。一次 get_msg 调用拉取消息，逐张下载入库。",
+                {
+                    "properties": {
+                        "msg_number": {
+                            "type": "integer",
+                            "description": "聊天记录中的消息编号（如「75: 用户名: [图片]」中的75）",
+                        },
+                        "message_id": {
+                            "type": "integer",
+                            "description": "可选，直接用 OneBot 消息 ID（优先级低于 msg_number）",
+                        },
+                        "image_indices": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "可选，1-based 索引列表（如 [1,2,3]）；不填则导入该消息中的全部图片",
+                        },
+                        "description": {"type": "string", "description": "可选，对每张图片应用的描述"},
+                        "name_prefix": {
+                            "type": "string",
+                            "description": "可选，图片名前缀，自动按索引生成后缀",
+                        },
+                    },
+                    "required": [],
                 },
             ),
         ]
@@ -255,6 +290,52 @@ async def _handle_gallery_rename(self: GallerySkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
+async def _handle_gallery_batch_add_from_chat(self: GallerySkill, args: dict) -> str:
+    if self._image_service is None:
+        return _json({"ok": False, "error": "图库服务未配置"})
+    msg_number = args.get("msg_number")
+    message_id_arg = args.get("message_id")
+    image_indices = args.get("image_indices") or None
+    description = args.get("description")
+    name_prefix = str(args.get("name_prefix", "") or "").strip() or None
+
+    # 解析真实 message_id：优先用 numbering_mapping 翻译 msg_number
+    real_message_id: int | None = None
+    numbering_mapping = args.get("_numbering_mapping")
+    if msg_number is not None:
+        if isinstance(numbering_mapping, dict):
+            mapping = {int(k): int(v) for k, v in numbering_mapping.items()}
+            real_message_id = mapping.get(int(msg_number))
+        if real_message_id is None:
+            return _json({"ok": False, "error": f"无法从编号映射获得 msg_number={msg_number} 的真实消息 ID（请确认编号或使用 message_id 参数）"})
+    elif message_id_arg is not None:
+        real_message_id = int(message_id_arg)
+    else:
+        return _json({"ok": False, "error": "请提供 msg_number 或 message_id"})
+
+    indices_list: list[int] | None = None
+    if image_indices and isinstance(image_indices, list):
+        indices_list = [int(i) for i in image_indices if int(i) > 0]
+
+    try:
+        # target=gallery 时 _ensure_gallery_enabled 在 import_chat_images 中处理
+        results = await self._image_service.import_chat_images(
+            message_id=real_message_id,
+            image_indices=indices_list,
+            target="gallery",
+            description=description,
+            name=name_prefix,
+        )
+        ok_count = sum(1 for r in results if r.get("ok"))
+        return _json({
+            "ok": ok_count > 0,
+            "imported": ok_count,
+            "total": len(results),
+            "results": results,
+        })
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
+
 _HANDLERS = {
     "gallery_list": _handle_gallery_list,
     "gallery_search": _handle_gallery_search,
@@ -262,4 +343,5 @@ _HANDLERS = {
     "gallery_update": _handle_gallery_update,
     "gallery_delete": _handle_gallery_delete,
     "gallery_rename": _handle_gallery_rename,
+    "gallery_batch_add_from_chat": _handle_gallery_batch_add_from_chat,
 }

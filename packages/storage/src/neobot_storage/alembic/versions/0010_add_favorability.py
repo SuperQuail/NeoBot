@@ -1,4 +1,4 @@
-"""add favorability to user_data
+"""为 user_data 新增好感度
 
 Revision ID: 0010
 Revises: 0009

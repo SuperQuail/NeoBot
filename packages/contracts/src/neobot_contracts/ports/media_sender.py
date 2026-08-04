@@ -1,4 +1,4 @@
-"""MediaSender port — protocol for sending media (image/audio) messages."""
+"""MediaSender 端口 — 发送媒体（图片/音频）消息的协议。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ from neobot_contracts.models import ConversationRef
 
 @runtime_checkable
 class MediaSender(Protocol):
-    """Protocol for sending image and audio media through a file server.
+    """通过文件服务器发送图片与音频媒体的协议。
 
-    Implementations bind infrastructure details (e.g. FileServer) and expose
-    a uniform interface that plugin code can call without importing app-layer
-    modules.
+    实现方负责绑定基础设施细节（如 FileServer），并向插件代码暴露统一接口，
+    使插件无需导入应用层模块即可调用。
     """
 
     async def send_image(
@@ -26,9 +25,9 @@ class MediaSender(Protocol):
         data: bytes | None = None,
         filename: str | None = None,
     ) -> Any:
-        """Send an image to a conversation.
+        """向会话发送一张图片。
 
-        Provide either a file *path* or raw *data* (with *filename*).
+        需要提供文件 *path* 或原始 *data*（附带 *filename*）。
         """
         ...
 
@@ -39,13 +38,13 @@ class MediaSender(Protocol):
         *,
         path: Path,
     ) -> Any:
-        """Send an audio clip to a conversation."""
+        """向会话发送一段音频。"""
         ...
 
     def prepare_image_segment(self, file_server: Any, file_path: Path) -> dict:
-        """Prepare an image message segment dict using the given file server."""
+        """使用给定的文件服务器构造图片消息段字典。"""
         ...
 
     def prepare_audio_segment(self, file_server: Any, file_path: Path) -> dict:
-        """Prepare an audio message segment dict using the given file server."""
+        """使用给定的文件服务器构造音频消息段字典。"""
         ...

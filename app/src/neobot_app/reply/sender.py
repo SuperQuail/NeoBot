@@ -1,4 +1,4 @@
-"""ReplySender — formats and sends reply messages with cooldown, segmentation, and image support."""
+"""ReplySender —— 负责格式化并发送回复消息，支持冷却、分段与图片。"""
 
 from __future__ import annotations
 
@@ -12,19 +12,19 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
 from neobot_app.reply.debug import DebugHelper
+from neobot_app.reply.event import ReplyState
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
-from neobot_app.statistics.tracker import (
-    get_usage_tracker,
-)
+
+_MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
 
 
 class ReplySender:
-    """Formats reply text into message segments and sends them with cooldown pacing.
+    """将回复文本格式化为消息分段，并按冷却节奏发送。
 
-    Extracted from ReplyOrchestrator to separate the sending concern from
-    scheduling, engine logic, and debug recording.
+    从 ReplyOrchestrator 中抽取而来，以便将发送职责与调度、
+    引擎逻辑和调试记录相分离。
     """
 
     def __init__(
@@ -146,7 +146,10 @@ class ReplySender:
         )
         if before_send.consumed:
             event.send_response = before_send.result
-            event.transition(getattr(event.__class__, "COMPLETED", None))
+            try:
+                event.transition(ReplyState.COMPLETED)
+            except RuntimeError:
+                pass
             return
         text = str(before_send.payload.get("text", text))
         segments = before_send.payload.get("segments", segments)
@@ -154,8 +157,6 @@ class ReplySender:
         images = before_send.payload.get("images", images)
         reply_to_message_id = before_send.payload.get("reply_to_message_id", reply_to_message_id)
         mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
-
-        from neobot_app.reply.event import ReplyState
 
         event.transition(ReplyState.SENDING)
         conv_ref = event.conversation_ref
@@ -215,7 +216,10 @@ class ReplySender:
         if not images and not send_original and not segments and text.strip():
             if self._can_use_markdown_image(text):
                 try:
-                    image_path = await self._render_long_reply_as_image(text)
+                    image_path = await asyncio.wait_for(
+                        self._render_long_reply_as_image(text),
+                        timeout=_MARKDOWN_RENDER_TIMEOUT_SECONDS,
+                    )
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
                     send_results.append(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
                     event.send_response = send_results[0]

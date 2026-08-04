@@ -1,4 +1,4 @@
-"""DrawTask data structure for background drawing jobs."""
+"""后台绘图任务的数据结构定义。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from neobot_app.time_context import monotonic_seconds
 
 @dataclass
 class DrawTask:
-    """Background drawing task record."""
+    """后台绘图任务记录。"""
 
     task_id: str
     pipeline_key: str

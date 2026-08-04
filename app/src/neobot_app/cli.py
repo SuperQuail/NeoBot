@@ -9,16 +9,19 @@ import sys
 from pathlib import Path
 
 from neobot_app.bootstrap import create_application
+from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 
 
 async def run() -> None:
-    application = create_application()
     loop = asyncio.get_running_loop()
+    current_application = {"value": None}
 
     def request_stop() -> None:
-        application.request_stop()
+        application = current_application["value"]
+        if application is not None:
+            application.request_stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -30,13 +33,47 @@ async def run() -> None:
                     lambda _signum, _frame: loop.call_soon_threadsafe(request_stop),
                 )
 
-    await application.run_forever()
+    while True:
+        application = create_application()
+        current_application["value"] = application
+        await application.run_forever()
+        if not application.restart_requested:
+            break
+    current_application["value"] = None
+
+
+def cmd_firewall_open(args: argparse.Namespace) -> None:
+    """为控制台端口添加 Windows 防火墙入站放行规则 (需管理员权限)。"""
+    import sys as _sys
+
+    from neobot_app.console.firewall import add_inbound_allow_rule
+
+    program = _sys.executable
+    ports = list(dict.fromkeys([args.port, 9891, 9981]))
+    added = 0
+    for port in ports:
+        if add_inbound_allow_rule(program, port):
+            print(f"已添加放行规则: {program} -> TCP {port}")
+            added += 1
+        else:
+            print(
+                f"添加失败 (TCP {port}): 请确认以管理员身份运行本命令。\n"
+                f"  手动命令: netsh advfirewall firewall add rule "
+                f'name="NeoBot Console {port}" dir=in action=allow '
+                f'program="{program}" protocol=TCP localport={port}'
+            )
+    if added == 0:
+        _sys.exit(1)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人主程序。"""
     try:
         asyncio.run(run())
+    except ConfigLoadError as exc:
+        print(f"配置加载失败，无法启动机器人：\n{exc}")
+        print("请补充上述缺失的环境变量（或禁用对应功能）后重新启动。")
+        sys.exit(1)
     except ConnectionTimeoutError as exc:
         print(f"错误: {exc}")
     except KeyboardInterrupt:
@@ -195,7 +232,11 @@ async def _run_sandbox_cleanup() -> int:
     print()
 
     # 1. 加载配置
-    config = build_config()
+    try:
+        config = build_config()
+    except ConfigLoadError as exc:
+        print(f"配置加载失败：\n{exc}")
+        return 1
     sandbox_cfg = getattr(config.agent, "sandbox", None)
     if not sandbox_cfg or not sandbox_cfg.enabled:
         print("错误: 沙箱功能未启用 (agent.sandbox.enabled = false)")
@@ -369,6 +410,17 @@ def main() -> None:
         description="执行一次完整的沙箱临时文件清理和持久化文件维护，完成后退出。",
     )
 
+    # `neobot firewall-open`
+    firewall_parser = sub.add_parser(
+        "firewall-open", help="放行控制台端口（Windows 防火墙，需管理员）",
+        description="为当前 Python 程序添加控制台端口的入站放行规则，"
+                    "解决'内网可访问、外网不可用'的问题。需以管理员身份运行。",
+    )
+    firewall_parser.add_argument(
+        "--port", type=int, default=9981,
+        help="首选端口 (默认 9981；9891/9981 都会放行)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-browser":
@@ -377,6 +429,8 @@ def main() -> None:
         cmd_open_web(args)
     elif args.command == "sandbox_CP":
         cmd_sandbox_clean(args)
+    elif args.command == "firewall-open":
+        cmd_firewall_open(args)
     else:
         # 无子命令 → 启动机器人
         cmd_run(args)

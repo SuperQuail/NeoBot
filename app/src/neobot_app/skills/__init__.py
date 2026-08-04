@@ -33,6 +33,7 @@ from neobot_app.skills.gift_skill import GiftSkill
 from neobot_app.skills.browser_skill import BrowserSkill
 from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
+from neobot_app.skills.balance_skill import BalanceSkill
 
 
 def build_all_skills(
@@ -63,6 +64,7 @@ def build_all_skills(
     problem_solver_manager: Any = None,
     sandbox_maintenance_manager: Any = None,
     temp_cleaner: Any = None,
+    balance_checker: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -193,7 +195,7 @@ def build_all_skills(
         )
 
     if "birthday" not in disabled:
-        skills_to_register.append(BirthdaySkill(uow_factory=uow_factory))
+        skills_to_register.append(BirthdaySkill(uow_factory=uow_factory, config=config))
 
     if "cross_chat" not in disabled:
         skills_to_register.append(
@@ -281,6 +283,13 @@ def build_all_skills(
                 lifecycle_manager=browser_lifecycle_manager,
             )
         )
+
+    # ── DeepSeek 余额查询（仅当 BalanceChecker 已启用时注册） ──
+    if "deepseek_balance" not in disabled and balance_checker is not None:
+        if hasattr(balance_checker, "is_enabled") and balance_checker.is_enabled:
+            skills_to_register.append(
+                BalanceSkill(balance_checker=balance_checker)
+            )
 
     for skill in skills_to_register:
         mgr.register(skill)

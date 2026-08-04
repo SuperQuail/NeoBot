@@ -1,4 +1,4 @@
-"""Official bot detection via get_robot_uin_range API."""
+"""通过 get_robot_uin_range API 检测官方机器人账号。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ if TYPE_CHECKING:
 
 
 class BotDetector:
-    """Detects whether a QQ account is an official bot using get_robot_uin_range."""
+    """使用 get_robot_uin_range 检测 QQ 账号是否为官方机器人。"""
 
     def __init__(self, adapter: OneBotAdapter | None = None) -> None:
         self._adapter = adapter
         self._ranges: list[tuple[int, int]] = []
 
     async def refresh(self) -> None:
-        """Query the bot UIN ranges from the QQ backend and cache them."""
+        """从 QQ 后端查询机器人 UIN 段并缓存。"""
         if self._adapter is None:
             return
 
@@ -40,7 +40,7 @@ class BotDetector:
         self._ranges = ranges
 
     def is_official_bot(self, user_id: int | str) -> bool:
-        """Check if a user ID falls within any known official bot UIN range."""
+        """检查用户 ID 是否落在已知的官方机器人 UIN 段内。"""
         if not self._ranges:
             return False
         try:

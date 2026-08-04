@@ -6,10 +6,10 @@ from neobot_contracts.models import ConversationRef
 
 
 class Bot:
-    """Wrapper around an adapter providing a stable messaging API.
+    """适配器包装类，对外提供稳定的消息发送 API。
 
-    Exposes ``send``, ``send_private``, and ``send_group`` while hiding
-    adapter internals from plugins and DI-resolved handlers.
+    暴露 ``send``、``send_private`` 与 ``send_group``，对插件和依赖注入
+    解析出的处理器隐藏适配器内部实现。
     """
 
     def __init__(self, adapter: Any) -> None:
@@ -17,26 +17,26 @@ class Bot:
 
     @property
     def self_id(self) -> Any:
-        """Get the bot's own ID from adapter."""
+        """从适配器获取机器人自身的 ID。"""
         return getattr(self._adapter, "self_id", None)
 
     async def send(self, conversation: ConversationRef, message: Any) -> Any:
-        """Send *message* to *conversation*.
+        """将 *message* 发送到 *conversation*。
 
-        Delegates to ``adapter.send(conversation, message)``.
+        委托给 ``adapter.send(conversation, message)``。
         """
         return await self._adapter.send(conversation, message)
 
     async def send_private(self, user_id: int, message: Any) -> Any:
-        """Send *message* to a private chat identified by *user_id*.
+        """将 *message* 发送到由 *user_id* 标识的私聊。
 
-        Delegates to ``adapter.send_private_msg(user_id, message)``.
+        委托给 ``adapter.send_private_msg(user_id, message)``。
         """
         return await self._adapter.send_private_msg(user_id, message)
 
     async def send_group(self, group_id: int, message: Any) -> Any:
-        """Send *message* to a group chat identified by *group_id*.
+        """将 *message* 发送到由 *group_id* 标识的群聊。
 
-        Delegates to ``adapter.send_group_msg(group_id, message)``.
+        委托给 ``adapter.send_group_msg(group_id, message)``。
         """
         return await self._adapter.send_group_msg(group_id, message)

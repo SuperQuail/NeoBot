@@ -1,4 +1,4 @@
-"""add scheduled task tables"""
+"""新增定时任务相关表"""
 
 from typing import Sequence, Union
 

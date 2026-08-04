@@ -12,6 +12,28 @@ from neobot_app.utils.logger import get_module_logger
 T = TypeVar("T")
 logger = get_module_logger("config_converter")
 
+# 概率类字段（合法范围 [0.0, 1.0]），加载时越界钳位到边界并记警告
+_PROBABILITY_FIELDS = frozenset({
+    "group_chat_chance",
+    "random_sticker_probability",
+})
+
+
+def _apply_probability_clamp(field_name: str, value: Any) -> Any:
+    """概率类字段超出 [0,1] 时钳位到边界并记录警告。"""
+    if field_name not in _PROBABILITY_FIELDS:
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    if value < 0.0 or value > 1.0:
+        clamped = max(0.0, min(1.0, float(value)))
+        logger.warning(
+            f"配置项 '{field_name}' 的值 {value!r} 超出合法范围 [0.0, 1.0]，"
+            f"已钳位为 {clamped}"
+        )
+        return clamped
+    return value
+
 
 def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
     """验证值是否与预期类型匹配，如果不匹配则尝试转换"""
@@ -152,7 +174,12 @@ def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
                 elif lower_val in ("false", "0", "no", "off", "disabled", "disable", "unable"):
                     return True, False
             elif isinstance(value, int):
-                return True, bool(value)
+                if value in (0, 1):
+                    return True, bool(value)
+                logger.warning(
+                    f"整数值 {value} 不是 0/1，已钳位为布尔值 {value > 0}"
+                )
+                return True, value > 0
         elif expected_type is str:
             return True, str(value)
     except (ValueError, TypeError):
@@ -174,7 +201,11 @@ def dict_to_dataclass(data: dict, schema: type[T]) -> T:
         # 验证和转换值
         if raw_value is not None:
             valid, validated_value = _validate_type(raw_value, field.type)
-            value = validated_value if valid else None
+            value = (
+                _apply_probability_clamp(field_name, validated_value)
+                if valid
+                else None
+            )
             if not valid:
                 logger.warning(
                     f"配置项 '{field_name}' 的类型不匹配: "
@@ -299,7 +330,9 @@ def dataclass_to_toml(
             if raw_value is not None:
                 valid, validated_value = _validate_type(raw_value, field_type)
                 if valid:
-                    existing_value = validated_value
+                    existing_value = _apply_probability_clamp(
+                        field_name, validated_value
+                    )
                 else:
                     logger.warning(
                         f"配置项 '{field_name}' 的类型不匹配: "

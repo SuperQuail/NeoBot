@@ -69,7 +69,12 @@ def load_env():
                 if stripped.startswith("#") or not stripped:
                     continue
                 if "=" in stripped:
-                    key, value = stripped.split("=", 1)
+                    key, value = (part.strip() for part in stripped.split("=", 1))
+                    if not key:
+                        logger.warning(
+                            f"忽略无效的环境变量行（键为空）: {stripped!r}"
+                        )
+                        continue
                     existing_keys.add(key)
                     os.environ[key] = value
 

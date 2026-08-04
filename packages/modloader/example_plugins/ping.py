@@ -1,4 +1,4 @@
-"""Example plugin demonstrating the Plugin API."""
+"""演示 Plugin API 的示例插件。"""
 
 from neobot_modloader import Message, Plugin, Reply
 

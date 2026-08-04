@@ -133,6 +133,18 @@ class WillingnessSkill(SkillModule):
 
 # ── Handlers ──
 
+def _resolve_conv_id(args: dict) -> str:
+    """解析目标会话标识：pipeline_key（回复层自动注入，格式 kind:id）→ conv_id → 默认 current。"""
+    value = str(args.get("pipeline_key") or args.get("conv_id") or "").strip()
+    return value or "current"
+
+def _parse_value(args: dict) -> tuple[float | None, str | None]:
+    """解析数值系数；失败时返回 (None, 错误消息)。"""
+    try:
+        return float(args.get("value", 1.0)), None
+    except (TypeError, ValueError):
+        return None, f"value 必须为数字，收到 {args.get('value')!r}"
+
 async def _handle_get_willingness_status(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": True, "note": "willing_service 未配置，所有设置均为默认"})
@@ -141,51 +153,63 @@ async def _handle_get_willingness_status(self: WillingnessSkill, args: dict) -> 
 async def _handle_set_session_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
-    value = float(args.get("value", 1.0))
-    return self._willing.set_runtime_conversation_coefficient("current", value)
+    value, error = _parse_value(args)
+    if error is not None:
+        return _json({"ok": False, "error": error})
+    return self._willing.set_runtime_conversation_coefficient(_resolve_conv_id(args), value)
 
 async def _handle_remove_session_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
-    return self._willing.remove_runtime_conversation_coefficient("current")
+    return self._willing.remove_runtime_conversation_coefficient(_resolve_conv_id(args))
 
 async def _handle_set_session_user_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
     user_id = str(args.get("user_id", "")).strip()
-    value = float(args.get("value", 1.0))
-    conv_id = str(args.get("conv_id", "current")).strip()
-    return self._willing.set_runtime_conversation_user_coefficient(conv_id, user_id, value)
+    if not user_id:
+        return _json({"ok": False, "error": "用户 ID 不能为空"})
+    value, error = _parse_value(args)
+    if error is not None:
+        return _json({"ok": False, "error": error})
+    return self._willing.set_runtime_conversation_user_coefficient(_resolve_conv_id(args), user_id, value)
 
 async def _handle_remove_session_user_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
     user_id = str(args.get("user_id", "")).strip()
-    conv_id = str(args.get("conv_id", "current")).strip()
-    return self._willing.remove_runtime_conversation_user_coefficient(conv_id, user_id)
+    if not user_id:
+        return _json({"ok": False, "error": "用户 ID 不能为空"})
+    return self._willing.remove_runtime_conversation_user_coefficient(_resolve_conv_id(args), user_id)
 
 async def _handle_set_user_global_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
     user_id = str(args.get("user_id", "")).strip()
-    value = float(args.get("value", 1.0))
+    if not user_id:
+        return _json({"ok": False, "error": "用户 ID 不能为空"})
+    value, error = _parse_value(args)
+    if error is not None:
+        return _json({"ok": False, "error": error})
     return self._willing.set_runtime_user_global_coefficient(user_id, value)
 
 async def _handle_remove_user_global_coefficient(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": False, "error": "willing_service 未配置"})
     user_id = str(args.get("user_id", "")).strip()
+    if not user_id:
+        return _json({"ok": False, "error": "用户 ID 不能为空"})
     return self._willing.remove_runtime_user_global_coefficient(user_id)
 
 async def _handle_add_session_blacklist(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": True, "note": "模拟：当前会话已加入临时黑名单"})
-    return self._willing.add_runtime_blacklist("current")
+    return self._willing.add_runtime_blacklist(_resolve_conv_id(args))
 
 async def _handle_remove_session_blacklist(self: WillingnessSkill, args: dict) -> str:
     if self._willing is None:
         return _json({"ok": True, "note": "模拟：当前会话已从临时黑名单移除"})
-    return self._willing.remove_runtime_blacklist("current")
+    return self._willing.remove_runtime_blacklist(_resolve_conv_id(args))
 
 _HANDLERS = {
     "get_willingness_status": _handle_get_willingness_status,
