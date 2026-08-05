@@ -3,11 +3,42 @@
 from __future__ import annotations
 
 import copy
+import inspect
+import json
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 
 _SEPARATOR = "__"
+_RESERVED_FINAL_TOOL_NAMES = frozenset(
+    {"skills__read_manifest", "skills__read_resource"}
+)
+_FINAL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_LOCAL_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+_MAX_SCHEMA_BYTES = 64 * 1024
+_STALE_TOOL_ERROR = "工具不可用或已更新"
+_MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class SkillExecutionToken:
+    module: Any
+    local_name: str
+    final_name: str
+
+
+@dataclass(slots=True)
+class _RegisteredSkill:
+    module: Any
+    name: str
+    description: str
+    instructions: str
+    tools: tuple[dict[str, Any], ...]
+    tokens: dict[str, SkillExecutionToken]
+    session_tools: frozenset[str]
 
 
 class SkillModule(ABC):
@@ -66,7 +97,11 @@ class SkillModule(ABC):
             params["required"] = parameters.get("required", [])
         return {
             "type": "function",
-            "function": {"name": name, "description": description, "parameters": params},
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": params,
+            },
         }
 
     def reset(self) -> None:
@@ -93,27 +128,98 @@ class SkillManager:
     """
 
     def __init__(self) -> None:
-        self._skills: dict[str, SkillModule] = {}
+        self._skills: dict[str, _RegisteredSkill] = {}
         self._session_tools: set[str] = set()
 
     def register(self, skill: SkillModule) -> None:
         """注册一个 Skill 模块。"""
-        if skill.name in self._skills:
-            raise ValueError(f"Skill '{skill.name}' 已注册")
-        self._skills[skill.name] = skill
-        for tool_name in skill.session_tools:
-            self._session_tools.add(f"{skill.name}{_SEPARATOR}{tool_name}")
+        name = getattr(skill, "name", None)
+        if not isinstance(name, str) or not _SKILL_NAME_RE.fullmatch(name):
+            raise ValueError(f"Skill 名称无效: {name!r}")
+        if _SEPARATOR in name or name.endswith("_"):
+            raise ValueError(f"Skill 名称与分隔符 {_SEPARATOR!r} 冲突: {name!r}")
+        if name in self._skills:
+            raise ValueError(f"Skill '{name}' 已注册")
+        description = getattr(skill, "description", None)
+        instructions = getattr(skill, "instructions", "")
+        execute = getattr(skill, "execute", None)
+        reset = getattr(skill, "reset", None)
+        get_tools = getattr(skill, "get_tools", None)
+        if not isinstance(description, str) or not isinstance(instructions, str):
+            raise ValueError(f"Skill {name!r} description/instructions must be strings")
+        if (
+            not callable(get_tools)
+            or not callable(execute)
+            or not inspect.iscoroutinefunction(execute)
+        ):
+            raise ValueError(
+                f"Skill {name!r} must define get_tools() and async execute()"
+            )
+        if reset is not None and not callable(reset):
+            raise ValueError(f"Skill {name!r} reset must be callable")
+        try:
+            raw_tools = get_tools()
+        except Exception as exc:
+            raise ValueError(
+                f"Skill {name!r} tool definitions could not be read"
+            ) from exc
+        if not isinstance(raw_tools, list):
+            raise ValueError(f"Skill {name!r} get_tools() must return a list")
+        tools: list[dict[str, Any]] = []
+        tokens: dict[str, SkillExecutionToken] = {}
+        local_names: set[str] = set()
+        for index, tool_def in enumerate(raw_tools):
+            original_name, validated = _validate_tool_definition(tool_def, name, index)
+            final_name = f"{name}{_SEPARATOR}{original_name}"
+            if not _FINAL_NAME_RE.fullmatch(final_name):
+                raise ValueError(f"无效的最终工具名: {final_name!r}")
+            if final_name in _RESERVED_FINAL_TOOL_NAMES:
+                raise ValueError(f"保留的最终工具名: {final_name}")
+            if original_name in local_names:
+                raise ValueError(f"重复的最终工具定义: {final_name}")
+            local_names.add(original_name)
+            validated["function"]["name"] = final_name
+            tools.append(validated)
+            tokens[final_name] = SkillExecutionToken(skill, original_name, final_name)
+        raw_session_tools = getattr(skill, "session_tools", set())
+        if not isinstance(raw_session_tools, (set, frozenset)) or not all(
+            isinstance(item, str) for item in raw_session_tools
+        ):
+            raise ValueError(f"Skill {name!r} session_tools must be a set of names")
+        if not raw_session_tools <= local_names:
+            unknown = sorted(raw_session_tools - local_names)
+            raise ValueError(
+                f"Skill {name!r} session_tools contain undeclared tools: {unknown}"
+            )
+        registered = _RegisteredSkill(
+            module=skill,
+            name=name,
+            description=description,
+            instructions=instructions,
+            tools=tuple(tools),
+            tokens=tokens,
+            session_tools=frozenset(raw_session_tools),
+        )
+        self._skills[name] = registered
+        self._session_tools.update(
+            f"{name}{_SEPARATOR}{tool_name}" for tool_name in registered.session_tools
+        )
 
     def unregister(self, name: str) -> None:
         """注销指定 Skill。"""
-        self._skills.pop(name, None)
+        registration = self._skills.pop(name, None)
+        if registration is None:
+            return
+        for tool_name in registration.session_tools:
+            self._session_tools.discard(f"{name}{_SEPARATOR}{tool_name}")
 
     def get(self, name: str) -> SkillModule | None:
-        return self._skills.get(name)
+        registration = self._skills.get(name)
+        return registration.module if registration else None
 
     @property
     def all_skills(self) -> list[SkillModule]:
-        return list(self._skills.values())
+        return [registration.module for registration in self._skills.values()]
 
     @property
     def skill_names(self) -> list[str]:
@@ -122,26 +228,39 @@ class SkillManager:
     def get_tools(self) -> list[dict]:
         """聚合所有 Skill 的工具定义，自动加 ``{name}__`` 前缀。"""
         tools: list[dict] = []
-        for skill in self._skills.values():
-            for tool_def in skill.get_tools():
-                prefixed = _deep_copy(tool_def)
-                original_name = prefixed["function"]["name"]
-                prefixed["function"]["name"] = f"{skill.name}{_SEPARATOR}{original_name}"
-                tools.append(prefixed)
+        for registration in self._skills.values():
+            tools.extend(_deep_copy(tool) for tool in registration.tools)
         return tools
+
+    def capture_execution_token(self, prefixed_name: str) -> SkillExecutionToken | None:
+        parsed = self._parse_name(prefixed_name)
+        if parsed is None:
+            return None
+        registration = self._skills.get(parsed[0])
+        return registration.tokens.get(prefixed_name) if registration else None
 
     def get_instructions(self) -> str:
         """聚合所有 Skill 的操作说明。"""
         parts: list[str] = []
-        for skill in self._skills.values():
-            instr = skill.instructions
+        for registration in self._skills.values():
+            instr = registration.instructions
             if instr:
-                parts.append(f"## {skill.name}\n{instr}")
+                parts.append(f"## {registration.name}\n{instr}")
         return "\n\n".join(parts)
 
-    async def execute(self, prefixed_name: str, args: dict[str, Any]) -> str:
+    async def execute(
+        self,
+        prefixed_name: str,
+        args: dict[str, Any],
+        token: SkillExecutionToken | None = None,
+    ) -> str:
         """路由执行：解析 ``{name}__{tool}`` 并分派到对应的 Skill。"""
-        parsed = self._parse_name(prefixed_name)
+        supplied_token = token is not None
+        parsed = (
+            self._split_name(prefixed_name)
+            if supplied_token
+            else self._parse_name(prefixed_name)
+        )
         if parsed is None:
             available = ", ".join(self._skills)
             return (
@@ -151,33 +270,271 @@ class SkillManager:
             )
 
         skill_name, tool_name = parsed
-        skill = self._skills.get(skill_name)
-        if skill is None:
-            return f"错误：未找到 Skill '{skill_name}'"
+        registration = self._skills.get(skill_name)
+        if token is None:
+            token = registration.tokens.get(prefixed_name) if registration else None
+        elif (
+            registration is None or registration.tokens.get(prefixed_name) is not token
+        ):
+            return f"{_STALE_TOOL_ERROR} [{prefixed_name}]"
+        if (
+            token is None
+            or token.final_name != prefixed_name
+            or token.local_name != tool_name
+        ):
+            return f"未知工具: {prefixed_name}"
 
         try:
-            return await skill.execute(tool_name, args)
-        except Exception as exc:
-            return f"工具执行失败 [{prefixed_name}]: {exc}"
+            return await token.module.execute(token.local_name, args)
+        except Exception:
+            return f"工具执行失败 [{prefixed_name}]"
 
     def reset_all(self) -> None:
         """复位所有 Skill 的状态。"""
-        for skill in self._skills.values():
-            skill.reset()
+        for registration in self._skills.values():
+            registration.module.reset()
 
     def is_session_tool(self, prefixed_name: str) -> bool:
         """检查指定前缀工具名是否已声明为 Session 模式执行。"""
         return prefixed_name in self._session_tools
 
     def _parse_name(self, prefixed_name: str) -> tuple[str, str] | None:
-        if _SEPARATOR in prefixed_name:
-            idx = prefixed_name.index(_SEPARATOR)
-            skill_name = prefixed_name[:idx]
-            tool_name = prefixed_name[idx + len(_SEPARATOR):]
-            if skill_name in self._skills:
-                return skill_name, tool_name
+        parsed = self._split_name(prefixed_name)
+        if parsed is not None and parsed[0] in self._skills:
+            return parsed
         return None
+
+    @staticmethod
+    def _split_name(prefixed_name: str) -> tuple[str, str] | None:
+        if _SEPARATOR not in prefixed_name:
+            return None
+        skill_name, tool_name = prefixed_name.split(_SEPARATOR, 1)
+        return (skill_name, tool_name) if skill_name and tool_name else None
 
 
 def _deep_copy(d: dict) -> dict:
     return copy.deepcopy(d)
+
+
+def _validate_tool_definition(
+    tool_def: Any, skill_name: str, index: int
+) -> tuple[str, dict]:
+    label = f"Skill {skill_name!r} tool #{index}"
+    if not isinstance(tool_def, dict) or tool_def.get("type") != "function":
+        raise ValueError(f"{label} must be a function definition")
+    function = tool_def.get("function")
+    if not isinstance(function, dict):
+        raise ValueError(f"{label} function must be an object")
+    local_name = function.get("name")
+    if (
+        not isinstance(local_name, str)
+        or not _LOCAL_NAME_RE.fullmatch(local_name)
+        or _SEPARATOR in local_name
+    ):
+        raise ValueError(f"{label} has invalid local name: {local_name!r}")
+    if not isinstance(function.get("description"), str):
+        raise ValueError(f"{label} description must be a string")
+    schema = function.get("parameters")
+    if schema is None:
+        schema = {"type": "object", "properties": {}, "required": []}
+    elif not isinstance(schema, dict) or schema.get("type") != "object":
+        raise ValueError(f"{label} parameters must have an object root")
+    try:
+        encoded = json.dumps(tool_def, ensure_ascii=False, allow_nan=False).encode(
+            "utf-8"
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"{label} must be JSON-serializable") from exc
+    if len(encoded) > _MAX_SCHEMA_BYTES:
+        raise ValueError(f"{label} exceeds {_MAX_SCHEMA_BYTES} bytes")
+    _validate_schema(schema, label, schema)
+    validated = copy.deepcopy(tool_def)
+    validated["function"].setdefault("parameters", dict(schema))
+    return local_name, validated
+
+
+def _validate_schema(node: Any, label: str, root: dict) -> None:
+    if not isinstance(node, dict):
+        raise ValueError(f"{label} contains a non-object schema")
+    ref = node.get("$ref")
+    if "$ref" in node:
+        if not isinstance(ref, str) or not (ref == "#" or ref.startswith("#/")):
+            raise ValueError(f"{label} contains an invalid or external ref")
+        target = _resolve_pointer(root, ref[1:])
+        if target is _MISSING:
+            raise ValueError(f"{label} contains dangling local ref {ref!r}")
+        if not isinstance(target, dict):
+            raise ValueError(f"{label} contains a ref to a non-object schema")
+    value = node.get("type")
+    valid_types = {"object", "array", "string", "number", "integer", "boolean", "null"}
+    if value is not None and not (
+        isinstance(value, str)
+        and value in valid_types
+        or isinstance(value, list)
+        and value
+        and all(isinstance(v, str) and v in valid_types for v in value)
+    ):
+        raise ValueError(f"{label} contains malformed type")
+    for keyword in ("properties", "$defs", "patternProperties"):
+        children = node.get(keyword)
+        if children is not None:
+            if not isinstance(children, dict) or not all(
+                isinstance(k, str) for k in children
+            ):
+                raise ValueError(f"{label} contains malformed {keyword}")
+            for key, child in children.items():
+                if keyword == "patternProperties":
+                    try:
+                        re.compile(key)
+                    except re.error as exc:
+                        raise ValueError(
+                            f"{label} contains malformed patternProperties regex"
+                        ) from exc
+                _validate_schema(child, label, root)
+    required = node.get("required")
+    if required is not None and (
+        not isinstance(required, list)
+        or not all(isinstance(item, str) for item in required)
+    ):
+        raise ValueError(f"{label} contains malformed required")
+    properties = node.get("properties")
+    if (
+        required is not None
+        and isinstance(required, list)
+        and isinstance(properties, dict)
+    ):
+        missing = [item for item in required if item not in properties]
+        if missing:
+            raise ValueError(
+                f"{label} required references missing property: {missing[0]!r}"
+            )
+    if "prefixItems" in node:
+        raise ValueError(
+            f"{label} contains unsupported tuple schema keyword prefixItems"
+        )
+    if "items" in node:
+        items = node["items"]
+        if isinstance(items, list):
+            raise ValueError(
+                f"{label} contains unsupported tuple schema in array-valued items"
+            )
+        if not isinstance(items, bool):
+            _validate_schema(items, label, root)
+    additional = node.get("additionalProperties")
+    if additional is not None and not isinstance(additional, bool):
+        _validate_schema(additional, label, root)
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        values = node.get(keyword)
+        if values is not None:
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"{label} contains malformed {keyword}")
+            for child in values:
+                _validate_schema(child, label, root)
+    if "not" in node:
+        _validate_schema(node["not"], label, root)
+    if "enum" in node and (not isinstance(node["enum"], list) or not node["enum"]):
+        raise ValueError(f"{label} contains malformed enum")
+    for keyword in (
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+    ):
+        number = node.get(keyword)
+        if number is not None and (
+            not isinstance(number, (int, float)) or isinstance(number, bool)
+        ):
+            raise ValueError(f"{label} contains malformed {keyword}")
+    for keyword in (
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+    ):
+        count = node.get(keyword)
+        if count is not None and (
+            not isinstance(count, int) or isinstance(count, bool) or count < 0
+        ):
+            raise ValueError(f"{label} contains malformed {keyword}")
+    if "pattern" in node:
+        pattern = node.get("pattern")
+        if not isinstance(pattern, str):
+            raise ValueError(f"{label} contains malformed pattern")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"{label} contains malformed pattern") from exc
+    if "uniqueItems" in node and not isinstance(node["uniqueItems"], bool):
+        raise ValueError(f"{label} contains malformed uniqueItems")
+
+    if node is root:
+        _reject_recursive_refs(root, label)
+
+
+def _reject_recursive_refs(root: dict, label: str) -> None:
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(node: dict) -> None:
+        node_id = id(node)
+        if node_id in visiting:
+            raise ValueError(f"{label} contains an unsupported recursive ref")
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for child in _schema_children(node, root):
+            visit(child)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    visit(root)
+
+
+def _schema_children(node: dict, root: dict) -> list[dict]:
+    children: list[dict] = []
+    for keyword in ("properties", "$defs", "patternProperties"):
+        value = node.get(keyword)
+        if isinstance(value, dict):
+            children.extend(
+                child for child in value.values() if isinstance(child, dict)
+            )
+    for keyword in ("items", "additionalProperties", "not"):
+        value = node.get(keyword)
+        if isinstance(value, dict):
+            children.append(value)
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        value = node.get(keyword)
+        if isinstance(value, list):
+            children.extend(child for child in value if isinstance(child, dict))
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        target = _resolve_pointer(root, ref[1:])
+        if isinstance(target, dict):
+            children.append(target)
+    return children
+
+
+def _resolve_pointer(document: Any, pointer: str) -> Any:
+    if pointer == "":
+        return document
+    if not pointer.startswith("/"):
+        return _MISSING
+    current = document
+    for raw in pointer[1:].split("/"):
+        if "~" in raw and any(
+            index + 1 >= len(raw) or raw[index + 1] not in "01"
+            for index, char in enumerate(raw)
+            if char == "~"
+        ):
+            return _MISSING
+        part = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            return _MISSING
+    return current

@@ -193,6 +193,50 @@ class PluginHostTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_tracked_skill_cleanup_is_identity_safe(self) -> None:
+        async def run() -> None:
+            class _FakeSkills:
+                def __init__(self) -> None:
+                    self._skills: dict[str, Any] = {}
+
+                def register(self, skill: Any) -> None:
+                    self._skills[skill.name] = skill
+
+                def unregister(self, name: str) -> None:
+                    self._skills.pop(name, None)
+
+                def get(self, name: str) -> Any | None:
+                    return self._skills.get(name)
+
+            skills = _FakeSkills()
+            host = PluginHostFacade(skills=skills)
+            first_cleanups: list[Any] = []
+            second_cleanups: list[Any] = []
+            first = TrackedPluginHostFacade(host, first_cleanups.append)
+            second = TrackedPluginHostFacade(host, second_cleanups.append)
+
+            class _SkillA:
+                name = "demo"
+
+            class _SkillB:
+                name = "demo"
+
+            first.register_skill(_SkillA())
+            second.register_skill(_SkillB())
+
+            # 旧插件清理不得删除新实例
+            for cleanup in reversed(first_cleanups):
+                cleanup()
+            self.assertIsNotNone(skills.get("demo"))
+
+            for cleanup in reversed(second_cleanups):
+                cleanup()
+            self.assertIsNone(skills.get("demo"))
+
+        import asyncio
+
+        asyncio.run(run())
+
     def test_host_facade_exposes_all_buses(self) -> None:
         output = CapturingOutput()
         hook_bus = FakeHookBus()

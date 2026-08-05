@@ -6,8 +6,12 @@ import importlib.util
 import re
 import shutil
 import sys
+from itertools import count
 from pathlib import Path
 from types import ModuleType
+
+
+_MODULE_GENERATION = count(1)
 
 
 class PluginModuleImporter:
@@ -25,10 +29,12 @@ class PluginModuleImporter:
         pycache = path.parent / "__pycache__"
         if pycache.exists():
             shutil.rmtree(pycache, ignore_errors=True)
-        before = {name for name in sys.modules if name.startswith("neobot_user_plugins.")}
-        # 使用路径摘要生成模块名，避免同名插件或热重载时误复用旧模块。
+        self.last_module_names = ()
+        # Every candidate gets a fresh package namespace. This prevents package
+        # children from being reused while the previous generation is still active.
         module_name = self.module_name(path, plugin_name)
-        sys.modules.setdefault("neobot_user_plugins", ModuleType("neobot_user_plugins"))
+        namespace = sys.modules.setdefault("neobot_user_plugins", ModuleType("neobot_user_plugins"))
+        namespace.__path__ = []
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"无法创建插件模块 spec: {path}")
@@ -40,14 +46,13 @@ class PluginModuleImporter:
         try:
             spec.loader.exec_module(module)
         except Exception:
-            sys.modules.pop(module_name, None)
+            self.clear_module_cache((module_name,))
             raise
         after = {
             name
             for name in sys.modules
             if name == module_name
             or name.startswith(f"{module_name}.")
-            or (name not in before and name.startswith("neobot_user_plugins."))
         }
         self.last_module_names = tuple(sorted(after))
         return module
@@ -55,4 +60,4 @@ class PluginModuleImporter:
     def module_name(self, path: Path, plugin_name: str) -> str:
         digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
         safe_name = re.sub(r"\W", "_", plugin_name)
-        return f"neobot_user_plugins.{safe_name}_{digest}"
+        return f"neobot_user_plugins.{safe_name}_{digest}_g{next(_MODULE_GENERATION)}"

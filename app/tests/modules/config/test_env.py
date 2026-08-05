@@ -122,8 +122,7 @@ def test_load_env_matches_keys_case_insensitively(monkeypatch, tmp_path):
     _clear_platform_env(monkeypatch)
     env_file = _use_env_file(monkeypatch, tmp_path)
     env_file.write_text(
-        "deepseek_url=https://ds.example.com\n"
-        "DEEPSEEK_APIKEY=sk-ds-lower\n",
+        "deepseek_url=https://ds.example.com\nDEEPSEEK_APIKEY=sk-ds-lower\n",
         encoding="utf-8",
     )
 
@@ -137,3 +136,27 @@ def test_load_env_matches_keys_case_insensitively(monkeypatch, tmp_path):
     platform = EnvConfig.get_api_platform_config("DeepSeek")
     assert platform.url == "https://ds.example.com"
     assert platform.api_key == "sk-ds-lower"
+
+
+def test_load_env_does_not_log_value_from_malformed_line(monkeypatch, tmp_path):
+    class _CaptureLogger:
+        def __init__(self) -> None:
+            self.records: list[tuple[tuple, dict]] = []
+
+        def __getattr__(self, _name):
+            def _record(*args, **kwargs) -> None:
+                self.records.append((args, kwargs))
+
+            return _record
+
+    secret = "sk-malformed-must-not-be-logged"
+    env_file = _use_env_file(monkeypatch, tmp_path)
+    env_file.write_text(f"={secret}\n", encoding="utf-8")
+    capture = _CaptureLogger()
+    monkeypatch.setattr("neobot_app.config.loader.env.logger", capture)
+
+    load_env()
+
+    logged = repr(capture.records)
+    assert secret not in logged
+    assert "line=1" in logged

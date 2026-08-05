@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_contracts.models import ConversationRef
-from neobot_modloader.context import RuntimePluginContext
+from neobot_modloader.context import MarkdownSkillRegistrar, RuntimePluginContext
 
 
 class FakeAgent:
@@ -37,6 +37,20 @@ class FakeRegistry:
     @property
     def names(self) -> list[str]:
         return list(self.agents)
+
+
+class DrainableFakeRegistry(FakeRegistry):
+    """带 unregister_and_drain 的底层注册表，用于验证插件侧 registrar 的代理行为。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.drained: list[str] = []
+
+    async def unregister_and_drain(
+        self, name: str, *, drain_timeout_seconds: float | None = None
+    ) -> Any | None:
+        self.drained.append(name)
+        return self.agents.pop(name, None)
 
 
 class FakeAdapter:
@@ -123,6 +137,109 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(registered_name, registry.agents)
             self.assertEqual(len(recorded), 1)
             self.assertEqual(ctx.agents.snapshot(), [{"name": registered_name, "description": "Echo agent"}])
+
+    def test_agent_registrar_handles_method_style_names(self) -> None:
+        class MethodStyleRegistry(FakeRegistry):
+            # 鸭子类型注册表把 names 写成方法而非属性时也必须能查重
+            def names(self) -> list[str]:
+                return list(self.agents)
+
+        with tempfile.TemporaryDirectory() as temp:
+            registry = MethodStyleRegistry()
+            ctx = self.make_context(Path(temp), agent_registry=registry)
+
+            registered_name = ctx.agents.register("echo", FakeAgent())
+
+            self.assertEqual(registered_name, "test.echo")
+            # 与真实注册表已存在的同名 Agent 冲突必须被检测到
+            with self.assertRaises(ValueError):
+                ctx.agents.register("echo", FakeAgent())
+
+    async def test_agent_registrar_unregister_and_drain_delegates_to_registry(self) -> None:
+        """PluginAgentRegistrar 必须暴露 unregister_and_drain 并代理到底层排空注册表。"""
+        with tempfile.TemporaryDirectory() as temp:
+            registry = DrainableFakeRegistry()
+            ctx = self.make_context(Path(temp), agent_registry=registry)
+
+            registered_name = ctx.agents.register("echo", FakeAgent())
+
+            removed = await ctx.agents.unregister_and_drain(registered_name)
+
+            self.assertEqual(registry.drained, [registered_name])
+            self.assertNotIn(registered_name, registry.agents)
+            self.assertNotIn(registered_name, ctx.agents._registered)
+            self.assertIsNotNone(removed)
+
+    async def test_agent_registrar_unregister_and_drain_falls_back_to_unregister(self) -> None:
+        """底层注册表无 unregister_and_drain 时，回退到 unregister 逻辑（卸载仍生效）。"""
+        with tempfile.TemporaryDirectory() as temp:
+            registry = FakeRegistry()
+            ctx = self.make_context(Path(temp), agent_registry=registry)
+
+            registered_name = ctx.agents.register("echo", FakeAgent())
+
+            removed = await ctx.agents.unregister_and_drain(registered_name)
+
+            self.assertNotIn(registered_name, registry.agents)
+            self.assertNotIn(registered_name, ctx.agents._registered)
+            self.assertIsNotNone(removed)
+
+    def test_markdown_skill_registrar_failure_leaves_clean_state(self) -> None:
+        class FailingRegistry:
+            def register_many(self, owner: str, skills: list[Any]) -> None:
+                raise ValueError("conflict")
+
+            def unregister_owner(self, owner: str) -> list[str]:
+                return []
+
+        cleanups: list[Any] = []
+        registrar = MarkdownSkillRegistrar(
+            plugin_name="p", registry=FailingRegistry(), record_cleanup=cleanups.append
+        )
+        self.assertTrue(registrar.available)
+
+        with self.assertRaises(ValueError):
+            registrar.register([object()])
+
+        # 注册失败不置 _registered、不记录清理；unregister_all 幂等
+        self.assertFalse(registrar._registered)
+        self.assertEqual(cleanups, [])
+        registrar.unregister_all()
+        registrar.unregister_all()
+        self.assertFalse(registrar._registered)
+
+    def test_markdown_skill_registrar_unavailable(self) -> None:
+        registrar = MarkdownSkillRegistrar(plugin_name="p", registry=None, record_cleanup=None)
+        self.assertFalse(registrar.available)
+        registrar.unregister_all()  # 幂等、不抛错
+        with self.assertRaises(RuntimeError):
+            registrar.register([object()])
+
+    def test_markdown_skill_unregister_failure_is_retryable(self) -> None:
+        class RetryRegistry:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def register_many(self, owner: str, skills: list[Any]) -> None:
+                pass
+
+            def unregister_owner(self, owner: str) -> list[str]:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("busy")
+                return [owner]
+
+        registry = RetryRegistry()
+        registrar = MarkdownSkillRegistrar(plugin_name="p", registry=registry, record_cleanup=None)
+        registrar.register([object()])
+
+        with self.assertRaises(RuntimeError):
+            registrar.unregister_all()
+        self.assertTrue(registrar._registered)
+
+        registrar.unregister_all()
+        self.assertFalse(registrar._registered)
+        self.assertEqual(registry.calls, 2)
 
 
 if __name__ == "__main__":

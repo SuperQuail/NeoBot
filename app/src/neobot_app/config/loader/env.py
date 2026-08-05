@@ -44,7 +44,10 @@ def generate_env():
     """生成环境变量模板。"""
     logger.info("尝试生成环境变量模板...")
     fields = EnvConfig.__dataclass_fields__
-    blocks = ["\n".join(_build_env_lines(field_name, field_obj)) for field_name, field_obj in fields.items()]
+    blocks = [
+        "\n".join(_build_env_lines(field_name, field_obj))
+        for field_name, field_obj in fields.items()
+    ]
 
     try:
         with open(ENV_FILE, "w", encoding="utf-8") as f:
@@ -63,7 +66,7 @@ def load_env():
         lines: list[str] = []
 
         with open(ENV_FILE, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_number, line in enumerate(f, start=1):
                 lines.append(line.rstrip("\n"))
                 stripped = line.strip()
                 if stripped.startswith("#") or not stripped:
@@ -72,7 +75,7 @@ def load_env():
                     key, value = (part.strip() for part in stripped.split("=", 1))
                     if not key:
                         logger.warning(
-                            f"忽略无效的环境变量行（键为空）: {stripped!r}"
+                            f"忽略无效的环境变量行（键为空）: line={line_number}"
                         )
                         continue
                     existing_keys.add(key)

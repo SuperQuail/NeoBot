@@ -196,12 +196,20 @@ class TrackedPluginHostFacade:
         return self._lifecycle
 
     def register_skill(self, skill: Any) -> None:
-        """注册 Skill，插件卸载时自动注销。"""
+        """注册 Skill，插件卸载时自动注销（仅当仍是原实例时）。"""
         self._host.register_skill(skill)
-        self._record_cleanup(lambda name=skill.name: self._unregister_skill(name))
+        self._record_cleanup(lambda skill=skill: self._unregister_skill(skill))
 
-    def _unregister_skill(self, name: str) -> None:
-        self._host._skills.unregister(name)
+    def _unregister_skill(self, skill: Any) -> None:
+        registry = getattr(self._host, "_skills", None)
+        if registry is None:
+            return
+        get = getattr(registry, "get", None)
+        if callable(get):
+            current = get(skill.name)
+            if current is not None and current is not skill:
+                return
+        registry.unregister(skill.name)
 
 
 class _TrackedCommandRegistry:

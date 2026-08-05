@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from neobot_modloader.message import ImageSegment, Message, MessageSegment
+from neobot_modloader.message import AtSegment, ImageSegment, Message, MessageSegment
 
 
 class PatternError(ValueError):
@@ -34,7 +35,13 @@ class PatternMatch:
 
 
 class MessagePattern:
-    def __init__(self, pattern: str | None = None, *, command: bool = False, aliases: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        pattern: str | None = None,
+        *,
+        command: bool = False,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
         self.pattern = (pattern or "").strip()
         self.command = command
         self.aliases = tuple(aliases)
@@ -49,8 +56,20 @@ class MessagePattern:
             self.body = self.elements
 
     @property
+    def capture_names(self) -> tuple[str, ...]:
+        return tuple(
+            element.name
+            for element in self.elements
+            if element.kind == "param" and element.name is not None
+        )
+
+    @property
     def usage(self) -> str:
-        return f"/{self.pattern}" if self.command and not self.pattern.startswith("/") else self.pattern
+        return (
+            f"/{self.pattern}"
+            if self.command and not self.pattern.startswith("/")
+            else self.pattern
+        )
 
     def match(self, message: Message) -> PatternMatch:
         tokens = _message_tokens(message)
@@ -61,7 +80,10 @@ class MessagePattern:
             raw = tokens[command_index]
             assert isinstance(raw, str)
             command_name = raw.lstrip("/")
-            allowed = {self.command_name.lower(), *(alias.lower().lstrip("/") for alias in self.aliases)}
+            allowed = {
+                self.command_name.lower(),
+                *(alias.lower().lstrip("/") for alias in self.aliases),
+            }
             if command_name.lower() not in allowed:
                 return PatternMatch(False, {}, command_matched=False)
             try:
@@ -79,6 +101,53 @@ class MessagePattern:
         return PatternMatch(True, values, command_matched=False)
 
 
+class RegexPattern:
+    def __init__(
+        self,
+        pattern: str | re.Pattern[str],
+        *,
+        flags: int = 0,
+    ) -> None:
+        if not isinstance(flags, int):
+            raise PatternError("flags must be an integer")
+        if isinstance(pattern, str):
+            try:
+                compiled = re.compile(pattern, flags)
+            except (re.error, ValueError, OverflowError) as exc:
+                raise PatternError(f"invalid regex pattern: {exc}") from exc
+        elif isinstance(pattern, re.Pattern):
+            if flags:
+                raise PatternError(
+                    "flags cannot be applied to an already compiled pattern"
+                )
+            compiled = pattern
+        else:
+            raise PatternError(
+                "regex pattern must be a string or a compiled pattern"
+            )
+        if not isinstance(compiled.pattern, str):
+            raise PatternError("regex pattern must be a string pattern")
+        if not compiled.pattern.strip():
+            raise PatternError("regex pattern cannot be empty")
+        self.pattern = compiled
+
+    @property
+    def capture_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self.pattern.groupindex))
+
+    @property
+    def usage(self) -> str:
+        return self.pattern.pattern
+
+    def match(self, message: Message) -> PatternMatch:
+        match = self.pattern.search(message.text)
+        if match is None:
+            return PatternMatch(False, {})
+        return PatternMatch(
+            True, {name: match.group(name) for name in self.capture_names}
+        )
+
+
 def _parse_pattern(pattern: str) -> list[PatternElement]:
     if not pattern:
         return []
@@ -88,13 +157,19 @@ def _parse_pattern(pattern: str) -> list[PatternElement]:
         raise PatternError(str(exc)) from exc
 
     elements: list[PatternElement] = []
+    capture_names: set[str] = set()
     for token in tokens:
         if token.startswith("<") and token.endswith(">"):
-            elements.append(_parse_param(token[1:-1], optional=False))
+            element = _parse_param(token[1:-1], optional=False)
         elif token.startswith("[") and token.endswith("]"):
-            elements.append(_parse_param(token[1:-1], optional=True))
+            element = _parse_param(token[1:-1], optional=True)
         else:
-            elements.append(PatternElement(kind="literal", value=token))
+            element = PatternElement(kind="literal", value=token)
+        if element.name is not None:
+            if element.name in capture_names:
+                raise PatternError(f"duplicate parameter name: {element.name}")
+            capture_names.add(element.name)
+        elements.append(element)
     return elements
 
 
@@ -110,7 +185,7 @@ def _parse_param(raw: str, *, optional: bool) -> PatternElement:
     list_value = value_type.startswith("list[") and value_type.endswith("]")
     if list_value:
         value_type = value_type[5:-1].strip()
-    if value_type not in {"str", "int", "float", "bool", "rest", "image"}:
+    if value_type not in {"str", "int", "float", "bool", "rest", "image", "at"}:
         raise PatternError(f"unsupported parameter type: {value_type}")
     return PatternElement(
         kind="param",
@@ -146,7 +221,9 @@ def _find_command(tokens: list[str | MessageSegment]) -> int | None:
     return None
 
 
-def _match_elements(elements: list[PatternElement], tokens: list[str | MessageSegment]) -> dict[str, Any]:
+def _match_elements(
+    elements: list[PatternElement], tokens: list[str | MessageSegment]
+) -> dict[str, Any]:
     values: dict[str, Any] = {}
     index = 0
     for element in elements:
@@ -170,9 +247,15 @@ def _match_literal(literal: str, tokens: list[str | MessageSegment], start: int)
     raise PatternMatchError(f"expected {literal!r}")
 
 
-def _capture(element: PatternElement, tokens: list[str | MessageSegment], start: int) -> tuple[Any, int]:
+def _capture(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
     if element.value_type == "image":
         return _capture_image(element, tokens, start)
+    if element.value_type == "at":
+        return _capture_at(element, tokens, start)
     if element.value_type == "rest":
         rest = " ".join(token for token in tokens[start:] if isinstance(token, str))
         if not rest and not element.optional:
@@ -189,7 +272,11 @@ def _capture(element: PatternElement, tokens: list[str | MessageSegment], start:
     return _coerce_text(token, element), index + 1
 
 
-def _capture_image(element: PatternElement, tokens: list[str | MessageSegment], start: int) -> tuple[Any, int]:
+def _capture_image(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
     images: list[ImageSegment] = []
     first_index: int | None = None
     last_index = start
@@ -211,6 +298,36 @@ def _capture_image(element: PatternElement, tokens: list[str | MessageSegment], 
             return None, start
         raise PatternMatchError(f"missing required image parameter {element.name}")
     return images[0], last_index
+
+
+def _capture_at(
+    element: PatternElement,
+    tokens: list[str | MessageSegment],
+    start: int,
+) -> tuple[Any, int]:
+    ats: list[AtSegment] = []
+    first_index: int | None = None
+    last_index = start
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        if isinstance(token, AtSegment):
+            if first_index is None:
+                first_index = index
+            ats.append(token)
+            last_index = index + 1
+            if not element.list_value:
+                break
+        elif not isinstance(token, str):
+            break
+    if element.list_value:
+        if not ats and not element.optional:
+            raise PatternMatchError(f"missing required at parameter {element.name}")
+        return ats, last_index if ats else start
+    if first_index is None:
+        if element.optional:
+            return None, start
+        raise PatternMatchError(f"missing required at parameter {element.name}")
+    return ats[0], last_index
 
 
 def _next_text_token(tokens: list[str | MessageSegment], start: int) -> int | None:

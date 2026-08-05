@@ -7,9 +7,37 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neobot_app.browser.agent_browser import AgentBrowser
+from neobot_contracts.ports.screenshot import ScreenshotUnavailable
+
+if TYPE_CHECKING:
+    from neobot_app.browser.agent_browser.manager import BrowserManager
+
+
+class BrowserScreenshotBackend:
+    """ScreenshotService 内部后端：包装 BrowserAgentWrapper。
+
+    - get_manager() 懒调用 wrapper._ensure() 解析共享的 BrowserManager
+    - operation_lock 与浏览器技能共享同一把锁（跨聊天流串行化）
+    - wrapper 关闭后拒绝重启浏览器（避免关闭流程中静默拉起 Chromium）
+    """
+
+    def __init__(self, wrapper: BrowserAgentWrapper) -> None:
+        self._wrapper = wrapper
+
+    @property
+    def operation_lock(self) -> asyncio.Lock:
+        return self._wrapper.operation_lock
+
+    async def get_manager(self) -> "BrowserManager":
+        if self._wrapper._closed:
+            raise ScreenshotUnavailable(
+                "browser has been closed; screenshots are unavailable"
+            )
+        agent = await self._wrapper._ensure()
+        return agent._manager
 
 
 class BrowserAgentWrapper:
@@ -34,6 +62,7 @@ class BrowserAgentWrapper:
         self._browser_path = browser_path
         self._lifecycle = lifecycle_manager
         self._agent: AgentBrowser | None = None
+        self._closed = False
         self._init_lock = asyncio.Lock()
         self._operation_lock = asyncio.Lock()
 
@@ -62,6 +91,9 @@ class BrowserAgentWrapper:
                 await self._agent.start()
                 if self._lifecycle:
                     self._lifecycle.set_browser_instance(self)
+            # 浏览器已被（重新）启用：截图后端可再次提供服务。
+            # close() 置位 _closed 只对"关闭后不再有浏览器"的状态生效。
+            self._closed = False
         return self._agent
 
     async def open(self, url: str = "") -> dict:
@@ -72,6 +104,7 @@ class BrowserAgentWrapper:
 
     async def close(self) -> dict:
         async with self._init_lock:
+            self._closed = True
             if self._agent is not None:
                 await self._agent.close()
                 self._agent = None

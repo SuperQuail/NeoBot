@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neobot_modloader import PluginHookBus, PluginHostFacade
 
@@ -10,6 +10,9 @@ from neobot_app.observability.logging import set_runtime_event_dispatcher
 from neobot_app.observability.output import RuntimeOutput
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.application import NeoBotApplication
+
+if TYPE_CHECKING:
+    from neobot_contracts.ports.screenshot import ScreenshotPort
 from neobot_app.runtime.event_pipeline import EventPipeline
 from neobot_app.runtime.gateway import EventGateway
 from neobot_app.runtime.inbound_pipeline import InboundPipeline
@@ -150,6 +153,7 @@ def build_reply_orchestrator(
     balance_checker: Any,
     hook_bus: Any,
     file_server: Any,
+    skills_registry: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -178,6 +182,7 @@ def build_reply_orchestrator(
         balance_checker=balance_checker,
         runtime_events=hook_bus,
         file_server=file_server,
+        skills_registry=skills_registry,
     )
 
 
@@ -210,6 +215,7 @@ def build_pipelines_and_app(
     vision_provider: Any,
     browser_lifecycle_manager: Any,
     browser_instance: Any = None,
+    screenshots: "ScreenshotPort | None" = None,
     creator_image_service: Any = None,
     drawing_manager: Any = None,
     background_coros: list | None = None,
@@ -276,6 +282,7 @@ def build_pipelines_and_app(
         archive_summary_service=archive_summary_service,
         browser_lifecycle_manager=browser_lifecycle_manager,
         browser_instance=browser_instance,
+        screenshots=screenshots,
         creator_image_service=creator_image_service,
         drawing_manager=drawing_manager,
         background_coros=background_coros,
