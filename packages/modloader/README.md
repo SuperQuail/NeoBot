@@ -45,6 +45,20 @@ async def ping(args: str | None, reply: Reply):
 
 用户发送 `/ping hello` 时，`args` 会得到 `"hello"`。
 
+插件可通过 `Plugin(command_prefix="#")` 为全部命令设置固定前缀。若插件配置模型包含
+`command_prefix` 字段，加载时经过校验的配置值会自动覆盖该默认值：
+
+```python
+class Config(BaseModel):
+    command_prefix: str = "/"
+
+
+plugin = Plugin("ping", config=Config)
+```
+
+单个命令仍可用 `@plugin.command("ping", prefix="!")` 覆盖插件全局前缀。
+空字符串表示无前缀；前缀不能包含空白字符。
+
 ## 消息链
 
 处理器可以注入标准化后的 `Message` 对象。它会优先从 `event["message"]` 读取 OneBot 消息链；如果没有消息链，才使用 `raw_message` 作为纯文本兜底。

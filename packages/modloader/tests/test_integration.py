@@ -441,6 +441,111 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.mock_adapter.send.call_args.args[1], "pong")
 
+    async def test_e2e_global_command_prefix_from_config(self) -> None:
+        self._write_pkg(
+            "prefixed",
+            textwrap.dedent(
+                """\
+                from pydantic import BaseModel
+                from neobot_modloader import Plugin, Reply
+
+                class Config(BaseModel):
+                    command_prefix: str = "/"
+
+                plugin = Plugin("prefixed", config=Config)
+
+                @plugin.command("ping")
+                async def ping(reply: Reply):
+                    await reply.send("pong")
+                """
+            ),
+            manifest='name = "prefixed"\n[config]\ncommand_prefix = "#"\n',
+        )
+
+        self.runtime.load_all()
+        await self.runtime.load_registered()
+        await self.runtime.start_all()
+        slash = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "/ping"}
+        )
+        custom = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "#ping"}
+        )
+
+        self.assertFalse(slash.consumed)
+        self.assertTrue(custom.consumed)
+        self.assertEqual(self.mock_adapter.send.call_args.args[1], "pong")
+
+    async def test_e2e_command_prefix_override_wins(self) -> None:
+        self._write_pkg(
+            "prefixed",
+            textwrap.dedent(
+                """\
+                from pydantic import BaseModel
+                from neobot_modloader import Plugin, Reply
+
+                class Config(BaseModel):
+                    command_prefix: str = "#"
+
+                plugin = Plugin("prefixed", config=Config)
+
+                @plugin.command("ping", prefix="!")
+                async def ping(reply: Reply):
+                    await reply.send("pong")
+                """
+            ),
+            manifest='name = "prefixed"\n[config]\ncommand_prefix = "#"\n',
+        )
+
+        self.runtime.load_all()
+        await self.runtime.load_registered()
+        await self.runtime.start_all()
+        global_prefix = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "#ping"}
+        )
+        override = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "!ping"}
+        )
+
+        self.assertFalse(global_prefix.consumed)
+        self.assertTrue(override.consumed)
+        self.assertEqual(self.mock_adapter.send.call_args.args[1], "pong")
+
+    async def test_e2e_global_prefix_normalizes_prefixed_pattern_and_alias(self) -> None:
+        self._write_pkg(
+            "prefixed",
+            textwrap.dedent(
+                """\
+                from pydantic import BaseModel
+                from neobot_modloader import Plugin, Reply
+
+                class Config(BaseModel):
+                    command_prefix: str = "#"
+
+                plugin = Plugin("prefixed", config=Config)
+
+                @plugin.command("/ping", aliases=("/p",))
+                async def ping(reply: Reply):
+                    await reply.send("pong")
+                """
+            ),
+            manifest='name = "prefixed"\n[config]\ncommand_prefix = "#"\n',
+        )
+
+        self.runtime.load_all()
+        await self.runtime.load_registered()
+        await self.runtime.start_all()
+        command = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "#ping"}
+        )
+        alias = await self._dispatch(
+            {"post_type": "message", "message_type": "private", "user_id": 1, "raw_message": "#p"}
+        )
+
+        self.assertTrue(command.consumed)
+        self.assertTrue(alias.consumed)
+        self.assertEqual(self.mock_adapter.send.call_count, 2)
+
     async def test_e2e_agent_handler_registration(self) -> None:
         self._write_pkg(
             "helper",
