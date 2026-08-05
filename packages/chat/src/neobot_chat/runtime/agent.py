@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -23,7 +24,7 @@ from neobot_chat.schema.types import (
 )
 from neobot_chat.skills.inject import build_skill_preprocessor
 from neobot_chat.runtime.prompt import SystemPromptState
-from neobot_chat.skills.registry import SkillRegistry
+from neobot_chat.skills.registry import Skill, SkillRegistry
 from neobot_chat.tools.builtin import build_builtin_toolset
 from neobot_chat.tools.registry import AgentRegistry
 from neobot_chat.tools.toolset import Toolset
@@ -69,7 +70,9 @@ class Agent:
             agent_registry=agent_registry,
             cwd=cwd,
             command_timeout=command_timeout,
-            allowed_paths=[skill.path.parent for skill in skills.skills.values()] if skills else None,
+            # 复用已 resolve 并去重的 allowed_paths 快照（去掉 cwd 一份，BuiltinTools 会自行加上），
+            # 避免未 resolve 的相对路径与 _path_resolver 的 resolve 结果比较失配
+            allowed_paths=[p for p in self.allowed_paths if self.cwd is None or p != self.cwd],
             allowed_commands=allowed_commands,
             output=output,
         )
@@ -83,6 +86,7 @@ class Agent:
         self.system_prompt = system_prompt
         self.on_event = on_event
         self.preprocessor = preprocessor or self._build_legacy_preprocessor(skills)
+        self._close_task: asyncio.Task | None = None
 
     async def invoke(self, state: State) -> State:
         state, tools, messages = self._prepare(state)
@@ -175,8 +179,20 @@ class Agent:
         yield ChatChunk(state={**state, "messages": messages})
 
     async def close(self) -> None:
-        await self.toolset.executor.close()
-        await self.provider.close()
+        if self._close_task is None or (
+            self._close_task.done()
+            and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
+            self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
+
+    async def _close_resources(self) -> None:
+        results = await asyncio.gather(
+            self.toolset.executor.close(), self.provider.close(), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     def _all_tools(self) -> list[ToolDefinition]:
         return self.toolset.definitions()
@@ -187,8 +203,20 @@ class Agent:
         tools = self._all_tools() or None
         if self.preprocessor:
             state = self.preprocessor(state)
-        messages: list[Message] = list(state.get("messages", []))
+        raw_messages = state.get("messages", [])
+        messages: list[Message] = []
+        if isinstance(raw_messages, (list, tuple)):
+            messages = [
+                cast(Message, dict(message))
+                for message in raw_messages
+                if isinstance(message, Mapping)
+            ]
         matched_skills = state.get("_matched_skills") if self.skills else None
+        # state 由外部注入时可能携带非 Skill 数据，过滤掉避免 set_skills 渲染时崩溃
+        if isinstance(matched_skills, (list, tuple)):
+            matched_skills = [s for s in matched_skills if isinstance(s, Skill)] or None
+        else:
+            matched_skills = None
 
         system_parts: list[str] = []
         rest: list[Message] = []
@@ -286,12 +314,19 @@ class Agent:
             name = call["function"]["name"]
             raw = call["function"]["arguments"]
             try:
-                args = parse_tool_args(raw)
+                parsed_args = parse_tool_args(raw)
             except Exception as exc:
                 result = f"Error: 工具参数 JSON 解析失败: {exc}"
                 self._emit("error", {"name": name, "error": result})
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 continue
+            if not isinstance(parsed_args, Mapping):
+                arg_type = "null" if parsed_args is None else type(parsed_args).__name__
+                result = f"Error: 工具参数必须是 JSON 对象，实际类型: {arg_type}"
+                self._emit("error", {"name": name, "error": result})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                continue
+            args = dict(parsed_args)
             action = self._decide_tool_action(name, args)
 
             if action == "ask" and not await self._ask_tool_guard(name, args):
@@ -307,7 +342,7 @@ class Agent:
                 heartbeat()
             self._emit("tool_start", {"name": name, "args": args})
             try:
-                result = await self.toolset.executor.execute(name, args)
+                result = str(await self.toolset.executor.execute(name, args))
             except Exception as exc:
                 result = f"Error: {type(exc).__name__}: {exc}"
                 self._emit("error", {"name": name, "error": result})

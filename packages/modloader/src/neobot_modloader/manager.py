@@ -1,13 +1,70 @@
 from __future__ import annotations
 
-import inspect
 import asyncio
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.plugin import PluginState
+
+
+class ReentrantLock:
+    """按任务可重入的 asyncio 锁。
+
+    同一任务可嵌套获取（回调内经 plugin_control 重新进入同名操作不会自死锁）；
+    不同任务仍排队串行。``_pending`` 记录排队获取者，供运行时的闲置剪枝判断。
+    """
+
+    __slots__ = ("_lock", "_owner", "_depth", "_pending")
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task | None = None
+        self._depth = 0
+        self._pending = 0
+
+    async def __aenter__(self) -> "ReentrantLock":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.release()
+
+    async def acquire(self) -> None:
+        task = asyncio.current_task()
+        if self._owner is task and self._depth > 0:
+            self._depth += 1
+            return
+        self._pending += 1
+        try:
+            await self._lock.acquire()
+            self._owner = task
+            self._depth = 1
+        finally:
+            self._pending -= 1
+
+    def release(self) -> None:
+        if self._owner is not asyncio.current_task():
+            raise RuntimeError("lock released by a different task")
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+    def is_owned_by_current_task(self) -> bool:
+        return self._owner is asyncio.current_task()
+
+    def held_by_other_task(self) -> bool:
+        owner = self._owner
+        return owner is not None and owner is not asyncio.current_task()
+
+    def in_use(self) -> bool:
+        return self._owner is not None or self._pending > 0
+
+    def is_free(self) -> bool:
+        return not self.in_use()
 
 
 @dataclass(slots=True)
@@ -20,6 +77,9 @@ class PluginRecord:
     agent_registrations: list[tuple[str, Any]] = field(default_factory=list)
     cleanup_callbacks: list[Any] = field(default_factory=list)
     error: Exception | None = None
+    stop_failed: bool = False
+    _teardown_depth: int = field(default=0, repr=False)
+    _agent_close_pending: set[int] = field(default_factory=set, repr=False)
 
 
 class PluginHandle:
@@ -44,7 +104,9 @@ class PluginHandle:
     def capabilities(self) -> tuple[str, ...]:
         return tuple(_capability_names(self._record().plugin))
 
-    async def call(self, capability: str, payload: Mapping[str, Any] | None = None) -> Any:
+    async def call(
+        self, capability: str, payload: Mapping[str, Any] | None = None
+    ) -> Any:
         record = self._record()
         payload_dict = dict(payload or {})
         names = set(_capability_names(record.plugin))
@@ -107,7 +169,7 @@ class DefaultPluginManager:
         self._records: dict[str, PluginRecord] = {}
         self._registry_view = PluginRegistryView(self)
         self._lock = asyncio.Lock()
-        self._plugin_locks: dict[str, asyncio.Lock] = {}
+        self._plugin_locks: dict[str, ReentrantLock] = {}
 
     @property
     def registry_view(self) -> PluginRegistryView:
@@ -124,23 +186,45 @@ class DefaultPluginManager:
         if name in self._records:
             raise ValueError(f"插件已注册: {name}")
         self._records[name] = PluginRecord(name=name, plugin=plugin, context=context)
-        self._plugin_locks[name] = asyncio.Lock()
+        # Locks are intentionally permanent per name. Replacing one lets an operation
+        # queued on the old lock race a newly registered record.
+        self._plugin_locks.setdefault(name, ReentrantLock())
 
     def get_plugin(self, name: str) -> Any | None:
         record = self._records.get(name)
         return record.plugin if record is not None else None
 
-    async def remove_plugin(self, name: str) -> PluginRecord | None:
+    async def remove_plugin(
+        self,
+        name: str,
+        *,
+        expected: PluginRecord | None = None,
+        force: bool = False,
+    ) -> PluginRecord | None:
+        record = self._records.get(name) if expected is None else expected
+        if record is None:
+            return None
         lock = self._plugin_locks.get(name)
         if lock is None:
             return None
         async with lock:
-            record = self._records.get(name)
-            if record is None:
+            if self._records.get(name) is not record:
                 return None
-            await self._stop_plugin_locked(name)
-            self._records.pop(name, None)
-            self._plugin_locks.pop(name, None)
+            if force:
+                try:
+                    await self._stop_plugin_locked(record)
+                finally:
+                    if self._records.get(name) is record:
+                        self._records.pop(name)
+                current = self._records.get(name)
+                return record if current is None else None
+
+            teardown_ok = await self._stop_plugin_locked(record)
+            if not teardown_ok:
+                return record
+            if self._records.get(name) is not record:
+                return record if self._records.get(name) is None else None
+            self._records.pop(name)
             return record
 
     def get_state(self, name: str) -> PluginState:
@@ -154,90 +238,221 @@ class DefaultPluginManager:
         return list(record.subscriptions)
 
     def record_subscription(self, name: str, subscription: Any) -> None:
-        record = self._records.get(name)
-        if record is None:
-            raise KeyError(f"插件未注册: {name}")
+        record = self._record_for_resource(name)
         record.subscriptions.append(subscription)
 
-    def record_agent_registration(self, name: str, registered_name: str, agent: Any) -> None:
-        record = self._records.get(name)
-        if record is None:
-            raise KeyError(f"插件未注册: {name}")
+    def record_agent_registration(
+        self, name: str, registered_name: str, agent: Any
+    ) -> None:
+        record = self._record_for_resource(name)
         record.agent_registrations.append((registered_name, agent))
 
     def record_cleanup(self, name: str, cleanup: Any) -> None:
+        record = self._record_for_resource(name)
+        record.cleanup_callbacks.append(cleanup)
+
+    def _record_for_resource(self, name: str) -> PluginRecord:
         record = self._records.get(name)
         if record is None:
             raise KeyError(f"插件未注册: {name}")
-        record.cleanup_callbacks.append(cleanup)
+        if record._teardown_depth or record.state in {
+            PluginState.STOPPING,
+            PluginState.STOPPED,
+            PluginState.ERROR,
+        }:
+            raise RuntimeError(f"插件正在停止或已停止，不能再登记资源: {name}")
+        return record
 
     async def load_plugin(self, name: str) -> None:
-        async with self._plugin_locks[name]:
-            await self._load_plugin_locked(name)
+        record = self._records.get(name)
+        if record is None:
+            return
+        lock = self._plugin_locks[name]
+        async with lock:
+            if self._records.get(name) is record:
+                await self._load_plugin_locked(record)
 
-    async def _load_plugin_locked(self, name: str) -> None:
-        record = self._records[name]
+    async def _load_plugin_locked(self, record: PluginRecord) -> None:
+        name = record.name
         if record.state not in {PluginState.UNLOADED, PluginState.STOPPED}:
             return
+        if record.state is PluginState.STOPPED:
+            cleanup_errors = await self._teardown_owned_resources(record)
+            if cleanup_errors:
+                record.error = _error_from("插件清理失败", cleanup_errors)
+                return
+            record.error = None
         try:
             self._set_state(record, "LOADING")
             await self._maybe_await(record.plugin.on_load(record.context))
+        except asyncio.CancelledError:
+            # 取消不得留下 LOADING 僵尸纪录：进入终态、清理资源后重新抛出
+            record.state = PluginState.ERROR
+            record.error = RuntimeError(f"插件加载被取消 ({name})")
+            cleanup_errors = await self._teardown_owned_resources(record)
+            if cleanup_errors:
+                record.error = _error_from(
+                    "插件加载取消及回滚失败", [record.error, *cleanup_errors]
+                )
+            raise
         except Exception as exc:
             record.error = exc
             record.state = PluginState.ERROR
             self._logger.exception(f"插件加载失败 ({name}): {exc}")
-            self._cleanup_callbacks(record)
-            self._unsubscribe_all(record)
-            await self._cleanup_agents(record)
+            cleanup_errors = await self._teardown_owned_resources(record)
+            if cleanup_errors:
+                record.error = _error_from("插件加载及回滚失败", [exc, *cleanup_errors])
             return
-        record.state = PluginState.LOADED
-        record.error = None
+        if self._records.get(name) is record and record.state is PluginState.LOADING:
+            record.state = PluginState.LOADED
+            record.error = None
+            record.stop_failed = False
 
     async def start_plugin(self, name: str) -> None:
-        async with self._plugin_locks[name]:
-            await self._start_plugin_locked(name)
+        record = self._records.get(name)
+        if record is None:
+            return
+        lock = self._plugin_locks[name]
+        async with lock:
+            if self._records.get(name) is record:
+                await self._start_plugin_locked(record)
 
-    async def _start_plugin_locked(self, name: str) -> None:
-        record = self._records[name]
+    async def _start_plugin_locked(self, record: PluginRecord) -> None:
+        name = record.name
         if record.state is PluginState.STOPPED:
-            await self._load_plugin_locked(name)
+            await self._load_plugin_locked(record)
         if record.state is not PluginState.LOADED:
             return
         try:
             self._set_state(record, "STARTING")
             await self._maybe_await(record.plugin.on_start())
+        except asyncio.CancelledError:
+            record.state = PluginState.ERROR
+            record.error = RuntimeError(f"插件启动被取消 ({name})")
+            cleanup_errors = await self._teardown_owned_resources(record)
+            if cleanup_errors:
+                record.error = _error_from(
+                    "插件启动取消及回滚失败", [record.error, *cleanup_errors]
+                )
+            raise
         except Exception as exc:
             record.error = exc
             record.state = PluginState.ERROR
             self._logger.exception(f"插件启动失败 ({name}): {exc}")
-            self._cleanup_callbacks(record)
-            self._unsubscribe_all(record)
-            await self._cleanup_agents(record)
+            cleanup_errors = await self._teardown_owned_resources(record)
+            if cleanup_errors:
+                record.error = _error_from("插件启动及回滚失败", [exc, *cleanup_errors])
             return
-        record.state = PluginState.RUNNING
-        record.error = None
+        if self._records.get(name) is record and record.state is PluginState.STARTING:
+            record.state = PluginState.RUNNING
+            record.error = None
 
     async def stop_plugin(self, name: str) -> None:
-        async with self._plugin_locks[name]:
-            await self._stop_plugin_locked(name)
-
-    async def _stop_plugin_locked(self, name: str) -> None:
-        record = self._records[name]
-        if record.state in {PluginState.UNLOADED, PluginState.STOPPED}:
+        record = self._records.get(name)
+        if record is None:
             return
-        should_mark_stopped = record.state is not PluginState.ERROR
-        if record.state in {PluginState.LOADED, PluginState.RUNNING}:
-            try:
+        lock = self._plugin_locks[name]
+        async with lock:
+            if self._records.get(name) is record:
+                await self._stop_plugin_locked(record)
+
+    async def _stop_plugin_locked(self, record: PluginRecord) -> bool:
+        name = record.name
+        if record.state is PluginState.STOPPING or record._teardown_depth:
+            # The active outer stop owns final state/error bookkeeping. A same-task
+            # remove must report incomplete without poisoning a stop that may succeed.
+            return False
+
+        initial_state = record.state
+        terminal_state = (
+            PluginState.ERROR
+            if initial_state is PluginState.ERROR
+            else PluginState.STOPPED
+        )
+        persistent_error = record.error if initial_state is PluginState.ERROR else None
+        if initial_state is PluginState.ERROR and persistent_error is None:
+            persistent_error = RuntimeError(f"插件处于错误状态但没有错误信息: {name}")
+        recoverable_error = (
+            record.error if initial_state is not PluginState.ERROR else None
+        )
+        errors: list[Exception] = (
+            [persistent_error] if persistent_error is not None else []
+        )
+        cancellation: asyncio.CancelledError | None = None
+        callback_needed = initial_state in {
+            PluginState.LOADED,
+            PluginState.RUNNING,
+        } or (initial_state is PluginState.STOPPED and record.stop_failed)
+
+        try:
+            if callback_needed:
+                callback_error_before = record.error
+                callback_failed = False
+                cancellation_baseline = _cancellation_count()
                 self._set_state(record, "STOPPING")
-                await self._maybe_await(record.plugin.on_stop())
-            except Exception as exc:
-                record.error = exc
-                self._logger.exception(f"插件停止失败 ({name}): {exc}")
-        self._cleanup_callbacks(record)
-        self._unsubscribe_all(record)
-        await self._cleanup_agents(record)
-        if should_mark_stopped:
-            record.state = PluginState.STOPPED
+                try:
+                    await self._maybe_await(record.plugin.on_stop())
+                except asyncio.CancelledError as exc:
+                    callback_failed = True
+                    errors.append(_cancelled_failure(f"插件停止被取消 ({name})", exc))
+                    if _cancellation_requested_since(cancellation_baseline):
+                        cancellation = exc
+                    else:
+                        self._logger.exception(f"插件停止回调取消失败 ({name}): {exc}")
+                except Exception as exc:
+                    callback_failed = True
+                    errors.append(exc)
+                    self._logger.exception(f"插件停止失败 ({name}): {exc}")
+                finally:
+                    callback_side_error = record.error
+                    if (
+                        callback_side_error is not None
+                        and callback_side_error is not callback_error_before
+                    ):
+                        _append_error_once(errors, callback_side_error)
+                    elif callback_failed and callback_error_before is not None:
+                        _append_error_once(errors, callback_error_before)
+                    record.stop_failed = callback_failed
+                    record.state = terminal_state
+                    record.error = (
+                        _error_from("插件停止失败", errors) if errors else None
+                    )
+            else:
+                record.state = terminal_state
+                if persistent_error is not None:
+                    record.error = persistent_error
+
+            cleanup_errors: list[Exception] = []
+            cleanup_cancellation_baseline = _cancellation_count()
+            try:
+                await self._teardown_owned_resources(
+                    record,
+                    errors=cleanup_errors,
+                    cancellation_baseline=cleanup_cancellation_baseline,
+                )
+            except asyncio.CancelledError as exc:
+                if not any(error.__cause__ is exc for error in cleanup_errors):
+                    cleanup_errors.append(
+                        _cancelled_failure(f"插件资源清理被取消 ({name})", exc)
+                    )
+                if cancellation is None:
+                    cancellation = exc
+
+            if cleanup_errors:
+                if (
+                    not callback_needed
+                    and persistent_error is None
+                    and recoverable_error is not None
+                ):
+                    _append_error_once(errors, recoverable_error)
+                errors.extend(cleanup_errors)
+        finally:
+            record.state = terminal_state
+            record.error = _error_from("插件停止失败", errors) if errors else None
+
+        if cancellation is not None:
+            raise cancellation
+        return not errors
 
     async def load_all(self) -> None:
         async with self._lock:
@@ -265,47 +480,209 @@ class DefaultPluginManager:
         if isinstance(next_state, PluginState):
             record.state = next_state
 
-    def _unsubscribe_all(self, record: PluginRecord) -> None:
-        subscriptions = record.subscriptions
-        record.subscriptions = []
-        for subscription in subscriptions:
+    async def _teardown_owned_resources(
+        self,
+        record: PluginRecord,
+        *,
+        errors: list[Exception] | None = None,
+        cancellation_baseline: int | None = None,
+    ) -> list[Exception]:
+        collected = [] if errors is None else errors
+        baseline = (
+            _cancellation_count()
+            if cancellation_baseline is None
+            else cancellation_baseline
+        )
+        record._teardown_depth += 1
+        try:
+            self._cleanup_callbacks(record, collected, baseline)
+            self._unsubscribe_all(record, collected, baseline)
+            await self._cleanup_agents(record, collected, baseline)
+        finally:
+            record._teardown_depth -= 1
+        return collected
+
+    def _unsubscribe_all(
+        self,
+        record: PluginRecord,
+        errors: list[Exception],
+        cancellation_baseline: int,
+    ) -> None:
+        for subscription in list(record.subscriptions):
             try:
                 subscription.unsubscribe()
-            except Exception as exc:
+            except asyncio.CancelledError as exc:
+                error = _cancelled_failure(f"插件订阅清理被取消 ({record.name})", exc)
+                errors.append(error)
                 self._logger.exception(f"插件订阅清理失败 ({record.name}): {exc}")
+                if _cancellation_requested_since(cancellation_baseline):
+                    raise
+            except Exception as exc:
+                errors.append(exc)
+                self._logger.exception(f"插件订阅清理失败 ({record.name}): {exc}")
+            else:
+                _remove_identity(record.subscriptions, subscription)
 
-    def _cleanup_callbacks(self, record: PluginRecord) -> None:
-        callbacks = record.cleanup_callbacks
-        record.cleanup_callbacks = []
-        for cleanup in reversed(callbacks):
+    def _cleanup_callbacks(
+        self,
+        record: PluginRecord,
+        errors: list[Exception],
+        cancellation_baseline: int,
+    ) -> None:
+        for cleanup in reversed(list(record.cleanup_callbacks)):
             try:
                 cleanup()
-            except Exception as exc:
+            except asyncio.CancelledError as exc:
+                error = _cancelled_failure(f"插件资源清理被取消 ({record.name})", exc)
+                errors.append(error)
                 self._logger.exception(f"插件资源清理失败 ({record.name}): {exc}")
-
-    async def _cleanup_agents(self, record: PluginRecord) -> None:
-        registrations = record.agent_registrations
-        record.agent_registrations = []
-        registrar = getattr(record.context, "agents", None)
-        for registered_name, agent in registrations:
-            try:
-                unregister = getattr(registrar, "unregister", None)
-                if callable(unregister):
-                    unregister(registered_name)
+                if _cancellation_requested_since(cancellation_baseline):
+                    raise
             except Exception as exc:
-                self._logger.exception(f"插件 Agent 注销失败 ({record.name}/{registered_name}): {exc}")
+                errors.append(exc)
+                self._logger.exception(f"插件资源清理失败 ({record.name}): {exc}")
+            else:
+                _remove_last_identity(record.cleanup_callbacks, cleanup)
+
+    async def _cleanup_agents(
+        self,
+        record: PluginRecord,
+        errors: list[Exception],
+        cancellation_baseline: int,
+    ) -> None:
+        registrar = getattr(record.context, "agents", None)
+        for registration in list(record.agent_registrations):
+            registered_name, agent = registration
+            # 优先走支持在途委托排空的 unregister_and_drain（由注册表负责注销、
+            # 取消在途任务并关闭实例）；旧注册表回退 unregister + close 组合
+            unregister_and_drain = getattr(registrar, "unregister_and_drain", None)
+            if callable(unregister_and_drain):
+                try:
+                    await self._maybe_await(unregister_and_drain(registered_name))
+                except asyncio.CancelledError as exc:
+                    error = _cancelled_failure(
+                        f"插件 Agent 注销被取消 ({record.name}/{registered_name})", exc
+                    )
+                    errors.append(error)
+                    self._logger.exception(
+                        f"插件 Agent 注销失败 ({record.name}/{registered_name}): {exc}"
+                    )
+                    if _cancellation_requested_since(cancellation_baseline):
+                        raise
+                except Exception as exc:
+                    errors.append(exc)
+                    self._logger.exception(
+                        f"插件 Agent 注销失败 ({record.name}/{registered_name}): {exc}"
+                    )
+                else:
+                    _remove_identity(record.agent_registrations, registration)
+                continue
+
+            registration_id = id(registration)
+            if registration_id not in record._agent_close_pending:
+                try:
+                    unregister = getattr(registrar, "unregister", None)
+                    if callable(unregister):
+                        await self._maybe_await(unregister(registered_name))
+                except asyncio.CancelledError as exc:
+                    error = _cancelled_failure(
+                        f"插件 Agent 注销被取消 ({record.name}/{registered_name})", exc
+                    )
+                    errors.append(error)
+                    self._logger.exception(
+                        f"插件 Agent 注销失败 ({record.name}/{registered_name}): {exc}"
+                    )
+                    if _cancellation_requested_since(cancellation_baseline):
+                        raise
+                    continue
+                except Exception as exc:
+                    errors.append(exc)
+                    self._logger.exception(
+                        f"插件 Agent 注销失败 ({record.name}/{registered_name}): {exc}"
+                    )
+                    continue
+                record._agent_close_pending.add(registration_id)
+
             try:
                 close = getattr(agent, "close", None)
                 if callable(close):
                     await self._maybe_await(close())
+            except asyncio.CancelledError as exc:
+                error = _cancelled_failure(
+                    f"插件 Agent 关闭被取消 ({record.name}/{registered_name})", exc
+                )
+                errors.append(error)
+                self._logger.exception(
+                    f"插件 Agent 关闭失败 ({record.name}/{registered_name}): {exc}"
+                )
+                if _cancellation_requested_since(cancellation_baseline):
+                    raise
             except Exception as exc:
-                self._logger.exception(f"插件 Agent 关闭失败 ({record.name}/{registered_name}): {exc}")
+                errors.append(exc)
+                self._logger.exception(
+                    f"插件 Agent 关闭失败 ({record.name}/{registered_name}): {exc}"
+                )
+            else:
+                _remove_identity(record.agent_registrations, registration)
+                record._agent_close_pending.discard(registration_id)
 
 
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _error_from(message: str, errors: list[Exception]) -> Exception:
+    if len(errors) == 1:
+        return errors[0]
+    details = "; ".join(filter(None, (_error_details(error) for error in errors)))
+    group_message = f"{message}: {details}" if details else message
+    return ExceptionGroup(group_message, errors)
+
+
+def _error_details(error: Exception) -> str:
+    if isinstance(error, ExceptionGroup):
+        return "; ".join(
+            filter(None, (_error_details(nested) for nested in error.exceptions))
+        )
+    return str(error)
+
+
+def _append_error_once(errors: list[Exception], error: Exception) -> None:
+    if all(existing is not error for existing in errors):
+        errors.append(error)
+
+
+def _cancellation_count() -> int:
+    task = asyncio.current_task()
+    return task.cancelling() if task is not None else 0
+
+
+def _cancellation_requested_since(baseline: int) -> bool:
+    return _cancellation_count() > baseline
+
+
+def _cancelled_failure(
+    message: str, cancellation: asyncio.CancelledError
+) -> RuntimeError:
+    error = RuntimeError(message)
+    error.__cause__ = cancellation
+    return error
+
+
+def _remove_identity(items: list[Any], target: Any) -> None:
+    for index, item in enumerate(items):
+        if item is target:
+            items.pop(index)
+            return
+
+
+def _remove_last_identity(items: list[Any], target: Any) -> None:
+    for index in range(len(items) - 1, -1, -1):
+        if items[index] is target:
+            items.pop(index)
+            return
 
 
 def _capability_names(plugin: Any) -> list[str]:

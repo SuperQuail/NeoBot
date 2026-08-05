@@ -4,15 +4,152 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import os
+import re
+import stat
+from pathlib import Path
 from typing import Any
 
 from neobot_chat.schema.exceptions import ToolError
 from neobot_chat.schema.protocol import ToolExecutor
-from neobot_chat.schema.types import ToolAccessPolicy, ToolAccessRule, ToolDefinition, ToolGuardContext
+from neobot_chat.schema.types import (
+    ToolAccessPolicy,
+    ToolAccessRule,
+    ToolDefinition,
+    ToolGuardContext,
+)
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
 from neobot_app.time_context import monotonic_seconds
+
+
+# 技能激活限制工具（allowed-tools）时始终可用的基础工具白名单。
+# 除基础回复工具外，还包括技能读取基础设施（skills__read_manifest /
+# skills__read_resource / agents__list / agents__delegate）：技能作者不会把这些
+# 写进 allowed-tools，但模型必须依赖它们先读取技能正文并按需委托子代理，
+# 因此不能被技能限制掉。
+# skills__read_resource 本身有注册表 + 路径授权；agents__list 只读不执行；
+# agents__delegate 的副作用受 AgentRegistry 注册表 + 超时/排空管理约束，
+# 是插件能力的核心通道，同样不能被技能声明限制掉。
+# check_background_tasks / cancel_task / check_last_drawing /
+# mark_scheduled_task_complete 属于会话基础设施：技能受限轮次里模型必须仍能
+# 查询/中止后台任务（如用户要求中止当前操作时响应 cancel_task），
+# 同样不能被技能声明限制掉。
+_SKILL_GUARD_BASE_TOOLS = frozenset(
+    {
+        "cancel",
+        "split_reply",
+        "send_reply",
+        "wait",
+        "send_emoji",
+        "send_long_reply",
+        "speak",
+        "skills__read_manifest",
+        "skills__read_resource",
+        "agents__list",
+        "agents__delegate",
+        "check_background_tasks",
+        "cancel_task",
+        "check_last_drawing",
+        "mark_scheduled_task_complete",
+    }
+)
+_MAX_TOOL_TEXT_CHARS = 16 * 1024
+_MAX_SKILL_RESOURCE_BYTES = 1024 * 1024
+_SKILL_INTERNAL_KEYS = frozenset(
+    {"pipeline_key", "_numbering_mapping", "_delegate_context"}
+)
+_SESSION_ERROR_KEYS = frozenset({"error", "errors"})
+_SESSION_FAILURE_PREFIXES = ("未知工具", "工具执行失败", "错误")
+
+
+def _bounded_text(value: Any, limit: int = _MAX_TOOL_TEXT_CHARS) -> str:
+    if isinstance(value, str):
+        text = value[: limit + 1]
+    elif isinstance(value, (dict, list, tuple)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=lambda _: "<object>")[
+                : limit + 1
+            ]
+        except (TypeError, ValueError, RecursionError):
+            text = f"<{type(value).__name__}>"
+    else:
+        try:
+            text = str(value)[: limit + 1]
+        except Exception:
+            text = f"<{type(value).__name__}>"
+    return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+
+def _path_is_within(path: Path, base: Path) -> bool:
+    try:
+        normalized_path = os.path.normcase(os.path.abspath(path))
+        normalized_base = os.path.normcase(os.path.abspath(base))
+        return os.path.commonpath((normalized_path, normalized_base)) == normalized_base
+    except (OSError, ValueError):
+        return False
+
+
+def _opened_file_path(file_obj: Any) -> Path | None:
+    """Return the OS-resolved path for an already-open file handle when available."""
+    try:
+        fd = file_obj.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            get_final_path = ctypes.WinDLL(
+                "kernel32", use_last_error=True
+            ).GetFinalPathNameByHandleW
+            get_final_path.argtypes = (
+                wintypes.HANDLE,
+                wintypes.LPWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+            )
+            get_final_path.restype = wintypes.DWORD
+            handle = msvcrt.get_osfhandle(fd)
+            length = get_final_path(handle, None, 0, 0)
+            if not length:
+                return None
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            written = get_final_path(handle, buffer, len(buffer), 0)
+            if not written or written >= len(buffer):
+                return None
+            value = buffer.value
+            if value.startswith("\\\\?\\UNC\\"):
+                value = "\\\\" + value[8:]
+            elif value.startswith("\\\\?\\"):
+                value = value[4:]
+            return Path(value)
+        except (AttributeError, OSError, ValueError):
+            return None
+
+    for fd_root in ("/proc/self/fd", "/dev/fd"):
+        fd_path = Path(fd_root) / str(fd)
+        try:
+            if fd_path.is_symlink():
+                return Path(os.path.realpath(fd_path))
+        except OSError:
+            continue
+    return None
+
+
+def _same_open_file(first: os.stat_result, second: os.stat_result) -> bool:
+    first_ino = getattr(first, "st_ino", 0)
+    second_ino = getattr(second, "st_ino", 0)
+    if not first_ino or not second_ino:
+        return False
+    return first_ino == second_ino and getattr(first, "st_dev", None) == getattr(
+        second, "st_dev", None
+    )
 
 
 def _default_resolver(
@@ -57,6 +194,8 @@ class ReplyToolExecutor(ToolExecutor):
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
         skill_manager: Any = None,
+        skills_registry: Any = None,
+        allowed_tools: set[str] | None = None,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -89,6 +228,8 @@ class ReplyToolExecutor(ToolExecutor):
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
         self._skill_manager = skill_manager
+        self._skills_registry = skills_registry
+        self._allowed_tools = allowed_tools
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
@@ -105,10 +246,66 @@ class ReplyToolExecutor(ToolExecutor):
         self._session_task_info: dict[int, dict] = {}
         self._session_task_queue: dict[str, dict] = {}
         self._session_completed: dict[str, list[dict]] = {}
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._logger = logger or NullLogger()
+        self._skill_tokens: dict[str, Any] = {}
+
+    @property
+    def closed(self) -> bool:
+        """Whether close has begun and new session work is rejected."""
+        return self._closed
+
+    async def __aenter__(self) -> ReplyToolExecutor:
+        if self._closed:
+            raise RuntimeError("ReplyToolExecutor is closed")
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        await self.close()
 
     def definitions(self) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
+        if self._skills_registry is not None and getattr(
+            self._skills_registry, "skills", None
+        ):
+            tools.append(
+                _tool_def(
+                    "skills__read_manifest",
+                    "读取一个技能的完整说明文档（SKILL.md 正文）。"
+                    "技能 id 格式为 owner:name，由提示词中的 <可用技能> 列表提供。"
+                    "执行技能任务前必须先调用本工具获取说明。",
+                    {
+                        "properties": {
+                            "skill_id": {
+                                "type": "string",
+                                "description": "技能 id（格式 owner:name）。",
+                            },
+                        },
+                        "required": ["skill_id"],
+                    },
+                )
+            )
+            tools.append(
+                _tool_def(
+                    "skills__read_resource",
+                    "读取技能目录内的参考资料（相对路径）。"
+                    "仅允许技能目录内的文件，禁止绝对路径或 .. 越界。",
+                    {
+                        "properties": {
+                            "skill_id": {
+                                "type": "string",
+                                "description": "技能 id（格式 owner:name）。",
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "技能目录内的相对路径，如 references/cities.md。",
+                            },
+                        },
+                        "required": ["skill_id", "path"],
+                    },
+                )
+            )
         if self._cancel is not None:
             tools.append(
                 _tool_def(
@@ -306,6 +503,7 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
+        if self._emoji is not None:
             tools.append(
                 _tool_def(
                     "search_custom_emoji",
@@ -316,7 +514,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "properties": {
                             "keyword": {
                                 "type": "string",
-                                "description": "搜索关键词，如\"狗\"、\"贴纸\"、\"猫\"等。",
+                                "description": '搜索关键词，如"狗"、"贴纸"、"猫"等。',
                             },
                         },
                         "required": ["keyword"],
@@ -361,7 +559,9 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 ),
             )
-        if self._tts_service is not None and getattr(self._tts_service, "enabled", False):
+        if self._tts_service is not None and getattr(
+            self._tts_service, "enabled", False
+        ):
             tools.append(
                 _tool_def(
                     "speak",
@@ -469,10 +669,41 @@ class ReplyToolExecutor(ToolExecutor):
             )
         # 合并 Skill 系统的工具定义
         if self._skill_manager is not None:
-            tools.extend(self._skill_manager.get_tools())
+            skill_tools = self._skill_manager.get_tools()
+            tools.extend(skill_tools)
+            capture = getattr(self._skill_manager, "capture_execution_token", None)
+            if callable(capture):
+                self._skill_tokens = {
+                    definition["function"]["name"]: token
+                    for definition in skill_tools
+                    if (token := capture(definition["function"]["name"])) is not None
+                }
+        # allowed-tools 白名单：非空时过滤掉「不在白名单且不在 allowed_tools 中」的工具
+        if self._allowed_tools:
+            allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
+            tools = [t for t in tools if t["function"]["name"] in allowed]
+        names: set[str] = set()
+        for tool in tools:
+            name = tool["function"]["name"]
+            if name in names:
+                raise ValueError(f"重复的最终工具定义: {name}")
+            names.add(name)
         return tools
 
+    def is_tool_authorized(self, name: str) -> bool:
+        """Return whether the active skill policy permits a final tool name."""
+        return not self._allowed_tools or name in (
+            _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
+        )
+
+    @staticmethod
+    def authorization_error(name: str) -> str:
+        return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
+
     async def execute(self, name: str, args: dict) -> str:
+        # allowed-tools 白名单拦截（须在 skills__read_* 等所有路由之前）
+        if not self.is_tool_authorized(name):
+            return self.authorization_error(name)
         if name == "cancel":
             return await self._execute_cancel(args)
         if name == "split_reply":
@@ -507,22 +738,72 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
+        # Markdown 技能读取（优先于 SkillManager 的 __ 路由）
+        if name == "skills__read_manifest":
+            return self._read_skill_manifest(args)
+        if name == "skills__read_resource":
+            return self._read_skill_resource(args)
         # Skill 系统路由（优先于 ToolError）
         if self._skill_manager is not None and "__" in name:
-            # 自动注入当前对话上下文，skill 工具不需要也不应自行指定
-            enriched = dict(args)
+            token = self._skill_tokens.get(name)
+            capture = getattr(self._skill_manager, "capture_execution_token", None)
+            if token is None and callable(capture):
+                # Direct executor users may execute before asking for definitions.
+                token = capture(name)
+                if token is None:
+                    return f"未知工具: {name}"
+            # 自动注入当前对话上下文，skill 工具不需要也不应自行指定。
+            # 模型伪造的内部键（pipeline_key/_numbering_mapping/_delegate_context）
+            # 一律剥离，由会话状态覆盖。
+            enriched = {
+                key: value
+                for key, value in dict(args).items()
+                if key not in _SKILL_INTERNAL_KEYS
+            }
             if self._conv_kind and self._conv_id:
                 enriched["pipeline_key"] = f"{self._conv_kind}:{self._conv_id}"
             if self._numbering is not None:
-                enriched["_numbering_mapping"] = self._numbering.mapping
+                mapping = getattr(self._numbering, "mapping", None)
+                if isinstance(mapping, dict):
+                    enriched["_numbering_mapping"] = mapping
+            if self._chat_context and name.startswith("agents__"):
+                # 仅子 Agent 委派需要当前对话上下文，避免污染其他 skill 工具参数
+                enriched["_delegate_context"] = self._chat_context
             if self._skill_manager.is_session_tool(name):
-                return await self._execute_session_tool(name, enriched)
-            return await self._skill_manager.execute(name, enriched)
+                return await self._execute_session_tool(name, enriched, token)
+            return await self._execute_skill(name, enriched, token)
         raise ToolError(f"Unknown reply tool: {name}")
 
-    async def _execute_session_tool(self, name: str, args: dict) -> str:
+    async def _execute_skill(self, name: str, args: dict, token: Any) -> str:
+        if token is None:
+            return await self._skill_manager.execute(name, args)
+        return await self._skill_manager.execute(name, args, token=token)
+
+    async def _execute_session_tool(
+        self, name: str, args: dict, token: Any = None
+    ) -> str:
         """将会话工具提交到后台执行（同一管线最多 1 运行 + 1 排队）。"""
-        pipeline_key = str(args.get("pipeline_key", ""))
+        if self._closed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "closed",
+                    "tool": name,
+                    "message": "回复执行器已关闭，拒绝提交新的会话工具。",
+                },
+                ensure_ascii=False,
+            )
+        pipeline_key = str(args.get("pipeline_key", "") or "")
+        if not pipeline_key:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "missing_pipeline",
+                    "tool": name,
+                    "message": "无法确定当前会话，会话工具已拒绝执行。",
+                },
+                ensure_ascii=False,
+            )
         conv_kind = self._conv_kind
         conv_id = self._conv_id
 
@@ -548,6 +829,7 @@ class ReplyToolExecutor(ToolExecutor):
             self._session_task_queue[pipeline_key] = {
                 "name": name,
                 "args": args,
+                "token": token,
                 "conv_kind": conv_kind,
                 "conv_id": conv_id,
                 "queued_at": monotonic_seconds(),
@@ -570,12 +852,30 @@ class ReplyToolExecutor(ToolExecutor):
                 ensure_ascii=False,
             )
 
-        return self._start_session_tool(name, args, pipeline_key, conv_kind, conv_id)
+        return self._start_session_tool(
+            name, args, pipeline_key, conv_kind, conv_id, token
+        )
 
     def _start_session_tool(
-        self, name: str, args: dict, pipeline_key: str, conv_kind: str, conv_id: str,
+        self,
+        name: str,
+        args: dict,
+        pipeline_key: str,
+        conv_kind: str,
+        conv_id: str,
+        token: Any = None,
     ) -> str:
         """创建并启动会话工具任务，完成后自动处理排队。"""
+        if self._closed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "closed",
+                    "tool": name,
+                    "message": "回复执行器已关闭，拒绝提交新的会话工具。",
+                },
+                ensure_ascii=False,
+            )
         task = asyncio.create_task(
             self._run_session_tool(
                 name=name,
@@ -583,6 +883,7 @@ class ReplyToolExecutor(ToolExecutor):
                 pipeline_key=pipeline_key,
                 conv_kind=conv_kind,
                 conv_id=conv_id,
+                token=token,
             )
         )
         tid = id(task)
@@ -596,6 +897,27 @@ class ReplyToolExecutor(ToolExecutor):
         def _cleanup(t: asyncio.Task) -> None:
             self._session_tasks.discard(t)
             info = self._session_task_info.pop(tid, None)
+            # 关闭后不得消费排队项、不得再启动新任务
+            if self._closed:
+                return
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    self._logger.warning(
+                        "会话工具任务异常",
+                        tool=name,
+                        pipeline_key=info["pipeline_key"] if info else "",
+                        error_type=type(exc).__name__,
+                    )
+                    if info is not None:
+                        started = info.get("started_at", 0.0) or 0.0
+                        self._record_session_completion(
+                            info["name"],
+                            info["pipeline_key"],
+                            "error",
+                            "工具执行异常",
+                            max(0.0, monotonic_seconds() - started),
+                        )
             if info:
                 pk = info["pipeline_key"]
                 if pk and pk in self._session_task_queue:
@@ -611,6 +933,7 @@ class ReplyToolExecutor(ToolExecutor):
                         pipeline_key=pk,
                         conv_kind=queued["conv_kind"],
                         conv_id=queued["conv_id"],
+                        token=queued.get("token"),
                     )
 
         task.add_done_callback(_cleanup)
@@ -638,7 +961,9 @@ class ReplyToolExecutor(ToolExecutor):
         """手动取消后台任务或会话工具。"""
         task_type = str(args.get("task_type", ""))
         if not self._conv_kind or not self._conv_id:
-            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False
+            )
         pipeline_key = f"{self._conv_kind}:{self._conv_id}"
 
         if task_type == "session_tool":
@@ -660,29 +985,123 @@ class ReplyToolExecutor(ToolExecutor):
                 cancelled.append(f"运行中任务({cancelled_running}个)")
 
             if not cancelled:
-                return json.dumps({
-                    "ok": True,
-                    "message": "当前管线没有正在执行或排队的会话工具",
-                }, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "message": "当前管线没有正在执行或排队的会话工具",
+                    },
+                    ensure_ascii=False,
+                )
             self._logger.info(
                 "主Agent取消会话工具",
                 pipeline_key=pipeline_key,
                 cancelled=cancelled,
             )
-            return json.dumps({
-                "ok": True,
-                "cancelled": cancelled,
-                "message": f"已取消：{', '.join(cancelled)}。排队的任务（如有）将不会执行。",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "cancelled": cancelled,
+                    "message": f"已取消：{', '.join(cancelled)}。排队的任务（如有）将不会执行。",
+                },
+                ensure_ascii=False,
+            )
 
         if task_type == "drawing_cooldown":
             if self._drawing_manager is None:
-                return json.dumps({"ok": False, "error": "绘图系统未配置"}, ensure_ascii=False)
+                return json.dumps(
+                    {"ok": False, "error": "绘图系统未配置"}, ensure_ascii=False
+                )
             self._drawing_manager.cancel_cooldown(pipeline_key)
             self._logger.info("主Agent取消绘图冷却", pipeline_key=pipeline_key)
-            return json.dumps({"ok": True, "message": "已取消当前管线的绘图冷却限制"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": True, "message": "已取消当前管线的绘图冷却限制"},
+                ensure_ascii=False,
+            )
 
-        return json.dumps({"ok": False, "error": f"未知任务类型: {task_type}"}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": False, "error": f"未知任务类型: {task_type}"}, ensure_ascii=False
+        )
+
+    @staticmethod
+    def _parse_session_timeout(raw: Any) -> int:
+        """防御性解析模型传入的 timeout_seconds 并钳制到 [1, 1800]。
+
+        数值零、空值、布尔值、Infinity/NaN 与畸形输入回退默认 300；
+        负数钳制为 1，正小数向零取整。
+        """
+        if raw is None or isinstance(raw, bool):
+            return 300
+        try:
+            if isinstance(raw, int):
+                parsed = raw
+                if parsed == 0:
+                    return 300
+            else:
+                numeric = float(raw)
+                if not math.isfinite(numeric) or numeric == 0:
+                    return 300
+                parsed = int(numeric)
+        except (TypeError, ValueError, OverflowError):
+            return 300
+        return max(1, min(parsed, 1800))
+
+    @staticmethod
+    def _classify_session_result(result_text: str) -> tuple[bool, str]:
+        """Return success and a safe failure summary for a session result."""
+        parsed: Any = None
+        parsed_json = False
+        try:
+            parsed = json.loads(result_text)
+            parsed_json = True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        bare_text = parsed if isinstance(parsed, str) else result_text
+        stripped = bare_text.strip()
+        if stripped.startswith(
+            _SESSION_FAILURE_PREFIXES
+        ) or stripped.lower().startswith("error:"):
+            return False, stripped
+
+        if not parsed_json or not isinstance(parsed, dict):
+            # Empty JSON containers are valid successful results.
+            return True, ""
+
+        for key, value in parsed.items():
+            if str(key).casefold() in _SESSION_ERROR_KEYS:
+                return False, _bounded_text(value, 200)
+
+        status = parsed.get("status")
+        if isinstance(status, str) and status.strip().casefold() in {
+            "cancelled",
+            "error",
+            "failed",
+            "failure",
+            "timeout",
+        }:
+            return False, status.strip()
+
+        if "ok" not in parsed:
+            return True, ""
+        ok = parsed["ok"]
+        if isinstance(ok, bool):
+            success = ok
+        elif ok is None:
+            success = False
+        elif isinstance(ok, (int, float)):
+            success = bool(ok) and (not isinstance(ok, float) or math.isfinite(ok))
+        elif isinstance(ok, str):
+            success = ok.strip().casefold() not in {
+                "false",
+                "no",
+                "0",
+                "0.0",
+                "none",
+                "",
+            }
+        else:
+            success = True
+        return success, "" if success else result_text
 
     async def _run_session_tool(
         self,
@@ -691,6 +1110,7 @@ class ReplyToolExecutor(ToolExecutor):
         pipeline_key: str,
         conv_kind: str,
         conv_id: str,
+        token: Any = None,
     ) -> None:
         """在后台执行会话工具并将结果发布到 NotificationHub。
 
@@ -698,25 +1118,21 @@ class ReplyToolExecutor(ToolExecutor):
         额外 +10 秒留给 NotificationHub publish 等收尾操作。
         """
         started_at = monotonic_seconds()
-        timeout_seconds = int(args.get("timeout_seconds", 300) or 300)
-        timeout_seconds = max(1, min(timeout_seconds, 1800))
+        timeout_seconds = self._parse_session_timeout(args.get("timeout_seconds", 300))
         status = "completed"
         result_summary = ""
         notification: str | None = None
 
         try:
             result = await asyncio.wait_for(
-                self._skill_manager.execute(name, args),
+                self._execute_skill(name, args, token),
                 timeout=timeout_seconds + 10,
             )
-            success = True
-            result_text = str(result)
-            try:
-                parsed = json.loads(result_text)
-                if isinstance(parsed, dict) and parsed.get("ok") is False:
-                    success = False
-            except (json.JSONDecodeError, TypeError):
-                pass
+            result_text = _bounded_text(result)
+            success, error_msg = self._classify_session_result(result_text)
+            if result_text.startswith("工具不可用或已更新 ["):
+                success = False
+                error_msg = result_text
 
             if success:
                 result_summary = result_text[:200]
@@ -729,11 +1145,6 @@ class ReplyToolExecutor(ToolExecutor):
                 )
             else:
                 status = "failed"
-                error_msg = ""
-                try:
-                    error_msg = json.loads(result_text).get("error", "")
-                except Exception:
-                    pass
                 result_summary = (error_msg or result_text)[:200]
                 notification = (
                     f"<会话工具结果>\n"
@@ -770,10 +1181,10 @@ class ReplyToolExecutor(ToolExecutor):
             raise
         except Exception as exc:
             status = "error"
-            result_summary = str(exc)[:200]
+            result_summary = "工具执行异常"
             notification = (
                 f"<会话工具结果>\n"
-                f"工具 {name} 执行异常：{exc}\n"
+                f"工具 {name} 执行异常。\n"
                 f"请告知用户操作失败。\n"
                 f"</会话工具结果>"
             )
@@ -781,13 +1192,20 @@ class ReplyToolExecutor(ToolExecutor):
                 "会话工具任务异常",
                 tool=name,
                 pipeline_key=pipeline_key,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
         finally:
             elapsed = monotonic_seconds() - started_at
-            self._record_session_completion(name, pipeline_key, status, result_summary, elapsed)
+            self._record_session_completion(
+                name, pipeline_key, status, result_summary, elapsed
+            )
 
-        if notification is not None and self._notification_hub is not None and conv_kind and conv_id:
+        if (
+            notification is not None
+            and self._notification_hub is not None
+            and conv_kind
+            and conv_id
+        ):
             try:
                 await self._notification_hub.publish(
                     source="session_tool",
@@ -807,21 +1225,30 @@ class ReplyToolExecutor(ToolExecutor):
     _MAX_COMPLETED_HISTORY = 5
 
     def _record_session_completion(
-        self, name: str, pipeline_key: str, status: str, summary: str, elapsed: float,
+        self,
+        name: str,
+        pipeline_key: str,
+        status: str,
+        summary: str,
+        elapsed: float,
     ) -> None:
         """记录已完成的会话工具，供 check_background_tasks 展示。"""
         if pipeline_key not in self._session_completed:
             self._session_completed[pipeline_key] = []
         history = self._session_completed[pipeline_key]
-        history.append({
-            "tool": name,
-            "status": status,
-            "summary": summary,
-            "elapsed_seconds": round(elapsed),
-            "completed_at": monotonic_seconds(),
-        })
+        history.append(
+            {
+                "tool": name,
+                "status": status,
+                "summary": summary,
+                "elapsed_seconds": round(elapsed),
+                "completed_at": monotonic_seconds(),
+            }
+        )
         if len(history) > self._MAX_COMPLETED_HISTORY:
-            self._session_completed[pipeline_key] = history[-self._MAX_COMPLETED_HISTORY:]
+            self._session_completed[pipeline_key] = history[
+                -self._MAX_COMPLETED_HISTORY :
+            ]
 
     async def _execute_cancel(self, args: dict) -> str:
         if self._cancel is None:
@@ -877,7 +1304,9 @@ class ReplyToolExecutor(ToolExecutor):
             except (ValueError, TypeError):
                 return f"错误：mention 必须为整数列表，收到 {raw_mention}"
 
-        if self._ai_reply_check and not (send_original or ai_check_approved or segments):
+        if self._ai_reply_check and not (
+            send_original or ai_check_approved or segments
+        ):
             result = self._preview_split(text)
             return self._build_ai_check_prompt(result)
 
@@ -890,7 +1319,11 @@ class ReplyToolExecutor(ToolExecutor):
             if result.fallback_used:
                 return self._build_ai_check_prompt(result)
 
-        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and not segments:
+        if (
+            self._enable_ai_reply_regenerate
+            and not (send_original or merge_text_with_image)
+            and not segments
+        ):
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -900,7 +1333,11 @@ class ReplyToolExecutor(ToolExecutor):
                     f"请精简为更短的版本后重新调用 send_reply。"
                 )
 
-        if self._enable_ai_reply_regenerate and not (send_original or merge_text_with_image) and ai_check_approved:
+        if (
+            self._enable_ai_reply_regenerate
+            and not (send_original or merge_text_with_image)
+            and ai_check_approved
+        ):
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -934,6 +1371,21 @@ class ReplyToolExecutor(ToolExecutor):
     async def _execute_wait(self, args: dict) -> str:
         if self._wait is None:
             return "错误：wait 处理器未配置"
+        raw_seconds = args.get("seconds", 20)
+        if raw_seconds is None:
+            seconds = 20
+        elif isinstance(raw_seconds, bool):
+            return f"错误：seconds 必须为整数，收到 {raw_seconds}"
+        else:
+            try:
+                if isinstance(raw_seconds, float) and not raw_seconds.is_integer():
+                    raise ValueError
+                seconds = int(raw_seconds)
+            except (ValueError, TypeError, OverflowError):
+                return f"错误：seconds 必须为整数，收到 {raw_seconds}"
+        if seconds < 0:
+            return f"错误：seconds 不能为负数，收到 {raw_seconds}"
+
         now = monotonic_seconds()
         elapsed = now - self._last_wait_time
         if self._last_wait_time > 0 and elapsed < self._wait_cooldown_seconds:
@@ -942,14 +1394,6 @@ class ReplyToolExecutor(ToolExecutor):
                 f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
                 "【提示】如果是在等待后台任务完成，请结束本轮回复，系统会在完成后通知你。"
             )
-        seconds = args.get("seconds", 20)
-        if seconds is not None:
-            try:
-                seconds = int(seconds)
-            except (ValueError, TypeError):
-                return f"错误：seconds 必须为整数，收到 {seconds}"
-        else:
-            seconds = 20
         self._last_wait_time = now
         return await self._wait(seconds=seconds)
 
@@ -975,9 +1419,13 @@ class ReplyToolExecutor(ToolExecutor):
             value = args.get("value")
             if value is None:
                 return "错误：set_conversation 需要提供 value 参数"
-            return self._willing.set_runtime_conversation_coefficient(current_conv_id, float(value))
+            return self._willing.set_runtime_conversation_coefficient(
+                current_conv_id, float(value)
+            )
         if action == "remove_conversation":
-            return self._willing.remove_runtime_conversation_coefficient(current_conv_id)
+            return self._willing.remove_runtime_conversation_coefficient(
+                current_conv_id
+            )
         if action == "add_blacklist":
             return self._willing.add_runtime_blacklist(current_conv_id)
         if action == "remove_blacklist":
@@ -1016,11 +1464,13 @@ class ReplyToolExecutor(ToolExecutor):
             return "错误：keyword 不能为空"
         results = self._emoji.search_entries(keyword)
         if not results:
-            return f"未找到与\"{keyword}\"相关的自定义表情包"
-        lines = [f"搜索\"{keyword}\"的结果（按使用次数从少到多排列）："]
+            return f'未找到与"{keyword}"相关的自定义表情包'
+        lines = [f'搜索"{keyword}"的结果（按使用次数从少到多排列）：']
         for number, entry in results:
             usage_info = f" [已用{entry.use_count}次]" if entry.use_count > 0 else ""
-            lines.append(f"  #{number}: {entry.analysis_text}{usage_info} ({entry.file_name})")
+            lines.append(
+                f"  #{number}: {entry.analysis_text}{usage_info} ({entry.file_name})"
+            )
         return "\n".join(lines)
 
     async def _execute_react_emoji(self, args: dict) -> str:
@@ -1061,7 +1511,8 @@ class ReplyToolExecutor(ToolExecutor):
         try:
             return await self._speak_handler(text=text)
         except Exception as exc:
-            return f"语音生成失败：{exc}"
+            self._logger.warning("语音生成失败", error_type=type(exc).__name__)
+            return "语音生成失败"
 
     async def _execute_poke_user(self, args: dict) -> str:
         if self._poke_user is None:
@@ -1092,7 +1543,9 @@ class ReplyToolExecutor(ToolExecutor):
         """查询当前聊天流的后台任务状态（绘图、定时任务、解题、会话工具）。"""
         pipeline_key = f"{self._conv_kind}:{self._conv_id}"
         if not self._conv_kind or not self._conv_id:
-            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False
+            )
 
         has_any_manager = (
             self._drawing_manager is not None
@@ -1107,15 +1560,21 @@ class ReplyToolExecutor(ToolExecutor):
         )
 
         if not has_any_manager and not has_session_activity:
-            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "后台任务未配置"}, ensure_ascii=False
+            )
 
         status: dict[str, Any] = {}
         if self._drawing_manager is not None:
             status.update(self._drawing_manager.get_pipeline_status(pipeline_key))
         if self._scheduled_task_manager is not None:
-            status.update(self._scheduled_task_manager.get_pipeline_status(pipeline_key))
+            status.update(
+                self._scheduled_task_manager.get_pipeline_status(pipeline_key)
+            )
         if self._problem_solver_manager is not None:
-            status.update(self._problem_solver_manager.get_pipeline_status(pipeline_key))
+            status.update(
+                self._problem_solver_manager.get_pipeline_status(pipeline_key)
+            )
         if self._notification_hub is not None:
             status.update(self._notification_hub.get_pipeline_status(pipeline_key))
 
@@ -1125,21 +1584,25 @@ class ReplyToolExecutor(ToolExecutor):
         for info in self._session_task_info.values():
             # "or not info["pipeline_key"]" 为防御性处理，当前逻辑下 pipeline_key 始终非空
             if info["pipeline_key"] == pipeline_key or not info["pipeline_key"]:
-                active_session_tools.append({
-                    "tool": info["name"],
-                    "pipeline_key": info["pipeline_key"] or pipeline_key,
-                    "elapsed_seconds": round(now - info["started_at"]),
-                })
+                active_session_tools.append(
+                    {
+                        "tool": info["name"],
+                        "pipeline_key": info["pipeline_key"] or pipeline_key,
+                        "elapsed_seconds": round(now - info["started_at"]),
+                    }
+                )
         if active_session_tools:
             status["active_session_tools"] = active_session_tools
 
         queued_tools: list[dict] = []
         for pk, queued in self._session_task_queue.items():
             if pk == pipeline_key:
-                queued_tools.append({
-                    "tool": queued["name"],
-                    "queued_seconds": round(now - queued["queued_at"]),
-                })
+                queued_tools.append(
+                    {
+                        "tool": queued["name"],
+                        "queued_seconds": round(now - queued["queued_at"]),
+                    }
+                )
         if queued_tools:
             status["queued_session_tools"] = queued_tools
 
@@ -1175,14 +1638,20 @@ class ReplyToolExecutor(ToolExecutor):
             queued=len(queued_tools),
             completed=len(completed),
         )
-        return json.dumps({"ok": True, "pipeline_key": pipeline_key, **status}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": True, "pipeline_key": pipeline_key, **status}, ensure_ascii=False
+        )
 
     async def _execute_mark_scheduled_task_complete(self, args: dict) -> str:
         if self._scheduled_task_manager is None:
-            return json.dumps({"ok": False, "error": "定时任务系统未配置"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "定时任务系统未配置"}, ensure_ascii=False
+            )
         task_id = str(args.get("task_id") or "").strip()
         if not task_id:
-            return json.dumps({"ok": False, "error": "task_id 不能为空"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "task_id 不能为空"}, ensure_ascii=False
+            )
         result = await self._scheduled_task_manager.mark_completed(task_id)
         self._logger.info(
             "主Agent标记定时任务完成",
@@ -1193,7 +1662,9 @@ class ReplyToolExecutor(ToolExecutor):
 
     async def _execute_send_long_reply(self, args: dict) -> str:
         if self._markdown_image_converter is None:
-            return json.dumps({"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False
+            )
 
         markdown = str(args.get("markdown") or "").strip()
         pre_rendered = str(args.get("image_path") or "").strip()
@@ -1209,14 +1680,19 @@ class ReplyToolExecutor(ToolExecutor):
             try:
                 reply_to = int(reply_to)
             except (ValueError, TypeError):
-                return json.dumps({"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"}, ensure_ascii=False)
+                return json.dumps(
+                    {"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"},
+                    ensure_ascii=False,
+                )
         raw_mention = args.get("mention")
         mention: list[int] | None = None
         if raw_mention:
             try:
                 mention = [int(qq) for qq in raw_mention]
             except (ValueError, TypeError):
-                return json.dumps({"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False)
+                return json.dumps(
+                    {"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False
+                )
         caption = str(args.get("caption") or "").strip()
 
         if pre_rendered:
@@ -1225,8 +1701,10 @@ class ReplyToolExecutor(ToolExecutor):
             try:
                 image_path = str(await self._markdown_image_converter.convert(markdown))
             except Exception as exc:
-                self._logger.error(f"Markdown 转图片失败: {exc}")
-                return json.dumps({"ok": False, "error": f"Markdown 转图片失败：{exc}"}, ensure_ascii=False)
+                self._logger.error("Markdown 转图片失败", error_type=type(exc).__name__)
+                return json.dumps(
+                    {"ok": False, "error": "Markdown 转图片失败"}, ensure_ascii=False
+                )
 
         # 调用 orchestrator 提供的 handler 实际发送图片
         if self._send_long_reply is not None:
@@ -1237,21 +1715,191 @@ class ReplyToolExecutor(ToolExecutor):
                 mention=mention,
                 markdown=markdown,
             )
-        return json.dumps({
-            "ok": True,
-            "status": "sent",
-            "image_path": image_path,
-            "caption": caption or None,
-            "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "status": "sent",
+                "image_path": image_path,
+                "caption": caption or None,
+                "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
+            },
+            ensure_ascii=False,
+        )
+
+    # ── Markdown 技能读取 ──
+
+    def _resolve_skill(self, skill_id: str) -> Any:
+        if self._skills_registry is None:
+            raise ToolError("Markdown 技能注册表不可用")
+        skill = self._skills_registry.skills.get(str(skill_id))
+        if skill is None:
+            raise ToolError(f"技能不存在或已卸载: {skill_id}")
+        return skill
+
+    def _read_skill_manifest(self, args: dict) -> str:
+        skill_id = str(args.get("skill_id") or "").strip()
+        if not skill_id:
+            return "Error: 缺少 skill_id 参数"
+        try:
+            skill = self._resolve_skill(skill_id)
+        except ToolError as exc:
+            return f"Error: {exc}"
+        return skill.content
+
+    @staticmethod
+    def _inspect_skill_resource_path(
+        base: Path, target: Path
+    ) -> tuple[os.stat_result | None, str | None]:
+        try:
+            relative = target.relative_to(base)
+        except ValueError:
+            return None, "outside"
+
+        current = base
+        target_stat: os.stat_result | None = None
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        try:
+            for component in relative.parts:
+                current /= component
+                target_stat = current.lstat()
+                file_attributes = getattr(target_stat, "st_file_attributes", 0)
+                if stat.S_ISLNK(target_stat.st_mode) or file_attributes & reparse_flag:
+                    return None, "reparse"
+        except FileNotFoundError:
+            return None, "missing"
+        except OSError:
+            return None, "read_failed"
+
+        if target_stat is None or not stat.S_ISREG(target_stat.st_mode):
+            return None, "missing"
+        return target_stat, None
+
+    @classmethod
+    def _validate_open_skill_resource(
+        cls, file_obj: Any, base: Path, target: Path
+    ) -> tuple[os.stat_result | None, str | None]:
+        try:
+            opened_stat = os.fstat(file_obj.fileno())
+        except (AttributeError, OSError, ValueError):
+            return None, "unverifiable"
+        if not stat.S_ISREG(opened_stat.st_mode):
+            return None, "missing"
+        link_count = getattr(opened_stat, "st_nlink", None)
+        if isinstance(link_count, int) and link_count > 1:
+            return None, "hard_link"
+
+        path_stat, error = cls._inspect_skill_resource_path(base, target)
+        if error is not None or path_stat is None:
+            return None, error or "unverifiable"
+        try:
+            resolved_target = target.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None, "changed"
+        if not _path_is_within(resolved_target, base):
+            return None, "outside"
+
+        opened_path = _opened_file_path(file_obj)
+        if os.name == "nt" and opened_path is None:
+            return None, "unverifiable"
+        if opened_path is not None and not _path_is_within(opened_path, base):
+            return None, "outside"
+
+        if not _same_open_file(opened_stat, path_stat):
+            same_resolved_path = opened_path is not None and os.path.normcase(
+                os.path.abspath(opened_path)
+            ) == os.path.normcase(os.path.abspath(resolved_target))
+            if not same_resolved_path:
+                return None, "changed"
+        return opened_stat, None
+
+    @staticmethod
+    def _skill_resource_error(error: str, rel: str) -> str:
+        if error == "outside":
+            return f"Error: 路径越界，拒绝读取: {rel}"
+        if error == "reparse":
+            return f"Error: 拒绝读取 symlink/junction 路径: {rel}"
+        if error == "hard_link":
+            return f"Error: 拒绝读取硬链接文件: {rel}"
+        if error == "missing":
+            return f"Error: 文件不存在: {rel}"
+        if error == "changed":
+            return f"Error: 路径在读取期间发生变化，拒绝读取: {rel}"
+        if error == "unverifiable":
+            return f"Error: 无法安全验证文件路径，拒绝读取: {rel}"
+        return f"Error: 读取失败: {rel}"
+
+    def _read_skill_resource(self, args: dict) -> str:
+        skill_id = str(args.get("skill_id") or "").strip()
+        rel = str(args.get("path") or "").strip()
+        if not skill_id or not rel:
+            return "Error: 缺少 skill_id 或 path 参数"
+        if (
+            rel.startswith("/")
+            or rel.startswith("\\")
+            or re.match(r"^[A-Za-z]:", rel)
+            or ".." in rel.replace("\\", "/").split("/")
+        ):
+            return "Error: 非法路径（仅允许技能目录内的相对路径）"
+        try:
+            skill = self._resolve_skill(skill_id)
+        except ToolError as exc:
+            return f"Error: {exc}"
+        try:
+            base = Path(skill.path.parent).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return "Error: 技能目录不可用"
+        relative_parts = [
+            part for part in rel.replace("\\", "/").split("/") if part not in {"", "."}
+        ]
+        target = base.joinpath(*relative_parts)
+
+        _, error = self._inspect_skill_resource_path(base, target)
+        if error is not None:
+            return self._skill_resource_error(error, rel)
+        try:
+            if not _path_is_within(target.resolve(strict=True), base):
+                return self._skill_resource_error("outside", rel)
+        except (OSError, RuntimeError):
+            return self._skill_resource_error("read_failed", rel)
+
+        try:
+            with target.open("rb", buffering=0) as file_obj:
+                opened_stat, error = self._validate_open_skill_resource(
+                    file_obj, base, target
+                )
+                if error is not None or opened_stat is None:
+                    return self._skill_resource_error(error or "unverifiable", rel)
+                if opened_stat.st_size > _MAX_SKILL_RESOURCE_BYTES:
+                    return f"Error: 文件超过 1MB 限制: {rel}"
+
+                content = file_obj.read(_MAX_SKILL_RESOURCE_BYTES + 1)
+                final_stat, error = self._validate_open_skill_resource(
+                    file_obj, base, target
+                )
+                if error is not None or final_stat is None:
+                    return self._skill_resource_error(error or "unverifiable", rel)
+                if (
+                    len(content) > _MAX_SKILL_RESOURCE_BYTES
+                    or final_stat.st_size > _MAX_SKILL_RESOURCE_BYTES
+                ):
+                    return f"Error: 文件超过 1MB 限制: {rel}"
+        except FileNotFoundError:
+            return self._skill_resource_error("missing", rel)
+        except (OSError, ValueError):
+            return self._skill_resource_error("read_failed", rel)
+        return content.decode("utf-8", errors="replace")
 
     async def _execute_check_last_drawing(self, args: dict) -> str:
         """查询当前聊天流上一次绘图任务的详细记录。"""
         if self._drawing_manager is None:
-            return json.dumps({"ok": False, "error": "后台任务未配置"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "后台任务未配置"}, ensure_ascii=False
+            )
         pipeline_key = f"{self._conv_kind}:{self._conv_id}"
         if not self._conv_kind or not self._conv_id:
-            return json.dumps({"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "无法获取当前会话信息"}, ensure_ascii=False
+            )
         info = self._drawing_manager.get_last_draw_info(pipeline_key)
         if info.get("found"):
             self._logger.info(
@@ -1260,7 +1908,9 @@ class ReplyToolExecutor(ToolExecutor):
                 task_id=info.get("task_id"),
                 status=info.get("status"),
             )
-        return json.dumps({"ok": True, "pipeline_key": pipeline_key, **info}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": True, "pipeline_key": pipeline_key, **info}, ensure_ascii=False
+        )
 
     def _preview_split(self, text: str) -> ReplyPostProcessResult:
         return process_reply_text(
@@ -1298,7 +1948,9 @@ class ReplyToolExecutor(ToolExecutor):
         for index, message in enumerate(result.messages, start=1):
             lines.append(f"{index}. {message}")
         if result.fallback_used:
-            lines.append(f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。")
+            lines.append(
+                f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。"
+            )
             if self._enable_ai_reply_regenerate:
                 lines.append(
                     "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
@@ -1322,13 +1974,22 @@ class ReplyToolExecutor(ToolExecutor):
         return "\n".join(lines)
 
     async def close(self) -> None:
-        for task in list(self._session_tasks):
-            task.cancel()
-        if self._session_tasks:
-            await asyncio.gather(*self._session_tasks, return_exceptions=True)
-        self._session_tasks.clear()
-        self._session_task_info.clear()
+        """Idempotently reject new session work, cancel active work, and wait for it."""
+        if self._close_task is None:
+            self._closed = True
+            self._session_task_queue.clear()
+            self._close_task = asyncio.create_task(self._finish_close())
+        await asyncio.shield(self._close_task)
+
+    async def _finish_close(self) -> None:
+        while self._session_tasks:
+            tasks = tuple(self._session_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._session_tasks.difference_update(tasks)
         self._session_task_queue.clear()
+        self._session_task_info.clear()
         self._session_completed.clear()
 
 
@@ -1353,6 +2014,8 @@ def build_reply_toolset(
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
     skill_manager: Any = None,
+    skills_registry: Any = None,
+    allowed_tools: set[str] | None = None,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -1387,6 +2050,8 @@ def build_reply_toolset(
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
         skill_manager=skill_manager,
+        skills_registry=skills_registry,
+        allowed_tools=allowed_tools,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

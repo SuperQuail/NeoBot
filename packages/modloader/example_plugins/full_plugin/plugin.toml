@@ -1,0 +1,7 @@
+name = "full_plugin"
+version = "1.0.0"
+description = "Demo: commands, tools, sub-agents and SKILL.md"
+author = "NeoBot"
+
+[config]
+default_city = "Shanghai"

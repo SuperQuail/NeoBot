@@ -68,7 +68,12 @@ class FilesystemPluginLoader:
                 result = self._load_package(entry)
                 if result is not None:
                     results.append(result)
-        return order_results(results)
+        ordered = order_results(results)
+        retained = {id(result) for result in ordered if isinstance(result, LoadedPlugin)}
+        for result in results:
+            if isinstance(result, LoadedPlugin) and id(result) not in retained:
+                self.clear_module_cache(result.module_names)
+        return ordered
 
     def load_one(self, plugin_path: Path) -> PluginLoadResult | None:
         plugin_path = plugin_path.resolve()
@@ -127,9 +132,11 @@ class FilesystemPluginLoader:
 
     def _load_file(self, path: Path) -> PluginLoadResult:
         name = path.stem
+        module_names: tuple[str, ...] = ()
         try:
             self._validate_plugin_name(name)
             module = self._importer.import_module(path, name)
+            module_names = self._importer.last_module_names
             plugin = self._create_plugin(module)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
@@ -146,15 +153,17 @@ class FilesystemPluginLoader:
                 priority=int(getattr(plugin, "priority", 0) or 0),
                 min_neobot_version=getattr(plugin, "min_neobot_version", None),
                 python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
-                module_names=self._importer.last_module_names,
+                module_names=module_names,
                 source_path=path,
             )
         except Exception as exc:
+            self.clear_module_cache(module_names)
             self._logger.exception(f"插件加载失败 ({path}): {exc}")
             return PluginLoadError(name=name, plugin_dir=path.parent, error=exc)
 
     def _load_package(self, path: Path) -> PluginLoadResult | None:
         manifest_name = path.name
+        module_names: tuple[str, ...] = ()
         try:
             metadata = read_manifest(path / "plugin.toml")
             enabled = metadata.get("enabled", True)
@@ -180,6 +189,7 @@ class FilesystemPluginLoader:
                 raise TypeError("plugin.toml 的 [config] 必须是 table")
 
             module = self._importer.import_module(path / "__init__.py", name)
+            module_names = self._importer.last_module_names
             plugin = self._create_plugin(module)
             validate_manifest_conflicts(metadata, plugin)
             plugin_name = str(getattr(plugin, "name", name) or name)
@@ -205,10 +215,11 @@ class FilesystemPluginLoader:
                 priority=priority,
                 min_neobot_version=min_neobot_version,
                 python_dependencies=python_dependencies,
-                module_names=self._importer.last_module_names,
+                module_names=module_names,
                 source_path=path,
             )
         except Exception as exc:
+            self.clear_module_cache(module_names)
             self._logger.exception(f"插件加载失败 ({path}): {exc}")
             return PluginLoadError(name=manifest_name, plugin_dir=path, error=exc)
 

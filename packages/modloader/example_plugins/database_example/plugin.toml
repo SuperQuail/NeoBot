@@ -1,0 +1,10 @@
+name = "example"
+version = "1.0.0"
+description = "Demo: plugin-owned SQLite database with migrations"
+author = "NeoBot"
+enabled = true
+
+python_dependencies = ["sqlalchemy>=2.0", "aiosqlite>=0.20.0"]
+
+[config]
+page_size = 10

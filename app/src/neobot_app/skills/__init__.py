@@ -34,6 +34,7 @@ from neobot_app.skills.browser_skill import BrowserSkill
 from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
 from neobot_app.skills.balance_skill import BalanceSkill
+from neobot_app.skills.agent_delegation import AgentDelegationSkill
 
 
 def build_all_skills(
@@ -65,6 +66,7 @@ def build_all_skills(
     sandbox_maintenance_manager: Any = None,
     temp_cleaner: Any = None,
     balance_checker: Any = None,
+    agent_registry: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -78,6 +80,9 @@ def build_all_skills(
     disabled = set(disabled_skills or [])
 
     skills_to_register: list[Any] = []
+
+    if agent_registry is not None and "agents" not in disabled:
+        skills_to_register.append(AgentDelegationSkill(agent_registry))
 
     if "archive_crud" not in disabled:
         skills_to_register.append(

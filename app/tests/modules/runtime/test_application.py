@@ -90,6 +90,8 @@ def _make_app(
     ingress: _FakeIngress | None = None,
     browser_instance=None,
     console_service: _FakeConsole | None = None,
+    plugin_runtime=None,
+    reply_orchestrator=None,
 ) -> NeoBotApplication:
     """构造一个仅依赖 Fake 组件的 NeoBotApplication（不调用真实构造函数）。"""
     app = object.__new__(NeoBotApplication)
@@ -98,7 +100,7 @@ def _make_app(
     app.chat_stream = chat_stream or _FakeChatStream()
     app.event_ingress = ingress or _FakeIngress()
     app._message_pipeline = None
-    app._reply_orchestrator = None
+    app._reply_orchestrator = reply_orchestrator
     app._emoji_service = None
     app._logger = NullLogger()
     app._shutdown_event = asyncio.Event()
@@ -109,7 +111,7 @@ def _make_app(
     app._scheduled_task_manager = None
     app._problem_solver_manager = None
     app._markdown_image_converter = None
-    app._plugin_runtime = None
+    app._plugin_runtime = plugin_runtime
     app._report_service = None
     app._report_task = None
     app._engine = None
@@ -126,6 +128,54 @@ def _make_app(
     return app
 
 
+def _make_app_real_init(screenshots=None) -> NeoBotApplication:
+    """经真实 __init__ 构造应用（仅依赖 Fake 组件，不启动任何服务）。"""
+    return NeoBotApplication(
+        adapter=_FakeAdapter(),
+        chat_stream=_FakeChatStream(),
+        event_ingress=_FakeIngress(),
+        file_server=_FakeFileServer(),
+        screenshots=screenshots,
+    )
+
+
+class _FakeScreenshots:
+    """记录 render/save 调用的假截图 Port 实现。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def render(self, **kwargs):
+        self.calls += 1
+        return object()
+
+    async def save(self, **kwargs):
+        self.calls += 1
+        return object()
+
+
+def test_application_uses_injected_screenshots() -> None:
+    screenshots = _FakeScreenshots()
+    app = _make_app_real_init(screenshots=screenshots)
+    assert app.screenshots is screenshots
+
+
+async def test_application_default_screenshots_raise_unavailable() -> None:
+    from neobot_app.screenshot import UnavailableScreenshots
+    from neobot_contracts.ports.screenshot import (
+        RenderOptions,
+        ScreenshotOptions,
+        ScreenshotUnavailable,
+    )
+
+    app = _make_app_real_init()
+    assert isinstance(app.screenshots, UnavailableScreenshots)
+    with pytest.raises(ScreenshotUnavailable, match="浏览器未启用或 Chromium 不可用"):
+        await app.screenshots.render(
+            html="<p>x</p>", options=RenderOptions(ScreenshotOptions())
+        )
+
+
 def test_restart_request_is_distinct_from_normal_stop() -> None:
     application = object.__new__(NeoBotApplication)
     application._shutdown_event = asyncio.Event()
@@ -136,6 +186,9 @@ def test_restart_request_is_distinct_from_normal_stop() -> None:
     assert application._shutdown_event.is_set()
 
     application.request_stop()
+    assert application.restart_requested is True
+
+    application.request_stop(clear_restart=True)
     assert application.restart_requested is False
 
 
@@ -245,7 +298,9 @@ async def test_console_started_before_adapter_connection_wait() -> None:
     console = _FakeConsole()
     adapter = _FakeAdapter()
     adapter.requires_connection_wait = True
-    adapter.wait_for_connection = lambda _timeout: False  # 连接超时 (同步函数, to_thread 调用)
+    adapter.wait_for_connection = lambda _timeout: (
+        False
+    )  # 连接超时 (同步函数, to_thread 调用)
     app = _make_app(adapter=adapter, console_service=console)
 
     # Act
@@ -255,6 +310,81 @@ async def test_console_started_before_adapter_connection_wait() -> None:
     # Assert: 控制台先于连接等待启动, 失败回滚后停止
     assert console.start_calls == 1
     assert console.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_reply_pipeline_before_agent_registry_close() -> None:
+    """停机顺序：回复管线先于 AgentRegistry 关闭被取消；在途 delegate() 必须
+    收到 CancelledError 而不是被转成友好文本后继续回复。"""
+    from neobot_chat.tools.registry import AgentRegistry
+
+    registry = AgentRegistry()
+    registry.drain_timeout_seconds = 1.0
+
+    class GatedSubAgent:
+        def __init__(self) -> None:
+            self.invoke_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def invoke(self, state: dict) -> dict:
+            self.invoke_started.set()
+            await self.release.wait()
+            return {"messages": [{"role": "assistant", "content": "late reply"}]}
+
+        async def close(self) -> None:
+            pass
+
+    agent = GatedSubAgent()
+    registry.register("demo.gate", agent)
+
+    outcomes: list[str] = []
+
+    class FakeOrchestrator:
+        def __init__(self) -> None:
+            self._pipeline: asyncio.Task | None = None
+
+        def attach(self, pipeline: asyncio.Task) -> None:
+            self._pipeline = pipeline
+
+        async def shutdown(self) -> None:
+            assert self._pipeline is not None
+            self._pipeline.cancel()
+            try:
+                await self._pipeline
+            except asyncio.CancelledError:
+                pass
+
+    class FakePluginRuntime:
+        def __init__(self) -> None:
+            self.agent_registry = registry
+
+        async def stop_all(self) -> None:
+            assert outcomes == ["CancelledError"]
+
+    async def pipeline() -> None:
+        try:
+            result = await registry.delegate(agent="demo.gate", task="go")
+        except asyncio.CancelledError:
+            outcomes.append("CancelledError")
+            raise
+        else:
+            outcomes.append(result)
+
+    pipeline_task = asyncio.create_task(pipeline())
+    await agent.invoke_started.wait()
+
+    orchestrator = FakeOrchestrator()
+    orchestrator.attach(pipeline_task)
+    app = _make_app(
+        plugin_runtime=FakePluginRuntime(),
+        reply_orchestrator=orchestrator,
+    )
+    app._started = True
+    await app.stop()
+
+    assert outcomes == ["CancelledError"]
+    assert registry._closed
+    agent.release.set()
 
 
 @pytest.mark.asyncio
@@ -289,3 +419,96 @@ async def test_restart_requested_survives_graceful_shutdown() -> None:
     # Assert
     assert app2.restart_requested is False
     assert app2._started is False
+
+
+@pytest.mark.asyncio
+async def test_stop_continues_after_exception_and_manager_cancelled_error() -> None:
+    class _FailingConsole:
+        async def stop(self) -> None:
+            raise RuntimeError("console failed")
+
+    class _CancelledManager:
+        async def shutdown(self) -> None:
+            raise asyncio.CancelledError
+
+    vision = SimpleNamespace(close=AsyncMock())
+    engine = SimpleNamespace(dispose=AsyncMock())
+    app = _make_app(console_service=_FailingConsole())
+    app._self_heal_manager = _CancelledManager()
+    app._vision_provider = vision
+    app._engine = engine
+    app._started = True
+
+    await app.stop()
+
+    vision.close.assert_awaited_once()
+    engine.dispose.assert_awaited_once()
+    assert app.adapter.stop_calls == 1
+    assert app.file_server.stop_calls == 1
+    assert app._started is False
+
+
+@pytest.mark.asyncio
+async def test_stop_defers_caller_cancellation_until_cleanup_finishes() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    class _BlockingManager:
+        async def shutdown(self) -> None:
+            started.set()
+            await release.wait()
+            finished.set()
+
+    app = _make_app()
+    app._self_heal_manager = _BlockingManager()
+    app._started = True
+
+    stop_task = asyncio.create_task(app.stop())
+    await started.wait()
+    stop_task.cancel()
+    await asyncio.sleep(0)
+    assert not stop_task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stop_task
+
+    assert finished.is_set()
+    assert app.adapter.stop_calls == 1
+    assert app.file_server.stop_calls == 1
+    assert app._started is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_closes_prebuilt_resources_and_continues_on_failure() -> None:
+    self_heal = SimpleNamespace(
+        shutdown=AsyncMock(side_effect=RuntimeError("heal close failed"))
+    )
+    problem_solver = SimpleNamespace(shutdown=AsyncMock())
+    orchestrator = SimpleNamespace(shutdown=AsyncMock())
+    registry = SimpleNamespace(close=AsyncMock())
+    plugin_runtime = SimpleNamespace(
+        stop_all=AsyncMock(side_effect=RuntimeError("plugin stop failed")),
+        agent_registry=registry,
+    )
+    vision = SimpleNamespace(close=AsyncMock())
+    engine = SimpleNamespace(dispose=AsyncMock())
+    app = _make_app(
+        plugin_runtime=plugin_runtime,
+        reply_orchestrator=orchestrator,
+    )
+    app._self_heal_manager = self_heal
+    app._problem_solver_manager = problem_solver
+    app._vision_provider = vision
+    app._engine = engine
+
+    deferred = await app._rollback_start(["plugin"])
+
+    assert deferred is None
+    self_heal.shutdown.assert_awaited_once()
+    problem_solver.shutdown.assert_awaited_once()
+    orchestrator.shutdown.assert_awaited_once()
+    registry.close.assert_awaited_once()
+    vision.close.assert_awaited_once()
+    engine.dispose.assert_awaited_once()
