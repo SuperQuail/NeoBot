@@ -39,6 +39,7 @@ class Plugin:
         usage: str = "",
         author: str = "",
         config: type[BaseModel] | None = None,
+        command_prefix: str = "/",
         dependencies: Sequence[str] = (),
         priority: int = 0,
         min_neobot_version: str | None = None,
@@ -50,6 +51,9 @@ class Plugin:
         self.usage = usage
         self.author = author
         self.config_model = config
+        self.command_prefix = MessagePattern(
+            "_prefix_validation", command=True, prefix=command_prefix
+        ).prefix
         self.dependencies = tuple(dependencies)
         self.priority = int(priority)
         self.min_neobot_version = min_neobot_version
@@ -98,6 +102,7 @@ class Plugin:
         self,
         pattern: str,
         *,
+        prefix: str | None = None,
         aliases: Sequence[str] | None = None,
         priority: int = 10,
         block: bool = True,
@@ -110,7 +115,12 @@ class Plugin:
         not parse is treated as unhandled: it neither runs the handler nor
         applies this registration's block settings.
         """
-        compiled = MessagePattern(pattern, command=True, aliases=tuple(aliases or ()))
+        compiled = MessagePattern(
+            pattern,
+            command=True,
+            aliases=tuple(aliases or ()),
+            prefix=prefix if prefix is not None else self.command_prefix,
+        )
         validate_parse_error(parse_error)
 
         def decorate(handler: Handler) -> Handler:
@@ -124,6 +134,7 @@ class Plugin:
                     block_ai_reply=False,
                     timeout=timeout,
                     parse_error=parse_error,
+                    command_prefix=prefix,
                 )
             )
             return handler
@@ -342,6 +353,7 @@ class Plugin:
         )
         await self._bind_databases()
         if not self._bound:
+            self._apply_command_prefix()
             # 订阅、Tool、SKILL.md 和 Agent 只绑定一次；reload/stop 会由 manager 清理旧绑定。
             bind_handlers(self, self._registrations, context)
             await bind_tools(self, self._tool_registrations, context)
@@ -350,6 +362,33 @@ class Plugin:
             self._bound = True
         for handler in self._load_handlers:
             await self._call_lifecycle(handler)
+
+    def _apply_command_prefix(self) -> None:
+        prefix = self.command_prefix
+        configured = getattr(self._config, "command_prefix", None)
+        if configured is not None:
+            prefix = MessagePattern(
+                "_prefix_validation", command=True, prefix=configured
+            ).prefix
+        for registration in self._registrations:
+            if registration.kind != "command" or registration.command_prefix is not None:
+                continue
+            old_prefix = registration.pattern.prefix
+            pattern = registration.pattern.pattern
+            if old_prefix and pattern.startswith(old_prefix):
+                pattern = pattern.removeprefix(old_prefix)
+            aliases = tuple(
+                alias.removeprefix(old_prefix)
+                if old_prefix and alias.startswith(old_prefix)
+                else alias
+                for alias in registration.pattern.aliases
+            )
+            registration.pattern = MessagePattern(
+                pattern,
+                command=True,
+                aliases=aliases,
+                prefix=prefix,
+            )
 
     async def _bind_databases(self) -> None:
         if not self._databases:
