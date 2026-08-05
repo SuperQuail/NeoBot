@@ -19,6 +19,44 @@ class CommandDslTest(unittest.TestCase):
         self.assertTrue(missing.matched)
         self.assertIsNone(missing.values["city"])
 
+    def test_command_custom_prefix(self) -> None:
+        pattern = MessagePattern("签到", command=True, prefix="#")
+
+        self.assertEqual(pattern.usage, "#签到")
+        self.assertTrue(pattern.match(Message({"raw_message": "#签到"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "/签到"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "签到"})).matched)
+
+    def test_command_custom_prefix_with_args_and_alias(self) -> None:
+        pattern = MessagePattern(
+            "出售 <target:str>", command=True, prefix="!", aliases=("sell",)
+        )
+
+        result = pattern.match(Message({"raw_message": "!出售 鲫鱼"}))
+        self.assertTrue(result.matched)
+        self.assertEqual(result.values["target"], "鲫鱼")
+        self.assertTrue(pattern.match(Message({"raw_message": "!sell 草鱼"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "/出售 鲫鱼"})).matched)
+
+    def test_command_default_prefix_unchanged(self) -> None:
+        pattern = MessagePattern("签到", command=True)
+
+        self.assertEqual(pattern.usage, "/签到")
+        self.assertTrue(pattern.match(Message({"raw_message": "/签到"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "#签到"})).matched)
+
+    def test_command_allows_empty_prefix(self) -> None:
+        pattern = MessagePattern("签到", command=True, prefix="")
+
+        self.assertEqual(pattern.usage, "签到")
+        self.assertTrue(pattern.match(Message({"raw_message": "签到"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "/签到"})).matched)
+        self.assertFalse(pattern.match(Message({"raw_message": "你好 签到"})).matched)
+
+    def test_command_rejects_whitespace_prefix(self) -> None:
+        with self.assertRaises(PatternError):
+            MessagePattern("签到", command=True, prefix="bot ")
+
     def test_command_coerces_basic_types(self) -> None:
         pattern = MessagePattern("debug <enabled:bool> <count:int> <ratio:float>", command=True)
 
