@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.output import OutputPort
+from neobot_contracts.ports.screenshot import ScreenshotPort
 
 
 class PluginState(Enum):
@@ -110,6 +111,9 @@ class RuntimePluginContext(Protocol):
 
     @property
     def output(self) -> OutputPort: ...
+
+    @property
+    def screenshots(self) -> ScreenshotPort | None: ...
 
     async def send_private(self, user_id: int, message: str | list[dict[str, Any]]) -> Any: ...
 

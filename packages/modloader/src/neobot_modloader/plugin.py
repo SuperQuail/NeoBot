@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel
 
 from neobot_modloader.agent import AgentRequest
-from neobot_modloader.command_dsl import MessagePattern
+from neobot_modloader.command_dsl import MessagePattern, RegexPattern
+from neobot_modloader.database import Migration, PluginDatabase
 from neobot_modloader.message import Message
 from neobot_modloader.plugins.agents import bind_agents
 from neobot_modloader.plugins.dispatch import bind_handlers
@@ -59,9 +60,39 @@ class Plugin:
         self._shutdown_handlers: list[Handler] = []
         self._agent_registrations: list[AgentRegistration] = []
         self._tool_registrations: list[ToolRegistration] = []
+        self._databases: dict[str, PluginDatabase] = {}
         self._context: Any | None = None
         self._config: BaseModel | None = None
         self._bound = False
+
+    def sqlite_database(
+        self,
+        name: str = "main",
+        *,
+        filename: str | None = None,
+        metadata: Any | None = None,
+        migrations: Sequence[Migration] = (),
+        pragmas: Mapping[str, str] | None = None,
+    ) -> PluginDatabase:
+        """声明一个插件独立数据库；实际初始化发生在插件加载阶段。"""
+        if name in self._databases:
+            raise ValueError(f"插件 {self.name} 已注册同名数据库: {name}")
+        filename = filename or f"{name}.sqlite3"
+        for existing in self._databases.values():
+            if existing.filename.casefold() == filename.casefold():
+                raise ValueError(
+                    f"插件 {self.name} 已注册使用同名文件的数据库: {filename!r}"
+                )
+        database = PluginDatabase(
+            self.name,
+            name,
+            filename=filename,
+            metadata=metadata,
+            migrations=tuple(migrations),
+            pragmas=pragmas,
+        )
+        self._databases[name] = database
+        return database
 
     def command(
         self,
@@ -123,6 +154,9 @@ class Plugin:
             raise ValueError("group and private cannot both be True")
         validate_parse_error(parse_error)
         compiled = MessagePattern(pattern, command=False)
+        regex_filter: re.Pattern[str] | None = None
+        if regex is not None:
+            regex_filter = RegexPattern(regex).pattern
 
         def decorate(handler: Handler) -> Handler:
             self._registrations.append(
@@ -140,10 +174,55 @@ class Plugin:
                     text=text,
                     contains=contains,
                     keywords=keywords,
-                    regex=regex,
+                    regex=regex_filter,
                     startswith=startswith,
                     endswith=endswith,
                     fullmatch=fullmatch,
+                    rule=rule,
+                )
+            )
+            return handler
+
+        return decorate
+
+    def regex(
+        self,
+        pattern: str | re.Pattern[str],
+        *,
+        flags: int = 0,
+        group: bool = False,
+        private: bool = False,
+        rule: Callable[[dict[str, Any]], Any] | None = None,
+        priority: int = 10,
+        block: bool = False,
+        block_ai_reply: bool = False,
+        timeout: float | None = None,
+        parse_error: str = "ignore",
+    ) -> Callable[[Handler], Handler]:
+        """Register a regex message handler.
+
+        The pattern is searched against ``message.text``. Named groups
+        ``(?P<name>...)`` are injected into the handler by parameter name;
+        DI parameters (Reply, config, ...) are resolved as usual.
+        """
+        if group and private:
+            raise ValueError("group and private cannot both be True")
+        validate_parse_error(parse_error)
+        compiled = RegexPattern(pattern, flags=flags)
+
+        def decorate(handler: Handler) -> Handler:
+            self._registrations.append(
+                HandlerRegistration(
+                    kind="regex",
+                    pattern=compiled,
+                    handler=handler,
+                    priority=priority,
+                    block=block,
+                    block_ai_reply=block_ai_reply,
+                    timeout=timeout,
+                    parse_error=parse_error,
+                    group=group,
+                    private=private,
                     rule=rule,
                 )
             )
@@ -243,6 +322,11 @@ class Plugin:
                 except Exception as exc:
                     errors.append(exc)
         finally:
+            for database in self._databases.values():
+                try:
+                    await database.close()
+                except Exception as exc:
+                    errors.append(exc)
             self._bound = False
         if len(errors) == 1:
             raise errors[0]
@@ -256,6 +340,7 @@ class Plugin:
             if self.config_model is not None
             else None
         )
+        await self._bind_databases()
         if not self._bound:
             # 订阅、Tool、SKILL.md 和 Agent 只绑定一次；reload/stop 会由 manager 清理旧绑定。
             bind_handlers(self, self._registrations, context)
@@ -265,6 +350,23 @@ class Plugin:
             self._bound = True
         for handler in self._load_handlers:
             await self._call_lifecycle(handler)
+
+    async def _bind_databases(self) -> None:
+        if not self._databases:
+            return
+        databases_dir = self._context.data_dir / "databases"
+        bound: list[PluginDatabase] = []
+        try:
+            for database in self._databases.values():
+                await database.bind(databases_dir)
+                bound.append(database)
+        except Exception:
+            for database in reversed(bound):
+                try:
+                    await database.close()
+                except Exception:
+                    pass
+            raise
 
     async def _call_lifecycle(self, handler: Handler) -> Any:
         if self._context is None:

@@ -9,9 +9,11 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "aiosqlite>=0.20.0",
     "neobot-adapter",
     "neobot-contracts",
     "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
 ]
 
 [tool.uv.sources]

@@ -111,6 +111,118 @@ class MessageTest(unittest.TestCase):
 
         self.assertEqual(segment.qq, "888")
 
+    def test_at_zero_qq_coerced_to_str(self) -> None:
+        segment = at(0)
+
+        self.assertEqual(segment.qq, "0")
+        self.assertFalse(segment.is_all)
+
+    def test_at_factory_explicit_args_win_over_data(self) -> None:
+        segment = at(qq="1", name="甲", extra="x")
+
+        self.assertEqual(segment.data, {"qq": "1", "name": "甲", "extra": "x"})
+
+    def test_at_factory_accepts_data_only_keys(self) -> None:
+        segment = at(**{"qq": "all"})
+
+        self.assertTrue(segment.is_all)
+        self.assertEqual(segment.data, {"qq": "all"})
+
+    def test_message_chain_at_preserves_extra_data(self) -> None:
+        chain = MessageChain().at(qq="123", extra="x")
+
+        self.assertEqual(chain.to_list(), [{"type": "at", "data": {"qq": "123", "extra": "x"}}])
+
+    def test_from_raw_at_without_data(self) -> None:
+        segment = MessageSegment.from_raw({"type": "at"})
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertIsNone(segment.qq)
+
+    def test_from_raw_at_with_non_mapping_data(self) -> None:
+        segment = MessageSegment.from_raw({"type": "at", "data": "broken"})
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertEqual(segment.data, {})
+
+    def test_from_raw_at_with_none_data(self) -> None:
+        segment = MessageSegment.from_raw({"type": "at", "data": None})
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertEqual(segment.data, {})
+        self.assertIsNone(segment.qq)
+
+    def test_from_raw_at_with_nested_data_is_safe(self) -> None:
+        segment = MessageSegment.from_raw({"type": "at", "data": {"nested": {"qq": 1}}})
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertEqual(segment.data, {"nested": {"qq": 1}})
+        self.assertIsNone(segment.qq)
+
+    def test_at_empty_string_qq_is_not_all(self) -> None:
+        segment = at(qq="")
+
+        self.assertEqual(segment.qq, "")
+        self.assertFalse(segment.is_all)
+
+    def test_at_empty_name_is_preserved(self) -> None:
+        segment = at(name="")
+
+        self.assertEqual(segment.name, "")
+        self.assertEqual(segment.data, {"name": ""})
+
+    def test_chain_at_coerces_zero_qq(self) -> None:
+        chain = MessageChain().at(0)
+
+        self.assertEqual(chain.to_list(), [{"type": "at", "data": {"qq": "0"}}])
+
+    def test_chain_at_supports_all(self) -> None:
+        segment = MessageChain().at(qq="all").segments[0]
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertTrue(segment.is_all)
+
+    def test_chain_at_passes_name_and_extra_data(self) -> None:
+        chain = MessageChain().at(qq="1", name="甲", extra="x")
+
+        self.assertEqual(
+            chain.to_list(), [{"type": "at", "data": {"qq": "1", "name": "甲", "extra": "x"}}]
+        )
+
+    def test_at_factory_key_order_data_then_explicit(self) -> None:
+        segment = at(qq="1", name="甲", extra="x")
+
+        self.assertEqual(list(segment.data), ["extra", "qq", "name"])
+
+    def test_at_factory_qq_none_omits_key(self) -> None:
+        self.assertEqual(at().data, {})
+        self.assertEqual(at(qq=None).data, {})
+        self.assertIsNone(at(qq=None).qq)
+
+    def test_at_segment_qq_coerces_all_boundaries(self) -> None:
+        self.assertEqual(AtSegment({"qq": 0}).qq, "0")
+        self.assertFalse(AtSegment({"qq": 0}).is_all)
+        self.assertEqual(AtSegment({"qq": False}).qq, "False")
+        self.assertFalse(AtSegment({"qq": False}).is_all)
+        self.assertEqual(AtSegment({"qq": ""}).qq, "")
+        self.assertFalse(AtSegment({"qq": ""}).is_all)
+        self.assertIsNone(AtSegment({"qq": None}).qq)
+        self.assertIsNone(AtSegment({}).qq)
+
+    def test_at_segment_qq_str_coerces_mapping_value(self) -> None:
+        segment = AtSegment({"qq": {"nested": 1}})
+
+        self.assertIsInstance(segment.qq, str)
+        self.assertIn("nested", segment.qq or "")
+        self.assertFalse(segment.is_all)
+
+    def test_from_raw_at_zero_qq(self) -> None:
+        segment = MessageSegment.from_raw({"type": "at", "data": {"qq": 0}})
+
+        self.assertIsInstance(segment, AtSegment)
+        self.assertEqual(segment.qq, "0")
+        self.assertFalse(segment.is_all)
+
 
 if __name__ == "__main__":
     unittest.main()

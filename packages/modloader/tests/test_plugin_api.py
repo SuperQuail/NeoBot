@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 import copy
@@ -7,9 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from neobot_chat import Workflow
+from neobot_contracts.ports.logging import Logger
 from pydantic import BaseModel
 
 from neobot_modloader.agent import AgentRequest
+from neobot_modloader.command_dsl import PatternError
 from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import PluginHostFacade
@@ -17,6 +20,7 @@ from neobot_modloader.message import ImageSegment, MessageChain
 from neobot_modloader.plugin import Plugin
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
 from neobot_modloader.reply import Reply
+from neobot_modloader.users import UserDirectory
 from neobot_modloader.plugins.markdown_skills import _normalize_allowed_tools, scan_plugin_skills
 from neobot_modloader.plugins.registration import validate_plugin_name, validate_qualified_tool_name
 
@@ -267,6 +271,86 @@ class PluginApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ["https://example/image.png"])
         self.assertEqual(adapter.calls[0][1], [{"type": "image", "data": {"url": "https://example/image.png"}}])
 
+    async def test_regex_captures_named_group_and_injects_reply(self) -> None:
+        plugin = Plugin("regex")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[str] = []
+
+        @plugin.regex(r"天气 (?P<city>\S+)")
+        async def weather(city: str, reply: Reply) -> None:
+            seen.append(city)
+            await reply.send(f"今天{city}晴天")
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "天气 北京",
+                }
+            )
+        )
+
+        self.assertEqual(seen, ["北京"])
+        self.assertEqual(adapter.calls[0][1], "今天北京晴天")
+
+    async def test_regex_capture_conflicting_with_di_name_fails_binding(self) -> None:
+        plugin = Plugin("regexconflict")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+
+        @plugin.regex(r"run (?P<logger>\S+)")
+        async def run(logger: Logger) -> None:
+            pass
+
+        with self.assertRaises(PatternError):
+            await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+
+    async def test_regex_decorator_forwards_flags(self) -> None:
+        plugin = Plugin("regexflags")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[str] = []
+
+        @plugin.regex(r"^hello (?P<name>\S+)", flags=re.IGNORECASE)
+        async def hello(name: str, reply: Reply) -> None:
+            seen.append(name)
+            await reply.send(f"hi {name}")
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "HELLO 北京",
+                }
+            )
+        )
+
+        self.assertEqual(seen, ["北京"])
+        self.assertEqual(adapter.calls[0][1], "hi 北京")
+
+    async def test_regex_decorator_empty_pattern_raises(self) -> None:
+        plugin = Plugin("regexempty")
+
+        with self.assertRaises(PatternError):
+            @plugin.regex("")
+            async def empty(reply: Reply) -> None:  # pragma: no cover
+                pass
+
+    async def test_regex_decorator_invalid_pattern_raises(self) -> None:
+        plugin = Plugin("regexinvalid")
+
+        with self.assertRaises(PatternError):
+            @plugin.regex("(")
+            async def broken(reply: Reply) -> None:  # pragma: no cover
+                pass
+
     async def test_message_filter_and_config_injection(self) -> None:
         plugin = Plugin("ping", config=Config)
         hook_bus = PluginHookBus()
@@ -282,6 +366,282 @@ class PluginApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(adapter.calls[0][1], "PONG")
+
+    async def test_message_regex_filter_matches_and_dispatches(self) -> None:
+        plugin = Plugin("msgregex")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[int] = []
+
+        @plugin.message(regex=r"温度 (\d+) 度")
+        async def temperature(reply: Reply) -> None:
+            seen.append(1)
+            await reply.send("收到")
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "今天温度 25 度",
+                }
+            )
+        )
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "今天没有温度",
+                }
+            )
+        )
+
+        self.assertEqual(seen, [1])
+        self.assertEqual(adapter.calls[0][1], "收到")
+
+    async def test_message_regex_filter_invalid_pattern_raises_at_registration(self) -> None:
+        plugin = Plugin("msgregexbad")
+
+        with self.assertRaises(PatternError) as ctx:
+            @plugin.message(regex="(")
+            async def broken(reply: Reply) -> None:  # pragma: no cover
+                pass
+
+        self.assertIs(type(ctx.exception), PatternError)
+        self.assertIsInstance(ctx.exception.__cause__, re.error)
+
+    async def test_message_regex_filter_accepts_compiled_pattern(self) -> None:
+        plugin = Plugin("msgregexcompiled")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[int] = []
+
+        @plugin.message(regex=re.compile(r"^hi \S+", re.IGNORECASE))
+        async def hi(reply: Reply) -> None:
+            seen.append(1)
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "HI there",
+                }
+            )
+        )
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "hi",
+                }
+            )
+        )
+
+        self.assertEqual(seen, [1])
+
+    async def test_message_regex_filter_rejects_invalid_input_types(self) -> None:
+        plugin = Plugin("msgregextype")
+
+        for value in (42, b"abc", ["abc"]):
+            with self.subTest(value=value):
+                with self.assertRaises(PatternError):
+                    plugin.message(regex=value)
+
+    async def test_message_regex_filter_empty_pattern_raises(self) -> None:
+        plugin = Plugin("msgregexempty")
+
+        for value in ("", "   ", re.compile("")):
+            with self.subTest(value=value):
+                with self.assertRaises(PatternError):
+                    plugin.message(regex=value)
+
+    async def test_regex_decorator_and_regex_filter_coexist(self) -> None:
+        plugin = Plugin("regexcoexist")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[str] = []
+
+        @plugin.regex(r"查天气 (?P<city>\S+)")
+        async def weather(city: str) -> None:
+            seen.append(f"w:{city}")
+
+        @plugin.message(regex=r"^\d{3}$")
+        async def code(reply: Reply) -> None:
+            seen.append("m")
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "查天气 上海",
+                }
+            )
+        )
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "404",
+                }
+            )
+        )
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "查天气 上海 404",
+                }
+            )
+        )
+
+        self.assertEqual(seen, ["w:上海", "m", "w:上海"])
+
+    async def test_message_regex_filter_combines_with_other_filters(self) -> None:
+        plugin = Plugin("msgregexcombo")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[int] = []
+
+        @plugin.message(contains="订单", regex=r"#\d{4}", startswith="查")
+        async def order(reply: Reply) -> None:
+            seen.append(1)
+
+        await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+        for text in ("查订单 #1234", "查订单 #123", "#1234", "查 订单 #1234"):
+            await hook_bus.dispatch(
+                DispatchCtx(
+                    {
+                        "post_type": "message",
+                        "message_type": "private",
+                        "user_id": 1,
+                        "raw_message": text,
+                    }
+                )
+            )
+
+        self.assertEqual(seen, [1, 1])
+
+    async def test_users_di_injects_context_user_directory(self) -> None:
+        plugin = Plugin("usersdi")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        seen: list[Any] = []
+
+        @plugin.message(text="who")
+        async def who(users: UserDirectory, reply: Reply) -> None:
+            seen.append(users)
+            await reply.send("ok")
+
+        context = self.make_context(plugin, hook_bus, adapter)
+        await plugin.on_load(context)
+        await hook_bus.dispatch(
+            DispatchCtx(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "user_id": 1,
+                    "raw_message": "who",
+                }
+            )
+        )
+
+        self.assertIs(seen[0], context.users)
+        self.assertEqual(adapter.calls[0][1], "ok")
+
+    async def test_agent_handler_users_di_injects_context_user_directory(self) -> None:
+        plugin = Plugin("usersagentdi")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        registry = FakeAgentRegistry()
+        seen: list[Any] = []
+
+        @plugin.agent("who", description="Who agent")
+        async def who(task: str, users: UserDirectory) -> str:
+            seen.append(users)
+            return task
+
+        context = self.make_context(plugin, hook_bus, adapter, agent_registry=registry)
+        await plugin.on_load(context)
+        result = await registry.agents["usersagentdi.who"].invoke(
+            {"messages": [{"role": "user", "content": "hi"}]}
+        )
+
+        self.assertEqual(seen, [context.users])
+        self.assertIs(seen[0], context.users)
+        self.assertEqual(result["messages"][-1]["content"], "hi")
+
+    async def test_users_di_capture_conflict_still_rejected(self) -> None:
+        plugin = Plugin("usersconflict")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+
+        @plugin.regex(r"who (?P<users>\S+)")
+        async def who(users: UserDirectory) -> None:
+            pass
+
+        with self.assertRaises(PatternError):
+            await plugin.on_load(self.make_context(plugin, hook_bus, adapter))
+
+    async def test_tool_users_di_hidden_from_schema_and_injected(self) -> None:
+        plugin = Plugin("userstool")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        skills = FakeSkillRegistry()
+        host = PluginHostFacade(skills=skills)
+        seen: list[Any] = []
+
+        @plugin.tool("who", description="who")
+        async def who(users: UserDirectory, target: str) -> str:
+            seen.append(users)
+            return target
+
+        context = self.make_context(plugin, hook_bus, adapter, host=host)
+        await plugin.on_load(context)
+
+        schema = skills.get_tools()[0]["function"]["parameters"]
+        self.assertNotIn("users", schema["properties"])
+        self.assertEqual(list(schema["properties"]), ["target"])
+        self.assertEqual(schema["required"], ["target"])
+
+        # 模型无法伪造 users：显式传入也会被丢弃并由 DI 注入 context.users
+        result = await skills.execute(
+            "userstool__who", {"target": "x", "users": "forged"}
+        )
+
+        self.assertEqual(result, "x")
+        self.assertIs(seen[0], context.users)
+
+    async def test_tool_users_di_cannot_be_model_facing(self) -> None:
+        plugin = Plugin("userstoolbad")
+        hook_bus = PluginHookBus()
+        adapter = FakeAdapter()
+        host = PluginHostFacade(skills=FakeSkillRegistry())
+
+        @plugin.tool(
+            "who",
+            parameters={"properties": {"users": {"type": "string"}}, "required": []},
+        )
+        async def who(users: UserDirectory) -> str:
+            return "ok"
+
+        with self.assertRaises(ValueError):
+            await plugin.on_load(self.make_context(plugin, hook_bus, adapter, host=host))
 
     async def test_lifecycle_decorators_run(self) -> None:
         plugin = Plugin("life")

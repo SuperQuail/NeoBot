@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from typing import Any
@@ -98,6 +99,53 @@ class MessagePattern:
         except PatternMatchError as exc:
             return PatternMatch(False, {}, str(exc), command_matched=False)
         return PatternMatch(True, values, command_matched=False)
+
+
+class RegexPattern:
+    def __init__(
+        self,
+        pattern: str | re.Pattern[str],
+        *,
+        flags: int = 0,
+    ) -> None:
+        if not isinstance(flags, int):
+            raise PatternError("flags must be an integer")
+        if isinstance(pattern, str):
+            try:
+                compiled = re.compile(pattern, flags)
+            except (re.error, ValueError, OverflowError) as exc:
+                raise PatternError(f"invalid regex pattern: {exc}") from exc
+        elif isinstance(pattern, re.Pattern):
+            if flags:
+                raise PatternError(
+                    "flags cannot be applied to an already compiled pattern"
+                )
+            compiled = pattern
+        else:
+            raise PatternError(
+                "regex pattern must be a string or a compiled pattern"
+            )
+        if not isinstance(compiled.pattern, str):
+            raise PatternError("regex pattern must be a string pattern")
+        if not compiled.pattern.strip():
+            raise PatternError("regex pattern cannot be empty")
+        self.pattern = compiled
+
+    @property
+    def capture_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self.pattern.groupindex))
+
+    @property
+    def usage(self) -> str:
+        return self.pattern.pattern
+
+    def match(self, message: Message) -> PatternMatch:
+        match = self.pattern.search(message.text)
+        if match is None:
+            return PatternMatch(False, {})
+        return PatternMatch(
+            True, {name: match.group(name) for name in self.capture_names}
+        )
 
 
 def _parse_pattern(pattern: str) -> list[PatternElement]:
@@ -269,6 +317,8 @@ def _capture_at(
             last_index = index + 1
             if not element.list_value:
                 break
+        elif not isinstance(token, str):
+            break
     if element.list_value:
         if not ats and not element.optional:
             raise PatternMatchError(f"missing required at parameter {element.name}")

@@ -38,6 +38,22 @@ from neobot_contracts.ports.host import (
 )
 from neobot_contracts.ports.scheduled_task_access import ScheduledTaskAccess
 from neobot_contracts.ports.sandbox import SandboxDataPort
+from neobot_contracts.ports.screenshot import (
+    FontFace,
+    FontFormat,
+    FontLoadError,
+    ImageFormat,
+    InvalidScreenshotOptions,
+    RenderOptions,
+    ScreenshotError,
+    ScreenshotMode,
+    ScreenshotOptions,
+    ScreenshotPort,
+    ScreenshotResult,
+    ScreenshotTargetNotFound,
+    ScreenshotTimeout,
+    ScreenshotUnavailable,
+)
 
 __all__ = [
     "Logger",
@@ -83,4 +99,18 @@ __all__ = [
     "QueryRegistry",
     "QuerySpec",
     "SandboxDataPort",
+    "FontFace",
+    "FontFormat",
+    "FontLoadError",
+    "ImageFormat",
+    "InvalidScreenshotOptions",
+    "RenderOptions",
+    "ScreenshotError",
+    "ScreenshotMode",
+    "ScreenshotOptions",
+    "ScreenshotPort",
+    "ScreenshotResult",
+    "ScreenshotTargetNotFound",
+    "ScreenshotTimeout",
+    "ScreenshotUnavailable",
 ]

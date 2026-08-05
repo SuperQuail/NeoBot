@@ -15,6 +15,7 @@ from neobot_app.core.paths import get_data_dir
 if TYPE_CHECKING:
     from neobot_app.audio import TTSService
     from neobot_app.emoji.service import EmojiService
+    from neobot_contracts.ports.screenshot import ScreenshotPort
 
 T = TypeVar("T")
 
@@ -53,6 +54,7 @@ class NeoBotApplication(Generic[T]):
         file_server: FileServer | None = None,
         browser_lifecycle_manager: Any = None,
         browser_instance: Any = None,
+        screenshots: "ScreenshotPort | None" = None,
         creator_image_service: Any = None,
         drawing_manager: Any = None,
         background_coros: list | None = None,
@@ -95,6 +97,11 @@ class NeoBotApplication(Generic[T]):
         self._archive_summary_service = archive_summary_service
         self._browser_lifecycle_manager = browser_lifecycle_manager
         self._browser_instance = browser_instance
+        if screenshots is None:
+            from neobot_app.screenshot import UnavailableScreenshots
+
+            screenshots = UnavailableScreenshots()
+        self.screenshots: "ScreenshotPort" = screenshots
         self._creator_image_service = creator_image_service
         self._drawing_manager = drawing_manager
         self._background_coros = background_coros or []

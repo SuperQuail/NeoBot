@@ -363,6 +363,7 @@ def create_application() -> NeoBotApplication:
         file_server=file_server,
         agent_registry=agent_registry,
         skills_registry=markdown_skill_registry,
+        screenshots=browser["screenshots"],
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -515,6 +516,7 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
         browser_lifecycle_manager=browser["browser_lifecycle_manager"],
         browser_instance=browser["browser_instance"],
+        screenshots=browser["screenshots"],
         creator_image_service=creator_image_service,
         drawing_manager=drawing_manager,
         background_coros=maintenance_coros,

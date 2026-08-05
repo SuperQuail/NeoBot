@@ -128,6 +128,54 @@ def _make_app(
     return app
 
 
+def _make_app_real_init(screenshots=None) -> NeoBotApplication:
+    """经真实 __init__ 构造应用（仅依赖 Fake 组件，不启动任何服务）。"""
+    return NeoBotApplication(
+        adapter=_FakeAdapter(),
+        chat_stream=_FakeChatStream(),
+        event_ingress=_FakeIngress(),
+        file_server=_FakeFileServer(),
+        screenshots=screenshots,
+    )
+
+
+class _FakeScreenshots:
+    """记录 render/save 调用的假截图 Port 实现。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def render(self, **kwargs):
+        self.calls += 1
+        return object()
+
+    async def save(self, **kwargs):
+        self.calls += 1
+        return object()
+
+
+def test_application_uses_injected_screenshots() -> None:
+    screenshots = _FakeScreenshots()
+    app = _make_app_real_init(screenshots=screenshots)
+    assert app.screenshots is screenshots
+
+
+async def test_application_default_screenshots_raise_unavailable() -> None:
+    from neobot_app.screenshot import UnavailableScreenshots
+    from neobot_contracts.ports.screenshot import (
+        RenderOptions,
+        ScreenshotOptions,
+        ScreenshotUnavailable,
+    )
+
+    app = _make_app_real_init()
+    assert isinstance(app.screenshots, UnavailableScreenshots)
+    with pytest.raises(ScreenshotUnavailable, match="浏览器未启用或 Chromium 不可用"):
+        await app.screenshots.render(
+            html="<p>x</p>", options=RenderOptions(ScreenshotOptions())
+        )
+
+
 def test_restart_request_is_distinct_from_normal_stop() -> None:
     application = object.__new__(NeoBotApplication)
     application._shutdown_event = asyncio.Event()

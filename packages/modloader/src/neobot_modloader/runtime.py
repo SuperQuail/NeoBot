@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.plugin import PluginState
+from neobot_contracts.ports.screenshot import ScreenshotPort
 
 from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.dependencies import PythonDependencyInstaller
@@ -63,6 +64,7 @@ class PluginRuntime:
         host: Any | None = None,
         file_server: Any | None = None,
         media_sender: Any | None = None,
+        screenshots: ScreenshotPort | None = None,
         dependency_installer: PythonDependencyInstaller | None = None,
         auto_install_dependencies: bool = False,
     ) -> None:
@@ -74,6 +76,7 @@ class PluginRuntime:
         self.skills_registry = skills_registry
         self._file_server = file_server
         self._media_sender = media_sender
+        self.screenshots = screenshots
         self.record_ai_reply_block = record_ai_reply_block
         self.output = output or NullOutput()
         self.logger = logger or self._get_logger("modloader.runtime")
@@ -1251,6 +1254,7 @@ class PluginRuntime:
                 host=tracked_host,
                 file_server=self._file_server,
                 media_sender=self._media_sender,
+                screenshots=self.screenshots,
                 plugin_control=self.control,
             )
             self.manager.register(loaded.plugin, context)

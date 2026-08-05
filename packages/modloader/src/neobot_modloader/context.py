@@ -10,8 +10,10 @@ from neobot_adapter.model.response import SendMsgResponse
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
+from neobot_contracts.ports.screenshot import ScreenshotPort
 from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
+from neobot_modloader.users import UserDirectory
 
 MessagePayload = str | list[dict[str, Any]]
 
@@ -77,6 +79,7 @@ class RuntimePluginContext:
         plugin_control: PluginControlFacade | None = None,
         markdown_skill_registry: Any | None = None,
         record_skill_cleanup: Any | None = None,
+        screenshots: ScreenshotPort | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -84,6 +87,7 @@ class RuntimePluginContext:
         self._config = dict(config or {})
         self._logger = logger or NullLogger()
         self._adapter = adapter
+        self.users = UserDirectory(adapter)
         self._hook_bus = hook_bus
         self._record_subscription = record_subscription or (lambda _subscription: None)
         self._plugins = plugin_registry
@@ -92,6 +96,7 @@ class RuntimePluginContext:
         self._file_server = file_server
         self._media_sender = media_sender
         self._plugin_control = plugin_control
+        self.screenshots = screenshots
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self.agents = PluginAgentRegistrar(
             plugin_name=plugin_name,

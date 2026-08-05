@@ -15,6 +15,7 @@ from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.message import Message
 from neobot_modloader.plugins.registration import Handler
 from neobot_modloader.reply import Reply
+from neobot_modloader.users import UserDirectory
 
 
 _NAME_INJECTION_KINDS = {
@@ -143,6 +144,7 @@ def _classify_di_annotation(
         (Bot, "bot"),
         (Logger, "logger"),
         (PluginControlFacade, "plugin_control"),
+        (UserDirectory, "users"),
     ):
         if _safe_issubclass(provider_type, annotation) or _safe_issubclass(
             annotation, provider_type
@@ -299,6 +301,8 @@ def _injected_value(
         return True, context.plugins
     if kind == "plugin_control":
         return True, context.plugin_control
+    if kind == "users":
+        return True, context.users
     if kind == "config":
         return config_model is not None and config is not None, config
     return False, None

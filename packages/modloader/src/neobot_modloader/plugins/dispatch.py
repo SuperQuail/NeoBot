@@ -152,11 +152,12 @@ def _message_filters_match(
     if registration.fullmatch is not None and text_value != registration.fullmatch:
         return False
     if registration.regex is not None:
-        pattern = (
-            re.compile(registration.regex)
-            if isinstance(registration.regex, str)
-            else registration.regex
-        )
+        pattern = registration.regex
+        if isinstance(pattern, str):
+            try:
+                pattern = re.compile(pattern)
+            except (re.error, ValueError, OverflowError) as exc:
+                raise PatternError(f"invalid regex pattern: {exc}") from exc
         if pattern.search(text_value) is None:
             return False
     return True

@@ -133,6 +133,164 @@ async def vision_message(img: ImageSegment, reply: Reply):
     await reply.send(img)
 ```
 
+## 正则模式
+
+`@plugin.regex(pattern, ...)` 对消息纯文本（`message.text`，text 段拼接）做正则 `search`，
+把命名分组 `(?P<名字>...)` 按名注入处理器参数。适合实现无斜杠的中文指令：
+
+```python
+from neobot_modloader import Plugin, Reply
+
+plugin = Plugin("weather")
+
+
+@plugin.regex(r"^天气 (?P<city>\S+)")
+async def weather(city: str | None, reply: Reply):
+    await reply.send(f"{city} 今天晴，22-28 度。")
+```
+
+用户发送「天气 上海」即可触发，`city` 参数会得到 `"上海"`。命名分组注入到同名参数，
+可选分组未命中时为 `None`；`reply`、`config`、`logger` 等 DI 参数照常可用，
+命名分组名不能与 DI 参数名冲突。与 `@plugin.message(...)` 一样是消息级注册
+（不是 slash 命令，无前缀概念），其余参数（`group` / `private` / `priority` /
+`block` / `parse_error` 等）行为一致。
+
+## 用户资料
+
+`ctx.users`（`UserDirectory`）统一查询用户与群成员资料，屏蔽 OneBot 适配器的字段差异。
+当前发言人直接用 `from_event`（零 API 请求），查其他用户用 `get`，
+排行榜这类批量查询用 `get_many`：
+
+```python
+from neobot_modloader import Plugin, Reply, UserProfile
+
+plugin = Plugin("coin")
+
+
+@plugin.message("金币")
+async def balance(event, ctx, reply: Reply):
+    sender = ctx.users.from_event(event)          # 当前发言人：直接读事件，零 API 请求
+    await reply.send(f"{sender.display_name} 当前拥有 100 金币")
+
+
+@plugin.message("排行榜")
+async def leaderboard(message, ctx, reply: Reply):
+    user_ids = ["111", "222", "333"]
+    profiles = await ctx.users.get_many(user_ids, group_id=message.raw_event.get("group_id"))
+    await reply.send("\n".join(p.display_name for p in profiles.values()))
+```
+
+`UserProfile` 是不可变（frozen）dataclass，常用字段：
+
+- `user_id: str`
+- `nickname: str | None`、`avatar_url: str | None`、`group_id: str | None`
+- `card: str | None`（群名片）、`role: str | None`（owner / admin / member）、
+  `title: str | None`（群头衔）
+- `raw: Mapping`：只读原始数据逃生口，业务代码不应依赖
+- `display_name` 属性 = `card or nickname or user_id`
+
+方法一览：
+
+- `await ctx.users.get(user_id, *, group_id=None, refresh=False) -> UserProfile`
+- `ctx.users.from_event(event) -> UserProfile`（同步，读事件 sender，零请求）
+- `await ctx.users.display_name(user_id, *, group_id=None, refresh=False) -> str`
+- `await ctx.users.get_many(user_ids, *, group_id=None) -> dict[str, UserProfile]`
+  （自动去重；带 `group_id` 时批量拉取一次群成员列表，避免 N+1 查询）
+
+查询规则：带 `group_id` 时先查群成员资料、优先群名片 `card`；失败回退全局用户昵称；
+全部失败返回只有 `user_id` 的占位资料，不让昵称查询拖垮指令。
+结果缓存：成功 5 分钟、失败 30 秒，`refresh=True` 可强制刷新。
+
+`users` 也可以作为 DI 参数注入（`async def h(users: UserDirectory, reply: Reply)`，
+与 `config`、`logger` 等用法一致），但 `ctx.users` 是主入口。
+
+> 注意：`profile.role == "admin"` 只是 QQ 群管理员，并不等同于 NeoBot 的全局管理员，
+> 插件不要拿它做权限判断（权限体系另行设计）。
+
+不建议直接调用 `ctx.adapter.get_group_member_info(...)` 等原始 API：返回字段绑定 OneBot
+实现、各适配器字段不一致，且回退规则、缓存与批量查询无法统一；用 `ctx.users` 即可。
+
+## 独立数据库
+
+插件可以声明自己的 SQLite 数据库（SQLAlchemy Async + aiosqlite），数据文件按插件隔离。宿主负责数据库的初始化、迁移、关闭与路径校验，插件只关心模型定义和查询。
+
+数据库在插件模块加载时声明，随插件加载初始化、随卸载关闭；卸载不会删除数据文件。
+
+```python
+from neobot_modloader import Migration, Plugin
+
+from .models import Base
+from .migrations import create_initial_schema, add_user_index
+
+plugin = Plugin("example", version="1.0.0", description="数据库示例插件")
+
+database = plugin.sqlite_database(
+    "main",
+    filename="example.db",
+    metadata=Base.metadata,
+    migrations=[
+        Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
+        Migration(version=2, name="add-user-index", upgrade=add_user_index),
+    ],
+)
+```
+
+- `Migration(version, name, upgrade)`：`version` 必须为正整数且同一数据库内不能重复；迁移按 `version` 升序执行；首版没有 downgrade
+- `plugin.sqlite_database(name="main", *, filename=None, metadata=None, migrations=(), pragmas=None) -> PluginDatabase`：同一插件内 `name` 不能重复；`filename` 缺省为 `<name>.sqlite3`；`metadata=` 传入 SQLAlchemy `DeclarativeBase.metadata` 用于建表
+
+### 使用
+
+写操作放进事务，成功自动 commit，异常自动 rollback：
+
+```python
+async with database.transaction() as session:
+    session.add(ExampleUser(name=name))
+```
+
+只读查询用普通会话，不自动提交：
+
+```python
+async with database.session() as session:
+    users = list(await session.scalars(select(ExampleUser).order_by(ExampleUser.id)))
+```
+
+`PluginDatabase` 的属性与方法：`name` / `path` / `url` / `engine`；`session()`（AsyncSession，不自动提交）、`transaction()`（commit/rollback）、`migrate()`、`close()`（幂等，可重试）。
+
+### 迁移
+
+迁移函数签名：
+
+```python
+async def upgrade(connection):
+    ...
+```
+
+每个迁移在独立事务中执行，失败自动回滚并阻止插件启动（插件进入 ERROR）。迁移声明后不会重复执行：已执行的迁移记录在 `_neobot_plugin_migrations` 表中，并做 checksum 校验，修改已执行迁移的代码会报 `PluginMigrationConflictError`。
+
+### 存储路径与路径安全
+
+数据文件位于 `<插件数据目录>/databases/<filename>`，例如插件 `example` 的数据文件在 `data/plugins_data/example/databases/example.db`（数据根目录由部署配置决定）。
+
+路径安全规则：禁止绝对路径、`..`、盘符、UNC 与 symlink 逃逸；文件必须位于本插件自己的 databases 目录内；`filename` 只能是文件名，不能包含目录分隔符；不允许指向 `neobot.db`。
+
+### 强制 PRAGMA
+
+每连接强制设置以下 PRAGMA，插件无法覆盖：`journal_mode=WAL`、`foreign_keys=ON`、`busy_timeout=5000`、`synchronous=NORMAL`。`pragmas=` 参数可追加其他 PRAGMA。
+
+### 生命周期与错误
+
+数据库在 `on_load` 之前初始化，migration 全部完成后才绑定命令/Tool/Agent；初始化失败插件进入 ERROR。停止时在 `on_shutdown` 之后关闭数据库，关闭失败记录进插件错误状态；热重载不会重复迁移；卸载不删除数据文件。
+
+错误类型：
+
+- `PluginDatabaseError`：数据库通用错误
+- `PluginDatabaseNotReadyError`：数据库尚未绑定完成就查询
+- `PluginDatabaseClosedError`：数据库已关闭后使用
+- `PluginMigrationError`：迁移执行失败
+- `PluginMigrationConflictError`：已执行迁移的 checksum 冲突
+
+完整的声明、迁移与使用示例见 `example_plugins/database_example/`（插件名 `example`，包含 models / migrations / plugin.toml，`plugin.toml` 中声明 `python_dependencies = ["sqlalchemy>=2.0", "aiosqlite>=0.20.0"]`）。
+
 ## Reply
 
 `Reply.send()` 是主要发送入口。
@@ -275,7 +433,7 @@ def build_worker() -> Workflow:
     return Workflow().add_step(parse).add_step(answer)
 ```
 
-子 Agent 默认不直接发消息，而是把结果返回给主 Agent。需要直接回复用户时，仍使用 `@plugin.command` 或 `@plugin.message`。
+子 Agent 默认不直接发消息，而是把结果返回给主 Agent。
 
 主 Agent 通过 `agents__list` / `agents__delegate` 工具发现并委托插件子 Agent。
 
@@ -309,7 +467,7 @@ async def save(text: str, config: Config, ctx, logger) -> str:
 ```
 
 支持：`config: Config`（插件配置）、`ctx` / `context`、`logger`、`data_dir: Path`、
-`plugin_dir: Path`、`host`、`plugins`、`plugin_control`。
+`plugin_dir: Path`、`host`、`plugins`、`plugin_control`、`users: UserDirectory`。
 
 > 注：`Reply` 仅建议在命令/消息处理器中注入（此时携带当前事件上下文）。
 > 工具处理器中的 `reply` 参数没有可用的回复事件，行为不可依赖；
@@ -469,16 +627,25 @@ from neobot_modloader import (
     Message,
     MessageChain,
     MessageSegment,
+    Migration,
     Plugin,
     PluginControlFacade,
+    PluginDatabase,
+    PluginDatabaseClosedError,
+    PluginDatabaseError,
+    PluginDatabaseNotReadyError,
     PluginHookBus,
     PluginHostFacade,
+    PluginMigrationConflictError,
+    PluginMigrationError,
     PluginOperationResult,
     PluginRuntime,
     PluginSnapshot,
     PythonDependencyInstaller,
     Reply,
     RuntimePluginContext,
+    UserDirectory,
+    UserProfile,
     at,
     image,
     text,

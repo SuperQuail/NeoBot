@@ -166,12 +166,11 @@ def image(*, url: str | None = None, file: str | None = None, **data: Any) -> Im
 
 
 def at(qq: str | None = None, name: str | None = None, **data: Any) -> AtSegment:
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = dict(data)
     if qq is not None:
         payload["qq"] = str(qq)
     if name is not None:
         payload["name"] = name
-    payload.update(data)
     return AtSegment(payload)
 
 

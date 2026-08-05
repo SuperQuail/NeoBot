@@ -7,20 +7,32 @@ agent-browser — AI 代理浏览器核心管理模块
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import platform
 import shutil
+import sys
 import threading
 import time
 import weakref
 from pathlib import Path
 import glob as _glob
+from io import BytesIO
 from typing import Any, Optional
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 from DrissionPage._pages.chromium_base import ChromiumBase
 from DrissionPage.errors import PageDisconnectedError
+from PIL import Image
+
+from neobot_contracts.ports.screenshot import (
+    ScreenshotError,
+    ScreenshotOptions,
+    ScreenshotResult,
+    ScreenshotTargetNotFound,
+    validate_screenshot_options,
+)
 
 _MAX_RETRIES = 2
 _RETRY_INTERVAL = 1.0
@@ -164,6 +176,7 @@ class BrowserManager:
         self._tabs: dict[int, Any] = {}
         self._tab_labels: dict[str, str] = {}
         self._init_scripts: dict[str, str] = {}
+        self._device_metrics_override: dict[str, Any] | None = None
         Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
         self._cleanup_locks()
         _register_instance(self)
@@ -1237,6 +1250,12 @@ class BrowserManager:
                 width=width, height=height,
                 deviceScaleFactor=device_scale_factor, mobile=False,
             )
+            self._device_metrics_override = {
+                "width": width,
+                "height": height,
+                "deviceScaleFactor": device_scale_factor,
+                "mobile": False,
+            }
             return {"success": True, "viewport": f"{width}x{height}@{device_scale_factor}x"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1263,6 +1282,12 @@ class BrowserManager:
                 width=spec["width"], height=spec["height"],
                 deviceScaleFactor=spec["dsf"], mobile=spec["mobile"],
             )
+            self._device_metrics_override = {
+                "width": spec["width"],
+                "height": spec["height"],
+                "deviceScaleFactor": spec["dsf"],
+                "mobile": spec["mobile"],
+            }
             ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
                   "Mobile/15E148 Safari/604.1" if spec["mobile"] else "")
@@ -1337,6 +1362,131 @@ class BrowserManager:
 
     # ── 截图 ──
 
+    async def _apply_temporary_capture_metrics(
+        self, options: ScreenshotOptions
+    ) -> tuple[ChromiumBase, bool, dict[str, Any] | None]:
+        """Apply capture metrics before content loads and return restoration state."""
+        validate_screenshot_options(options)
+        page = await self._ensure_page()
+        raw_metrics = await asyncio.to_thread(
+            page.run_js,
+            """return JSON.stringify({
+                width: window.innerWidth, height: window.innerHeight,
+                dpr: window.devicePixelRatio
+            })""",
+        )
+        metrics = json.loads(raw_metrics)
+        width = options.width or int(metrics["width"])
+        height = options.height or int(metrics["height"])
+        applied = (
+            width != metrics["width"]
+            or height != metrics["height"]
+            or options.scale != metrics["dpr"]
+        )
+        previous_override = getattr(self, "_device_metrics_override", None)
+        if applied:
+            await asyncio.to_thread(
+                page.run_cdp,
+                "Emulation.setDeviceMetricsOverride",
+                width=width,
+                height=height,
+                deviceScaleFactor=options.scale,
+                mobile=False,
+            )
+        return page, applied, previous_override
+
+    async def _restore_temporary_capture_metrics(
+        self, state: tuple[ChromiumBase, bool, dict[str, Any] | None]
+    ) -> None:
+        page, applied, previous_override = state
+        if not applied:
+            return
+        if previous_override is None:
+            await asyncio.to_thread(
+                page.run_cdp, "Emulation.clearDeviceMetricsOverride"
+            )
+        else:
+            await asyncio.to_thread(
+                page.run_cdp,
+                "Emulation.setDeviceMetricsOverride",
+                **previous_override,
+            )
+
+    async def capture(self, options: ScreenshotOptions) -> ScreenshotResult:
+        """Capture the current page without writing to disk."""
+        state = None
+        try:
+            state = await self._apply_temporary_capture_metrics(options)
+            page = state[0]
+            raw_box = await asyncio.to_thread(
+                page.run_js,
+                """return JSON.stringify({
+                    viewport: {x: window.scrollX, y: window.scrollY,
+                        width: window.innerWidth, height: window.innerHeight},
+                    full: {x: 0, y: 0,
+                        width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
+                        height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)}
+                })""",
+            )
+            boxes = json.loads(raw_box)
+            if options.mode == "element":
+                raw_element = await asyncio.to_thread(
+                    page.run_js,
+                    """const element = document.querySelector(arguments[0]);
+                    if (!element) return null;
+                    const rect = element.getBoundingClientRect();
+                    return JSON.stringify({x: rect.left + window.scrollX,
+                        y: rect.top + window.scrollY, width: rect.width, height: rect.height});""",
+                    options.selector,
+                )
+                if not raw_element:
+                    raise ScreenshotTargetNotFound(
+                        f"screenshot target not found: {options.selector}"
+                    )
+                clip = json.loads(raw_element)
+                if clip["width"] <= 0 or clip["height"] <= 0:
+                    raise ScreenshotTargetNotFound(
+                        f"screenshot target has no visible area: {options.selector}"
+                    )
+            else:
+                clip = boxes["full" if options.mode == "full_page" else "viewport"]
+            args: dict[str, Any] = {
+                "format": options.format,
+                "clip": {**clip, "scale": 1},
+                "captureBeyondViewport": True,
+                "omitBackground": options.transparent,
+            }
+            if options.format in {"jpeg", "webp"}:
+                args["quality"] = options.quality
+            response = await asyncio.to_thread(
+                page.run_cdp, "Page.captureScreenshot", **args
+            )
+            data = base64.b64decode(response["data"])
+            with Image.open(BytesIO(data)) as image:
+                pixel_width, pixel_height = image.size
+            return ScreenshotResult(
+                data=data,
+                format=options.format,
+                width=pixel_width,
+                height=pixel_height,
+                css_width=float(clip["width"]),
+                css_height=float(clip["height"]),
+                scale=options.scale,
+            )
+        except ScreenshotError:
+            raise
+        except Exception as exc:
+            raise ScreenshotError("failed to capture screenshot") from exc
+        finally:
+            if state is not None:
+                try:
+                    await self._restore_temporary_capture_metrics(state)
+                except Exception as exc:
+                    if sys.exc_info()[0] is None:
+                        raise ScreenshotError(
+                            "failed to restore browser metrics after capture"
+                        ) from exc
+
     async def screenshot(self, path: str | Path | None = None, full_page: bool = False) -> bytes:
         """截图，返回 JPEG bytes。
 
@@ -1410,6 +1560,66 @@ class BrowserManager:
             return {"success": False, "error": str(e)}
 
     # ── 标签页管理 ──
+
+    async def _open_temporary_page(self) -> tuple[ChromiumBase, ChromiumBase]:
+        """Open and activate an isolated blank tab, retaining the current page."""
+        original = await self._ensure_page()
+        tab_ids_before = set(original._browser.tab_ids)
+        temporary = None
+        tab_id = None
+        try:
+            temporary = await asyncio.to_thread(self._session_page.new_tab, None)
+            tab_id = getattr(temporary, "tab_id", None)
+            if tab_id is None:
+                tab_id = next(
+                    tid for tid in original._browser.tab_ids if tid not in tab_ids_before
+                )
+                temporary = self._session_page.get_tab(tab_id)
+            await asyncio.to_thread(original._browser.activate_tab, tab_id)
+            self._tab_pages[tab_id] = temporary
+            self._page = temporary
+            return original, temporary
+        except BaseException:
+            if tab_id is None:
+                tab_id = next(
+                    (tid for tid in original._browser.tab_ids if tid not in tab_ids_before),
+                    None,
+                )
+            if tab_id is not None:
+                try:
+                    await asyncio.to_thread(
+                        original.run_cdp, "Target.closeTarget", targetId=tab_id
+                    )
+                except Exception:
+                    pass
+                self._tab_pages.pop(tab_id, None)
+            try:
+                await asyncio.to_thread(
+                    original._browser.activate_tab, original.tab_id
+                )
+            except Exception:
+                pass
+            self._page = original
+            raise
+
+    async def _close_temporary_page(
+        self, temporary: ChromiumBase, original: ChromiumBase | None
+    ) -> None:
+        """Close an isolated tab and restore the exact page that was active."""
+        tab_id = temporary.tab_id
+        try:
+            await asyncio.to_thread(
+                temporary.run_cdp, "Target.closeTarget", targetId=tab_id
+            )
+        finally:
+            self._tab_pages.pop(tab_id, None)
+            if original is not None:
+                try:
+                    await asyncio.to_thread(
+                        original._browser.activate_tab, original.tab_id
+                    )
+                finally:
+                    self._page = original
 
     async def new_tab(self, url: str = "") -> dict:
         """新建标签页并自动激活。"""
