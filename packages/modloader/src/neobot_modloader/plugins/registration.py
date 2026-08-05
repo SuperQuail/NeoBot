@@ -32,6 +32,7 @@ class HandlerRegistration:
     endswith: str | None = None
     fullmatch: str | None = None
     rule: Callable[[dict[str, Any]], Any] | None = None
+    command_prefix: str | None = None
 
 
 @dataclass(slots=True)

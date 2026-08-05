@@ -41,15 +41,17 @@ class MessagePattern:
         *,
         command: bool = False,
         aliases: tuple[str, ...] = (),
+        prefix: str = "/",
     ) -> None:
         self.pattern = (pattern or "").strip()
         self.command = command
         self.aliases = tuple(aliases)
         self.elements = _parse_pattern(self.pattern)
+        self.prefix = _validate_command_prefix(prefix) if command else prefix
         if self.command:
             if not self.elements or self.elements[0].kind != "literal":
                 raise PatternError("command pattern must start with a command name")
-            self.command_name = self.elements[0].value.lstrip("/")
+            self.command_name = self.elements[0].value.removeprefix(self.prefix)
             self.body = self.elements[1:]
         else:
             self.command_name = ""
@@ -66,23 +68,23 @@ class MessagePattern:
     @property
     def usage(self) -> str:
         return (
-            f"/{self.pattern}"
-            if self.command and not self.pattern.startswith("/")
+            f"{self.prefix}{self.pattern}"
+            if self.command and not self.pattern.startswith(self.prefix)
             else self.pattern
         )
 
     def match(self, message: Message) -> PatternMatch:
         tokens = _message_tokens(message)
         if self.command:
-            command_index = _find_command(tokens)
+            command_index = _find_command(tokens, self.prefix)
             if command_index is None:
                 return PatternMatch(False, {}, command_matched=False)
             raw = tokens[command_index]
             assert isinstance(raw, str)
-            command_name = raw.lstrip("/")
+            command_name = raw.removeprefix(self.prefix)
             allowed = {
                 self.command_name.lower(),
-                *(alias.lower().lstrip("/") for alias in self.aliases),
+                *(alias.removeprefix(self.prefix).lower() for alias in self.aliases),
             }
             if command_name.lower() not in allowed:
                 return PatternMatch(False, {}, command_matched=False)
@@ -214,11 +216,21 @@ def _split_text(value: str) -> list[str]:
         return value.split()
 
 
-def _find_command(tokens: list[str | MessageSegment]) -> int | None:
+def _find_command(
+    tokens: list[str | MessageSegment], prefix: str = "/"
+) -> int | None:
     for index, token in enumerate(tokens):
-        if isinstance(token, str) and token.startswith("/") and len(token) > 1:
+        if isinstance(token, str) and token.startswith(prefix) and len(token) > len(prefix):
             return index
     return None
+
+
+def _validate_command_prefix(prefix: str) -> str:
+    if not isinstance(prefix, str):
+        raise PatternError("command prefix must be a string")
+    if any(char.isspace() for char in prefix):
+        raise PatternError("command prefix cannot contain whitespace")
+    return prefix
 
 
 def _match_elements(
