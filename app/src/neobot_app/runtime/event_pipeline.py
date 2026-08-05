@@ -7,7 +7,13 @@ from typing import Any, AsyncIterator, Dict, List
 
 from neobot_adapter import OneBotAdapter, Subscription
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
-from neobot_adapter.model.notice import EmojiReaction, GroupMessageDelete, GroupPoke, PrivateMessageDelete, PrivatePoke
+from neobot_adapter.model.notice import (
+    EmojiReaction,
+    GroupMessageDelete,
+    GroupPoke,
+    PrivateMessageDelete,
+    PrivatePoke,
+)
 from neobot_adapter.utils.parse import safe_parse_model
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -102,11 +108,14 @@ class EventPipeline:
         self._recent_message_ids: deque[int] = deque(maxlen=200)
         self._recent_message_ids_lock = asyncio.Lock()
         self._image_willing_locks: dict[str, asyncio.Lock] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._stopping = False
 
     def start(self) -> None:
         if self._started:
             return
 
+        self._stopping = False
         self._subscriptions = [
             self.adapter.subscribe(
                 "message",
@@ -131,19 +140,61 @@ class EventPipeline:
         self._logger.info("实时事件管线已启动")
 
     def stop(self) -> None:
-        if not self._started:
-            return
-
-        for subscription in self._subscriptions:
-            subscription.unsubscribe()
-        self._subscriptions.clear()
-        self._started = False
-        self._logger.info("实时事件管线已停止")
+        self._stopping = True
+        if self._started:
+            for subscription in self._subscriptions:
+                subscription.unsubscribe()
+            self._subscriptions.clear()
+            self._started = False
+            self._logger.info("实时事件管线已停止")
+        for task in list(self._background_tasks):
+            task.cancel()
 
     async def flush_pending_summaries(self) -> None:
         """对所有未达到阈值但有待处理消息的计数器触发摘要。"""
-        if self._archive_summary_service is not None:
-            await self._archive_summary_service.flush_all()
+        restore_scheduling = self._started and not self._stopping
+        self._stopping = True
+        try:
+            await self._cancel_background_tasks()
+            if self._archive_summary_service is not None:
+                await self._archive_summary_service.flush_all()
+        finally:
+            if restore_scheduling:
+                self._stopping = False
+
+    def _track_background_task(
+        self,
+        task: asyncio.Task[None],
+        *,
+        label: str,
+        context: dict[str, object] | None = None,
+    ) -> None:
+        if self._stopping:
+            task.cancel()
+        self._background_tasks.add(task)
+
+        def _done(done_task: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self._logger.warning(
+                    f"{label} background task failed",
+                    error=str(exc),
+                    **(context or {}),
+                )
+
+        task.add_done_callback(_done)
+
+    async def _cancel_background_tasks(self) -> None:
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
     def _has_active_reply_pipeline(self, kind: str, queue_key: str) -> bool:
         if self._reply_orchestrator is None:
@@ -155,7 +206,9 @@ class EventPipeline:
 
     def _get_group_agent_silent_timeout_seconds(self) -> float:
         if self._config is not None:
-            value = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
+            value = getattr(
+                self._config.chat, "group_agent_silent_timeout_seconds", None
+            )
             if isinstance(value, (int, float)):
                 return max(0.0, float(value))
         return 60.0
@@ -195,7 +248,11 @@ class EventPipeline:
         sender_id: str | None = None,
         sender_name: str | None = None,
     ) -> None:
-        if self._archive_summary_service is None or not conversation_id:
+        if (
+            self._stopping
+            or self._archive_summary_service is None
+            or not conversation_id
+        ):
             return
 
         async def _run() -> None:
@@ -208,23 +265,18 @@ class EventPipeline:
             )
 
         task = asyncio.create_task(_run())
+        self._track_background_task(
+            task,
+            label="archive auto summary",
+            context={
+                "conversation_kind": conversation_kind,
+                "conversation_id": conversation_id,
+            },
+        )
 
-        def _done(done_task: asyncio.Task[None]) -> None:
-            try:
-                done_task.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                self._logger.warning(
-                    "archive auto summary background task failed",
-                    conversation_kind=conversation_kind,
-                    conversation_id=conversation_id,
-                    error=str(exc),
-                )
-
-        task.add_done_callback(_done)
-
-    async def _is_duplicate_message(self, message: PrivateMessage | GroupMessage) -> bool:
+    async def _is_duplicate_message(
+        self, message: PrivateMessage | GroupMessage
+    ) -> bool:
         """按 message_id 对真实消息去重：断线重连重投的同一条消息直接丢弃。"""
         message_id = getattr(message, "message_id", None)
         if message_id is None:
@@ -251,7 +303,9 @@ class EventPipeline:
             return
         queue_key = str(message.user_id or "")
         await self._handle_inbound_raw_event(event)
-        replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
+        replied_messages = await self._fetch_replied_messages(
+            message, self._friend_queue, queue_key
+        )
         self._friend_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
@@ -273,7 +327,9 @@ class EventPipeline:
 
         ai_reply_blocked = self._consume_ai_reply_block(message)
         if skip_ai_reply or ai_reply_blocked:
-            self._logger.info("插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key)
+            self._logger.info(
+                "插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key
+            )
             return
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
@@ -346,7 +402,9 @@ class EventPipeline:
                 delay = float(val)
 
         if delay > 0:
-            self._logger.debug("私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
+            self._logger.debug(
+                "私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay
+            )
             await asyncio.sleep(delay)
 
         if self._reply_orchestrator is None:
@@ -388,7 +446,9 @@ class EventPipeline:
             return
         queue_key = str(message.group_id or "")
         await self._handle_inbound_raw_event(event)
-        replied_messages = await self._fetch_replied_messages(message, self._group_queue, queue_key)
+        replied_messages = await self._fetch_replied_messages(
+            message, self._group_queue, queue_key
+        )
         self._group_queue.push(queue_key, message, replied_messages=replied_messages)
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
@@ -409,7 +469,9 @@ class EventPipeline:
 
         ai_reply_blocked = self._consume_ai_reply_block(message)
         if skip_ai_reply or ai_reply_blocked:
-            self._logger.info("插件监听器已阻止本条群消息触发 AI 回复", queue_key=queue_key)
+            self._logger.info(
+                "插件监听器已阻止本条群消息触发 AI 回复", queue_key=queue_key
+            )
             return
 
         # 如果当前正在回复中，新消息入 post-reply 队列，不计算意愿
@@ -428,23 +490,16 @@ class EventPipeline:
         if _message_has_images(message):
             self._pending_image_willing.setdefault(queue_key, []).append(message)
             task = asyncio.create_task(self._process_pending_image_willing(queue_key))
-
-            def _done(done_task: asyncio.Task[None]) -> None:
-                try:
-                    done_task.result()
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    self._logger.warning(
-                        "pending image willingness task failed",
-                        queue_key=queue_key,
-                        error=str(exc),
-                    )
-
-            task.add_done_callback(_done)
+            self._track_background_task(
+                task,
+                label="pending image willingness",
+                context={"queue_key": queue_key},
+            )
             return
 
-        await self._handle_willing_decision(message=message, queue=self._group_queue, queue_key=queue_key)
+        await self._handle_willing_decision(
+            message=message, queue=self._group_queue, queue_key=queue_key
+        )
 
     async def _handle_group_message(self, event: Dict[str, Any]) -> None:
         await self.handle_group_message_event(event)
@@ -699,7 +754,9 @@ class EventPipeline:
                 # 已在回复中，剩余消息放入 post-reply 队列
                 idx = pending.index(msg)
                 if idx >= 0:
-                    self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
+                    self._post_reply_willing.setdefault(queue_key, []).extend(
+                        pending[idx:]
+                    )
                 break
 
             triggered = await self._handle_willing_decision(
@@ -739,7 +796,7 @@ class EventPipeline:
                 self._replying_queues.discard(queue_key)
             if queue_key in self._replying_queues:
                 self._post_reply_willing.setdefault(queue_key, []).extend(
-                    pending[pending.index(msg):]
+                    pending[pending.index(msg) :]
                 )
                 return
 
@@ -771,7 +828,9 @@ class EventPipeline:
             if message.sender.nickname:
                 observed_fields["nick_name"] = message.sender.nickname
             if message.sender.sex is not None:
-                observed_fields["sex"] = getattr(message.sender.sex, "value", message.sender.sex)
+                observed_fields["sex"] = getattr(
+                    message.sender.sex, "value", message.sender.sex
+                )
 
         try:
             await asyncio.wait_for(
@@ -815,10 +874,21 @@ class EventPipeline:
 
         # 构建详情
         details: list[str] = []
-        for key in ("user_id", "operator_id", "sender_id", "target_id",
-                     "group_id", "message_id", "file", "duration",
-                     "honor_type", "title", "card_new", "card_old",
-                     "emoji_id"):
+        for key in (
+            "user_id",
+            "operator_id",
+            "sender_id",
+            "target_id",
+            "group_id",
+            "message_id",
+            "file",
+            "duration",
+            "honor_type",
+            "title",
+            "card_new",
+            "card_old",
+            "emoji_id",
+        ):
             val = event.get(key)
             if val is not None:
                 details.append(f"{key}={val}")
@@ -884,15 +954,23 @@ class EventPipeline:
             target_id = notice.target_id or 0
             resolved_group_id = notice.group_id or int(group_id)
 
-            sender_name = await self._resolve_name(sender_id, group_id=resolved_group_id)
-            target_name = await self._resolve_name(target_id, group_id=resolved_group_id)
-            action_text = _build_poke_action_text(event.get("raw_info"), sender_name, target_name)
+            sender_name = await self._resolve_name(
+                sender_id, group_id=resolved_group_id
+            )
+            target_name = await self._resolve_name(
+                target_id, group_id=resolved_group_id
+            )
+            action_text = _build_poke_action_text(
+                event.get("raw_info"), sender_name, target_name
+            )
 
             poke = PokeEntry(
                 sender_id=sender_id,
                 user_id=sender_id,
                 target_id=target_id,
-                sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
+                sub_type=getattr(notice.sub_type, "value", "poke")
+                if notice.sub_type
+                else "poke",
                 group_id=resolved_group_id,
                 sender_name=sender_name,
                 target_name=target_name,
@@ -907,13 +985,17 @@ class EventPipeline:
 
             sender_name = await self._resolve_name(sender_id, group_id=None)
             target_name = await self._resolve_name(target_id, group_id=None)
-            action_text = _build_poke_action_text(event.get("raw_info"), sender_name, target_name)
+            action_text = _build_poke_action_text(
+                event.get("raw_info"), sender_name, target_name
+            )
 
             poke = PokeEntry(
                 sender_id=sender_id,
                 user_id=notice.user_id or 0,
                 target_id=target_id,
-                sub_type=getattr(notice.sub_type, "value", "poke") if notice.sub_type else "poke",
+                sub_type=getattr(notice.sub_type, "value", "poke")
+                if notice.sub_type
+                else "poke",
                 group_id=None,
                 sender_name=sender_name,
                 target_name=target_name,
@@ -965,7 +1047,12 @@ class EventPipeline:
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:
-                    return resp.data.card or resp.data.nickname or resp.data.card_or_nickname or f"QQ:{user_id}"
+                    return (
+                        resp.data.card
+                        or resp.data.nickname
+                        or resp.data.card_or_nickname
+                        or f"QQ:{user_id}"
+                    )
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "resolve group member name timed out",

@@ -21,6 +21,7 @@ class PluginAgentRegistrar:
         self._registry = registry
         self._record_registration = record_registration
         self._registered: dict[str, Any] = {}
+        self._pending_close: dict[str, Any] = {}
 
     @property
     def names(self) -> list[str]:
@@ -34,8 +35,11 @@ class PluginAgentRegistrar:
         registered_name = f"{self._plugin_name}.{local_name}"
         if registered_name in self._registered:
             raise ValueError(f"插件 Agent 已注册: {registered_name}")
-        registry_names = getattr(self._registry, "names", [])
-        if registered_name in registry_names:
+        # 兼容属性与方法的两种 names 写法（真实 AgentRegistry 是属性，鸭子类型注册表可能是方法）
+        registry_names = getattr(self._registry, "names", None)
+        if callable(registry_names):
+            registry_names = registry_names()
+        if registered_name in (registry_names or []):
             raise ValueError(f"Agent 已注册: {registered_name}")
         self._registry.register(registered_name, agent)
         self._registered[registered_name] = agent
@@ -44,12 +48,63 @@ class PluginAgentRegistrar:
         return registered_name
 
     def unregister(self, registered_name: str) -> Any | None:
-        agent = self._registered.pop(registered_name, None)
+        agent = self._registered.get(registered_name)
+        if self._registry_closed():
+            # 注册表已关闭：关闭清扫已关闭实例，后续不再有任何 drain/close。
+            # 同时清掉 _pending_close，避免实例被永久强持有。
+            self._registered.pop(registered_name, None)
+            self._pending_close.pop(registered_name, None)
+            return agent
         unregister = getattr(self._registry, "unregister", None)
+        removed = None
         if callable(unregister):
             removed = unregister(registered_name)
-            return removed if removed is not None else agent
-        return agent
+        removed = removed if removed is not None else agent
+        if removed is not None:
+            self._registered.pop(registered_name, None)
+            # Keep ownership until an async drain confirms that close succeeded.
+            self._pending_close[registered_name] = removed
+        return removed
+
+    def _registry_closed(self) -> bool:
+        return bool(getattr(self._registry, "_closed", False))
+
+    async def unregister_and_drain(
+        self, registered_name: str, *, drain_timeout_seconds: float | None = None
+    ) -> Any | None:
+        """注销单个插件 Agent 并排空其在途委托（与 unregister 相同的清理顺序）。
+
+        底层注册表支持 unregister_and_drain 时委托给它（负责取消在途任务并关闭
+        实例）；旧注册表回退到 unregister 逻辑。
+        """
+        agent = self._registered.get(registered_name) or self._pending_close.get(registered_name)
+        drain = getattr(self._registry, "unregister_and_drain", None)
+        if callable(drain):
+            removed = await drain(registered_name, drain_timeout_seconds=drain_timeout_seconds)
+            removed = removed if removed is not None else agent
+            if removed is not None:
+                self._registered.pop(registered_name, None)
+                self._pending_close.pop(registered_name, None)
+            return removed
+        unregister = getattr(self._registry, "unregister", None)
+        removed = None
+        if registered_name in self._registered and callable(unregister):
+            removed = unregister(registered_name)
+        removed = removed if removed is not None else agent
+        if removed is not None:
+            self._pending_close[registered_name] = removed
+            try:
+                result = removed.close()
+                if inspect.isawaitable(result):
+                    await result
+            except BaseException:
+                # Legacy registries do not own removed instances. Retain the
+                # instance so cancellation/failure can be retried safely.
+                self._registered.pop(registered_name, None)
+                raise
+            self._registered.pop(registered_name, None)
+            self._pending_close.pop(registered_name, None)
+        return removed
 
     def snapshot(self) -> list[dict[str, str]]:
         return [

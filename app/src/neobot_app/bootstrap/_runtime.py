@@ -125,18 +125,25 @@ def build_browser_components(
     data_dir: Path,
     logger: Any,
 ) -> dict[str, Any]:
-    """创建浏览器实例和生命周期管理器。"""
+    """创建浏览器实例、生命周期管理器和公共截图 façade。
+
+    返回的 "screenshots" 永不为 None：浏览器禁用或 Chromium 缺失时
+    为 UnavailableScreenshots（调用 render/save 抛 ScreenshotUnavailable）。
+    """
+    from neobot_app.screenshot import ScreenshotService, UnavailableScreenshots
+
     browser_cfg = getattr(config.agent, "browser", None)
     result: dict[str, Any] = {
         "browser_instance": None,
         "browser_lifecycle_manager": None,
+        "screenshots": UnavailableScreenshots(),
     }
 
     if not browser_cfg or not browser_cfg.enabled:
         return result
 
     from neobot_app.browser.agent_browser.manager import _find_chrome_binary
-    from neobot_app.browser import BrowserAgentWrapper
+    from neobot_app.browser import BrowserAgentWrapper, BrowserScreenshotBackend
 
     if not _find_chrome_binary():
         _auto_install_chromium()
@@ -183,6 +190,9 @@ def build_browser_components(
     lifecycle_manager.set_close_callback(_close_flow_tabs)
     result["browser_instance"] = browser_instance
     result["browser_lifecycle_manager"] = lifecycle_manager
+    result["screenshots"] = ScreenshotService(
+        BrowserScreenshotBackend(browser_instance)
+    )
     return result
 
 

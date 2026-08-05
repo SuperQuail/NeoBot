@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 
@@ -116,6 +117,25 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
 
             self.assertEqual(FilesystemPluginLoader().load_all(root), [])
 
+    def test_rejects_dot_and_parent_manifest_names_before_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            loader = FilesystemPluginLoader()
+            for index, name in enumerate((".", "..")):
+                package = root / f"escape_{index}"
+                package.mkdir()
+                (package / "plugin.toml").write_text(f'name = "{name}"\n', encoding="utf-8")
+                (package / "__init__.py").write_text(
+                    "raise AssertionError('invalid manifest name was imported')\n",
+                    encoding="utf-8",
+                )
+
+                result = loader.load_one(package)
+
+                self.assertIsInstance(result, PluginLoadError)
+                assert isinstance(result, PluginLoadError)
+                self.assertIn("非法插件名", str(result.error))
+
     def test_dependencies_are_loaded_before_dependants(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -144,6 +164,62 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
 
             self.assertEqual(sum(isinstance(result, LoadedPlugin) for result in results), 1)
             self.assertEqual(sum(isinstance(result, PluginLoadError) for result in results), 1)
+
+    def test_failed_package_import_cleans_imported_children(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "child_cleanup_failure"
+            package.mkdir()
+            (package / "child.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (package / "__init__.py").write_text(
+                "from . import child\nraise RuntimeError('failed candidate')\n",
+                encoding="utf-8",
+            )
+
+            result = FilesystemPluginLoader().load_one(package)
+
+            self.assertIsInstance(result, PluginLoadError)
+            self.assertFalse(
+                any(name.startswith("neobot_user_plugins.child_cleanup_failure_") for name in sys.modules)
+            )
+
+    def test_repeated_post_import_validation_failures_do_not_leak_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            missing = root / "missing.py"
+            missing.write_text("VALUE = 1\n", encoding="utf-8")
+            conflict = root / "conflict"
+            conflict.mkdir()
+            (conflict / "plugin.toml").write_text('name = "manifest"\n', encoding="utf-8")
+            (conflict / "__init__.py").write_text(
+                PLUGIN_SOURCE.format(name="code", version="0.1.0"), encoding="utf-8"
+            )
+            loader = FilesystemPluginLoader()
+
+            for _ in range(2):
+                self.assertIsInstance(loader.load_one(missing), PluginLoadError)
+                self.assertIsInstance(loader.load_one(conflict), PluginLoadError)
+
+            self.assertFalse(any(name.startswith("neobot_user_plugins.missing_") for name in sys.modules))
+            self.assertFalse(any(name.startswith("neobot_user_plugins.manifest_") for name in sys.modules))
+
+    def test_dependency_ordering_errors_clear_rejected_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "dependent"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                'name = "dependent"\ndependencies = ["missing"]\n', encoding="utf-8"
+            )
+            (package / "__init__.py").write_text(
+                PLUGIN_SOURCE.format(name="dependent", version="0.1.0"), encoding="utf-8"
+            )
+            loader = FilesystemPluginLoader()
+
+            for _ in range(2):
+                result = loader.load_all(root)[0]
+                self.assertIsInstance(result, PluginLoadError)
+
+            self.assertFalse(any(name.startswith("neobot_user_plugins.dependent_") for name in sys.modules))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            width: 560px;
+            height: {{ canvas_height }}px;
+            padding: 18px;
+            overflow: hidden;
+            color: #282937;
+            font-family: "Noto Sans CJK SC", "Source Han Sans CN", "Microsoft YaHei",
+                "PingFang SC", Arial, sans-serif;
+            background:
+                radial-gradient(circle at 8% 5%, rgba(153, 137, 245, 0.35), transparent 32%),
+                radial-gradient(circle at 92% 95%, rgba(87, 194, 175, 0.24), transparent 30%),
+                #ececf3;
+        }
+
+        .card {
+            position: relative;
+            width: 524px;
+            height: {{ card_height }}px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.82);
+            border-radius: 30px;
+            background: #faf9f7;
+            box-shadow: 0 24px 60px rgba(57, 57, 91, 0.20);
+        }
+
+        .header {
+            position: relative;
+            height: 148px;
+            padding: 25px 28px;
+            overflow: hidden;
+            color: #ffffff;
+            background: linear-gradient(125deg, #756ae4 0%, #7478dc 48%, #5bbab0 100%);
+        }
+
+        .header::before {
+            position: absolute;
+            top: -122px;
+            right: -55px;
+            width: 275px;
+            height: 275px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 50%;
+            box-shadow: 0 0 0 34px rgba(255, 255, 255, 0.035);
+            content: "";
+        }
+
+        .brand {
+            position: relative;
+            z-index: 1;
+            color: rgba(255, 255, 255, 0.76);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+        }
+
+        h1 {
+            position: relative;
+            z-index: 1;
+            margin-top: 18px;
+            font-size: 29px;
+            line-height: 1.15;
+            letter-spacing: 0.02em;
+        }
+
+        .subtitle {
+            position: relative;
+            z-index: 1;
+            margin-top: 6px;
+            color: rgba(255, 255, 255, 0.72);
+            font-size: 11px;
+        }
+
+        .board {
+            position: relative;
+            z-index: 2;
+            margin: -24px 22px 0;
+            padding: 11px 14px 12px;
+            border: 1px solid rgba(75, 73, 108, 0.07);
+            border-radius: 22px;
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: 0 16px 36px rgba(59, 57, 91, 0.13);
+        }
+
+        .board-head,
+        .row {
+            display: flex;
+            align-items: center;
+        }
+
+        .board-head {
+            height: 30px;
+            padding: 0 10px;
+            color: #aaa9b2;
+            font-size: 9px;
+            letter-spacing: 0.08em;
+        }
+
+        .rank-col {
+            width: 42px;
+        }
+
+        .player-col {
+            flex: 1;
+        }
+
+        .score-col {
+            width: 116px;
+            text-align: right;
+        }
+
+        .row {
+            height: 54px;
+            padding: 0 10px;
+            border-top: 1px solid #efedf1;
+        }
+
+        .row.current {
+            margin: 0 -4px;
+            padding: 0 14px;
+            border-top-color: transparent;
+            border-radius: 14px;
+            background: #f2f0fd;
+        }
+
+        .rank {
+            width: 42px;
+            color: #a5a3ac;
+            font-size: 13px;
+            font-weight: 800;
+        }
+
+        .row:nth-child(2) .rank {
+            color: #e4a83f;
+            font-size: 19px;
+        }
+
+        .row:nth-child(3) .rank {
+            color: #8e98aa;
+            font-size: 17px;
+        }
+
+        .row:nth-child(4) .rank {
+            color: #bc7d5d;
+            font-size: 16px;
+        }
+
+        .player {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+            align-items: center;
+        }
+
+        .avatar,
+        .avatar-placeholder {
+            display: block;
+            flex: 0 0 auto;
+            width: 34px;
+            height: 34px;
+            border: 2px solid #ffffff;
+            border-radius: 11px;
+            object-fit: cover;
+            background: linear-gradient(135deg, #d9d5fa, #c8ece5);
+            box-shadow: 0 4px 10px rgba(75, 72, 112, 0.10);
+            image-rendering: -webkit-optimize-contrast;
+        }
+
+        .player-copy {
+            min-width: 0;
+            margin-left: 11px;
+        }
+
+        .nickname {
+            max-width: 220px;
+            overflow: hidden;
+            color: #3d3e4b;
+            font-size: 12px;
+            font-weight: 700;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .user-id {
+            margin-top: 2px;
+            color: #adabb3;
+            font-size: 8px;
+        }
+
+        .score {
+            width: 116px;
+            color: #4f5060;
+            font-size: 15px;
+            font-weight: 800;
+            text-align: right;
+        }
+
+        .coin .score {
+            color: #7168d2;
+        }
+
+        .fish .score {
+            color: #4da393;
+        }
+
+        .unit {
+            margin-left: 4px;
+            color: #a6a4ad;
+            font-size: 9px;
+            font-weight: 600;
+        }
+
+        .empty {
+            display: flex;
+            height: 54px;
+            align-items: center;
+            justify-content: center;
+            border-top: 1px solid #efedf1;
+            color: #aaa8af;
+            font-size: 11px;
+        }
+
+        .footer {
+            margin-top: 13px;
+            color: #aaa8af;
+            font-size: 9px;
+            text-align: center;
+            letter-spacing: 0.06em;
+        }
+    </style>
+</head>
+<body>
+    <main class="card {{ variant }}">
+        <header class="header">
+            <div class="brand">海共动态 UBI</div>
+            <h1>{{ title }}</h1>
+            <div class="subtitle">{{ subtitle }} · TOP 10</div>
+        </header>
+
+        <section class="board">
+            <div class="board-head">
+                <div class="rank-col">排名</div>
+                <div class="player-col">玩家</div>
+                <div class="score-col">{{ score_label }}</div>
+            </div>
+            {% for entry in entries %}
+            <div class="row{% if entry.user_id == current_user_id %} current{% endif %}">
+                <div class="rank">{{ entry.rank }}</div>
+                <div class="player">
+                    {% if entry.avatar_url %}
+                    <img class="avatar" src="{{ entry.avatar_url }}" alt="">
+                    {% else %}
+                    <span class="avatar-placeholder"></span>
+                    {% endif %}
+                    <div class="player-copy">
+                        <div class="nickname">{{ entry.nickname }}</div>
+                        <div class="user-id">{{ entry.user_id }}</div>
+                    </div>
+                </div>
+                <div class="score">{{ entry.score }}<span class="unit">{{ unit }}</span></div>
+            </div>
+            {% else %}
+            <div class="empty">暂无排行数据</div>
+            {% endfor %}
+        </section>
+
+        <footer class="footer">
+            {% if current_rank %}你的当前排名：第 {{ current_rank }} 名{% else %}参与活动后即可进入排行{% endif %}
+        </footer>
+    </main>
+</body>
+</html>

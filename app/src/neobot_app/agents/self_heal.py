@@ -69,12 +69,12 @@ LOGGER_PREFIX = "app.self_heal"
 
 # ContextVar carrying the HealTask that the current LLM invocation belongs to,
 # used by tool executor to read the error snapshot + chat_flow_id.
-_HEAL_TASK: ContextVar["HealTask | None"] = ContextVar(
-    "self_heal_task", default=None
-)
+_HEAL_TASK: ContextVar["HealTask | None"] = ContextVar("self_heal_task", default=None)
 
 
-def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
+def _tool_def(
+    name: str, description: str, parameters: dict[str, Any]
+) -> ToolDefinition:
     return {
         "type": "function",
         "function": {
@@ -128,8 +128,9 @@ class SelfHealAgentConfig:
         self.timeout_seconds = float(timeout_seconds)
         self.max_tokens = int(max_tokens)
         self.reasoning_effort = str(reasoning_effort)
-        self.sandbox_debug_dir = (str(sandbox_debug_dir).strip().lstrip("/")
-                                  or "debug/self_heal")
+        self.sandbox_debug_dir = (
+            str(sandbox_debug_dir).strip().lstrip("/") or "debug/self_heal"
+        )
 
     @classmethod
     def from_schema(cls, config: Any | None) -> "SelfHealAgentConfig":
@@ -142,14 +143,18 @@ class SelfHealAgentConfig:
             traceback_threshold=int(getattr(config, "traceback_threshold", 3) or 3),
             rate_threshold=int(getattr(config, "rate_threshold", 10) or 10),
             rate_window_seconds=int(getattr(config, "rate_window_seconds", 60) or 60),
-            min_interval_seconds=int(getattr(config, "min_interval_seconds", 300) or 300),
+            min_interval_seconds=int(
+                getattr(config, "min_interval_seconds", 300) or 300
+            ),
             buffer_size=int(getattr(config, "buffer_size", 200) or 200),
             daily_limit=int(getattr(config, "daily_limit", 5) or 5),
             timeout_seconds=float(getattr(config, "timeout_seconds", 300) or 300),
             max_tokens=int(getattr(config, "max_tokens", 8192) or 8192),
             reasoning_effort=str(getattr(config, "reasoning_effort", "high") or "high"),
-            sandbox_debug_dir=str(getattr(config, "sandbox_debug_dir", "debug/self_heal")
-                                  or "debug/self_heal"),
+            sandbox_debug_dir=str(
+                getattr(config, "sandbox_debug_dir", "debug/self_heal")
+                or "debug/self_heal"
+            ),
         )
 
 
@@ -207,7 +212,9 @@ class SelfHealManager:
         vision_provider: Any = None,
     ) -> None:
         self._config = config or SelfHealAgentConfig()
-        self._fallback_admin = fallback_admin_account.strip() if fallback_admin_account else ""
+        self._fallback_admin = (
+            fallback_admin_account.strip() if fallback_admin_account else ""
+        )
         self._logger = logger or NullLogger()
         self._notification_hub = notification_hub
         self._sandbox = sandbox_service
@@ -226,6 +233,7 @@ class SelfHealManager:
         self._web_search_config = web_search_config or {}
         self._trigger_date_today: str = ""
         self._trigger_count_today: int = 0
+        self._closed = False
 
     # ── wiring ──
 
@@ -242,7 +250,7 @@ class SelfHealManager:
 
     @property
     def enabled(self) -> bool:
-        return self._config.enabled and self._agent is not None
+        return not self._closed and self._config.enabled and self._agent is not None
 
     def resolve_admin_account(self) -> str:
         if self._config.admin_account:
@@ -257,7 +265,7 @@ class SelfHealManager:
         可在主事件循环中的任意协程内安全调用（loguru sink 应通过
         call_soon_threadsafe 转交到事件循环）。
         """
-        if not self._config.enabled:
+        if self._closed or not self._config.enabled:
             return
         # Skip internal self-heal logs to avoid self-excitation
         module = str(error_payload.get("module", ""))
@@ -293,15 +301,15 @@ class SelfHealManager:
         now_mono = monotonic_seconds()
         if now_mono - self._last_trigger_monotonic < self._config.min_interval_seconds:
             return  # throttled
-        if self._traceback_count() < self._config.traceback_threshold and \
-                self._rate_count() < self._config.rate_threshold:
+        if (
+            self._traceback_count() < self._config.traceback_threshold
+            and self._rate_count() < self._config.rate_threshold
+        ):
             return  # not enough signal yet
 
         reason_parts = []
         if self._traceback_count() >= self._config.traceback_threshold:
-            reason_parts.append(
-                f"{self._traceback_count()} 个未处理异常累积"
-            )
+            reason_parts.append(f"{self._traceback_count()} 个未处理异常累积")
         if self._rate_count() >= self._config.rate_threshold:
             reason_parts.append(
                 f"{self._rate_count()} 秒内错误速率达 {self._config.rate_threshold}/"
@@ -322,33 +330,45 @@ class SelfHealManager:
 
         返回 JSON 状态字符串。
         """
+        if self._closed:
+            return _json({"ok": False, "error": "self_heal closed"})
         if not self._config.enabled:
             return _json({"ok": False, "error": "self_heal disabled"})
         if self._agent is None:
             return _json({"ok": False, "error": "self_heal agent 未配置"})
         if self._running_task is not None and not self._running_task.done():
-            return _json({
-                "ok": True,
-                "status": "busy",
-                "task_id": self._current_heal.task_id if self._current_heal else None,
-            })
+            return _json(
+                {
+                    "ok": True,
+                    "status": "busy",
+                    "task_id": self._current_heal.task_id
+                    if self._current_heal
+                    else None,
+                }
+            )
         started = await self._dispatch(reason=reason)
         if started and self._current_heal is not None:
-            return _json({
-                "ok": True,
-                "status": "started",
-                "task_id": self._current_heal.task_id,
-            })
-        return _json({
-            "ok": False,
-            "error": "触发被拒绝（已有任务在运行、已达每日上限或缺少配置）",
-        })
+            return _json(
+                {
+                    "ok": True,
+                    "status": "started",
+                    "task_id": self._current_heal.task_id,
+                }
+            )
+        return _json(
+            {
+                "ok": False,
+                "error": "触发被拒绝（已有任务在运行、已达每日上限或缺少配置）",
+            }
+        )
 
     async def _dispatch(self, *, reason: str) -> bool:
         """当没有任务在运行且今日预算允许时，启动一个修复任务。
 
         启动成功返回 True，否则返回 False。
         """
+        if self._closed:
+            return False
         if self._running_task is not None and not self._running_task.done():
             self._logger.debug(
                 "self_heal dispatch skipped: 已有任务运行中",
@@ -364,9 +384,7 @@ class SelfHealManager:
             return False
         admin = self.resolve_admin_account()
         if not admin:
-            self._logger.warning(
-                "self_heal trigger skipped: admin account 未配置"
-            )
+            self._logger.warning("self_heal trigger skipped: admin account 未配置")
             return False
         snapshot = list(self._buffer)
         if not snapshot:
@@ -476,15 +494,17 @@ class SelfHealManager:
                     task_id=heal.task_id,
                 )
                 messages = result_state.get("messages", [])
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "你尚未调用 submit_resolution 提交诊断结论。请立即调用 "
-                        "submit_resolution，给出 summary（必填）、repaired（bool，"
-                        "默认 false）、debug_file（可选，已写报告的沙箱相对路径）、"
-                        "root_cause（可选）。即使无法诊断也必须提交。"
-                    ),
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你尚未调用 submit_resolution 提交诊断结论。请立即调用 "
+                            "submit_resolution，给出 summary（必填）、repaired（bool，"
+                            "默认 false）、debug_file（可选，已写报告的沙箱相对路径）、"
+                            "root_cause（可选）。即使无法诊断也必须提交。"
+                        ),
+                    }
+                )
                 retry_state: State = {"messages": messages}
                 retry_timeout = max(self._config.timeout_seconds * 0.5, 60)
                 await asyncio.wait_for(
@@ -610,17 +630,19 @@ class SelfHealManager:
         )
 
     async def shutdown(self) -> None:
-        if self._running_task is not None and not self._running_task.done():
-            self._running_task.cancel()
-            try:
-                await self._running_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+        self._closed = True
+        running_task = self._running_task
+        if running_task is not None and not running_task.done():
+            running_task.cancel()
+            await asyncio.gather(running_task, return_exceptions=True)
         self._running_task = None
         self._current_heal = None
         self._buffer.clear()
+        agent = self._agent
+        self._agent = None
+        close = getattr(agent, "close", None)
+        if callable(close):
+            await close()
 
 
 # ── Tool executor ───────────────────────────────────────────────────────────
@@ -725,8 +747,9 @@ class SelfHealToolExecutor(ToolExecutor):
         self._sandbox = sandbox_service
         self._source_roots = source_roots or []
         self._log_file = log_file
-        self._sandbox_debug_dir = (str(sandbox_debug_dir).strip().lstrip("/")
-                                   or "debug/self_heal")
+        self._sandbox_debug_dir = (
+            str(sandbox_debug_dir).strip().lstrip("/") or "debug/self_heal"
+        )
         self._repair_hooks = repair_hooks or {}
         self._vision_provider = vision_provider
         ws = web_search_config or {}
@@ -821,9 +844,7 @@ class SelfHealToolExecutor(ToolExecutor):
                         },
                         "content_base64": {
                             "type": "string",
-                            "description": (
-                                "Markdown 报告的 UTF-8 文本的 base64 编码"
-                            ),
+                            "description": ("Markdown 报告的 UTF-8 文本的 base64 编码"),
                         },
                     },
                     "required": ["content_base64"],
@@ -913,81 +934,93 @@ class SelfHealToolExecutor(ToolExecutor):
             ),
         ]
         if self._sandbox is not None:
-            tools.extend([
-                _tool_def(
-                    "list_files",
-                    "列出沙箱目录内容。",
-                    {
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "目录相对路径，默认沙箱根",
-                            }
-                        },
-                        "required": [],
-                    },
-                ),
-                _tool_def(
-                    "read_file",
-                    "读取沙箱文件内容（支持文本/二进制检测），返回文本或 base64。",
-                    {
-                        "properties": {
-                            "path": {"type": "string", "description": "沙箱相对路径"},
-                        },
-                        "required": ["path"],
-                    },
-                ),
-                _tool_def(
-                    "run_python",
-                    "在 Bot 的 Python 虚拟环境执行诊断代码。"
-                    "代码 print() 输出会被捕获。仅用于诊断（如查询数据库、检查文件状态）。",
-                    {
-                        "properties": {
-                            "code": {"type": "string", "description": "Python 代码"},
-                            "timeout": {
-                                "type": "integer",
-                                "description": "超时秒数（默认 30，最大 60）",
+            tools.extend(
+                [
+                    _tool_def(
+                        "list_files",
+                        "列出沙箱目录内容。",
+                        {
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "目录相对路径，默认沙箱根",
+                                }
                             },
+                            "required": [],
                         },
-                        "required": ["code"],
-                    },
-                ),
-                _tool_def(
-                    "parse_image",
-                    "解析沙箱中图片文件内容（如图表截图、报错截图）。",
-                    {
-                        "properties": {
-                            "image_path": {"type": "string"},
-                            "requirement": {
-                                "type": "string",
-                                "description": "分析要求",
+                    ),
+                    _tool_def(
+                        "read_file",
+                        "读取沙箱文件内容（支持文本/二进制检测），返回文本或 base64。",
+                        {
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "沙箱相对路径",
+                                },
                             },
+                            "required": ["path"],
                         },
-                        "required": ["image_path"],
-                    },
-                ),
-            ])
+                    ),
+                    _tool_def(
+                        "run_python",
+                        "在 Bot 的 Python 虚拟环境执行诊断代码。"
+                        "代码 print() 输出会被捕获。仅用于诊断（如查询数据库、检查文件状态）。",
+                        {
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "description": "Python 代码",
+                                },
+                                "timeout": {
+                                    "type": "integer",
+                                    "description": "超时秒数（默认 30，最大 60）",
+                                },
+                            },
+                            "required": ["code"],
+                        },
+                    ),
+                    _tool_def(
+                        "parse_image",
+                        "解析沙箱中图片文件内容（如图表截图、报错截图）。",
+                        {
+                            "properties": {
+                                "image_path": {"type": "string"},
+                                "requirement": {
+                                    "type": "string",
+                                    "description": "分析要求",
+                                },
+                            },
+                            "required": ["image_path"],
+                        },
+                    ),
+                ]
+            )
         # Repair hooks are optional; include only when wired in
         if "clear_drawing_cooldown" in self._repair_hooks:
-            tools.append(_tool_def(
-                "clear_drawing_cooldown",
-                "清除指定聊天流的绘图冷却（用于诊断后修复卡死的绘图管线）。",
-                {
-                    "properties": {
-                        "pipeline_key": {
-                            "type": "string",
-                            "description": "形如 'group:123456' 或 'private:654321'",
-                        }
+            tools.append(
+                _tool_def(
+                    "clear_drawing_cooldown",
+                    "清除指定聊天流的绘图冷却（用于诊断后修复卡死的绘图管线）。",
+                    {
+                        "properties": {
+                            "pipeline_key": {
+                                "type": "string",
+                                "description": "形如 'group:123456' 或 'private:654321'",
+                            }
+                        },
+                        "required": ["pipeline_key"],
                     },
-                    "required": ["pipeline_key"],
-                },
-            ))
+                )
+            )
         if "trigger_image_cleanup" in self._repair_hooks:
-            tools.append(_tool_def(
-                "trigger_image_cleanup",
-                "触发图库失效记录与磁盘文件清理（用于诊断后修复磁盘/数据库记录不一致）。",
-                {"properties": {}, "required": []},
-            ))
+            tools.append(
+                _tool_def(
+                    "trigger_image_cleanup",
+                    "触发图库失效记录与磁盘文件清理（用于诊断后修复磁盘/数据库记录不一致）。",
+                    {"properties": {}, "required": []},
+                )
+            )
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -1033,15 +1066,17 @@ class SelfHealToolExecutor(ToolExecutor):
         task = _HEAL_TASK.get(None)
         if task is None:
             return _json({"ok": False, "error": "无活跃自修复任务上下文"})
-        return _json({
-            "ok": True,
-            "task_id": task.task_id,
-            "trigger_reason": task.trigger_reason,
-            "first_error_time": task.first_error_time,
-            "last_error_time": task.last_error_time,
-            "error_count": len(task.error_snapshot),
-            "errors": task.error_snapshot,
-        })
+        return _json(
+            {
+                "ok": True,
+                "task_id": task.task_id,
+                "trigger_reason": task.trigger_reason,
+                "first_error_time": task.first_error_time,
+                "last_error_time": task.last_error_time,
+                "error_count": len(task.error_snapshot),
+                "errors": task.error_snapshot,
+            }
+        )
 
     # ── log tail ──
 
@@ -1098,13 +1133,15 @@ class SelfHealToolExecutor(ToolExecutor):
             return _json({"ok": False, "error": "缺少 path"})
         path = self._resolve_source_path(rel)
         if path is None:
-            return _json({
-                "ok": False,
-                "error": (
-                    "路径不在白名单子树（仅允许 app/、packages/ 下的源码）或"
-                    "为敏感文件（.env / config.toml / __pycache__ / 密钥等）"
-                ),
-            })
+            return _json(
+                {
+                    "ok": False,
+                    "error": (
+                        "路径不在白名单子树（仅允许 app/、packages/ 下的源码）或"
+                        "为敏感文件（.env / config.toml / __pycache__ / 密钥等）"
+                    ),
+                }
+            )
         try:
             size = path.stat().st_size
         except OSError as exc:
@@ -1114,32 +1151,38 @@ class SelfHealToolExecutor(ToolExecutor):
         except OSError as exc:
             return _json({"ok": False, "error": f"读取失败: {exc}"})
         if size > self.MAX_SOURCE_FILE_BYTES:
-            truncated = data[-self.MAX_SOURCE_FILE_BYTES:]
+            truncated = data[-self.MAX_SOURCE_FILE_BYTES :]
             try:
                 text = truncated.decode("utf-8")
             except UnicodeDecodeError:
-                return _json({
-                    "ok": False,
-                    "error": (
-                        f"文件超过 {self.MAX_SOURCE_FILE_BYTES} 字节且尾部无法以 UTF-8 解码"
-                    ),
-                })
-            return _json({
-                "ok": True,
-                "path": str(path),
-                "size": size,
-                "truncated": True,
-                "truncated_to_tail_bytes": self.MAX_SOURCE_FILE_BYTES,
-                "content": text,
-                "note": f"文件较大，仅返回尾部 {self.MAX_SOURCE_FILE_BYTES} 字节",
-            })
+                return _json(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"文件超过 {self.MAX_SOURCE_FILE_BYTES} 字节且尾部无法以 UTF-8 解码"
+                        ),
+                    }
+                )
+            return _json(
+                {
+                    "ok": True,
+                    "path": str(path),
+                    "size": size,
+                    "truncated": True,
+                    "truncated_to_tail_bytes": self.MAX_SOURCE_FILE_BYTES,
+                    "content": text,
+                    "note": f"文件较大，仅返回尾部 {self.MAX_SOURCE_FILE_BYTES} 字节",
+                }
+            )
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
-            return _json({
-                "ok": False,
-                "error": "文件无法以 UTF-8 解码（可能为二进制）",
-            })
+            return _json(
+                {
+                    "ok": False,
+                    "error": "文件无法以 UTF-8 解码（可能为二进制）",
+                }
+            )
         return _json({"ok": True, "path": str(path), "size": size, "content": text})
 
     def _confine_glob(self, path_glob: str) -> str | None:
@@ -1173,6 +1216,7 @@ class SelfHealToolExecutor(ToolExecutor):
         except re.error as exc:
             return _json({"ok": False, "error": f"正则编译失败: {exc}"})
         import glob as glob_module
+
         path_glob = str(args.get("path_glob", "")).strip()
         if not path_glob:
             # source_roots are already e.g. <project>/app and <project>/packages
@@ -1180,13 +1224,15 @@ class SelfHealToolExecutor(ToolExecutor):
         else:
             anchored = self._confine_glob(path_glob)
             if anchored is None:
-                return _json({
-                    "ok": False,
-                    "error": (
-                        "path_glob 越界：仅允许项目内源码子树（app/、packages/）"
-                        "内的相对 glob，禁止绝对路径与 ../"
-                    ),
-                })
+                return _json(
+                    {
+                        "ok": False,
+                        "error": (
+                            "path_glob 越界：仅允许项目内源码子树（app/、packages/）"
+                            "内的相对 glob，禁止绝对路径与 ../"
+                        ),
+                    }
+                )
             globs = [anchored]
         seen_files = 0
         total_matches = 0
@@ -1220,31 +1266,37 @@ class SelfHealToolExecutor(ToolExecutor):
                         break
                     start = max(0, idx - self.SEARCH_CONTEXT_LINES)
                     end = min(len(lines), idx + self.SEARCH_CONTEXT_LINES + 1)
-                    results.append({
-                        "path": str(p),
-                        "line": idx + 1,
-                        "context": "\n".join(
-                            f"{(start + i + 1):>5}{'>' if (start + i) == idx else ' '} {lines[start + i]}"
-                            for i in range(end - start)
-                        ),
-                    })
+                    results.append(
+                        {
+                            "path": str(p),
+                            "line": idx + 1,
+                            "context": "\n".join(
+                                f"{(start + i + 1):>5}{'>' if (start + i) == idx else ' '} {lines[start + i]}"
+                                for i in range(end - start)
+                            ),
+                        }
+                    )
                     file_matches += 1
                     total_matches += 1
                     if total_matches >= self.SEARCH_MAX_MATCHES_TOTAL:
-                        return _json({
-                            "ok": True,
-                            "files_scanned": seen_files,
-                            "match_count": total_matches,
-                            "truncated": True,
-                            "matches": results,
-                            "note": f"已达匹配上限 {self.SEARCH_MAX_MATCHES_TOTAL}",
-                        })
-        return _json({
-            "ok": True,
-            "files_scanned": seen_files,
-            "match_count": total_matches,
-            "matches": results,
-        })
+                        return _json(
+                            {
+                                "ok": True,
+                                "files_scanned": seen_files,
+                                "match_count": total_matches,
+                                "truncated": True,
+                                "matches": results,
+                                "note": f"已达匹配上限 {self.SEARCH_MAX_MATCHES_TOTAL}",
+                            }
+                        )
+        return _json(
+            {
+                "ok": True,
+                "files_scanned": seen_files,
+                "match_count": total_matches,
+                "matches": results,
+            }
+        )
 
     # ── sandbox debug report I/O ──
 
@@ -1275,9 +1327,16 @@ class SelfHealToolExecutor(ToolExecutor):
         safe_suffix = ".md"
         if not file_name:
             from neobot_app.time_context import get_current_time_and_lunar_date
-            ts = get_current_time_and_lunar_date().replace(" ", "_").replace(":", "").replace("/", "")
+
+            ts = (
+                get_current_time_and_lunar_date()
+                .replace(" ", "_")
+                .replace(":", "")
+                .replace("/", "")
+            )
             # ts may include lunar info; use a simple timestamp instead
             import datetime as _dt
+
             ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             file_name = f"report_{ts}{safe_suffix}"
         else:
@@ -1321,11 +1380,13 @@ class SelfHealToolExecutor(ToolExecutor):
                 text = data.decode("utf-8")
                 return _json({"ok": True, "file": rel, "content": text})
             except UnicodeDecodeError:
-                return _json({
-                    "ok": True,
-                    "file": rel,
-                    "content_base64": base64.b64encode(data).decode("utf-8"),
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "file": rel,
+                        "content_base64": base64.b64encode(data).decode("utf-8"),
+                    }
+                )
         except Exception as exc:
             return _json({"ok": False, "error": str(exc)})
 
@@ -1354,6 +1415,7 @@ class SelfHealToolExecutor(ToolExecutor):
                 MAX_TEXT_READ_BYTES,
                 detect_file_type,
             )
+
             path = self._sandbox.resolve_read_path(rel)
             info = detect_file_type(path)
             ftype = info["type"]
@@ -1364,41 +1426,51 @@ class SelfHealToolExecutor(ToolExecutor):
             if ftype == "empty":
                 return _json({"ok": True, "content_base64": "", "size": 0})
             if ftype == "image":
-                return _json({
-                    "ok": True,
-                    "type": "image",
-                    "format": fmt,
-                    "size": size,
-                    "note": "图片文件，请使用 parse_image 工具读取内容",
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "image",
+                        "format": fmt,
+                        "size": size,
+                        "note": "图片文件，请使用 parse_image 工具读取内容",
+                    }
+                )
             if ftype == "binary":
-                return _json({
-                    "ok": True,
-                    "type": "binary",
-                    "format": fmt,
-                    "size": size,
-                    "note": "二进制文件，请通过 send_chat_file 发送或使用 parse_image",
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "binary",
+                        "format": fmt,
+                        "size": size,
+                        "note": "二进制文件，请通过 send_chat_file 发送或使用 parse_image",
+                    }
+                )
             data = await self._sandbox.read_file(path)
             try:
                 text = data.decode("utf-8")
                 if len(data) > MAX_TEXT_READ_BYTES:
-                    return _json({
-                        "ok": True,
-                        "content": text[:MAX_TEXT_READ_BYTES],
-                        "size": len(data),
-                        "truncated": True,
-                    })
+                    return _json(
+                        {
+                            "ok": True,
+                            "content": text[:MAX_TEXT_READ_BYTES],
+                            "size": len(data),
+                            "truncated": True,
+                        }
+                    )
                 return _json({"ok": True, "content": text, "size": len(data)})
             except UnicodeDecodeError:
                 preview_size = min(len(data), MAX_BASE64_BYTES)
-                return _json({
-                    "ok": True,
-                    "type": "unknown_binary",
-                    "content_base64": base64.b64encode(data[:preview_size]).decode(),
-                    "size": len(data),
-                    "truncated": len(data) > MAX_BASE64_BYTES,
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "unknown_binary",
+                        "content_base64": base64.b64encode(
+                            data[:preview_size]
+                        ).decode(),
+                        "size": len(data),
+                        "truncated": len(data) > MAX_BASE64_BYTES,
+                    }
+                )
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
 
@@ -1436,12 +1508,14 @@ class SelfHealToolExecutor(ToolExecutor):
             )
             output = result.stdout.decode("utf-8", errors="replace").strip()
             error = result.stderr.decode("utf-8", errors="replace").strip()
-            return _json({
-                "ok": True,
-                "stdout": output,
-                "stderr": error or None,
-                "returncode": result.returncode,
-            })
+            return _json(
+                {
+                    "ok": True,
+                    "stdout": output,
+                    "stderr": error or None,
+                    "returncode": result.returncode,
+                }
+            )
         except subprocess.TimeoutExpired:
             return _json({"ok": False, "error": f"Python 执行超时（{timeout}秒）"})
         except Exception as e:
@@ -1454,10 +1528,13 @@ class SelfHealToolExecutor(ToolExecutor):
         if self._vision_provider is None:
             return _json({"ok": False, "error": "vision_provider 未配置"})
         from neobot_app.runtime.sandbox_service import detect_file_type
+
         image_path = str(args.get("image_path", "")).strip()
         if not image_path:
             return _json({"ok": False, "error": "缺少 image_path"})
-        requirement = str(args.get("requirement") or "请简洁描述这张图片的主要内容。").strip()
+        requirement = str(
+            args.get("requirement") or "请简洁描述这张图片的主要内容。"
+        ).strip()
         try:
             if self._sandbox is not None:
                 path = self._sandbox.resolve_read_path(image_path)
@@ -1465,21 +1542,26 @@ class SelfHealToolExecutor(ToolExecutor):
                 path = Path(image_path)
             info = detect_file_type(path)
             if info["type"] != "image":
-                return _json({
-                    "ok": False,
-                    "error": f"文件不是图片（检测为 {info['type']}）",
-                })
+                return _json(
+                    {
+                        "ok": False,
+                        "error": f"文件不是图片（检测为 {info['type']}）",
+                    }
+                )
             data = path.read_bytes()
             from neobot_app.image.parser import _build_vision_image_part
+
             part = _build_vision_image_part(data, logger=self._logger)
             content_parts = [
                 {"type": "text", "text": requirement},
                 part,
             ]
-            result = await self._vision_provider.chat([
-                {"role": "user", "content": content_parts}
-            ])
-            text = result.get("content", "") if isinstance(result, dict) else str(result)
+            result = await self._vision_provider.chat(
+                [{"role": "user", "content": content_parts}]
+            )
+            text = (
+                result.get("content", "") if isinstance(result, dict) else str(result)
+            )
             return _json({"ok": True, "description": text[:2000]})
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
@@ -1518,9 +1600,7 @@ class SelfHealToolExecutor(ToolExecutor):
         except Exception:
             task.repaired = False
         task.status = "completed"
-        return (
-            "已记录诊断结论。系统将自动通过通知系统向管理员私聊推送最终通知。"
-        )
+        return "已记录诊断结论。系统将自动通过通知系统向管理员私聊推送最终通知。"
 
 
 # ── Agent ───────────────────────────────────────────────────────────────────
@@ -1606,7 +1686,9 @@ class SelfHealAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(cfg, peer_descriptions=peer_descriptions),
+            system_prompt=_build_system_prompt(
+                cfg, peer_descriptions=peer_descriptions
+            ),
             on_model_usage=_record_usage,
             max_iterations=30,
             command_timeout=int(cfg.timeout_seconds),
@@ -1638,10 +1720,7 @@ class SelfHealAgent:
             CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:
-        try:
-            await self._agent.close()
-        except Exception:
-            pass
+        await self._agent.close()
 
 
 # ── Builder ─────────────────────────────────────────────────────────────────
@@ -1663,7 +1742,8 @@ def build_self_heal_agent(
     peer_descriptions: str = "",
 ) -> SelfHealAgent:
     cfg = (
-        config if isinstance(config, SelfHealAgentConfig)
+        config
+        if isinstance(config, SelfHealAgentConfig)
         else SelfHealAgentConfig.from_schema(config)
     )
     provider.max_tokens = cfg.max_tokens

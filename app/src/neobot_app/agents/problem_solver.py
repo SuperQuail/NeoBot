@@ -55,9 +55,7 @@ EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
     "简单搜索查询请使用联网搜索工具包(先 unlock web_search)自行完成。"
     "只有确认问题需要深度推理（非简单搜索能解决）时才使用本 agent。"
 )
-EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = (
-    "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
-)
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
 
 
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")
@@ -65,7 +63,9 @@ _SOLUTION_RESULT: ContextVar[str] = ContextVar("solution_result", default="")
 _CHAT_FLOW_ID: ContextVar[str] = ContextVar("solver_chat_flow_id", default="")
 
 
-def _tool_def(name: str, description: str, parameters: dict[str, Any]) -> ToolDefinition:
+def _tool_def(
+    name: str, description: str, parameters: dict[str, Any]
+) -> ToolDefinition:
     return {
         "type": "function",
         "function": {
@@ -84,8 +84,6 @@ def _default_resolver(
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-
 
 
 class ProblemSolverAgentConfig:
@@ -120,10 +118,16 @@ class ProblemSolverAgentConfig:
             enabled=bool(getattr(config, "enabled", True)),
             timeout_seconds=float(getattr(config, "timeout_seconds", 600) or 600),
             max_tokens=int(getattr(config, "max_tokens", 20480) or 20480),
-            notification_retry_seconds=int(getattr(config, "notification_retry_seconds", 30) or 30),
+            notification_retry_seconds=int(
+                getattr(config, "notification_retry_seconds", 30) or 30
+            ),
             max_retries=int(getattr(config, "max_retries", 1) or 0),
-            startup_grace_seconds=float(getattr(config, "startup_grace_seconds", 3.0) or 3.0),
-            max_tasks_per_pipeline=int(getattr(config, "max_tasks_per_pipeline", 5) or 5),
+            startup_grace_seconds=float(
+                getattr(config, "startup_grace_seconds", 3.0) or 3.0
+            ),
+            max_tasks_per_pipeline=int(
+                getattr(config, "max_tasks_per_pipeline", 5) or 5
+            ),
             reasoning_effort=str(getattr(config, "reasoning_effort", "max") or "max"),
         )
 
@@ -164,6 +168,7 @@ class ProblemSolverManager:
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None
         self._agent: Any = None
+        self._closed = False
 
     def set_agent(self, agent: Any) -> None:
         self._agent = agent
@@ -196,8 +201,7 @@ class ProblemSolverManager:
         if limit <= 0:
             return
         pipeline_tasks = [
-            t for t in self._tasks.values()
-            if t.pipeline_key == pipeline_key
+            t for t in self._tasks.values() if t.pipeline_key == pipeline_key
         ]
         if len(pipeline_tasks) <= limit:
             return
@@ -223,20 +227,24 @@ class ProblemSolverManager:
         recent: list[dict[str, Any]] = []
         for task in self._tasks.values():
             if task.pipeline_key == pipeline_key and task.status != "solving":
-                recent.append({
-                    "task_id": task.task_id,
-                    "status": task.status,
-                    "error": task.error,
-                    "question": (task.question or "")[:100],
-                    "created_at": task.created_at,
-                })
+                recent.append(
+                    {
+                        "task_id": task.task_id,
+                        "status": task.status,
+                        "error": task.error,
+                        "question": (task.question or "")[:100],
+                        "created_at": task.created_at,
+                    }
+                )
         return {
             "solver_has_active_task": active is not None,
             "solver_active_task": {
                 "task_id": active.task_id,
                 "status": active.status,
                 "question": (active.question or "")[:200],
-            } if active else None,
+            }
+            if active
+            else None,
             "solver_recent_tasks": recent[-5:],
         }
 
@@ -260,19 +268,28 @@ class ProblemSolverManager:
         delegate_context: str = "",
     ) -> str:
         """提交后台解题任务。返回 JSON 状态字符串。"""
+        if self._closed:
+            return _json({"ok": False, "error": "解题管理器已关闭"})
         if self._agent is None:
             return _json({"ok": False, "error": "解题 Agent 未配置"})
         if not conversation_kind or not conversation_id:
-            return _json({"ok": False, "error": f"无效的会话信息: kind={conversation_kind!r}, id={conversation_id!r}"})
+            return _json(
+                {
+                    "ok": False,
+                    "error": f"无效的会话信息: kind={conversation_kind!r}, id={conversation_id!r}",
+                }
+            )
 
         active = self._get_active_task(pipeline_key)
         if active is not None:
-            return _json({
-                "ok": True,
-                "status": "busy",
-                "message": f"已有解题任务正在进行中 (task_id={active.task_id})，请等待任务完成后再提交",
-                "existing_task_id": active.task_id,
-            })
+            return _json(
+                {
+                    "ok": True,
+                    "status": "busy",
+                    "message": f"已有解题任务正在进行中 (task_id={active.task_id})，请等待任务完成后再提交",
+                    "existing_task_id": active.task_id,
+                }
+            )
 
         task = SolveTask(
             task_id=f"solve_{uuid4().hex[:12]}",
@@ -299,12 +316,14 @@ class ProblemSolverManager:
             pipeline_key=pipeline_key,
             question=question[:80],
         )
-        return _json({
-            "ok": True,
-            "status": "solving",
-            "task_id": task.task_id,
-            "message": "正在解题，已加入后台解题任务，完成后会通知你",
-        })
+        return _json(
+            {
+                "ok": True,
+                "status": "solving",
+                "task_id": task.task_id,
+                "message": "正在解题，已加入后台解题任务，完成后会通知你",
+            }
+        )
 
     async def _run_solve(self, task: SolveTask) -> None:
         """后台执行解题。"""
@@ -334,14 +353,16 @@ class ProblemSolverManager:
             # 如果 agent 未提交任何答复，保留上下文再次唤起，要求明确提供答复
             if not solution:
                 messages = result_state.get("messages", [])
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "你尚未调用 submit_solution 提交任何解答。"
-                        "请立即提交你的最终解答（调用 submit_solution）。"
-                        "即使无法解答，也必须说明失败原因（如缺少关键信息、超出能力范围等）。"
-                    ),
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你尚未调用 submit_solution 提交任何解答。"
+                            "请立即提交你的最终解答（调用 submit_solution）。"
+                            "即使无法解答，也必须说明失败原因（如缺少关键信息、超出能力范围等）。"
+                        ),
+                    }
+                )
                 retry_state: State = {
                     "messages": messages,
                     "_delegate_context": task.delegate_context,
@@ -451,7 +472,9 @@ class ProblemSolverManager:
             return
 
         if self._orchestrator is None:
-            self._logger.warning("通知推送失败：orchestrator 为空", task_id=task.task_id)
+            self._logger.warning(
+                "通知推送失败：orchestrator 为空", task_id=task.task_id
+            )
             return
 
         pipeline_active = self._orchestrator.is_pipeline_key_active(task.pipeline_key)
@@ -545,6 +568,7 @@ class ProblemSolverManager:
         )
 
     async def shutdown(self) -> None:
+        self._closed = True
         for task in list(self._tasks.values()):
             if task.status == "solving":
                 task.status = "failed"
@@ -557,6 +581,11 @@ class ProblemSolverManager:
         self._bg_tasks.clear()
         self._tasks.clear()
         self._notification_queues.clear()
+        agent = self._agent
+        self._agent = None
+        close = getattr(agent, "close", None)
+        if callable(close):
+            await close()
 
 
 class ProblemSolverToolExecutor(ToolExecutor):
@@ -704,53 +733,55 @@ class ProblemSolverToolExecutor(ToolExecutor):
             ),
         ]
         if self._sandbox is not None:
-            tools.extend([
-                _tool_def(
-                    "write_file",
-                    "将内容写入沙箱文件。文件路径相对于沙箱临时目录。"
-                    "可用于保存生成的 PDF、图片、代码等文件。"
-                    "写入后主Agent可通过 sandbox_manager 工具查看和发送这些文件。",
-                    {
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件名（如 test.pdf），将保存到沙箱临时目录",
+            tools.extend(
+                [
+                    _tool_def(
+                        "write_file",
+                        "将内容写入沙箱文件。文件路径相对于沙箱临时目录。"
+                        "可用于保存生成的 PDF、图片、代码等文件。"
+                        "写入后主Agent可通过 sandbox_manager 工具查看和发送这些文件。",
+                        {
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "文件名（如 test.pdf），将保存到沙箱临时目录",
+                                },
+                                "content_base64": {
+                                    "type": "string",
+                                    "description": "文件内容的 base64 编码",
+                                },
                             },
-                            "content_base64": {
-                                "type": "string",
-                                "description": "文件内容的 base64 编码",
-                            },
+                            "required": ["path", "content_base64"],
                         },
-                        "required": ["path", "content_base64"],
-                    },
-                ),
-                _tool_def(
-                    "read_file",
-                    "读取沙箱文件的内容，返回 base64 编码数据。",
-                    {
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件路径（相对于沙箱根）",
+                    ),
+                    _tool_def(
+                        "read_file",
+                        "读取沙箱文件的内容，返回 base64 编码数据。",
+                        {
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "文件路径（相对于沙箱根）",
+                                },
                             },
+                            "required": ["path"],
                         },
-                        "required": ["path"],
-                    },
-                ),
-                _tool_def(
-                    "list_files",
-                    "列出沙箱目录下的内容。",
-                    {
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "目录路径（相对于沙箱根），默认为 /",
+                    ),
+                    _tool_def(
+                        "list_files",
+                        "列出沙箱目录下的内容。",
+                        {
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "目录路径（相对于沙箱根），默认为 /",
+                                },
                             },
+                            "required": [],
                         },
-                        "required": [],
-                    },
-                ),
-            ])
+                    ),
+                ]
+            )
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
@@ -816,6 +847,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return cfid
         # 回退：正则解析旧格式 [当前会话] 文本（兼容旧格式）
         import re
+
         ctx = _SOLVER_CHAT_CONTEXT.get("")
         if not ctx:
             return None
@@ -841,8 +873,11 @@ class ProblemSolverToolExecutor(ToolExecutor):
                     None,
                     lambda: subprocess.run(
                         [sys.executable, script_path],
-                        capture_output=True, text=True, encoding="utf-8",
-                        timeout=timeout, cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=timeout,
+                        cwd=cwd,
                     ),
                 ),
                 timeout=timeout + 5,
@@ -852,19 +887,23 @@ class ProblemSolverToolExecutor(ToolExecutor):
             error = result.stderr.strip()
             # 如果超时被 subprocess 自己捕获
             if result.returncode != 0:
-                return _json({
+                return _json(
+                    {
+                        "ok": True,
+                        "stdout": output,
+                        "stderr": error,
+                        "returncode": result.returncode,
+                        "note": "进程退出码非零，请检查 stderr",
+                    }
+                )
+            return _json(
+                {
                     "ok": True,
                     "stdout": output,
-                    "stderr": error,
-                    "returncode": result.returncode,
-                    "note": "进程退出码非零，请检查 stderr",
-                })
-            return _json({
-                "ok": True,
-                "stdout": output,
-                "stderr": error or None,
-                "returncode": 0,
-            })
+                    "stderr": error or None,
+                    "returncode": 0,
+                }
+            )
         except subprocess.TimeoutExpired:
             Path(script_path).unlink(missing_ok=True)
             return _json({"ok": False, "error": f"Python 执行超时（{timeout}秒）"})
@@ -881,7 +920,9 @@ class ProblemSolverToolExecutor(ToolExecutor):
         if not image_path:
             return _json({"ok": False, "error": "缺少 image_path"})
 
-        requirement = str(args.get("requirement") or "请简洁描述这张图片的主要内容。").strip()
+        requirement = str(
+            args.get("requirement") or "请简洁描述这张图片的主要内容。"
+        ).strip()
         chat_flow_id = str(args.get("chat_flow_id", "")).strip() or None
 
         try:
@@ -892,25 +933,37 @@ class ProblemSolverToolExecutor(ToolExecutor):
 
             info = detect_file_type(path)
             if info["type"] != "image":
-                return _json({
-                    "ok": False,
-                    "error": f"文件不是图片（检测为 {info['type']}"
-                    + (f"/{info['format']}" if info.get("format") else "")
-                    + "），请确认路径正确",
-                })
+                return _json(
+                    {
+                        "ok": False,
+                        "error": f"文件不是图片（检测为 {info['type']}"
+                        + (f"/{info['format']}" if info.get("format") else "")
+                        + "），请确认路径正确",
+                    }
+                )
 
             import base64
+
             data = path.read_bytes()
             content_parts = [
                 {"type": "text", "text": requirement},
-                {"type": "image", "source": {
-                    "type": "base64",
-                    "media_type": f"image/{info['format'].lower()}" if info.get("format") else "image/png",
-                    "data": base64.b64encode(data).decode("utf-8"),
-                }},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": f"image/{info['format'].lower()}"
+                        if info.get("format")
+                        else "image/png",
+                        "data": base64.b64encode(data).decode("utf-8"),
+                    },
+                },
             ]
-            result = await self._vision_provider.chat([{"role": "user", "content": content_parts}])
-            text = result.get("content", "") if isinstance(result, dict) else str(result)
+            result = await self._vision_provider.chat(
+                [{"role": "user", "content": content_parts}]
+            )
+            text = (
+                result.get("content", "") if isinstance(result, dict) else str(result)
+            )
             return _json({"ok": True, "description": text[:2000]})
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
@@ -919,6 +972,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
         if self._sandbox is None:
             return _json({"ok": False, "error": "sandbox 未配置"})
         import base64
+
         rel_path = str(args.get("path", "")).strip()
         content_b64 = args.get("content_base64", "")
         if not rel_path or not content_b64:
@@ -960,28 +1014,32 @@ class ProblemSolverToolExecutor(ToolExecutor):
                 return _json({"ok": True, "content_base64": "", "size": 0})
 
             if ftype == "image":
-                return _json({
-                    "ok": True,
-                    "type": "image",
-                    "format": fmt,
-                    "size": size,
-                    "note": (
-                        f"这是 {fmt} 图片文件（{size} 字节），内容不会以文本/base64 返回。"
-                        "请使用 parse_image 工具分析图片内容。"
-                    ),
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "image",
+                        "format": fmt,
+                        "size": size,
+                        "note": (
+                            f"这是 {fmt} 图片文件（{size} 字节），内容不会以文本/base64 返回。"
+                            "请使用 parse_image 工具分析图片内容。"
+                        ),
+                    }
+                )
 
             if ftype == "binary":
-                return _json({
-                    "ok": True,
-                    "type": "binary",
-                    "format": fmt,
-                    "size": size,
-                    "note": (
-                        f"这是 {fmt} 二进制文件（{size} 字节），无法以文本读取。"
-                        "请在解题结果中引用此文件路径，由主 Agent 通过 send_chat_file 发送。"
-                    ),
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "binary",
+                        "format": fmt,
+                        "size": size,
+                        "note": (
+                            f"这是 {fmt} 二进制文件（{size} 字节），无法以文本读取。"
+                            "请在解题结果中引用此文件路径，由主 Agent 通过 send_chat_file 发送。"
+                        ),
+                    }
+                )
 
             # 文本或未知类型 → 读取内容
             data = await self._sandbox.read_file(path)
@@ -989,31 +1047,41 @@ class ProblemSolverToolExecutor(ToolExecutor):
             try:
                 text = data.decode("utf-8")
                 if len(data) > MAX_TEXT_READ_BYTES:
-                    return _json({
-                        "ok": True,
-                        "content": text[:MAX_TEXT_READ_BYTES],
-                        "size": len(data),
-                        "truncated": True,
-                        "note": (
-                            f"[PARTIAL view] 文本过大（{len(data)} 字节），"
-                            f"仅返回前 {MAX_TEXT_READ_BYTES} 字节。"
-                        ),
-                    })
+                    return _json(
+                        {
+                            "ok": True,
+                            "content": text[:MAX_TEXT_READ_BYTES],
+                            "size": len(data),
+                            "truncated": True,
+                            "note": (
+                                f"[PARTIAL view] 文本过大（{len(data)} 字节），"
+                                f"仅返回前 {MAX_TEXT_READ_BYTES} 字节。"
+                            ),
+                        }
+                    )
                 return _json({"ok": True, "content": text, "size": len(data)})
             except UnicodeDecodeError:
                 preview_size = min(len(data), MAX_BASE64_BYTES)
                 truncated = len(data) > MAX_BASE64_BYTES
-                return _json({
-                    "ok": True,
-                    "type": "unknown_binary",
-                    "content_base64": base64.b64encode(data[:preview_size]).decode(),
-                    "size": len(data),
-                    "truncated": truncated,
-                    "note": (
-                        f"未知二进制格式（{len(data)} 字节）"
-                        + (f"，仅返回前 {MAX_BASE64_BYTES} 字节预览。" if truncated else "。")
-                    ),
-                })
+                return _json(
+                    {
+                        "ok": True,
+                        "type": "unknown_binary",
+                        "content_base64": base64.b64encode(
+                            data[:preview_size]
+                        ).decode(),
+                        "size": len(data),
+                        "truncated": truncated,
+                        "note": (
+                            f"未知二进制格式（{len(data)} 字节）"
+                            + (
+                                f"，仅返回前 {MAX_BASE64_BYTES} 字节预览。"
+                                if truncated
+                                else "。"
+                            )
+                        ),
+                    }
+                )
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
 
@@ -1030,7 +1098,9 @@ class ProblemSolverToolExecutor(ToolExecutor):
             return _json({"ok": False, "error": str(e)})
 
 
-def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descriptions: str = "") -> str:
+def _build_system_prompt(
+    config: ProblemSolverAgentConfig | None, *, peer_descriptions: str = ""
+) -> str:
     cfg = config or ProblemSolverAgentConfig()
     return (
         "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
@@ -1049,7 +1119,7 @@ def _build_system_prompt(config: ProblemSolverAgentConfig | None, *, peer_descri
         "- 提交解答时说明生成的文件路径，主Agent将通过 sandbox_manager 工具读取和发送\n\n"
         "搜索使用提示：\n"
         "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
-        "- search 支持 mode 参数进行多角度搜索，如 mode=\"encyclopedia\" 查百科类信息\n"
+        '- search 支持 mode 参数进行多角度搜索，如 mode="encyclopedia" 查百科类信息\n'
         "- 搜索后先浏览摘要，只对有价值的结果使用 read_page 读取全文\n"
         "- 每次解题任务开始时搜索会话自动重置\n\n"
         "交互规则：\n"
@@ -1127,7 +1197,9 @@ class ProblemSolverAgent:
             provider,
             toolset=self._toolset,
             description=self.description,
-            system_prompt=_build_system_prompt(cfg, peer_descriptions=peer_descriptions),
+            system_prompt=_build_system_prompt(
+                cfg, peer_descriptions=peer_descriptions
+            ),
             on_model_usage=_record_usage,
             max_iterations=20,
             command_timeout=int(cfg.timeout_seconds),
@@ -1138,7 +1210,9 @@ class ProblemSolverAgent:
         """主 Agent 委托入口：提交后台解题任务并立即返回。"""
         if self._manager is None:
             return {
-                "messages": [{"role": "assistant", "content": "错误：解题后台管理器未配置"}],
+                "messages": [
+                    {"role": "assistant", "content": "错误：解题后台管理器未配置"}
+                ],
             }
 
         messages = state.get("messages", [])
@@ -1151,7 +1225,12 @@ class ProblemSolverAgent:
         conv_kind, conv_id = self._parse_conv_from_context(delegate_context)
         if not conv_kind or not conv_id:
             return {
-                "messages": [{"role": "assistant", "content": "错误：无法确定当前会话信息，请重试"}],
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "错误：无法确定当前会话信息，请重试",
+                    }
+                ],
             }
 
         pipeline_key = f"{conv_kind}:{conv_id}"
@@ -1170,6 +1249,7 @@ class ProblemSolverAgent:
     def _parse_conv_from_context(context: str) -> tuple[str, str]:
         """从委托上下文解析当前会话 kind 和 id。"""
         import re
+
         m = re.search(r"\[当前会话\]\s*\nkind=(\w+)\s*\nid=(\S+)", context)
         if m:
             return m.group(1), m.group(2)
@@ -1231,7 +1311,8 @@ def build_problem_solver_agent(
         vision_provider: 视觉模型 provider，提供 parse_image 工具
     """
     cfg = (
-        config if isinstance(config, ProblemSolverAgentConfig)
+        config
+        if isinstance(config, ProblemSolverAgentConfig)
         else ProblemSolverAgentConfig.from_schema(config)
     )
     # 解题 agent 的 max_tokens 覆盖 agent 模型的默认值，

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neobot_modloader import PluginRuntime
 
 from neobot_app.core import DATA_DIR
 from neobot_app.skills import build_all_skills
+
+if TYPE_CHECKING:
+    from neobot_contracts.ports.screenshot import ScreenshotPort
 
 
 def build_skill_manager(
@@ -39,6 +42,7 @@ def build_skill_manager(
     friend_message_queue: Any = None,
     data_dir: Path = Path("."),
     balance_checker: Any = None,
+    agent_registry: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -70,6 +74,7 @@ def build_skill_manager(
         friend_message_queue=friend_message_queue,
         data_dir=data_dir,
         balance_checker=balance_checker,
+        agent_registry=agent_registry,
     )
 
 
@@ -83,6 +88,9 @@ def build_plugin_runtime(
     runtime_output: Any,
     host_facade: Any,
     file_server: Any,
+    agent_registry: Any,
+    skills_registry: Any = None,
+    screenshots: "ScreenshotPort | None" = None,
 ) -> Any:
     if not config.plugins.enabled:
         return None
@@ -144,6 +152,9 @@ def build_plugin_runtime(
         host=host_facade,
         file_server=file_server,
         media_sender=_MediaSenderWrapper(file_server),
+        agent_registry=agent_registry,
+        skills_registry=skills_registry,
+        screenshots=screenshots,
         auto_install_dependencies=True,
     )
     plugin_runtime.load_all()

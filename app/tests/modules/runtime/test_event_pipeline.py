@@ -30,6 +30,10 @@ def _new_pipeline() -> EventPipeline:
     pipeline = object.__new__(EventPipeline)
     pipeline._recent_message_ids = deque(maxlen=200)
     pipeline._recent_message_ids_lock = asyncio.Lock()
+    pipeline._background_tasks = set()
+    pipeline._stopping = False
+    pipeline._started = False
+    pipeline._subscriptions = []
     return pipeline
 
 
@@ -89,6 +93,8 @@ async def test_group_message_event_duplicate_not_pushed_twice():
     pipeline._replying_queues = set()
     pipeline._post_reply_willing = {}
     pipeline._pending_image_willing = {}
+    pipeline._background_tasks = set()
+    pipeline._stopping = False
 
     event = {
         "post_type": "message",
@@ -170,7 +176,9 @@ def _fast_private_config() -> BotConfig:
     """私聊处理配置：关闭动态预热并将回复延迟设为 0，避免测试长时间等待。"""
     return BotConfig(
         bot=Bot(account=0),
-        chat=Chat(private_chat_dynamic_warmup=False, private_chat_reply_delay_seconds=0.0),
+        chat=Chat(
+            private_chat_dynamic_warmup=False, private_chat_reply_delay_seconds=0.0
+        ),
     )
 
 
@@ -186,7 +194,9 @@ def _pipeline_with_queue(
     """
     pipeline = object.__new__(EventPipeline)
     pipeline._group_queue = group_queue if group_queue is not None else MessageQueue()
-    pipeline._friend_queue = friend_queue if friend_queue is not None else MessageQueue()
+    pipeline._friend_queue = (
+        friend_queue if friend_queue is not None else MessageQueue()
+    )
     pipeline.adapter = AsyncMock()
     pipeline._profile_service = None
     pipeline._image_parse_service = None
@@ -209,6 +219,10 @@ def _pipeline_with_queue(
     pipeline._image_willing_locks = {}
     pipeline._warmup_lock = asyncio.Lock()
     pipeline._warmed_up_friends = set()
+    pipeline._background_tasks = set()
+    pipeline._stopping = False
+    pipeline._started = False
+    pipeline._subscriptions = []
     return pipeline
 
 
@@ -264,7 +278,9 @@ async def test_event_pipeline_skips_reply_for_bot_own_message():
     pipeline._willing_service = AsyncMock()
 
     # Act
-    await pipeline.handle_group_message_event(_group_event(9201, text="hi", user_id=12345))
+    await pipeline.handle_group_message_event(
+        _group_event(9201, text="hi", user_id=12345)
+    )
 
     # Assert
     assert queue.size("42") == 1
@@ -307,7 +323,9 @@ async def test_private_warmup_failure_does_not_mark_user_warmed():
     )
     pipeline = _pipeline_with_queue(config=config)
     pipeline.adapter = AsyncMock()
-    pipeline.adapter.get_friend_msg_history.side_effect = RuntimeError("history unavailable")
+    pipeline.adapter.get_friend_msg_history.side_effect = RuntimeError(
+        "history unavailable"
+    )
 
     # Act
     await pipeline._maybe_warmup_friend_chat("123")
@@ -332,3 +350,59 @@ async def test_events_enqueue_in_receive_order():
     second = queue.get("42", 1)
     assert first.message_id == 9301
     assert second.message_id == 9302
+
+
+@pytest.mark.asyncio
+async def test_flush_cancels_and_awaits_tracked_background_tasks() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class _ArchiveSummary:
+        def __init__(self) -> None:
+            self.flush_all = AsyncMock()
+
+        async def record_message(self, **kwargs) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    pipeline = _pipeline_with_queue()
+    archive = _ArchiveSummary()
+    pipeline._archive_summary_service = archive
+
+    pipeline._schedule_archive_summary(
+        conversation_kind="group",
+        conversation_id="42",
+        message_text="pending",
+    )
+    await started.wait()
+    task = next(iter(pipeline._background_tasks))
+
+    await pipeline.flush_pending_summaries()
+
+    assert task.cancelled()
+    assert cancelled.is_set()
+    assert pipeline._background_tasks == set()
+    archive.flush_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_prevents_new_fire_and_forget_tasks() -> None:
+    pipeline = _pipeline_with_queue()
+    pipeline._archive_summary_service = SimpleNamespace(
+        record_message=AsyncMock(),
+        flush_all=AsyncMock(),
+    )
+
+    pipeline.stop()
+    pipeline._schedule_archive_summary(
+        conversation_kind="group",
+        conversation_id="42",
+        message_text="ignored",
+    )
+    await pipeline.flush_pending_summaries()
+
+    assert pipeline._background_tasks == set()
+    pipeline._archive_summary_service.record_message.assert_not_awaited()

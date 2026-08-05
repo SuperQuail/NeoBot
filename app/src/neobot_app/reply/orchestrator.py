@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,222 @@ from neobot_app.statistics.tracker import get_usage_tracker
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
+
+
+def _xml_escape(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _safe_int(value: object) -> int:
+    """把配置值安全解析为 int；非数字/None/空串一律返回 0。
+
+    避免畸形配置（如 bot.account 填了 "your_qq"）在 int() 处抛 ValueError，
+    导致每次 agent 回复管线崩溃。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+_MAX_TOOL_TEXT_CHARS = 16 * 1024
+_MAX_TOOL_LOG_CHARS = 2 * 1024
+_MAX_TOOL_REDACTION_CHARS = 1024 * 1024
+_MAX_TOOL_REDACTION_ITEMS = 256
+_SENSITIVE_TOOL_KEYS = frozenset(
+    {
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "api_key",
+        "apikey",
+        "api-key",
+        "authorization",
+        "auth",
+        "cookie",
+        "credential",
+        "access_key",
+        "private_key",
+        "bearer",
+        "client_secret",
+        "access_token",
+        "refresh_token",
+    }
+)
+_SENSITIVE_TOOL_KEY_SUFFIXES = (
+    "_secret",
+    "_password",
+    "_passwd",
+    "_pwd",
+    "_token",
+    "_credential",
+    "_authorization",
+    "_cookie",
+    "_api_key",
+    "_access_key",
+    "_private_key",
+)
+_INTERNAL_TOOL_KEYS = frozenset({"_delegate_context"})
+
+
+def _normalize_tool_key(key: object) -> str:
+    text = str(key)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_").casefold()
+
+
+def _is_sensitive_tool_key(key: object) -> bool:
+    normalized = _normalize_tool_key(key)
+    if normalized in _SENSITIVE_TOOL_KEYS:
+        return True
+    return any(normalized.endswith(suffix) for suffix in _SENSITIVE_TOOL_KEY_SUFFIXES)
+
+
+def _bounded_tool_text(value: object, limit: int = _MAX_TOOL_TEXT_CHARS) -> str:
+    if isinstance(value, str):
+        text = value[: limit + 1]
+    elif isinstance(value, (dict, list, tuple)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=lambda _: "<object>")[
+                : limit + 1
+            ]
+        except (TypeError, ValueError, RecursionError):
+            text = f"<{type(value).__name__}>"
+    else:
+        try:
+            text = str(value)[: limit + 1]
+        except Exception:
+            text = f"<{type(value).__name__}>"
+    return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+
+def _redact_tool_value(
+    value: object,
+    _depth: int = 0,
+    *,
+    drop_internal: bool = False,
+) -> object:
+    """递归替换敏感键的值；深/宽超限时整体折叠，避免无界展开。"""
+    if _depth > 8:
+        return "<truncated>"
+    if isinstance(value, dict):
+        redacted: dict[str, object] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _MAX_TOOL_REDACTION_ITEMS:
+                redacted["..."] = "<truncated>"
+                break
+            key_text = str(key)
+            if key_text in _INTERNAL_TOOL_KEYS:
+                if not drop_internal:
+                    redacted[key_text] = "<redacted>"
+                continue
+            safe_key = _scrub_secret_values(key_text)
+            redacted[safe_key] = (
+                "<redacted>"
+                if _is_sensitive_tool_key(key)
+                else _redact_tool_value(
+                    item,
+                    _depth + 1,
+                    drop_internal=drop_internal,
+                )
+            )
+        return redacted
+    if isinstance(value, (list, tuple)):
+        items = list(value[:_MAX_TOOL_REDACTION_ITEMS])
+        redacted_items = [
+            _redact_tool_value(
+                item,
+                _depth + 1,
+                drop_internal=drop_internal,
+            )
+            for item in items
+        ]
+        if len(value) > _MAX_TOOL_REDACTION_ITEMS:
+            redacted_items.append("<truncated>")
+        return redacted_items
+    if isinstance(value, str):
+        return _scrub_secret_values(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return "<object>"
+
+
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)(bearer\s+|"
+    r"[\"']?(?:authorization|api[_-]?key|access[_-]?key|private[_-]?key|"
+    r"client[_-]?secret|secret|token|passwd|password|credential|pwd)"
+    r"[\"']?\s*[:=]\s*[\"']?)"
+    r"(?:bearer\s+)?[^\s,;\"']+"
+)
+
+
+def _scrub_secret_values(text: str) -> str:
+    """把字符串值内嵌的常见密钥形态（Bearer <token>、token=xxx 等）替换为占位符。"""
+    if not isinstance(text, str):
+        return text
+    return _SECRET_VALUE_RE.sub(lambda match: match.group(1) + "<redacted>", text)
+
+
+def _redacted_tool_text(value: object, limit: int = _MAX_TOOL_LOG_CHARS) -> str:
+    """日志/调试用文本：先解析完整的有界对象并脱敏，最后才截断。"""
+    if isinstance(value, str):
+        parsed: object | None = None
+        should_parse = len(value) <= _MAX_TOOL_REDACTION_CHARS
+        if should_parse:
+            try:
+                parsed = json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+                parsed = None
+        if parsed is not None or value.strip() == "null":
+            text = _bounded_tool_text(
+                _redact_tool_value(parsed),
+                _MAX_TOOL_REDACTION_CHARS,
+            )
+        else:
+            # Only the prefix can reach the bounded log output. Scrub it before
+            # truncating so oversized or malformed JSON cannot bypass redaction.
+            scan_limit = max(_MAX_TOOL_TEXT_CHARS, limit * 2)
+            text = _scrub_secret_values(value[:scan_limit])
+    else:
+        try:
+            text = json.dumps(
+                _redact_tool_value(value),
+                ensure_ascii=False,
+                default=lambda _: "<object>",
+            )
+        except (TypeError, ValueError, RecursionError):
+            text = f"<{type(value).__name__}>"
+    return _bounded_tool_text(_scrub_secret_values(text), limit)
+
+
+def _safe_tool_args(args: object) -> str:
+    redacted = _redact_tool_value(args, drop_internal=True)
+    return _redacted_tool_text(redacted, _MAX_TOOL_LOG_CHARS)
+
+
+def _parse_tool_args(value: object) -> dict[str, Any]:
+    """Normalize provider tool arguments to the dictionary executor contract."""
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -66,6 +284,7 @@ class ReplyOrchestrator:
         balance_checker: Any = None,
         runtime_events: Any = None,
         file_server: FileServer | None = None,
+        skills_registry: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -88,16 +307,22 @@ class ReplyOrchestrator:
         self._markdown_image_converter = markdown_image_converter
         self._reply_block_registry = reply_block_registry
         self._skill_manager = skill_manager
+        self._markdown_skills = skills_registry
         self._balance_checker = balance_checker
         self._runtime_events = runtime_events
         self._file_server = file_server
         self._tasks: set[asyncio.Task[None]] = set()
+        self._callback_tasks: set[asyncio.Task[None]] = set()
+        self._tool_executors: set[Any] = set()
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
         self._last_sentence_time: dict[str, float] = {}
+        self._closed = False
         self._notification_hub = notification_hub
         self._pre_reply_hooks: list[Callable[[ReplyEvent], Awaitable[str | None]]] = []
-        self._post_reply_hooks: list[Callable[[ReplyEvent, str | None], Awaitable[str | None]]] = []
+        self._post_reply_hooks: list[
+            Callable[[ReplyEvent, str | None], Awaitable[str | None]]
+        ] = []
         self._debug_helper = DebugHelper(
             debug_recorder=debug_recorder,
             runtime_events=runtime_events,
@@ -170,6 +395,9 @@ class ReplyOrchestrator:
         skip_cooldown: bool = False,
         background_content: str | None = None,
     ) -> ReplyEvent | None:
+        if self._closed:
+            self._logger.warning("ReplyOrchestrator 已关闭，拒绝创建回复管线")
+            return None
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
         event = ReplyEvent(
@@ -250,8 +478,10 @@ class ReplyOrchestrator:
                 self._active_pipelines.pop(pipeline_key, None)
             if on_reply_done is not None:
                 callback_task = asyncio.ensure_future(on_reply_done())
+                self._callback_tasks.add(callback_task)
 
                 def _callback_done(done_task: asyncio.Future[None]) -> None:
+                    self._callback_tasks.discard(callback_task)
                     try:
                         done_task.result()
                     except asyncio.CancelledError:
@@ -300,6 +530,9 @@ class ReplyOrchestrator:
 
         当绘图完成但对应聊天流无活跃管线时，由 BackgroundDrawingManager 调用。
         """
+        if self._closed:
+            self._logger.warning("ReplyOrchestrator 已关闭，拒绝创建后台回复管线")
+            return None
         from neobot_app.willing.models import WillingDecision
 
         queue_key = str(conversation_id)
@@ -325,9 +558,7 @@ class ReplyOrchestrator:
             )
             return None
 
-        queue = (
-            self._group_queue if kind == "group" else self._friend_queue
-        )
+        queue = self._group_queue if kind == "group" else self._friend_queue
         if queue is None:
             self._logger.error(
                 "无法启动后台回复：消息队列未配置",
@@ -351,8 +582,14 @@ class ReplyOrchestrator:
             sub_type: str = "normal"
             message_id: int = 0
             user_id: int = 0
-            group_id: int = int(conversation_id) if kind == "group" and conversation_id.isdigit() else 0
-            message: list = field(default_factory=lambda: [{"type": "text", "data": {"text": content}}])
+            group_id: int = (
+                int(conversation_id)
+                if kind == "group" and conversation_id.isdigit()
+                else 0
+            )
+            message: list = field(
+                default_factory=lambda: [{"type": "text", "data": {"text": content}}]
+            )
             raw_message: str = ""
             font: int = 0
             sender: Any = field(default_factory=_SyntheticSender)
@@ -385,22 +622,106 @@ class ReplyOrchestrator:
         )
 
     async def shutdown(self) -> None:
-        for task in list(self._tasks):
-            task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._closed = True
+        deferred: BaseException | None = None
+
+        async def _run_step(label: str, action: Callable[[], Any]) -> None:
+            nonlocal deferred
+            deferred_cancel: asyncio.CancelledError | None = None
+            cleanup_task: asyncio.Future[Any] | None = None
+            try:
+                result = action()
+                if inspect.isawaitable(result):
+                    cleanup_task = asyncio.ensure_future(result)
+                    while not cleanup_task.done():
+                        try:
+                            await asyncio.shield(cleanup_task)
+                        except asyncio.CancelledError as exc:
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                deferred_cancel = deferred_cancel or exc
+                                continue
+                            raise
+                    cleanup_task.result()
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    self._logger.error(
+                        f"{label} interrupted during orchestrator shutdown",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    deferred = exc
+                elif isinstance(exc, asyncio.CancelledError):
+                    self._logger.warning(
+                        f"{label} cancelled during orchestrator shutdown"
+                    )
+                    current = asyncio.current_task()
+                    if deferred_cancel is not None:
+                        deferred = deferred or deferred_cancel
+                    elif current is not None and current.cancelling():
+                        deferred = deferred or exc
+                else:
+                    self._logger.warning(
+                        f"{label} failed during orchestrator shutdown",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+            if deferred_cancel is not None:
+                deferred = deferred or deferred_cancel
+
+        async def _cancel_tasks(tasks: set[asyncio.Task[None]]) -> None:
+            pending = list(tasks)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        async def _close_executors() -> None:
+            executors = list(self._tool_executors)
+            if not executors:
+                return
+            fatal: BaseException | None = None
+            results = await asyncio.gather(
+                *(executor.close() for executor in executors),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    self._logger.warning(
+                        "reply tool executor close failed",
+                        error_type=type(result).__name__,
+                        error=str(result),
+                    )
+                    if isinstance(result, (KeyboardInterrupt, SystemExit)):
+                        fatal = result
+            if fatal is not None:
+                raise fatal
+
+        await _run_step("reply pipelines", lambda: _cancel_tasks(self._tasks))
+        await _run_step(
+            "reply completion callbacks", lambda: _cancel_tasks(self._callback_tasks)
+        )
+        await _run_step("reply tool executors", _close_executors)
+        if self._drawing_manager is not None:
+            await _run_step("drawing manager", self._drawing_manager.shutdown)
+        if self._scheduled_task_manager is not None:
+            await _run_step(
+                "scheduled task manager", self._scheduled_task_manager.shutdown
+            )
+        if self._notification_hub is not None:
+            await _run_step("notification hub", self._notification_hub.clear)
+        if self._provider is not None:
+            await _run_step("reply provider", self._provider.close)
+
+        self._tool_executors.clear()
         self._active_pipelines.clear()
+        self._tasks.clear()
+        self._callback_tasks.clear()
         self._last_reply_time.clear()
         self._last_sentence_time.clear()
-        if self._drawing_manager is not None:
-            await self._drawing_manager.shutdown()
-        if self._scheduled_task_manager is not None:
-            await self._scheduled_task_manager.shutdown()
-        if self._notification_hub is not None:
-            self._notification_hub.clear()
-        if self._provider is not None:
-            await self._provider.close()
         self._logger.info("ReplyOrchestrator 已关闭")
+        if deferred is not None:
+            raise deferred
 
     def _resolve_mode(self) -> str:
         if self._config is not None:
@@ -432,7 +753,9 @@ class ReplyOrchestrator:
 
     def _get_private_chat_sentence_cooldown_seconds(self) -> float:
         if self._config is not None:
-            val = getattr(self._config.chat, "private_chat_sentence_cooldown_seconds", None)
+            val = getattr(
+                self._config.chat, "private_chat_sentence_cooldown_seconds", None
+            )
             if isinstance(val, (int, float)):
                 return float(val)
         return 2.0
@@ -480,13 +803,18 @@ class ReplyOrchestrator:
         return 30.0
 
     def _get_model_response_timeout_seconds(self, event: ReplyEvent) -> float:
-        if event.conversation_ref is not None and event.conversation_ref.kind == "group":
+        if (
+            event.conversation_ref is not None
+            and event.conversation_ref.kind == "group"
+        ):
             timeout = self._get_group_agent_silent_timeout_seconds()
             if timeout > 0:
                 return timeout
         return 120.0
 
-    async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
+    async def _send_with_timeout(
+        self, conversation_ref: ConversationRef, payload: object
+    ) -> Any:
         return await self._sender.send_with_timeout(conversation_ref, payload)
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
@@ -501,7 +829,9 @@ class ReplyOrchestrator:
 
     def _get_private_chat_new_message_collect_seconds(self) -> float:
         if self._config is not None:
-            val = getattr(self._config.chat, "private_chat_new_message_collect_seconds", None)
+            val = getattr(
+                self._config.chat, "private_chat_new_message_collect_seconds", None
+            )
             if isinstance(val, (int, float)) and val > 0:
                 return float(val)
         return 5.0
@@ -590,7 +920,9 @@ class ReplyOrchestrator:
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         self._debug_helper.record(stage, event, **extra)
 
-    async def _emit_runtime_event(self, stage: str, event: ReplyEvent, **payload: object) -> RuntimeEnvelope:
+    async def _emit_runtime_event(
+        self, stage: str, event: ReplyEvent, **payload: object
+    ) -> RuntimeEnvelope:
         return await self._debug_helper.emit_runtime_event(stage, event, **payload)
 
     async def _handle_runtime_failure(self, event: ReplyEvent, exc: Exception) -> None:
@@ -607,27 +939,51 @@ class ReplyOrchestrator:
         queue: MessageQueue,
         queue_key: str,
     ) -> None:
-        await self._emit_runtime_event("reply.decide.before", event, queue_key=queue_key)
         started_at = monotonic_seconds()
         try:
-            start_envelope = await self._emit_runtime_event("reply.decide.after", event, queue_key=queue_key)
+            before_decide = await self._emit_runtime_event(
+                "reply.decide.before", event, queue_key=queue_key
+            )
+            if before_decide.consumed:
+                event.error = "reply lifecycle consumed before decision"
+                event.transition(ReplyState.CANCELLED)
+                await self._emit_runtime_event(
+                    "reply.cancel", event, queue_key=queue_key
+                )
+                return
+            start_envelope = await self._emit_runtime_event(
+                "reply.decide.after", event, queue_key=queue_key
+            )
             if start_envelope.consumed:
                 event.error = "reply lifecycle consumed before run"
                 event.transition(ReplyState.CANCELLED)
-                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
+                await self._emit_runtime_event(
+                    "reply.cancel", event, queue_key=queue_key
+                )
                 return
             if event.mode == "agent":
                 await self._run_agent_mode(event, queue, queue_key)
             else:
                 await self._run_common_mode(event, queue, queue_key)
+            if event.state == ReplyState.CANCELLED:
+                self._record_debug("cancelled", event, queue_key=queue_key)
+                await self._emit_runtime_event(
+                    "reply.cancel", event, queue_key=queue_key
+                )
+                return
             # 记录完成时间用于冷却
             if event.conversation_ref is not None:
                 pipeline_key = f"{event.conversation_ref.kind}:{queue_key}"
                 self._last_reply_time[pipeline_key] = monotonic_seconds()
             # 记录上次回复位置
             enable_tracking = (
-                getattr(getattr(self._config, "chat", None), "enable_last_reply_tracking", True)
-                if self._config else True
+                getattr(
+                    getattr(self._config, "chat", None),
+                    "enable_last_reply_tracking",
+                    True,
+                )
+                if self._config
+                else True
             )
             if enable_tracking:
                 queue.set_last_reply_position(
@@ -644,9 +1000,16 @@ class ReplyOrchestrator:
                 reply_preview=event.generated_text[:80] if event.generated_text else "",
             )
             self._record_debug("completed", event, queue_key=queue_key)
-            await self._emit_runtime_event("reply.complete", event, queue_key=queue_key, duration_seconds=elapsed)
+            await self._emit_runtime_event(
+                "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
+            )
         except asyncio.CancelledError:
             event.error = "cancelled"
+            if not event.is_terminal:
+                try:
+                    event.transition(ReplyState.CANCELLED)
+                except RuntimeError:
+                    pass
             self._logger.warning("回复事件被取消", event_id=event.event_id)
             self._record_debug("cancelled", event, queue_key=queue_key)
             await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
@@ -664,7 +1027,9 @@ class ReplyOrchestrator:
                 error=event.error,
             )
             self._record_debug("failed", event, queue_key=queue_key)
-            await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
+            await self._emit_runtime_event(
+                "reply.fail", event, queue_key=queue_key, error=event.error
+            )
             await self._handle_runtime_failure(event, exc)
 
     # ── Common 模式 ──
@@ -679,21 +1044,24 @@ class ReplyOrchestrator:
 
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
         prompt = await self._build_prompt(
-            event, queue, queue_key,
+            event,
+            queue,
+            queue_key,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
-        self._record_debug("base_prompt_built", event, queue_key=queue_key, prompt=prompt)
+        self._record_debug(
+            "base_prompt_built", event, queue_key=queue_key, prompt=prompt
+        )
 
         # pre-reply hooks：可短路跳过 AI 生成
         reply_text = await self._apply_pre_reply_hooks(event)
         if reply_text is None:
             reply_text = await self._generate_reply(event, prompt)
 
-        self._record_debug("reply_generated", event, queue_key=queue_key, reply_text=reply_text)
-
-        # post-reply hooks：可对文本做后处理
-        reply_text = await self._apply_post_reply_hooks(event, reply_text)
+        self._record_debug(
+            "reply_generated", event, queue_key=queue_key, reply_text=reply_text
+        )
 
         await self._send_reply(event, reply_text)
 
@@ -714,9 +1082,11 @@ class ReplyOrchestrator:
             if mgr in ("background_drawing", "scheduled_task"):
                 return
 
-        prob = getattr(
-            self._config.chat, "random_sticker_probability", 0.1
-        ) if self._config else 0.1
+        prob = (
+            getattr(self._config.chat, "random_sticker_probability", 0.1)
+            if self._config
+            else 0.1
+        )
         try:
             prob = float(prob)
         except (TypeError, ValueError):
@@ -735,7 +1105,12 @@ class ReplyOrchestrator:
             return
 
         try:
-            await send_image(self._file_server, self._adapter, event.conversation_ref, entry.file_path)
+            await send_image(
+                self._file_server,
+                self._adapter,
+                event.conversation_ref,
+                entry.file_path,
+            )
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
             self._logger.debug(
@@ -753,11 +1128,137 @@ class ReplyOrchestrator:
 
     # ── Agent 模式 ──
 
+    def _match_markdown_skills(self, queue: MessageQueue, queue_key: str) -> list[Any]:
+        query = self._last_user_text(queue, queue_key)
+        if not query:
+            return []
+        return (
+            self._markdown_skills.match(query, limit=3) if self._markdown_skills else []
+        )
+
+    def _last_user_text(self, queue: MessageQueue, queue_key: str) -> str:
+        from neobot_app.message.queue import QueueEntryType as _QET
+
+        # 只取「最后一条用户消息」的全部文本段作为技能匹配查询文本：
+        # - 从队列末尾逆序遍历，避免把 bot 自己发送的消息（语音/图片等会自推入队列）
+        #   或更早的旧话题文本算进去，导致旧技能被错误激活
+        # - 优先使用 MessageQueue 注入的 bot_account（bootstrap 已按配置传入），
+        #   其次回退到 config.bot.account 解析；两者都为 0/None 时不过滤（保持旧行为）
+        bot_account = _safe_int(getattr(queue, "bot_account", None))
+        if not bot_account and self._config is not None:
+            bot_cfg = getattr(self._config, "bot", None)
+            if bot_cfg is not None:
+                bot_account = _safe_int(getattr(bot_cfg, "account", 0) or 0)
+        for entry in reversed(queue.entries(queue_key)):
+            if entry.kind != _QET.MESSAGE or entry.message is None:
+                continue
+            if bot_account:
+                user_id = getattr(entry.message, "user_id", None)
+                # 防御性解析：user_id 理论经 pydantic 校验为 int 不可达，
+                # 但非数字时按 0 处理（与 bot_account 不等，消息保留），避免崩溃
+                if user_id is not None and _safe_int(user_id) == bot_account:
+                    continue
+            parts: list[str] = []
+            segments = getattr(entry.message, "message", None) or []
+            for segment in segments:
+                if getattr(segment, "type", None) != "text":
+                    continue
+                text = (segment.data or {}).get("text")
+                if text:
+                    parts.append(str(text))
+            return " ".join(parts).strip()
+        return ""
+
+    @staticmethod
+    def _render_skills(skills: list[Any]) -> str:
+        lines = [
+            "当用户请求与以下技能相关的事情时，先调用 skills__read_manifest 读取对应技能说明，"
+            "再按说明逐步操作（如需要，可用 skills__read_resource 读取技能目录内的参考资料）。"
+        ]
+        for skill in skills:
+            skill_id = getattr(skill, "qualified_name", None) or skill.name
+            description = getattr(skill, "description", "") or ""
+            lines.append(
+                f'<skill id="{_xml_escape(str(skill_id))}" description="{_xml_escape(str(description))}" />'
+            )
+        return "\n".join(lines)
+
     async def _run_agent_mode(
         self,
         event: ReplyEvent,
         queue: MessageQueue,
         queue_key: str,
+    ) -> None:
+        is_group = (
+            event.conversation_ref is not None
+            and event.conversation_ref.kind == "group"
+        )
+        silent_timeout = (
+            self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
+        )
+        silent_deadline = (
+            monotonic_seconds() + silent_timeout if silent_timeout > 0 else 0.0
+        )
+
+        def reset_silent_deadline(extra_seconds: float = 0.0) -> None:
+            nonlocal silent_deadline
+            if silent_timeout <= 0:
+                return
+            silent_deadline = (
+                monotonic_seconds() + silent_timeout + max(0.0, extra_seconds)
+            )
+
+        def silent_remaining() -> float | None:
+            if silent_timeout <= 0:
+                return None
+            return silent_deadline - monotonic_seconds()
+
+        def cancel_for_silence(phase: str) -> None:
+            event.error = (
+                f"群聊 agent 管线静默超过 {silent_timeout:.0f} 秒，"
+                f"已强制关闭（阶段：{phase}）"
+            )
+            if not event.is_terminal:
+                event.transition(ReplyState.CANCELLED)
+            self._logger.warning(
+                "群聊 agent 管线静默超时，强制关闭",
+                event_id=event.event_id,
+                queue_key=queue_key,
+                phase=phase,
+                timeout_seconds=silent_timeout,
+            )
+            self._record_debug(
+                "group_agent_silent_timeout",
+                event,
+                queue_key=queue_key,
+                phase=phase,
+                timeout_seconds=silent_timeout,
+            )
+
+        heartbeat_token = SILENT_HEARTBEAT.set(reset_silent_deadline)
+        try:
+            await self._run_agent_mode_inner(
+                event,
+                queue,
+                queue_key,
+                silent_timeout=silent_timeout,
+                reset_silent_deadline=reset_silent_deadline,
+                silent_remaining=silent_remaining,
+                cancel_for_silence=cancel_for_silence,
+            )
+        finally:
+            SILENT_HEARTBEAT.reset(heartbeat_token)
+
+    async def _run_agent_mode_inner(
+        self,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_key: str,
+        *,
+        silent_timeout: float,
+        reset_silent_deadline: Callable[[float], None],
+        silent_remaining: Callable[[], float | None],
+        cancel_for_silence: Callable[[str], None],
     ) -> None:
         from neobot_app.message.numbering import MessageNumbering
         from neobot_app.reply.tools import build_reply_toolset
@@ -773,24 +1274,53 @@ class ReplyOrchestrator:
         # 2. 构建 prompt（带编号）
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
         prompt = await self._build_prompt(
-            event, queue_copy, queue_key, numbering=numbering,
+            event,
+            queue_copy,
+            queue_key,
+            numbering=numbering,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
+        # 注入匹配的 Markdown 技能（插件 SKILL.md）：先完成匹配与 allowed-tools 判定，
+        # 供后续表情包搜索提示引用（限制激活时 search_custom_emoji 已被过滤）
+        matched_skills: list[Any] = []
+        if self._markdown_skills is not None:
+            matched = self._match_markdown_skills(queue_copy, queue_key)
+            if matched:
+                matched_skills = list(matched)
+
+        # allowed-tools 白名单：仅当本轮所有命中技能都声明了非空 allowed-tools 时才限制
+        # 工具集，限制集为这些声明的并集；任一命中技能未声明（或声明为空）则不限制
+        # （传 None，避免未声明技能的工具被其他技能的声明误伤）
+        allowed_tools: set[str] | None = None
+        if matched_skills:
+            declared = [
+                set(getattr(skill, "allowed_tools", None) or ())
+                for skill in matched_skills
+            ]
+            if all(declared):
+                union: set[str] = set()
+                for tools in declared:
+                    union.update(tools)
+                allowed_tools = union
+
         # 注入表情包列表
         if self._emoji_service is not None:
-            emoji_page_size = getattr(
-                getattr(self._config, "chat", None), "emoji_page_size", 50
-            ) if self._config else 50
+            emoji_page_size = (
+                getattr(getattr(self._config, "chat", None), "emoji_page_size", 50)
+                if self._config
+                else 50
+            )
             emoji_text = self._emoji_service.build_prompt_text(limit=emoji_page_size)
             if emoji_text:
                 emoji_total = self._emoji_service.emoji_count
                 search_hint = (
                     f"\n当表情包数量过多（如{emoji_total}个）时可能需要搜索，"
                     "正常情况下直接列表查看即可。可用 search_custom_emoji 按关键词搜索。"
-                    if emoji_total > emoji_page_size else ""
+                    if emoji_total > emoji_page_size and allowed_tools is None
+                    else ""
                 )
                 prompt += (
                     "\n\n<可用的表情包>\n"
@@ -807,7 +1337,25 @@ class ReplyOrchestrator:
         if self._skill_manager is not None:
             skill_instructions = self._skill_manager.get_instructions()
             if skill_instructions:
-                prompt += f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
+                prompt += (
+                    f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
+                )
+
+        # 注入匹配的 Markdown 技能（插件 SKILL.md）
+        if matched_skills:
+            prompt += (
+                "\n\n<可用技能>\n"
+                + self._render_skills(matched_skills)
+                + "\n</可用技能>"
+            )
+
+        # 限制说明（保持与 <可用技能> 相邻追加）
+        if allowed_tools is not None:
+            prompt += (
+                "\n注意：当前激活技能限制了可用工具，仅允许："
+                f"{', '.join(sorted(allowed_tools))}"
+                "（以及始终可用的基础回复工具与技能读取工具）。"
+            )
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
@@ -839,7 +1387,8 @@ class ReplyOrchestrator:
             nonlocal cancelled
             cancelled = True
             event.error = reason or "agent 主动取消回复"
-            event.transition(ReplyState.CANCELLED)
+            if not event.is_terminal:
+                event.transition(ReplyState.CANCELLED)
             self._logger.debug(
                 "Agent主动取消回复",
                 event_id=event.event_id,
@@ -927,12 +1476,16 @@ class ReplyOrchestrator:
             )
 
             # 获取操作者名称（bot 自身）
-            bot_name = getattr(self._config.bot, "nick_name", "Bot") if self._config else "Bot"
+            bot_name = (
+                getattr(self._config.bot, "nick_name", "Bot") if self._config else "Bot"
+            )
 
             reaction = ReactionEntry(
                 target_message_id=msg_id,
                 emoji_id=emoji_id,
-                operator_user_id=getattr(self._config.bot, "account", 0) if self._config else 0,
+                operator_user_id=getattr(self._config.bot, "account", 0)
+                if self._config
+                else 0,
                 operator_name=bot_name,
             )
             # 同时推送到源队列和快照队列
@@ -940,6 +1493,7 @@ class ReplyOrchestrator:
             queue_copy.push_reaction(queue_key, reaction)
 
             from neobot_app.emoji.mapping import lookup_emoji
+
             emoji_info = lookup_emoji(emoji_id)
             emoji_label = emoji_info[0] if emoji_info else f"#{emoji_id}"
             return f"已对消息{message_number}做出表情回应:{emoji_label}"
@@ -982,7 +1536,11 @@ class ReplyOrchestrator:
                         "user_id": user_id,
                     },
                 )
-                return f"已在群{conv_id}中戳一戳 QQ:{user_id}" if self._api_succeeded(result) else f"群戳一戳失败: {result}"
+                return (
+                    f"已在群{conv_id}中戳一戳 QQ:{user_id}"
+                    if self._api_succeeded(result)
+                    else f"群戳一戳失败: {result}"
+                )
             else:
                 result = await self._call_api_with_timeout(
                     "friend_poke",
@@ -990,7 +1548,11 @@ class ReplyOrchestrator:
                         "user_id": user_id,
                     },
                 )
-                return f"已戳一戳好友 QQ:{user_id}" if self._api_succeeded(result) else f"好友戳一戳失败: {result}"
+                return (
+                    f"已戳一戳好友 QQ:{user_id}"
+                    if self._api_succeeded(result)
+                    else f"好友戳一戳失败: {result}"
+                )
 
         async def send_long_reply_handler(
             image_path: str,
@@ -1016,7 +1578,9 @@ class ReplyOrchestrator:
                 )
                 await self._send_with_timeout(conv_ref, caption_segs)
             # 发送图片（不附带引用，图片单独发送）
-            await send_image(self._file_server, self._adapter, conv_ref, Path(image_path))
+            await send_image(
+                self._file_server, self._adapter, conv_ref, Path(image_path)
+            )
             # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
             if markdown.strip():
                 self._push_self_sent_message(
@@ -1052,6 +1616,8 @@ class ReplyOrchestrator:
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
+            skills_registry=self._markdown_skills,
+            allowed_tools=allowed_tools,
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
             ai_reply_check=self._get_ai_reply_check(),
             ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
@@ -1062,6 +1628,7 @@ class ReplyOrchestrator:
             enable_ai_reply_regenerate=self._get_enable_ai_reply_regenerate(),
             logger=self._logger,
         )
+        self._tool_executors.add(reply_toolset.executor)
 
         tools = reply_toolset.definitions()
 
@@ -1082,55 +1649,12 @@ class ReplyOrchestrator:
         rendered_user_ids: set[str] = set()
         if is_group:
             from neobot_app.message.queue import QueueEntryType as _QET
+
             for entry in queue_copy.entries(queue_key):
                 if entry.kind == _QET.MESSAGE and entry.message is not None:
                     uid = getattr(entry.message, "user_id", None)
                     if uid is not None:
                         rendered_user_ids.add(str(uid))
-
-        silent_timeout = self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
-        silent_deadline = (
-            monotonic_seconds() + silent_timeout
-            if silent_timeout > 0
-            else 0.0
-        )
-
-        def reset_silent_deadline(extra_seconds: float = 0.0) -> None:
-            nonlocal silent_deadline
-            if silent_timeout <= 0:
-                return
-            silent_deadline = monotonic_seconds() + silent_timeout + max(0.0, extra_seconds)
-
-        def silent_remaining() -> float | None:
-            if silent_timeout <= 0:
-                return None
-            return silent_deadline - monotonic_seconds()
-
-        def cancel_for_silence(phase: str) -> None:
-            event.error = (
-                f"群聊 agent 管线静默超过 {silent_timeout:.0f} 秒，"
-                f"已强制关闭（阶段：{phase}）"
-            )
-            try:
-                event.transition(ReplyState.CANCELLED)
-            except RuntimeError:
-                pass
-            self._logger.warning(
-                "群聊 agent 管线静默超时，强制关闭",
-                event_id=event.event_id,
-                queue_key=queue_key,
-                phase=phase,
-                timeout_seconds=silent_timeout,
-            )
-            self._record_debug(
-                "group_agent_silent_timeout",
-                event,
-                queue_key=queue_key,
-                phase=phase,
-                timeout_seconds=silent_timeout,
-            )
-
-        _heartbeat_token = SILENT_HEARTBEAT.set(reset_silent_deadline)
 
         # pre-reply hooks：可短路跳过 Agent 循环，直接用返回文本发送
         pre_hook_text = await self._apply_pre_reply_hooks(event)
@@ -1153,7 +1677,9 @@ class ReplyOrchestrator:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
                 pipeline_key = f"{conv_kind}:{conv_id}"
-                notification_text = await self._poll_background_notifications(pipeline_key)
+                notification_text = await self._poll_background_notifications(
+                    pipeline_key
+                )
                 if notification_text:
                     messages.append({"role": "user", "content": notification_text})
                     self._logger.info(
@@ -1195,7 +1721,9 @@ class ReplyOrchestrator:
                         messages = before_model.payload.get("messages", messages)
                         tools = before_model.payload.get("tools", tools)
                         response = await asyncio.wait_for(
-                            self._provider.chat(messages, tools=tools if tools else None),
+                            self._provider.chat(
+                                messages, tools=tools if tools else None
+                            ),
                             timeout=model_timeout,
                         )
                     after_model = await self._emit_runtime_event(
@@ -1257,7 +1785,11 @@ class ReplyOrchestrator:
                 if not tool_calls:
                     if not reply_sent:
                         content = response.get("content", "")
-                        text = content.strip() if isinstance(content, str) else str(content)
+                        text = (
+                            content.strip()
+                            if isinstance(content, str)
+                            else str(content)
+                        )
                         if text:
                             full_check = self._get_ai_reply_check()
                             light_check = self._get_ai_reply_check_lightweight()
@@ -1274,7 +1806,9 @@ class ReplyOrchestrator:
                             if need_check and not ai_check_prompted:
                                 ai_check_prompted = True
                                 check_prompt = self._build_ai_reply_check_prompt(text)
-                                messages.append({"role": "user", "content": check_prompt})
+                                messages.append(
+                                    {"role": "user", "content": check_prompt}
+                                )
                                 self._record_debug(
                                     "ai_reply_check_requested",
                                     event,
@@ -1296,16 +1830,17 @@ class ReplyOrchestrator:
                     break
 
                 for tc in tool_calls:
-                    name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        args = {}
+                    function = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    if not isinstance(function, dict):
+                        function = {}
+                    name = str(function.get("name", ""))
+                    args = _parse_tool_args(function.get("arguments"))
+                    safe_args = _safe_tool_args(args)
                     self._logger.info(
                         f"工具调用: {name}",
                         event_id=event.event_id,
                         tool=name,
-                        args=str(args),
+                        args=safe_args,
                     )
                     self._record_debug(
                         "tool_called",
@@ -1313,7 +1848,7 @@ class ReplyOrchestrator:
                         queue_key=queue_key,
                         iteration=iteration + 1,
                         tool_name=name,
-                        tool_args=args,
+                        tool_args=safe_args,
                     )
                     wait_extra_seconds = 0.0
                     if name == "wait":
@@ -1326,6 +1861,10 @@ class ReplyOrchestrator:
                             max(1, min(parsed_seconds, self._get_max_wait_seconds()))
                         )
                     reset_silent_deadline(wait_extra_seconds)
+                    result: object | None = None
+                    safe_result: str | None = None
+                    tool_error: str | None = None
+                    remaining: float | None = None
                     try:
                         remaining = silent_remaining()
                         tool_timeout = (
@@ -1333,57 +1872,89 @@ class ReplyOrchestrator:
                             if remaining is not None
                             else max(
                                 self._get_model_response_timeout_seconds(event),
-                                wait_extra_seconds + self._get_dependency_timeout_seconds(),
+                                wait_extra_seconds
+                                + self._get_dependency_timeout_seconds(),
                             )
                         )
-                        before_tool = await self._emit_runtime_event(
-                            "tool.call.before",
-                            event,
-                            queue_key=queue_key,
-                            iteration=iteration + 1,
-                            tool_name=name,
-                            tool_args=args,
-                            timeout_seconds=tool_timeout,
-                        )
-                        if before_tool.consumed:
-                            result = before_tool.result
+                        if not reply_toolset.executor.is_tool_authorized(name):
+                            result = reply_toolset.executor.authorization_error(name)
                         else:
-                            name = str(before_tool.payload.get("tool_name", name))
-                            args = before_tool.payload.get("tool_args", args)
-                            result = await asyncio.wait_for(
-                                reply_toolset.executor.execute(name, args),
-                                timeout=tool_timeout,
+                            before_tool = await self._emit_runtime_event(
+                                "tool.call.before",
+                                event,
+                                queue_key=queue_key,
+                                iteration=iteration + 1,
+                                tool_name=name,
+                                # 保持可变原始参数供 before 钩子注入/改写工具调用
+                                tool_args=args,
+                                timeout_seconds=tool_timeout,
                             )
+                            name = str(before_tool.payload.get("tool_name", name))
+                            args = _parse_tool_args(
+                                before_tool.payload.get("tool_args", args)
+                            )
+                            safe_args = _safe_tool_args(args)
+
+                            # A hook may rewrite both tool and arguments. Recompute
+                            # wait allowance and authorization from the final call.
+                            wait_extra_seconds = 0.0
+                            if name == "wait":
+                                raw_seconds = args.get("seconds", 20)
+                                try:
+                                    parsed_seconds = int(raw_seconds)
+                                except (ValueError, TypeError):
+                                    parsed_seconds = 20
+                                wait_extra_seconds = float(
+                                    max(
+                                        1,
+                                        min(
+                                            parsed_seconds,
+                                            self._get_max_wait_seconds(),
+                                        ),
+                                    )
+                                )
+                            reset_silent_deadline(wait_extra_seconds)
+                            remaining = silent_remaining()
+                            tool_timeout = (
+                                max(0.1, remaining)
+                                if remaining is not None
+                                else max(
+                                    self._get_model_response_timeout_seconds(event),
+                                    wait_extra_seconds
+                                    + self._get_dependency_timeout_seconds(),
+                                )
+                            )
+                            if not reply_toolset.executor.is_tool_authorized(name):
+                                result = reply_toolset.executor.authorization_error(
+                                    name
+                                )
+                            elif before_tool.consumed:
+                                result = before_tool.result
+                            else:
+                                result = await asyncio.wait_for(
+                                    reply_toolset.executor.execute(name, args),
+                                    timeout=tool_timeout,
+                                )
                         after_tool = await self._emit_runtime_event(
                             "tool.call.after",
                             event,
                             queue_key=queue_key,
                             iteration=iteration + 1,
                             tool_name=name,
-                            tool_args=args,
+                            # after 事件不再携带原始参数，使用脱敏后的参数文本
+                            tool_args=safe_args,
                             tool_result=result,
                         )
                         result = after_tool.payload.get("tool_result", result)
-                        tool_error = None
+                        safe_result = _redacted_tool_text(result, _MAX_TOOL_LOG_CHARS)
+                        result = _bounded_tool_text(result)
                     except asyncio.TimeoutError:
-                        if remaining is not None:
-                            cancel_for_silence(f"tool:{name}")
-                            return
-                        tool_error = f"TimeoutError: tool {name} timed out"
+                        tool_error = f"工具 {name} 执行超时"
                         self._logger.warning(
                             "agent tool timed out",
                             event_id=event.event_id,
                             queue_key=queue_key,
                             tool=name,
-                        )
-                    except Exception as tool_exc:
-                        result = None
-                        tool_error = f"{type(tool_exc).__name__}: {tool_exc}"
-                        self._logger.warning(
-                            f"工具调用失败: {name}",
-                            event_id=event.event_id,
-                            tool=name,
-                            error=tool_error,
                         )
                         await self._emit_runtime_event(
                             "tool.call.after",
@@ -1391,22 +1962,49 @@ class ReplyOrchestrator:
                             queue_key=queue_key,
                             iteration=iteration + 1,
                             tool_name=name,
-                            tool_args=args,
+                            tool_args=safe_args,
+                            tool_error=tool_error,
+                            timed_out=True,
+                        )
+                        if remaining is not None:
+                            cancel_for_silence(f"tool:{name}")
+                            return
+                    except Exception as tool_exc:
+                        tool_error = f"工具 {name} 执行失败"
+                        self._logger.warning(
+                            f"工具调用失败: {name}",
+                            event_id=event.event_id,
+                            tool=name,
+                            error_type=type(tool_exc).__name__,
+                        )
+                        await self._emit_runtime_event(
+                            "tool.call.after",
+                            event,
+                            queue_key=queue_key,
+                            iteration=iteration + 1,
+                            tool_name=name,
+                            tool_args=safe_args,
                             tool_error=tool_error,
                         )
                     if tool_error is not None:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": f"工具调用失败：{tool_error}",
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": (
+                                    str(tc.get("id", ""))
+                                    if isinstance(tc, dict)
+                                    else ""
+                                ),
+                                "content": f"工具调用失败：{tool_error}",
+                            }
+                        )
                         self._record_debug(
                             "tool_failed",
                             event,
                             queue_key=queue_key,
                             iteration=iteration + 1,
                             tool_name=name,
-                            tool_args=args,
+                            tool_args=safe_args,
                             tool_error=tool_error,
                         )
                     else:
@@ -1414,7 +2012,7 @@ class ReplyOrchestrator:
                             f"工具返回: {name}",
                             event_id=event.event_id,
                             tool=name,
-                            result=str(result),
+                            result=safe_result,
                         )
                         self._record_debug(
                             "tool_returned",
@@ -1422,14 +2020,20 @@ class ReplyOrchestrator:
                             queue_key=queue_key,
                             iteration=iteration + 1,
                             tool_name=name,
-                            tool_args=args,
-                            tool_result=result,
+                            tool_args=safe_args,
+                            tool_result=safe_result,
                         )
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": str(result),
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": (
+                                    str(tc.get("id", ""))
+                                    if isinstance(tc, dict)
+                                    else ""
+                                ),
+                                "content": str(result),
+                            }
+                        )
 
                 if reply_sent or cancelled:
                     break
@@ -1445,10 +2049,12 @@ class ReplyOrchestrator:
                         previous_entries=previous_entries,
                     )
                     if new_text:
-                        messages.append({
-                            "role": "user",
-                            "content": f"[期间新消息]\n{new_text}",
-                        })
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"[期间新消息]\n{new_text}",
+                            }
+                        )
                         self._record_debug(
                             "agent_new_messages_injected",
                             event,
@@ -1458,6 +2064,10 @@ class ReplyOrchestrator:
 
             # 保存编号映射（每轮更新）
             event.message_number_map = numbering.mapping
+
+            # CANCELLED 是终态；不得通过群聊寿命循环把它直接改回 GENERATING。
+            if cancelled or event.state == ReplyState.CANCELLED:
+                break
 
             # 未回复且非取消 → 异常，结束
             if not reply_sent and not cancelled:
@@ -1519,12 +2129,20 @@ class ReplyOrchestrator:
                     # 构建增量提示并注入（仅新消息+新成员档案）
                     if new_entries:
                         resume_content = await self._build_group_chat_resume_content(
-                            new_entries, queue_key, rendered_user_ids, numbering, queue_copy
+                            new_entries,
+                            queue_key,
+                            rendered_user_ids,
+                            numbering,
+                            queue_copy,
                         )
                         # 更新已渲染用户ID集合
                         from neobot_app.message.queue import QueueEntryType as _QET2
+
                         for entry in new_entries:
-                            if entry.kind == _QET2.MESSAGE and entry.message is not None:
+                            if (
+                                entry.kind == _QET2.MESSAGE
+                                and entry.message is not None
+                            ):
                                 uid = getattr(entry.message, "user_id", None)
                                 if uid is not None:
                                     rendered_user_ids.add(str(uid))
@@ -1602,23 +2220,23 @@ class ReplyOrchestrator:
                     previous_entries=[],
                 )
                 if new_text:
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            f"[收到新消息]\n{new_text}\n\n"
-                            "这是私聊对话。如果对方话没有说完或可能还有更多内容，"
-                            "请使用 wait 等待更多消息，不要直接结束对话。"
-                            "如果对话已自然结束或对方明确表示结束，可以不再回复。"
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"[收到新消息]\n{new_text}\n\n"
+                                "这是私聊对话。如果对方话没有说完或可能还有更多内容，"
+                                "请使用 wait 等待更多消息，不要直接结束对话。"
+                                "如果对话已自然结束或对方明确表示结束，可以不再回复。"
+                            ),
+                        }
+                    )
                     self._record_debug(
                         "private_chat_new_messages_injected",
                         event,
                         queue_key=queue_key,
                         injected_text=new_text,
                     )
-
-        SILENT_HEARTBEAT.reset(_heartbeat_token)
 
         if event.state == ReplyState.GENERATING and not event.is_terminal:
             try:
@@ -1664,7 +2282,8 @@ class ReplyOrchestrator:
         snapshot.append_entries(queue_key, new_entries)
 
         return [
-            entry for entry in new_entries
+            entry
+            for entry in new_entries
             if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
         ]
 
@@ -1786,7 +2405,9 @@ class ReplyOrchestrator:
 
             # 轮询后台通知，有通知立即中断挂起
             if notification_text is None:
-                notification_text = await self._poll_background_notifications(pipeline_key)
+                notification_text = await self._poll_background_notifications(
+                    pipeline_key
+                )
 
             if notification_text:
                 self._logger.debug(
@@ -1935,7 +2556,9 @@ class ReplyOrchestrator:
                 if entry.kind != _QET.MESSAGE or entry.message is None:
                     continue
                 if self._evaluate_single_message_willing(
-                    message=entry.message, queue=source, queue_key=queue_key,
+                    message=entry.message,
+                    queue=source,
+                    queue_key=queue_key,
                 ):
                     return True
             return False
@@ -1973,7 +2596,9 @@ class ReplyOrchestrator:
 
             # 轮询后台通知，有通知立即中断挂起
             if notification_text is None:
-                notification_text = await self._poll_background_notifications(pipeline_key)
+                notification_text = await self._poll_background_notifications(
+                    pipeline_key
+                )
 
             if notification_text:
                 self._logger.debug(
@@ -2066,9 +2691,13 @@ class ReplyOrchestrator:
             new_text_lines: list[str] = []
             for entry in new_entries:
                 if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                    text = getattr(entry.message, "raw_message", "") or str(entry.message)
+                    text = getattr(entry.message, "raw_message", "") or str(
+                        entry.message
+                    )
                     sender = getattr(entry.message, "sender", None)
-                    sender_name = getattr(sender, "nickname", None) or getattr(entry.message, "user_id", "?")
+                    sender_name = getattr(sender, "nickname", None) or getattr(
+                        entry.message, "user_id", "?"
+                    )
                     new_text_lines.append(f"{sender_name}: {text}")
             if new_text_lines:
                 new_messages_text = "[收到新消息]\n" + "\n".join(new_text_lines)
@@ -2077,7 +2706,9 @@ class ReplyOrchestrator:
         if new_user_ids and self._prompt_builder is not None:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
-                member_profiles = await profile_service.render_specific_members(new_user_ids)
+                member_profiles = await profile_service.render_specific_members(
+                    new_user_ids
+                )
                 if member_profiles:
                     new_member_text = f"[新出现的群友档案]\n{member_profiles}"
 
@@ -2085,11 +2716,18 @@ class ReplyOrchestrator:
             return ""
 
         from neobot_app.time_context import get_current_time_and_lunar_date
+
         current_time = get_current_time_and_lunar_date()
 
-        template = getattr(
-            getattr(self._config, "chat", None), "group_chat_resume_prompt_template", None
-        ) if self._config else None
+        template = (
+            getattr(
+                getattr(self._config, "chat", None),
+                "group_chat_resume_prompt_template",
+                None,
+            )
+            if self._config
+            else None
+        )
         if not template:
             template = (
                 "{new_messages}\n\n"
@@ -2129,7 +2767,10 @@ class ReplyOrchestrator:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
             image_wait_timeout: float | None = None
-            if event.conversation_ref is not None and event.conversation_ref.kind == "group":
+            if (
+                event.conversation_ref is not None
+                and event.conversation_ref.kind == "group"
+            ):
                 image_wait_timeout = self._get_group_agent_silent_timeout_seconds()
             else:
                 # 私聊不能无限等：视觉模型慢/抖动时会把整条私聊回复卡在 prompt
@@ -2141,7 +2782,9 @@ class ReplyOrchestrator:
                 timeout=image_wait_timeout,
             )
 
-        before_prompt = await self._emit_runtime_event("prompt.build.before", event, queue_key=queue_key)
+        before_prompt = await self._emit_runtime_event(
+            "prompt.build.before", event, queue_key=queue_key
+        )
         if before_prompt.consumed:
             return str(before_prompt.result or before_prompt.payload.get("prompt", ""))
         event.transition(ReplyState.BUILDING_PROMPT)
@@ -2160,7 +2803,9 @@ class ReplyOrchestrator:
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
-                after_prompt = await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
+                after_prompt = await self._emit_runtime_event(
+                    "prompt.build.after", event, queue_key=queue_key, prompt=prompt
+                )
                 return str(after_prompt.payload.get("prompt", prompt))
             except asyncio.TimeoutError:
                 self._logger.warning(
@@ -2182,8 +2827,10 @@ class ReplyOrchestrator:
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
-            await self._emit_runtime_event("prompt.build.after", event, queue_key=queue_key, prompt=prompt)
-            return prompt
+            after_prompt = await self._emit_runtime_event(
+                "prompt.build.after", event, queue_key=queue_key, prompt=prompt
+            )
+            return str(after_prompt.payload.get("prompt", prompt))
         except asyncio.TimeoutError:
             self._logger.warning(
                 "private prompt build timed out",
@@ -2207,8 +2854,11 @@ class ReplyOrchestrator:
         已存在最后回复位置时返回 (message_id, False)。
         """
         enable_tracking = (
-            getattr(getattr(self._config, "chat", None), "enable_last_reply_tracking", True)
-            if self._config else True
+            getattr(
+                getattr(self._config, "chat", None), "enable_last_reply_tracking", True
+            )
+            if self._config
+            else True
         )
         if not enable_tracking:
             return None, False
@@ -2225,8 +2875,17 @@ class ReplyOrchestrator:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": prompt},
         ]
+        if event.background_content:
+            messages.append({"role": "user", "content": event.background_content})
+            self._record_debug(
+                "background_notification_injected_initial",
+                event,
+                notification=event.background_content[:200],
+            )
         timeout = self._get_model_response_timeout_seconds(event)
-        before_model = await self._emit_runtime_event("model.call.before", event, messages=messages, timeout_seconds=timeout)
+        before_model = await self._emit_runtime_event(
+            "model.call.before", event, messages=messages, timeout_seconds=timeout
+        )
         if before_model.consumed and isinstance(before_model.result, dict):
             response = before_model.result
         else:
@@ -2244,7 +2903,9 @@ class ReplyOrchestrator:
                     timeout_seconds=timeout,
                 )
                 raise
-        after_model = await self._emit_runtime_event("model.call.after", event, messages=messages, response=response)
+        after_model = await self._emit_runtime_event(
+            "model.call.after", event, messages=messages, response=response
+        )
         response = after_model.payload.get("response", response)
         content = response.get("content", "")
 
@@ -2289,7 +2950,9 @@ class ReplyOrchestrator:
         for index, message in enumerate(result.messages, start=1):
             lines.append(f"{index}. {message}")
         if result.fallback_used:
-            lines.append(f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。")
+            lines.append(
+                f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。"
+            )
             if self._get_enable_ai_reply_regenerate():
                 lines.append(
                     "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
@@ -2346,7 +3009,9 @@ class ReplyOrchestrator:
         conv_ref: ConversationRef,
         text: str,
     ) -> None:
-        self._sender.push_self_sent_message(queue, queue_copy, queue_key, conv_ref, text)
+        self._sender.push_self_sent_message(
+            queue, queue_copy, queue_key, conv_ref, text
+        )
 
     def _can_use_markdown_image(self, text: str) -> bool:
         return self._sender._can_use_markdown_image(text)
@@ -2361,7 +3026,9 @@ class ReplyOrchestrator:
         segments: list[str] | None = None,
         send_original: bool = False,
     ) -> list[str]:
-        return self._sender._build_reply_messages(text, segments=segments, send_original=send_original)
+        return self._sender._build_reply_messages(
+            text, segments=segments, send_original=send_original
+        )
 
     @staticmethod
     def _build_reply_segments(

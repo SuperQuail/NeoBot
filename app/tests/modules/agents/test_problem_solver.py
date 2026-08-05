@@ -49,6 +49,7 @@ class _FakeSolverAgent:
         self.block = block
         self.release = asyncio.Event()
         self.invocations = 0
+        self.close_calls = 0
 
     async def _invoke_direct(self, state):
         self.invocations += 1
@@ -59,6 +60,9 @@ class _FakeSolverAgent:
         if self.solution:
             _SOLUTION_RESULT.set(self.solution)
         return {"messages": []}
+
+    async def close(self) -> None:
+        self.close_calls += 1
 
 
 def _make_manager(*, agent=None, hub=None, **overrides) -> ProblemSolverManager:
@@ -134,7 +138,8 @@ async def test_shutdown_cancels_running_solve_and_marks_failed() -> None:
 
 async def test_shutdown_is_idempotent() -> None:
     """连续调用 shutdown() 不得抛错，状态保持已清理。"""
-    manager = _make_manager(agent=_FakeSolverAgent())
+    agent = _FakeSolverAgent()
+    manager = _make_manager(agent=agent)
 
     await manager.shutdown()
     assert manager._bg_tasks == set()
@@ -144,6 +149,8 @@ async def test_shutdown_is_idempotent() -> None:
     assert manager._bg_tasks == set()
     assert manager._tasks == {}
     assert manager._notification_queues == {}
+    assert agent.close_calls == 1
+    assert manager._agent is None
 
 
 async def test_run_solve_exception_marks_failed_and_notifies() -> None:

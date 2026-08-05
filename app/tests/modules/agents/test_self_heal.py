@@ -1,4 +1,5 @@
 """BUG-0038 防护测试: self-heal 单飞、每日预算、源码 glob 越界限制。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,8 +25,14 @@ class _FakeHub:
 
 
 class _FakeAgent:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
     async def _invoke_direct(self, state) -> dict:
         return {"messages": []}
+
+    async def close(self) -> None:
+        self.close_calls += 1
 
 
 def _payload(time: str = "t0") -> dict:
@@ -33,7 +40,9 @@ def _payload(time: str = "t0") -> dict:
 
 
 def _make_manager(daily_limit: int = 5, hub_delay: float = 0.0) -> SelfHealManager:
-    cfg = SelfHealAgentConfig(enabled=True, admin_account="10001", daily_limit=daily_limit)
+    cfg = SelfHealAgentConfig(
+        enabled=True, admin_account="10001", daily_limit=daily_limit
+    )
     manager = SelfHealManager(config=cfg, notification_hub=_FakeHub(delay=hub_delay))
     manager.set_agent(_FakeAgent())
     return manager
@@ -117,9 +126,7 @@ def _make_executor(tmp_path: Path) -> SelfHealToolExecutor:
     (app_root / "src" / "manager.py").write_text(
         "def heal():\n    return 'fixed'\n", encoding="utf-8"
     )
-    (pkg_root / "src" / "core.py").write_text(
-        "VERSION = '1.0'\n", encoding="utf-8"
-    )
+    (pkg_root / "src" / "core.py").write_text("VERSION = '1.0'\n", encoding="utf-8")
     return SelfHealToolExecutor(source_roots=[app_root, pkg_root])
 
 
@@ -128,10 +135,12 @@ async def test_search_source_code_rejects_absolute_glob(tmp_path) -> None:
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("sk-lives-here\n", encoding="utf-8")
     executor = _make_executor(tmp_path)
-    out = await executor._execute_search_source_code({
-        "pattern": "sk-",
-        "path_glob": str(outside.resolve()),
-    })
+    out = await executor._execute_search_source_code(
+        {
+            "pattern": "sk-",
+            "path_glob": str(outside.resolve()),
+        }
+    )
     data = json.loads(out)
     assert data["ok"] is False
     assert "越界" in data["error"]
@@ -139,10 +148,12 @@ async def test_search_source_code_rejects_absolute_glob(tmp_path) -> None:
 
 async def test_search_source_code_rejects_parent_traversal(tmp_path) -> None:
     executor = _make_executor(tmp_path)
-    out = await executor._execute_search_source_code({
-        "pattern": "heal",
-        "path_glob": "../**/*.py",
-    })
+    out = await executor._execute_search_source_code(
+        {
+            "pattern": "heal",
+            "path_glob": "../**/*.py",
+        }
+    )
     data = json.loads(out)
     assert data["ok"] is False
     assert "越界" in data["error"]
@@ -153,10 +164,12 @@ async def test_search_source_code_rejects_out_of_root_glob(tmp_path) -> None:
     data_dir.mkdir()
     (data_dir / "secret.env").write_text("KEY=123\n", encoding="utf-8")
     executor = _make_executor(tmp_path)
-    out = await executor._execute_search_source_code({
-        "pattern": "KEY",
-        "path_glob": "data/**/*.env",
-    })
+    out = await executor._execute_search_source_code(
+        {
+            "pattern": "KEY",
+            "path_glob": "data/**/*.env",
+        }
+    )
     data = json.loads(out)
     assert data["ok"] is False
     assert "越界" in data["error"]
@@ -164,10 +177,12 @@ async def test_search_source_code_rejects_out_of_root_glob(tmp_path) -> None:
 
 async def test_search_source_code_accepts_in_root_glob(tmp_path) -> None:
     executor = _make_executor(tmp_path)
-    out = await executor._execute_search_source_code({
-        "pattern": "heal",
-        "path_glob": "app/**/*.py",
-    })
+    out = await executor._execute_search_source_code(
+        {
+            "pattern": "heal",
+            "path_glob": "app/**/*.py",
+        }
+    )
     data = json.loads(out)
     assert data["ok"] is True
     assert data["match_count"] == 1
@@ -262,3 +277,16 @@ async def test_run_heal_completion_clears_running_task() -> None:
 
     await manager._running_task
     assert manager._running_task is None
+
+
+async def test_shutdown_closes_attached_agent_once() -> None:
+    manager = _make_manager()
+    agent = _FakeAgent()
+    manager.set_agent(agent)
+
+    await manager.shutdown()
+    await manager.shutdown()
+
+    assert agent.close_calls == 1
+    assert manager._agent is None
+    assert manager.enabled is False

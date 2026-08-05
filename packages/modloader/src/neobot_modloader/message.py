@@ -24,6 +24,8 @@ class MessageSegment:
             data = {}
         if segment_type == "image":
             return ImageSegment(dict(data))
+        if segment_type == "at":
+            return AtSegment(dict(data))
         return cls(type=segment_type, data=dict(data))
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +62,25 @@ class ImageSegment(MessageSegment):
         return self.data.get("subType", self.data.get("sub_type", self.data.get("subtype")))
 
 
+class AtSegment(MessageSegment):
+    def __init__(self, data: Mapping[str, Any] | None = None) -> None:
+        super().__init__(type="at", data=dict(data or {}))
+
+    @property
+    def qq(self) -> str | None:
+        value = self.data.get("qq")
+        return str(value) if value is not None else None
+
+    @property
+    def name(self) -> str | None:
+        value = self.data.get("name")
+        return str(value) if value is not None else None
+
+    @property
+    def is_all(self) -> bool:
+        return self.qq == "all"
+
+
 class Message:
     def __init__(self, raw_event: Mapping[str, Any] | None = None) -> None:
         self.raw_event: dict[str, Any] = dict(raw_event or {})
@@ -81,6 +102,18 @@ class Message:
     @property
     def has_image(self) -> bool:
         return self.first_image is not None
+
+    @property
+    def ats(self) -> list[AtSegment]:
+        return [segment for segment in self.segments if isinstance(segment, AtSegment)]
+
+    @property
+    def first_at(self) -> AtSegment | None:
+        return self.ats[0] if self.ats else None
+
+    @property
+    def has_at(self) -> bool:
+        return self.first_at is not None
 
     def of_type(self, segment_type: str) -> list[MessageSegment]:
         return [segment for segment in self.segments if segment.type == segment_type]
@@ -111,6 +144,10 @@ class MessageChain:
         self._segments.append(image(url=url, file=file, **data))
         return self
 
+    def at(self, qq: str | None = None, name: str | None = None, **data: Any) -> MessageChain:
+        self._segments.append(at(qq=qq, name=name, **data))
+        return self
+
     def to_list(self) -> list[dict[str, Any]]:
         return [segment.to_dict() for segment in self._segments]
 
@@ -126,6 +163,15 @@ def image(*, url: str | None = None, file: str | None = None, **data: Any) -> Im
     if file is not None:
         payload["file"] = file
     return ImageSegment(payload)
+
+
+def at(qq: str | None = None, name: str | None = None, **data: Any) -> AtSegment:
+    payload: dict[str, Any] = dict(data)
+    if qq is not None:
+        payload["qq"] = str(qq)
+    if name is not None:
+        payload["name"] = name
+    return AtSegment(payload)
 
 
 def normalize_message_payload(payload: Any) -> str | list[dict[str, Any]]:
