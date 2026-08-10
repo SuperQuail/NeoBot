@@ -217,6 +217,66 @@ def build_image_parse_service(
     )
 
 
+def _resolve_under_data_dir(raw: str, data_dir: Path) -> Path:
+    """解析相对 data 目录的路径;容忍已包含 data 根的 './data/xxx' 写法。"""
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] in ("data", "Data", "DATA"):
+        path = Path(*parts[1:])
+    return data_dir / path
+
+
+def resolve_vision_detect_paths(*, config: Any, data_dir: Path) -> tuple[Path, Path]:
+    """解析视觉检测配置中的相对路径(data 目录下的相对路径)。"""
+    cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
+    models_dir = Path(cfg.models_dir) if cfg else Path("./vision_detect/models")
+    index_file = Path(cfg.index_file) if cfg else Path("./vision_detect/models.toml")
+    return (
+        _resolve_under_data_dir(str(models_dir), data_dir),
+        _resolve_under_data_dir(str(index_file), data_dir),
+    )
+
+
+def build_vision_detect_service(
+    *,
+    config: Any,
+    data_dir: Path,
+    logger_factory: Any,
+) -> Any:
+    """创建本地视觉检测服务(ONNX/YOLO)。
+
+    onnxruntime 未安装/配置禁用时返回 None;模型目录为空时不注册工具,
+    bot 可正常运行,放入模型后执行 `neobot init` 或重启即可启用。
+    """
+    cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
+    if cfg is None or not cfg.enabled:
+        return None
+    from neobot_app.vision_detect.service import VisionDetectService
+
+    logger = logger_factory.get_logger("app.vision_detect")
+    models_dir, index_file = resolve_vision_detect_paths(config=config, data_dir=data_dir)
+    service = VisionDetectService(
+        models_dir,
+        index_file,
+        default_conf=cfg.default_conf,
+        default_iou=cfg.default_iou,
+        imgsz=cfg.imgsz,
+        auto_refresh=cfg.auto_refresh,
+        logger=logger,
+    )
+    if not service.onnx_available:
+        logger.warning("onnxruntime 未安装,本地视觉检测服务已禁用(运行 `neobot init` 可检查)")
+        return service
+    try:
+        report = service.refresh()
+        logger.info(f"视觉检测模型库: {report.summary()}")
+    except Exception as exc:
+        logger.warning(f"视觉检测模型库初始化扫描失败: {exc}")
+    return service
+
+
 def build_archive_summary_service(
     *,
     config: BotConfigSchema,

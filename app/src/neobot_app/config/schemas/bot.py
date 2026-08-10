@@ -1066,6 +1066,46 @@ class AgentSandbox:
 
 
 @dataclass
+class VisionDetect:
+    """本地视觉检测(ONNX/YOLO)配置。
+
+    模型文件放入 models_dir 目录(每个 .onnx 一个模型),程序自动维护
+    index_file 索引骨架(models.toml),用户只需在索引中填写每个模型的
+    id/name/description,AI 即可依据 description 主动选择模型。
+    运行 `neobot init` 可随时重新扫描模型目录。
+    """
+
+    enabled: bool = field(
+        default=True,
+        metadata={"description": "是否启用本地视觉检测服务；关闭后 skill 不注册"},
+    )
+    models_dir: str = field(
+        default="./data/vision_detect/models",
+        metadata={"description": "ONNX 模型文件目录（相对 data 目录）"},
+    )
+    index_file: str = field(
+        default="./data/vision_detect/models.toml",
+        metadata={"description": "模型索引文件（相对 data 目录，程序自动生成骨架）"},
+    )
+    default_conf: float = field(
+        default=0.35,
+        metadata={"description": "默认置信度阈值（0.0-1.0），可被单模型 conf 覆盖"},
+    )
+    default_iou: float = field(
+        default=0.45,
+        metadata={"description": "默认 NMS IoU 阈值"},
+    )
+    imgsz: int = field(
+        default=0,
+        metadata={"description": "默认输入尺寸（0 = 从模型自动推断），可被单模型 imgsz 覆盖"},
+    )
+    auto_refresh: bool = field(
+        default=True,
+        metadata={"description": "每次调用前检查模型目录/索引变化并热重载"},
+    )
+
+
+@dataclass
 class AgentSkill:
     """Skill 系统全局配置。"""
 
@@ -1166,6 +1206,7 @@ class Agent:
     skill: AgentSkill = field(default_factory=AgentSkill)
     file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
     self_healing: AgentSelfHeal = field(default_factory=AgentSelfHeal)
+    vision_detect: VisionDetect = field(default_factory=VisionDetect)
 
 
 @dataclass

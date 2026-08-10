@@ -379,6 +379,63 @@ def cmd_sandbox_clean(args: argparse.Namespace) -> None:
         sys.exit(130)
 
 
+def cmd_init(args: argparse.Namespace) -> None:
+    """重新扫描并建立所有可再生的资源索引(不启动 Bot)。"""
+    from neobot_app.bootstrap._config import build_config
+    from neobot_app.bootstrap._services import resolve_vision_detect_paths
+    from neobot_app.core import DATA_DIR
+    from neobot_app.indexer import IndexRunner, IndexTask
+    from neobot_app.vision_detect.service import VisionDetectService
+
+    print("neobot init — 扫描并建立资源索引…")
+    print()
+    try:
+        config = build_config()
+    except ConfigLoadError as exc:
+        print(f"配置加载失败：\n{exc}")
+        sys.exit(1)
+
+    runner = IndexRunner()
+    vision_cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
+    if vision_cfg is not None and vision_cfg.enabled:
+        models_dir, index_file = resolve_vision_detect_paths(config=config, data_dir=DATA_DIR)
+        service = VisionDetectService(
+            models_dir,
+            index_file,
+            default_conf=vision_cfg.default_conf,
+            default_iou=vision_cfg.default_iou,
+            imgsz=vision_cfg.imgsz,
+            auto_refresh=vision_cfg.auto_refresh,
+        )
+        if not service.onnx_available:
+            print("警告: onnxruntime 未安装,本地视觉检测不可用")
+            print("      安装依赖后重试: uv add --package neobot-app onnxruntime")
+        runner.register(
+            IndexTask(
+                name="vision_detect",
+                description="扫描 ONNX 模型目录并维护 models.toml 索引",
+                scan=service.refresh,
+            )
+        )
+    else:
+        print("视觉检测配置未启用 (agent.vision_detect.enabled = false)，跳过")
+        print()
+
+    print(runner.describe())
+    print()
+    reports = runner.run_sync(force=args.force)
+    for entry in reports:
+        if entry.get("skipped"):
+            print(f"[{entry['task']}] 跳过(异步任务,请通过 bot 启动时执行)")
+            continue
+        report = entry["report"]
+        print(f"── {entry['task']}: {entry['description']} ──")
+        summary = getattr(report, "summary", None)
+        print(summary() if callable(summary) else str(report))
+        print()
+    print("完成。编辑模型索引(models.toml)填写模型描述后,重启 bot 即可生效。")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
     parser.add_argument(
@@ -421,6 +478,17 @@ def main() -> None:
         help="首选端口 (默认 9981；9891/9981 都会放行)",
     )
 
+    # `neobot init [--force]`
+    init_parser = sub.add_parser(
+        "init", help="重新扫描并建立资源索引（模型库等），不启动 Bot",
+        description="扫描模型目录等可再生资源并重建索引（如 data/vision_detect/models.toml），"
+                    "通常在放入新模型后执行；启动 Bot 时也会自动执行。",
+    )
+    init_parser.add_argument(
+        "--force", action="store_true",
+        help="强制重建索引骨架（不会覆盖已填写的模型描述）",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-browser":
@@ -431,6 +499,8 @@ def main() -> None:
         cmd_sandbox_clean(args)
     elif args.command == "firewall-open":
         cmd_firewall_open(args)
+    elif args.command == "init":
+        cmd_init(args)
     else:
         # 无子命令 → 启动机器人
         cmd_run(args)

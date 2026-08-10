@@ -36,6 +36,7 @@ from neobot_app.bootstrap._services import (
     build_memory_services,
     build_message_queues,
     build_tts_service,
+    build_vision_detect_service,
 )
 from neobot_app.bootstrap._runtime import (
     build_balance_checker,
@@ -321,6 +322,23 @@ def create_application() -> NeoBotApplication:
         notification_hub=notification_hub,
         logger_factory=logger_factory,
     )
+    # ── 本地视觉检测(ONNX/YOLO):启动时扫描模型目录并维护 models.toml 索引 ──
+    vision_detect_service = build_vision_detect_service(
+        config=config,
+        data_dir=DATA_DIR,
+        logger_factory=logger_factory,
+    )
+    if vision_detect_service is not None:
+        from neobot_app.indexer import build_init_runner
+
+        init_runner = build_init_runner(vision_detect_service=vision_detect_service)
+        for task_report in init_runner.run_sync(force=False):
+            report = task_report["report"]
+            summary = getattr(report, "summary", lambda: str(report))
+            if report.added or report.missing or report.errors or report.unconfigured:
+                logger_factory.get_logger("app.init").warning(
+                    f"[init] {task_report['name']}: {summary()}"
+                )
     skill_manager = build_skill_manager(
         config=config,
         adapter=adapter,
@@ -349,6 +367,7 @@ def create_application() -> NeoBotApplication:
         data_dir=DATA_DIR,
         balance_checker=balance_checker,
         agent_registry=agent_registry,
+        vision_detect_service=vision_detect_service,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 

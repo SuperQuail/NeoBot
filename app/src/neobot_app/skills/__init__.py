@@ -35,6 +35,7 @@ from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
 from neobot_app.skills.balance_skill import BalanceSkill
 from neobot_app.skills.agent_delegation import AgentDelegationSkill
+from neobot_app.skills.vision_detect_skill import VisionDetectSkill
 
 
 def build_all_skills(
@@ -67,6 +68,7 @@ def build_all_skills(
     temp_cleaner: Any = None,
     balance_checker: Any = None,
     agent_registry: Any = None,
+    vision_detect_service: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -83,6 +85,17 @@ def build_all_skills(
 
     if agent_registry is not None and "agents" not in disabled:
         skills_to_register.append(AgentDelegationSkill(agent_registry))
+
+    # ── 本地视觉检测(ONNX/YOLO,服务不可用时无工具) ──
+    if "vision_detect" not in disabled and vision_detect_service is not None:
+        skills_to_register.append(
+            VisionDetectSkill(
+                service=vision_detect_service,
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+            )
+        )
 
     if "archive_crud" not in disabled:
         skills_to_register.append(
