@@ -165,7 +165,18 @@ def build_all_skills(
         skills_to_register.append(StickerSkill(emoji_service=emoji_service, file_server=file_server))
 
     if "drawing" not in disabled:
-        skills_to_register.append(DrawingSkill(drawing_manager=drawing_manager))
+        skills_to_register.append(
+            DrawingSkill(
+                drawing_manager=drawing_manager,
+                image_service=creator_image_service,
+                vision_provider=vision_provider,
+                enable_image_inspect=(
+                    bool(config.agent.creator.image_inspect_enabled)
+                    if config and hasattr(config.agent, "creator")
+                    else False
+                ),
+            )
+        )
 
     if "gallery" not in disabled:
         skills_to_register.append(

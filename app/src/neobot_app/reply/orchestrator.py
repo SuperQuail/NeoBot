@@ -1306,20 +1306,22 @@ class ReplyOrchestrator:
                     union.update(tools)
                 allowed_tools = union
 
-        # 注入表情包列表
+        # 注入表情包列表(只注入一页的五分之一,避免占用过多上下文)
         if self._emoji_service is not None:
             emoji_page_size = (
                 getattr(getattr(self._config, "chat", None), "emoji_page_size", 50)
                 if self._config
                 else 50
             )
-            emoji_text = self._emoji_service.build_prompt_text(limit=emoji_page_size)
+            inject_limit = max(1, emoji_page_size // 5)
+            emoji_text = self._emoji_service.build_prompt_text(limit=inject_limit)
             if emoji_text:
                 emoji_total = self._emoji_service.emoji_count
                 search_hint = (
-                    f"\n当前共{emoji_total}个表情包，列表仅显示前{emoji_page_size}个；"
-                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索。"
-                    if emoji_total > emoji_page_size and allowed_tools is None
+                    f"\n当前共{emoji_total}个表情包，列表仅显示前{inject_limit}个；"
+                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索，"
+                    "或用 emoji_list 翻页查看全部。"
+                    if emoji_total > inject_limit and allowed_tools is None
                     else ""
                 )
                 prompt += (
@@ -1333,12 +1335,16 @@ class ReplyOrchestrator:
                     "</可用的表情包>"
                 )
 
-        # 注入 Skill 操作说明
+        # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
             skill_instructions = self._skill_manager.get_instructions()
             if skill_instructions:
                 prompt += (
-                    f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
+                    "\n\n<Skill 操作说明>\n"
+                    f"{skill_instructions}\n"
+                    "需要某个技能的具体操作说明、参数细节或注意事项时,"
+                    "调用 skills__view_instructions 查看完整内容。"
+                    "\n</Skill 操作说明>"
                 )
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）

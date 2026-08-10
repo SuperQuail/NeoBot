@@ -157,11 +157,9 @@ class EmojiService:
         if total > limit:
             header += f"，当前显示第{offset + 1}-{min(offset + limit, total)}个"
             if offset > 0:
-                prev_page = max(1, offset // limit)
-                header += f"，往前翻页: emoji_list(page={prev_page})"
+                header += f"，往前翻页: emoji_list(offset={max(0, offset - limit)})"
             if offset + limit < total:
-                next_page = offset // limit + 2
-                header += f"，往后翻页: emoji_list(page={next_page})"
+                header += f"，往后翻页: emoji_list(offset={offset + limit})"
         return header + "\n" + "\n".join(lines)
 
     async def send_sticker(

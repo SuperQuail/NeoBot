@@ -848,6 +848,13 @@ class ImageCreationConfig:
     gallery: GalleryConfig = field(default_factory=GalleryConfig)
     emoji: CreatorEmojiConfig = field(default_factory=CreatorEmojiConfig)
     drawing: BackgroundDrawConfig = field(default_factory=BackgroundDrawConfig)
+    image_inspect_enabled: bool = field(
+        default=False,
+        metadata={
+            "description": "是否启用生图检查工具 inspect_image（需视觉模型支持）；"
+            "关闭时工具不注册不注入提示词，开启后动态注入"
+        },
+    )
 
 
 @dataclass

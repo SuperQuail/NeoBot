@@ -240,13 +240,46 @@ class SkillManager:
         return registration.tokens.get(prefixed_name) if registration else None
 
     def get_instructions(self) -> str:
-        """聚合所有 Skill 的操作说明。"""
-        parts: list[str] = []
+        """聚合所有 Skill 的一行摘要(默认注入提示词,节省 token)。
+
+        完整操作说明不再全量注入,由 `skills__view_instructions` 按需查看
+        (与 Markdown 技能「默认元数据 + 按需读取正文」的模式一致)。
+        """
+        lines: list[str] = []
         for registration in self._skills.values():
-            instr = registration.instructions
-            if instr:
-                parts.append(f"## {registration.name}\n{instr}")
-        return "\n\n".join(parts)
+            summary = self._instructions_summary(registration)
+            if summary:
+                lines.append(summary)
+        return "\n".join(lines)
+
+    def get_skill_instructions(self, name: str) -> str:
+        """返回单个 Skill 的完整操作说明(供 skills__view_instructions 使用)。"""
+        registration = self._skills.get(name)
+        if registration is None:
+            return f"技能不存在: {name}"
+        instructions = (registration.instructions or "").strip()
+        if not instructions:
+            tool_names = [
+                tool.get("function", {}).get("name", "")
+                for tool in registration.tools
+            ]
+            return (
+                f"{name} 没有额外的操作说明。\n"
+                f"可用工具: {', '.join(tool_names) or '(无)'}"
+            )
+        return f"## {name}\n{instructions}"
+
+    @staticmethod
+    def _instructions_summary(registration: _RegisteredSkill) -> str:
+        """一行摘要:description 优先,否则取 instructions 首行。"""
+        description = (registration.description or "").strip()
+        if description:
+            return f"- {registration.name}: {description}"
+        instructions = (registration.instructions or "").strip()
+        if instructions:
+            first_line = instructions.splitlines()[0].strip()
+            return f"- {registration.name}: {first_line}"
+        return ""
 
     async def execute(
         self,

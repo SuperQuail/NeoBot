@@ -48,6 +48,7 @@ _SKILL_GUARD_BASE_TOOLS = frozenset(
         "speak",
         "skills__read_manifest",
         "skills__read_resource",
+        "skills__view_instructions",
         "agents__list",
         "agents__delegate",
         "check_background_tasks",
@@ -306,6 +307,27 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
+        if self._skill_manager is not None:
+            skill_names = getattr(self._skill_manager, "skill_names", None) or []
+            if skill_names:
+                tools.append(
+                    _tool_def(
+                        "skills__view_instructions",
+                        "查看某个内置技能的完整操作说明（默认只显示一行摘要）。"
+                        "需要深入了解某技能的使用规则、参数细节或注意事项时调用本工具；"
+                        "技能名从提示词的 <Skill 操作说明> 摘要列表中选择。",
+                        {
+                            "properties": {
+                                "skill": {
+                                    "type": "string",
+                                    "enum": skill_names,
+                                    "description": "技能名（如 vision_detect、image_parse）。",
+                                },
+                            },
+                            "required": ["skill"],
+                        },
+                    )
+                )
         if self._cancel is not None:
             tools.append(
                 _tool_def(
@@ -743,6 +765,9 @@ class ReplyToolExecutor(ToolExecutor):
             return self._read_skill_manifest(args)
         if name == "skills__read_resource":
             return self._read_skill_resource(args)
+        # 内置技能操作说明查看（按需读取,默认只注入一行摘要）
+        if name == "skills__view_instructions":
+            return self._view_skill_instructions(args)
         # Skill 系统路由（优先于 ToolError）
         if self._skill_manager is not None and "__" in name:
             token = self._skill_tokens.get(name)
@@ -1745,6 +1770,15 @@ class ReplyToolExecutor(ToolExecutor):
         except ToolError as exc:
             return f"Error: {exc}"
         return skill.content
+
+    def _view_skill_instructions(self, args: dict) -> str:
+        """返回指定内置技能的完整操作说明(按需查看)。"""
+        if self._skill_manager is None:
+            return "Error: SkillManager 不可用"
+        skill_name = str(args.get("skill") or "").strip()
+        if not skill_name:
+            return "Error: 缺少 skill 参数"
+        return self._skill_manager.get_skill_instructions(skill_name)
 
     @staticmethod
     def _inspect_skill_resource_path(
