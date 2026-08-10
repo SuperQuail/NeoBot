@@ -1089,15 +1089,15 @@ class VisionDetect:
     )
     default_conf: float = field(
         default=0.35,
-        metadata={"description": "默认置信度阈值（0.0-1.0），可被单模型 conf 覆盖"},
+        metadata={"description": "默认置信度阈值（0.0-1.0），仅作为 models.toml [library] 段首次生成的初始值；运行期以 models.toml 中的配置为准"},
     )
     default_iou: float = field(
         default=0.45,
-        metadata={"description": "默认 NMS IoU 阈值"},
+        metadata={"description": "默认 NMS IoU 阈值，仅作为 models.toml [library] 段首次生成的初始值"},
     )
     imgsz: int = field(
         default=0,
-        metadata={"description": "默认输入尺寸（0 = 从模型自动推断），可被单模型 imgsz 覆盖"},
+        metadata={"description": "默认输入尺寸（0 = 从模型自动推断），仅作为 models.toml [library] 段首次生成的初始值"},
     )
     auto_refresh: bool = field(
         default=True,

@@ -379,6 +379,17 @@ def cmd_sandbox_clean(args: argparse.Namespace) -> None:
         sys.exit(130)
 
 
+def _init_scanned_zero(reports: list) -> bool:
+    """init 输出中是否没有任何模型被扫描到(用于提示放模型)。"""
+    for entry in reports:
+        report = entry.get("report")
+        if report is None:
+            continue
+        if getattr(report, "scanned", 0) > 0:
+            return False
+    return True
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """重新扫描并建立所有可再生的资源索引(不启动 Bot)。"""
     from neobot_app.bootstrap._config import build_config
@@ -389,15 +400,20 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print("neobot init — 扫描并建立资源索引…")
     print()
+    config = None
     try:
         config = build_config()
     except ConfigLoadError as exc:
         print(f"配置加载失败：\n{exc}")
-        sys.exit(1)
+        print("已降级: 使用默认路径重建模型索引(视觉检测配置未读取)。")
+        print()
 
     runner = IndexRunner()
-    vision_cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
-    if vision_cfg is not None and vision_cfg.enabled:
+    vision_cfg = getattr(getattr(config, "agent", None), "vision_detect", None) if config is not None else None
+    if vision_cfg is not None and not vision_cfg.enabled:
+        print("视觉检测配置未启用 (agent.vision_detect.enabled = false)，跳过")
+        print()
+    elif config is not None:
         models_dir, index_file = resolve_vision_detect_paths(config=config, data_dir=DATA_DIR)
         service = VisionDetectService(
             models_dir,
@@ -418,8 +434,30 @@ def cmd_init(args: argparse.Namespace) -> None:
             )
         )
     else:
-        print("视觉检测配置未启用 (agent.vision_detect.enabled = false)，跳过")
-        print()
+        # 配置加载失败:降级为默认路径,仅重建模型索引
+        from neobot_app.config.schemas.bot import VisionDetect as _DefaultVisionDetect
+
+        defaults = _DefaultVisionDetect()
+        models_dir = DATA_DIR / "vision_detect" / "models"
+        index_file = DATA_DIR / "vision_detect" / "models.toml"
+        service = VisionDetectService(
+            models_dir,
+            index_file,
+            default_conf=defaults.default_conf,
+            default_iou=defaults.default_iou,
+            imgsz=defaults.imgsz,
+            auto_refresh=defaults.auto_refresh,
+        )
+        if not service.onnx_available:
+            print("警告: onnxruntime 未安装,本地视觉检测不可用")
+            print("      安装依赖后重试: uv add --package neobot-app onnxruntime")
+        runner.register(
+            IndexTask(
+                name="vision_detect",
+                description="扫描 ONNX 模型目录并维护 models.toml 索引(默认路径)",
+                scan=service.refresh,
+            )
+        )
 
     print(runner.describe())
     print()
@@ -428,12 +466,19 @@ def cmd_init(args: argparse.Namespace) -> None:
         if entry.get("skipped"):
             print(f"[{entry['task']}] 跳过(异步任务,请通过 bot 启动时执行)")
             continue
+        if entry.get("error"):
+            print(f"[{entry['task']}] 扫描失败: {entry['error']}")
+            continue
         report = entry["report"]
         print(f"── {entry['task']}: {entry['description']} ──")
         summary = getattr(report, "summary", None)
         print(summary() if callable(summary) else str(report))
         print()
-    print("完成。编辑模型索引(models.toml)填写模型描述后,重启 bot 即可生效。")
+    if _init_scanned_zero(reports):
+        print(f"未发现 .onnx 模型文件: 请将模型放入 {models_dir} 后重新运行 neobot init")
+    else:
+        print("完成。编辑模型索引(models.toml)填写模型描述后即可生效"
+              "(无需重启;若关闭了自动刷新 auto_refresh 则需重启)。")
 
 
 def main() -> None:

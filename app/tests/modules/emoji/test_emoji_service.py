@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from io import BytesIO
 
 import pytest
@@ -151,6 +152,62 @@ async def test_send_sticker_validates_inputs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_external_file_appears_immediately_in_list(tmp_path):
+    """外部直接放入 emoji 目录的文件(不经过 add_image_bytes)应即时出现在列表中。"""
+    engine, setup = _engine_factory(tmp_path)
+    await setup()
+    uow_factory = make_uow_factory(engine)
+    service = EmojiService(data_dir=tmp_path, uow_factory=uow_factory)
+    await service.start()
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir(exist_ok=True)
+        (emoji_dir / "external.png").write_bytes(_png_bytes("green"))
+        (emoji_dir / "external.txt").write_text("外部放入", encoding="utf-8")
+
+        assert service.emoji_count == 1
+        entries = service.list_entries()
+        assert len(entries) == 1
+        number, entry = entries[0]
+        assert entry.file_name == "external.png"
+        assert entry.analysis_text == "外部放入"
+        assert f"[{number}]" in service.build_prompt_text()
+
+        # 等待后台全量刷新完成,确认编号稳定、数据被修正
+        if service._disk_refresh_task is not None:
+            await asyncio.wait_for(asyncio.shield(service._disk_refresh_task), timeout=5.0)
+        entries_after = service.list_entries()
+        assert entries_after[0][0] == number
+    finally:
+        await service.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_external_file_without_sidecar_gets_placeholder(tmp_path):
+    """外部文件无 txt 侧文件时,列表立即显示 [待解析] 占位。"""
+    engine, setup = _engine_factory(tmp_path)
+    await setup()
+    uow_factory = make_uow_factory(engine)
+    service = EmojiService(data_dir=tmp_path, uow_factory=uow_factory)
+    await service.start()
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir(exist_ok=True)
+        (emoji_dir / "raw.png").write_bytes(_png_bytes("blue"))
+
+        entries = service.list_entries()
+        assert len(entries) == 1
+        assert entries[0][1].analysis_text == "[待解析]"
+
+        if service._disk_refresh_task is not None:
+            await asyncio.wait_for(asyncio.shield(service._disk_refresh_task), timeout=5.0)
+    finally:
+        await service.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_send_sticker_without_send_dependencies_raises(tmp_path):
     engine, setup = _engine_factory(tmp_path)
     await setup()
@@ -285,6 +342,8 @@ async def test_send_sticker_missing_file_raises_file_not_found(tmp_path):
             await service.send_sticker(imported.number, group_id="123")
         assert adapter.sent == []
     finally:
+        # 文件删除会触发外部变化检测的后台刷新,stop() 等待其收尾
+        await service.stop()
         await engine.dispose()
 
 

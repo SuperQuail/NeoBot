@@ -46,12 +46,24 @@ class IndexRunner:
         return list(self._tasks)
 
     async def run(self, *, force: bool = False) -> list[Any]:
-        """顺序执行所有已注册任务(幂等)。"""
+        """顺序执行所有已注册任务(幂等);单个任务失败不影响其他任务。"""
         reports: list[Any] = []
         for task in self._tasks.values():
-            result = task.scan(force)
+            try:
+                result = task.scan(force)
+            except Exception as exc:
+                reports.append(
+                    {"task": task.name, "description": task.description, "error": str(exc)}
+                )
+                continue
             if asyncio.iscoroutine(result):
-                result = await result
+                try:
+                    result = await result
+                except Exception as exc:
+                    reports.append(
+                        {"task": task.name, "description": task.description, "error": str(exc)}
+                    )
+                    continue
             reports.append({"task": task.name, "description": task.description, "report": result})
         return reports
 
@@ -59,7 +71,13 @@ class IndexRunner:
         """同步执行所有任务;异步任务会被跳过并计入 skipped。"""
         reports: list[Any] = []
         for task in self._tasks.values():
-            result = task.scan(force)
+            try:
+                result = task.scan(force)
+            except Exception as exc:
+                reports.append(
+                    {"task": task.name, "description": task.description, "error": str(exc)}
+                )
+                continue
             if asyncio.iscoroutine(result):
                 result.close()
                 reports.append(

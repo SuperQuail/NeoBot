@@ -179,7 +179,14 @@ def build_all_skills(
         )
 
     if "emoji_management" not in disabled:
-        skills_to_register.append(EmojiManagementSkill(emoji_service=emoji_service))
+        skills_to_register.append(
+            EmojiManagementSkill(
+                emoji_service=emoji_service,
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+            )
+        )
 
     if "image_pool" not in disabled and image_pool is not None:
         skills_to_register.append(

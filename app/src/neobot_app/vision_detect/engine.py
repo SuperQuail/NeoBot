@@ -18,14 +18,20 @@ from typing import Any, Sequence
 import numpy as np
 from PIL import Image
 
-__all__ = ["OnnxDetector", "letterbox", "nms", "resolve_names", "describe_detections"]
+__all__ = ["OnnxDetector", "letterbox", "nms", "resolve_names"]
 
 
 def letterbox(img: np.ndarray, new_shape: tuple[int, int] = (640, 640), color: tuple[int, int, int] = (114, 114, 114)):
-    """等比缩放 + 灰边填充到 new_shape,返回 (img, ratio, (dw, dh))。"""
+    """等比缩放 + 灰边填充到 new_shape,返回 (img, ratio, (dw, dh))。
+
+    极端纵横比(如 1:1000)下缩放后的短边可能为 0,钳制为 1 避免崩溃。
+    """
     shape = img.shape[:2]
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    new_unpad = (
+        max(1, int(round(shape[1] * r))),
+        max(1, int(round(shape[0] * r))),
+    )
     dw = (new_shape[1] - new_unpad[0]) / 2
     dh = (new_shape[0] - new_unpad[1]) / 2
     img = np.asarray(Image.fromarray(img).resize(new_unpad, Image.Resampling.BILINEAR))
@@ -86,40 +92,99 @@ def _read_text_loose(path: Path) -> str | None:
     return None
 
 
-def _parse_names_from_yaml(text: str) -> list[str] | None:
-    """解析 data.yaml 中的 names(兼容映射表与列表两种写法)。"""
-    names: list[str] = []
-    in_names = False
-    bracket: str | None = None
+def _strip_comment(line: str) -> str:
+    """剥离 YAML 行内注释(引号内的 # 不算注释)。"""
+    in_single = in_double = False
+    for index, char in enumerate(line):
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif char == "#" and not in_single and not in_double:
+            return line[:index]
+    return line
+
+
+def _split_yaml_list(text: str) -> list[str]:
+    """把内联/多行 YAML 列表拆成元素(兼容 [a, b]、['a', 'b']、- a 缩进列表)。"""
+    items: list[str] = []
     for raw in text.splitlines():
-        line = raw.strip()
-        if bracket:
-            if "]" in line:
-                names.append(line.split("]", 1)[0].strip().strip("\"'"))
-                bracket = None
-            else:
-                names.append(line.strip().strip("\"'"))
+        line = _strip_comment(raw).strip()
+        if not line or line == "[" or line == "]":
             continue
-        if not in_names:
-            if line.startswith("names:"):
-                in_names = True
-                rest = line[len("names:"):].strip()
-                if rest.startswith("["):
-                    bracket = "["
-                    rest = rest[1:]
-                    if "]" in rest:
-                        names.append(rest.split("]", 1)[0].strip().strip("\"'"))
-                        bracket = None
-                    elif rest:
-                        names.append(rest.strip().strip("\"'"))
-            continue
+        if line.startswith("["):
+            line = line[1:]
+        if line.endswith("]"):
+            line = line[:-1]
+        if line.startswith("-"):
+            line = line[1:].strip()
         if not line:
             continue
-        if ":" in line and not line.startswith("#"):
-            if line[0].isdigit() or line[0] in "-":
-                names.append(line.split(":", 1)[1].strip().strip("\"'"))
+        for part in line.split(","):
+            item = part.strip()
+            if item.startswith("'") and item.endswith("'"):
+                item = item[1:-1]
+            elif item.startswith('"') and item.endswith('"'):
+                item = item[1:-1]
+            if item:
+                items.append(item)
+    return items
+
+
+def _parse_names_from_yaml(text: str) -> list[str] | None:
+    """解析 data.yaml 中的 names(兼容映射表、内联/多行列表、破折号列表)。"""
+    names: list[str] = []
+    in_names = False
+    list_mode = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not in_names:
+            if stripped.startswith("names:"):
+                in_names = True
+                rest = _strip_comment(stripped[len("names:"):]).strip()
+                if not rest:
+                    continue
+                if rest.startswith("[") or rest == "[":
+                    list_mode = True
+                    rest = rest[1:]
+                if rest.startswith("{"):
+                    rest = rest[1:]
+                if not rest:
+                    continue
+                if list_mode and rest.endswith("]"):
+                    rest = rest[:-1]
+                for part in rest.split(","):
+                    item = part.strip().strip("\"'")
+                    if item:
+                        names.append(item)
+                if list_mode and "]" in stripped:
+                    list_mode = False
                 continue
-        if line.startswith("#") or any(key in line for key in ("train:", "val:", "test:")):
+            continue
+        line = _strip_comment(stripped)
+        if not line:
+            continue
+        if line.startswith("["):
+            list_mode = True
+            line = line[1:]
+        if list_mode:
+            if line.endswith("]"):
+                line = line[:-1]
+                list_mode = False
+            for part in line.split(","):
+                item = part.strip().strip("\"'")
+                if item:
+                    names.append(item)
+            continue
+        if line.startswith("-"):
+            item = line[1:].strip().strip("\"'")
+            if item:
+                names.append(item)
+            continue
+        if ":" in line and (line[0].isdigit() or line[0] in "-"):
+            names.append(line.split(":", 1)[1].strip().strip("\"'"))
+            continue
+        if line.startswith("#") or any(key in line for key in ("train:", "val:", "test:", "names:")):
             continue
         names.append(line.strip().strip("\"'"))
     return names or None
@@ -221,10 +286,11 @@ class OnnxDetector:
 
         out_shape = self.session.get_outputs()[0].shape
         self._nc_from_output = self._infer_nc(out_shape)
-        # 输出布局:ultralytics 标准导出为 [1, C, N](xywh);NMS 后处理导出为 [1, N, C]
-        self._out_layout = "xywh"
+        # 输出布局:ultralytics 标准导出为 [1, C, N](xywh);NMS 后处理导出为 [1, N, C];
+        # 通道维很小(通常 5-20),锚点维很大;含动态维度时无法静态判断,置 None
+        self._out_layout: str | None = "xywh"
         if len(out_shape) == 3 and isinstance(out_shape[1], int) and isinstance(out_shape[2], int):
-            if out_shape[1] > out_shape[2]:
+            if out_shape[1] > out_shape[2] and out_shape[2] >= 6:
                 self._out_layout = "xyxy"
         if names:
             self.nc = len(names)
@@ -235,6 +301,19 @@ class OnnxDetector:
             self.names = [f"cls{i}" for i in range(self.nc)]
         self.conf = conf
         self.iou = iou
+
+    @staticmethod
+    def _is_nms_layout(pred: np.ndarray) -> bool:
+        """判断预测矩阵是否为 NMS 后处理布局([N, 6]: xyxy+conf+cls)。
+
+        NMS 布局固定 6 列且类别列为整数索引;xywh 布局的类别列是
+        0-1 连续分数(onehot),据此区分(动态 shape 模型无法静态判断时使用)。
+        """
+        if pred.shape[1] != 6:
+            return False
+        cls_col = pred[:, 5]
+        mean_diff = float(np.abs(cls_col - np.round(cls_col)).mean())
+        return mean_diff < 0.01
 
     @staticmethod
     def _infer_nc(out_shape: Sequence[int]) -> int:
@@ -257,6 +336,42 @@ class OnnxDetector:
         if channels >= 5:
             return channels - 4
         return max(1, channels - 4)
+
+    def _parse_pred(
+        self, pred: np.ndarray, conf: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """把 [N, C] 预测矩阵解析为 (boxes, confs, cls_ids, xyxy);无法解析返回 None。
+
+        NMS 后处理布局 [N, 6](x1,y1,x2,y2,conf,cls)与 xywh 布局 [N, 4+nc]
+        (cx,cy,w,h,class_scores)均支持,布局由 _out_layout 与内容启发式判定。
+        """
+        cols = pred.shape[1]
+        if cols >= 6 and (
+            self._out_layout == "xyxy" or (self._out_layout is None and self._is_nms_layout(pred))
+        ):
+            # NMS 后处理导出布局
+            boxes = pred[:, :4]
+            confs = pred[:, 4]
+            cls_ids = np.round(pred[:, 5]).astype(int)
+            xyxy = boxes
+        elif cols >= 5:
+            # xywh 布局,类别数以实际列数为准
+            scores = pred[:, 4:]
+            cls_ids = scores.argmax(1)
+            confs = scores[np.arange(len(scores)), cls_ids]
+            boxes = pred[:, :4]
+            x1 = boxes[:, 0] - boxes[:, 2] / 2
+            y1 = boxes[:, 1] - boxes[:, 3] / 2
+            x2 = boxes[:, 0] + boxes[:, 2] / 2
+            y2 = boxes[:, 1] + boxes[:, 3] / 2
+            xyxy = np.stack([x1, y1, x2, y2], axis=1)
+        else:
+            return None
+
+        mask = confs >= conf
+        if not mask.any():
+            return None
+        return boxes[mask], confs[mask], cls_ids[mask], xyxy[mask]
 
     def detect(
         self,
@@ -283,37 +398,17 @@ class OnnxDetector:
         if self._out_layout == "xywh":
             # [C, N] → [N, C],每行一个锚点
             pred = pred.T
-        cols = pred.shape[1]
-        if cols >= 6:
-            # NMS 后处理导出布局([N, 6]: x1,y1,x2,y2,conf,cls)
-            boxes = pred[:, :4]
-            confs = pred[:, 4]
-            cls_ids = np.round(pred[:, 5]).astype(int)
-        elif cols >= 5:
-            # xywh 布局([N, 4+nc]: cx,cy,w,h,class_scores),类别数以实际列数为准
-            scores = pred[:, 4:]
-            cls_ids = scores.argmax(1)
-            confs = scores[np.arange(len(scores)), cls_ids]
-            boxes = pred[:, :4]
-        else:
+        elif self._out_layout is None:
+            # 动态 shape:通道维小、锚点维大 → 视为 [C, N] 转置
+            if pred.shape[0] <= 32 and pred.shape[1] > 32:
+                pred = pred.T
+        parsed = self._parse_pred(pred, conf)
+        if parsed is None and self._out_layout is None and pred.shape[1] <= 32:
+            # 小锚点数场景下可能是 [C, N] 布局,转置再试
+            parsed = self._parse_pred(pred.T, conf)
+        if parsed is None:
             return [], elapsed_ms
-
-        mask = confs >= conf
-        if not mask.any():
-            return [], elapsed_ms
-        boxes = boxes[mask]
-        scores = confs[mask]
-        cls_ids = cls_ids[mask]
-
-        if self._out_layout == "xywh":
-            # 中心宽高 → 左上右下坐标
-            x1 = boxes[:, 0] - boxes[:, 2] / 2
-            y1 = boxes[:, 1] - boxes[:, 3] / 2
-            x2 = boxes[:, 0] + boxes[:, 2] / 2
-            y2 = boxes[:, 1] + boxes[:, 3] / 2
-            xyxy = np.stack([x1, y1, x2, y2], axis=1)
-        else:
-            xyxy = boxes
+        boxes, scores, cls_ids, xyxy = parsed
 
         keep_idx: list[int] = []
         for c in np.unique(cls_ids):
@@ -338,14 +433,3 @@ class OnnxDetector:
             )
         dets.sort(key=lambda d: d["conf"], reverse=True)
         return dets, elapsed_ms
-
-
-def describe_detections(dets: Sequence[dict[str, Any]], min_conf: float = 0.0) -> str:
-    """把检测结果转成中文描述(agent 友好)。"""
-    text = []
-    for d in dets:
-        if d["conf"] < min_conf:
-            continue
-        x1, y1, x2, y2 = [int(v) for v in d["box"]]
-        text.append(f"{d['name']} {d['conf']:.0%} 位置({x1},{y1})-({x2},{y2})")
-    return "检测到: " + " | ".join(text) if text else "未检测到目标"

@@ -333,11 +333,15 @@ def create_application() -> NeoBotApplication:
 
         init_runner = build_init_runner(vision_detect_service=vision_detect_service)
         for task_report in init_runner.run_sync(force=False):
-            report = task_report["report"]
+            if task_report.get("skipped"):
+                continue
+            report = task_report.get("report")
+            if report is None:
+                continue
             summary = getattr(report, "summary", lambda: str(report))
             if report.added or report.missing or report.errors or report.unconfigured:
                 logger_factory.get_logger("app.init").warning(
-                    f"[init] {task_report['name']}: {summary()}"
+                    f"[init] {task_report['task']}: {summary()}"
                 )
     skill_manager = build_skill_manager(
         config=config,
@@ -495,6 +499,16 @@ def create_application() -> NeoBotApplication:
         )
 
     # ── 内置控制台 / 管线 / 网关 / 应用 ──
+    def _vision_detect_probe() -> dict[str, Any]:
+        """控制台 /api/services 的 vision_detect 状态探测。"""
+        service = vision_detect_service
+        if service is None:
+            return {"Vision detect": False}
+        return {
+            "Vision detect": service.available,
+            "Vision detect ONNX": service.onnx_available,
+        }
+
     console_service = ConsoleService(
         config=config,
         data_dir=DATA_DIR,
@@ -506,6 +520,7 @@ def create_application() -> NeoBotApplication:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
+        service_probe=_vision_detect_probe,
     )
     return build_pipelines_and_app(
         adapter=adapter,

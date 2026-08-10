@@ -49,19 +49,29 @@ def _make_detector(
     names: list[str] | None = None,
     conf: float = 0.35,
     iou: float = 0.45,
-    out_layout: str | None = None,
+    out_layout: str | None | object = None,
 ) -> OnnxDetector:
     det = OnnxDetector.__new__(OnnxDetector)
     det.session = _FakeSession(pred, in_shape, out_shape)
     det.model_path = Path("fake.onnx")
     det.input_name = "images"
     det.imgsz = int(in_shape[2])
-    det.dynamic = False
+    det.dynamic = any(isinstance(s, str) for s in out_shape)
     det.nc = len(names) if names else max(1, int(out_shape[1]) - 4)
     det.names = list(names) if names else [f"cls{i}" for i in range(det.nc)]
     det.conf = conf
     det.iou = iou
-    det._out_layout = out_layout or ("xywh" if out_shape[1] <= out_shape[2] else "xyxy")
+    if out_layout is not None:
+        det._out_layout = out_layout  # type: ignore[assignment]
+    elif det.dynamic:
+        det._out_layout = None
+    elif isinstance(out_shape[1], int) and isinstance(out_shape[2], int):
+        if out_shape[1] > out_shape[2] and out_shape[2] >= 6:
+            det._out_layout = "xyxy"
+        else:
+            det._out_layout = "xywh"
+    else:
+        det._out_layout = "xywh"
     return det
 
 
@@ -191,6 +201,57 @@ def test_names_fallback_when_not_provided() -> None:
     assert dets[0]["name"] == "cls0"
 
 
+def test_multi_class_xywh_layout() -> None:
+    """多类 xywh 导出(cols = 4 + nc >= 6)不应被误判为 NMS 布局。"""
+    # nc=2,两个锚点各命中一类;布局 [1, C=6, N=2]
+    anchors = [
+        [160, 160, 100, 100, 0.30, 0.95],  # cls1 0.95
+        [160, 160, 100, 100, 0.90, 0.05],  # cls0 0.90
+    ]
+    pred = np.array([np.array(anchors, dtype=np.float32).T], dtype=np.float32)
+    det = _make_detector(pred, out_shape=(1, 6, 2), names=["a", "b"], conf=0.35)
+    dets, _ = det.detect(_img())
+    assert len(dets) == 2
+    by_conf = {round(d["conf"], 2): d["name"] for d in dets}
+    assert by_conf[0.95] == "b"
+    assert by_conf[0.90] == "a"
+
+
+def test_letterbox_extreme_aspect_ratio() -> None:
+    """极端纵横比(如 1:1000)不应崩溃。"""
+    for h, w in ((1, 1000), (1000, 1), (640, 1), (2, 2000)):
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        out, ratio, pad = letterbox(img, (320, 320))
+        assert out.shape == (320, 320, 3)
+        assert ratio > 0
+
+
+def test_dynamic_shape_layout_detected_at_runtime() -> None:
+    """动态 shape 模型(运行时输出 [1, N, 6] NMS 布局)应正确解析。"""
+    pred = np.array(
+        [
+            [
+                [10, 20, 30, 40, 0.8, 0.0],
+                [50, 60, 70, 80, 0.7, 0.0],
+            ]
+        ],
+        dtype=np.float32,
+    )
+    det = _make_detector(pred, out_shape=(1, "N", 6), names=["target"], conf=0.35, out_layout=None)
+    dets, _ = det.detect(_img())
+    assert len(dets) == 2
+    assert dets[0]["conf"] == pytest.approx(0.8)
+
+
+def test_dynamic_shape_xywh_layout_detected_at_runtime() -> None:
+    """动态 shape 模型(运行时输出 [1, C, N] xywh 布局)应正确解析。"""
+    pred = np.array([[[160, 160, 100, 100, 0.9]]], dtype=np.float32)  # [1, 5, 1]
+    det = _make_detector(pred, out_shape=(1, 5, "N"), names=["target"], conf=0.35, out_layout=None)
+    dets, _ = det.detect(_img())
+    assert len(dets) == 1
+    assert dets[0]["name"] == "target"
+
+
 # ── resolve_names ──
 
 
@@ -224,3 +285,35 @@ def test_resolve_names_none_when_missing(tmp_path: Path) -> None:
     model = tmp_path / "model.onnx"
     model.write_bytes(b"fake")
     assert resolve_names(model) is None
+
+
+def test_resolve_names_inline_list(tmp_path: Path) -> None:
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"fake")
+    (tmp_path / "data.yaml").write_text("names: [cat, dog, bird]\n", encoding="utf-8")
+    assert resolve_names(model) == ["cat", "dog", "bird"]
+
+
+def test_resolve_names_quoted_inline_list(tmp_path: Path) -> None:
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"fake")
+    (tmp_path / "data.yaml").write_text("names: ['猫', '狗']\n", encoding="utf-8")
+    assert resolve_names(model) == ["猫", "狗"]
+
+
+def test_resolve_names_dash_list(tmp_path: Path) -> None:
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"fake")
+    (tmp_path / "data.yaml").write_text(
+        "names:\n  - cat\n  - dog\n", encoding="utf-8"
+    )
+    assert resolve_names(model) == ["cat", "dog"]
+
+
+def test_resolve_names_inline_comment(tmp_path: Path) -> None:
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"fake")
+    (tmp_path / "data.yaml").write_text(
+        "names:\n  0: cat  # 猫\n  1: dog\n", encoding="utf-8"
+    )
+    assert resolve_names(model) == ["cat", "dog"]

@@ -1317,8 +1317,8 @@ class ReplyOrchestrator:
             if emoji_text:
                 emoji_total = self._emoji_service.emoji_count
                 search_hint = (
-                    f"\n当表情包数量过多（如{emoji_total}个）时可能需要搜索，"
-                    "正常情况下直接列表查看即可。可用 search_custom_emoji 按关键词搜索。"
+                    f"\n当前共{emoji_total}个表情包，列表仅显示前{emoji_page_size}个；"
+                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索。"
                     if emoji_total > emoji_page_size and allowed_tools is None
                     else ""
                 )
