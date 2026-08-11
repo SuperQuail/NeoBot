@@ -1,7 +1,8 @@
-"""onnx 部署环境诊断与自动修复脚本。
+"""onnx/torch 部署环境诊断与自动修复脚本。
 
 用途:在 NeoBot 部署环境(Stand/服务器/虚拟机)上诊断 onnxruntime
-DLL 加载失败问题,并自动尝试多种修复路径,尽可能让视觉检测跑起来。
+与 PyTorch(ultralytics) DLL 加载失败问题,并自动尝试多种修复路径,
+尽可能让视觉检测跑起来。
 
 运行方式(在 Stand 目录):
     uv run python scripts/onnx_deploy_check.py
@@ -24,7 +25,7 @@ from pathlib import Path
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 VERSIONS_TO_TRY = ["1.28.0", "1.24.3", "1.20.1", "1.16.3"]
 
-# 需要检查的 VC++ 运行库(onnxruntime 依赖)
+# 需要检查的 VC++ 运行库(onnxruntime / torch 共同依赖)
 VC_DLLS = [
     "vcruntime140.dll",
     "vcruntime140_1.dll",
@@ -33,6 +34,44 @@ VC_DLLS = [
     "msvcp140_2.dll",
     "msvcp140_atomic_wait.dll",
 ]
+
+# 建议最低版本:VC++ 2015-2022 redist(x64)最新版通常 ≥ 14.40。
+# 旧版本(如 14.31 = 2019 版)常导致 DLL 初始化例程失败(WinError 1114)。
+VC_MIN_VERSION = (14, 40, 0, 0)
+
+
+def _parse_version(text: str) -> tuple[int, ...] | None:
+    try:
+        parts = tuple(int(p) for p in text.split("."))
+        return parts if parts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _file_version(path: str) -> str:
+    """用 WinAPI 读取文件版本(Path.VersionInfo 不存在,需 ctypes)。"""
+    import struct
+
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, buf):
+            return ""
+        ver_ptr = ctypes.c_void_p()
+        ver_size = ctypes.c_uint()
+        if not ctypes.windll.version.VerQueryValueW(
+            buf, "\\", ctypes.byref(ver_ptr), ctypes.byref(ver_size)
+        ):
+            return ""
+        data = ctypes.string_at(ver_ptr, ver_size.value)
+        if len(data) < 16:
+            return ""
+        ms, ls = struct.unpack_from("<II", data, 8)  # VS_FIXEDFILEINFO 偏移
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    except Exception:
+        return ""
 
 
 def _banner(title: str) -> None:
@@ -52,6 +91,13 @@ def check_system_info() -> None:
         print(f"  onnxruntime: 当前无法导入 ({type(exc).__name__})")
     else:
         print(f"  onnxruntime: {onnxruntime.__version__} OK")
+    try:
+        import torch  # noqa: F401
+        import ultralytics  # noqa: F401
+    except Exception as exc:
+        print(f"  torch/ultralytics: 当前无法导入 ({type(exc).__name__})")
+    else:
+        print(f"  torch: {torch.__version__} / ultralytics: {ultralytics.__version__} OK")
     # 虚拟化判断
     try:
         result = subprocess.run(
@@ -71,33 +117,43 @@ def check_system_info() -> None:
         if cpu_line:
             print(f"  CPU       : {cpu_line}")
             if "General Purpose Processor" in cpu_line or "Hypervisor: True" in cpu_line:
-                print("  ↳ 检测到虚拟化环境:若后续 DLL 初始化失败,多为虚拟机未透传 CPU 指令集(SSE/AVX)")
+                print("  ↳ 检测到虚拟化环境:若 DLL 初始化失败,可能为虚拟机未透传 CPU 指令集(SSE/AVX)")
     except Exception as exc:
         print(f"  CPU       : 无法读取 ({exc})")
 
 
-def check_vc_redist() -> list[str]:
+def check_vc_redist() -> tuple[list[str], list[str]]:
+    """返回 (缺失 DLL 列表, 版本过旧 DLL 列表)。"""
     _banner("2. VC++ 运行库检查")
     missing: list[str] = []
+    outdated: list[str] = []
     for dll in VC_DLLS:
         system_path = Path(r"C:\Windows\System32") / dll
         exists = system_path.exists()
         version = ""
+        flag = ""
         if exists:
-            try:
-                version = str(system_path.VersionInfo.FileVersion)
-            except Exception:
-                version = "?"
+            version = _file_version(str(system_path))
+            if version:
+                parsed = _parse_version(version)
+                if parsed is not None and parsed < VC_MIN_VERSION:
+                    outdated.append(dll)
+                    flag = "  ← 版本较旧,建议更新"
         marker = "OK " if exists else "MISS"
-        print(f"  [{marker}] {dll:32s} {version}")
+        print(f"  [{marker}] {dll:32s} {version}{flag}")
         if not exists:
             missing.append(dll)
     if missing:
         print(f"\n  缺失 {len(missing)} 个运行库文件 → 需要安装 VC++ 2015-2022 Redistributable (x64)")
         print(f"  下载: {VC_REDIST_URL}")
+    elif outdated:
+        print(f"\n  存在 {len(outdated)} 个较旧版本(建议版本 ≥ 14.40): "
+              f"{', '.join(outdated)}")
+        print("  旧版本运行库是 WinError 1114(初始化例程失败)的常见根因")
+        print(f"  建议安装最新 VC++ 2015-2022 redist: {VC_REDIST_URL}")
     else:
-        print("\n  VC++ 运行库文件齐全(vcruntime140.dll 存在时 onnxruntime 依赖通常满足)")
-    return missing
+        print("\n  VC++ 运行库版本齐全且较新")
+    return missing, outdated
 
 
 def diagnose_load_error() -> tuple[int | None, Path | None]:
@@ -106,7 +162,7 @@ def diagnose_load_error() -> tuple[int | None, Path | None]:
     错误码判定:
       126 (0x7E)  模块找不到 — 缺依赖 DLL
       127 (0x7F)  过程找不到 — 运行库版本过旧/缺失函数
-      1114(0x45C) 初始化例程失败 — CPU 指令集/运行库损坏/安全软件
+      1114(0x45C) 初始化例程失败 — 运行库版本旧/CPU 指令集/安全软件
     """
     _banner("3. onnxruntime C 扩展加载诊断")
     site_packages = Path(sys.prefix) / "Lib" / "site-packages"
@@ -128,11 +184,42 @@ def diagnose_load_error() -> tuple[int | None, Path | None]:
         elif code == 127:
             print("  → 判定: 缺少运行库函数(VC++ 版本过旧,需 2015-2022 redist)")
         elif code == 1114:
-            print("  → 判定: DLL 初始化例程失败(CPU 指令集不支持 / 运行库损坏 / 安全软件拦截)")
+            print("  → 判定: DLL 初始化例程失败(运行库版本过旧 / CPU 指令集不支持 / 安全软件拦截)")
         return code, pyd
     else:
         print("  直接加载成功!")
         return 0, pyd
+
+
+def diagnose_torch() -> tuple[int | None, Path | None]:
+    """诊断 PyTorch 备选栈:import + c10.dll 精确错误码(与 onnxruntime 同源)。"""
+    _banner("3b. PyTorch 备选栈诊断")
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages"
+    try:
+        import torch  # noqa: F401
+        import ultralytics  # noqa: F401
+    except Exception as exc:
+        print(f"  import 失败: {type(exc).__name__}: {str(exc)[:200]}")
+    else:
+        print(f"  torch {torch.__version__} / ultralytics {ultralytics.__version__} 导入成功!")
+        return 0, None
+    c10 = site_packages / "torch" / "lib" / "c10.dll"
+    if not c10.exists():
+        print(f"  c10.dll 不存在: {c10}(torch 未安装)")
+        return None, None
+    print(f"  目标: {c10}")
+    try:
+        ctypes.WinDLL(str(c10), winmode=0)
+    except OSError as exc:
+        code = exc.winerror
+        print(f"  加载失败, Windows 错误码: {code} (0x{code:08X})" if code else f"  加载失败: {exc}")
+        if code == 1114:
+            print("  → 与 onnxruntime 相同的 1114: 属环境级问题(运行库/指令集),"
+                  "不是 torch 包本身")
+        return code, c10
+    else:
+        print("  c10.dll 直接加载成功(说明 import 失败在其他依赖)")
+        return 0, c10
 
 
 def try_import() -> str | None:
@@ -194,7 +281,7 @@ def try_versions(venv_python: str) -> str | None:
     return None
 
 
-def final_report(version: str | None, error_code: int | None, missing_dlls: list[str]) -> None:
+def final_report(version: str | None, error_code: int | None, missing_dlls: list[str], outdated_dlls: list[str], torch_code: int | None) -> None:
     _banner("5. 结论")
     if version:
         print(f"  onnxruntime {version} 可用,视觉检测可以启用。")
@@ -206,10 +293,16 @@ def final_report(version: str | None, error_code: int | None, missing_dlls: list
         print(f"     安装: {VC_REDIST_URL}")
         print("     或运行: python scripts/onnx_deploy_check.py --install-redist(需管理员)")
     if error_code == 1114:
-        print("  2) DLL 初始化失败(1114): 大概率是虚拟机/CPU 未透传 SSE/AVX 指令集。")
+        if outdated_dlls:
+            print(f"  1) VC++ 运行库版本较旧({len(outdated_dlls)} 个): 这是 1114 最常见的根因。")
+            print(f"     安装最新 VC++ 2015-2022 redist(x64): {VC_REDIST_URL}")
+            print("     装完后重启终端,重跑本脚本验证;大概率可修复")
+        elif torch_code == 1114:
+            print("  1) 运行库最新但 onnxruntime 与 torch 均 1114: 指向 CPU 指令集未透传。")
+        print("  2) DLL 初始化失败(1114) 其他可能: 虚拟机/CPU 未透传 SSE/AVX 指令集。")
         print("     - 虚拟化平台(vSphere/KVM/VirtualBox)给 VM 开启 CPU 直通或 SSE/AVX 特性")
         print("     - 或在物理机上运行 NeoBot")
-        print("     - 若确认不是 CPU: 重装 VC++ redist 后重启,并临时关闭杀毒软件重装 onnxruntime")
+        print("     - 若确认不是 CPU: 重装 VC++ redist 后重启,并临时关闭杀毒软件重装依赖")
     if error_code == 126 or error_code == 127:
         print(f"  2) 运行库缺失/过旧(错误码 {error_code}): 安装 VC++ 2015-2022 redist 后重启终端重试")
     print("\n  3) 兜底: 视觉检测可禁用运行(bot 主功能不受影响),后续在合适机器上启用。")
@@ -221,18 +314,21 @@ def main() -> int:
     install_redist = "--install-redist" in args
 
     check_system_info()
-    missing_dlls = check_vc_redist()
+    missing_dlls, outdated_dlls = check_vc_redist()
     error_code, pyd = diagnose_load_error()
+    torch_code, _ = diagnose_torch()
     if error_code == 0:
         version = try_import()
-        final_report(version, None, [])
+        final_report(version, None, [], [], torch_code)
         return 0
 
-    if install_redist and missing_dlls:
+    if install_redist and (missing_dlls or outdated_dlls):
         auto_install_redist()
+        missing_dlls, outdated_dlls = check_vc_redist()
         error_code, pyd = diagnose_load_error()
+        torch_code, _ = diagnose_torch()
         if error_code == 0:
-            final_report(try_import(), None, [])
+            final_report(try_import(), None, [], [], torch_code)
             return 0
 
     version = None
@@ -240,11 +336,11 @@ def main() -> int:
         venv_python = sys.executable
         version = try_versions(venv_python)
         if version:
-            final_report(version, None, [])
+            final_report(version, None, [], [], torch_code)
             return 0
 
-    final_report(None, error_code, missing_dlls)
-    if missing_dlls and not install_redist:
+    final_report(None, error_code, missing_dlls, outdated_dlls, torch_code)
+    if (missing_dlls or outdated_dlls) and not install_redist:
         print("\n  提示: 可执行 `python scripts/onnx_deploy_check.py --install-redist` 自动安装运行库")
     return 1
 
