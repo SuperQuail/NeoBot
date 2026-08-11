@@ -1,4 +1,4 @@
-"""命令系统装配:CommandService 构建与配置保存回调。"""
+"""命令系统与凭据管理器装配。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,13 @@ def build_command_service(*, config: Any, adapter: Any, logger_factory: Any) -> 
         logger=logger_factory.get_logger("app.commands"),
     )
     return service
+
+
+def build_credential_manager(*, permissions: Any) -> Any:
+    """构建凭据管理器(风险操作授权,与命令系统共用权限树)。"""
+    from neobot_app.credentials.service import CredentialManager
+
+    return CredentialManager(permissions=permissions)
 
 
 def _make_config_save_callback(config: Any):

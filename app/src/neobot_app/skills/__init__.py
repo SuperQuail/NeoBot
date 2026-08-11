@@ -35,6 +35,7 @@ from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
 from neobot_app.skills.balance_skill import BalanceSkill
 from neobot_app.skills.agent_delegation import AgentDelegationSkill
+from neobot_app.skills.credential_skill import CredentialSkill
 from neobot_app.skills.vision_detect_skill import VisionDetectSkill
 
 
@@ -69,6 +70,7 @@ def build_all_skills(
     balance_checker: Any = None,
     agent_registry: Any = None,
     vision_detect_service: Any = None,
+    credential_manager: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -85,6 +87,10 @@ def build_all_skills(
 
     if agent_registry is not None and "agents" not in disabled:
         skills_to_register.append(AgentDelegationSkill(agent_registry))
+
+    # ── 风险操作凭据(踢人/退群等) ──
+    if "credential" not in disabled and credential_manager is not None:
+        skills_to_register.append(CredentialSkill(credential_manager=credential_manager))
 
     # ── 本地视觉检测(ONNX/YOLO,服务不可用时无工具) ──
     if "vision_detect" not in disabled and vision_detect_service is not None:
@@ -147,7 +153,12 @@ def build_all_skills(
         skills_to_register.append(ChatHistorySkill(adapter=adapter))
 
     if "group_management" not in disabled:
-        skills_to_register.append(GroupManagementSkill(adapter=adapter))
+        skills_to_register.append(
+            GroupManagementSkill(
+                adapter=adapter,
+                credential_manager=credential_manager,
+            )
+        )
 
     if "friend_management" not in disabled:
         skills_to_register.append(FriendManagementSkill(adapter=adapter))

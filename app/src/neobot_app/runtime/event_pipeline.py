@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List
@@ -86,6 +87,7 @@ class EventPipeline:
         logger: Logger | None = None,
         reply_block_registry: Any | None = None,
         command_service: Any | None = None,
+        credential_manager: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -100,6 +102,7 @@ class EventPipeline:
         self._logger = logger or NullLogger()
         self._reply_block_registry = reply_block_registry
         self._command_service = command_service
+        self._credential_manager = credential_manager
         self._subscriptions: List[Subscription] = []
         self._started = False
         self._warmed_up_friends: set[str] = set()
@@ -336,6 +339,13 @@ class EventPipeline:
                     )
                 return
 
+        # 凭据签发:管理员发送凭据文本
+        if self._credential_manager is not None and await self._try_issue_credential(
+            message, kind="private", queue_key=queue_key,
+            queue=self._friend_queue,
+        ):
+            return
+
         # Bot 自己的消息不触发回复
         if self._is_bot_self(message):
             return
@@ -490,6 +500,13 @@ class EventPipeline:
                         queue_key=queue_key, background=result.background,
                     )
                 return
+
+        # 凭据签发:管理员发送凭据文本
+        if self._credential_manager is not None and await self._try_issue_credential(
+            message, kind="group", queue_key=queue_key,
+            queue=self._group_queue,
+        ):
+            return
 
         # Bot 自己的消息不触发回复
         if self._is_bot_self(message):
@@ -1167,6 +1184,108 @@ class EventPipeline:
             background_content=background,
         )
 
+    async def _try_issue_credential(
+        self,
+        message: PrivateMessage | GroupMessage,
+        *,
+        kind: str,
+        queue_key: str,
+        queue: MessageQueue,
+    ) -> bool:
+        """检查消息是否为待签发凭据文本;是则签发并返回 True(已处理)。"""
+        credential_manager = self._credential_manager
+        if credential_manager is None:
+            return False
+        issuer_id = int(getattr(message, "user_id", 0) or 0)
+        bot_account = self._bot_account_id()
+        # bot 自己发送的消息不能触发自我签发(防审批失效)
+        if bot_account and issuer_id == bot_account:
+            return False
+        # 使用纯文本内容匹配(不含"发送者: "前缀)
+        text = _credential_message_text(message)
+        text = text.strip()
+        if not text:
+            return False
+        self._maybe_cleanup_credentials()
+        chat_flow = f"{kind}:{queue_key}"
+        issue = credential_manager.try_issue(
+            chat_flow=chat_flow,
+            code=text,
+            issuer_id=issuer_id,
+        )
+        if not issue.ok:
+            if issue.error == "permission_denied" and issue.credential is not None:
+                # 权限不足:明确拒绝,避免 AI 误回复
+                await self._send_credential_notice(
+                    message, queue, queue_key,
+                    "该凭据需要更高级别的管理员签发,你没有权限。",
+                )
+                return True
+            return False  # 非凭据文本(not_found/expired/状态异常):正常管线
+        credential = issue.credential
+        if credential is None:
+            return False
+        # 仅首次签发(pending → active)时通知并触发 bot 继续执行;
+        # 重复发送(幂等)静默,避免任意成员反复触发
+        if issue.newly_issued:
+            await self._send_credential_notice(
+                message, queue, queue_key,
+                f"凭据已确认(用途: {credential.action}),可以执行对应操作了。",
+            )
+            background = (
+                "<这是新的必须要回答的内容>\n"
+                f"凭据已签发: 用途 {credential.action},会话 {chat_flow}。\n"
+                "如正在等待此凭据执行风险操作(踢人/退群等),现在可以继续执行。\n"
+                "</这是新的必须要回答的内容>"
+            )
+            self._start_command_sync_reply(
+                message=message, queue=queue, queue_key=queue_key, background=background,
+            )
+        return True
+
+    def _bot_account_id(self) -> int:
+        if self._config is None:
+            return 0
+        try:
+            return int(getattr(self._config.bot, "account", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _maybe_cleanup_credentials(self) -> None:
+        """定期清理过期/已用凭据(避免内存无界增长)。"""
+        credential_manager = self._credential_manager
+        if credential_manager is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_last_credential_cleanup", 0.0) < 60.0:
+            return
+        self._last_credential_cleanup = now
+        try:
+            credential_manager.cleanup()
+        except Exception:
+            pass
+
+    async def _send_credential_notice(
+        self,
+        message: PrivateMessage | GroupMessage,
+        queue: MessageQueue,
+        queue_key: str,
+        text: str,
+    ) -> None:
+        """发送凭据相关提示(不触发 AI 回复)。"""
+        from neobot_contracts.models import ConversationRef
+
+        conv_ref = ConversationRef(
+            kind="group" if isinstance(message, GroupMessage) else "private",
+            id=queue_key,
+        )
+        try:
+            await self.adapter.send(
+                conv_ref, [{"type": "text", "data": {"text": text}}]
+            )
+        except Exception as exc:
+            self._logger.warning(f"凭据提示发送失败: {exc}")
+
     def _is_bot_self(self, message) -> bool:
         """检查消息是否由 Bot 自己发送。"""
         if self._config is None:
@@ -1218,6 +1337,31 @@ def _sender_name(message: PrivateMessage | GroupMessage) -> str:
                 return str(value)
     user_id = getattr(message, "user_id", None)
     return f"QQ:{user_id}" if user_id is not None else ""
+
+
+def _credential_message_text(message: PrivateMessage | GroupMessage) -> str:
+    """提取消息的纯文本内容(不含"发送者: "前缀,用于凭据匹配)。
+
+    注意:event_message__to_text 会拼接发送者名前缀,凭据文本匹配必须
+    使用纯文本段拼接,否则签发永远无法命中。
+    """
+    parts: list[str] = []
+    segments = getattr(message, "message", None)
+    if not segments:
+        return ""
+    for segment in segments:
+        segment_type = getattr(segment, "type", None)
+        segment_type = getattr(segment_type, "value", segment_type)
+        if str(segment_type or "") != "text":
+            continue
+        data = getattr(segment, "data", None)
+        if isinstance(data, dict):
+            text = data.get("text")
+        else:
+            text = getattr(data, "text", None)
+        if text:
+            parts.append(str(text))
+    return "".join(parts)
 
 
 def _safe_int(value: object) -> int | None:

@@ -91,6 +91,7 @@ def build_memory_services(
     group_queue: Any,
     friend_queue: Any,
     uow_factory: Any,
+    prompt_store: Any = None,
 ) -> dict[str, Any]:
     """创建记忆、聊天流、用户画像、意愿等服务。"""
     memory = MemoryService(
@@ -134,6 +135,7 @@ def build_memory_services(
             data_dir / "自适应提示词.txt" if adaptive_prompt_enabled else None
         ),
         uow_factory=uow_factory,
+        prompt_store=prompt_store,
     )
     return {
         "memory": memory,

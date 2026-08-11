@@ -200,6 +200,7 @@ class ReplyToolExecutor(ToolExecutor):
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
+        current_user_id: int | None = None,
         wait_cooldown_seconds: int = 60,
         ai_reply_check: bool = False,
         ai_reply_check_lightweight: bool = True,
@@ -234,6 +235,7 @@ class ReplyToolExecutor(ToolExecutor):
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id
+        self._current_user_id = current_user_id
         self._ai_reply_check = ai_reply_check
         self._ai_reply_check_lightweight = ai_reply_check_lightweight
         self._bot_name = bot_name
@@ -787,6 +789,9 @@ class ReplyToolExecutor(ToolExecutor):
             }
             if self._conv_kind and self._conv_id:
                 enriched["pipeline_key"] = f"{self._conv_kind}:{self._conv_id}"
+            if self._current_user_id is not None:
+                # 当前会话用户 QQ(凭据申请等需要记录请求者)
+                enriched["_requester_id"] = self._current_user_id
             if self._numbering is not None:
                 mapping = getattr(self._numbering, "mapping", None)
                 if isinstance(mapping, dict):
@@ -2053,6 +2058,7 @@ def build_reply_toolset(
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
+    current_user_id: int | None = None,
     wait_cooldown_seconds: int = 60,
     ai_reply_check: bool = False,
     ai_reply_check_lightweight: bool = True,
@@ -2089,6 +2095,7 @@ def build_reply_toolset(
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,
+        current_user_id=current_user_id,
         wait_cooldown_seconds=wait_cooldown_seconds,
         ai_reply_check=ai_reply_check,
         ai_reply_check_lightweight=ai_reply_check_lightweight,

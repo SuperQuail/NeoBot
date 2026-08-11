@@ -390,6 +390,7 @@ def build_self_heal_agent_wiring(
     log_file: Path | None,
     vision_provider: Any = None,
     web_search_config: dict | None = None,
+    prompt_store: Any = None,
 ) -> Any:
     """构建 SelfHealAgent 并绑定到已创建的 Manager。"""
     from neobot_app.agents.self_heal import (
@@ -418,5 +419,6 @@ def build_self_heal_agent_wiring(
         web_search_config=web_search_config or {},
         vision_provider=vision_provider,
         peer_descriptions=peer_descriptions,
+        prompt_store=prompt_store,
     )
     return agent

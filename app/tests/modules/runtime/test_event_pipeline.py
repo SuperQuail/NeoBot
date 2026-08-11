@@ -82,6 +82,7 @@ async def test_group_message_event_duplicate_not_pushed_twice():
     pipeline._reply_orchestrator = None
     pipeline._reply_block_registry = None
     pipeline._command_service = None
+    pipeline._credential_manager = None
     pipeline._willing_service = None
     pipeline._inbound_pipeline = None
     pipeline._logger = SimpleNamespace(
@@ -206,6 +207,7 @@ def _pipeline_with_queue(
     pipeline._reply_orchestrator = None
     pipeline._reply_block_registry = None
     pipeline._command_service = None
+    pipeline._credential_manager = None
     pipeline._willing_service = None
     pipeline._inbound_pipeline = None
     pipeline._logger = SimpleNamespace(

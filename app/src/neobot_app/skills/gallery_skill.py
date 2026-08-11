@@ -78,6 +78,19 @@ class GallerySkill(SkillModule):
             "    - 示例：'sakura_standing_01'、'swimsuit_sitting_02'、'uniform_front_view'\n"
             "    - 这样后续用 gallery_search 搜索 'sakura' 或 'standing' 都能找到\n\n"
 
+            "【立绘与QQ用户关联标注（强制）】\n"
+            "  存储或更新立绘（角色图/人设图/用户形象等）时：\n"
+            "  1. 如果该立绘与某个QQ用户强相关——例如：该用户的角色/OC/人设、"
+            "为用户本人或其亲友绘制的形象、聊天中明确属于某人（谁的女朋友/谁的设子/谁的皮套）的立绘——\n"
+            "     必须在 description（资料）中明确写入对应相关者的QQ号\n"
+            "  2. 写入格式：在描述中加入「相关者QQ:<QQ号>」（如「相关者QQ:123456789」），"
+            "可放在描述开头或结尾；同一人的多张立绘保持一致的写法，便于 gallery_search 检索\n"
+            "  3. 只有完全不与任何QQ用户相关的立绘（风景/静物/通用角色等）才不需要标注\n"
+            "  4. 立绘入库时（gallery_add / gallery_batch_add_from_chat）就应写入；"
+            "遗漏时用 gallery_update 补充，不要省略\n"
+            "  5. 判断相关者以聊天上下文为准（消息发送者/被@对象/明确提及的QQ号）；"
+            "拿不准是否强相关时倾向标注（标注冗余优于漏标，便于后续检索归属）\n\n"
+
             "【批量从聊天导入】\n"
             "  当用户一条消息发了多张图片并希望全部加入图库时，用 gallery_batch_add_from_chat：\n"
             "    - 必填 msg_number 或 message_id\n"
@@ -134,7 +147,11 @@ class GallerySkill(SkillModule):
                 {
                     "properties": {
                         "image_path": {"type": "string", "description": "本地图片路径"},
-                        "description": {"type": "string", "description": "可选，图片描述"},
+                        "description": {
+                            "type": "string",
+                            "description": "可选，图片描述。存储立绘（角色/人设/用户形象）且与某个QQ用户强相关时，"
+                            "必须在描述中明确写入其QQ号（格式「相关者QQ:<QQ号>」）；完全不与人相关的图片可不写",
+                        },
                         "tags": {"type": "array", "items": {"type": "string"}, "description": "可选，标签列表"},
                     },
                     "required": ["image_path"],
@@ -146,7 +163,10 @@ class GallerySkill(SkillModule):
                 {
                     "properties": {
                         "image_id": {"type": "string", "description": "图片 ID（如 gallery_xxx）"},
-                        "description": {"type": "string", "description": "新的描述"},
+                        "description": {
+                            "type": "string",
+                            "description": "新的描述。立绘与某个QQ用户强相关时，描述中必须包含相关者QQ号（格式「相关者QQ:<QQ号>」）",
+                        },
                     },
                     "required": ["image_id", "description"],
                 },
@@ -190,7 +210,11 @@ class GallerySkill(SkillModule):
                             "items": {"type": "integer"},
                             "description": "可选，1-based 索引列表（如 [1,2,3]）；不填则导入该消息中的全部图片",
                         },
-                        "description": {"type": "string", "description": "可选，对每张图片应用的描述"},
+                        "description": {
+                            "type": "string",
+                            "description": "可选，对每张图片应用的描述。立绘（角色/人设/用户形象）与某个QQ用户强相关时，"
+                            "描述中必须包含相关者QQ号（格式「相关者QQ:<QQ号>」）",
+                        },
                         "name_prefix": {
                             "type": "string",
                             "description": "可选，图片名前缀，自动按索引生成后缀",

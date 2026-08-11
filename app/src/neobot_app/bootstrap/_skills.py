@@ -44,6 +44,7 @@ def build_skill_manager(
     balance_checker: Any = None,
     agent_registry: Any = None,
     vision_detect_service: Any = None,
+    credential_manager: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -77,6 +78,7 @@ def build_skill_manager(
         balance_checker=balance_checker,
         agent_registry=agent_registry,
         vision_detect_service=vision_detect_service,
+        credential_manager=credential_manager,
     )
 
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 import re
-from typing import Callable, Deque, Dict, Iterator, List, Optional, Union
+from typing import Callable, Deque, Dict, Iterator, List, Optional, Tuple, Union
 
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
 from neobot_adapter.model.notice import GroupMessageDelete, PrivateMessageDelete
@@ -778,7 +778,7 @@ class MessageQueue:
         separator_after_index: int | None = None,
         all_new_message: str | None = None,
     ) -> str:
-        sender_labels = self._build_sender_labels(context_entries or entries)
+        sender_labels, sender_labels_by_user = self._build_sender_labels(context_entries or entries)
         lines: list[str] = []
         all_are_new = separator_after_index is None and all_new_message is not None
         if all_new_message is not None:
@@ -813,6 +813,7 @@ class MessageQueue:
         entry: QueueEntry,
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        sender_labels_by_user: Optional[Dict[str, str]] = None,
         wrap_at_mention: bool = False,
     ) -> str:
         if entry.kind == QueueEntryType.TIMESTAMP:
@@ -821,6 +822,7 @@ class MessageQueue:
             return self._message_to_text(
                 entry.message,
                 sender_labels=sender_labels,
+                sender_labels_by_user=sender_labels_by_user,
                 replied_messages=entry.replied_messages,
                 wrap_at_mention=wrap_at_mention,
             )
@@ -829,6 +831,7 @@ class MessageQueue:
                 entry.notice,
                 entry.recalled_message,
                 sender_labels=sender_labels,
+                sender_labels_by_user=sender_labels_by_user,
             )
         if entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
             return self._reaction_to_text(entry.reaction)
@@ -848,11 +851,16 @@ class MessageQueue:
         message: QueueMessage,
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        sender_labels_by_user: Optional[Dict[str, str]] = None,
         replied_messages: Optional[List[QueueMessage]] = None,
         reply_number_resolver: Optional[Callable[[int], int]] = None,
         wrap_at_mention: bool = False,
     ) -> str:
-        name = self._message_sender_label(message, sender_labels=sender_labels)
+        name = self._message_sender_label(
+            message,
+            sender_labels=sender_labels,
+            sender_labels_by_user=sender_labels_by_user,
+        )
         content = self._render_message_content(
             message,
             replied_messages=replied_messages,
@@ -867,9 +875,10 @@ class MessageQueue:
         recalled_message: Optional[QueueMessage],
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        sender_labels_by_user: Optional[Dict[str, str]] = None,
     ) -> str:
         if recalled_message is not None:
-            return f"消息撤回: {self._message_to_text(recalled_message)}"
+            return f"消息撤回: {self._message_to_text(recalled_message, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)}"
         message_id = notice.message_id if notice.message_id is not None else "未知"
         return f"消息撤回: [原消息不可用, message_id={message_id}]"
 
@@ -924,14 +933,28 @@ class MessageQueue:
         message: QueueMessage,
         *,
         sender_labels: Optional[Dict[int, str]] = None,
+        sender_labels_by_user: Optional[Dict[str, str]] = None,
     ) -> str:
         if sender_labels is not None:
             label = sender_labels.get(id(message))
             if label:
                 return label
+        # 按 user_id 回退:被回复消息/撤回原文常是独立解析出的对象,
+        # id() 在"深拷贝快照 + 源对象混合"场景会 miss,user_id 索引不受影响
+        if sender_labels_by_user is not None and message.user_id is not None:
+            label = sender_labels_by_user.get(str(message.user_id))
+            if label:
+                return label
         return self._message_sender_name(message)
 
-    def _build_sender_labels(self, entries: List[QueueEntry]) -> Dict[int, str]:
+    def _build_sender_labels(
+        self, entries: List[QueueEntry]
+    ) -> Tuple[Dict[int, str], Dict[str, str]]:
+        """构建发送者标签:返回 (id 索引, user_id 索引) 两份映射。
+
+        重名用户加 QQ 号后缀消歧;user_id 索引供独立解析出的
+        (被回复/撤回)消息对象回退使用,保证同一发送者身份恒定。
+        """
         messages = [
             entry.message
             for entry in entries
@@ -949,13 +972,18 @@ class MessageQueue:
             if len(sender_ids) > 1
         }
         labels: Dict[int, str] = {}
+        labels_by_user: Dict[str, str] = {}
         for message in messages:
             name = self._message_sender_name(message)
             if name in duplicate_names and message.user_id is not None:
-                labels[id(message)] = f"{name}({message.user_id})"
+                label = f"{name}({message.user_id})"
+                labels[id(message)] = label
+                labels_by_user.setdefault(str(message.user_id), label)
             else:
                 labels[id(message)] = name
-        return labels
+                if message.user_id is not None:
+                    labels_by_user.setdefault(str(message.user_id), name)
+        return labels, labels_by_user
 
     def _build_new_duplicate_notes(
         self,

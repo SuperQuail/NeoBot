@@ -312,10 +312,22 @@ async def _run_sandbox_cleanup() -> int:
     # 6. 创建 Agent
     from neobot_chat.runtime.agent import Agent
 
+    maintenance_prompt = _MAINTENANCE_SYSTEM_PROMPT
+    try:
+        from neobot_app.prompt.store import PromptStore, sync_default_prompts
+
+        sync_default_prompts(DATA_DIR)
+        prompt_store = PromptStore(DATA_DIR)
+        maintenance_prompt = prompt_store.get(
+            "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
+        )
+    except Exception:
+        pass
+
     agent = Agent(
         provider=provider,
         toolset=toolset,
-        system_prompt=_MAINTENANCE_SYSTEM_PROMPT,
+        system_prompt=maintenance_prompt,
         max_iterations=30,
         command_timeout=120,
     )

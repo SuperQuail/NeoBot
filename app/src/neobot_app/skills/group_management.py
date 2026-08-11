@@ -37,8 +37,9 @@ class GroupManagementSkill(SkillModule):
             "  delete_msg — 撤回消息"
         )
 
-    def __init__(self, adapter: Any = None) -> None:
+    def __init__(self, adapter: Any = None, credential_manager: Any = None) -> None:
         self._adapter = adapter
+        self._credential_manager = credential_manager
 
     def reset(self) -> None:
         pass
@@ -49,14 +50,16 @@ class GroupManagementSkill(SkillModule):
         return [
             self._tool_def(
                 "manage_group",
-                "群管理：管理员、禁言、踢人、群名/群备注/群名片/头衔、加群请求、精华、撤回。",
+                "群管理：管理员、禁言、踢人、退群、群名/群备注/群名片/头衔、加群请求、精华、撤回。"
+                "踢人(kick)与退群(quit_group)需要超级管理员凭据,"
+                "凭据不足时先调用 credential__request 申请(见凭据操作说明)。",
                 {
                     "properties": {
                         "action": {
                             "type": "string",
                             "enum": [
                                 "set_admin", "set_ban", "set_whole_ban", "kick",
-                                "set_card", "set_group_name", "set_group_remark",
+                                "quit_group", "set_card", "set_group_name", "set_group_remark",
                                 "set_special_title", "handle_add_request",
                                 "set_essence", "delete_essence", "delete_msg",
                             ],
@@ -91,11 +94,35 @@ async def _handle_manage_group(self: GroupManagementSkill, args: dict) -> str:
         return _json({"ok": False, "error": "adapter 未配置"})
     action = str(args.get("action", "")).strip()
     try:
+        # 需要凭据的动作:执行前校验并消费凭据
+        if action in _CREDENTIAL_ACTIONS:
+            group_id = _as_int(args.get("group_id"))
+            if group_id is None:
+                return _json({"ok": False, "error": "缺少参数 group_id"})
+            chat_flow = f"group:{group_id}"
+            credential = None
+            if self._credential_manager is not None:
+                credential = self._credential_manager.consume(
+                    chat_flow=chat_flow, action=action
+                )
+            if credential is None:
+                return _json({
+                    "ok": False,
+                    "error": (
+                        f"操作 {action} 需要超级管理员凭据。"
+                        f"请先调用 credential__request 申请凭据(action=\"{action}\"),"
+                        "再请超级管理员在群内发送凭据文本,然后重试本操作。"
+                    ),
+                })
         api_action, params = _group_action_params(action, args)
         result = await self._adapter.call_api(api_action, params)
         return _json({"ok": True, "action": action, "api": api_action, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
+
+# 需要凭据的风险操作
+_CREDENTIAL_ACTIONS = frozenset({"kick", "quit_group"})
+
 
 def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
     group_id = _as_int(args.get("group_id"))
@@ -125,6 +152,10 @@ def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
             "group_id": _require(group_id, "group_id"),
             "user_id": _require(user_id, "user_id"),
             "reject_add_request": bool(args.get("reject_add_request", False)),
+        }
+    if action == "quit_group":
+        return "set_group_leave", {
+            "group_id": _require(group_id, "group_id"),
         }
     if action == "set_card":
         return "set_group_card", {

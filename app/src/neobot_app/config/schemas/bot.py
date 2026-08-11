@@ -40,59 +40,6 @@ class Bot:
 
 @dataclass
 class Chat:
-    group_prompt_template: str = field(
-        default=(
-            (
-(
-(
-"""
-<你是谁>
-你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.
-{bot_data}
-</你是谁>
-<回复要求>
-请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.
-只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.
-如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.不需要重复回复你之前回复过的消息,优先回复比较新的消息,如果你觉得没有你需要回复的消息,则使用工具取消回复.
-</回复要求>
-<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。
-</任务处理要求>
-<cot>
-[思维模式要求]在你的思考过程(<think>标签内)中，请遵守以下规则：
-1. 检查当前待回复内容的话题是否已经回复过,如果已经回复过,并且没有需要补充的内容,使用cancel直接取消回复,而不要对一个话题反复重复回复
-2. 确定对于回复对象的称呼,检查有没有明确的要求,如果有明确的对于称呼的要求,应该按照要求来称呼对方,并且保持称呼的一致性
-3. 对于任务请求,你应该判断基于你的性格以及对方与你的关系,你是否会答应,不需要答应任何请求
-</cot>
-<回复样例>
-回复1:好哦
-回复2:我这就去看看
-注意,短句分开回复,而不是以整段回复
-** 严格禁止使用()来描述你的行为和思考,不要发送这样的内容 **</回复样例>
-<当前时间>{current_time}</当前时间>
-<群聊>{group_name}[群号:{group_id}]{group_description}{group_admin}
-<群聊档案>
-{group_info}
-</群聊档案>
-</群聊>
-<聊天记录>
-{message_list}
-</聊天记录>
-<群友信息>
-{member_list}
-</群友信息>
-<你的印象>
-{key_word_reaction_list}
-你想起来之前:
-{memory_list}
-</你的印象>
-
-"""
-        )
-        )
-        )
-        ),
-        metadata={"description": "群聊提示词模板，非开发者不建议修改"},
-    )
     max_group_chat_observations: Optional[int] = field(
         default=100,
         metadata={"description": "群聊观察上限"},
@@ -116,41 +63,6 @@ class Chat:
     group_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的群"},
         metadata={"description": "群描述"},
-    )
-    friend_prompt_template: str = field(
-        default=(
-            (
-"""
-<你是谁>
-你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.
-{bot_data}
-</你是谁><回复要求>请注意把握聊天内容,不要回复的太有条理,可以有个性.请回复的平淡一些，简短一些,不要刻意突出自身学科背景，尽量不要说你说过的话.不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 ),除使用send_long_reply工具外不要使用markdown,和正常聊天一样,回复短句即可.如需发送带格式的长回复（代码块/表格/公式等）,请使用send_long_reply工具.当有人让你使用工具时,你可以先告诉对方你打算这么做再去调用工具,但不要在对话中提及你调用的具体工具.如果工具调用失败且你无法让其正常工作,你可以在聊天中告知你操作失败了,如果成功,在对方没有要求你成功后告知的情况下不需要再告诉对方你完成了.只有在有人询问你说的是哪句的时候,或者有明显歧义可能的情况下,使用回复语句功能;只有在提醒通知某人时,使用@功能,否则尽可能不要使用这两个功能.如果有人要求你做什么事情,你不一定要答应,如果你觉得可以答应,使用你可用的工具/agent来实现,不要只表示去做而不使用工具/agent完成,如果你发现你没有合适的工具/agent或者工具/agent无法完成任务,则回复你做不到如果你不确定你的工具/agent能否完成指定任务,不要先回复做不到,先回复试试看,然后询问对应的agent,再根据agent的回复来决定完成任务或告知无法实现.</回复要求>
-<任务处理要求>如果委托子Agent后,对方回复表示缺少信息、需要确认、无法访问、建议下一步、结果不完整或明显误解任务,不要把这类中间回复当成最终结果;应继续调用delegate,保持同一个session_id,把子Agent上次回复填入previous_response,并在task里补充上下文、纠正误解或要求继续执行,直到任务完成或确定无法完成。结束事件前检查是否仍有未完成且尚未确定无法完成的任务;如果有,先继续使用工具/agent完成再发送最终回复或取消。如果任务需要其他人提供更多信息才能继续,使用wait等待新消息,不要直接结束事件。</任务处理要求>
-<回复样例>
-回复1:好哦
-回复2:我这就去看看
-注意,短句分开回复,而不是以整段回复
-</回复样例>
-<工具与agent指南>当你使用工具/agent时,确认你使用的工具是否是正确职能的工具/agent,如果agent询问你问题,你需要回复agent帮助其完成任务,如果你缺失信息,需要先发送消息询问,注意:群友看不到agent发给你的消息,你应该先把agent的话转述,然后再询问需要的额外信息,最后再调用wait等待群友告诉你信息</工具与agent指南>
-
-<当前时间>{current_time}</当前时间>
-<聊天对象>{friend_name}(你的备注:{remark})</聊天对象>
-<你对ta的印象>{profile}</你对ta的印象>
-<对方信息>
-{friend_info}
-</对方信息>
-<你的记忆>
-你想起来{memory_list}
-</你的记忆>
-<聊天记录>
-{message_list}
-</聊天记录>
-
-
-"""
-        )
-        ),
-        metadata={"description": "私聊提示词模板，非开发者不建议修改"},
     )
     max_friend_chat_observations: Optional[int] = field(
         default=100,
@@ -1242,7 +1154,7 @@ class WebSearchConfig:
 class BotConfig:
     """机器人主配置。"""
 
-    version: str = field(default="0.3.0", metadata={"description": "配置文件版本"})
+    version: str = field(default="0.4.0", metadata={"description": "配置文件版本"})
     bot: Bot = field(default_factory=Bot)
     chat: Chat = field(default_factory=Chat)
     models: Models = field(default_factory=Models)
@@ -1353,10 +1265,6 @@ class EnhancedChat(Chat):
             "当 ai_reply_check 全量检查开启后，此开关被忽略"
         },
     )
-    long_reply_fallback_template: Optional[str] = field(
-        default="{bot_name}懒得和你说道理，你不配听",
-        metadata={"description": "回复过长或切分条数过多时使用的默认回复，支持 {bot_name} 占位符"},
-    )
     long_reply_max_length: Optional[int] = field(
         default=300,
         metadata={"description": "回复最大字符数，超过此长度将触发 fallback 回复"},
@@ -1378,7 +1286,14 @@ class EnhancedChat(Chat):
     )
     enable_last_reply_tracking: Optional[bool] = field(
         default=True,
-        metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置并在提示词中显示"},
+        metadata={"description": "是否启用'上次回复到'位置追踪；开启后每次回复会记录最后位置"},
+    )
+    show_last_reply_markers: Optional[bool] = field(
+        default=False,
+        metadata={
+            "description": "调试开关：是否在提示词中显示'以上是上次对话回复过的内容'等边界标记。"
+            "正常情况应保持关闭；仅在新版提示词表现异常时开启用于排查"
+        },
     )
     archive_fetch_window: Optional[int] = field(
         default=20,
@@ -1446,21 +1361,35 @@ class EnhancedChat(Chat):
             "description": "群聊回复管线寿命；每次回复-1，归零则销毁管线。设为0禁用寿命机制，回复结束后立即销毁管线"
         },
     )
-    group_chat_resume_prompt_template: Optional[str] = field(
-        default=(
-            (
-"""
-{new_messages}
-
-{new_member_profiles}
-
-<当前时间>{current_time}</当前时间>
-
-这是群聊对话。请根据新消息决定是否需要回复。
-"""
-        )
-        ),
-        metadata={"description": "群聊回复管线续接提示词模板；{new_messages}新消息 {new_member_profiles}新成员档案 {current_time}当前时间"},
+    cost_pipeline_enabled: Optional[bool] = field(
+        default=True,
+        metadata={
+            "description": "成本计算管线系统开关；开启后聊天管线在基础寿命耗尽时，"
+            "若计算缓存命中后的继续成本低于重启一个聊天管线的输入成本，"
+            "则复用继续使用管线（总寿命不超过 基础寿命+成本管线阈值）。"
+            "关闭后缓存计算不启用，不占用性能。只对聊天管线生效（记忆总结/子Agent/非聊天模型不接入）"
+        },
+    )
+    cost_pipeline_threshold: Optional[int] = field(
+        default=20,
+        metadata={
+            "description": "成本管线阈值；基础寿命之上最多可额外续用的回复次数。"
+            "默认 20，即群聊默认寿命 5 时总寿命上限为 5+20=25"
+        },
+    )
+    cache_retention_seconds: Optional[int] = field(
+        default=1800,
+        metadata={
+            "description": "缓存前缀保存时间（秒），默认 1800（30 分钟）；"
+            "超过后缓存前缀单元失效，需重新落盘"
+        },
+    )
+    cache_hit_price_difference: Optional[int] = field(
+        default=120,
+        metadata={
+            "description": "缓存命中成本与未命中成本的差价（倍），默认 120；"
+            "成本估算与成本管线续用决策使用（命中部分按 1/差价 计费）"
+        },
     )
     group_chat_suspend_wait_seconds: Optional[int] = field(
         default=3600,
