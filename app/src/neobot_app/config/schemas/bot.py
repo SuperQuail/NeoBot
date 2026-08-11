@@ -588,6 +588,26 @@ class Adapter:
         default=8090,
         metadata={"description": "本地适配器 HTTP/WebSocket 监听端口"},
     )
+    reverse_ws_host: str = field(
+        default="",
+        metadata={
+            "description": (
+                "OneBot 反向 WebSocket 服务端监听地址（onebot 模式）；"
+                "留空则读环境变量 NEO_BOT_ADAPTER_HOST（兼容回退 NEOBOT_LOCAL_ADAPTER_HOST），"
+                "再缺省 0.0.0.0"
+            )
+        },
+    )
+    reverse_ws_port: int = field(
+        default=0,
+        metadata={
+            "description": (
+                "OneBot 反向 WebSocket 服务端监听端口（onebot 模式）；"
+                "0 表示未配置，读环境变量 NEO_BOT_ADAPTER_PORT（兼容回退 "
+                "NEOBOT_LOCAL_ADAPTER_PORT），再缺省 8080"
+            )
+        },
+    )
 
 
 

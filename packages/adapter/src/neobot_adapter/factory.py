@@ -19,6 +19,9 @@ class AdapterSettings:
     local_auth_token: str = ""
     bot_user_id: int = 0
     bot_name: str = "Neo Bot"
+    # onebot 反向 WebSocket 服务端监听(空/0 表示未配置,回退环境变量与默认值)
+    reverse_ws_host: str = ""
+    reverse_ws_port: int = 0
 
 
 def create_adapter(
@@ -32,7 +35,12 @@ def create_adapter(
     adapter_logger = logger or NullLogger()
     mode = cfg.mode.strip().casefold()
     if mode == "onebot":
-        return OneBotAdapter(logger=adapter_logger, packet_callback=packet_callback)
+        return OneBotAdapter(
+            logger=adapter_logger,
+            packet_callback=packet_callback,
+            host=cfg.reverse_ws_host or None,
+            port=cfg.reverse_ws_port if cfg.reverse_ws_port else None,
+        )
     if mode == "local":
         return LocalAdapter(
             host=cfg.local_host,
@@ -59,4 +67,6 @@ def _coerce_settings(settings: AdapterSettings | Any | None) -> AdapterSettings:
         local_auth_token=str(getattr(settings, "local_auth_token", "") or ""),
         bot_user_id=int(getattr(settings, "bot_user_id", 0) or 0),
         bot_name=str(getattr(settings, "bot_name", "Neo Bot") or "Neo Bot"),
+        reverse_ws_host=str(getattr(settings, "reverse_ws_host", "") or ""),
+        reverse_ws_port=int(getattr(settings, "reverse_ws_port", 0) or 0),
     )
