@@ -56,7 +56,8 @@ class TorchYoloDetector:
         except ImportError as exc:
             raise RuntimeError(
                 "PyTorch 后端不可用:未安装 ultralytics。"
-                "请运行 `pip install ultralytics` 后重试(onnxruntime 不可用环境下的备选推理栈)。"
+                "onnxruntime 不可用环境的备选推理栈,请运行 `neobot init` 自动安装"
+                "(或手动执行 `uv pip install ultralytics`)后重试。"
             ) from exc
         try:
             self._model = YOLO(str(self.model_path))

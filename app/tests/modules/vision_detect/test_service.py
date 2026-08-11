@@ -168,6 +168,7 @@ async def test_inspect_image_returns_none_when_unavailable(
     monkeypatch.setattr(service_module, "OnnxDetector", _FakeDetector)
     service = _build_service(tmp_path)
     monkeypatch.setattr(service, "_usable", False)
+    monkeypatch.setattr(service, "_torch_usable", False)
     result = await service.inspect_image(_png_bytes())
     assert result is None
 

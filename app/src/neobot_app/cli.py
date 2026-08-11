@@ -402,12 +402,21 @@ def _init_scanned_zero(reports: list) -> bool:
     return True
 
 
+def _uv_python_install_cmd(package: str) -> list[str]:
+    """生成安装命令:部署环境均为 uv 管理(venv 内无 pip),优先 uv,回退 python -m pip。"""
+    import shutil
+    import sys
+
+    if shutil.which("uv"):
+        return ["uv", "pip", "install", "--python", sys.executable, package]
+    return [sys.executable, "-m", "pip", "install", package]
+
+
 def _install_ultralytics() -> bool:
     """在当前 Python 环境安装 ultralytics(PyTorch 备选推理栈)。"""
     import subprocess
-    import sys
 
-    cmd = [sys.executable, "-m", "pip", "install", "ultralytics"]
+    cmd = _uv_python_install_cmd("ultralytics")
     print(f"执行: {' '.join(cmd)}")
     print("(下载约 200MB+,视网络状况可能需要数分钟)")
     try:
@@ -433,6 +442,7 @@ def _ensure_vision_engine(service: Any) -> None:
 
     策略:onnxruntime 可运行的环境不装 torch(torch 体积大);
     仅当 onnxruntime 不可用时,询问用户安装 ultralytics 作为备选推理栈。
+    安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别。
     """
     if service.onnx_available:
         print("推理引擎: onnxruntime 可用(无需安装 PyTorch 备选栈)")
@@ -446,18 +456,16 @@ def _ensure_vision_engine(service: Any) -> None:
     print("推理引擎: onnxruntime 不可用(虚拟机环境常见:CPU 指令集未透传或运行库缺失)")
     print("         .onnx 模型无法运行,可用 PyTorch 备选推理栈运行 .pt 模型")
     if _ask_install_ultralytics():
-        if _install_ultralytics():
-            service.reset_availability()
-            if service.torch_available:
-                print("安装成功: PyTorch 备选推理栈已就绪,放入 .pt 模型后重跑 neobot init")
-            else:
-                print("安装完成但仍无法导入 ultralytics,请检查输出中的错误")
+        _install_ultralytics()
+        service.reset_availability()
+        if service.torch_available:
+            print("就绪: PyTorch 备选推理栈已可用,放入 .pt 模型后重跑 neobot init")
         else:
-            print("安装失败,可稍后手动执行: "
-                  f"{sys.executable} -m pip install ultralytics")
+            print("安装后仍未检测到 ultralytics,可稍后手动执行: "
+                  f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
     else:
         print("跳过安装。手动安装命令: "
-              f"{sys.executable} -m pip install ultralytics")
+              f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
         print("安装后重新运行 neobot init 即可生效")
     print()
 
