@@ -150,7 +150,8 @@ def test_onnx_unavailable_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(service_module, "OnnxDetector", _FakeDetector)
     service = _build_service(tmp_path)
     monkeypatch.setattr(service, "_usable", False)
-    with pytest.raises(DetectionError, match="onnxruntime 不可用"):
+    monkeypatch.setattr(service, "_torch_usable", False)
+    with pytest.raises(DetectionError, match="本地推理引擎不可用"):
         service.detect_pil(Image.new("RGB", (10, 10)))
 
 

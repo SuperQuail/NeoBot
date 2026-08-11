@@ -1,6 +1,8 @@
-"""VisionDetectService:YOLO/ONNX 图像检测服务。
+"""VisionDetectService:YOLO 图像检测服务。
 
-- 进程内单例检测器池:按 (模型路径, 输入尺寸) 缓存 onnxruntime Session
+- 进程内单例检测器池:按 (模型路径, 输入尺寸) 缓存检测器
+- 双推理栈:.onnx 模型走 onnxruntime;.pt 模型走 PyTorch/ultralytics
+  (onnxruntime 在虚拟机等环境无法加载时的备选方案)
 - 热重载:每次调用前廉价检查模型目录/索引变化,变化时增量重建
 - 模型可被 agent 主动选择:list_models() 提供每个模型的 id/name/description
 - 备用接口 inspect_image():当前未接入自动图片解析链路,注释标明备用
@@ -19,17 +21,23 @@ from typing import Any, Sequence
 from PIL import Image
 
 from neobot_app.vision_detect.engine import OnnxDetector
+from neobot_app.vision_detect.engine_torch import TorchYoloDetector
 from neobot_app.vision_detect.model_library import ModelEntry, ModelLibrary, ScanReport
 
 __all__ = ["VisionDetectService", "DetectionError"]
 
 
 class DetectionError(RuntimeError):
-    """检测失败(模型缺失/图片损坏/onnxruntime 不可用)。"""
+    """检测失败(模型缺失/图片损坏/推理引擎不可用)。"""
 
 
 class VisionDetectService:
-    """本地 ONNX/YOLO 图像检测服务。"""
+    """本地 YOLO 图像检测服务。
+
+    .onnx 模型用 onnxruntime 推理;.onnx 不可用(如虚拟机未透传 CPU 指令集
+    导致 DLL 加载失败)时,改用 .pt 模型 + PyTorch(ultralytics) 推理,
+    两者都可用时 .onnx 优先。
+    """
 
     def __init__(
         self,
@@ -44,12 +52,13 @@ class VisionDetectService:
         max_pixels: int = 40_000_000,
     ):
         self._library = ModelLibrary(models_dir, index_file)
-        self._detectors: dict[tuple[str, int], OnnxDetector] = {}
+        self._detectors: dict[tuple[str, int], OnnxDetector | TorchYoloDetector] = {}
         self._detector_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
         self._auto_refresh = auto_refresh
         self._logger = logger
         self._usable: bool | None = None
+        self._torch_usable: bool | None = None
         self._default_conf = default_conf
         self._default_iou = default_iou
         self._default_imgsz = imgsz
@@ -61,7 +70,7 @@ class VisionDetectService:
 
     @property
     def onnx_available(self) -> bool:
-        """onnxruntime 是否可用(不可用时服务整体禁用,skill 不注册)。"""
+        """onnxruntime 推理栈是否可用。"""
         if self._usable is None:
             try:
                 import onnxruntime  # type: ignore[import-untyped]  # noqa: F401
@@ -71,13 +80,31 @@ class VisionDetectService:
                 self._usable = False
         return self._usable
 
+    @property
+    def torch_available(self) -> bool:
+        """PyTorch(ultralytics) 推理栈是否可用。"""
+        if self._torch_usable is None:
+            try:
+                import torch  # type: ignore[import-untyped]  # noqa: F401
+                import ultralytics  # type: ignore[import-untyped]  # noqa: F401
+
+                self._torch_usable = True
+            except Exception:
+                self._torch_usable = False
+        return self._torch_usable
+
     def reset_availability(self) -> None:
-        """重置 onnxruntime 可用性缓存(环境修复后可重新探测)。"""
+        """重置推理引擎可用性缓存(环境修复后可重新探测)。"""
         self._usable = None
+        self._torch_usable = None
 
     @property
     def available(self) -> bool:
-        return not self._closed and self.onnx_available and bool(self._library.enabled_entries())
+        if self._closed:
+            return False
+        if not self._library.enabled_entries():
+            return False
+        return self.onnx_available or self.torch_available
 
     def _log(self, message: str) -> None:
         if self._logger is not None:
@@ -115,7 +142,10 @@ class VisionDetectService:
                 self._log(f"vision_detect 自动刷新失败: {exc}")
 
     def list_models(self) -> list[dict[str, Any]]:
-        """启用模型的元信息列表(供工具描述与 agent 选择模型)。"""
+        """启用模型的元信息列表(供工具描述与 agent 选择模型)。
+
+        backend 字段:onnx(onnxruntime)/ torch(PyTorch/ultralytics)。
+        """
         self._maybe_refresh()
         result: list[dict[str, Any]] = []
         for entry in self._library.enabled_entries():
@@ -128,6 +158,7 @@ class VisionDetectService:
                     "conf": entry.conf if entry.conf is not None else self._default_conf,
                     "imgsz": entry.imgsz or self._default_imgsz,
                     "file": entry.file,
+                    "backend": "torch" if entry.file.lower().endswith(".pt") else "onnx",
                 }
             )
         return result
@@ -161,22 +192,32 @@ class VisionDetectService:
             )
         return resolved
 
-    def _get_detector(self, entry: ModelEntry) -> OnnxDetector:
+    def _get_detector(self, entry: ModelEntry) -> OnnxDetector | TorchYoloDetector:
         imgsz = entry.imgsz or self._default_imgsz
         key = (entry.file, int(imgsz or 0))
         detector = self._detectors.get(key)
         if detector is None:
-            # 双检锁:冷启动并发首次检测时避免重复构建 ONNX 会话
+            # 双检锁:冷启动并发首次检测时避免重复构建推理引擎
             with self._detector_lock:
                 detector = self._detectors.get(key)
                 if detector is None:
-                    detector = OnnxDetector(
-                        self._library.models_dir / entry.file,
-                        names=entry.classes or None,
-                        conf=entry.conf if entry.conf is not None else self._default_conf,
-                        iou=entry.iou if entry.iou is not None else self._default_iou,
-                        imgsz=imgsz,
-                    )
+                    model_path = self._library.models_dir / entry.file
+                    if entry.file.lower().endswith(".pt"):
+                        detector = TorchYoloDetector(
+                            model_path,
+                            names=entry.classes or None,
+                            conf=entry.conf if entry.conf is not None else self._default_conf,
+                            iou=entry.iou if entry.iou is not None else self._default_iou,
+                            imgsz=imgsz,
+                        )
+                    else:
+                        detector = OnnxDetector(
+                            model_path,
+                            names=entry.classes or None,
+                            conf=entry.conf if entry.conf is not None else self._default_conf,
+                            iou=entry.iou if entry.iou is not None else self._default_iou,
+                            imgsz=imgsz,
+                        )
                     self._detectors[key] = detector
         return detector
 
@@ -209,12 +250,18 @@ class VisionDetectService:
             raise DetectionError(f"无效的 mode: {mode!r}(可选值: filter / all)")
         if self._closed:
             raise DetectionError("视觉检测服务已关闭")
-        if not self.onnx_available:
-            raise DetectionError("onnxruntime 不可用,视觉检测服务未启用")
+        if not (self.onnx_available or self.torch_available):
+            raise DetectionError(
+                "本地推理引擎不可用:onnxruntime 加载失败且 PyTorch(ultralytics) 未安装。"
+                "请安装 ultralytics 以启用备选推理栈(.pt 模型),"
+                "或修复 onnxruntime(.onnx 模型)"
+            )
         self._maybe_refresh()
         entries = self._resolve_ids(model_ids)
         if not entries:
-            raise DetectionError("没有可用的检测模型,请把 .onnx 放入模型目录并运行 `neobot init`")
+            raise DetectionError(
+                "没有可用的检测模型,请把 .onnx / .pt 放入模型目录并运行 `neobot init`"
+            )
         if min_conf is not None and (isinstance(min_conf, bool) or not 0.0 <= float(min_conf) <= 1.0):
             raise DetectionError(f"min_conf 必须在 0.0 到 1.0 之间,收到: {min_conf!r}")
         total_ms = 0.0

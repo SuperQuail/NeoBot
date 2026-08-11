@@ -99,7 +99,7 @@ def build_init_runner(*, vision_detect_service: Any = None) -> IndexRunner:
         runner.register(
             IndexTask(
                 name="vision_detect",
-                description="扫描 ONNX 模型目录并维护 models.toml 索引",
+                description="扫描模型目录(.onnx/.pt)并维护 models.toml 索引",
                 scan=vision_detect_service.refresh,
             )
         )

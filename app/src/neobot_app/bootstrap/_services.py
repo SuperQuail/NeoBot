@@ -247,10 +247,11 @@ def build_vision_detect_service(
     data_dir: Path,
     logger_factory: Any,
 ) -> Any:
-    """创建本地视觉检测服务(ONNX/YOLO)。
+    """创建本地视觉检测服务(YOLO)。
 
-    onnxruntime 未安装/配置禁用时返回 None;模型目录为空时不注册工具,
-    bot 可正常运行,放入模型后执行 `neobot init` 或重启即可启用。
+    双推理栈:.onnx 走 onnxruntime(默认);onnxruntime 不可用(如虚拟机
+    未透传 CPU 指令集导致 DLL 加载失败)时,.pt 模型走 PyTorch/ultralytics。
+    两者均未就绪时返回服务但 skill 不注册,bot 可正常运行。
     """
     cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
     if cfg is None or not cfg.enabled:
@@ -269,7 +270,14 @@ def build_vision_detect_service(
         logger=logger,
     )
     if not service.onnx_available:
-        logger.warning("onnxruntime 未安装,本地视觉检测服务已禁用(运行 `neobot init` 可检查)")
+        if service.torch_available:
+            logger.warning("onnxruntime 不可用,已切换 PyTorch 备选推理栈(.pt 模型)")
+        else:
+            logger.warning(
+                "onnxruntime 不可用且 PyTorch 未安装:本地视觉检测暂不可用。"
+                "onnx 环境无需处理;不可用环境请运行 `neobot init` 安装 ultralytics "
+                "备选推理栈,并将 .pt 模型放入模型目录"
+            )
         return service
     try:
         report = service.refresh()

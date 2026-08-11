@@ -1,8 +1,10 @@
-"""模型库:扫描 ONNX 模型目录 ↔ models.toml 索引。
+"""模型库:扫描模型目录(.onnx/.pt) ↔ models.toml 索引。
 
 设计目标(高扩展性):
-- 用户只需把 .onnx 放入 models/ 目录,运行 `neobot init` 或重启 bot,
+- 用户只需把 .onnx / .pt 放入 models/ 目录,运行 `neobot init` 或重启 bot,
   程序自动生成/合并 models.toml 骨架条目
+- .onnx 用 onnxruntime 推理,.pt(YOLO 权重)用 PyTorch/ultralytics 推理
+  (onnxruntime 不可用环境的备选推理栈)
 - 用户只填写每个模型的 id/name/description(给 agent 看的模型描述),
   其余字段(conf/iou/imgsz/classes)可选,程序提供默认与自动解析
 - 任何已登记条目的用户填写内容(非空字段)都不会被程序覆盖
@@ -24,7 +26,7 @@ from neobot_app.vision_detect.engine import resolve_names
 
 INDEX_HEADER = (
     "# 本文件由 neobot 自动维护骨架(运行 `neobot init` 可重新扫描 models/ 目录重建)。\n"
-    "# 每个 .onnx 文件对应一个模型条目,程序自动生成;请按需填写以下字段:\n"
+    "# 每个 .onnx / .pt 模型文件对应一个模型条目,程序自动生成;请按需填写以下字段:\n"
     "#   id          唯一标识(建议填写,不填则由文件名自动生成,重名自动加后缀)\n"
     "#   name        展示名(建议填写)\n"
     "#   description 模型能力描述(强烈建议填写),会展示给 AI 供其选择模型;\n"
@@ -40,6 +42,8 @@ INDEX_HEADER = (
     "# name = \"弥音脸部识别\"\n"
     "# description = \"检测图片中是否出现角色『弥音』的面部/头部形象\"\n"
     "# conf = 0.35\n"
+    "# 提示: .onnx 用 onnxruntime 推理;.pt(YOLO 权重)用 PyTorch/ultralytics 推理,\n"
+    "#       适用于 onnxruntime 不可用的环境(需 pip install ultralytics)\n"
     "# 注意: 手写注释与自定义字段会被保留,不会被程序覆盖。\n"
 )
 
@@ -181,7 +185,7 @@ class ModelLibrary:
             return sorted(
                 path
                 for path in self._models_dir.iterdir()
-                if path.is_file() and path.suffix.lower() == ".onnx"
+                if path.is_file() and path.suffix.lower() in (".onnx", ".pt")
             )
         except OSError:
             return []
@@ -397,6 +401,7 @@ class ModelLibrary:
         ONNX 有两种形态:带 "ONNX" 魔数(onnx 库写入)与纯 protobuf
         (ultralytics 等直接导出)。protobuf 首字节应为合法 field 头
         (0x08/0x10/0x0A/0x12...),文本文件/空文件会在此被拦截。
+        .pt 为 PyTorch 权重,应是 zip(PK) 魔数或 pickled 二进制。
         """
         path = self._models_dir / entry.file
         if not path.exists():
@@ -407,6 +412,10 @@ class ModelLibrary:
             size = path.stat().st_size
         except OSError as exc:
             return f"模型文件不可读: {exc}"
+        if entry.file.lower().endswith(".pt"):
+            if size >= 1024 and (header[:2] == b"PK" or header[:4] == b"\x80\x02\x95\x19"):
+                return ""
+            return f"模型文件不是有效的 PyTorch 权重(zip/pickle 头异常): {entry.file}"
         if header[:4] == b"ONNX":
             return ""
         # protobuf 合法 field 头:field 1-2(wire type 0 或 2),且文件不是空壳

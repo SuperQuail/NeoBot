@@ -402,6 +402,66 @@ def _init_scanned_zero(reports: list) -> bool:
     return True
 
 
+def _install_ultralytics() -> bool:
+    """在当前 Python 环境安装 ultralytics(PyTorch 备选推理栈)。"""
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-m", "pip", "install", "ultralytics"]
+    print(f"执行: {' '.join(cmd)}")
+    print("(下载约 200MB+,视网络状况可能需要数分钟)")
+    try:
+        result = subprocess.run(cmd)
+        return result.returncode == 0
+    except OSError as exc:
+        print(f"安装失败: {exc}")
+        return False
+
+
+def _ask_install_ultralytics() -> bool:
+    """询问用户是否安装 ultralytics;非交互环境(EOF)默认不装。"""
+    try:
+        answer = input("是否现在安装 ultralytics(PyTorch 备选推理栈,约 200MB+)? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("(非交互环境,跳过安装)")
+        return False
+    return answer in ("y", "yes")
+
+
+def _ensure_vision_engine(service: Any) -> None:
+    """init 时的推理引擎检查:onnx 可用则无需 torch;不可用则按需安装。
+
+    策略:onnxruntime 可运行的环境不装 torch(torch 体积大);
+    仅当 onnxruntime 不可用时,询问用户安装 ultralytics 作为备选推理栈。
+    """
+    if service.onnx_available:
+        print("推理引擎: onnxruntime 可用(无需安装 PyTorch 备选栈)")
+        print()
+        return
+    if service.torch_available:
+        print("推理引擎: onnxruntime 不可用,但 PyTorch(ultralytics) 已安装")
+        print("         .pt 模型将使用 PyTorch 推理;如需修复 onnxruntime 请检查运行库")
+        print()
+        return
+    print("推理引擎: onnxruntime 不可用(虚拟机环境常见:CPU 指令集未透传或运行库缺失)")
+    print("         .onnx 模型无法运行,可用 PyTorch 备选推理栈运行 .pt 模型")
+    if _ask_install_ultralytics():
+        if _install_ultralytics():
+            service.reset_availability()
+            if service.torch_available:
+                print("安装成功: PyTorch 备选推理栈已就绪,放入 .pt 模型后重跑 neobot init")
+            else:
+                print("安装完成但仍无法导入 ultralytics,请检查输出中的错误")
+        else:
+            print("安装失败,可稍后手动执行: "
+                  f"{sys.executable} -m pip install ultralytics")
+    else:
+        print("跳过安装。手动安装命令: "
+              f"{sys.executable} -m pip install ultralytics")
+        print("安装后重新运行 neobot init 即可生效")
+    print()
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """重新扫描并建立所有可再生的资源索引(不启动 Bot)。"""
     from neobot_app.bootstrap._config import build_config
@@ -435,13 +495,11 @@ def cmd_init(args: argparse.Namespace) -> None:
             imgsz=vision_cfg.imgsz,
             auto_refresh=vision_cfg.auto_refresh,
         )
-        if not service.onnx_available:
-            print("警告: onnxruntime 未安装,本地视觉检测不可用")
-            print("      安装依赖后重试: uv add --package neobot-app onnxruntime")
+        _ensure_vision_engine(service)
         runner.register(
             IndexTask(
                 name="vision_detect",
-                description="扫描 ONNX 模型目录并维护 models.toml 索引",
+                description="扫描模型目录(.onnx/.pt)并维护 models.toml 索引",
                 scan=service.refresh,
             )
         )
@@ -460,13 +518,11 @@ def cmd_init(args: argparse.Namespace) -> None:
             imgsz=defaults.imgsz,
             auto_refresh=defaults.auto_refresh,
         )
-        if not service.onnx_available:
-            print("警告: onnxruntime 未安装,本地视觉检测不可用")
-            print("      安装依赖后重试: uv add --package neobot-app onnxruntime")
+        _ensure_vision_engine(service)
         runner.register(
             IndexTask(
                 name="vision_detect",
-                description="扫描 ONNX 模型目录并维护 models.toml 索引(默认路径)",
+                description="扫描模型目录(.onnx/.pt)并维护 models.toml 索引(默认路径)",
                 scan=service.refresh,
             )
         )
@@ -487,7 +543,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(summary() if callable(summary) else str(report))
         print()
     if _init_scanned_zero(reports):
-        print(f"未发现 .onnx 模型文件: 请将模型放入 {models_dir} 后重新运行 neobot init")
+        print(f"未发现 .onnx / .pt 模型文件: 请将模型放入 {models_dir} 后重新运行 neobot init")
     else:
         print("完成。编辑模型索引(models.toml)填写模型描述后即可生效"
               "(无需重启;若关闭了自动刷新 auto_refresh 则需重启)。")

@@ -1,10 +1,11 @@
-"""VisionDetectSkill:基于本地 ONNX/YOLO 模型的图像检测工具。
+"""VisionDetectSkill:基于本地 YOLO 模型的图像检测工具。
 
 - list_models:查看可用模型清单(含能力描述),agent 依据描述选择模型
 - detect:必须指定 model,只检测 agent 选择的模型(不做全量检测)
 - 图片来源解析统一走 neobot_app.image.source(与 parse_image/emoji_add 一致)
-- 推理毫秒级(CPU 单张约 5-7ms),同步快速返回,不走会话工具队列
-- 模型库不可用(onnxruntime 缺失/无模型)时不暴露工具
+- 双推理栈:.onnx 走 onnxruntime(毫秒级);.pt 走 PyTorch/ultralytics
+  (onnxruntime 不可用环境的备选方案,如虚拟机未透传 CPU 指令集)
+- 模型库不可用(两推理栈均缺失/无模型)时不暴露工具
 """
 
 from __future__ import annotations
@@ -43,12 +44,12 @@ class VisionDetectSkill(SkillModule):
 
     @property
     def description(self) -> str:
-        return "视觉检测：用本地 ONNX/YOLO 模型检测图片中是否包含特定目标（如机器人自身形象）"
+        return "视觉检测：用本地 YOLO 模型检测图片中是否包含特定目标（如机器人自身形象）"
 
     @property
     def instructions(self) -> str:
         if not self._service.available:
-            # 服务不可用(onnxruntime 缺失/无模型):不注入说明,避免引导调用不存在的工具
+            # 服务不可用(推理引擎缺失/无模型):不注入说明,避免引导调用不存在的工具
             return ""
         return (
             "视觉检测 Skill 提供以下能力：\n\n"
