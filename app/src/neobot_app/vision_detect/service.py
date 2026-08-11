@@ -59,6 +59,8 @@ class VisionDetectService:
         self._logger = logger
         self._usable: bool | None = None
         self._torch_usable: bool | None = None
+        self._onnx_error: str = ""
+        self._torch_error: str = ""
         self._default_conf = default_conf
         self._default_iou = default_iou
         self._default_imgsz = imgsz
@@ -76,8 +78,10 @@ class VisionDetectService:
                 import onnxruntime  # type: ignore[import-untyped]  # noqa: F401
 
                 self._usable = True
-            except Exception:
+                self._onnx_error = ""
+            except Exception as exc:
                 self._usable = False
+                self._onnx_error = f"{type(exc).__name__}: {exc}"
         return self._usable
 
     @property
@@ -89,14 +93,32 @@ class VisionDetectService:
                 import ultralytics  # type: ignore[import-untyped]  # noqa: F401
 
                 self._torch_usable = True
-            except Exception:
+                self._torch_error = ""
+            except Exception as exc:
                 self._torch_usable = False
+                self._torch_error = f"{type(exc).__name__}: {exc}"
         return self._torch_usable
+
+    def engine_error(self, name: str) -> str:
+        """返回指定推理引擎不可用的具体原因(先触发探测再取缓存)。
+
+        name: "onnx" / "torch"。可用时返回空串;不可用时返回导入异常
+        (如 DLL 加载失败的具体报错,用于区分「未安装」与「装不上」)。
+        """
+        if name == "onnx":
+            self.onnx_available
+            return self._onnx_error
+        if name == "torch":
+            self.torch_available
+            return self._torch_error
+        raise ValueError(f"未知推理引擎: {name!r}")
 
     def reset_availability(self) -> None:
         """重置推理引擎可用性缓存(环境修复后可重新探测)。"""
         self._usable = None
         self._torch_usable = None
+        self._onnx_error = ""
+        self._torch_error = ""
 
     @property
     def available(self) -> bool:

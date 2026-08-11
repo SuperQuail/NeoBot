@@ -442,31 +442,44 @@ def _ensure_vision_engine(service: Any) -> None:
 
     策略:onnxruntime 可运行的环境不装 torch(torch 体积大);
     仅当 onnxruntime 不可用时,询问用户安装 ultralytics 作为备选推理栈。
-    安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别。
+    安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别;
+    探测失败会给出具体导入错误,区分「未安装」与「已装但无法加载」。
     """
     if service.onnx_available:
         print("推理引擎: onnxruntime 可用(无需安装 PyTorch 备选栈)")
         print()
         return
+    onnx_error = service.engine_error("onnx")
+    print("推理引擎: onnxruntime 不可用")
+    print(f"         {onnx_error or '未知原因'}")
     if service.torch_available:
-        print("推理引擎: onnxruntime 不可用,但 PyTorch(ultralytics) 已安装")
-        print("         .pt 模型将使用 PyTorch 推理;如需修复 onnxruntime 请检查运行库")
+        print("         .onnx 无法运行;PyTorch(ultralytics) 已安装,.pt 模型可用")
+        print("         (如需修复 onnxruntime 请检查 CPU 指令集透传与 VC++ 运行库)")
         print()
         return
-    print("推理引擎: onnxruntime 不可用(虚拟机环境常见:CPU 指令集未透传或运行库缺失)")
-    print("         .onnx 模型无法运行,可用 PyTorch 备选推理栈运行 .pt 模型")
-    if _ask_install_ultralytics():
-        _install_ultralytics()
-        service.reset_availability()
-        if service.torch_available:
-            print("就绪: PyTorch 备选推理栈已可用,放入 .pt 模型后重跑 neobot init")
-        else:
-            print("安装后仍未检测到 ultralytics,可稍后手动执行: "
-                  f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
+    torch_error = service.engine_error("torch")
+    print("         .onnx 模型无法运行,备选方案为 PyTorch 推理栈(.pt 模型)")
+    if torch_error:
+        print(f"         PyTorch 检测失败: {torch_error}")
+        print("         提示: 包已安装但仍无法导入,多为 CPU 指令集未透传/运行库缺失,"
+              "PyTorch 也可能无法运行")
+        print("         可手动验证: 直接 import torch 查看具体报错")
     else:
-        print("跳过安装。手动安装命令: "
-              f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
-        print("安装后重新运行 neobot init 即可生效")
+        print("         未检测到 ultralytics(未安装)")
+        if _ask_install_ultralytics():
+            _install_ultralytics()
+            service.reset_availability()
+            if service.torch_available:
+                print("就绪: PyTorch 备选推理栈已可用,放入 .pt 模型后重跑 neobot init")
+            else:
+                after_error = service.engine_error("torch")
+                print(f"安装后仍不可用: {after_error or '未知原因'}")
+                print("         可稍后手动执行: "
+                      f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
+        else:
+            print(f"        跳过安装。手动安装命令: "
+                  f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
+            print("        安装后重新运行 neobot init 即可生效")
     print()
 
 
