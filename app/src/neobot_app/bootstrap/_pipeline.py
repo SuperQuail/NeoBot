@@ -221,6 +221,7 @@ def build_pipelines_and_app(
     background_coros: list | None = None,
     self_heal_manager: Any = None,
     console_service: Any = None,
+    command_service: Any = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -241,6 +242,7 @@ def build_pipelines_and_app(
         config=config,
         logger=logger_factory.get_logger("app.event_pipeline"),
         reply_block_registry=reply_block_registry,
+        command_service=command_service,
     )
 
     notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)

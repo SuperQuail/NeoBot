@@ -85,6 +85,7 @@ class EventPipeline:
         config: BotConfig | None = None,
         logger: Logger | None = None,
         reply_block_registry: Any | None = None,
+        command_service: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -98,6 +99,7 @@ class EventPipeline:
         self._config = config
         self._logger = logger or NullLogger()
         self._reply_block_registry = reply_block_registry
+        self._command_service = command_service
         self._subscriptions: List[Subscription] = []
         self._started = False
         self._warmed_up_friends: set[str] = set()
@@ -321,6 +323,19 @@ class EventPipeline:
         if queue_key:
             await self._maybe_warmup_friend_chat(queue_key)
 
+        # 命令系统处理(私聊无需 @)
+        if self._command_service is not None:
+            result = await self._command_service.handle_message(
+                message, kind="private", queue_key=queue_key
+            )
+            if result is not None and result.consumed:
+                if result.background:
+                    self._start_command_sync_reply(
+                        message=message, queue=self._friend_queue,
+                        queue_key=queue_key, background=result.background,
+                    )
+                return
+
         # Bot 自己的消息不触发回复
         if self._is_bot_self(message):
             return
@@ -462,6 +477,19 @@ class EventPipeline:
             sender_name=_sender_name(message),
         )
         self._logger.info(f"收到群消息[{message.group_id or '未知'}]: {text}")
+
+        # 命令系统处理(允许 bot 自己触发,群聊需被 @bot)
+        if self._command_service is not None:
+            result = await self._command_service.handle_message(
+                message, kind="group", queue_key=queue_key
+            )
+            if result is not None and result.consumed:
+                if result.background:
+                    self._start_command_sync_reply(
+                        message=message, queue=self._group_queue,
+                        queue_key=queue_key, background=result.background,
+                    )
+                return
 
         # Bot 自己的消息不触发回复
         if self._is_bot_self(message):
@@ -1102,6 +1130,42 @@ class EventPipeline:
         if not callable(consume):
             return False
         return bool(consume(message))
+
+    def _start_command_sync_reply(
+        self,
+        *,
+        message: PrivateMessage | GroupMessage,
+        queue: MessageQueue,
+        queue_key: str,
+        background: str,
+    ) -> None:
+        """sync_reply 命令:命令结果作为背景内容触发回复管线。"""
+        if self._reply_orchestrator is None:
+            return
+        from neobot_app.willing.models import WillingDecision
+
+        decision = WillingDecision(
+            manager_name="command",
+            probability=1.0,
+            should_reply=True,
+            reasons=("command_sync_reply",),
+        )
+        pre_reply_msg_id = queue.get_last_message_id(queue_key)
+        self._replying_queues.add(queue_key)
+
+        async def on_reply_done() -> None:
+            self._replying_queues.discard(queue_key)
+            await self._process_post_reply_queue(queue_key)
+
+        self._reply_orchestrator.start_reply(
+            message=message,
+            queue=queue,
+            queue_key=queue_key,
+            decision=decision,
+            pre_reply_message_id=pre_reply_msg_id,
+            on_reply_done=on_reply_done,
+            background_content=background,
+        )
 
     def _is_bot_self(self, message) -> bool:
         """检查消息是否由 Bot 自己发送。"""

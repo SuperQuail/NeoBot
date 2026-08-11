@@ -93,6 +93,7 @@ def build_plugin_runtime(
     agent_registry: Any,
     skills_registry: Any = None,
     screenshots: "ScreenshotPort | None" = None,
+    command_registry: Any = None,
 ) -> Any:
     if not config.plugins.enabled:
         return None
@@ -157,6 +158,7 @@ def build_plugin_runtime(
         agent_registry=agent_registry,
         skills_registry=skills_registry,
         screenshots=screenshots,
+        app_commands=command_registry,
         auto_install_dependencies=True,
     )
     plugin_runtime.load_all()

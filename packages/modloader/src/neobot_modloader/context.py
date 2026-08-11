@@ -55,6 +55,79 @@ class MarkdownSkillRegistrar:
         self._registered = False
 
 
+class PluginCommandRegistrar:
+    """插件命令注册器:自动加插件名前缀,卸载时清理。
+
+    用法::
+
+        @ctx.app_commands.register("ping", description="响应测试")
+        async def _ping(ctx: Any) -> str:
+            return "pong"
+
+    或::
+
+        ctx.app_commands.register(
+            Command(name="ping", description="响应测试", handler=_ping)
+        )
+    """
+
+    def __init__(
+        self,
+        *,
+        plugin_name: str,
+        registry: Any | None,
+        record_cleanup: Any | None,
+    ) -> None:
+        self._plugin_name = plugin_name
+        self._registry = registry
+        self._record_cleanup = record_cleanup
+        self._registered: set[str] = set()
+
+    @property
+    def available(self) -> bool:
+        return self._registry is not None
+
+    def _command_name(self, name: str) -> str:
+        return f"{self._plugin_name}__{name}"
+
+    def register(self, command: Any) -> None:
+        """注册命令(自动加 {plugin_name}__ 前缀)。"""
+        if self._registry is None:
+            raise RuntimeError("命令注册表不可用(未注入 app_commands)")
+        command.name = self._command_name(command.name)
+        self._registry.register(command)
+        self._registered.add(command.name)
+        if self._record_cleanup is not None:
+            self._record_cleanup(self.unregister_all)
+
+    def __call__(self, name: str, **kwargs: Any):
+        """装饰器用法:@ctx.app_commands.register("ping", description=...)。"""
+        from types import SimpleNamespace
+
+        def _decorate(handler: Any) -> Any:
+            self.register(
+                SimpleNamespace(
+                    name=name,
+                    description=str(kwargs.get("description") or ""),
+                    usage=str(kwargs.get("usage") or ""),
+                    permission=int(kwargs.get("permission", 0)),
+                    sync_reply=bool(kwargs.get("sync_reply", False)),
+                    aliases=tuple(kwargs.get("aliases") or ()),
+                    handler=handler,
+                )
+            )
+            return handler
+
+        return _decorate
+
+    def unregister_all(self) -> None:
+        if self._registry is None:
+            return
+        for name in list(self._registered):
+            self._registry.unregister(name)
+        self._registered.clear()
+
+
 class RuntimePluginContext:
     """新 Plugin API 的内部运行时上下文。"""
 
@@ -80,6 +153,7 @@ class RuntimePluginContext:
         markdown_skill_registry: Any | None = None,
         record_skill_cleanup: Any | None = None,
         screenshots: ScreenshotPort | None = None,
+        app_commands: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._plugin_dir = plugin_dir
@@ -97,6 +171,7 @@ class RuntimePluginContext:
         self._media_sender = media_sender
         self._plugin_control = plugin_control
         self.screenshots = screenshots
+        self._app_commands = app_commands
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self.agents = PluginAgentRegistrar(
             plugin_name=plugin_name,
@@ -106,6 +181,11 @@ class RuntimePluginContext:
         self.markdown_skills = MarkdownSkillRegistrar(
             plugin_name=plugin_name,
             registry=markdown_skill_registry,
+            record_cleanup=record_skill_cleanup,
+        )
+        self.app_commands = PluginCommandRegistrar(
+            plugin_name=plugin_name,
+            registry=app_commands,
             record_cleanup=record_skill_cleanup,
         )
 

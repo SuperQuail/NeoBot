@@ -22,6 +22,7 @@ from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.utils.data_sync import sync_data_files
 
 from neobot_app.bootstrap._config import build_config
+from neobot_app.bootstrap._commands import build_command_service
 from neobot_app.bootstrap._providers import (
     build_main_provider,
     build_vision_provider,
@@ -375,6 +376,13 @@ def create_application() -> NeoBotApplication:
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
+    # ── 命令系统(被@触发、/ 前缀、权限树;先于插件构建,供插件注册命令) ──
+    command_service = build_command_service(
+        config=config,
+        adapter=adapter,
+        logger_factory=logger_factory,
+    )
+
     plugin_runtime = build_plugin_runtime(
         config=config,
         adapter=adapter,
@@ -387,6 +395,7 @@ def create_application() -> NeoBotApplication:
         agent_registry=agent_registry,
         skills_registry=markdown_skill_registry,
         screenshots=browser["screenshots"],
+        command_registry=command_service.registry if command_service is not None else None,
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -522,7 +531,8 @@ def create_application() -> NeoBotApplication:
         problem_solver_manager=problem_solver_manager,
         service_probe=_vision_detect_probe,
     )
-    return build_pipelines_and_app(
+
+    application = build_pipelines_and_app(
         adapter=adapter,
         memory=memory_svcs["memory"],
         group_message_queue=group_queue,
@@ -556,4 +566,13 @@ def create_application() -> NeoBotApplication:
         background_coros=maintenance_coros,
         self_heal_manager=self_heal_manager,
         console_service=console_service,
+        command_service=command_service,
     )
+
+    # 命令 /reboot:绑定应用重启回调
+    if command_service is not None:
+        restart = getattr(application, "request_restart", None)
+        if callable(restart):
+            command_service.set_restart_callback(restart)
+
+    return application

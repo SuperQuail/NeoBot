@@ -1476,7 +1476,11 @@ class EnhancedChat(Chat):
     )
     admin_accounts: List[str] = field(
         default_factory=list,
-        metadata={"description": "管理员QQ号列表，用于接收余额不足等系统通知"},
+        metadata={"description": "超级管理员QQ号列表，用于接收余额不足等系统通知；仅可通过配置增减"},
+    )
+    sub_admin_accounts: List[str] = field(
+        default_factory=list,
+        metadata={"description": "次级管理员QQ号列表；超级管理员可通过 /add_admin、/del_admin 命令增删"},
     )
     balance_check_cooldown_seconds: Optional[int] = field(
         default=300,
