@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import os
@@ -210,6 +211,9 @@ class ReplyToolExecutor(ToolExecutor):
         long_reply_max_sentence_count: int = 12,
         enable_ai_reply_regenerate: bool = True,
         logger: Logger | None = None,
+        credential_manager: Any = None,
+        config: Any = None,
+        config_update_callback: Any = None,
     ) -> None:
         self._send_reply = send_reply_handler
         self._willing = willing_service
@@ -244,6 +248,9 @@ class ReplyToolExecutor(ToolExecutor):
         self._long_reply_max_sentence_count = long_reply_max_sentence_count
         self._enable_ai_reply_regenerate = enable_ai_reply_regenerate
         self._wait_cooldown_seconds = wait_cooldown_seconds
+        self._credential_manager = credential_manager
+        self._config = config
+        self._config_update_callback = config_update_callback
         self._last_wait_time = 0.0
         self._session_tasks: set[asyncio.Task] = set()
         self._session_task_info: dict[int, dict] = {}
@@ -472,18 +479,25 @@ class ReplyToolExecutor(ToolExecutor):
                 [
                     _tool_def(
                         "adjust_reply_willingness",
-                        "调整运行时回复意愿设置。",
+                        "调整运行时回复意愿设置。\n"
+                        "- set_conversation 等动作仅允许作用于当前会话\n"
+                        "- set_global 设置全局回复意愿系数(影响所有群聊;私聊固定百分百"
+                        "不受影响),需要管理员凭据:先调用凭据 skill 的 request 工具申请"
+                        "凭据(action=willing_global,临时调整用 one_time,需要反复调整"
+                        "可申请 timed),管理员在聊天中发送凭据文本后重试",
                         {
                             "properties": {
                                 "action": {
                                     "type": "string",
                                     "enum": [
+                                        "set_global",
                                         "set_conversation",
                                         "remove_conversation",
                                         "add_blacklist",
                                         "remove_blacklist",
                                     ],
-                                    "description": "调整动作。仅允许作用于当前会话。",
+                                    "description": "调整动作。set_global 为全局(需凭据);"
+                                    "其余仅允许作用于当前会话。",
                                 },
                                 "conv_id": {
                                     "type": "string",
@@ -491,7 +505,7 @@ class ReplyToolExecutor(ToolExecutor):
                                 },
                                 "value": {
                                     "type": "number",
-                                    "description": "数值系数。",
+                                    "description": "数值系数（set_global / set_conversation 必填）。",
                                 },
                             },
                             "required": ["action"],
@@ -501,6 +515,34 @@ class ReplyToolExecutor(ToolExecutor):
                         "get_willingness_config",
                         "查看当前运行时回复意愿设置。",
                         {"properties": {}, "required": []},
+                    ),
+                    _tool_def(
+                        "manage_willing_config",
+                        "查看/编辑 config.toml 中的全局回复意愿系数(agent 模式生效项为 "
+                        "willing_agent_global_coefficient,common 模式为 "
+                        "willing_global_coefficient)。编辑后写回配置文件并热重载,立即生效"
+                        "并持久化(重启不丢失)。需要超级管理员凭据:先调用凭据 skill 的 "
+                        "request 工具申请凭据(action=willing_config),管理员签发后重试。",
+                        {
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["get", "set"],
+                                    "description": "get=查看当前配置值;set=修改(需 value)",
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "enum": ["agent", "common"],
+                                    "description": "可选，编辑哪个模式下的系数；"
+                                    "默认使用当前回复模式对应的系数。",
+                                },
+                                "value": {
+                                    "type": "number",
+                                    "description": "set 时必填，新的系数值（0.0-1.0）。",
+                                },
+                            },
+                            "required": ["action"],
+                        },
                     ),
                 ]
             )
@@ -740,6 +782,8 @@ class ReplyToolExecutor(ToolExecutor):
             return self._execute_adjust_willingness(args)
         if name == "get_willingness_config":
             return self._execute_get_willingness_config()
+        if name == "manage_willing_config":
+            return await self._execute_manage_willing_config(args)
         if name == "send_emoji":
             return await self._execute_send_emoji(args)
         if name == "search_custom_emoji":
@@ -1432,7 +1476,7 @@ class ReplyToolExecutor(ToolExecutor):
             return "错误：回复意愿服务未配置"
         action = str(args.get("action") or "")
         if action == "set_global":
-            return "错误：主回复工具不允许修改全局回复意愿；请仅调整当前会话"
+            return self._execute_set_global_willing(args)
         current_conv_id = str(self._conv_id or "").strip()
         requested_conv_id = str(args.get("conv_id") or current_conv_id).strip()
         if action in {
@@ -1461,6 +1505,127 @@ class ReplyToolExecutor(ToolExecutor):
         if action == "remove_blacklist":
             return self._willing.remove_runtime_blacklist(current_conv_id)
         return f"错误：未知操作 {action}"
+
+    def _execute_set_global_willing(self, args: dict) -> str:
+        """设置全局回复意愿系数(运行时):需 willing_global 凭据。
+
+        凭据类型由 agent 在凭据 skill 申请时决定:临时调整用 one_time,
+        需要反复调整可申请 timed(签发后持续有效)。
+        """
+        if self._willing is None:
+            return "错误：回复意愿服务未配置"
+        value = args.get("value")
+        if value is None:
+            return "错误：set_global 需要提供 value 参数"
+        try:
+            coefficient = float(value)
+        except (TypeError, ValueError):
+            return "错误：value 必须是数字"
+        if not 0.0 <= coefficient <= 1.0:
+            return "错误：value 必须在 0.0 到 1.0 之间"
+        chat_flow = self._credential_chat_flow()
+        if chat_flow is None:
+            return "错误：无法确定当前会话"
+        missing = self._credential_missing_message(
+            chat_flow, "willing_global", "全局回复意愿"
+        )
+        if missing is not None:
+            return missing
+        return self._willing.set_runtime_global_coefficient(coefficient)
+
+    async def _execute_manage_willing_config(self, args: dict) -> str:
+        """查看/编辑 config 中的全局回复意愿系数(持久化+热重载):需超级管理员凭据。"""
+        action = str(args.get("action") or "")
+        chat_flow = self._credential_chat_flow()
+        if chat_flow is None:
+            return "错误：无法确定当前会话"
+        missing = self._credential_missing_message(
+            chat_flow, "willing_config", "修改全局回复意愿配置"
+        )
+        if missing is not None:
+            return missing
+
+        if self._config is None:
+            return "错误：配置未注入,无法读取全局回复意愿系数"
+        chat = getattr(self._config, "chat", None)
+        if chat is None:
+            return "错误：配置缺少 chat 段"
+        reply_mode = str(getattr(chat, "reply_mode", "agent") or "agent")
+        agent_coeff = getattr(chat, "willing_agent_global_coefficient", 1.0)
+        common_coeff = getattr(chat, "willing_global_coefficient", 1.0)
+
+        if action == "get":
+            effective = "agent" if reply_mode == "agent" else "common"
+            return (
+                "当前全局回复意愿系数配置:\n"
+                f"- 回复模式: {reply_mode}(生效项: {effective})\n"
+                f"- agent 模式系数(willing_agent_global_coefficient): {agent_coeff}\n"
+                f"- common 模式系数(willing_global_coefficient): {common_coeff}"
+            )
+        if action != "set":
+            return f"错误：未知操作 {action}(可选值: get / set)"
+
+        target = str(args.get("target") or reply_mode or "agent").strip().casefold()
+        if target not in ("agent", "common"):
+            return "错误：target 必须是 agent 或 common"
+        value = args.get("value")
+        if value is None:
+            return "错误：set 需要提供 value 参数"
+        try:
+            coefficient = float(value)
+        except (TypeError, ValueError):
+            return "错误：value 必须是数字"
+        if not 0.0 <= coefficient <= 1.0:
+            return "错误：value 必须在 0.0 到 1.0 之间"
+        key = (
+            "willing_agent_global_coefficient"
+            if target == "agent"
+            else "willing_global_coefficient"
+        )
+        callback = self._config_update_callback
+        if callback is None:
+            return "错误：配置更新能力未注入"
+        try:
+            result = callback(key, coefficient)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            return f"错误：配置更新失败: {exc}"
+        if isinstance(result, str) and result.startswith("错误"):
+            return result
+        return (
+            f"已更新全局回复意愿系数: chat.{key} = {coefficient:.3f}"
+            "(已写回 config.toml 并热重载,立即生效;重启不丢失)"
+        )
+
+    def _credential_chat_flow(self) -> str | None:
+        conv_kind = str(self._conv_kind or "").strip()
+        conv_id = str(self._conv_id or "").strip()
+        if not conv_kind or not conv_id:
+            return None
+        return f"{conv_kind}:{conv_id}"
+
+    def _credential_missing_message(
+        self, chat_flow: str, action: str, purpose: str
+    ) -> str | None:
+        """检查并消费凭据;无可用凭据时返回引导文案,否则返回 None。"""
+        if self._credential_manager is None:
+            return (
+                f"错误：凭据服务未配置,无法执行{purpose}。"
+                "请联系管理员检查配置"
+            )
+        credential = self._credential_manager.consume(
+            chat_flow=chat_flow, action=action, commit=True
+        )
+        if credential is not None:
+            return None
+        return (
+            f"需要管理员凭据才能执行{purpose}。\n"
+            f"请调用凭据 skill 的 request 工具申请凭据: action={action}\n"
+            "- 临时调整一次: credential_type=one_time(默认)\n"
+            "- 需要反复调整: credential_type=timed(签发后持续有效,可多次使用)\n"
+            "管理员在聊天中发送凭据文本后,凭据即生效,届时再执行原操作。"
+        )
 
     def _execute_get_willingness_config(self) -> str:
         if self._willing is None:
@@ -2069,6 +2234,9 @@ def build_reply_toolset(
     enable_ai_reply_regenerate: bool = True,
     logger: Logger | None = None,
     policy: ToolAccessPolicy | None = None,
+    credential_manager: Any = None,
+    config: Any = None,
+    config_update_callback: Any = None,
 ) -> Toolset:
     executor = ReplyToolExecutor(
         send_reply_handler=send_reply_handler,
@@ -2105,6 +2273,9 @@ def build_reply_toolset(
         long_reply_max_sentence_count=long_reply_max_sentence_count,
         enable_ai_reply_regenerate=enable_ai_reply_regenerate,
         logger=logger,
+        credential_manager=credential_manager,
+        config=config,
+        config_update_callback=config_update_callback,
     )
     definitions = executor.definitions()
     specs = [

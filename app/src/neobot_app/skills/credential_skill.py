@@ -3,7 +3,7 @@
 申请流程:
 1. bot 调用 credential__request(action, credential_type, duration_minutes)
 2. 生成凭据文本,在聊天中请求管理员发送该文本
-3. 管理员发送后凭据签发,风险操作(kick/quit_group)方可执行
+3. 管理员发送后凭据签发,风险操作(kick/quit_group 等)方可执行
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class CredentialSkill(SkillModule):
 
     @property
     def description(self) -> str:
-        return "风险操作凭据：申请凭据（一次性/时间凭据），供踢人/退群等管理操作使用"
+        return "风险操作凭据：申请凭据（一次性/时间凭据），供踢人/退群/全局回复意愿等管理操作使用"
 
     @property
     def instructions(self) -> str:
@@ -45,7 +45,7 @@ class CredentialSkill(SkillModule):
             "  credential__request — 申请风险操作凭据\n"
             "  credential__check — 查看当前会话的凭据状态\n\n"
             "【申请流程（重要）】\n"
-            "  1. 执行踢人/退群等需要凭据的操作前，先调用 credential__request 申请凭据\n"
+            "  1. 执行踢人/退群/全局回复意愿等需要凭据的操作前，先调用 credential__request 申请凭据\n"
             "  2. 把返回的 code 文本告诉用户：『我需要凭据来做{action}，发送 {code} 让我获得凭据』\n"
             "  3. 管理员在群内发送该文本后，凭据自动签发（必须单独发送该文本，不要夹带其他文字）\n"
             "  4. 签发后再次执行原操作即可（凭据校验通过）\n"
@@ -56,7 +56,11 @@ class CredentialSkill(SkillModule):
             "  - timed：时间凭据，签发后持续有效（默认 5 分钟，最长 30 分钟）\n\n"
             "【当前需要凭据的操作】\n"
             "  - kick：踢人（需超级管理员签发）\n"
-            "  - quit_group：退群（需超级管理员签发）"
+            "  - quit_group：退群（需超级管理员签发）\n"
+            "  - willing_global：设置全局回复意愿（运行时，影响所有群聊；私聊固定百分百"
+            "不受影响；需次级管理员签发；临时调整一次用 one_time，反复调整可申请 timed）\n"
+            "  - willing_config：查看/编辑 config 中的全局回复意愿系数（持久化+热重载；"
+            "需超级管理员签发）"
         )
 
     def reset(self) -> None:

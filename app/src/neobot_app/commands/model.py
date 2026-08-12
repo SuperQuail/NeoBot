@@ -65,9 +65,10 @@ class Command:
 
     name: str
     description: str
-    handler: Callable[[CommandContext], Awaitable[str]]
+    handler: Callable[[CommandContext], Awaitable[str | None]]
     permission: int = PERM_EVERYONE
     usage: str = ""
+    params: tuple[tuple[str, str], ...] = ()  # (参数名, 说明),用于 /help <命令> 详情
     sync_reply: bool = False
     aliases: tuple[str, ...] = ()
 

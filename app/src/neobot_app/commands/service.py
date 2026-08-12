@@ -33,6 +33,8 @@ class CommandService:
         config_save_callback: ConfigSaveCallback | None = None,
         logger: Any = None,
         register_builtins: bool = True,
+        markdown_image_converter: Any = None,
+        file_server: Any = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -42,6 +44,8 @@ class CommandService:
         self._config_save_callback = config_save_callback
         self._logger = logger
         self._restart_callback: RestartCallback | None = None
+        self._markdown_image_converter = markdown_image_converter
+        self._file_server = file_server
         if register_builtins:
             for command in build_builtin_commands(self):
                 self._registry.register(command)
@@ -138,7 +142,9 @@ class CommandService:
             )
             return CommandHandleResult(consumed=True, background=background)
 
-        await self._send_text(kind, queue_key, result_text, at_user_id=user_id)
+        if result_text is not None:
+            # handler 返回 None 表示已自行发送回复(如图片),不再重复发送
+            await self._send_text(kind, queue_key, result_text, at_user_id=user_id)
         return CommandHandleResult(consumed=True)
 
     # ── 消息解析辅助 ──
@@ -211,6 +217,48 @@ class CommandService:
         self, kind: str, conv_id: str, text: str, *, at_user_id: int | None
     ) -> None:
         await self._send_text(kind, conv_id, text, at_user_id=at_user_id)
+
+    async def send_markdown_image(
+        self,
+        kind: str,
+        conv_id: str,
+        markdown: str,
+        *,
+        at_user_id: int | None = None,
+    ) -> bool:
+        """将 markdown 渲染为图片发送;成功返回 True,失败返回 False(调用方降级)。
+
+        依赖 markdown_image_converter 与 file_server;任一缺失即返回 False。
+        """
+        if (
+            self._markdown_image_converter is None
+            or self._file_server is None
+            or self._adapter is None
+        ):
+            return False
+        try:
+            image_path = await self._markdown_image_converter.convert(markdown)
+        except Exception as exc:
+            self._log(f"markdown 渲染失败,降级文本发送: {exc}")
+            return False
+
+        from neobot_app.utils.media_sender import prepare_image_segment
+
+        from neobot_contracts.models import ConversationRef
+
+        segments: list[dict[str, Any]] = []
+        if kind == "group" and at_user_id is not None:
+            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        segments.append(prepare_image_segment(self._file_server, image_path))
+        conv_ref = ConversationRef(
+            kind="group" if kind == "group" else "private", id=str(conv_id)
+        )
+        try:
+            await self._adapter.send(conv_ref, segments)
+            return True
+        except Exception as exc:
+            self._log(f"命令图片发送失败: {exc}")
+            return False
 
     async def _send_text(
         self, kind: str, conv_id: str, text: str, *, at_user_id: int | None

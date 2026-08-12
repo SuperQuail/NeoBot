@@ -437,13 +437,216 @@ def _ask_install_ultralytics() -> bool:
     return answer in ("y", "yes")
 
 
+# ── VC++ 运行库检测与安装(onnxruntime 1114 最常见根因) ──
+
+_VC_DLLS = [
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+]
+_VC_MIN_VERSION = (14, 40, 0, 0)  # VC++ 2015-2022 redist 新版基线
+_VC_SYSTEM32 = Path(r"C:\Windows\System32")
+VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+
+
+def _file_version_win(path: str) -> str:
+    """ctypes WinAPI 读取文件版本。"""
+    import ctypes
+    import struct
+
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, buf):
+            return ""
+        ptr = ctypes.c_void_p()
+        total = ctypes.c_uint()
+        if not ctypes.windll.version.VerQueryValueW(
+            buf, "\\", ctypes.byref(ptr), ctypes.byref(total)
+        ):
+            return ""
+        data = ctypes.string_at(ptr, total.value)
+        if len(data) < 16:
+            return ""
+        ms, ls = struct.unpack_from("<II", data, 8)
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    except Exception:
+        return ""
+
+
+def _vc_runtime_issues() -> list[str]:
+    """Windows 下检查 VC++ 运行库,返回问题描述列表(空 = 正常)。"""
+    import platform
+    from pathlib import Path
+
+    if platform.system() != "Windows":
+        return []
+    issues: list[str] = []
+    system32 = _VC_SYSTEM32
+    for dll in _VC_DLLS:
+        path = system32 / dll
+        if not path.exists():
+            issues.append(f"缺失 {dll}(VC++ 运行库不完整)")
+            continue
+        version = _file_version_win(str(path))
+        try:
+            parsed = tuple(int(p) for p in version.split(".")) if version else ()
+        except ValueError:
+            parsed = ()
+        if parsed and parsed < _VC_MIN_VERSION:
+            issues.append(f"{dll} 版本过旧: {version}(建议 ≥14.40)")
+    return issues
+
+
+def _find_local_vc_redist() -> Path | None:
+    """查找发布包内置的离线 VC++ redist(与 bot 的 scripts 目录同源)。"""
+    from pathlib import Path
+
+    candidates = [
+        Path(__file__).resolve().parents[2] / "scripts" / "vc_redist" / "vc_redist.x64.exe",
+        Path.cwd() / "scripts" / "vc_redist" / "vc_redist.x64.exe",
+        Path.cwd() / "vc_redist.x64.exe",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 1024 * 1024:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _ask_install_vc_redist(package: Path | None) -> str:
+    """询问安装方式,返回 "offline" / "online" / ""(跳过)。
+
+    - 有内置离线包:提供 [1] 离线包(无网可用)与 [2] 在线下载(最新版)两个选择
+    - 无离线包:仅询问是否在线下载
+    """
+    try:
+        if package is not None:
+            answer = input(
+                f"请选择 VC++ 运行库安装方式(需管理员,可能弹出 UAC):\n"
+                f"  [1] 使用内置离线包 {package.name} "
+                f"({package.stat().st_size / 1024 / 1024:.1f} MB,无网可用)\n"
+                f"  [2] 在线下载最新版(约 25 MB)\n"
+                f"  [n/N] 跳过\n"
+                f"请选择: "
+            ).strip().lower()
+            if answer in ("1", "offline", "local"):
+                return "offline"
+            if answer in ("2", "online", "download"):
+                return "online"
+            return ""
+        answer = input(
+            "未找到内置离线包,是否在线下载最新版 VC++ 运行库并安装"
+            "(约 25 MB,需管理员,可能弹出 UAC)? [y/N] "
+        ).strip().lower()
+        return "online" if answer in ("y", "yes") else ""
+    except (EOFError, KeyboardInterrupt):
+        print("(非交互环境,跳过安装)")
+        return ""
+
+
+def _download_vc_redist() -> Path | None:
+    """在线下载最新 VC++ redist 到临时目录。"""
+    import tempfile
+    import urllib.request
+
+    target = Path(tempfile.gettempdir()) / "vc_redist.x64.exe"
+    print(f"在线下载: {VC_REDIST_URL}")
+    try:
+        urllib.request.urlretrieve(VC_REDIST_URL, target)
+        print(f"已下载: {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
+        return target
+    except Exception as exc:
+        print(f"下载失败: {exc}")
+        return None
+
+
+def _install_vc_redist(package: Path) -> bool:
+    """提权静默安装 VC++ redist(UAC 弹窗);装完返回是否已生效。"""
+    import subprocess
+
+    print(f"执行: Start-Process '{package}' /install /quiet /norestart(触发 UAC)")
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Start-Process -FilePath "
+                    f"'{package}' -ArgumentList '/install','/quiet','/norestart' "
+                    "-Verb RunAs -Wait"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result.returncode == 0
+    except Exception as exc:
+        print(f"安装调用失败: {exc}")
+        return False
+
+
+def _ensure_vc_runtime_fixed() -> bool:
+    """onnx 不可用时优先处理 VC++ 运行库(Windows):检测 → 选择安装方式 → 安装。
+
+    Returns: True 表示运行库问题已解决(可重新探测 onnxruntime)。
+    """
+    import platform
+
+    if platform.system() != "Windows":
+        return False
+    issues = _vc_runtime_issues()
+    if not issues:
+        return False
+    print("检测到 VC++ 运行库问题(onnxruntime/torch DLL 初始化失败 1114 的最常见根因):")
+    for item in issues:
+        print(f"         - {item}")
+    package = _find_local_vc_redist()
+    if package is not None:
+        print(f"         已找到内置离线包: {package}(可离线安装)")
+    else:
+        print("         未找到内置离线包(scripts/vc_redist/vc_redist.x64.exe),"
+              "可选择在线下载安装")
+    choice = _ask_install_vc_redist(package)
+    if not choice:
+        print("         跳过。可稍后手动安装: scripts/vc_redist/vc_redist.x64.exe"
+              "(右键管理员)或 scripts/onnx_deploy_check.py --install-redist")
+        return False
+    installer = package if choice == "offline" else _download_vc_redist()
+    if installer is None:
+        print("         获取安装包失败,请稍后重试或手动安装")
+        return False
+    if not _install_vc_redist(installer):
+        print("         安装失败,请以管理员身份手动运行后重试")
+        return False
+    leftover = _vc_runtime_issues()
+    if leftover:
+        print("         安装完成但运行库仍存在问题(可能需要重启后生效):")
+        for item in leftover:
+            print(f"           - {item}")
+        return False
+    print("         VC++ 运行库已更新完成")
+    return True
+
+
 def _ensure_vision_engine(service: Any) -> None:
     """init 时的推理引擎检查:onnx 可用则无需 torch;不可用则按需安装。
 
-    策略:onnxruntime 可运行的环境不装 torch(torch 体积大);
-    仅当 onnxruntime 不可用时,询问用户安装 ultralytics 作为备选推理栈。
-    安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别;
-    探测失败会给出具体导入错误,区分「未安装」与「已装但无法加载」。
+    策略:
+    1. onnxruntime 不可用且是 Windows:优先检测 VC++ 运行库(1114 最常见根因),
+       询问用户用内置离线包修复,修好后重新探测 onnxruntime
+    2. 仍不可用:询问安装 ultralytics(PyTorch 备选推理栈,.pt 模型)
+    3. 安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别;
+       探测失败会给出具体导入错误,区分「未安装」与「已装但无法加载」。
     """
     if service.onnx_available:
         print("推理引擎: onnxruntime 可用(无需安装 PyTorch 备选栈)")
@@ -452,6 +655,12 @@ def _ensure_vision_engine(service: Any) -> None:
     onnx_error = service.engine_error("onnx")
     print("推理引擎: onnxruntime 不可用")
     print(f"         {onnx_error or '未知原因'}")
+    if _ensure_vc_runtime_fixed():
+        service.reset_availability()
+        if service.onnx_available:
+            print("推理引擎: 修复 VC++ 运行库后 onnxruntime 已可用")
+            print()
+            return
     if service.torch_available:
         print("         .onnx 无法运行;PyTorch(ultralytics) 已安装,.pt 模型可用")
         print("         (如需修复 onnxruntime 请检查 CPU 指令集透传与 VC++ 运行库)")

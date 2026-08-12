@@ -22,7 +22,11 @@ from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.utils.data_sync import sync_data_files
 
 from neobot_app.bootstrap._config import build_config
-from neobot_app.bootstrap._commands import build_command_service, build_credential_manager
+from neobot_app.bootstrap._commands import (
+    build_command_service,
+    build_credential_manager,
+    _make_chat_config_update_callback,
+)
 from neobot_app.bootstrap._providers import (
     build_main_provider,
     build_vision_provider,
@@ -360,6 +364,8 @@ def create_application() -> NeoBotApplication:
         config=config,
         adapter=adapter,
         logger_factory=logger_factory,
+        markdown_image_converter=markdown_image_converter,
+        file_server=file_server,
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
@@ -508,6 +514,8 @@ def create_application() -> NeoBotApplication:
         skills_registry=markdown_skill_registry,
         prompt_store=prompt_store,
         cache_calculator=cache_calculator,
+        credential_manager=credential_manager,
+        config_update_callback=_make_chat_config_update_callback(config),
     )
     console_telemetry = ConsoleTelemetry()
     plugin["hook_bus"].subscribe_runtime(

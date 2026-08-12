@@ -10,6 +10,7 @@ from neobot_app.commands.model import (
     PERM_SUPER_ADMIN,
     Command,
     CommandContext,
+    permission_name,
 )
 
 if TYPE_CHECKING:
@@ -22,14 +23,19 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
     return [
         Command(
             name="help",
-            description="查看可用命令列表",
+            description="查看可用命令列表;/help <命令名> 查看单个命令的详细说明与参数",
             permission=PERM_EVERYONE,
+            usage="[命令名]",
+            params=(
+                ("命令名", "可选。查看指定命令的详细说明、参数与权限要求"),
+            ),
             handler=_handle_help,
         ),
         Command(
             name="reboot",
             description="重启 Bot(超级管理员)",
             permission=PERM_SUPER_ADMIN,
+            params=(),
             handler=_handle_reboot,
         ),
         Command(
@@ -37,6 +43,9 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             description="添加次级管理员,用 QQ 号或 @ 指定(超级管理员)",
             permission=PERM_SUPER_ADMIN,
             usage="<QQ号|@某人>",
+            params=(
+                ("QQ号|@某人", "必填。要添加为次级管理员的 QQ 号,或直接 @ 对方"),
+            ),
             handler=_handle_add_admin,
         ),
         Command(
@@ -44,20 +53,103 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             description="删除次级管理员,用 QQ 号或 @ 指定(超级管理员)",
             permission=PERM_SUPER_ADMIN,
             usage="<QQ号|@某人>",
+            params=(
+                ("QQ号|@某人", "必填。要移除的次级管理员 QQ 号,或直接 @ 对方"),
+            ),
             handler=_handle_del_admin,
         ),
     ]
 
 
-async def _handle_help(ctx: CommandContext) -> str:
-    """列出当前用户可见的命令。"""
-    lines = ["可用命令:"]
+def _render_command_list_markdown(commands: list[Command]) -> str:
+    """命令列表 markdown(列表)。"""
+    lines = ["# 可用命令", ""]
+    for command in commands:
+        name_part = command.display_name
+        if command.usage:
+            name_part += f" {command.usage}"
+        lines.append(f"- `{name_part}` — {command.description}")
+        lines.append(f"  - 权限: **{permission_name(command.permission)}**")
+    lines.append("")
+    lines.append("> 命令以 `/` 开头,群聊中需先 @bot。")
+    return "\n".join(lines)
+
+
+def _render_command_detail_markdown(command: Command) -> str:
+    """单个命令的详细说明 markdown。"""
+    lines = [
+        f"# `{command.display_name}`",
+        "",
+        f"{command.description}",
+        "",
+        "| 项目 | 内容 |",
+        "| --- | --- |",
+        f"| 权限 | {permission_name(command.permission)} |",
+        f"| 用法 | `{command.display_name}{' ' + command.usage if command.usage else ''}` |",
+    ]
+    if command.aliases:
+        lines.append(f"| 别名 | `{'`、`'.join('/' + alias for alias in command.aliases)}` |")
+    if command.params:
+        lines.extend(
+            [
+                "",
+                "## 参数",
+                "",
+                "| 参数 | 说明 |",
+                "| --- | --- |",
+            ]
+        )
+        for name, description in command.params:
+            lines.append(f"| `{name}` | {description} |")
+    return "\n".join(lines)
+
+
+async def _handle_help(ctx: CommandContext) -> str | None:
+    """列出当前用户可见的命令;带参数时显示指定命令的详情。
+
+    使用 markdown 渲染器输出为图片发送;渲染失败时降级为纯文本。
+    返回 None 表示已自行发送回复。
+    """
     visible = [
         command
         for command in ctx.service.registry.commands()
         if ctx.service.permissions.can(ctx.user_id, command.permission)
     ]
     visible.sort(key=lambda command: command.name)
+
+    target = None
+    if ctx.args:
+        target = ctx.args[0].lstrip("/")
+
+    if target:
+        command = ctx.service.registry.get(target)
+        if command is None:
+            text = (
+                f"未找到命令 `/{target}`。\n\n"
+                "可用命令:\n" + "\n".join(f"  {item.help_line}" for item in visible)
+            )
+        elif command not in visible:
+            text = f"命令 `/{target}` 存在,但你没有权限查看其详情(需要权限:{permission_name(command.permission)})。"
+        else:
+            markdown = _render_command_detail_markdown(command)
+            if await ctx.service.send_markdown_image(
+                ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
+            ):
+                return None
+            text = (
+                f"{command.help_line}\n"
+                + ("参数:\n" + "\n".join(f"  {name} — {desc}" for name, desc in command.params))
+            )
+        if await ctx.service.send_markdown_image(ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id):
+            return None
+        return text
+
+    markdown = _render_command_list_markdown(visible)
+    if await ctx.service.send_markdown_image(
+        ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
+    ):
+        return None
+    lines = ["可用命令:"]
     for command in visible:
         lines.append(f"  {command.help_line}")
     lines.append("命令以 / 开头,群聊中需先 @bot。")

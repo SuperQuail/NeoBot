@@ -10,7 +10,14 @@
 
 可选参数:
     --try-versions  自动回退尝试多个 onnxruntime 版本(默认开启)
-    --install-redist 自动下载安装 VC++ 运行库(需管理员,默认仅提示)
+    --install-redist 自动安装 VC++ 运行库(需管理员,默认仅提示)
+                    优先使用本地离线包 scripts/vc_redist/vc_redist.x64.exe,
+                    不存在时在线下载
+
+DLL 数据包说明:
+    发布包已内置 scripts/vc_redist/vc_redist.x64.exe(微软官方 VC++ 2015-2022
+    Redistributable x64,14.44)。WinError 1114(初始化例程失败)最常见根因是
+    运行库版本过旧(如 14.31=2019 版),离线安装本包即可覆盖解决。
 """
 
 from __future__ import annotations
@@ -23,6 +30,11 @@ import sys
 from pathlib import Path
 
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+LOCAL_REDIST_CANDIDATES = [
+    Path(__file__).resolve().parent / "vc_redist" / "vc_redist.x64.exe",
+    Path.cwd() / "scripts" / "vc_redist" / "vc_redist.x64.exe",
+    Path.cwd() / "vc_redist.x64.exe",
+]
 VERSIONS_TO_TRY = ["1.28.0", "1.24.3", "1.20.1", "1.16.3"]
 
 # 需要检查的 VC++ 运行库(onnxruntime / torch 共同依赖)
@@ -233,22 +245,41 @@ def try_import() -> str | None:
         return None
 
 
-def auto_install_redist() -> bool:
-    """下载并静默安装 VC++ redist(需管理员)。"""
-    _banner("4a. 尝试自动安装 VC++ 运行库")
-    target = Path(os.environ.get("TEMP", ".")) / "vc_redist.x64.exe"
-    try:
-        import urllib.request
+def _find_local_redist() -> Path | None:
+    """查找本地离线 VC++ redist 包(发布包内置,无网环境可用)。"""
+    for candidate in LOCAL_REDIST_CANDIDATES:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 1024 * 1024:
+                return candidate
+        except OSError:
+            continue
+    return None
 
-        print(f"  下载 {VC_REDIST_URL}")
-        urllib.request.urlretrieve(VC_REDIST_URL, target)
-        print(f"  已下载: {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
-    except Exception as exc:
-        print(f"  下载失败: {exc}")
-        return False
+
+def auto_install_redist() -> bool:
+    """安装 VC++ redist(需管理员)。优先本地离线包,缺失时在线下载。"""
+    _banner("4a. 尝试安装 VC++ 运行库")
+    target = _find_local_redist()
+    if target is not None:
+        print(f"  使用本地离线包: {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
+        installer = target
+    else:
+        target = Path(os.environ.get("TEMP", ".")) / "vc_redist.x64.exe"
+        try:
+            import urllib.request
+
+            print(f"  未找到本地离线包,在线下载 {VC_REDIST_URL}")
+            urllib.request.urlretrieve(VC_REDIST_URL, target)
+            print(f"  已下载: {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
+        except Exception as exc:
+            print(f"  下载失败: {exc}")
+            print("  提示: 发布包已内置 scripts/vc_redist/vc_redist.x64.exe,"
+                  "可直接使用该离线包")
+            return False
+        installer = target
     try:
         result = subprocess.run(
-            [str(target), "/install", "/quiet", "/norestart"],
+            [str(installer), "/install", "/quiet", "/norestart"],
             capture_output=True,
             timeout=180,
         )
@@ -288,14 +319,19 @@ def final_report(version: str | None, error_code: int | None, missing_dlls: list
         print("  运行 `neobot init` 验证模型索引即可。")
         return
     print("  onnxruntime 未能在此环境跑起来。按原因处理:")
+    if error_code == 1114 and not outdated_dlls and not missing_dlls:
+        print("  0) 先排除运行库问题(1114 最常见根因): 安装 VC++ 2015-2022 redist(x64)")
+        print("     离线包已内置发布包: scripts/vc_redist/vc_redist.x64.exe(14.44)")
+        print("     或运行: python scripts/onnx_deploy_check.py --install-redist(需管理员)")
     if missing_dlls:
         print(f"  1) 缺失 VC++ 运行库文件({len(missing_dlls)} 个):")
-        print(f"     安装: {VC_REDIST_URL}")
+        print(f"     离线包: scripts/vc_redist/vc_redist.x64.exe 或下载 {VC_REDIST_URL}")
         print("     或运行: python scripts/onnx_deploy_check.py --install-redist(需管理员)")
     if error_code == 1114:
         if outdated_dlls:
             print(f"  1) VC++ 运行库版本较旧({len(outdated_dlls)} 个): 这是 1114 最常见的根因。")
-            print(f"     安装最新 VC++ 2015-2022 redist(x64): {VC_REDIST_URL}")
+            print("     安装离线包 scripts/vc_redist/vc_redist.x64.exe(14.44,覆盖 14.31 旧版)")
+            print("     或运行: python scripts/onnx_deploy_check.py --install-redist(需管理员)")
             print("     装完后重启终端,重跑本脚本验证;大概率可修复")
         elif torch_code == 1114:
             print("  1) 运行库最新但 onnxruntime 与 torch 均 1114: 指向 CPU 指令集未透传。")
@@ -340,8 +376,9 @@ def main() -> int:
             return 0
 
     final_report(None, error_code, missing_dlls, outdated_dlls, torch_code)
-    if (missing_dlls or outdated_dlls) and not install_redist:
-        print("\n  提示: 可执行 `python scripts/onnx_deploy_check.py --install-redist` 自动安装运行库")
+    if not install_redist:
+        print("\n  提示: 可执行 `python scripts/onnx_deploy_check.py --install-redist`"
+              "安装内置离线运行库包(scripts/vc_redist/vc_redist.x64.exe,需管理员)")
     return 1
 
 

@@ -289,6 +289,8 @@ class ReplyOrchestrator:
         skills_registry: Any = None,
         prompt_store: PromptStore | None = None,
         cache_calculator: CacheCalculator | None = None,
+        credential_manager: Any = None,
+        config_update_callback: Any = None,
     ) -> None:
         self._adapter = adapter
         self._prompt_builder = prompt_builder
@@ -317,6 +319,8 @@ class ReplyOrchestrator:
         self._balance_checker = balance_checker
         self._runtime_events = runtime_events
         self._file_server = file_server
+        self._credential_manager = credential_manager
+        self._config_update_callback = config_update_callback
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._tool_executors: set[Any] = set()
@@ -1809,14 +1813,16 @@ class ReplyOrchestrator:
             skills_registry=self._markdown_skills,
             allowed_tools=allowed_tools,
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
-            ai_reply_check=self._get_ai_reply_check(),
-            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
+            ai_reply_check=self._get_ai_reply_check(),            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
             bot_name=self._get_bot_name(),
             long_reply_fallback_template=self._get_long_reply_fallback_template(),
             long_reply_max_length=self._get_long_reply_max_length(),
             long_reply_max_sentence_count=self._get_long_reply_max_sentence_count(),
             enable_ai_reply_regenerate=self._get_enable_ai_reply_regenerate(),
             logger=self._logger,
+            credential_manager=self._credential_manager,
+            config=self._config,
+            config_update_callback=self._config_update_callback,
         )
         self._tool_executors.add(reply_toolset.executor)
 

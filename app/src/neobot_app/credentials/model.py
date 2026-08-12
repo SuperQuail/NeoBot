@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from neobot_app.commands.model import PERM_SUPER_ADMIN
+from neobot_app.commands.model import PERM_SUB_ADMIN, PERM_SUPER_ADMIN
 
 # 凭据类型
 CRED_TYPE_ONE_TIME = "one_time"  # 一次性:使用后失效
@@ -19,10 +19,14 @@ CRED_STATUS_USED = "used"  # 已消费
 CRED_STATUS_EXPIRED = "expired"  # 已过期/已撤销
 
 # 需要凭据的动作 → 签发者最低等级
-# 当前:踢人/退群需要超级管理员凭据;新动作在此追加
+# 踢人/退群需要超级管理员凭据;新动作在此追加
 ACTION_REQUIRED_LEVEL: dict[str, int] = {
     "kick": PERM_SUPER_ADMIN,
     "quit_group": PERM_SUPER_ADMIN,
+    # 设置全局回复意愿(运行时,影响所有群聊;私聊固定百分百不受影响)
+    "willing_global": PERM_SUB_ADMIN,
+    # 查看/编辑 config 中的全局回复意愿系数(持久化,热重载)
+    "willing_config": PERM_SUPER_ADMIN,
 }
 
 # 未登记动作的默认签发等级
