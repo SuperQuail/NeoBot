@@ -129,6 +129,30 @@ class MessageQueue:
         self._weighted_counts: Dict[str, float] = {}
         self._last_message_times: Dict[str, Optional[int]] = {}
         self._last_reply_positions: Dict[str, int] = {}
+        # 命令系统已消费的消息 message_id（按 queue_key 分桶，有界）。
+        # 挂起回复管线收集新消息时必须跳过这些条目，避免 /help 等命令
+        # 在命令系统回复后被已运行的 Agent 管线再次拾取并触发回复。
+        self._command_consumed: Dict[str, Deque[int]] = {}
+
+    # 命令消费标记：事件入口在命令命中后标记消息；挂起管线增量收集时过滤。
+
+    def mark_command_consumed(self, key: str, message_id: Optional[int]) -> None:
+        """标记一条消息已被命令系统消费（不再作为新消息触发回复管线）。"""
+        if message_id is None:
+            return
+        bucket = self._command_consumed.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=self.max_size * 2)
+            self._command_consumed[key] = bucket
+        if message_id not in bucket:
+            bucket.append(message_id)
+
+    def is_command_consumed(self, key: str, message_id: Optional[int]) -> bool:
+        """查询消息是否已被命令系统消费。"""
+        if message_id is None:
+            return False
+        bucket = self._command_consumed.get(key)
+        return bucket is not None and message_id in bucket
 
     def _convert_message(self, message: MessageType) -> QueueMessage:
         if isinstance(message, (PrivateMessage, GroupMessage)):
@@ -437,6 +461,7 @@ class MessageQueue:
             self._message_counts.clear()
             self._weighted_counts.clear()
             self._last_message_times.clear()
+            self._command_consumed.clear()
             return
 
         self._queues.pop(key, None)
@@ -444,6 +469,7 @@ class MessageQueue:
         self._message_counts.pop(key, None)
         self._weighted_counts.pop(key, None)
         self._last_message_times.pop(key, None)
+        self._command_consumed.pop(key, None)
 
     def iterate_from_oldest(self, key: str) -> Iterator[QueueMessage]:
         if key not in self._queues:

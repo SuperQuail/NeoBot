@@ -201,3 +201,41 @@ async def test_concurrent_push_and_read_from_multiple_tasks() -> None:
     assert all(results)
     assert queue.find_by_message_id("g", 0) is not None
     assert queue.get_last_message_id("g") in ids
+
+
+# ── 命令消费标记 ────────────────────────────────────────────────
+
+
+def test_command_consumed_mark_and_query() -> None:
+    """Arrange: 空队列；Act: 标记一条消息已消费；Assert: 仅同 key 同 id 命中，未标记/异 key/None 均不命中。"""
+    queue = MessageQueue()
+    queue.mark_command_consumed("g", 1001)
+
+    assert queue.is_command_consumed("g", 1001)
+    assert not queue.is_command_consumed("g", 1002)
+    assert not queue.is_command_consumed("other", 1001)
+    queue.mark_command_consumed("g", None)
+    assert not queue.is_command_consumed("g", None)
+
+
+def test_command_consumed_mark_is_idempotent() -> None:
+    """Arrange: 同一消息重复标记；Act: 标记两次；Assert: 幂等且查询仍命中。"""
+    queue = MessageQueue()
+    queue.mark_command_consumed("g", 1001)
+    queue.mark_command_consumed("g", 1001)
+
+    assert queue.is_command_consumed("g", 1001)
+
+
+def test_command_consumed_cleared_with_queue() -> None:
+    """Arrange: 已标记的队列；Act: clear(key) 与 clear()；Assert: 标记随之清除。"""
+    queue = MessageQueue()
+    queue.mark_command_consumed("g", 1001)
+    queue.mark_command_consumed("h", 2002)
+
+    queue.clear("g")
+    assert not queue.is_command_consumed("g", 1001)
+    assert queue.is_command_consumed("h", 2002)
+
+    queue.clear()
+    assert not queue.is_command_consumed("h", 2002)

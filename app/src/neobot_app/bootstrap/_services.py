@@ -37,6 +37,19 @@ def build_debug_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
     return None
 
 
+def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
+    """构建聊天上下文记录器(debug 模式):记录每次模型调用的完整上下文,保留最近 100 轮。"""
+    if not getattr(getattr(config, "debug", None), "enabled", False):
+        return None
+    from neobot_app.observability.context_recorder import ContextRecorder
+
+    return ContextRecorder(
+        DATA_DIR / "debug" / "context",
+        max_files=100,
+        logger=logger,
+    )
+
+
 def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     from neobot_app.message.queue import MessageQueue
 

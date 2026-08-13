@@ -311,7 +311,27 @@ class EventPipeline:
         replied_messages = await self._fetch_replied_messages(
             message, self._friend_queue, queue_key
         )
+
+        # 命令系统处理:入队之前解析;命令命中则拦截回复管线并标记消息。
+        # (私聊无需 @;未命中时消息按普通消息继续走管线)
+        command_consumed = False
+        command_background: str | None = None
+        if self._command_service is not None:
+            result = await self._command_service.handle_message(
+                message, kind="private", queue_key=queue_key
+            )
+            if result is not None and result.consumed:
+                command_consumed = True
+                command_background = result.background
+
+        # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
+        # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
         self._friend_queue.push(queue_key, message, replied_messages=replied_messages)
+        if command_consumed:
+            self._friend_queue.mark_command_consumed(
+                queue_key, getattr(message, "message_id", None)
+            )
+
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
@@ -325,19 +345,17 @@ class EventPipeline:
         )
         if queue_key:
             await self._maybe_warmup_friend_chat(queue_key)
+        self._logger.info(f"收到私聊消息: {text}")
 
-        # 命令系统处理(私聊无需 @)
-        if self._command_service is not None:
-            result = await self._command_service.handle_message(
-                message, kind="private", queue_key=queue_key
-            )
-            if result is not None and result.consumed:
-                if result.background:
-                    self._start_command_sync_reply(
-                        message=message, queue=self._friend_queue,
-                        queue_key=queue_key, background=result.background,
-                    )
-                return
+        # 命令已消费:回复管线在此拦截(不再进入延迟回复/意愿判断);
+        # sync_reply 命令额外以命令结果为背景触发回复管线
+        if command_consumed:
+            if command_background:
+                self._start_command_sync_reply(
+                    message=message, queue=self._friend_queue,
+                    queue_key=queue_key, background=command_background,
+                )
+            return
 
         # 凭据签发:管理员发送凭据文本
         if self._credential_manager is not None and await self._try_issue_credential(
@@ -358,7 +376,6 @@ class EventPipeline:
             return
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
-        self._logger.info(f"收到私聊消息: {text}")
 
     async def _handle_private_message(self, event: Dict[str, Any]) -> None:
         await self.handle_private_message_event(event)
@@ -474,7 +491,27 @@ class EventPipeline:
         replied_messages = await self._fetch_replied_messages(
             message, self._group_queue, queue_key
         )
+
+        # 命令系统处理:入队之前解析;命令命中则拦截回复管线并标记消息。
+        # (允许 bot 自己触发,群聊需被 @bot;未命中时消息按普通消息继续走管线)
+        command_consumed = False
+        command_background: str | None = None
+        if self._command_service is not None:
+            result = await self._command_service.handle_message(
+                message, kind="group", queue_key=queue_key
+            )
+            if result is not None and result.consumed:
+                command_consumed = True
+                command_background = result.background
+
+        # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
+        # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
         self._group_queue.push(queue_key, message, replied_messages=replied_messages)
+        if command_consumed:
+            self._group_queue.mark_command_consumed(
+                queue_key, getattr(message, "message_id", None)
+            )
+
         await self._refresh_profile_for_message(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
@@ -488,18 +525,15 @@ class EventPipeline:
         )
         self._logger.info(f"收到群消息[{message.group_id or '未知'}]: {text}")
 
-        # 命令系统处理(允许 bot 自己触发,群聊需被 @bot)
-        if self._command_service is not None:
-            result = await self._command_service.handle_message(
-                message, kind="group", queue_key=queue_key
-            )
-            if result is not None and result.consumed:
-                if result.background:
-                    self._start_command_sync_reply(
-                        message=message, queue=self._group_queue,
-                        queue_key=queue_key, background=result.background,
-                    )
-                return
+        # 命令已消费:回复管线在此拦截(不再进入意愿判断/回复触发);
+        # sync_reply 命令额外以命令结果为背景触发回复管线
+        if command_consumed:
+            if command_background:
+                self._start_command_sync_reply(
+                    message=message, queue=self._group_queue,
+                    queue_key=queue_key, background=command_background,
+                )
+            return
 
         # 凭据签发:管理员发送凭据文本
         if self._credential_manager is not None and await self._try_issue_credential(

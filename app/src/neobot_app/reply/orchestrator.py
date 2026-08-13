@@ -275,6 +275,7 @@ class ReplyOrchestrator:
         tts_service: Any = None,
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
+        context_recorder: Any = None,
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
@@ -308,6 +309,7 @@ class ReplyOrchestrator:
             provider_error_message or "当前主回复模型不可用，请检查模型配置"
         )
         self._debug_recorder = debug_recorder
+        self._context_recorder = context_recorder
         self._logger = logger or NullLogger()
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
@@ -1045,6 +1047,54 @@ class ReplyOrchestrator:
 
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         self._debug_helper.record(stage, event, **extra)
+
+    async def _record_context(
+        self,
+        event: ReplyEvent,
+        messages: list[dict],
+        *,
+        iteration: int,
+        stage: str,
+    ) -> None:
+        """记录一次模型调用的完整上下文(debug 模式,滚动保留最近 100 轮)。
+
+        用于事后分析 token 构成:每轮迭代/每次模型调用一个文件,
+        内容为发送给模型的完整 messages(含 system prompt)。
+        """
+        recorder = self._context_recorder
+        if recorder is None:
+            return
+        try:
+            total_chars = 0
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if content is not None:
+                    total_chars += len(str(content))
+            conv_ref = event.conversation_ref
+            from datetime import datetime, timezone
+
+            payload = {
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "stage": stage,
+                "event_id": event.event_id,
+                "mode": event.mode,
+                "conversation_kind": getattr(conv_ref, "kind", "") if conv_ref else "",
+                "conversation_id": getattr(conv_ref, "id", "") if conv_ref else "",
+                "iteration": iteration,
+                "messages_count": len(messages),
+                "total_chars": total_chars,
+                "estimated_tokens": self._estimate_tokens(messages),
+                "messages": messages,
+            }
+            await asyncio.to_thread(recorder.record_context, payload)
+        except Exception as exc:
+            self._logger.debug(
+                "聊天上下文记录失败",
+                event_id=event.event_id,
+                error=str(exc),
+            )
 
     async def _emit_runtime_event(
         self, stage: str, event: ReplyEvent, **payload: object
@@ -1923,6 +1973,12 @@ class ReplyOrchestrator:
                     else:
                         messages = before_model.payload.get("messages", messages)
                         tools = before_model.payload.get("tools", tools)
+                        await self._record_context(
+                            event,
+                            messages,
+                            iteration=iteration + 1,
+                            stage="agent_model_call",
+                        )
                         response = await asyncio.wait_for(
                             self._provider.chat(
                                 messages, tools=tools if tools else None
@@ -2494,6 +2550,8 @@ class ReplyOrchestrator:
         使用指纹集合比对，而非位置分割：
         - 指纹在 snapshot 中已存在 → 不是新条目（即使推送顺序与 message_id 顺序不一致）
         - 指纹不在 snapshot 中 → 新条目（支持队列驱逐后的安全回退）
+        - 已被命令系统消费的消息（mark_command_consumed）不返回，但仍加入快照，
+          避免挂起循环反复拾取；命令回复已由事件入口发出，挂起管线不应再回复
         """
         from neobot_app.message.queue import QueueEntryType
 
@@ -2512,13 +2570,27 @@ class ReplyOrchestrator:
 
         # 在 source 中找出指纹不在 snapshot 中的新条目
         new_entries: list = []
+        skipped_consumed: list = []
         for entry in source_entries:
             fp = entry_fingerprint(entry)
             if fp and fp in snapshot_fingerprints:
                 continue  # 已存在于快照中
+            # 命令系统已消费的消息：跳过注入（仍加入快照，避免反复收集）
+            if (
+                entry.kind == QueueEntryType.MESSAGE
+                and entry.message is not None
+                and source.is_command_consumed(queue_key, entry.message.message_id)
+            ):
+                skipped_consumed.append(entry)
+                self._logger.debug(
+                    "挂起管线跳过命令已消费消息",
+                    queue_key=queue_key,
+                    message_id=entry.message.message_id,
+                )
+                continue
             new_entries.append(entry)
 
-        snapshot.append_entries(queue_key, new_entries)
+        snapshot.append_entries(queue_key, new_entries + skipped_consumed)
 
         # 返回全部可渲染的新条目:消息 + 表情回应/戳一戳/撤回(时间戳除外)。
         # 全量构建(role_messages)会渲染这些非消息条目,增量注入必须保持一致,
@@ -3162,6 +3234,12 @@ class ReplyOrchestrator:
             response = before_model.result
         else:
             messages = before_model.payload.get("messages", messages)
+            await self._record_context(
+                event,
+                messages,
+                iteration=1,
+                stage="common_model_call",
+            )
             try:
                 response = await asyncio.wait_for(
                     self._provider.chat(messages),

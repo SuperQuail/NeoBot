@@ -34,6 +34,7 @@ from neobot_app.bootstrap._providers import (
 from neobot_app.bootstrap._services import (
     build_adapter_service,
     build_archive_summary_service,
+    build_context_recorder,
     build_debug_recorder,
     build_emoji_service,
     build_file_server,
@@ -217,6 +218,11 @@ def create_application() -> NeoBotApplication:
 
     debug_recorder = build_debug_recorder(
         config=config, logger=logger_factory.get_logger("app.debug")
+    )
+
+    # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
+    context_recorder = build_context_recorder(
+        config=config, logger=logger_factory.get_logger("app.context")
     )
 
     db_url = sqlite_url(DATA_DIR / "neobot.db")
@@ -500,6 +506,7 @@ def create_application() -> NeoBotApplication:
         tts_service=tts_service,
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
+        context_recorder=context_recorder,
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,

@@ -410,3 +410,127 @@ async def test_stop_prevents_new_fire_and_forget_tasks() -> None:
 
     assert pipeline._background_tasks == set()
     pipeline._archive_summary_service.record_message.assert_not_awaited()
+
+
+# ── 命令系统:入队前解析 + 回复管线拦截 + 消费标记 ──
+
+
+def _command_service_mock(consumed: bool, background: str | None = None) -> AsyncMock:
+    service = AsyncMock()
+    service.handle_message.return_value = SimpleNamespace(
+        consumed=consumed, background=background
+    )
+    return service
+
+
+def _at_command_event(message_id: int, text: str, bot_account: int) -> dict:
+    """构造一条 @bot 的命令形态群消息事件。"""
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": message_id,
+        "user_id": 7,
+        "group_id": 42,
+        "message": [
+            {"type": "at", "data": {"qq": str(bot_account)}},
+            {"type": "text", "data": {"text": text}},
+        ],
+        "raw_message": text,
+    }
+
+
+@pytest.mark.asyncio
+async def test_group_command_consumed_blocks_reply_and_marks_message():
+    """命令被消费时:消息仍入队但打上已消费标记,且不进入意愿/回复触发。"""
+    config = BotConfig(bot=Bot(account=88888))
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=config)
+    pipeline._willing_service = AsyncMock()
+    pipeline._command_service = _command_service_mock(consumed=True)
+
+    await pipeline.handle_group_message_event(
+        _at_command_event(9501, "/help", bot_account=88888)
+    )
+
+    assert queue.size("42") == 1
+    assert queue.is_command_consumed("42", 9501)
+    pipeline._command_service.handle_message.assert_awaited_once()
+    pipeline._willing_service.evaluate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_group_command_consumed_with_background_starts_sync_reply():
+    """sync_reply 命令:消息入队+标记后,以命令结果为背景触发回复管线。"""
+    config = BotConfig(bot=Bot(account=88888))
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=config)
+    # start_reply 是同步方法(返回 ReplyEvent),用普通 Mock
+    from unittest.mock import Mock
+
+    pipeline._reply_orchestrator = Mock()
+    pipeline._command_service = _command_service_mock(
+        consumed=True, background="<这是新的必须要回答的内容>"
+    )
+    pipeline._replying_queues = set()
+
+    await pipeline.handle_group_message_event(
+        _at_command_event(9502, "/sync_demo", bot_account=88888)
+    )
+
+    assert queue.size("42") == 1
+    assert queue.is_command_consumed("42", 9502)
+    pipeline._reply_orchestrator.start_reply.assert_called_once()
+    call_kwargs = pipeline._reply_orchestrator.start_reply.call_args.kwargs
+    assert call_kwargs["background_content"] == "<这是新的必须要回答的内容>"
+
+
+@pytest.mark.asyncio
+async def test_group_command_not_consumed_message_not_marked():
+    """命令未命中(如未 @bot 或未注册)时:消息入队但不标记,继续走正常管线。"""
+    from unittest.mock import Mock
+
+    config = BotConfig(bot=Bot(account=88888))
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=config)
+    # is_at_mentioned / evaluate 是同步方法,用普通 Mock
+    willing = Mock()
+    willing.is_at_mentioned.return_value = False
+    willing.evaluate.return_value = SimpleNamespace(
+        should_reply=False, probability=0.0, reasons=()
+    )
+    pipeline._willing_service = willing
+    pipeline._command_service = _command_service_mock(consumed=False)
+
+    event = _at_command_event(9503, "/help", bot_account=88888)
+    # 未 @bot:命令系统返回 consumed=False
+    event["message"] = [{"type": "text", "data": {"text": "/help"}}]
+    await pipeline.handle_group_message_event(event)
+
+    assert queue.size("42") == 1
+    assert not queue.is_command_consumed("42", 9503)
+    # 非命令消息继续走到意愿判断
+    willing.evaluate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_private_command_consumed_blocks_reply_and_marks_message():
+    """私聊命令被消费时:消息入队+标记,且不触发延迟回复。"""
+    config = _fast_private_config()
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(friend_queue=queue, config=config)
+    pipeline._command_service = _command_service_mock(consumed=True)
+
+    await pipeline.handle_private_message_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "message_id": 9601,
+            "user_id": 8,
+            "message": [{"type": "text", "data": {"text": "/help"}}],
+            "raw_message": "/help",
+        }
+    )
+
+    assert queue.size("8") == 1
+    assert queue.is_command_consumed("8", 9601)
+    pipeline._command_service.handle_message.assert_awaited_once()

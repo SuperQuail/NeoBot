@@ -339,6 +339,37 @@ async def test_collect_new_entries_deduplicates_by_fingerprint():
     assert new == []
 
 
+async def test_collect_new_entries_skips_command_consumed_messages():
+    """命令系统已消费的消息不得作为新条目注入挂起管线，但仍计入快照避免反复收集。"""
+    orch = _make_orchestrator()
+    source = MessageQueue()
+    key = "123456"
+    snapshot = source.clone(key)
+    source.push(key, _make_private_message(message_id=1, text="/help"))
+    source.mark_command_consumed(key, 1)
+
+    first = orch._collect_new_entries(source, snapshot, key)
+    second = orch._collect_new_entries(source, snapshot, key)
+
+    assert first == []
+    assert second == []
+
+
+async def test_collect_new_entries_keeps_normal_messages_alongside_consumed():
+    """命令已消费消息被过滤时，同批到达的普通消息仍正常返回。"""
+    orch = _make_orchestrator()
+    source = MessageQueue()
+    key = "123456"
+    snapshot = source.clone(key)
+    source.push(key, _make_private_message(message_id=1, text="/help"))
+    source.mark_command_consumed(key, 1)
+    source.push(key, _make_private_message(message_id=2, text="普通消息"))
+
+    new = orch._collect_new_entries(source, snapshot, key)
+
+    assert [e.message.message_id for e in new] == [2]
+
+
 async def test_consume_ai_reply_blocked_entries_filters_blocked():
     """reply_block_registry.consume_message 命中时必须过滤被插件拦截的消息条目。"""
     registry = type(
