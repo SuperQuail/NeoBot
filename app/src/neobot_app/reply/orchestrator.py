@@ -1055,11 +1055,13 @@ class ReplyOrchestrator:
         *,
         iteration: int,
         stage: str,
+        response: dict | None = None,
     ) -> None:
-        """记录一次模型调用的完整上下文(debug 模式,滚动保留最近 100 轮)。
+        """记录一轮模型调用的完整上下文与输出(debug 模式,滚动保留最近 100 轮)。
 
         用于事后分析 token 构成:每轮迭代/每次模型调用一个文件,
-        内容为发送给模型的完整 messages(含 system prompt)。
+        内容为发送给模型的完整 messages(含 system prompt)、模型输出(response)
+        以及数据包中的 usage/缓存命中率。
         """
         recorder = self._context_recorder
         if recorder is None:
@@ -1072,6 +1074,27 @@ class ReplyOrchestrator:
                 content = message.get("content")
                 if content is not None:
                     total_chars += len(str(content))
+
+            # 模型输出与 usage(与 usage tracker 同一来源:extensions.usage)
+            output_text = ""
+            usage: dict | None = None
+            if isinstance(response, dict):
+                output_content = response.get("content")
+                if output_content is not None:
+                    output_text = str(output_content)
+                extensions = response.get("extensions")
+                if isinstance(extensions, dict):
+                    candidate = extensions.get("usage")
+                    if isinstance(candidate, dict):
+                        usage = candidate
+            cache_hit_rate: float | None = None
+            if usage is not None:
+                hit = usage.get("cache_hit_tokens", 0) or 0
+                miss = usage.get("cache_miss_tokens", 0) or 0
+                total = hit + miss
+                if total > 0:
+                    cache_hit_rate = round(hit / total, 4)
+
             conv_ref = event.conversation_ref
             from datetime import datetime, timezone
 
@@ -1086,7 +1109,18 @@ class ReplyOrchestrator:
                 "messages_count": len(messages),
                 "total_chars": total_chars,
                 "estimated_tokens": self._estimate_tokens(messages),
+                "output_chars": len(output_text),
+                "output_estimated_tokens": int(len(output_text) / 0.75),
+                "usage": usage,
+                "cache_hit_tokens": (
+                    usage.get("cache_hit_tokens", 0) if usage else None
+                ),
+                "cache_miss_tokens": (
+                    usage.get("cache_miss_tokens", 0) if usage else None
+                ),
+                "cache_hit_rate": cache_hit_rate,
                 "messages": messages,
+                "response": response,
             }
             await asyncio.to_thread(recorder.record_context, payload)
         except Exception as exc:
@@ -1973,12 +2007,6 @@ class ReplyOrchestrator:
                     else:
                         messages = before_model.payload.get("messages", messages)
                         tools = before_model.payload.get("tools", tools)
-                        await self._record_context(
-                            event,
-                            messages,
-                            iteration=iteration + 1,
-                            stage="agent_model_call",
-                        )
                         response = await asyncio.wait_for(
                             self._provider.chat(
                                 messages, tools=tools if tools else None
@@ -2013,6 +2041,14 @@ class ReplyOrchestrator:
                 reset_silent_deadline()
 
                 self._record_cache_request(messages, response)
+
+                await self._record_context(
+                    event,
+                    messages,
+                    iteration=iteration + 1,
+                    stage="agent_model_call",
+                    response=response,
+                )
 
                 usage = (response.get("extensions") or {}).get("usage")
                 if isinstance(usage, dict) and hasattr(self._provider, "model"):
@@ -3234,12 +3270,6 @@ class ReplyOrchestrator:
             response = before_model.result
         else:
             messages = before_model.payload.get("messages", messages)
-            await self._record_context(
-                event,
-                messages,
-                iteration=1,
-                stage="common_model_call",
-            )
             try:
                 response = await asyncio.wait_for(
                     self._provider.chat(messages),
@@ -3259,6 +3289,14 @@ class ReplyOrchestrator:
         response = after_model.payload.get("response", response)
 
         self._record_cache_request(messages, response)
+
+        await self._record_context(
+            event,
+            messages,
+            iteration=1,
+            stage="common_model_call",
+            response=response,
+        )
 
         content = response.get("content", "")
 

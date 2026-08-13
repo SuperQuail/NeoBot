@@ -133,3 +133,54 @@ async def test_orchestrator_record_context_writes_file(tmp_path) -> None:
     assert data["total_chars"] > 0
     assert data["estimated_tokens"] > 0
     assert len(data["messages"]) == 2
+    # 未传 response 时输出/usage 字段为空
+    assert data["output_chars"] == 0
+    assert data["usage"] is None
+    assert data["cache_hit_rate"] is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_record_context_includes_response_and_usage(tmp_path) -> None:
+    """传入 response 时记录完整输出与 usage/缓存命中率。"""
+    from neobot_app.reply.orchestrator import ReplyOrchestrator
+
+    orch = object.__new__(ReplyOrchestrator)
+    orch._context_recorder = ContextRecorder(tmp_path, max_files=3)
+    orch._logger = None
+    event = SimpleNamespace(
+        event_id="evt-z",
+        mode="agent",
+        conversation_ref=SimpleNamespace(kind="group", id="42"),
+    )
+    messages = [{"role": "system", "content": "人设提示词"}]
+    response = {
+        "role": "assistant",
+        "content": "这是模型回复的内容",
+        "extensions": {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_hit_tokens": 70,
+                "cache_miss_tokens": 30,
+            }
+        },
+    }
+
+    await orch._record_context(
+        event, messages, iteration=1, stage="agent_model_call", response=response
+    )
+
+    files = list(tmp_path.glob("ctx_*.json"))
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert data["response"]["content"] == "这是模型回复的内容"
+    assert data["output_chars"] == len("这是模型回复的内容")
+    assert data["output_estimated_tokens"] > 0
+    assert data["usage"]["cache_hit_tokens"] == 70
+    assert data["usage"]["cache_miss_tokens"] == 30
+    assert data["cache_hit_tokens"] == 70
+    assert data["cache_miss_tokens"] == 30
+    assert data["cache_hit_rate"] == 0.7
+    # 输入 messages 与输出 response 同时保留
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages_count"] == 1
