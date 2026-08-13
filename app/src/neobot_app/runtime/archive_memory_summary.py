@@ -338,7 +338,7 @@ class ArchiveMemoryAutoSummaryService:
             "archive",
             None,
         )
-        user_limit = 4000
+        user_limit = 2000
         group_limit = 1500
         if archive is not None:
             raw_user = getattr(archive, "max_chars", None)
