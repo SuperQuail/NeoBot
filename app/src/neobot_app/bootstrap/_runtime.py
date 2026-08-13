@@ -24,15 +24,14 @@ def _auto_install_chromium() -> bool:
 
     logger = LoguruLoggerFactory().get_logger("app.bootstrap")
     try:
-        from playwright._impl._driver import compute_driver_executable, get_driver_dir
         import subprocess
+        import sys
 
-        driver_path = get_driver_dir()
-        driver_exe = compute_driver_executable()
-        cli = Path(driver_path) / driver_exe
+        __import__("playwright")
+
         logger.info("未检测到浏览器，正在自动下载 Chromium（约 150MB）…")
         result = subprocess.run(
-            [str(cli), "install", "chromium"],
+            [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True, timeout=300,
         )
         if result.returncode == 0:
@@ -44,7 +43,7 @@ def _auto_install_chromium() -> bool:
     except ImportError:
         logger.info(
             "playwright 未安装，跳过自动下载。"
-            "如需浏览器功能请: pip install playwright && playwright install chromium"
+            "如需浏览器功能请: pip install playwright && python -m playwright install chromium"
         )
         return False
     except Exception as exc:
