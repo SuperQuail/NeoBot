@@ -89,7 +89,9 @@ def _playwright_chromium_path() -> str:
     if _WINDOWS:
         candidates = list((home / "AppData" / "Local" / "ms-playwright").glob("chromium-*/chrome-win/chrome.exe"))
     elif platform.system() == "Linux":
-        candidates = list((home / ".cache" / "ms-playwright").glob("chromium-*/chrome-linux/chrome"))
+        browser_cache = home / ".cache" / "ms-playwright"
+        candidates = list(browser_cache.glob("chromium-*/chrome-linux/chrome"))
+        candidates.extend(browser_cache.glob("chromium-*/chrome-linux64/chrome"))
     elif platform.system() == "Darwin":
         candidates = list((home / "Library" / "Caches" / "ms-playwright").glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"))
     else:
