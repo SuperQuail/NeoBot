@@ -827,7 +827,11 @@ class AgentMemoryArchive:
     )
     max_chars: Optional[int] = field(
         default=300,
-        metadata={"description": "单条档案最大字符数；超过后截断写入"},
+        metadata={"description": "个人档案(user_profile)渲染进提示词时的摘要长度上限；档案超长时自动生成最新部分摘要,完整档案可用工具分页阅读"},
+    )
+    group_profile_max_chars: Optional[int] = field(
+        default=1500,
+        metadata={"description": "群聊档案(group_profile)渲染进提示词时的摘要长度上限；档案超长时自动生成最新部分摘要,完整档案可用工具分页阅读"},
     )
 
 
@@ -854,8 +858,8 @@ class AgentMemoryItemArchive:
     """物品/事件关键词档案配置。
 
     允许 Agent 以关键词为键建立独立数据表，记录对特定物品、事件或话题的
-    长期信息档案。该表与 user_profile / group_profile 共用同一套
-    auto_compact_chars / max_chars 长度控制（由 AgentMemoryArchive 配置）。
+    长期信息档案。该表与 user_profile / group_profile 的摘要长度控制
+    （由 AgentMemoryArchive 配置）独立。
     自动记忆总结系统也会同步向该表写入。
     """
 

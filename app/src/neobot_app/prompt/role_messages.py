@@ -6,8 +6,9 @@
       避免重复回答同一话题、同一话题前后观点不一致)
     - 时间戳/撤回/表情回应/戳一戳等非消息条目 -> 独立的 user 消息
 
-消息编号(numbering)与 system 提示词中的 [聊天消息编号映射] 共用同一个实例,
-保证工具参数(如 reply_to)引用的编号一致。
+消息编号(numbering)与 system 提示词中的 <消息编号说明> 共用同一个实例,
+保证工具参数(如 reply_to)引用的编号一致;每条消息行首的 [msg_id=xxx]
+即真实 OneBot message_id,工具参数需要 message_id 时直接使用。
 """
 
 from __future__ import annotations
@@ -146,7 +147,9 @@ def _build_from_entries(
                 messages.append(
                     {
                         "role": _role_for_message(replied, bot_account),
-                        "content": f"{prefix}[被回复消息] {sender}: {content}",
+                        "content": (
+                            f"[msg_id={replied_id}] {prefix}[被回复消息] {sender}: {content}"
+                        ),
                     }
                 )
 
@@ -170,7 +173,7 @@ def _build_from_entries(
             messages.append(
                 {
                     "role": _role_for_message(msg, bot_account),
-                    "content": f"{prefix}{sender}: {content}",
+                    "content": f"[msg_id={msg_id}] {prefix}{sender}: {content}",
                 }
             )
         elif entry.kind == QueueEntryType.TIMESTAMP:

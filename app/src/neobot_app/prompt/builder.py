@@ -116,7 +116,14 @@ class PromptBuilder:
             message_queue,
         )
 
-        group_profile = await self._fetch_archive("group_profile", group_id_str) or ""
+        group_profile = (
+            await self._fetch_archive(
+                "group_profile",
+                group_id_str,
+                max_chars=self._group_profile_max_chars(),
+            )
+            or ""
+        )
         group_info = _merge_labeled_prompt_fragments(
             ("群聊档案", group_profile),
         )
@@ -286,7 +293,13 @@ class PromptBuilder:
             all_new=all_new,
         )
 
-    async def _fetch_archive(self, table_name: str, key: str) -> str | None:
+    async def _fetch_archive(
+        self,
+        table_name: str,
+        key: str,
+        *,
+        max_chars: int | None = None,
+    ) -> str | None:
         if self._archive_memory_service is None:
             return None
         try:
@@ -294,8 +307,35 @@ class PromptBuilder:
         except Exception:
             return None
         if item is not None and item.value:
-            return item.value.strip()
+            value = item.value.strip()
+            if max_chars and max_chars > 0 and len(value) > max_chars:
+                # 超长档案:原始内容完整保留,此处自动生成摘要(最新部分,
+                # 从完整行开始)并附分页阅读指引;完整档案由模型用
+                # archive_crud__read_archive 的 offset 参数按页读取
+                tail = value[-max_chars:]
+                newline = tail.find("\n")
+                if 0 < newline < len(tail) - 1:
+                    tail = tail[newline + 1 :]
+                return (
+                    f"[档案较长(共{len(value)}字),以下为最新部分摘要]\n"
+                    f"{tail}\n"
+                    "[完整档案可用 archive_crud__read_archive 分页阅读:"
+                    "offset 负数从尾部向前翻页(越后的内容越新)]"
+                )
+            return value
         return None
+
+    def _group_profile_max_chars(self) -> int:
+        archive = getattr(
+            getattr(getattr(self._config, "agent", None), "memory", None),
+            "archive",
+            None,
+        )
+        if archive is not None:
+            limit = getattr(archive, "group_profile_max_chars", None)
+            if isinstance(limit, int) and limit > 0:
+                return limit
+        return 1500
 
 
 def _build_bot_other_name(config: BotConfigSchema) -> str:
@@ -307,15 +347,10 @@ def _build_bot_other_name(config: BotConfigSchema) -> str:
 
 
 def _build_numbering_guide(numbering: MessageNumbering | None) -> str:
-    """构建消息编号说明(格式说明 + 编号->message_id 映射)。"""
+    """构建消息编号说明(格式说明;message_id 已直接标注在每条消息行首)。"""
     if numbering is None:
         return ""
-    lines = [numbering.format_example()]
-    mapping_text = _build_message_id_context(numbering)
-    if mapping_text:
-        lines.append("")
-        lines.append(mapping_text)
-    return "\n".join(lines)
+    return numbering.format_example()
 
 
 def _strip_empty_numbering_guide(prompt: str) -> str:
@@ -337,23 +372,6 @@ def _merge_labeled_prompt_fragments(*parts: tuple[str, str]) -> str:
         if value and value.strip()
     ]
     return "\n".join(cleaned)
-
-
-def _build_message_id_context(numbering: Any) -> str:
-    """构建消息编号 → 真实 message_id 的映射文本，嵌入 prompt 供 Agent 查阅。"""
-    if numbering is None:
-        return ""
-    mapping = numbering.mapping
-    if not isinstance(mapping, dict) or not mapping:
-        return ""
-    lines = [
-        "[聊天消息编号映射]",
-        "以下为 prompt 中每条消息左侧编号对应的真实 OneBot message_id。",
-        "当工具参数需要 message_id 时（如 message_id、chat: 前缀等），必须使用右侧的 message_id，不要把左侧聊天编号当作 message_id 传入。",
-    ]
-    for number, message_id in sorted(mapping.items(), key=lambda x: x[0]):
-        lines.append(f"  编号 {number} → message_id {message_id}")
-    return "\n".join(lines)
 
 
 async def get_group_chat_prompt(

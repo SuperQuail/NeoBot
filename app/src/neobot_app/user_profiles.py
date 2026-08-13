@@ -261,8 +261,35 @@ class UserProfileService:
         except Exception:
             return None
         if item is not None and item.value:
-            return item.value.strip()
+            value = item.value.strip()
+            limit = self._user_archive_max_chars()
+            if limit > 0 and len(value) > limit:
+                # 超长档案:原始内容完整保留,此处自动生成摘要(最新部分,
+                # 从完整行开始)并附分页阅读指引
+                tail = value[-limit:]
+                newline = tail.find("\n")
+                if 0 < newline < len(tail) - 1:
+                    tail = tail[newline + 1 :]
+                return (
+                    f"[档案较长(共{len(value)}字),以下为最新部分摘要]\n"
+                    f"{tail}\n"
+                    "[完整档案可用 archive_crud__read_archive 分页阅读:"
+                    "offset 负数从尾部向前翻页(越后的内容越新)]"
+                )
+            return value
         return None
+
+    def _user_archive_max_chars(self) -> int:
+        archive = getattr(
+            getattr(getattr(self._config, "agent", None), "memory", None),
+            "archive",
+            None,
+        )
+        if archive is not None:
+            limit = getattr(archive, "max_chars", None)
+            if isinstance(limit, int) and limit > 0:
+                return limit
+        return 300
 
     @staticmethod
     def _collect_group_members_from_queue(

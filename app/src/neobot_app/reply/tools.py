@@ -1720,20 +1720,6 @@ class ReplyToolExecutor(ToolExecutor):
             return f"错误：user_id 无效，收到 {args.get('user_id')}"
         return await self._poke_user(user_id=user_id)
 
-    def _build_message_id_context(self) -> str:
-        if self._numbering is None:
-            return ""
-        mapping = getattr(self._numbering, "mapping", None)
-        if not isinstance(mapping, dict) or not mapping:
-            return ""
-        lines = [
-            "[聊天消息编号映射]",
-            "这些编号来自主Agent当前提示词。导入、解析、撤回、引用聊天消息时，如果工具需要 message_id，必须使用右侧真实 message_id，不要把左侧聊天编号当作 message_id。",
-        ]
-        for number, message_id in sorted(mapping.items()):
-            lines.append(f"消息编号 {number} -> message_id {message_id}")
-        return "\n".join(lines)
-
     async def _execute_check_background_tasks(self, args: dict) -> str:
         """查询当前聊天流的后台任务状态（绘图、定时任务、解题、会话工具）。"""
         pipeline_key = f"{self._conv_kind}:{self._conv_id}"

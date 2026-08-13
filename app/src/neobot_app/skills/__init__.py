@@ -104,11 +104,22 @@ def build_all_skills(
         )
 
     if "archive_crud" not in disabled:
+        archive_cfg = config.agent.archive if config and hasattr(config.agent, "archive") else None
         skills_to_register.append(
             ArchiveCRUDSkill(
                 archive_service=archive_memory_service,
-                allow_delete=(config.agent.archive.allow_delete if config and hasattr(config.agent, "archive") else False),
-                allowed_tables=(config.agent.archive.allowed_tables if config and hasattr(config.agent, "archive") else ()),
+                allow_delete=bool(archive_cfg and archive_cfg.allow_delete),
+                allowed_tables=(
+                    tuple(archive_cfg.allowed_tables) if archive_cfg and archive_cfg.allowed_tables else ()
+                ),
+                max_chars={
+                    "user_profile": (archive_cfg.max_chars if archive_cfg and archive_cfg.max_chars else 300),
+                    "group_profile": (
+                        archive_cfg.group_profile_max_chars
+                        if archive_cfg and archive_cfg.group_profile_max_chars
+                        else 1500
+                    ),
+                },
             )
         )
 
