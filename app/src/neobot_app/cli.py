@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import signal
 import sys
-from pathlib import Path
 
 from neobot_app.bootstrap import create_application
 from neobot_app.config.loader.manager import ConfigLoadError
@@ -160,7 +159,7 @@ def cmd_install_browser(args: argparse.Namespace) -> None:
     print("需要安装 playwright: pip install playwright")
     print()
     try:
-        from playwright._impl._driver import compute_driver_executable, get_driver_dir
+        __import__("playwright")
     except ImportError:
         print("请先安装 playwright: pip install playwright")
         print("或通过 CHROME_PATH 环境变量指定已安装的浏览器路径。")
@@ -168,11 +167,8 @@ def cmd_install_browser(args: argparse.Namespace) -> None:
 
     try:
         import subprocess
-        driver_path = get_driver_dir()
-        driver_exe = compute_driver_executable()
-        cli = Path(driver_path) / driver_exe
         result = subprocess.run(
-            [str(cli), "install", "chromium"],
+            [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=False, text=True,
         )
         if result.returncode != 0:

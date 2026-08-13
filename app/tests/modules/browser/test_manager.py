@@ -13,7 +13,9 @@ import asyncio
 import base64
 import builtins
 import gc
+import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,6 +23,7 @@ from DrissionPage.errors import PageDisconnectedError
 
 from neobot_app.browser.agent_browser import manager as manager_module
 from neobot_app.browser.agent_browser.manager import BrowserManager
+from neobot_app.bootstrap._runtime import _auto_install_chromium
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +55,44 @@ class _BrokenPage:
 
 class _HealthyPage:
     url = "https://example.test/healthy"
+
+
+def test_playwright_chromium_path_supports_linux_chrome_linux64(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """新版 Playwright 的 chrome-linux64 目录应能被自动检测。"""
+    chromium = (
+        tmp_path
+        / ".cache"
+        / "ms-playwright"
+        / "chromium-1234"
+        / "chrome-linux64"
+        / "chrome"
+    )
+    chromium.parent.mkdir(parents=True)
+    chromium.touch()
+
+    monkeypatch.setattr(manager_module, "_WINDOWS", False)
+    monkeypatch.setattr(manager_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(manager_module.Path, "home", classmethod(lambda cls: tmp_path))
+
+    assert manager_module._playwright_chromium_path() == str(chromium)
+
+
+def test_auto_install_chromium_uses_current_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自动安装应走公开模块入口，避免依赖 Playwright 私有 API。"""
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert _auto_install_chromium() is True
+    assert commands == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
 async def _async_noop(self) -> None:
