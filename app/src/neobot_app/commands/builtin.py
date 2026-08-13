@@ -207,7 +207,7 @@ async def _handle_awake(ctx: CommandContext) -> str:
     sleep_service = getattr(ctx.service, "sleep_service", None)
     if sleep_service is None:
         return "睡眠功能不可用(未注入睡眠服务)"
-    if sleep_service.wake():
+    if sleep_service.wake(reason="awake_command"):
         return "我被叫醒了。"
     return "我没有在睡觉呀。"
 

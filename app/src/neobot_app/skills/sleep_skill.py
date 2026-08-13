@@ -114,7 +114,7 @@ async def _handle_go_to_sleep(self: SleepSkill, args: dict) -> str:
 async def _handle_wake_up(self: SleepSkill, args: dict) -> str:
     if self._sleep is None:
         return _json({"ok": False, "error": "sleep_service 未配置"})
-    was_sleeping = self._sleep.wake()
+    was_sleeping = self._sleep.wake(reason="sleep_skill")
     return _json({"ok": True, "was_sleeping": was_sleeping})
 
 

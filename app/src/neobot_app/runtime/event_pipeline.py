@@ -797,7 +797,7 @@ class EventPipeline:
                 return False
 
         # 被@唤醒:结束睡眠并注入唤醒提示词回复
-        self._sleep_service.wake()
+        self._sleep_service.wake(reason="at_mention_event")
         delay = 5.0
         if self._config is not None:
             val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)

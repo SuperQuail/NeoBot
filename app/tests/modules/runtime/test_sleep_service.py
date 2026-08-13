@@ -139,3 +139,81 @@ def test_wake_prompt_custom_from_store() -> None:
         assert service.wake_prompt() == "自定义唤醒提示词"
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
+
+# ── 睡眠结束日志(控制台定位用) ──
+
+
+class _LogRecorder:
+    """收集 logger.info 调用的假 logger。"""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict]] = []
+
+    def info(self, message: str, **kwargs) -> None:
+        self.records.append((message, dict(kwargs)))
+
+    def warning(self, message: str, **kwargs) -> None:
+        self.records.append((message, dict(kwargs)))
+
+    def debug(self, message: str, **kwargs) -> None:
+        pass
+
+    def error(self, message: str, **kwargs) -> None:
+        pass
+
+
+def test_wake_logs_reason_and_elapsed(monkeypatch) -> None:
+    """wake() 记录唤醒来源与已持续时长,便于定位提前结束原因。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+
+    service.sleep(3600)
+    fake["now"] = 1300.0
+    assert service.wake(reason="awake_command") is True
+
+    messages = [message for message, _ in recorder.records]
+    assert any("Bot 开始睡眠" in message for message in messages)
+    assert any("Bot 被唤醒" in message for message in messages)
+    wake_record = next(
+        record for record in recorder.records if "Bot 被唤醒" in record[0]
+    )
+    assert wake_record[1]["reason"] == "awake_command"
+    assert wake_record[1]["elapsed_text"] == "5 分钟"
+
+
+def test_sleep_expiry_logs_awake(monkeypatch) -> None:
+    """睡眠到期自动醒来时打印日志(时间到与被动唤醒可区分)。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+
+    service.sleep(60)
+    assert service.is_sleeping()
+    fake["now"] = 1060.0
+    assert not service.is_sleeping()
+
+    messages = [message for message, _ in recorder.records]
+    assert any("Bot 睡眠到期,自动醒来" in message for message in messages)
+    expiry_record = next(
+        record
+        for record in recorder.records
+        if "Bot 睡眠到期,自动醒来" in record[0]
+    )
+    assert expiry_record[1]["elapsed_text"] == "1 分钟"
+
+
+def test_wake_without_reason_uses_unknown(monkeypatch) -> None:
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+    service.sleep(60)
+    service.wake()
+    wake_record = next(
+        record for record in recorder.records if "Bot 被唤醒" in record[0]
+    )
+    assert wake_record[1]["reason"] == "unknown"
+

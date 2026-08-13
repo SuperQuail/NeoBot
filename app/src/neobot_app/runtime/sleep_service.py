@@ -83,6 +83,7 @@ class SleepService:
         self._logger = logger or NullLogger()
         self._max_seconds = max_seconds
         self._wake_up_at: float | None = None
+        self._sleep_started_at: float | None = None
 
     # ── 状态查询 ──
 
@@ -92,6 +93,12 @@ class SleepService:
             return False
         if epoch_seconds() >= self._wake_up_at:
             self._wake_up_at = None
+            self._logger.info(
+                "Bot 睡眠到期,自动醒来(控制台日志:睡眠完毕)",
+                elapsed_text=self._sleep_elapsed_text(),
+                ended_at=epoch_seconds(),
+            )
+            self._sleep_started_at = None
             return False
         return True
 
@@ -122,10 +129,14 @@ class SleepService:
         if seconds > self._max_seconds:
             return False, f"睡眠时长最多 {int(self._max_seconds // 3600)} 小时"
         self._wake_up_at = epoch_seconds() + seconds
+        self._sleep_started_at = epoch_seconds()
         self._logger.info(
-            "Bot 开始睡眠",
+            "Bot 开始睡眠(控制台日志)",
             duration_seconds=int(seconds),
+            duration_text=format_sleep_duration(seconds),
+            sleep_started_at=self._sleep_started_at,
             wake_up_at=self._wake_up_at,
+            wake_up_at_text=self.wake_up_time_text(),
         )
         return True, (
             f"好的,我去睡觉了(睡眠 {format_sleep_duration(seconds)},"
@@ -133,13 +144,26 @@ class SleepService:
             "睡眠期间群聊消息只接收不回复,被@会叫醒我;私聊不受影响。"
         )
 
-    def wake(self) -> bool:
-        """结束睡眠。返回之前是否在睡眠中。"""
+    def wake(self, reason: str | None = None) -> bool:
+        """结束睡眠。返回之前是否在睡眠中。reason 用于日志定位唤醒来源。"""
         was_sleeping = self.is_sleeping()
         if was_sleeping:
-            self._logger.info("Bot 被唤醒", wake_up_at=self._wake_up_at)
+            self._logger.info(
+                "Bot 被唤醒(控制台日志:睡眠完毕)",
+                reason=reason or "unknown",
+                elapsed_text=self._sleep_elapsed_text(),
+                ended_at=epoch_seconds(),
+            )
         self._wake_up_at = None
+        self._sleep_started_at = None
         return was_sleeping
+
+    def _sleep_elapsed_text(self) -> str:
+        """睡眠已持续时长的可读文本(用于结束日志;睡眠未开始/已清除时返回 '?')。"""
+        if self._sleep_started_at is None:
+            return "?"
+        elapsed = max(0.0, epoch_seconds() - self._sleep_started_at)
+        return format_sleep_duration(elapsed)
 
     # ── 唤醒提示词(参考自定义提示词系统,可被 data/prompts/custom 覆盖) ──
 

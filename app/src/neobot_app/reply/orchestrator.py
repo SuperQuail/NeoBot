@@ -2621,7 +2621,7 @@ class ReplyOrchestrator:
         service = getattr(self, "_sleep_service", None)
         if service is None or not service.is_sleeping():
             return None
-        service.wake()
+        service.wake(reason="at_mention_pipeline")
         return service.wake_prompt()
 
     def _entries_have_at_mention(self, entries: list) -> bool:
