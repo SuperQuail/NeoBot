@@ -802,11 +802,11 @@ class AgentSystem:
 @dataclass
 class AgentMemoryTrigger:
     group_interval: Optional[int] = field(
-        default=300,
+        default=500,
         metadata={"description": "群聊每N条消息触发一次记忆处理；0表示禁用"},
     )
     private_interval: Optional[int] = field(
-        default=100,
+        default=200,
         metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
     )
 
@@ -826,12 +826,12 @@ class AgentMemoryArchive:
         metadata={"description": "单条档案超过此字符数时触发一次 AI 自动精简；0表示禁用"},
     )
     max_chars: Optional[int] = field(
-        default=300,
-        metadata={"description": "个人档案(user_profile)渲染进提示词时的摘要长度上限；档案超长时自动生成最新部分摘要,完整档案可用工具分页阅读"},
+        default=4000,
+        metadata={"description": "个人记忆渲染进提示词时的展示长度上限(截取开头部分)；超出部分由模型用 archive_crud 分页查阅；user_summary 条目也以此为准"},
     )
     group_profile_max_chars: Optional[int] = field(
         default=1500,
-        metadata={"description": "群聊档案(group_profile)渲染进提示词时的摘要长度上限；档案超长时自动生成最新部分摘要,完整档案可用工具分页阅读"},
+        metadata={"description": "群聊记忆渲染进提示词时的展示长度上限(截取开头部分)；超出部分由模型用 archive_crud 分页查阅；group_summary 条目也以此为准"},
     )
 
 

@@ -254,29 +254,30 @@ class UserProfileService:
         return self._format_friend_info_line(str(user_id), profile, archive_text=archive_text)
 
     async def _fetch_user_archive(self, user_id: str) -> str | None:
+        """读个人记忆:优先受限 summary(user_summary),回退全量档案(user_profile)。
+
+        超长时截取开头部分(前 limit 字符)并附分页查阅引导;完整内容
+        由模型用 archive_crud__read_archive 的 offset 参数按页读取。
+        """
         if self._archive_memory_service is None:
             return None
-        try:
-            item = await self._archive_memory_service.get("user_profile", user_id)
-        except Exception:
-            return None
-        if item is not None and item.value:
-            value = item.value.strip()
-            limit = self._user_archive_max_chars()
-            if limit > 0 and len(value) > limit:
-                # 超长档案:原始内容完整保留,此处自动生成摘要(最新部分,
-                # 从完整行开始)并附分页阅读指引
-                tail = value[-limit:]
-                newline = tail.find("\n")
-                if 0 < newline < len(tail) - 1:
-                    tail = tail[newline + 1 :]
-                return (
-                    f"[档案较长(共{len(value)}字),以下为最新部分摘要]\n"
-                    f"{tail}\n"
-                    "[完整档案可用 archive_crud__read_archive 分页阅读:"
-                    "offset 负数从尾部向前翻页(越后的内容越新)]"
-                )
-            return value
+        limit = self._user_archive_max_chars()
+        for table in ("user_summary", "user_profile"):
+            try:
+                item = await self._archive_memory_service.get(table, user_id)
+            except Exception:
+                continue
+            if item is not None and item.value:
+                value = item.value.strip()
+                if limit > 0 and len(value) > limit:
+                    head = value[:limit]
+                    return (
+                        f"[记忆较长(共{len(value)}字),以下为开头部分]\n"
+                        f"{head}\n"
+                        "[完整记忆可用 archive_crud__read_archive 分页阅读:"
+                        "offset 负数从尾部向前翻页(越后的内容越新)]"
+                    )
+                return value
         return None
 
     def _user_archive_max_chars(self) -> int:
@@ -289,7 +290,7 @@ class UserProfileService:
             limit = getattr(archive, "max_chars", None)
             if isinstance(limit, int) and limit > 0:
                 return limit
-        return 300
+        return 4000
 
     @staticmethod
     def _collect_group_members_from_queue(

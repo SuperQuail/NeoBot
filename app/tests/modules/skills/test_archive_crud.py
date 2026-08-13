@@ -161,3 +161,161 @@ async def test_read_archive_handler_bad_offset_rejected() -> None:
 
     assert result["ok"] is False
     assert "offset" in result["error"]
+
+
+# ── 渲染侧:summary 优先 + 头部截断 + 查阅引导 ────────────────────
+
+
+class _FakeArchiveGet:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    async def get(self, table_name: str, key: str) -> SimpleNamespace | None:
+        value = self._values.get(f"{table_name}:{key}")
+        if value is None:
+            return None
+        return SimpleNamespace(value=value)
+
+
+def _fake_prompt_config(user_limit: int = 4000, group_limit: int = 1500) -> SimpleNamespace:
+    class _Chat:
+        key_word = []
+
+    return SimpleNamespace(
+        chat=_Chat(),
+        agent=SimpleNamespace(
+            memory=SimpleNamespace(
+                archive=SimpleNamespace(max_chars=user_limit, group_profile_max_chars=group_limit)
+            )
+        ),
+    )
+
+
+async def test_group_memory_prefers_summary_then_full() -> None:
+    """群聊渲染:group_summary 优先,缺失时回退 group_profile。"""
+    from neobot_app.prompt.builder import PromptBuilder
+
+    archive = _FakeArchiveGet(
+        {
+            "group_summary:42": "群聊总体总结",
+            "group_profile:42": "群聊全量档案",
+        }
+    )
+    pb = PromptBuilder(_fake_prompt_config(), profile_service=object())
+    pb._archive_memory_service = archive
+
+    assert await pb._fetch_group_memory("42") == "群聊总体总结"
+
+    archive = _FakeArchiveGet({"group_profile:42": "群聊全量档案"})
+    pb._archive_memory_service = archive
+    assert await pb._fetch_group_memory("42") == "群聊全量档案"
+
+    archive = _FakeArchiveGet({})
+    pb._archive_memory_service = archive
+    assert await pb._fetch_group_memory("42") is None
+
+
+async def test_group_memory_truncates_head_and_guides() -> None:
+    """群聊记忆超长:截取开头部分(1500 内)并附分页查阅引导。"""
+    from neobot_app.prompt.builder import PromptBuilder
+
+    long_value = "总体概述\n" + "x" * 3000
+    archive = _FakeArchiveGet({"group_summary:42": long_value})
+    pb = PromptBuilder(_fake_prompt_config(), profile_service=object())
+    pb._archive_memory_service = archive
+
+    rendered = await pb._fetch_group_memory("42")
+
+    assert rendered is not None
+    assert "以下为开头部分" in rendered
+    assert "分页阅读" in rendered and "越后的内容越新" in rendered
+    assert "总体概述" in rendered  # 头部(总体总结)保留
+    assert rendered.startswith("[记忆较长")
+
+
+async def test_user_archive_prefers_summary_and_truncates_at_4000() -> None:
+    """个人记忆:user_summary 优先;超长时截取前 4000 字符并附引导。"""
+    from neobot_app.user_profiles import UserProfileService
+
+    archive = _FakeArchiveGet(
+        {
+            "user_summary:10001": "个人总体总结",
+            "user_profile:10001": "个人全量档案",
+        }
+    )
+    service = UserProfileService(
+        adapter=object(), uow_factory=object(), config=_fake_prompt_config()
+    )
+    service._archive_memory_service = archive
+
+    assert await service._fetch_user_archive("10001") == "个人总体总结"
+
+    long_value = "开头概述\n" + "y" * 6000
+    archive = _FakeArchiveGet({"user_summary:10001": long_value})
+    service._archive_memory_service = archive
+    rendered = await service._fetch_user_archive("10001")
+
+    assert rendered is not None
+    assert rendered.startswith("[记忆较长")
+    assert "开头概述" in rendered
+    assert "分页阅读" in rendered
+    body = rendered.split("\n", 1)[1]
+    assert "y" * 3999 in body or len(body) < 4500
+
+
+# ── 总结 agent 行为规范 ──────────────────────────────────────────
+
+
+async def test_summary_prompt_requires_summary_and_full_records() -> None:
+    """总结提示词:要求维护受限 summary(总体在前+依次总结+硬限制)与全量记忆。"""
+    from neobot_app.config.schemas.bot import AgentMemoryArchive, BotConfig
+    from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
+
+    config = BotConfig(
+        agent=SimpleNamespace(
+            memory=SimpleNamespace(
+                archive=AgentMemoryArchive(max_chars=4000, group_profile_max_chars=1500),
+                favorability=SimpleNamespace(max_change_per_summary=5),
+            )
+        )
+    )
+    svc = object.__new__(ArchiveMemoryAutoSummaryService)
+    svc._config = config
+    svc._favorability_max_change = 5
+    svc._item_archive_enabled = False
+
+    prompt = svc._build_summary_prompt(
+        conversation_kind="group", conversation_id="42", messages=[]
+    )
+
+    assert "'group_summary'" in prompt
+    assert "'group_profile'" in prompt
+    assert "HARD LIMIT: 1500" in prompt
+    assert "OVERALL summary" in prompt
+    assert "chronological order" in prompt
+    assert "REWRITE and compress it with save_archive" in prompt
+    assert "NEVER append beyond the limit" in prompt
+    assert "negative offset reads from the tail" in prompt
+
+    private_prompt = svc._build_summary_prompt(
+        conversation_kind="private", conversation_id="10001", messages=[]
+    )
+    assert "'user_summary'" in private_prompt
+    assert "'user_profile'" in private_prompt
+    assert "HARD LIMIT: 4000" in private_prompt
+
+
+# ── 配置默认值 ────────────────────────────────────────────────────
+
+
+def test_memory_config_defaults() -> None:
+    """记忆总结触发条数默认:群聊 500、私聊 200;个人记忆展示上限 4000。"""
+    from neobot_app.config.schemas.bot import AgentMemoryArchive, AgentMemoryTrigger
+
+    trigger = AgentMemoryTrigger()
+    assert trigger.group_interval == 500
+    assert trigger.private_interval == 200
+
+    archive = AgentMemoryArchive()
+    assert archive.max_chars == 4000
+    assert archive.group_profile_max_chars == 1500

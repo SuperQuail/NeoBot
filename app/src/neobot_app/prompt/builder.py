@@ -116,16 +116,8 @@ class PromptBuilder:
             message_queue,
         )
 
-        group_profile = (
-            await self._fetch_archive(
-                "group_profile",
-                group_id_str,
-                max_chars=self._group_profile_max_chars(),
-            )
-            or ""
-        )
         group_info = _merge_labeled_prompt_fragments(
-            ("群聊档案", group_profile),
+            ("群聊档案", await self._fetch_group_memory(group_id_str) or ""),
         )
 
         keyword_reaction_text = self._keyword_reaction_builder.build(
@@ -293,36 +285,45 @@ class PromptBuilder:
             all_new=all_new,
         )
 
-    async def _fetch_archive(
+    async def _fetch_group_memory(self, group_id_str: str) -> str | None:
+        """读群聊记忆:优先受限 summary(group_summary),回退全量档案(group_profile)。
+
+        超长时截取开头部分(总体总结在前)并附分页查阅引导;完整内容
+        由模型用 archive_crud__read_archive 的 offset 参数按页读取。
+        """
+        return await self._fetch_archive_prefer_summary(
+            summary_table="group_summary",
+            full_table="group_profile",
+            key=group_id_str,
+            limit=self._group_profile_max_chars(),
+        )
+
+    async def _fetch_archive_prefer_summary(
         self,
-        table_name: str,
-        key: str,
         *,
-        max_chars: int | None = None,
+        summary_table: str,
+        full_table: str,
+        key: str,
+        limit: int,
     ) -> str | None:
         if self._archive_memory_service is None:
             return None
-        try:
-            item = await self._archive_memory_service.get(table_name, key)
-        except Exception:
-            return None
-        if item is not None and item.value:
-            value = item.value.strip()
-            if max_chars and max_chars > 0 and len(value) > max_chars:
-                # 超长档案:原始内容完整保留,此处自动生成摘要(最新部分,
-                # 从完整行开始)并附分页阅读指引;完整档案由模型用
-                # archive_crud__read_archive 的 offset 参数按页读取
-                tail = value[-max_chars:]
-                newline = tail.find("\n")
-                if 0 < newline < len(tail) - 1:
-                    tail = tail[newline + 1 :]
-                return (
-                    f"[档案较长(共{len(value)}字),以下为最新部分摘要]\n"
-                    f"{tail}\n"
-                    "[完整档案可用 archive_crud__read_archive 分页阅读:"
-                    "offset 负数从尾部向前翻页(越后的内容越新)]"
-                )
-            return value
+        for table in (summary_table, full_table):
+            try:
+                item = await self._archive_memory_service.get(table, key)
+            except Exception:
+                item = None
+            if item is not None and item.value:
+                value = item.value.strip()
+                if limit > 0 and len(value) > limit:
+                    head = value[:limit]
+                    return (
+                        f"[记忆较长(共{len(value)}字),以下为开头部分]\n"
+                        f"{head}\n"
+                        "[完整记忆可用 archive_crud__read_archive 分页阅读:"
+                        "offset 负数从尾部向前翻页(越后的内容越新)]"
+                    )
+                return value
         return None
 
     def _group_profile_max_chars(self) -> int:
