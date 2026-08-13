@@ -292,8 +292,10 @@ class ReplyOrchestrator:
         cache_calculator: CacheCalculator | None = None,
         credential_manager: Any = None,
         config_update_callback: Any = None,
+        sleep_service: Any = None,
     ) -> None:
         self._adapter = adapter
+        self._sleep_service = sleep_service
         self._prompt_builder = prompt_builder
         self._prompt_store = prompt_store
         self._cache_calculator = cache_calculator
@@ -1685,6 +1687,27 @@ class ReplyOrchestrator:
             await asyncio.sleep(wait_time)
             new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
             if new_entries:
+                # 睡眠拦截:睡眠中被@则唤醒并注入唤醒提示词,其余消息忽略
+                if self._sleeping():
+                    if self._entries_have_at_mention(new_entries):
+                        wake_prompt = self._wake_from_sleep() or ""
+                        self._logger.info(
+                            "睡眠中 wait 工具被@唤醒",
+                            queue_key=queue_key,
+                        )
+                        return (
+                            f"等待了 {wait_time} 秒,期间被@叫醒了。"
+                            f"{wake_prompt}"
+                        )
+                    self._logger.info(
+                        "睡眠中 wait 工具忽略新消息",
+                        queue_key=queue_key,
+                        count=len(new_entries),
+                    )
+                    return (
+                        f"等待了 {wait_time} 秒,期间收到新消息,"
+                        "但 Bot 正在睡觉,暂不处理。"
+                    )
                 # 刷新对比基准,避免多次 wait 的重复名提示基于过期快照
                 nonlocal previous_entries
                 previous_entries = queue_copy.entries(queue_key)
@@ -2428,8 +2451,8 @@ class ReplyOrchestrator:
                         queue_key=queue_key,
                         remaining_lifespan=group_lifespan,
                     )
-                    new_entries, notification_text = await self._suspend_group_chat(
-                        queue, queue_copy, queue_key
+                    new_entries, notification_text, wake_prompt = (
+                        await self._suspend_group_chat(queue, queue_copy, queue_key)
                     )
                     if not new_entries and not notification_text:
                         self._logger.debug(
@@ -2452,6 +2475,17 @@ class ReplyOrchestrator:
                             event,
                             queue_key=queue_key,
                             notification=notification_text[:200],
+                        )
+
+                    # 注入睡眠唤醒提示词(挂起期间被@唤醒)
+                    if wake_prompt:
+                        messages.append(
+                            {"role": "user", "content": f"[系统状态]{wake_prompt}"}
+                        )
+                        self._logger.info(
+                            "注入睡眠唤醒提示词(挂起期间被@唤醒)",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
                         )
 
                     # 构建增量提示并注入（角色消息 + 新成员档案说明）
@@ -2574,6 +2608,34 @@ class ReplyOrchestrator:
                 event.transition(ReplyState.COMPLETED)
             except RuntimeError:
                 pass
+
+    # ── 睡眠拦截(挂起循环 / wait 工具共用) ──
+
+    def _sleeping(self) -> bool:
+        """是否处于睡眠中(群聊不触发回复;私聊不睡眠)。"""
+        service = getattr(self, "_sleep_service", None)
+        return service is not None and service.is_sleeping()
+
+    def _wake_from_sleep(self) -> str | None:
+        """结束睡眠并返回唤醒提示词;未在睡眠时返回 None。"""
+        service = getattr(self, "_sleep_service", None)
+        if service is None or not service.is_sleeping():
+            return None
+        service.wake()
+        return service.wake_prompt()
+
+    def _entries_have_at_mention(self, entries: list) -> bool:
+        """检查条目列表中是否有 @bot 消息(与事件入口语义一致)。"""
+        from neobot_app.message.queue import QueueEntryType as _QET
+
+        if self._willing_service is None:
+            return False
+        for entry in entries:
+            if entry.kind != _QET.MESSAGE or entry.message is None:
+                continue
+            if self._willing_service.is_at_mentioned(entry.message):
+                return True
+        return False
 
     def _collect_new_entries(
         self,
@@ -2859,14 +2921,16 @@ class ReplyOrchestrator:
         source: MessageQueue,
         snapshot: MessageQueue,
         queue_key: str,
-    ) -> tuple[list, str | None]:
+    ) -> tuple[list, str | None, str | None]:
         """挂起等待群聊新消息或后台通知。
 
         新消息需通过回复意愿判断（@提及或概率命中）才结束挂起。
         - @提及：等待 at_mention_reply_delay_seconds 收集上下文后结束挂起
         - 普通意愿命中：立即结束挂起
         - 后台通知：立即中断挂起
-        返回 (新消息条目列表, 通知文本或None)；返回空列表且无通知表示超时。
+        - 睡眠中：非@消息忽略（不触发回复），@提及唤醒并注入唤醒提示词
+        返回 (新消息条目列表, 通知文本或None, 唤醒提示词或None)；
+        返回空列表且无通知表示超时。
         """
         from neobot_app.message.queue import QueueEntryType as _QET
 
@@ -2875,6 +2939,7 @@ class ReplyOrchestrator:
         deadline = monotonic_seconds() + suspend_secs
         all_new_entries: list = []
         notification_text: str | None = None
+        wake_prompt: str | None = None
         has_willing = False
         at_mention_deadline = 0.0
 
@@ -2928,6 +2993,25 @@ class ReplyOrchestrator:
             if current_new:
                 current_new = self._consume_ai_reply_blocked_entries(current_new)
             if current_new:
+                # 睡眠拦截:睡眠中非@消息忽略(已入快照,不会反复拾取),
+                # @提及唤醒并注入唤醒提示词,与事件入口语义一致
+                if self._sleeping():
+                    if not _has_at_mention(current_new):
+                        self._logger.info(
+                            "睡眠中,挂起管线忽略新消息",
+                            queue_key=queue_key,
+                            count=len(current_new),
+                        )
+                        continue
+                    wake_prompt = self._wake_from_sleep() or ""
+                    self._logger.info(
+                        "睡眠中,挂起管线被@唤醒",
+                        queue_key=queue_key,
+                    )
+                    all_new_entries.extend(current_new)
+                    has_willing = True
+                    at_mention_deadline = monotonic_seconds() + at_delay
+                    continue
                 all_new_entries.extend(current_new)
                 if not has_willing:
                     if _check_willing(current_new):
@@ -2985,11 +3069,11 @@ class ReplyOrchestrator:
 
         # 通知存在 → 总是返回（通知本身就是触发理由）
         if notification_text:
-            return all_new_entries, notification_text
+            return all_new_entries, notification_text, wake_prompt
 
         # 有意愿消息 → 返回
         if has_willing:
-            return all_new_entries, None
+            return all_new_entries, None, wake_prompt
 
         # 超时且无意愿消息 → 不触发回复
         self._logger.debug(
@@ -2997,7 +3081,7 @@ class ReplyOrchestrator:
             queue_key=queue_key,
             collected_count=len(all_new_entries),
         )
-        return [], None
+        return [], None, None
 
     async def _build_group_chat_resume_messages(
         self,

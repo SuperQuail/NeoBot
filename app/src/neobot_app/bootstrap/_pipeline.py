@@ -164,6 +164,7 @@ def build_reply_orchestrator(
     cache_calculator: Any = None,
     credential_manager: Any = None,
     config_update_callback: Any = None,
+    sleep_service: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -198,6 +199,7 @@ def build_reply_orchestrator(
         cache_calculator=cache_calculator,
         credential_manager=credential_manager,
         config_update_callback=config_update_callback,
+        sleep_service=sleep_service,
     )
 
 

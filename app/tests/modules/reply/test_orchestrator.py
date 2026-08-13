@@ -1558,7 +1558,7 @@ async def test_cancelled_group_event_cannot_resume_to_completed(monkeypatch):
     async def _suspend(source, snapshot, queue_key):
         nonlocal suspend_calls
         suspend_calls += 1
-        return [], "resume"
+        return [], "resume", None
 
     monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
     event = orch.start_reply(
@@ -1862,7 +1862,7 @@ async def test_cost_pipeline_extends_group_lifespan(monkeypatch):
     async def _suspend(source, snapshot, queue_key):
         nonlocal suspend_calls
         suspend_calls += 1
-        return [], "resume"  # 后台通知保持管线存活
+        return [], "resume", None  # 后台通知保持管线存活
 
     monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
     event = orch.start_reply(
@@ -1907,7 +1907,7 @@ async def test_cost_pipeline_disabled_keeps_base_lifespan(monkeypatch):
     )
 
     async def _suspend(source, snapshot, queue_key):
-        return [], "resume"
+        return [], "resume", None
 
     monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
     event = orch.start_reply(

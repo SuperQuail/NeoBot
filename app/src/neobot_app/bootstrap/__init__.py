@@ -533,6 +533,7 @@ def create_application() -> NeoBotApplication:
         cache_calculator=cache_calculator,
         credential_manager=credential_manager,
         config_update_callback=_make_chat_config_update_callback(config),
+        sleep_service=sleep_service,
     )
     console_telemetry = ConsoleTelemetry()
     plugin["hook_bus"].subscribe_runtime(
