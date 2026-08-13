@@ -7,6 +7,7 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 from neobot_app.bootstrap import create_application
 from neobot_app.config.loader.manager import ConfigLoadError
@@ -482,7 +483,6 @@ def _file_version_win(path: str) -> str:
 def _vc_runtime_issues() -> list[str]:
     """Windows 下检查 VC++ 运行库,返回问题描述列表(空 = 正常)。"""
     import platform
-    from pathlib import Path
 
     if platform.system() != "Windows":
         return []
@@ -503,47 +503,11 @@ def _vc_runtime_issues() -> list[str]:
     return issues
 
 
-def _find_local_vc_redist() -> Path | None:
-    """查找发布包内置的离线 VC++ redist(与 bot 的 scripts 目录同源)。"""
-    from pathlib import Path
-
-    candidates = [
-        Path(__file__).resolve().parents[2] / "scripts" / "vc_redist" / "vc_redist.x64.exe",
-        Path.cwd() / "scripts" / "vc_redist" / "vc_redist.x64.exe",
-        Path.cwd() / "vc_redist.x64.exe",
-    ]
-    for candidate in candidates:
-        try:
-            if candidate.is_file() and candidate.stat().st_size > 1024 * 1024:
-                return candidate
-        except OSError:
-            continue
-    return None
-
-
-def _ask_install_vc_redist(package: Path | None) -> str:
-    """询问安装方式,返回 "offline" / "online" / ""(跳过)。
-
-    - 有内置离线包:提供 [1] 离线包(无网可用)与 [2] 在线下载(最新版)两个选择
-    - 无离线包:仅询问是否在线下载
-    """
+def _ask_install_vc_redist() -> str:
+    """询问是否在线下载安装 VC++ 运行库,返回 "online" / ""(跳过)。"""
     try:
-        if package is not None:
-            answer = input(
-                f"请选择 VC++ 运行库安装方式(需管理员,可能弹出 UAC):\n"
-                f"  [1] 使用内置离线包 {package.name} "
-                f"({package.stat().st_size / 1024 / 1024:.1f} MB,无网可用)\n"
-                f"  [2] 在线下载最新版(约 25 MB)\n"
-                f"  [n/N] 跳过\n"
-                f"请选择: "
-            ).strip().lower()
-            if answer in ("1", "offline", "local"):
-                return "offline"
-            if answer in ("2", "online", "download"):
-                return "online"
-            return ""
         answer = input(
-            "未找到内置离线包,是否在线下载最新版 VC++ 运行库并安装"
+            "是否在线下载最新版 VC++ 运行库并安装"
             "(约 25 MB,需管理员,可能弹出 UAC)? [y/N] "
         ).strip().lower()
         return "online" if answer in ("y", "yes") else ""
@@ -596,7 +560,7 @@ def _install_vc_redist(package: Path) -> bool:
 
 
 def _ensure_vc_runtime_fixed() -> bool:
-    """onnx 不可用时优先处理 VC++ 运行库(Windows):检测 → 选择安装方式 → 安装。
+    """onnx 不可用时优先处理 VC++ 运行库(Windows):检测 → 在线下载 → 安装。
 
     Returns: True 表示运行库问题已解决(可重新探测 onnxruntime)。
     """
@@ -610,23 +574,20 @@ def _ensure_vc_runtime_fixed() -> bool:
     print("检测到 VC++ 运行库问题(onnxruntime/torch DLL 初始化失败 1114 的最常见根因):")
     for item in issues:
         print(f"         - {item}")
-    package = _find_local_vc_redist()
-    if package is not None:
-        print(f"         已找到内置离线包: {package}(可离线安装)")
-    else:
-        print("         未找到内置离线包(scripts/vc_redist/vc_redist.x64.exe),"
-              "可选择在线下载安装")
-    choice = _ask_install_vc_redist(package)
+    print(f"         将在线下载最新版 VC++ 运行库: {VC_REDIST_URL}")
+    choice = _ask_install_vc_redist()
     if not choice:
-        print("         跳过。可稍后手动安装: scripts/vc_redist/vc_redist.x64.exe"
-              "(右键管理员)或 scripts/onnx_deploy_check.py --install-redist")
+        print(f"         跳过。可稍后手动下载安装: {VC_REDIST_URL}"
+              "(右键管理员运行)或 scripts/onnx_deploy_check.py --install-redist")
         return False
-    installer = package if choice == "offline" else _download_vc_redist()
+    installer = _download_vc_redist()
     if installer is None:
-        print("         获取安装包失败,请稍后重试或手动安装")
+        print(f"         下载失败。请手动下载并安装: {VC_REDIST_URL}"
+              "(以管理员身份运行 vc_redist.x64.exe)")
         return False
     if not _install_vc_redist(installer):
-        print("         安装失败,请以管理员身份手动运行后重试")
+        print(f"         安装失败,请手动下载安装: {VC_REDIST_URL}"
+              "(以管理员身份运行,可能需重启后生效)")
         return False
     leftover = _vc_runtime_issues()
     if leftover:
@@ -643,7 +604,7 @@ def _ensure_vision_engine(service: Any) -> None:
 
     策略:
     1. onnxruntime 不可用且是 Windows:优先检测 VC++ 运行库(1114 最常见根因),
-       询问用户用内置离线包修复,修好后重新探测 onnxruntime
+       询问用户在线下载安装,修好后重新探测 onnxruntime
     2. 仍不可用:询问安装 ultralytics(PyTorch 备选推理栈,.pt 模型)
     3. 安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别;
        探测失败会给出具体导入错误,区分「未安装」与「已装但无法加载」。

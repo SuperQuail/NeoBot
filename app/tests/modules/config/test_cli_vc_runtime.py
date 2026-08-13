@@ -1,15 +1,10 @@
-"""cli 的 VC++ 运行库检测/安装机制测试。"""
+"""cli 的 VC++ 运行库检测/安装机制测试(在线下载模式,无内置离线包)。"""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-
-
-def _issue_names(cli, monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    monkeypatch.setattr("sys.platform", "win32")
-    from neobot_app import cli as cli_module
-
-    return cli_module._vc_runtime_issues()
 
 
 def test_vc_runtime_issues_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,7 +32,6 @@ def test_vc_runtime_issues_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_vc_runtime_issues_detects_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """System32 路径指向空目录 → 全部判定缺失。"""
     import platform
-    from pathlib import Path
 
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     from neobot_app import cli as cli_module
@@ -50,33 +44,12 @@ def test_vc_runtime_issues_detects_missing(tmp_path: Path, monkeypatch: pytest.M
     assert "缺失" in issues[0]
 
 
-def test_find_local_vc_redist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """离线包发现:cwd/scripts/vc_redist/vc_redist.x64.exe。"""
-    from neobot_app import cli as cli_module
-
-    package_dir = tmp_path / "scripts" / "vc_redist"
-    package_dir.mkdir(parents=True)
-    package = package_dir / "vc_redist.x64.exe"
-    package.write_bytes(b"x" * (1024 * 1024 + 1))
-    monkeypatch.chdir(tmp_path)
-    found = cli_module._find_local_vc_redist()
-    assert found is not None
-    assert found.name == "vc_redist.x64.exe"
-
-
-def test_find_local_vc_redist_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from neobot_app import cli as cli_module
-
-    monkeypatch.chdir(tmp_path)
-    assert cli_module._find_local_vc_redist() is None
-
-
 def test_ensure_vc_runtime_fixed_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """完整流程:检测到问题 → 用户拒绝 → 返回 False 且不安装。"""
+    """完整流程:检测到问题 → 用户拒绝 → 返回 False 且不下载不安装。"""
     import platform
 
     monkeypatch.setattr(platform, "system", lambda: "Windows")
@@ -85,60 +58,40 @@ def test_ensure_vc_runtime_fixed_flow(
     empty = tmp_path / "System32"
     empty.mkdir()
     monkeypatch.setattr(cli_module, "_VC_SYSTEM32", empty)
-    monkeypatch.setattr(cli_module, "_ask_install_vc_redist", lambda pkg: False)
+    monkeypatch.setattr(cli_module, "_ask_install_vc_redist", lambda: False)
+    monkeypatch.setattr(cli_module, "_download_vc_redist", lambda: None)
     assert cli_module._ensure_vc_runtime_fixed() is False
     out = capsys.readouterr().out
     assert "VC++ 运行库问题" in out
+    assert "手动下载安装" in out
 
 
-def test_ask_install_vc_redist_noninteractive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ask_install_vc_redist_noninteractive(monkeypatch: pytest.MonkeyPatch) -> None:
     """非交互环境(EOF)默认跳过(返回空串)。"""
     from neobot_app import cli as cli_module
 
-    package = tmp_path / "vc_redist.x64.exe"
-    package.write_bytes(b"x" * (1024 * 1024 + 1))
     monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError()))
     monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-    assert cli_module._ask_install_vc_redist(package) == ""
+    assert cli_module._ask_install_vc_redist() == ""
 
 
-def test_ask_install_vc_redist_choices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """有离线包时:[1] 选离线,[2] 选在线,其他跳过。"""
+def test_ask_install_vc_redist_choices(monkeypatch: pytest.MonkeyPatch) -> None:
+    """在线模式:y → online,其他跳过。"""
     from neobot_app import cli as cli_module
 
-    package = tmp_path / "vc_redist.x64.exe"
-    package.write_bytes(b"x" * (1024 * 1024 + 1))
-
-    for answer, expected in (("1", "offline"), ("offline", "offline"),
-                             ("2", "online"), ("download", "online"),
-                             ("n", ""), ("", "")):
+    for answer, expected in (("y", "online"), ("yes", "online"),
+                             ("n", ""), ("", ""), ("abc", "")):
         monkeypatch.setattr("builtins.input", lambda prompt, a=answer: a)
         monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-        assert cli_module._ask_install_vc_redist(package) == expected
+        assert cli_module._ask_install_vc_redist() == expected
 
 
-def test_ask_install_vc_redist_without_package(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """无离线包时:y → online,其他跳过。"""
-    from neobot_app import cli as cli_module
-
-    monkeypatch.setattr("builtins.input", lambda prompt: "y")
-    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-    assert cli_module._ask_install_vc_redist(None) == "online"
-
-    monkeypatch.setattr("builtins.input", lambda prompt: "n")
-    assert cli_module._ask_install_vc_redist(None) == ""
-
-
-def test_ensure_vc_runtime_fixed_offline_flow(
+def test_ensure_vc_runtime_fixed_online_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """完整流程:检测到问题 → 选离线包 → 安装成功 → 返回 True。"""
+    """完整流程:检测到问题 → 在线下载 → 安装成功 → 返回 True。"""
     import platform
 
     monkeypatch.setattr(platform, "system", lambda: "Windows")
@@ -154,9 +107,33 @@ def test_ensure_vc_runtime_fixed_offline_flow(
     monkeypatch.setattr(cli_module, "_vc_runtime_issues", fake_issues)
     package = tmp_path / "vc_redist.x64.exe"
     package.write_bytes(b"x" * (1024 * 1024 + 1))
-    monkeypatch.setattr(cli_module, "_find_local_vc_redist", lambda: package)
-    monkeypatch.setattr(cli_module, "_ask_install_vc_redist", lambda pkg: "offline")
+    monkeypatch.setattr(cli_module, "_ask_install_vc_redist", lambda: "online")
+    monkeypatch.setattr(cli_module, "_download_vc_redist", lambda: package)
     monkeypatch.setattr(cli_module, "_install_vc_redist", lambda pkg: True)
     assert cli_module._ensure_vc_runtime_fixed() is True
     out = capsys.readouterr().out
     assert "已更新完成" in out
+
+
+def test_ensure_vc_runtime_fixed_download_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """下载失败:返回 False 并提示手动下载官方链接。"""
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    from neobot_app import cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module,
+        "_vc_runtime_issues",
+        lambda: ["vcruntime140.dll 版本过旧: 14.31"],
+    )
+    monkeypatch.setattr(cli_module, "_ask_install_vc_redist", lambda: "online")
+    monkeypatch.setattr(cli_module, "_download_vc_redist", lambda: None)
+    assert cli_module._ensure_vc_runtime_fixed() is False
+    out = capsys.readouterr().out
+    assert "下载失败" in out
+    assert cli_module.VC_REDIST_URL in out
