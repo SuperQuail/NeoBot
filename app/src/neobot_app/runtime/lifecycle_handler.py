@@ -11,6 +11,14 @@ class LifecycleHandler:
     async def handle(self, ctx: EventContext) -> None:
         event = ctx.raw_event
         meta_event_type = event.get("meta_event_type", "未知")
+        if meta_event_type == "heartbeat":
+            status = event.get("status")
+            if isinstance(status, dict) and (
+                status.get("online") is False or status.get("good") is False
+            ):
+                self._logger.warning(f"心跳状态异常: {status}")
+            return
+
         sub_type = event.get("sub_type", "")
         label = f"{meta_event_type}" + (f".{sub_type}" if sub_type else "")
         details: list[str] = []
