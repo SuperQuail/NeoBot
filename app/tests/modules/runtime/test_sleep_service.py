@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import neobot_app.runtime.sleep_service as sleep_module
 from neobot_app.runtime.sleep_service import (
     DEFAULT_WAKE_PROMPT,
@@ -216,4 +218,65 @@ def test_wake_without_reason_uses_unknown(monkeypatch) -> None:
         record for record in recorder.records if "Bot 被唤醒" in record[0]
     )
     assert wake_record[1]["reason"] == "unknown"
+
+def test_log_remaining_prints_during_sleep(monkeypatch) -> None:
+    """睡眠中每分钟播报剩余时间(带可读文本与秒数)。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+
+    service.sleep(3600)
+    service._log_remaining()
+
+    records = [
+        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
+    ]
+    assert len(records) == 1
+    assert "剩余睡眠时间1 小时" in records[0][0]
+    assert records[0][1]["remaining_seconds"] == 3600
+
+
+def test_log_remaining_silent_when_awake(monkeypatch) -> None:
+    """未睡眠时不打印剩余时间播报。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+
+    service._log_remaining()
+
+    assert not any(
+        "睡眠中,剩余睡眠时间" in record[0] for record in recorder.records
+    )
+
+
+async def test_ticker_loop_polls_remaining(monkeypatch) -> None:
+    """ticker 循环按间隔播报剩余时间(睡眠中打印,醒来后停止)。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+    service.sleep(120)
+
+    task = asyncio.create_task(service._ticker_loop(interval_seconds=0.01))
+    await asyncio.sleep(0.045)  # 约 4 轮播报
+    logs_during_sleep = [
+        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
+    ]
+    assert len(logs_during_sleep) >= 2
+
+    service.wake()
+    await asyncio.sleep(0.04)  # 醒来后不再打印
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    logs_after_wake = [
+        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
+    ]
+    assert len(logs_after_wake) == len(logs_during_sleep)
+
 

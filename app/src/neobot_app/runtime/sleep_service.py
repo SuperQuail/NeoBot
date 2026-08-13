@@ -11,12 +11,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.time_context import epoch_seconds, from_epoch_seconds
+
+# 睡眠剩余时间播报间隔(秒)
+SLEEP_TICKER_INTERVAL_SECONDS = 60
 
 # 睡眠时长上限:12 小时
 MAX_SLEEP_SECONDS = 12 * 3600
@@ -118,6 +122,32 @@ class SleepService:
         if at is None:
             return ""
         return from_epoch_seconds(at).strftime("%H:%M")
+
+    # ── 睡眠剩余时间播报(每分钟,接入应用 background_coros) ──
+
+    def ticker(self) -> Any:
+        """返回睡眠状态播报协程:睡眠期间每分钟打印剩余时间。
+
+        接入 NeoBotApplication.background_coros,由应用生命周期统一启停。
+        """
+        return self._ticker_loop()
+
+    async def _ticker_loop(
+        self, interval_seconds: float = SLEEP_TICKER_INTERVAL_SECONDS
+    ) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            self._log_remaining()
+
+    def _log_remaining(self) -> None:
+        """睡眠中打印一条剩余时间日志(每分钟由 ticker 调用)。"""
+        if not self.is_sleeping():
+            return
+        remaining = self.remaining_seconds()
+        self._logger.info(
+            f"睡眠中,剩余睡眠时间{format_sleep_duration(remaining)}",
+            remaining_seconds=remaining,
+        )
 
     # ── 操作 ──
 

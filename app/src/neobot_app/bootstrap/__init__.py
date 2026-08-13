@@ -555,6 +555,8 @@ def create_application() -> NeoBotApplication:
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []
     maintenance_coros = []
+    # 睡眠剩余时间播报：睡眠期间每分钟打印剩余时间（仅日志，不回复）
+    maintenance_coros.append(sleep_service.ticker())
     if sandbox["sandbox_service"] is not None and admin_accounts:
         maintenance_coros.append(
             _make_maintenance_coro(

@@ -35,14 +35,14 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         ),
         Command(
             name="reboot",
-            description="重启 Bot(超级管理员)",
+            description="重启 Bot",
             permission=PERM_SUPER_ADMIN,
             params=(),
             handler=_handle_reboot,
         ),
         Command(
             name="add_admin",
-            description="添加次级管理员,用 QQ 号或 @ 指定(超级管理员)",
+            description="添加次级管理员,用 QQ 号或 @ 指定",
             permission=PERM_SUPER_ADMIN,
             usage="<QQ号|@某人>",
             params=(
@@ -52,7 +52,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         ),
         Command(
             name="del_admin",
-            description="删除次级管理员,用 QQ 号或 @ 指定(超级管理员)",
+            description="删除次级管理员,用 QQ 号或 @ 指定",
             permission=PERM_SUPER_ADMIN,
             usage="<QQ号|@某人>",
             params=(
@@ -62,7 +62,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         ),
         Command(
             name="sleep",
-            description="让 Bot 进入睡眠(次级管理员);睡眠期间群聊只接收不回复,被@会叫醒",
+            description="让 Bot 进入睡眠;睡眠期间群聊只接收不回复,被@会叫醒",
             permission=PERM_SUB_ADMIN,
             usage="<时长>",
             params=(
@@ -75,7 +75,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         ),
         Command(
             name="awake",
-            description="叫醒睡眠中的 Bot(次级管理员)",
+            description="叫醒睡眠中的 Bot",
             permission=PERM_SUB_ADMIN,
             params=(),
             handler=_handle_awake,
