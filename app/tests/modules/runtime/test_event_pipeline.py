@@ -12,6 +12,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment
 from neobot_app.config.schemas.bot import Bot, BotConfig, Chat
 from neobot_app.message.queue import MessageQueue
 from neobot_app.runtime.event_pipeline import EventPipeline
+from neobot_app.runtime.sleep_service import DEFAULT_WAKE_PROMPT, SleepService
 from neobot_app.skills.image_parse_skill import ImageParseSkill
 
 
@@ -85,6 +86,7 @@ async def test_group_message_event_duplicate_not_pushed_twice():
     pipeline._credential_manager = None
     pipeline._willing_service = None
     pipeline._inbound_pipeline = None
+    pipeline._sleep_service = None
     pipeline._logger = SimpleNamespace(
         debug=lambda *a, **k: None,
         info=lambda *a, **k: None,
@@ -210,6 +212,7 @@ def _pipeline_with_queue(
     pipeline._credential_manager = None
     pipeline._willing_service = None
     pipeline._inbound_pipeline = None
+    pipeline._sleep_service = None
     pipeline._logger = SimpleNamespace(
         debug=lambda *a, **k: None,
         info=lambda *a, **k: None,
@@ -390,6 +393,131 @@ async def test_flush_cancels_and_awaits_tracked_background_tasks() -> None:
     assert cancelled.is_set()
     assert pipeline._background_tasks == set()
     archive.flush_all.assert_awaited_once()
+# ── 睡眠拦截 ──
+
+
+def _sleep_config() -> BotConfig:
+    """睡眠测试配置:私聊不预热、回复延迟 0、@唤醒延迟 0。"""
+    return BotConfig(
+        bot=Bot(account=0),
+        chat=Chat(
+            private_chat_dynamic_warmup=False,
+            private_chat_reply_delay_seconds=0.0,
+            at_mention_reply_delay_seconds=0.0,
+        ),
+    )
+
+
+def _willing_fake(at_mentioned: bool = False, block_reason: str = ""):
+    return SimpleNamespace(
+        is_at_mentioned=lambda _m: at_mentioned,
+        block_reason_for_message=lambda **_kw: block_reason,
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_message_during_sleep_only_queued():
+    """睡眠中群消息只入队,不触发回复,也不唤醒 Bot。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=_sleep_config())
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=False)
+
+    await pipeline.handle_group_message_event(_group_event(9501, text="hello"))
+
+    assert queue.size("42") == 1  # 消息正常入队
+    assert sleep_service.is_sleeping()  # 未被唤醒
+
+
+@pytest.mark.asyncio
+async def test_group_at_mention_during_sleep_wakes_and_injects_prompt():
+    """睡眠中被@:唤醒 Bot,并带唤醒提示词触发回复。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=_sleep_config())
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    calls: list[dict] = []
+
+    def fake_start_reply(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=fake_start_reply)
+    pipeline._willing_service = _willing_fake(at_mentioned=True)
+
+    await pipeline.handle_group_message_event(_group_event(9502, text="hi"))
+
+    assert queue.size("42") == 1
+    assert len(calls) == 1
+    assert calls[0]["background_content"] == DEFAULT_WAKE_PROMPT
+    assert calls[0]["decision"].manager_name == "wake_up"
+    assert calls[0]["decision"].should_reply is True
+    assert not sleep_service.is_sleeping()  # 被@唤醒
+
+
+@pytest.mark.asyncio
+async def test_sleeping_at_mention_blocked_conversation_not_woken():
+    """睡眠中被@但会话被硬性屏蔽:不回复也不唤醒。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue, config=_sleep_config())
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=True, block_reason="已屏蔽")
+
+    await pipeline.handle_group_message_event(_group_event(9503, text="hi"))
+
+    assert queue.size("42") == 1
+    assert sleep_service.is_sleeping()  # 屏蔽优先,不唤醒
+
+
+@pytest.mark.asyncio
+async def test_private_message_during_sleep_still_replies():
+    """私聊不受睡眠影响:睡眠中私聊消息依旧触发回复,睡眠状态不变。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(
+        group_queue=queue, friend_queue=queue, config=_sleep_config()
+    )
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+
+    await pipeline.handle_private_message_event(_private_event(9504, text="hello"))
+
+    assert queue.size("8") == 1
+    assert sleep_service.is_sleeping()  # 私聊不会打断睡眠
+
+
+@pytest.mark.asyncio
+async def test_willing_decision_sleep_gate_returns_false_without_at():
+    """睡眠中非@消息,意愿决策直接返回 False(不计算意愿)。"""
+    pipeline = _pipeline_with_queue(config=_sleep_config())
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    evaluate = AsyncMock()
+    pipeline._willing_service = SimpleNamespace(
+        is_at_mentioned=lambda _m: False,
+        block_reason_for_message=lambda **_kw: "",
+        evaluate=evaluate,
+    )
+
+    result = await pipeline._handle_willing_decision(
+        message=_group_message(9601, text="hello"),
+        queue=MessageQueue(),
+        queue_key="42",
+    )
+
+    assert result is False
+    evaluate.assert_not_called()
+    assert sleep_service.is_sleeping()
+
 
 
 @pytest.mark.asyncio

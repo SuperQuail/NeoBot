@@ -238,6 +238,7 @@ def build_pipelines_and_app(
     console_service: Any = None,
     command_service: Any = None,
     credential_manager: Any = None,
+    sleep_service: Any = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -260,6 +261,7 @@ def build_pipelines_and_app(
         reply_block_registry=reply_block_registry,
         command_service=command_service,
         credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
 
     notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)

@@ -7,11 +7,13 @@ from typing import TYPE_CHECKING
 
 from neobot_app.commands.model import (
     PERM_EVERYONE,
+    PERM_SUB_ADMIN,
     PERM_SUPER_ADMIN,
     Command,
     CommandContext,
     permission_name,
 )
+from neobot_app.runtime.sleep_service import parse_sleep_duration
 
 if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
@@ -57,6 +59,26 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ("QQ号|@某人", "必填。要移除的次级管理员 QQ 号,或直接 @ 对方"),
             ),
             handler=_handle_del_admin,
+        ),
+        Command(
+            name="sleep",
+            description="让 Bot 进入睡眠(次级管理员);睡眠期间群聊只接收不回复,被@会叫醒",
+            permission=PERM_SUB_ADMIN,
+            usage="<时长>",
+            params=(
+                (
+                    "时长",
+                    "必填。睡眠时长,支持 30s / 10m / 2h / 1d,裸数字按分钟,最多 12 小时",
+                ),
+            ),
+            handler=_handle_sleep,
+        ),
+        Command(
+            name="awake",
+            description="叫醒睡眠中的 Bot(次级管理员)",
+            permission=PERM_SUB_ADMIN,
+            params=(),
+            handler=_handle_awake,
         ),
     ]
 
@@ -161,6 +183,33 @@ async def _handle_reboot(ctx: CommandContext) -> str:
     if not ctx.service.request_restart():
         return "重启功能不可用(当前启动方式不支持)"
     return "正在重启…请稍候"
+
+
+async def _handle_sleep(ctx: CommandContext) -> str:
+    """让 Bot 进入睡眠:睡眠期间群聊消息只接收不回复,被@会唤醒;私聊不受影响。"""
+    sleep_service = getattr(ctx.service, "sleep_service", None)
+    if sleep_service is None:
+        return "睡眠功能不可用(未注入睡眠服务)"
+    if not ctx.args:
+        return (
+            "请提供睡眠时长,例如: /sleep 2h"
+            "(支持 30s / 10m / 2h / 1d,裸数字按分钟,最多 12 小时)"
+        )
+    seconds, error = parse_sleep_duration(ctx.args[0])
+    if error is not None:
+        return error
+    _ok, message = sleep_service.sleep(seconds)
+    return message
+
+
+async def _handle_awake(ctx: CommandContext) -> str:
+    """叫醒睡眠中的 Bot。"""
+    sleep_service = getattr(ctx.service, "sleep_service", None)
+    if sleep_service is None:
+        return "睡眠功能不可用(未注入睡眠服务)"
+    if sleep_service.wake():
+        return "我被叫醒了。"
+    return "我没有在睡觉呀。"
 
 
 async def _handle_add_admin(ctx: CommandContext) -> str:

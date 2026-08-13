@@ -16,10 +16,12 @@ def build_command_service(
     logger_factory: Any,
     markdown_image_converter: Any = None,
     file_server: Any = None,
+    sleep_service: Any = None,
 ) -> Any:
     """构建命令服务(内置命令注册 + 配置保存/热重载回调)。
 
     markdown_image_converter/file_server 用于 /help 渲染图片(缺失时降级文本)。
+    sleep_service 供 /sleep /awake 命令使用。
     """
     from neobot_app.commands.service import CommandService
 
@@ -30,6 +32,7 @@ def build_command_service(
         logger=logger_factory.get_logger("app.commands"),
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
+        sleep_service=sleep_service,
     )
     return service
 

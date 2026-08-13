@@ -35,6 +35,7 @@ class CommandService:
         register_builtins: bool = True,
         markdown_image_converter: Any = None,
         file_server: Any = None,
+        sleep_service: Any = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -46,6 +47,7 @@ class CommandService:
         self._restart_callback: RestartCallback | None = None
         self._markdown_image_converter = markdown_image_converter
         self._file_server = file_server
+        self._sleep_service = sleep_service
         if register_builtins:
             for command in build_builtin_commands(self):
                 self._registry.register(command)
@@ -69,6 +71,11 @@ class CommandService:
     @property
     def registry(self) -> CommandRegistry:
         return self._registry
+
+    @property
+    def sleep_service(self) -> Any:
+        """睡眠服务(/sleep /awake 命令使用;未注入时为 None)。"""
+        return self._sleep_service
 
     # ── 消息入口 ──
 

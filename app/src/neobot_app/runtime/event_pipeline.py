@@ -88,6 +88,7 @@ class EventPipeline:
         reply_block_registry: Any | None = None,
         command_service: Any | None = None,
         credential_manager: Any | None = None,
+        sleep_service: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -103,6 +104,7 @@ class EventPipeline:
         self._reply_block_registry = reply_block_registry
         self._command_service = command_service
         self._credential_manager = credential_manager
+        self._sleep_service = sleep_service
         self._subscriptions: List[Subscription] = []
         self._started = False
         self._warmed_up_friends: set[str] = set()
@@ -660,6 +662,19 @@ class EventPipeline:
         conversation_type = "group" if isinstance(message, GroupMessage) else "private"
         chat_type = "群聊" if conversation_type == "group" else "私聊"
 
+        # 睡眠拦截:睡眠期间群聊不触发回复事件(消息已入队);
+        # 被@时唤醒并注入唤醒提示词回复;私聊不睡眠,不走本函数。
+        if (
+            getattr(self, "_sleep_service", None) is not None
+            and self._sleep_service.is_sleeping()
+        ):
+            return await self._handle_sleeping_message(
+                message=message,
+                queue=queue,
+                queue_key=queue_key,
+                chat_type=chat_type,
+            )
+
         # 被@时直接触发回复，跳过意愿计算
         if self._willing_service.is_at_mentioned(message):
             block_reason = self._willing_service.block_reason_for_message(
@@ -743,6 +758,83 @@ class EventPipeline:
             )
         return False
 
+    async def _handle_sleeping_message(
+        self,
+        *,
+        message: PrivateMessage | GroupMessage,
+        queue: MessageQueue,
+        queue_key: str,
+        chat_type: str,
+    ) -> bool:
+        """睡眠中的群消息处理:仅被@可唤醒回复,其余消息只入队不触发回复。"""
+        at_mentioned = (
+            self._willing_service is not None
+            and self._willing_service.is_at_mentioned(message)
+        )
+        if not at_mentioned:
+            self._logger.info(
+                "睡眠中,消息仅入队不触发回复",
+                会话类型=chat_type,
+                会话ID=queue_key,
+            )
+            return False
+
+        # 硬性屏蔽优先于唤醒:被屏蔽的会话即使@也不回复
+        if self._willing_service is not None:
+            block_reason = self._willing_service.block_reason_for_message(
+                message=message,
+                queue_key=queue_key,
+            )
+            if block_reason:
+                self._logger.info(
+                    "回复意愿",
+                    会话类型=chat_type,
+                    会话ID=queue_key,
+                    概率="0.000",
+                    决策="不回复",
+                    详情=f"原因: 已屏蔽: {block_reason}",
+                )
+                return False
+
+        # 被@唤醒:结束睡眠并注入唤醒提示词回复
+        self._sleep_service.wake()
+        delay = 5.0
+        if self._config is not None:
+            val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
+            if isinstance(val, (int, float)) and val >= 0:
+                delay = float(val)
+        if delay > 0:
+            self._logger.debug(
+                "睡眠中被@唤醒,延迟回复等待中",
+                queue_key=queue_key,
+                delay_seconds=delay,
+            )
+            await asyncio.sleep(delay)
+
+        decision = WillingDecision(
+            manager_name="wake_up",
+            probability=1.0,
+            should_reply=True,
+            reasons=("睡眠中被@唤醒,直接回复",),
+        )
+        self._logger.info(
+            "回复意愿",
+            会话类型=chat_type,
+            会话ID=queue_key,
+            概率="1.000",
+            决策="回复",
+            详情="原因: 睡眠中被@唤醒,注入唤醒提示词",
+        )
+        if self._reply_orchestrator is None:
+            return False
+        return self._start_reply_with_tracking(
+            message=message,
+            queue=queue,
+            queue_key=queue_key,
+            decision=decision,
+            background_content=self._sleep_service.wake_prompt(),
+        )
+
     def _start_reply_with_tracking(
         self,
         *,
@@ -750,6 +842,7 @@ class EventPipeline:
         queue: MessageQueue,
         queue_key: str,
         decision: WillingDecision,
+        background_content: str | None = None,
     ) -> bool:
         """发起回复并设置回复状态追踪与完成后回调。"""
         if self._reply_orchestrator is None:
@@ -780,6 +873,7 @@ class EventPipeline:
             decision=decision,
             pre_reply_message_id=pre_reply_msg_id,
             on_reply_done=on_reply_done,
+            background_content=background_content,
         )
         if event is None:
             self._replying_queues.discard(queue_key)

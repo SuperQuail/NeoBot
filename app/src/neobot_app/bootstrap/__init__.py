@@ -203,6 +203,14 @@ def create_application() -> NeoBotApplication:
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
     prompt_store = PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
 
+    # ── 睡眠服务(/sleep /awake 命令、睡眠 skill、事件管线共用) ──
+    from neobot_app.runtime.sleep_service import SleepService
+
+    sleep_service = SleepService(
+        prompt_store=prompt_store,
+        logger=logger_factory.get_logger("app.sleep"),
+    )
+
     # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
     from neobot_app.cache import CacheCalculator
 
@@ -372,6 +380,7 @@ def create_application() -> NeoBotApplication:
         logger_factory=logger_factory,
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
+        sleep_service=sleep_service,
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
@@ -423,6 +432,7 @@ def create_application() -> NeoBotApplication:
         agent_registry=agent_registry,
         vision_detect_service=vision_detect_service,
         credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
@@ -618,6 +628,7 @@ def create_application() -> NeoBotApplication:
         console_service=console_service,
         command_service=command_service,
         credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
 
     # 命令 /reboot:绑定应用重启回调

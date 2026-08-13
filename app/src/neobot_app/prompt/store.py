@@ -64,6 +64,7 @@ _FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
         )
     },
     "long_reply_fallback": {"template": "{bot_name}懒得和你说道理，你不配听"},
+    "wake_up": {"template": "你刚刚正在睡觉,现在被叫醒了,还有点困."},
 }
 
 _CUSTOM_SKELETON = """\
@@ -74,7 +75,7 @@ _CUSTOM_SKELETON = """\
 # 未出现在本文件中的分区自动使用默认提示词。
 #
 # 可用分区:group_chat / friend_chat / group_chat_resume / long_reply_fallback
-#          problem_solver / self_heal / maintenance
+#          problem_solver / self_heal / maintenance / wake_up
 # 示例(取消注释后修改):
 #
 # [group_chat]

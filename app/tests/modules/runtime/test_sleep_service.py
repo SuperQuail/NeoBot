@@ -1,0 +1,141 @@
+"""睡眠服务单元测试:时长解析 / 睡眠状态机 / 唤醒提示词。"""
+
+from __future__ import annotations
+
+import neobot_app.runtime.sleep_service as sleep_module
+from neobot_app.runtime.sleep_service import (
+    DEFAULT_WAKE_PROMPT,
+    MAX_SLEEP_SECONDS,
+    SleepService,
+    format_sleep_duration,
+    parse_sleep_duration,
+)
+
+
+# ── 时长解析 ──
+
+
+def test_parse_duration_units() -> None:
+    assert parse_sleep_duration("90s") == (90.0, None)
+    assert parse_sleep_duration("2m") == (120.0, None)
+    assert parse_sleep_duration("2h") == (7200.0, None)
+    assert parse_sleep_duration("1.5h") == (5400.0, None)
+    assert parse_sleep_duration("30") == (1800.0, None)  # 裸数字按分钟
+    assert parse_sleep_duration("12h") == (43200.0, None)  # 上限恰好允许
+    assert parse_sleep_duration(" 2H ") == (7200.0, None)  # 大小写与空白
+
+
+def test_parse_duration_invalid() -> None:
+    _, error = parse_sleep_duration("abc")
+    assert error is not None
+    _, error = parse_sleep_duration("")
+    assert error is not None
+    _, error = parse_sleep_duration(None)
+    assert error is not None
+    _, error = parse_sleep_duration("0")
+    assert error is not None
+    _, error = parse_sleep_duration("-5m")
+    assert error is not None
+    _, error = parse_sleep_duration("13h")
+    assert error is not None and "12" in error
+    _, error = parse_sleep_duration("721m")  # 12 小时 1 分,超限
+    assert error is not None and "12" in error
+
+
+def test_format_duration() -> None:
+    assert format_sleep_duration(1800) == "30 分钟"
+    assert format_sleep_duration(3600) == "1 小时"
+    assert format_sleep_duration(5400) == "1 小时 30 分钟"
+
+
+# ── 状态机 ──
+
+
+def test_sleep_and_wake() -> None:
+    service = SleepService()
+    assert not service.is_sleeping()
+    assert service.remaining_seconds() == 0
+    assert service.wake_up_at() is None
+
+    ok, message = service.sleep(3600)
+    assert ok
+    assert "睡觉" in message
+    assert "1 小时" in message
+    assert service.is_sleeping()
+    assert 3595 <= service.remaining_seconds() <= 3600
+    assert service.wake_up_at() is not None
+    assert service.wake_up_time_text() != ""
+
+    assert service.wake() is True
+    assert not service.is_sleeping()
+    assert service.wake() is False  # 已醒来,再次唤醒返回 False
+
+
+def test_sleep_caps_at_max() -> None:
+    service = SleepService()
+    ok, message = service.sleep(MAX_SLEEP_SECONDS + 1)
+    assert not ok
+    assert "12" in message
+    assert not service.is_sleeping()
+
+
+def test_sleep_rejects_zero_or_negative() -> None:
+    service = SleepService()
+    ok, _ = service.sleep(0)
+    assert not ok
+    ok, _ = service.sleep(-60)
+    assert not ok
+    assert not service.is_sleeping()
+
+
+def test_sleep_resets_when_called_again() -> None:
+    service = SleepService()
+    service.sleep(3600)
+    service.sleep(120)
+    assert service.is_sleeping()
+    assert service.remaining_seconds() <= 120
+
+
+def test_sleep_expires_by_time(monkeypatch) -> None:
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    service = SleepService()
+    service.sleep(60)
+    assert service.is_sleeping()
+    assert service.remaining_seconds() == 60
+
+    fake["now"] = 1060.0
+    assert not service.is_sleeping()  # 时间到自动醒来
+    assert service.remaining_seconds() == 0
+    assert service.wake_up_at() is None
+
+
+# ── 唤醒提示词(自定义提示词系统) ──
+
+
+def test_wake_prompt_default() -> None:
+    service = SleepService()
+    assert service.wake_prompt() == DEFAULT_WAKE_PROMPT
+
+
+def test_wake_prompt_custom_from_store() -> None:
+    import shutil
+    import uuid
+    from pathlib import Path
+
+    from neobot_app.prompt.store import PromptStore
+
+    # 使用工作区内的临时目录(沙箱环境不保证系统临时目录可写)
+    data_dir = Path("st_" + uuid.uuid4().hex[:8])
+    try:
+        custom_dir = data_dir / "prompts" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "prompts.toml").write_text(
+            '[wake_up]\ntemplate = "自定义唤醒提示词"\n',
+            encoding="utf-8",
+        )
+        store = PromptStore(data_dir)
+        service = SleepService(prompt_store=store)
+        assert service.wake_prompt() == "自定义唤醒提示词"
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)

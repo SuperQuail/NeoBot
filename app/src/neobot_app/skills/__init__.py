@@ -37,6 +37,7 @@ from neobot_app.skills.balance_skill import BalanceSkill
 from neobot_app.skills.agent_delegation import AgentDelegationSkill
 from neobot_app.skills.credential_skill import CredentialSkill
 from neobot_app.skills.vision_detect_skill import VisionDetectSkill
+from neobot_app.skills.sleep_skill import SleepSkill
 
 
 def build_all_skills(
@@ -71,6 +72,7 @@ def build_all_skills(
     agent_registry: Any = None,
     vision_detect_service: Any = None,
     credential_manager: Any = None,
+    sleep_service: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -246,6 +248,10 @@ def build_all_skills(
 
     if "willingness" not in disabled:
         skills_to_register.append(WillingnessSkill(willing_service=willing_service))
+
+    # ── 睡眠管理(Bot 自己开始睡觉/醒来;sleep_service 未注入时不注册) ──
+    if "sleep" not in disabled and sleep_service is not None:
+        skills_to_register.append(SleepSkill(sleep_service=sleep_service))
 
     if "reminder" not in disabled:
         skills_to_register.append(
