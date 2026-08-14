@@ -15,7 +15,7 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 | Skill | 能力 |
 |---|---|
 | `archive_crud` | 档案增删改查（user/group/item 档案） |
-| `archive_skill` | 档案读取 |
+| `archive`（archive_skill） | 文件压缩与解压（zip/tar） |
 | `user_profile` | 用户画像查询/更新（含头像分析） |
 | `favorability` | 好感度查询 |
 | `adaptive_prompt` | 自适应提示词读写（Agent 永久记忆） |
@@ -57,7 +57,7 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 | `file_storage` | 文件存储（沙箱内读写） |
 | `sandbox_manager` | 沙箱管理 |
 | `sandbox_maintenance` | 沙箱持久化维护 |
-| `balance` | 余额查询 |
+| `deepseek_balance` | DeepSeek 余额查询（仅在余额检查启用时注册） |
 | `agents`（agent_delegation） | 子 Agent 委托 |
 | `willingness` | 回复意愿设置 |
 
