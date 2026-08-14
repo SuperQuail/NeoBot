@@ -4,9 +4,9 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 
 ## 工作机制
 
-- **注册**：`app/src/neobot_app/skills/base.py` 的 `SkillManager` 负责注册、聚合与路由；`skills/__init__.py` 的 `build_all_skills()` 在启动时注册全部内置 Skill（支持 `agent.skill.disabled_skills` 黑名单）。
+- **注册**：[`app/src/neobot_app/skills/base.py`](../../app/src/neobot_app/skills/base.py) 的 `SkillManager` 负责注册、聚合与路由；[`skills/__init__.py`](../../app/src/neobot_app/skills/__init__.py) 的 `build_all_skills()` 在启动时注册全部内置 Skill（支持 `agent.skill.disabled_skills` 黑名单）。
 - **协议**：每个 Skill 继承 `SkillModule`，实现 `name`、`description`、`get_tools()`、`execute()`；可选 `instructions`（注入系统提示词的说明）、`session_tools`（Session 模式工具：提交后立即返回，后台执行完成后通知）、`reset()`（跨会话状态复位）。
-- **注入**：Skill 工具定义随提示词注入主 Agent（`packages/chat/skills/inject.py`），模型调用时经 SkillManager 分发到对应 Skill 的 `execute()`。
+- **注入**：Skill 工具定义随提示词注入主 Agent（[`packages/chat/skills/inject.py`](../../packages/chat/src/neobot_chat/skills/inject.py)），模型调用时经 SkillManager 分发到对应 Skill 的 `execute()`。
 - **会话模式**：耗时工具（绘图等）以 Session 模式运行，模型提交后立即返回，完成后通过通知系统告知。
 
 ## 内置技能清单（30+）
@@ -61,12 +61,12 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 | `agents`（agent_delegation） | 子 Agent 委托 |
 | `willingness` | 回复意愿设置 |
 
-> 以上清单随版本演进，最新列表以 `app/src/neobot_app/skills/__init__.py` 为准。
+> 以上清单随版本演进，最新列表以 [`app/src/neobot_app/skills/__init__.py`](../../app/src/neobot_app/skills/__init__.py) 为准。
 
 ## 开发自定义 Skill
 
 1. 创建 `SkillModule` 子类，实现 4 个核心方法
-2. 在 `skills/__init__.py` 的 `build_all_skills()` 中注册（或通过插件系统注册）
+2. 在 [`skills/__init__.py`](../../app/src/neobot_app/skills/__init__.py) 的 `build_all_skills()` 中注册（或通过插件系统注册）
 3. 通过 `agent.skill.disabled_skills` 可黑名单禁用
 
 示例见 `packages/modloader/example_plugins/` 与 Skill 测试 `app/tests/modules/skills/`。
@@ -75,3 +75,15 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 
 - `agent.skill.disabled_skills`：禁用的 skill 名称列表（黑名单），空列表表示全部启用
 - `agent.file_operation.enabled`：是否启用文件操作 Agent
+
+## 相关代码文件
+
+| 文件 | 说明 | 关键类/函数 |
+|---|---|---|
+| [skills/base.py](../../app/src/neobot_app/skills/base.py) | Skill 核心：SkillModule 协议与 SkillManager | `SkillModule`、`SkillManager`、`SkillExecutionToken` |
+| [skills/__init__.py](../../app/src/neobot_app/skills/__init__.py) | 全部内置 Skill 的注册工厂 | `build_all_skills` |
+| [chat/skills/inject.py](../../packages/chat/src/neobot_chat/skills/inject.py) | 将 Skill 工具定义注入 Agent 状态/提示词 | `inject_skills`、`build_skill_preprocessor` |
+| [chat/skills/registry.py](../../packages/chat/src/neobot_chat/skills/registry.py) | 插件 Markdown Skill 的注册表 | `Skill`、`SkillRegistry` |
+| [config/schemas/bot.py](../../app/src/neobot_app/config/schemas/bot.py) | Skill 全局配置（禁用列表） | `AgentSkill` |
+
+> 各内置 Skill 的实现文件见 [技能清单](#内置技能清单30) 对应的 `skills/*.py`（如 [drawing_skill.py](../../app/src/neobot_app/skills/drawing_skill.py)、[browser_skill.py](../../app/src/neobot_app/skills/browser_skill.py)）。

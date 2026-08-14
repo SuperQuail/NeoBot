@@ -41,7 +41,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 ## 专职子 Agent
 
-### Problem Solver（解题 Agent，`app/src/neobot_app/agents/problem_solver.py`）
+### Problem Solver（解题 Agent，[`app/src/neobot_app/agents/problem_solver.py`](../../app/src/neobot_app/agents/problem_solver.py)）
 
 处理需要深度思考的任务（数学、代码、研究），支持：
 
@@ -50,7 +50,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - 每个聊天流最多保留 `max_tasks_per_pipeline`（默认 5）个后台任务
 - 超时 `timeout_seconds`（默认 600s）、最大 Token `max_tokens`（默认 20480）、推理强度 `reasoning_effort`（默认 max）
 
-### Self-Heal（自修复 Agent，`app/src/neobot_app/agents/self_heal.py`）
+### Self-Heal（自修复 Agent，[`app/src/neobot_app/agents/self_heal.py`](../../app/src/neobot_app/agents/self_heal.py)）
 
 通过 loguru ERROR sink 累积异常，触发后自动唤起 Agent 诊断、尝试安全修复并写 debug 报告，通过通知系统向管理员私聊推送。关键参数：
 
@@ -80,3 +80,20 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 ## 相关配置
 
 `agent` 段（`Agent` 配置）：`creator`（图像创作）、`system`（工作目录）、`memory`（记忆）、`problem_solver`、`browser`、`sandbox`、`skill`、`file_operation`、`self_healing`。详见 [05-配置参考](../05-配置参考.md)。
+
+## 相关代码文件
+
+| 文件 | 说明 | 关键类/函数 |
+|---|---|---|
+| [agents/problem_solver.py](../../app/src/neobot_app/agents/problem_solver.py) | 解题 Agent：后台解题、完成通知、沙箱输出 | `ProblemSolverAgent`、`ProblemSolverManager`、`build_problem_solver_agent` |
+| [agents/self_heal.py](../../app/src/neobot_app/agents/self_heal.py) | 自修复 Agent：异常累积触发、诊断修复、通知管理员 | `SelfHealAgent`、`SelfHealManager`、`build_self_heal_agent` |
+| [runtime/notifications.py](../../app/src/neobot_app/runtime/notifications.py) | 后台任务完成通知（绘图/解题等） | `BackgroundNotificationHub` |
+| [runtime/archive_memory_summary.py](../../app/src/neobot_app/runtime/archive_memory_summary.py) | 档案自动总结 Agent 的运行时服务 | `ArchiveMemoryAutoSummaryService` |
+| [skills/agent_delegation.py](../../app/src/neobot_app/skills/agent_delegation.py) | 主 Agent 委托子 Agent 的 delegate 工具 | `AgentDelegationSkill` |
+| [providers/base.py](../../packages/chat/src/neobot_chat/providers/base.py) | LLM Provider 抽象与 HTTP 基础实现 | `Provider`、`BaseHTTPProvider` |
+| [providers/openai.py](../../packages/chat/src/neobot_chat/providers/openai.py) | OpenAI 兼容 Provider（含 DeepSeek 官方/OpenAI 样式思考模式转换） | `OpenAIProvider` |
+| [graph/graph.py](../../packages/chat/src/neobot_chat/graph/graph.py) | Agent 执行图（节点/边/入口） | `StateGraph` |
+| [graph/executor.py](../../packages/chat/src/neobot_chat/graph/executor.py) | 编译后的图执行器（工具循环） | `CompiledGraph` |
+| [graph/nodes.py](../../packages/chat/src/neobot_chat/graph/nodes.py) | 内置图节点（技能注入节点） | `skill_node` |
+| [tools/registry.py](../../packages/chat/src/neobot_chat/tools/registry.py) | Agent/工具注册表 | `AgentRegistry` |
+| [config/schemas/bot.py](../../app/src/neobot_app/config/schemas/bot.py) | 模型注册表与 Agent 路由的配置定义 | `Models`、`AgentModelRouting`、`ModelRegistration` |

@@ -33,5 +33,5 @@
 ## 文档维护约定
 
 - 本文档使用中文编写，文件名带数字前缀以固定阅读顺序。
-- 功能文档的准确信息来源：`app/src/neobot_app/config/schemas/bot.py` 中各配置字段的 `description` 元数据，以及各模块的 docstring。
+- 功能文档的准确信息来源：[`app/src/neobot_app/config/schemas/bot.py`](../app/src/neobot_app/config/schemas/bot.py) 中各配置字段的 `description` 元数据，以及各模块的 docstring。
 - 新增功能时，请同步更新对应的功能文档与配置参考。
