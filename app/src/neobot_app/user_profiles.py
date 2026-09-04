@@ -290,7 +290,7 @@ class UserProfileService:
             limit = getattr(archive, "max_chars", None)
             if isinstance(limit, int) and limit > 0:
                 return limit
-        return 2000
+        return 500
 
     @staticmethod
     def _collect_group_members_from_queue(

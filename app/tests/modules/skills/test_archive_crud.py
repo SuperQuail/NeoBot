@@ -309,7 +309,7 @@ async def test_summary_prompt_requires_summary_and_full_records() -> None:
 
 
 def test_memory_config_defaults() -> None:
-    """记忆总结触发条数默认:群聊 500、私聊 200;个人记忆展示上限 2000。"""
+    """记忆总结触发条数默认:群聊 500、私聊 200;个人记忆展示上限 500。"""
     from neobot_app.config.schemas.bot import AgentMemoryArchive, AgentMemoryTrigger
 
     trigger = AgentMemoryTrigger()
@@ -317,5 +317,5 @@ def test_memory_config_defaults() -> None:
     assert trigger.private_interval == 200
 
     archive = AgentMemoryArchive()
-    assert archive.max_chars == 2000
+    assert archive.max_chars == 500
     assert archive.group_profile_max_chars == 1500
