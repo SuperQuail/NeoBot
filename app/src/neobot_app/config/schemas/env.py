@@ -25,8 +25,35 @@ class EnvConfig:
         "siliconflow": "SiliconFlow",
         "硅基流动": "SiliconFlow",
         "deepseek": "DeepSeek",
+        "opencodego": "OpencodeGo",
+        "opencode_go": "OpencodeGo",
+        "opencode-go": "OpencodeGo",
+        "opencode go": "OpencodeGo",
     }
 
+
+    opencode_go_url: str = field(
+        default="https://opencode.ai/zen/go/v1/",
+        metadata={
+            "env_key": "OpencodeGo_URL",
+            "description": "OpencodeGo 平台 API URL",
+            "comment_lines": [
+                "使用 OpencodeGo 平台时请将模型供应商填写为 OpencodeGo",
+                "支持自定义平台名，任意名字配合 _URL 与 _APIKey 都可以被读取",
+            ],
+        },
+    )
+    opencode_go_api_key: str = field(
+        default="",
+        metadata={
+            "env_key": "OpencodeGo_APIKey",
+            "description": "OpencodeGo 平台 API Key",
+            "comment_lines": [
+                "使用 OpencodeGo 平台时请将模型供应商填写为 OpencodeGo",
+                "支持自定义平台名，任意名字配合 _URL 与 _APIKey 都可以被读取",
+            ],
+        },
+    )
 
     deepseek_url: str = field(
         default="https://api.deepseek.com",

@@ -16,6 +16,20 @@ from neobot_adapter.utils.parse import safe_parse_model
 logger = get_module_logger("adapter_receiver")
 
 
+def _env_ci(name: str) -> str | None:
+    """大小写不敏感地读取环境变量。
+
+    .env 文件中的键名由 load_env 原样写入 os.environ(保留用户大小写),
+    而 os.getenv 大小写敏感,用户写成 NEOBOT_ADAPTER_PORT / 小写变体时
+    会静默回落到默认值 —— 这里统一按大小写不敏感匹配,杜绝该坑。
+    """
+    target = name.casefold()
+    for key, value in os.environ.items():
+        if key.casefold() == target:
+            return value
+    return None
+
+
 class AdapterCore:
     """适配器核心类，负责 WebSocket 反向连接和消息处理
 
@@ -38,13 +52,21 @@ class AdapterCore:
         max_queue_size: int = 1000,
         heartbeat_timeout_multiplier: float = 2.0,
         packet_callback: Callable[[dict[str, Any]], None] | None = None,
+        host: str | None = None,
+        port: int | None = None,
     ):
         """初始化适配器核心
 
         Args:
             max_queue_size: 消息队列最大长度
             heartbeat_timeout_multiplier: 心跳超时倍数，超过 心跳间隔 * 该倍数 未收到心跳则告警
+            host: 反向 WebSocket 监听地址；None 时读环境变量 NEO_BOT_ADAPTER_HOST，
+                  缺省 0.0.0.0
+            port: 反向 WebSocket 监听端口；None 时读环境变量 NEO_BOT_ADAPTER_PORT，
+                  缺省 8080
         """
+        self.host = host
+        self.port = port
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -167,8 +189,27 @@ class AdapterCore:
                 task.cancel()
 
     async def _run_server(self):
-        host = os.getenv("NEO_BOT_ADAPTER_HOST", "0.0.0.0")
-        port = int(os.getenv("NEO_BOT_ADAPTER_PORT", 8080))
+        # 端口来源优先级:构造参数(配置系统) > 环境变量 > 默认。
+        # 环境变量兼容链(均大小写不敏感):
+        #   NEO_BOT_ADAPTER_*     反向 WS 规范键
+        #   NEOBOT_ADAPTER_*      老版本无 Local 字样的键(配置迁移期)
+        #   NEOBOT_LOCAL_ADAPTER_* local 专用键;生产环境长期用它配端口,
+        #                           onebot 模式下回退读取,避免"配了 8091 实际监听 8080"
+        host = (
+            self.host
+            or _env_ci("NEO_BOT_ADAPTER_HOST")
+            or _env_ci("NEOBOT_ADAPTER_HOST")
+            or _env_ci("NEOBOT_LOCAL_ADAPTER_HOST")
+            or "0.0.0.0"
+        )
+        port = self.port
+        if port is None:
+            env_port = (
+                _env_ci("NEO_BOT_ADAPTER_PORT")
+                or _env_ci("NEOBOT_ADAPTER_PORT")
+                or _env_ci("NEOBOT_LOCAL_ADAPTER_PORT")
+            )
+            port = int(env_port) if env_port else 8080
         self._async_stop_event = asyncio.Event()
         # 监听指定路径 /onebot；10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载
         server = await websockets.serve(

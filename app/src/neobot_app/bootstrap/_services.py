@@ -37,6 +37,19 @@ def build_debug_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
     return None
 
 
+def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
+    """构建聊天上下文记录器(debug 模式):记录每次模型调用的完整上下文,保留最近 100 轮。"""
+    if not getattr(getattr(config, "debug", None), "enabled", False):
+        return None
+    from neobot_app.observability.context_recorder import ContextRecorder
+
+    return ContextRecorder(
+        DATA_DIR / "debug" / "context",
+        max_files=100,
+        logger=logger,
+    )
+
+
 def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     from neobot_app.message.queue import MessageQueue
 
@@ -91,6 +104,7 @@ def build_memory_services(
     group_queue: Any,
     friend_queue: Any,
     uow_factory: Any,
+    prompt_store: Any = None,
 ) -> dict[str, Any]:
     """创建记忆、聊天流、用户画像、意愿等服务。"""
     memory = MemoryService(
@@ -134,6 +148,7 @@ def build_memory_services(
             data_dir / "自适应提示词.txt" if adaptive_prompt_enabled else None
         ),
         uow_factory=uow_factory,
+        prompt_store=prompt_store,
     )
     return {
         "memory": memory,
@@ -215,6 +230,74 @@ def build_image_parse_service(
         adapter=adapter,
         logger=logger_factory.get_logger("app.image_parse"),
     )
+
+
+def _resolve_under_data_dir(raw: str, data_dir: Path) -> Path:
+    """解析相对 data 目录的路径;容忍已包含 data 根的 './data/xxx' 写法。"""
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] in ("data", "Data", "DATA"):
+        path = Path(*parts[1:])
+    return data_dir / path
+
+
+def resolve_vision_detect_paths(*, config: Any, data_dir: Path) -> tuple[Path, Path]:
+    """解析视觉检测配置中的相对路径(data 目录下的相对路径)。"""
+    cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
+    models_dir = Path(cfg.models_dir) if cfg else Path("./vision_detect/models")
+    index_file = Path(cfg.index_file) if cfg else Path("./vision_detect/models.toml")
+    return (
+        _resolve_under_data_dir(str(models_dir), data_dir),
+        _resolve_under_data_dir(str(index_file), data_dir),
+    )
+
+
+def build_vision_detect_service(
+    *,
+    config: Any,
+    data_dir: Path,
+    logger_factory: Any,
+) -> Any:
+    """创建本地视觉检测服务(YOLO)。
+
+    双推理栈:.onnx 走 onnxruntime(默认);onnxruntime 不可用(如虚拟机
+    未透传 CPU 指令集导致 DLL 加载失败)时,.pt 模型走 PyTorch/ultralytics。
+    两者均未就绪时返回服务但 skill 不注册,bot 可正常运行。
+    """
+    cfg = getattr(getattr(config, "agent", None), "vision_detect", None)
+    if cfg is None or not cfg.enabled:
+        return None
+    from neobot_app.vision_detect.service import VisionDetectService
+
+    logger = logger_factory.get_logger("app.vision_detect")
+    models_dir, index_file = resolve_vision_detect_paths(config=config, data_dir=data_dir)
+    service = VisionDetectService(
+        models_dir,
+        index_file,
+        default_conf=cfg.default_conf,
+        default_iou=cfg.default_iou,
+        imgsz=cfg.imgsz,
+        auto_refresh=cfg.auto_refresh,
+        logger=logger,
+    )
+    if not service.onnx_available:
+        if service.torch_available:
+            logger.warning("onnxruntime 不可用,已切换 PyTorch 备选推理栈(.pt 模型)")
+        else:
+            logger.warning(
+                "onnxruntime 不可用且 PyTorch 未安装:本地视觉检测暂不可用。"
+                "onnx 环境无需处理;不可用环境请运行 `neobot init` 安装 ultralytics "
+                "备选推理栈,并将 .pt 模型放入模型目录"
+            )
+        return service
+    try:
+        report = service.refresh()
+        logger.info(f"视觉检测模型库: {report.summary()}")
+    except Exception as exc:
+        logger.warning(f"视觉检测模型库初始化扫描失败: {exc}")
+    return service
 
 
 def build_archive_summary_service(

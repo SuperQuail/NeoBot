@@ -140,18 +140,52 @@ async def test_emoji_add_missing_file_rejected(tmp_path):
     result = _parse(await skill.execute("emoji_add", {"image_path": str(tmp_path / "nope.png")}))
 
     assert result["ok"] is False
-    assert "文件不存在" in result["error"]
+    assert "下载/解码失败" in result["error"]
     assert service.add_calls == []
 
 
-async def test_emoji_add_missing_path_param_rejected():
-    """异常路径：emoji_add 缺少 image_path 时应返回缺少参数错误。"""
+async def test_emoji_add_missing_source_param_rejected():
+    """异常路径：emoji_add 无任何图片来源参数时应返回缺少来源错误。"""
     skill = _make_skill(FakeEmojiService())
 
     result = _parse(await skill.execute("emoji_add", {}))
 
     assert result["ok"] is False
-    assert "缺少 image_path" in result["error"]
+    assert "缺少图片来源参数" in result["error"]
+
+
+async def test_emoji_add_from_base64():
+    """emoji_add 应支持 base64 来源(与图片解析工具一致)。"""
+    import base64
+
+    service = FakeEmojiService()
+    skill = _make_skill(service)
+
+    result = _parse(await skill.execute(
+        "emoji_add",
+        {"image_base64": base64.b64encode(b"png-bytes").decode(), "description": "base64图"},
+    ))
+
+    assert result["ok"] is True
+    assert service.add_calls[0]["image_bytes"] == b"png-bytes"
+    assert service.add_calls[0]["file_name"] is None
+
+
+async def test_emoji_add_from_data_url():
+    """emoji_add 应支持 data URL 来源。"""
+    import base64
+
+    service = FakeEmojiService()
+    skill = _make_skill(service)
+
+    payload = base64.b64encode(b"png-bytes").decode()
+    result = _parse(await skill.execute(
+        "emoji_add",
+        {"image_url": f"data:image/png;base64,{payload}", "description": "data图"},
+    ))
+
+    assert result["ok"] is True
+    assert service.add_calls[0]["image_bytes"] == b"png-bytes"
 
 
 async def test_emoji_add_value_error_passthrough(tmp_path):

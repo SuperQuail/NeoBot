@@ -43,6 +43,9 @@ def build_skill_manager(
     data_dir: Path = Path("."),
     balance_checker: Any = None,
     agent_registry: Any = None,
+    vision_detect_service: Any = None,
+    credential_manager: Any = None,
+    sleep_service: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -75,6 +78,9 @@ def build_skill_manager(
         data_dir=data_dir,
         balance_checker=balance_checker,
         agent_registry=agent_registry,
+        vision_detect_service=vision_detect_service,
+        credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
 
 
@@ -91,6 +97,7 @@ def build_plugin_runtime(
     agent_registry: Any,
     skills_registry: Any = None,
     screenshots: "ScreenshotPort | None" = None,
+    command_registry: Any = None,
 ) -> Any:
     if not config.plugins.enabled:
         return None
@@ -155,6 +162,7 @@ def build_plugin_runtime(
         agent_registry=agent_registry,
         skills_registry=skills_registry,
         screenshots=screenshots,
+        app_commands=command_registry,
         auto_install_dependencies=True,
     )
     plugin_runtime.load_all()

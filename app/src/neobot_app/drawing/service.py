@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import mimetypes
 import time
@@ -414,6 +415,99 @@ class CreatorImageService:
             image_source=image_source,
         )
 
+    async def process_image(
+        self,
+        *,
+        image: str,
+        operation: str,
+        width: int | None = None,
+        height: int | None = None,
+        crop_box: list[int] | None = None,
+        quality: int | None = None,
+        background_color: str | None = None,
+        image_source: str | None = None,
+        conv_id: str = "",
+    ) -> CreatorImageRecord:
+        """本地图片后处理:缩放 / 裁切 / 格式转换 / 去底透明。
+
+        image 支持图片 ID(image_id,如 tmp_xxx / g_xxx)或来源描述符
+        (gallery:<编号> / emoji:<编号> / file:<路径> / url:<URL> / chat:<msg>:<idx>)。
+        operation:
+          - resize: 等比缩放;只给 width 或 height 时按单边等比,
+            两者都给时精确拉伸
+          - crop: 按 crop_box=[left, top, right, bottom] 裁切
+          - to_png / to_jpeg: 格式转换(quality 仅 jpeg 生效)
+          - remove_background: 纯色背景去底为透明 PNG
+            (background_color 指定键色,如 "#00ff00";不指定则自动从边框采样)
+        结果保存到临时目录,返回新图片 ID。
+        """
+        source_path = await self._resolve_process_source(image, conv_id=conv_id)
+        operation = (operation or "").strip().lower()
+        allowed = {"resize", "crop", "to_png", "to_jpeg", "remove_background"}
+        if operation not in allowed:
+            raise ValueError(
+                f"不支持的操作: {operation}(可选: {', '.join(sorted(allowed))})"
+            )
+
+        from PIL import Image, ImageOps
+
+        with Image.open(source_path) as opened:
+            opened.load()
+            img = ImageOps.exif_transpose(opened).convert("RGB")
+            if operation == "resize":
+                if width and height:
+                    img = img.resize((int(width), int(height)), Image.Resampling.LANCZOS)
+                elif width or height:
+                    target = (int(width) if width else None, int(height) if height else None)
+                    img = _resize_keep_ratio(img, target)
+            elif operation == "crop":
+                if not crop_box or len(crop_box) != 4:
+                    raise ValueError("crop 操作需要 crop_box=[left, top, right, bottom]")
+                left, top, right, bottom = (int(v) for v in crop_box)
+                if right <= left or bottom <= top:
+                    raise ValueError("crop_box 必须满足 right > left 且 bottom > top")
+                img = img.crop((left, top, right, bottom))
+            elif operation == "remove_background":
+                img = _remove_background(img, background_color=background_color)
+
+            output_format = "PNG"
+            if operation == "to_jpeg":
+                output_format = "JPEG"
+                img = img.convert("RGB")
+            elif operation == "remove_background":
+                output_format = "PNG"
+
+            buffer = io.BytesIO()
+            save_kwargs: dict[str, Any] = {}
+            if output_format == "JPEG" and quality:
+                save_kwargs["quality"] = max(1, min(int(quality), 100))
+            img.save(buffer, format=output_format, **save_kwargs)
+            image_bytes = buffer.getvalue()
+
+        return await self._save_image_bytes(
+            image_bytes,
+            source=TMP_SOURCE,
+            prompt=f"process_image({operation})",
+            description=None,
+            image_source=image_source,
+        )
+
+    async def _resolve_process_source(self, image: str, *, conv_id: str = "") -> Path:
+        """解析 process_image 的输入:图片 ID 或来源描述符。"""
+        image = str(image or "").strip()
+        if not image:
+            raise ValueError("缺少 image 参数")
+        # 先尝试按图片 ID 查找(DB 记录,覆盖 tmp_xxx / g_xxx)
+        record = await self._get_existing(image)
+        if record is not None and Path(record.file_path).is_file():
+            return Path(record.file_path)
+        # 再尝试来源描述符(gallery: / emoji: / file: / url: / chat:)
+        if ":" in image:
+            prefix = image.partition(":")[0].lower().strip()
+            if prefix in ("gallery", "g", "emoji", "e", "file", "url", "chat"):
+                return await self.resolve_source_to_path(image)
+        raise LookupError(f"图片不存在或无法解析: {image}")
+
     async def list_images(
         self,
         *,
@@ -438,10 +532,48 @@ class CreatorImageService:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[CreatorImageRecord]:
+        """按关键词搜索图库图片。
+
+        支持多关键词(空格分隔):返回按"命中关键词数"降序排列,
+        全部关键词都命中的记录排在最前(角色立绘精确搜索)。
+        """
         self._start_cleanup_task()
         limit = limit if limit is not None else self._config.gallery_page_size
+        keywords = [part.strip() for part in keyword.split() if part.strip()]
+        if not keywords:
+            return await self._list_image_records(
+                source=source, limit=limit, offset=offset
+            )
+        if len(keywords) == 1:
+            return await self._search_single(keywords[0], source=source, limit=limit, offset=offset)
+
+        # 多关键词:分别查询(扩大候选),按命中词数排序后截断
+        fetch_limit = max(limit * 3, 30)
+        scored: dict[str, tuple[CreatorImageRecord, int]] = {}
+        for index, word in enumerate(keywords):
+            records = await self._search_single(word, source=source, limit=fetch_limit)
+            for record in records:
+                previous = scored.get(record.image_id)
+                if previous is None:
+                    scored[record.image_id] = (record, 1)
+                else:
+                    scored[record.image_id] = (previous[0], previous[1] + 1)
+        ordered = sorted(
+            scored.values(), key=lambda item: (-item[1], item[0].id or 0)
+        )
+        return [record for record, _count in ordered][offset : offset + limit]
+
+    async def _search_single(
+        self,
+        keyword: str,
+        *,
+        source: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[CreatorImageRecord]:
+        limit = limit if limit is not None else self._config.gallery_page_size
         async with self._uow_factory() as uow:
-            records = await uow.creator_images.search(
+            records: list[CreatorImageRecord] = await uow.creator_images.search(
                 keyword,
                 source=source,
                 limit=limit,
@@ -1481,3 +1613,91 @@ def _record_payload(record: CreatorImageRecord) -> dict[str, Any]:
         "width": record.original_width,
         "height": record.original_height,
     }
+
+
+def _resize_keep_ratio(img: Any, target: tuple[int | None, int | None]) -> Any:
+    """等比缩放:只给一边时按单边等比,两边都给时取 fit(不拉伸)。"""
+    width, height = target
+    original_w, original_h = img.size
+    if width and height:
+        ratio = min(width / original_w, height / original_h)
+        new_size = (
+            max(1, int(original_w * ratio)),
+            max(1, int(original_h * ratio)),
+        )
+    elif width:
+        ratio = width / original_w
+        new_size = (int(width), max(1, int(original_h * ratio)))
+    elif height:
+        ratio = height / original_h
+        new_size = (max(1, int(original_w * ratio)), int(height))
+    else:
+        return img
+    return img.resize(new_size, Image.Resampling.LANCZOS)
+
+
+def _remove_background(img: Any, background_color: str | None = None) -> Any:
+    """纯色背景去底为透明(参考 codex remove_chroma_key 思路)。
+
+    - 键色:background_color 指定(如 "#00ff00");未指定时从边框四角采样平均
+    - alpha:色差距离做 soft matte(transparent 阈值 12 / opaque 阈值 220)
+    - despill:低透明度边缘向键色方向清理,避免色边
+    """
+    import numpy as np
+
+    rgba = img.convert("RGBA")
+    arr = np.asarray(rgba).astype(np.float32)
+    rgb = arr[:, :, :3]
+
+    if background_color:
+        key = _parse_hex_color(background_color)
+        key_arr = np.array(key, dtype=np.float32)
+    else:
+        # 边框采样:四角小方块平均
+        h, w = rgb.shape[:2]
+        patch = max(1, min(h, w, 12))
+        patches = [
+            rgb[0:patch, 0:patch],
+            rgb[0:patch, w - patch : w],
+            rgb[h - patch : h, 0:patch],
+            rgb[h - patch : h, w - patch : w],
+        ]
+        key_arr = np.mean(np.concatenate([p.reshape(-1, 3) for p in patches]), axis=0)
+
+    # 归一化颜色距离(0-1)
+    distance = np.linalg.norm(rgb - key_arr, axis=2) / np.sqrt(3.0)
+
+    transparent_threshold = 12.0 / 255.0
+    opaque_threshold = 220.0 / 255.0
+    alpha = np.clip(
+        (distance - transparent_threshold)
+        / max(opaque_threshold - transparent_threshold, 1e-6),
+        0.0,
+        1.0,
+    )
+
+    # despill:键色成分主导的低透明度区域,把颜色向键色方向收敛
+    key_dominance = (rgb * key_arr).sum(axis=2) / (
+        np.linalg.norm(rgb, axis=2) * np.linalg.norm(key_arr) + 1e-6
+    )
+    spill = (alpha < 0.5) & (key_dominance > 0.9)
+    if spill.any():
+        rgb[spill] = rgb[spill] * (1.0 - alpha[spill, None] * 0.8)
+
+    out = np.dstack([rgb, alpha * 255.0]).astype(np.uint8)
+    return Image.fromarray(out, mode="RGBA")
+
+
+def _parse_hex_color(raw: str) -> tuple[int, int, int]:
+    """解析 "#rrggbb" 或 "rrggbb" 颜色。"""
+    value = str(raw or "").strip().lstrip("#")
+    if len(value) != 6:
+        raise ValueError(f"颜色格式无效: {raw}(应为 #rrggbb)")
+    try:
+        return (
+            int(value[0:2], 16),
+            int(value[2:4], 16),
+            int(value[4:6], 16),
+        )
+    except ValueError as exc:
+        raise ValueError(f"颜色格式无效: {raw}") from exc

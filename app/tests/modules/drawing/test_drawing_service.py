@@ -315,4 +315,107 @@ async def test_dedup_keeps_newest_sidecar(tmp_path, monkeypatch):
         assert (new.with_suffix(".txt")).read_text("utf-8") == "新描述"
     finally:
         await service.close()
+
+
+async def _seed_gallery(service, uow_factory, image_id: str, description: str, prompt: str = "") -> None:
+    path = service._gallery_dir / f"{image_id}.png"
+    path.write_bytes(_png_bytes())
+    async with uow_factory() as uow:
+        await uow.creator_images.set(
+            image_id,
+            source="gallery",
+            file_hash="h" * 64 + image_id[:4],
+            file_path=str(path),
+            prompt=prompt or description,
+            description=description,
+            mime_type="image/png",
+            original_width=4,
+            original_height=4,
+        )
+        await uow.commit()
+
+
+async def test_search_images_multi_keyword_ranks_full_matches(tmp_path, monkeypatch):
+    """多关键词搜索:全部命中的记录排在最前。"""
+    service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
+    try:
+        await _seed_gallery(service, uow_factory, "g_full", "弥音 立绘 站姿")
+        await _seed_gallery(service, uow_factory, "g_part", "弥音 头像")
+        await _seed_gallery(service, uow_factory, "g_other", "风景照片")
+
+        records = await service.search_images("弥音 立绘", source="gallery", limit=10)
+        ids = [r.image_id for r in records]
+        assert ids[0] == "g_full", "全部关键词命中的应排最前"
+        assert "g_part" in ids
+        assert "g_other" not in ids
+    finally:
+        await service.close()
+        await engine.dispose()
+
+
+async def test_process_image_resize_and_crop(tmp_path, monkeypatch):
+    service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
+    try:
+        await _seed_gallery(service, uow_factory, "g_src", "源图片")
+
+        resized = await service.process_image(
+            image="gallery:1", operation="resize", width=20
+        )
+        assert resized.source == "tmp"
+        from PIL import Image
+
+        with Image.open(resized.file_path) as img:
+            assert img.size == (20, 20), f"等比缩放 4x4 → 20x20,实际 {img.size}"
+
+        cropped = await service.process_image(
+            image="gallery:1", operation="crop", crop_box=[0, 0, 2, 2]
+        )
+        with Image.open(cropped.file_path) as img:
+            assert img.size == (2, 2)
+    finally:
+        await service.close()
+        await engine.dispose()
+
+
+async def test_process_image_remove_background(tmp_path, monkeypatch):
+    """纯色背景去底:键色区域变透明,主体保留。"""
+    service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
+    try:
+        # 构造:绿色背景 + 中心红色方块
+        import io as _io
+
+        buffer = _io.BytesIO()
+        img = Image.new("RGB", (10, 10), (0, 255, 0))
+        for x in range(3, 7):
+            for y in range(3, 7):
+                img.putpixel((x, y), (255, 0, 0))
+        img.save(buffer, format="PNG")
+        path = service._tmp_dir / "g_src_bg.png"
+        path.write_bytes(buffer.getvalue())
+        async with uow_factory() as uow:
+            await uow.creator_images.set(
+                "tmp_bg",
+                source="tmp",
+                file_hash="f" * 64,
+                file_path=str(path),
+                prompt=None,
+                description="背景图",
+                mime_type="image/png",
+                original_width=10,
+                original_height=10,
+            )
+            await uow.commit()
+
+        result = await service.process_image(
+            image="tmp_bg", operation="remove_background", background_color="#00ff00"
+        )
+        with Image.open(result.file_path) as out:
+            assert out.mode == "RGBA"
+            corner = out.getpixel((0, 0))
+            center = out.getpixel((5, 5))
+            assert corner[3] == 0, f"角落应透明,实际 {corner}"
+            assert center[3] > 200, f"中心主体应保留,实际 {center}"
+    finally:
+        await service.close()
+        await engine.dispose()
         await engine.dispose()

@@ -23,6 +23,17 @@ class KeywordReactionBuilder:
     def __init__(self, rules: list["KeyWordRule"] | None, logger: Logger | None = None) -> None:
         self._rules = rules or []
         self._logger = logger or NullLogger()
+        # 预计算:规则关键词的 casefold 结果(匹配热路径避免逐消息重复 casefold)
+        self._prepared_rules: list[dict] = []
+        for rule in self._rules:
+            keywords = [str(item).strip() for item in rule.get("keywords", []) if str(item).strip()]
+            self._prepared_rules.append(
+                {
+                    "rule": rule,
+                    "keywords": keywords,
+                    "casefold_keywords": [k.casefold() for k in keywords],
+                }
+            )
 
     def build(
         self,
@@ -59,14 +70,32 @@ class KeywordReactionBuilder:
         except KeyError:
             return []
 
+        # 跳过 bot 自己发出的消息(语音/长回复等自推消息也会进队列),
+        # 避免关键词规则因 bot 自己的发言自触发
+        bot_account = getattr(queue, "bot_account", None)
+        if bot_account:
+            try:
+                bot_account = int(bot_account)
+            except (TypeError, ValueError):
+                bot_account = None
+        if bot_account:
+            recent_messages = [
+                message
+                for message in recent_messages
+                if _safe_user_id(message) != bot_account
+            ]
+
         message_texts = [self._render_message_text(message) for message in recent_messages]
+        # 统一 casefold 一次(匹配热路径直接复用,避免每规则每消息重复计算)
+        casefolded_texts = [text.casefold() for text in message_texts]
         items: list[KeywordReactionItem] = []
 
-        for rule_index, rule in enumerate(self._rules, start=1):
+        for rule_index, prepared in enumerate(self._prepared_rules, start=1):
+            rule = prepared["rule"]
             if not rule.get("enabled", False):
                 continue
 
-            normalized_keywords = [str(item).strip() for item in rule.get("keywords", []) if str(item).strip()]
+            normalized_keywords = prepared["keywords"]
             if not normalized_keywords:
                 continue
 
@@ -81,7 +110,9 @@ class KeywordReactionBuilder:
 
             matches = self._match_rule(
                 keywords=normalized_keywords,
+                casefold_keywords=prepared["casefold_keywords"],
                 message_texts=message_texts,
+                casefolded_texts=casefolded_texts,
                 ignore_case=ignore_case,
                 match_mode=match_mode,
                 min_depth=min_depth,
@@ -125,7 +156,9 @@ class KeywordReactionBuilder:
         self,
         *,
         keywords: list[str],
+        casefold_keywords: list[str],
         message_texts: list[str],
+        casefolded_texts: list[str],
         ignore_case: bool,
         match_mode: str,
         min_depth: int,
@@ -134,18 +167,19 @@ class KeywordReactionBuilder:
         matches: list[tuple[str, int]] = []
         matched_map: dict[str, int] = {}
 
-        for depth, text in enumerate(message_texts):
+        for depth, text in enumerate(casefolded_texts if ignore_case else message_texts):
             if min_depth != -1 and depth < min_depth:
                 continue
             if max_depth != -1 and depth > max_depth:
                 continue
 
-            normalized_text = text.casefold() if ignore_case else text
-            for keyword in keywords:
+            for keyword_index, keyword in enumerate(keywords):
                 if keyword in matched_map:
                     continue
-                normalized_keyword = keyword.casefold() if ignore_case else keyword
-                if normalized_keyword and normalized_keyword in normalized_text:
+                normalized_keyword = (
+                    casefold_keywords[keyword_index] if ignore_case else keyword
+                )
+                if normalized_keyword and normalized_keyword in text:
                     matched_map[keyword] = depth
                     if match_mode == "any":
                         return [(keyword, depth)]
@@ -188,3 +222,14 @@ class KeywordReactionBuilder:
             return "".join(parts).strip()
 
         return str(getattr(message, "raw_message", "") or "").strip()
+
+
+def _safe_user_id(message: object) -> int | None:
+    """归一化消息 user_id 为 int(防御字符串/None 输入)。"""
+    raw = getattr(message, "user_id", None)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None

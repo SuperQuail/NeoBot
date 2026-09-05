@@ -27,7 +27,7 @@ class MessageNumbering:
         """为一个队列中的所有消息编号并将其渲染为文本。"""
         lines: list[str] = []
         entries = queue.entries(queue_key)
-        sender_labels = queue._build_sender_labels(entries)
+        sender_labels, sender_labels_by_user = queue._build_sender_labels(entries)
 
         found_last_reply = False
         if last_reply_message_id is not None:
@@ -41,27 +41,33 @@ class MessageNumbering:
             lines.append("<当前均为新消息，没有上次回复过的内容>")
 
         new_section_opened = False
+        new_section_content_emitted = False
         poke_count = 0
         for i, entry in enumerate(entries):
             if new_section_opened and i > 0:
                 prev_entry = entries[i - 1]
                 if prev_entry.kind.value == "message" and prev_entry.message is not None and prev_entry.message.message_id == last_reply_message_id:
                     lines.append("<这是新的可能要回答的内容>")
+                    new_section_content_emitted = True
             if entry.kind.value == "message" and entry.message is not None:
-                lines.extend(self._format_replied_messages(entry, queue))
+                lines.extend(
+                    self._format_replied_messages(
+                        entry, queue, sender_labels_by_user=sender_labels_by_user
+                    )
+                )
                 msg = entry.message
                 msg_id = msg.message_id
                 if msg_id is None:
                     continue
                 number = self._assign_number(msg_id)
-                sender = queue._message_sender_label(msg, sender_labels=sender_labels)
+                sender = queue._message_sender_label(msg, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)
                 content = queue._render_message_content(
                     msg,
                     replied_messages=entry.replied_messages,
                     reply_number_resolver=self._assign_number,
                     wrap_at_mention=False,
                 )
-                lines.append(f"{number}: {sender}: {content}")
+                lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
             elif entry.kind.value == "timestamp":
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             elif entry.kind.value == "recall":
@@ -80,7 +86,8 @@ class MessageNumbering:
                 lines.append("<以上是上次对话回复过的内容>")
                 new_section_opened = True
                 continue
-        if new_section_opened:
+        # 仅在真正输出过新区段开标记时才追加闭合标记(last_reply 在队尾时避免残缺闭合)
+        if new_section_opened and new_section_content_emitted:
             lines.append("</这是新的可能要回答的内容>")
         return "\n".join(lines)
 
@@ -96,7 +103,7 @@ class MessageNumbering:
         from neobot_app.message.queue import QueueEntryType
 
         render_context = context_entries or messages
-        sender_labels = queue._build_sender_labels(render_context)
+        sender_labels, sender_labels_by_user = queue._build_sender_labels(render_context)
         lines: list[str] = []
 
         if previous_entries is not None:
@@ -111,19 +118,27 @@ class MessageNumbering:
         poke_count = 0
         for entry in messages:
             if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                lines.extend(self._format_replied_messages(entry, queue))
+                lines.extend(
+                    self._format_replied_messages(
+                        entry, queue, sender_labels_by_user=sender_labels_by_user
+                    )
+                )
                 msg_id = entry.message.message_id
                 if msg_id is None:
                     continue
                 number = self._assign_number(msg_id)
-                sender = queue._message_sender_label(entry.message, sender_labels=sender_labels)
+                sender = queue._message_sender_label(
+                    entry.message,
+                    sender_labels=sender_labels,
+                    sender_labels_by_user=sender_labels_by_user,
+                )
                 content = queue._render_message_content(
                     entry.message,
                     replied_messages=entry.replied_messages,
                     reply_number_resolver=self._assign_number,
                     wrap_at_mention=False,
                 )
-                lines.append(f"{number}: {sender}: {content}")
+                lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
             elif entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
                 reaction = entry.reaction
                 target_number = self.get_number(reaction.target_message_id)
@@ -131,6 +146,11 @@ class MessageNumbering:
                     lines.append(
                         self._format_reaction(reaction, target_number)
                     )
+            elif entry.kind == QueueEntryType.RECALL:
+                # 撤回事件渲染(与 role_messages 的增量路径一致)
+                text = queue._entry_to_text(entry, sender_labels=sender_labels)
+                if text:
+                    lines.append(text)
             elif entry.kind == QueueEntryType.POKE and entry.poke is not None:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
@@ -141,16 +161,16 @@ class MessageNumbering:
         from neobot_app.message.queue import QueueEntry, QueueEntryType
 
         entries = [QueueEntry(kind=QueueEntryType.MESSAGE, message=msg) for msg in messages]
-        sender_labels = queue._build_sender_labels(entries)
+        sender_labels, sender_labels_by_user = queue._build_sender_labels(entries)
         lines: list[str] = []
         for msg in messages:
             msg_id = msg.message_id
             if msg_id is None:
                 continue
             number = self._assign_number(msg_id)
-            sender = queue._message_sender_label(msg, sender_labels=sender_labels)
+            sender = queue._message_sender_label(msg, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)
             content = queue._render_message_content(msg)
-            lines.append(f"{number}: {sender}: {content}")
+            lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
         return "\n".join(lines)
 
     def get_message_id(self, number: int) -> int | None:
@@ -166,12 +186,14 @@ class MessageNumbering:
     @staticmethod
     def format_example() -> str:
         return (
-            "消息格式说明：每条消息以“编号: 用户名: 消息内容”的格式呈现，"
-            "编号可用于 reply_to 参数指定回复目标消息。\n"
-            "例如：1: 小明: 你好\n"
+            "消息格式说明：每条消息以“[msg_id=真实message_id] 编号: 用户名: 消息内容”的格式呈现。\n"
+            "- 行首方括号中的 msg_id= 即真实 OneBot message_id：工具参数需要 message_id 时"
+            "（如 message_id、chat: 前缀等），直接使用它，不要再查映射。\n"
+            "- 编号（msg_id 之后的数字）用于 reply_to / msg_number 参数指定回复目标消息。\n"
+            "例如：[msg_id=1425980020] 1: 小明: 你好\n"
             "当有人回复消息时，被回复的消息会以“[被回复消息]”前缀单独显示（有自己的编号）：\n"
-            "例如：1: [被回复消息] 小红: [图片]\n"
-            "     6: 唐天: [回复:消息ID=xxx] @bot 解析这张\n"
+            "例如：[msg_id=479202588] 1: [被回复消息] 小红: [图片]\n"
+            "     [msg_id=1525160030] 6: 唐天: [回复:消息ID=xxx] @bot 解析这张\n"
             "→ 要解析图片，应使用 msg_number=1（被回复消息），非 msg_number=6（回复文字）。"
         )
 
@@ -185,16 +207,24 @@ class MessageNumbering:
         self._next_number += 1
         return number
 
-    def _format_replied_messages(self, entry, queue: "MessageQueue") -> list[str]:
+    def _format_replied_messages(
+        self,
+        entry,
+        queue: "MessageQueue",
+        *,
+        sender_labels_by_user: dict | None = None,
+    ) -> list[str]:
         lines: list[str] = []
         for replied_message in getattr(entry, "replied_messages", []) or []:
             msg_id = getattr(replied_message, "message_id", None)
             if msg_id is None or self.get_number(msg_id) is not None:
                 continue
             number = self._assign_number(msg_id)
-            sender = queue._message_sender_label(replied_message)
+            sender = queue._message_sender_label(
+                replied_message, sender_labels_by_user=sender_labels_by_user
+            )
             content = queue._render_message_content(replied_message)
-            lines.append(f"{number}: [被回复消息] {sender}: {content}")
+            lines.append(f"[msg_id={msg_id}] {number}: [被回复消息] {sender}: {content}")
         return lines
 
     @staticmethod
