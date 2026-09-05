@@ -22,6 +22,11 @@ from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.utils.data_sync import sync_data_files
 
 from neobot_app.bootstrap._config import build_config
+from neobot_app.bootstrap._commands import (
+    build_command_service,
+    build_credential_manager,
+    _make_chat_config_update_callback,
+)
 from neobot_app.bootstrap._providers import (
     build_main_provider,
     build_vision_provider,
@@ -29,6 +34,7 @@ from neobot_app.bootstrap._providers import (
 from neobot_app.bootstrap._services import (
     build_adapter_service,
     build_archive_summary_service,
+    build_context_recorder,
     build_debug_recorder,
     build_emoji_service,
     build_file_server,
@@ -36,6 +42,7 @@ from neobot_app.bootstrap._services import (
     build_memory_services,
     build_message_queues,
     build_tts_service,
+    build_vision_detect_service,
 )
 from neobot_app.bootstrap._runtime import (
     build_balance_checker,
@@ -60,6 +67,7 @@ from neobot_app.bootstrap._pipeline import (
     build_reply_orchestrator,
     register_config_reload_command,
 )
+from neobot_app.prompt.store import PromptStore, sync_default_prompts
 
 
 _MAINTENANCE_SYSTEM_PROMPT = (
@@ -98,6 +106,7 @@ def _make_maintenance_coro(
     data_dir: Path,
     admin_id: str,
     logger: Any,
+    prompt_store: Any = None,
 ):
     """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。"""
     from dataclasses import dataclass
@@ -105,6 +114,12 @@ def _make_maintenance_coro(
     from neobot_chat.runtime.agent import Agent
     from neobot_chat.tools.toolset import ToolSpec, Toolset
     from neobot_chat.schema.types import ToolAccessRule
+
+    maintenance_prompt = _MAINTENANCE_SYSTEM_PROMPT
+    if prompt_store is not None:
+        maintenance_prompt = prompt_store.get(
+            "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
+        )
 
     @dataclass(frozen=True)
     class _SkillToolExecutor:
@@ -135,7 +150,7 @@ def _make_maintenance_coro(
                 agent = Agent(
                     provider=provider,
                     toolset=toolset,
-                    system_prompt=_MAINTENANCE_SYSTEM_PROMPT,
+                    system_prompt=maintenance_prompt,
                     max_iterations=30,
                     command_timeout=120,
                 )
@@ -185,9 +200,37 @@ def create_application() -> NeoBotApplication:
     config = build_config()
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
+    sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
+    prompt_store = PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
+
+    # ── 睡眠服务(/sleep /awake 命令、睡眠 skill、事件管线共用) ──
+    from neobot_app.runtime.sleep_service import SleepService
+
+    sleep_service = SleepService(
+        prompt_store=prompt_store,
+        logger=logger_factory.get_logger("app.sleep"),
+    )
+
+    # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
+    from neobot_app.cache import CacheCalculator
+
+    cache_calculator = CacheCalculator(
+        retention_seconds=(
+            getattr(getattr(config, "chat", None), "cache_retention_seconds", None) or 1800
+        ),
+        price_difference=(
+            getattr(getattr(config, "chat", None), "cache_hit_price_difference", None) or 120
+        ),
+        logger=logger_factory.get_logger("app.cache"),
+    )
 
     debug_recorder = build_debug_recorder(
         config=config, logger=logger_factory.get_logger("app.debug")
+    )
+
+    # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
+    context_recorder = build_context_recorder(
+        config=config, logger=logger_factory.get_logger("app.context")
     )
 
     db_url = sqlite_url(DATA_DIR / "neobot.db")
@@ -221,6 +264,7 @@ def create_application() -> NeoBotApplication:
         group_queue=group_queue,
         friend_queue=friend_queue,
         uow_factory=uow_factory,
+        prompt_store=prompt_store,
     )
 
     provider_logger = logger_factory.get_logger("app.provider")
@@ -305,6 +349,7 @@ def create_application() -> NeoBotApplication:
         sandbox_service=sandbox["sandbox_service"],
         logger_factory=logger_factory,
         vision_provider=vision_provider,
+        prompt_store=prompt_store,
     )
 
     # ── Skill 系统（balance_checker 先构建供 skill 条件注册使用） ──
@@ -321,6 +366,42 @@ def create_application() -> NeoBotApplication:
         notification_hub=notification_hub,
         logger_factory=logger_factory,
     )
+    # ── 本地视觉检测(ONNX/YOLO):启动时扫描模型目录并维护 models.toml 索引 ──
+    vision_detect_service = build_vision_detect_service(
+        config=config,
+        data_dir=DATA_DIR,
+        logger_factory=logger_factory,
+    )
+
+    # ── 命令系统(被@触发、/ 前缀、权限树;先于 skill/插件构建,供其注入) ──
+    command_service = build_command_service(
+        config=config,
+        adapter=adapter,
+        logger_factory=logger_factory,
+        markdown_image_converter=markdown_image_converter,
+        file_server=file_server,
+        sleep_service=sleep_service,
+    )
+
+    # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
+    credential_manager = build_credential_manager(
+        permissions=command_service.permissions if command_service is not None else None,
+    )
+    if vision_detect_service is not None:
+        from neobot_app.indexer import build_init_runner
+
+        init_runner = build_init_runner(vision_detect_service=vision_detect_service)
+        for task_report in init_runner.run_sync(force=False):
+            if task_report.get("skipped"):
+                continue
+            report = task_report.get("report")
+            if report is None:
+                continue
+            summary = getattr(report, "summary", lambda: str(report))
+            if report.added or report.missing or report.errors or report.unconfigured:
+                logger_factory.get_logger("app.init").warning(
+                    f"[init] {task_report['task']}: {summary()}"
+                )
     skill_manager = build_skill_manager(
         config=config,
         adapter=adapter,
@@ -349,6 +430,9 @@ def create_application() -> NeoBotApplication:
         data_dir=DATA_DIR,
         balance_checker=balance_checker,
         agent_registry=agent_registry,
+        vision_detect_service=vision_detect_service,
+        credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
@@ -364,6 +448,7 @@ def create_application() -> NeoBotApplication:
         agent_registry=agent_registry,
         skills_registry=markdown_skill_registry,
         screenshots=browser["screenshots"],
+        command_registry=command_service.registry if command_service is not None else None,
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -414,6 +499,7 @@ def create_application() -> NeoBotApplication:
             log_file=log_file_path,
             vision_provider=vision_provider,
             web_search_config={},
+            prompt_store=prompt_store,
         )
 
     # ── 回复编排器 + 交叉注入 ──
@@ -430,6 +516,7 @@ def create_application() -> NeoBotApplication:
         tts_service=tts_service,
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
+        context_recorder=context_recorder,
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
@@ -442,6 +529,11 @@ def create_application() -> NeoBotApplication:
         hook_bus=plugin["hook_bus"],
         file_server=file_server,
         skills_registry=markdown_skill_registry,
+        prompt_store=prompt_store,
+        cache_calculator=cache_calculator,
+        credential_manager=credential_manager,
+        config_update_callback=_make_chat_config_update_callback(config),
+        sleep_service=sleep_service,
     )
     console_telemetry = ConsoleTelemetry()
     plugin["hook_bus"].subscribe_runtime(
@@ -463,6 +555,8 @@ def create_application() -> NeoBotApplication:
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []
     maintenance_coros = []
+    # 睡眠剩余时间播报：睡眠期间每分钟打印剩余时间（仅日志，不回复）
+    maintenance_coros.append(sleep_service.ticker())
     if sandbox["sandbox_service"] is not None and admin_accounts:
         maintenance_coros.append(
             _make_maintenance_coro(
@@ -472,10 +566,21 @@ def create_application() -> NeoBotApplication:
                 data_dir=DATA_DIR,
                 admin_id=admin_accounts[0],
                 logger=logger_factory.get_logger("app.sandbox_maintenance_agent"),
+                prompt_store=prompt_store,
             )
         )
 
     # ── 内置控制台 / 管线 / 网关 / 应用 ──
+    def _vision_detect_probe() -> dict[str, Any]:
+        """控制台 /api/services 的 vision_detect 状态探测。"""
+        service = vision_detect_service
+        if service is None:
+            return {"Vision detect": False}
+        return {
+            "Vision detect": service.available,
+            "Vision detect ONNX": service.onnx_available,
+        }
+
     console_service = ConsoleService(
         config=config,
         data_dir=DATA_DIR,
@@ -487,8 +592,10 @@ def create_application() -> NeoBotApplication:
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
         problem_solver_manager=problem_solver_manager,
+        service_probe=_vision_detect_probe,
     )
-    return build_pipelines_and_app(
+
+    application = build_pipelines_and_app(
         adapter=adapter,
         memory=memory_svcs["memory"],
         group_message_queue=group_queue,
@@ -522,4 +629,15 @@ def create_application() -> NeoBotApplication:
         background_coros=maintenance_coros,
         self_heal_manager=self_heal_manager,
         console_service=console_service,
+        command_service=command_service,
+        credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
+
+    # 命令 /reboot:绑定应用重启回调
+    if command_service is not None:
+        restart = getattr(application, "request_restart", None)
+        if callable(restart):
+            command_service.set_restart_callback(restart)
+
+    return application

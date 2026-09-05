@@ -50,6 +50,12 @@ class _FakePromptBuilder:
     async def build_group_chat_prompt(self, **kwargs):
         return "群聊提示词"
 
+    async def build_group_chat_messages(self, **kwargs):
+        return [{"role": "user", "content": "群聊历史消息"}]
+
+    async def build_friend_chat_messages(self, **kwargs):
+        return [{"role": "user", "content": "私聊历史消息"}]
+
 
 class _HangingProvider:
     """chat 永远挂起，用于保持管线活跃。"""
@@ -331,6 +337,37 @@ async def test_collect_new_entries_deduplicates_by_fingerprint():
     new = orch._collect_new_entries(source, snapshot, key)
 
     assert new == []
+
+
+async def test_collect_new_entries_skips_command_consumed_messages():
+    """命令系统已消费的消息不得作为新条目注入挂起管线，但仍计入快照避免反复收集。"""
+    orch = _make_orchestrator()
+    source = MessageQueue()
+    key = "123456"
+    snapshot = source.clone(key)
+    source.push(key, _make_private_message(message_id=1, text="/help"))
+    source.mark_command_consumed(key, 1)
+
+    first = orch._collect_new_entries(source, snapshot, key)
+    second = orch._collect_new_entries(source, snapshot, key)
+
+    assert first == []
+    assert second == []
+
+
+async def test_collect_new_entries_keeps_normal_messages_alongside_consumed():
+    """命令已消费消息被过滤时，同批到达的普通消息仍正常返回。"""
+    orch = _make_orchestrator()
+    source = MessageQueue()
+    key = "123456"
+    snapshot = source.clone(key)
+    source.push(key, _make_private_message(message_id=1, text="/help"))
+    source.mark_command_consumed(key, 1)
+    source.push(key, _make_private_message(message_id=2, text="普通消息"))
+
+    new = orch._collect_new_entries(source, snapshot, key)
+
+    assert [e.message.message_id for e in new] == [2]
 
 
 async def test_consume_ai_reply_blocked_entries_filters_blocked():
@@ -1521,7 +1558,7 @@ async def test_cancelled_group_event_cannot_resume_to_completed(monkeypatch):
     async def _suspend(source, snapshot, queue_key):
         nonlocal suspend_calls
         suspend_calls += 1
-        return [], "resume"
+        return [], "resume", None
 
     monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
     event = orch.start_reply(
@@ -1700,4 +1737,188 @@ async def test_tool_timeout_emits_after_event_with_safe_diagnostics(
     assert "visible" in safe_args
     assert "timeout-secret" not in safe_args
     assert "<redacted>" in safe_args
+    await orch.shutdown()
+
+# ── 成本计算管线(字符级缓存命中) ───────────────────────────────
+
+
+class _CostFakeChat(_FakeChat):
+    cost_pipeline_enabled = True
+    cost_pipeline_threshold = 20
+
+
+class _CostFakeConfig(_FakeConfig):
+    chat = _CostFakeChat()
+
+
+def _cost_orchestrator(*, calculator=None):
+    orch = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        provider=_ScriptedProvider([{"content": "收到", "tool_calls": []}]),
+        config=_CostFakeConfig(),
+        cache_calculator=calculator,
+    )
+    return orch
+
+
+async def test_cost_pipeline_gating_and_defaults():
+    """成本管线开启判定与阈值读取。"""
+    orch = _cost_orchestrator(calculator=__import__("neobot_app.cache", fromlist=["CacheCalculator"]).CacheCalculator())
+    assert orch._cost_pipeline_enabled() is True
+    assert orch._get_cost_pipeline_threshold() == 20
+
+    # 未配置计算器 -> 不启用
+    orch2 = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        config=_CostFakeConfig(),
+        cache_calculator=None,
+    )
+    assert orch2._cost_pipeline_enabled() is False
+
+    # 默认配置(未显式开启) -> 不启用
+    orch3 = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        config=_FakeConfig(),
+        cache_calculator=__import__("neobot_app.cache", fromlist=["CacheCalculator"]).CacheCalculator(),
+    )
+    assert orch3._cost_pipeline_enabled() is False
+    await orch.shutdown()
+    await orch2.shutdown()
+    await orch3.shutdown()
+
+
+async def test_cache_continue_cheaper_decision():
+    """缓存命中后继续成本低于重启成本 -> 可续用;无命中/开关关闭 -> 不续用。"""
+    from neobot_app.cache import CacheCalculator, serialize_messages
+
+    calc = CacheCalculator(price_difference=120)
+    orch = _cost_orchestrator(calculator=calc)
+    provider_key = orch._provider_cache_key()  # 无 model 属性的桩 provider -> "chat"
+
+    base = [
+        {"role": "system", "content": "你是一位乐于助人的助手" * 5},
+        {"role": "user", "content": "中国的首都是哪里？"},
+    ]
+    continuation = base + [
+        {"role": "assistant", "content": "中国的首都是北京。"},
+        {"role": "user", "content": "美国的首都是哪里？"},
+    ]
+    # 先记录一次请求(模拟上一轮调用)
+    calc.record(provider_key, serialize_messages(base), output_text="中国的首都是北京。")
+    # 续用输入能完整命中上次请求前缀 -> 继续更便宜
+    assert orch._cache_continue_cheaper_than_restart(continuation) is True
+    # 全新输入无命中 -> 不续用(与不启用时行为一致)
+    fresh = [{"role": "user", "content": "全新话题" * 40}]
+    assert orch._cache_continue_cheaper_than_restart(fresh) is False
+    # 关闭成本管线 -> 不续用(用独立实例,避免污染共享的类属性)
+    orch._config.chat = _CostFakeChat()
+    orch._config.chat.cost_pipeline_enabled = False
+    assert orch._cache_continue_cheaper_than_restart(continuation) is False
+    await orch.shutdown()
+
+
+async def test_cache_continue_cheaper_without_calculator():
+    """未注入计算器时,续用决策恒为 False(不改变既有寿命行为)。"""
+    orch = _cost_orchestrator(calculator=None)
+    assert orch._cache_continue_cheaper_than_restart(
+        [{"role": "user", "content": "任何内容" * 30}]
+    ) is False
+    await orch.shutdown()
+
+
+async def test_cost_pipeline_extends_group_lifespan(monkeypatch):
+    """成本管线开启时,基础寿命(1)耗尽后因缓存命中续用,总回复次数 = 1+阈值(2)=3。"""
+    from neobot_app.cache import CacheCalculator
+
+    class _LifespanChat(_FakeChat):
+        group_chat_reply_lifespan = 1
+        cost_pipeline_enabled = True
+        cost_pipeline_threshold = 2
+        random_sticker_probability = 0.0
+
+    class _LifespanConfig(_FakeConfig):
+        chat = _LifespanChat()
+
+    provider = _ScriptedProvider(
+        [
+            {"content": "回复1", "tool_calls": []},
+            {"content": "回复2", "tool_calls": []},
+            {"content": "回复3", "tool_calls": []},
+            {"content": "回复4", "tool_calls": []},
+        ]
+    )
+    orch = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        provider=provider,
+        config=_LifespanConfig(),
+        cache_calculator=CacheCalculator(),
+    )
+    suspend_calls = 0
+
+    async def _suspend(source, snapshot, queue_key):
+        nonlocal suspend_calls
+        suspend_calls += 1
+        return [], "resume", None  # 后台通知保持管线存活
+
+    monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
+    event = orch.start_reply(
+        message=_make_group_message(),
+        queue=MessageQueue(),
+        queue_key="888888",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+
+    # 基础寿命 1 + 阈值 2 = 3 次回复;第 4 条脚本未被消费
+    assert len(provider.calls) == 3, provider.calls
+    assert suspend_calls == 2
+    await orch.shutdown()
+
+
+async def test_cost_pipeline_disabled_keeps_base_lifespan(monkeypatch):
+    """成本管线关闭(或未命中缓存)时,管线在基础寿命后正常结束。"""
+    from neobot_app.cache import CacheCalculator
+
+    class _LifespanChat(_FakeChat):
+        group_chat_reply_lifespan = 1
+        cost_pipeline_enabled = False
+        random_sticker_probability = 0.0
+
+    class _LifespanConfig(_FakeConfig):
+        chat = _LifespanChat()
+
+    provider = _ScriptedProvider(
+        [
+            {"content": "回复1", "tool_calls": []},
+            {"content": "回复2", "tool_calls": []},
+        ]
+    )
+    orch = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        provider=provider,
+        config=_LifespanConfig(),
+        cache_calculator=CacheCalculator(),
+    )
+
+    async def _suspend(source, snapshot, queue_key):
+        return [], "resume", None
+
+    monkeypatch.setattr(orch, "_suspend_group_chat", _suspend)
+    event = orch.start_reply(
+        message=_make_group_message(),
+        queue=MessageQueue(),
+        queue_key="888888",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+
+    # 基础寿命 1 耗尽后直接结束,不再调用挂起
+    assert len(provider.calls) == 1, provider.calls
     await orch.shutdown()

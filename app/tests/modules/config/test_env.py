@@ -42,7 +42,9 @@ def test_load_env_reads_all_keys_and_keeps_file_unchanged(monkeypatch, tmp_path)
         "SiliconFlow_URL=https://api.siliconflow.cn/v1\n"
         "SiliconFlow_APIKey=sk-sf-1\n"
         "HuoShan_APIKey=hs-ak-1\n"
-        "HuoShan_AppId=hs-app-1\n",
+        "HuoShan_AppId=hs-app-1\n"
+        "OpencodeGo_URL=https://opencode.ai/zen/go/v1/\n"
+        "OpencodeGo_APIKey=sk-go-1\n",
         encoding="utf-8",
     )
     original_content = env_file.read_text(encoding="utf-8")
@@ -56,6 +58,8 @@ def test_load_env_reads_all_keys_and_keeps_file_unchanged(monkeypatch, tmp_path)
     assert os.environ["SiliconFlow_APIKey"] == "sk-sf-1"
     assert os.environ["HuoShan_APIKey"] == "hs-ak-1"
     assert os.environ["HuoShan_AppId"] == "hs-app-1"
+    assert os.environ["OpencodeGo_URL"] == "https://opencode.ai/zen/go/v1/"
+    assert os.environ["OpencodeGo_APIKey"] == "sk-go-1"
     assert env_file.read_text(encoding="utf-8") == original_content
 
 

@@ -31,16 +31,30 @@ def _response_data_for_get_image(response: Any) -> dict | None:
 
 
 async def _read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
-    """读取图片引用（base64 / file / URL / 路径）。"""
+    """读取图片引用（base64 / data URL / file / URL / 路径）。"""
     import base64 as _base64
 
     if ref.startswith("base64://"):
-        return _base64.b64decode(ref[9:])
+        try:
+            return _base64.b64decode(ref[9:])
+        except Exception:
+            return None
+    if ref.startswith("data:") and ";base64," in ref:
+        try:
+            return _base64.b64decode(ref.split(";base64,", 1)[1])
+        except Exception:
+            return None
     if ref.startswith("file://"):
-        return Path(ref[7:]).expanduser().read_bytes()
+        try:
+            return Path(ref[7:]).expanduser().read_bytes()
+        except OSError:
+            return None
     path = Path(ref).expanduser()
     if path.exists() and path.is_file():
-        return path.read_bytes()
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
     try:
         import httpx
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -785,7 +799,10 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     image_indices_arg = args.get("image_indices") or []
     pipeline_key = str(args.get("pipeline_key", "")).strip()
 
-    timeout_seconds = float(int(args.get("timeout_seconds", 300) or 300))
+    try:
+        timeout_seconds = float(int(args.get("timeout_seconds", 300) or 300))
+    except (TypeError, ValueError, OverflowError):
+        return _json({"ok": False, "error": "timeout_seconds 必须是数字(秒)"})
     timeout_seconds = max(1.0, min(timeout_seconds, 1800.0))
 
     if not any([

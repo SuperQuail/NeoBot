@@ -35,6 +35,9 @@ from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
 from neobot_app.skills.balance_skill import BalanceSkill
 from neobot_app.skills.agent_delegation import AgentDelegationSkill
+from neobot_app.skills.credential_skill import CredentialSkill
+from neobot_app.skills.vision_detect_skill import VisionDetectSkill
+from neobot_app.skills.sleep_skill import SleepSkill
 
 
 def build_all_skills(
@@ -67,6 +70,9 @@ def build_all_skills(
     temp_cleaner: Any = None,
     balance_checker: Any = None,
     agent_registry: Any = None,
+    vision_detect_service: Any = None,
+    credential_manager: Any = None,
+    sleep_service: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -84,12 +90,38 @@ def build_all_skills(
     if agent_registry is not None and "agents" not in disabled:
         skills_to_register.append(AgentDelegationSkill(agent_registry))
 
+    # ── 风险操作凭据(踢人/退群等) ──
+    if "credential" not in disabled and credential_manager is not None:
+        skills_to_register.append(CredentialSkill(credential_manager=credential_manager))
+
+    # ── 本地视觉检测(ONNX/YOLO,服务不可用时无工具) ──
+    if "vision_detect" not in disabled and vision_detect_service is not None:
+        skills_to_register.append(
+            VisionDetectSkill(
+                service=vision_detect_service,
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+            )
+        )
+
     if "archive_crud" not in disabled:
+        archive_cfg = config.agent.archive if config and hasattr(config.agent, "archive") else None
         skills_to_register.append(
             ArchiveCRUDSkill(
                 archive_service=archive_memory_service,
-                allow_delete=(config.agent.archive.allow_delete if config and hasattr(config.agent, "archive") else False),
-                allowed_tables=(config.agent.archive.allowed_tables if config and hasattr(config.agent, "archive") else ()),
+                allow_delete=bool(archive_cfg and archive_cfg.allow_delete),
+                allowed_tables=(
+                    tuple(archive_cfg.allowed_tables) if archive_cfg and archive_cfg.allowed_tables else ()
+                ),
+                max_chars={
+                    "user_profile": (archive_cfg.max_chars if archive_cfg and archive_cfg.max_chars else 300),
+                    "group_profile": (
+                        archive_cfg.group_profile_max_chars
+                        if archive_cfg and archive_cfg.group_profile_max_chars
+                        else 1500
+                    ),
+                },
             )
         )
 
@@ -134,7 +166,12 @@ def build_all_skills(
         skills_to_register.append(ChatHistorySkill(adapter=adapter))
 
     if "group_management" not in disabled:
-        skills_to_register.append(GroupManagementSkill(adapter=adapter))
+        skills_to_register.append(
+            GroupManagementSkill(
+                adapter=adapter,
+                credential_manager=credential_manager,
+            )
+        )
 
     if "friend_management" not in disabled:
         skills_to_register.append(FriendManagementSkill(adapter=adapter))
@@ -152,7 +189,18 @@ def build_all_skills(
         skills_to_register.append(StickerSkill(emoji_service=emoji_service, file_server=file_server))
 
     if "drawing" not in disabled:
-        skills_to_register.append(DrawingSkill(drawing_manager=drawing_manager))
+        skills_to_register.append(
+            DrawingSkill(
+                drawing_manager=drawing_manager,
+                image_service=creator_image_service,
+                vision_provider=vision_provider,
+                enable_image_inspect=(
+                    bool(config.agent.creator.image_inspect_enabled)
+                    if config and hasattr(config.agent, "creator")
+                    else False
+                ),
+            )
+        )
 
     if "gallery" not in disabled:
         skills_to_register.append(
@@ -166,7 +214,14 @@ def build_all_skills(
         )
 
     if "emoji_management" not in disabled:
-        skills_to_register.append(EmojiManagementSkill(emoji_service=emoji_service))
+        skills_to_register.append(
+            EmojiManagementSkill(
+                emoji_service=emoji_service,
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+            )
+        )
 
     if "image_pool" not in disabled and image_pool is not None:
         skills_to_register.append(
@@ -193,6 +248,10 @@ def build_all_skills(
 
     if "willingness" not in disabled:
         skills_to_register.append(WillingnessSkill(willing_service=willing_service))
+
+    # ── 睡眠管理(Bot 自己开始睡觉/醒来;sleep_service 未注入时不注册) ──
+    if "sleep" not in disabled and sleep_service is not None:
+        skills_to_register.append(SleepSkill(sleep_service=sleep_service))
 
     if "reminder" not in disabled:
         skills_to_register.append(

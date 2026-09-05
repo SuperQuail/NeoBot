@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from neobot_app.utils.formater import safe_format
 
 
@@ -39,13 +37,17 @@ def test_safe_format_formats_non_string_values() -> None:
     assert result == "年龄18，状态True"
 
 
-def test_safe_format_raises_on_positional_placeholder() -> None:
-    """Arrange: 位置式占位符 {0}（本函数只支持关键字）；Act: safe_format；Assert: 抛出 ValueError。"""
-    with pytest.raises(ValueError):
-        safe_format("{0}号成员")
+def test_safe_format_tolerates_positional_placeholder() -> None:
+    """Arrange: 位置式占位符 {0}(本函数只支持关键字);Act: safe_format;
+    Assert: 不抛异常,无法替换的部分原样保留。"""
+    result = safe_format("{0}号成员")
+
+    assert result == "{0}号成员"
 
 
-def test_safe_format_raises_on_malformed_template() -> None:
-    """Arrange: 模板含孤立左大括号；Act: safe_format；Assert: 抛出 ValueError（异常路径）。"""
-    with pytest.raises(ValueError):
-        safe_format("未闭合{占位符")
+def test_safe_format_tolerates_malformed_template() -> None:
+    """Arrange: 模板含孤立左大括号;Act: safe_format;
+    Assert: 不抛异常(畸形部分原样保留),已提供的占位符仍被替换。"""
+    result = safe_format("未闭合{占位符和{bot_name}", bot_name="弥音")
+
+    assert result == "未闭合{占位符和弥音"

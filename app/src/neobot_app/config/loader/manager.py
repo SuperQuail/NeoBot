@@ -8,7 +8,6 @@ import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
-from neobot_app.core import CONFIG_BACKUP_DIR
 from neobot_app.utils.logger import get_module_logger
 
 T = TypeVar("T")
@@ -270,6 +269,10 @@ class Config:
     @classmethod
     def load(cls, file_path: Path, schema: Type[T]) -> T:
         """加载配置文件，如果不存在则生成，如果存在则检查并补全缺失项"""
+        # 注册配置迁移(migrate_* 装饰器在 import 时注册)。
+        # 必须在首次 load 前完成;懒加载避免模块初始化阶段的循环依赖。
+        from neobot_app.config import migrations as _migrations  # noqa: F401
+
         logger.info(f"加载配置文件: {file_path}")
 
         existing_data: dict[Any, Any] = {}
@@ -277,7 +280,9 @@ class Config:
 
         if file_exists:
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                # utf-8-sig 兼容 Windows 记事本保存的 UTF-8 BOM(否则 tomlkit 抛
+                # EmptyKeyError,整份配置会被当作损坏重置为默认值,造成数据丢失)
+                with open(file_path, "r", encoding="utf-8-sig") as f:
                     existing_data = tomlkit.parse(f.read()).unwrap()
                 logger.info(f"配置文件已读取: {file_path}")
 
@@ -314,7 +319,10 @@ class Config:
                     logger.info(f"缺失非必须配置项: {field}")
 
             if file_exists:
-                backup_config(file_path, CONFIG_BACKUP_DIR)
+                # 备份目录按配置文件位置派生:生产环境等价于全局
+                # CONFIG_BACKUP_DIR(DATA_DIR/config_backup),同时隔离测试/
+                # 外部工具对真实备份目录的污染与误删
+                backup_config(file_path, file_path.parent / "config_backup")
 
             assert toml_doc is not None, "toml_doc should not be None for valid dataclass"
             try:
@@ -332,7 +340,7 @@ class Config:
                     ) from e
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8-sig") as f:
                 config_dict = tomlkit.parse(f.read()).unwrap()
             config_obj = dict_to_dataclass(config_dict, schema)
 

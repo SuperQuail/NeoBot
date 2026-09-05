@@ -22,6 +22,7 @@ from neobot_app.runtime.onebot_request_handler import OneBotRequestHandler
 from neobot_app.runtime.reply_block import ReplyBlockRegistry
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.prompt.store import sync_default_prompts
 from neobot_app.utils.data_sync import sync_data_files
 from neobot_app.utils.logger import get_module_logger
 
@@ -71,16 +72,18 @@ def register_config_reload_command(
             return {"status": "error", "message": message}
         config.reload(new_config)
         sync_data_files(SRC_DATA_DIR, DATA_DIR)
+        sync_default_prompts(DATA_DIR, logger=logger)
         await host_facade.lifecycle.fire("config.changed")
         return {
             "status": "ok",
             "message": (
                 "配置已重载（部分生效）。"
-                "已生效：运行时按需读取的配置（提示词模板、概率系数、冷却时间、"
+                "已生效：运行时按需读取的配置（提示词模板文件、概率系数、冷却时间、"
                 "名单等，含模型注册表——新建的 Provider 请求将使用新值）。"
                 "需重启 NeoBot 后生效：运行中的 LLM Provider（模型名/API Key/"
                 "base_url 已固化在现有实例中）、关键词规则（KeywordReactionBuilder "
-                "持有构建时快照）、TTS/表情包等构建期组件。"
+                "持有构建时快照）、TTS/表情包等构建期组件、缓存计算器参数"
+                "（缓存保留时间/命中差价）。成本管线开关与阈值、提示词模板文件实时生效。"
             ),
         }
 
@@ -100,6 +103,7 @@ def build_problem_solver_agent_wiring(
     sandbox_service: Any,
     logger_factory: Any,
     vision_provider: Any = None,
+    prompt_store: Any = None,
 ) -> None:
     if problem_solver_manager is None:
         return
@@ -125,6 +129,7 @@ def build_problem_solver_agent_wiring(
         manager=problem_solver_manager,
         sandbox_service=sandbox_service,
         vision_provider=vision_provider,
+        prompt_store=prompt_store,
     )
 
 
@@ -142,6 +147,7 @@ def build_reply_orchestrator(
     tts_service: Any,
     provider_error_message: str | None,
     debug_recorder: Any,
+    context_recorder: Any = None,
     logger: Any,
     drawing_manager: Any,
     scheduled_task_manager: Any,
@@ -154,6 +160,11 @@ def build_reply_orchestrator(
     hook_bus: Any,
     file_server: Any,
     skills_registry: Any = None,
+    prompt_store: Any = None,
+    cache_calculator: Any = None,
+    credential_manager: Any = None,
+    config_update_callback: Any = None,
+    sleep_service: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -171,6 +182,7 @@ def build_reply_orchestrator(
         tts_service=tts_service,
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
+        context_recorder=context_recorder,
         logger=logger,
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
@@ -183,6 +195,11 @@ def build_reply_orchestrator(
         runtime_events=hook_bus,
         file_server=file_server,
         skills_registry=skills_registry,
+        prompt_store=prompt_store,
+        cache_calculator=cache_calculator,
+        credential_manager=credential_manager,
+        config_update_callback=config_update_callback,
+        sleep_service=sleep_service,
     )
 
 
@@ -221,6 +238,9 @@ def build_pipelines_and_app(
     background_coros: list | None = None,
     self_heal_manager: Any = None,
     console_service: Any = None,
+    command_service: Any = None,
+    credential_manager: Any = None,
+    sleep_service: Any = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -241,6 +261,9 @@ def build_pipelines_and_app(
         config=config,
         logger=logger_factory.get_logger("app.event_pipeline"),
         reply_block_registry=reply_block_registry,
+        command_service=command_service,
+        credential_manager=credential_manager,
+        sleep_service=sleep_service,
     )
 
     notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)
