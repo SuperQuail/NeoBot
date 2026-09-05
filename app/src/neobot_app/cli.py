@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import signal
 import sys
+from pathlib import Path
+from typing import Any
 
 from neobot_app.bootstrap import create_application
 from neobot_app.config.loader.manager import ConfigLoadError
@@ -308,10 +310,22 @@ async def _run_sandbox_cleanup() -> int:
     # 6. 创建 Agent
     from neobot_chat.runtime.agent import Agent
 
+    maintenance_prompt = _MAINTENANCE_SYSTEM_PROMPT
+    try:
+        from neobot_app.prompt.store import PromptStore, sync_default_prompts
+
+        sync_default_prompts(DATA_DIR)
+        prompt_store = PromptStore(DATA_DIR)
+        maintenance_prompt = prompt_store.get(
+            "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
+        )
+    except Exception:
+        pass
+
     agent = Agent(
         provider=provider,
         toolset=toolset,
-        system_prompt=_MAINTENANCE_SYSTEM_PROMPT,
+        system_prompt=maintenance_prompt,
         max_iterations=30,
         command_timeout=120,
     )
@@ -375,6 +389,354 @@ def cmd_sandbox_clean(args: argparse.Namespace) -> None:
         sys.exit(130)
 
 
+def _init_scanned_zero(reports: list) -> bool:
+    """init 输出中是否没有任何模型被扫描到(用于提示放模型)。"""
+    for entry in reports:
+        report = entry.get("report")
+        if report is None:
+            continue
+        if getattr(report, "scanned", 0) > 0:
+            return False
+    return True
+
+
+def _uv_python_install_cmd(package: str) -> list[str]:
+    """生成安装命令:部署环境均为 uv 管理(venv 内无 pip),优先 uv,回退 python -m pip。"""
+    import shutil
+    import sys
+
+    if shutil.which("uv"):
+        return ["uv", "pip", "install", "--python", sys.executable, package]
+    return [sys.executable, "-m", "pip", "install", package]
+
+
+def _install_ultralytics() -> bool:
+    """在当前 Python 环境安装 ultralytics(PyTorch 备选推理栈)。"""
+    import subprocess
+
+    cmd = _uv_python_install_cmd("ultralytics")
+    print(f"执行: {' '.join(cmd)}")
+    print("(下载约 200MB+,视网络状况可能需要数分钟)")
+    try:
+        result = subprocess.run(cmd)
+        return result.returncode == 0
+    except OSError as exc:
+        print(f"安装失败: {exc}")
+        return False
+
+
+def _ask_install_ultralytics() -> bool:
+    """询问用户是否安装 ultralytics;非交互环境(EOF)默认不装。"""
+    try:
+        answer = input("是否现在安装 ultralytics(PyTorch 备选推理栈,约 200MB+)? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("(非交互环境,跳过安装)")
+        return False
+    return answer in ("y", "yes")
+
+
+# ── VC++ 运行库检测与安装(onnxruntime 1114 最常见根因) ──
+
+_VC_DLLS = [
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+]
+_VC_MIN_VERSION = (14, 40, 0, 0)  # VC++ 2015-2022 redist 新版基线
+_VC_SYSTEM32 = Path(r"C:\Windows\System32")
+VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+
+
+def _file_version_win(path: str) -> str:
+    """ctypes WinAPI 读取文件版本。"""
+    import ctypes
+    import struct
+
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, buf):
+            return ""
+        ptr = ctypes.c_void_p()
+        total = ctypes.c_uint()
+        if not ctypes.windll.version.VerQueryValueW(
+            buf, "\\", ctypes.byref(ptr), ctypes.byref(total)
+        ):
+            return ""
+        data = ctypes.string_at(ptr, total.value)
+        if len(data) < 16:
+            return ""
+        ms, ls = struct.unpack_from("<II", data, 8)
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    except Exception:
+        return ""
+
+
+def _vc_runtime_issues() -> list[str]:
+    """Windows 下检查 VC++ 运行库,返回问题描述列表(空 = 正常)。"""
+    import platform
+
+    if platform.system() != "Windows":
+        return []
+    issues: list[str] = []
+    system32 = _VC_SYSTEM32
+    for dll in _VC_DLLS:
+        path = system32 / dll
+        if not path.exists():
+            issues.append(f"缺失 {dll}(VC++ 运行库不完整)")
+            continue
+        version = _file_version_win(str(path))
+        try:
+            parsed = tuple(int(p) for p in version.split(".")) if version else ()
+        except ValueError:
+            parsed = ()
+        if parsed and parsed < _VC_MIN_VERSION:
+            issues.append(f"{dll} 版本过旧: {version}(建议 ≥14.40)")
+    return issues
+
+
+def _ask_install_vc_redist() -> str:
+    """询问是否在线下载安装 VC++ 运行库,返回 "online" / ""(跳过)。"""
+    try:
+        answer = input(
+            "是否在线下载最新版 VC++ 运行库并安装"
+            "(约 25 MB,需管理员,可能弹出 UAC)? [y/N] "
+        ).strip().lower()
+        return "online" if answer in ("y", "yes") else ""
+    except (EOFError, KeyboardInterrupt):
+        print("(非交互环境,跳过安装)")
+        return ""
+
+
+def _download_vc_redist() -> Path | None:
+    """在线下载最新 VC++ redist 到临时目录。"""
+    import tempfile
+    import urllib.request
+
+    target = Path(tempfile.gettempdir()) / "vc_redist.x64.exe"
+    print(f"在线下载: {VC_REDIST_URL}")
+    try:
+        urllib.request.urlretrieve(VC_REDIST_URL, target)
+        print(f"已下载: {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
+        return target
+    except Exception as exc:
+        print(f"下载失败: {exc}")
+        return None
+
+
+def _install_vc_redist(package: Path) -> bool:
+    """提权静默安装 VC++ redist(UAC 弹窗);装完返回是否已生效。"""
+    import subprocess
+
+    print(f"执行: Start-Process '{package}' /install /quiet /norestart(触发 UAC)")
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Start-Process -FilePath "
+                    f"'{package}' -ArgumentList '/install','/quiet','/norestart' "
+                    "-Verb RunAs -Wait"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result.returncode == 0
+    except Exception as exc:
+        print(f"安装调用失败: {exc}")
+        return False
+
+
+def _ensure_vc_runtime_fixed() -> bool:
+    """onnx 不可用时优先处理 VC++ 运行库(Windows):检测 → 在线下载 → 安装。
+
+    Returns: True 表示运行库问题已解决(可重新探测 onnxruntime)。
+    """
+    import platform
+
+    if platform.system() != "Windows":
+        return False
+    issues = _vc_runtime_issues()
+    if not issues:
+        return False
+    print("检测到 VC++ 运行库问题(onnxruntime/torch DLL 初始化失败 1114 的最常见根因):")
+    for item in issues:
+        print(f"         - {item}")
+    print(f"         将在线下载最新版 VC++ 运行库: {VC_REDIST_URL}")
+    choice = _ask_install_vc_redist()
+    if not choice:
+        print(f"         跳过。可稍后手动下载安装: {VC_REDIST_URL}"
+              "(右键管理员运行)或 scripts/onnx_deploy_check.py --install-redist")
+        return False
+    installer = _download_vc_redist()
+    if installer is None:
+        print(f"         下载失败。请手动下载并安装: {VC_REDIST_URL}"
+              "(以管理员身份运行 vc_redist.x64.exe)")
+        return False
+    if not _install_vc_redist(installer):
+        print(f"         安装失败,请手动下载安装: {VC_REDIST_URL}"
+              "(以管理员身份运行,可能需重启后生效)")
+        return False
+    leftover = _vc_runtime_issues()
+    if leftover:
+        print("         安装完成但运行库仍存在问题(可能需要重启后生效):")
+        for item in leftover:
+            print(f"           - {item}")
+        return False
+    print("         VC++ 运行库已更新完成")
+    return True
+
+
+def _ensure_vision_engine(service: Any) -> None:
+    """init 时的推理引擎检查:onnx 可用则无需 torch;不可用则按需安装。
+
+    策略:
+    1. onnxruntime 不可用且是 Windows:优先检测 VC++ 运行库(1114 最常见根因),
+       询问用户在线下载安装,修好后重新探测 onnxruntime
+    2. 仍不可用:询问安装 ultralytics(PyTorch 备选推理栈,.pt 模型)
+    3. 安装尝试后无论成败都会重新探测:依赖已就绪(如已手动安装)也能正确识别;
+       探测失败会给出具体导入错误,区分「未安装」与「已装但无法加载」。
+    """
+    if service.onnx_available:
+        print("推理引擎: onnxruntime 可用(无需安装 PyTorch 备选栈)")
+        print()
+        return
+    onnx_error = service.engine_error("onnx")
+    print("推理引擎: onnxruntime 不可用")
+    print(f"         {onnx_error or '未知原因'}")
+    if _ensure_vc_runtime_fixed():
+        service.reset_availability()
+        if service.onnx_available:
+            print("推理引擎: 修复 VC++ 运行库后 onnxruntime 已可用")
+            print()
+            return
+    if service.torch_available:
+        print("         .onnx 无法运行;PyTorch(ultralytics) 已安装,.pt 模型可用")
+        print("         (如需修复 onnxruntime 请检查 CPU 指令集透传与 VC++ 运行库)")
+        print()
+        return
+    torch_error = service.engine_error("torch")
+    print("         .onnx 模型无法运行,备选方案为 PyTorch 推理栈(.pt 模型)")
+    if torch_error:
+        print(f"         PyTorch 检测失败: {torch_error}")
+        print("         提示: 包已安装但仍无法导入,多为 CPU 指令集未透传/运行库缺失,"
+              "PyTorch 也可能无法运行")
+        print("         可手动验证: 直接 import torch 查看具体报错")
+    else:
+        print("         未检测到 ultralytics(未安装)")
+        if _ask_install_ultralytics():
+            _install_ultralytics()
+            service.reset_availability()
+            if service.torch_available:
+                print("就绪: PyTorch 备选推理栈已可用,放入 .pt 模型后重跑 neobot init")
+            else:
+                after_error = service.engine_error("torch")
+                print(f"安装后仍不可用: {after_error or '未知原因'}")
+                print("         可稍后手动执行: "
+                      f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
+        else:
+            print(f"        跳过安装。手动安装命令: "
+                  f"{' '.join(_uv_python_install_cmd('ultralytics'))}")
+            print("        安装后重新运行 neobot init 即可生效")
+    print()
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    """重新扫描并建立所有可再生的资源索引(不启动 Bot)。"""
+    from neobot_app.bootstrap._config import build_config
+    from neobot_app.bootstrap._services import resolve_vision_detect_paths
+    from neobot_app.core import DATA_DIR
+    from neobot_app.indexer import IndexRunner, IndexTask
+    from neobot_app.vision_detect.service import VisionDetectService
+
+    print("neobot init — 扫描并建立资源索引…")
+    print()
+    config = None
+    try:
+        config = build_config()
+    except ConfigLoadError as exc:
+        print(f"配置加载失败：\n{exc}")
+        print("已降级: 使用默认路径重建模型索引(视觉检测配置未读取)。")
+        print()
+
+    runner = IndexRunner()
+    vision_cfg = getattr(getattr(config, "agent", None), "vision_detect", None) if config is not None else None
+    if vision_cfg is not None and not vision_cfg.enabled:
+        print("视觉检测配置未启用 (agent.vision_detect.enabled = false)，跳过")
+        print()
+    elif config is not None:
+        models_dir, index_file = resolve_vision_detect_paths(config=config, data_dir=DATA_DIR)
+        service = VisionDetectService(
+            models_dir,
+            index_file,
+            default_conf=vision_cfg.default_conf,
+            default_iou=vision_cfg.default_iou,
+            imgsz=vision_cfg.imgsz,
+            auto_refresh=vision_cfg.auto_refresh,
+        )
+        _ensure_vision_engine(service)
+        runner.register(
+            IndexTask(
+                name="vision_detect",
+                description="扫描模型目录(.onnx/.pt)并维护 models.toml 索引",
+                scan=service.refresh,
+            )
+        )
+    else:
+        # 配置加载失败:降级为默认路径,仅重建模型索引
+        from neobot_app.config.schemas.bot import VisionDetect as _DefaultVisionDetect
+
+        defaults = _DefaultVisionDetect()
+        models_dir = DATA_DIR / "vision_detect" / "models"
+        index_file = DATA_DIR / "vision_detect" / "models.toml"
+        service = VisionDetectService(
+            models_dir,
+            index_file,
+            default_conf=defaults.default_conf,
+            default_iou=defaults.default_iou,
+            imgsz=defaults.imgsz,
+            auto_refresh=defaults.auto_refresh,
+        )
+        _ensure_vision_engine(service)
+        runner.register(
+            IndexTask(
+                name="vision_detect",
+                description="扫描模型目录(.onnx/.pt)并维护 models.toml 索引(默认路径)",
+                scan=service.refresh,
+            )
+        )
+
+    print(runner.describe())
+    print()
+    reports = runner.run_sync(force=args.force)
+    for entry in reports:
+        if entry.get("skipped"):
+            print(f"[{entry['task']}] 跳过(异步任务,请通过 bot 启动时执行)")
+            continue
+        if entry.get("error"):
+            print(f"[{entry['task']}] 扫描失败: {entry['error']}")
+            continue
+        report = entry["report"]
+        print(f"── {entry['task']}: {entry['description']} ──")
+        summary = getattr(report, "summary", None)
+        print(summary() if callable(summary) else str(report))
+        print()
+    if _init_scanned_zero(reports):
+        print(f"未发现 .onnx / .pt 模型文件: 请将模型放入 {models_dir} 后重新运行 neobot init")
+    else:
+        print("完成。编辑模型索引(models.toml)填写模型描述后即可生效"
+              "(无需重启;若关闭了自动刷新 auto_refresh 则需重启)。")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
     parser.add_argument(
@@ -417,6 +779,17 @@ def main() -> None:
         help="首选端口 (默认 9981；9891/9981 都会放行)",
     )
 
+    # `neobot init [--force]`
+    init_parser = sub.add_parser(
+        "init", help="重新扫描并建立资源索引（模型库等），不启动 Bot",
+        description="扫描模型目录等可再生资源并重建索引（如 data/vision_detect/models.toml），"
+                    "通常在放入新模型后执行；启动 Bot 时也会自动执行。",
+    )
+    init_parser.add_argument(
+        "--force", action="store_true",
+        help="强制重建索引骨架（不会覆盖已填写的模型描述）",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-browser":
@@ -427,6 +800,8 @@ def main() -> None:
         cmd_sandbox_clean(args)
     elif args.command == "firewall-open":
         cmd_firewall_open(args)
+    elif args.command == "init":
+        cmd_init(args)
     else:
         # 无子命令 → 启动机器人
         cmd_run(args)

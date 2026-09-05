@@ -65,6 +65,7 @@ class PluginRuntime:
         file_server: Any | None = None,
         media_sender: Any | None = None,
         screenshots: ScreenshotPort | None = None,
+        app_commands: Any | None = None,
         dependency_installer: PythonDependencyInstaller | None = None,
         auto_install_dependencies: bool = False,
     ) -> None:
@@ -77,6 +78,7 @@ class PluginRuntime:
         self._file_server = file_server
         self._media_sender = media_sender
         self.screenshots = screenshots
+        self._app_commands = app_commands
         self.record_ai_reply_block = record_ai_reply_block
         self.output = output or NullOutput()
         self.logger = logger or self._get_logger("modloader.runtime")
@@ -1255,6 +1257,7 @@ class PluginRuntime:
                 file_server=self._file_server,
                 media_sender=self._media_sender,
                 screenshots=self.screenshots,
+                app_commands=self._app_commands,
                 plugin_control=self.control,
             )
             self.manager.register(loaded.plugin, context)

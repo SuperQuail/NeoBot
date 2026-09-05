@@ -1099,35 +1099,48 @@ class ProblemSolverToolExecutor(ToolExecutor):
 
 
 def _build_system_prompt(
-    config: ProblemSolverAgentConfig | None, *, peer_descriptions: str = ""
+    config: ProblemSolverAgentConfig | None,
+    *,
+    peer_descriptions: str = "",
+    prompt_store: Any = None,
 ) -> str:
     cfg = config or ProblemSolverAgentConfig()
+    base = ""
+    if prompt_store is not None:
+        base = prompt_store.get("problem_solver", "system_prompt", default="")
+    if not base:
+        base = _FALLBACK_SYSTEM_PROMPT
     return (
-        "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
-        "【强制要求】每次解题结束前必须调用 submit_solution 提交最终解答，否则任务将被视为失败。\n\n"
-        "工作流程：\n"
-        "1. 先用 get_chat_context 获取问题背景和文件路径上下文\n"
-        "2. 仔细分析问题，逐步推理，不要跳步\n"
-        "3. 如果问题涉及实时信息、数据查询或需要查阅资料，使用 search 联网搜索，"
-        "通过 read_page 读取有价值的页面获取详细信息\n"
-        "4. 使用 run_python 执行代码生成文件，使用 write_file 保存文件到沙箱\n"
-        "5. 最后调用 submit_solution 提交完整解答\n\n"
-        "文件路径规则（重要）：\n"
-        "- write_file / run_python 生成的文件默认在临时目录（通过 get_chat_context 获取路径）\n"
-        "- 临时目录的文件会被定期自动清理，不要依赖其长期存在\n"
-        "- 除非文件是需要长期复用的工具/文档/资源（如通用脚本、参考文档），否则一律放入临时目录\n"
-        "- 提交解答时说明生成的文件路径，主Agent将通过 sandbox_manager 工具读取和发送\n\n"
-        "搜索使用提示：\n"
-        "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
-        '- search 支持 mode 参数进行多角度搜索，如 mode="encyclopedia" 查百科类信息\n'
-        "- 搜索后先浏览摘要，只对有价值的结果使用 read_page 读取全文\n"
-        "- 每次解题任务开始时搜索会话自动重置\n\n"
-        "交互规则：\n"
-        "- 如果缺少关键信息无法解答，通过 submit_solution 返回说明，指出缺失什么信息\n"
-        "- 如果问题不属于你的能力范围，直接声明无法处理\n\n"
-        f"{peer_descriptions}\n"
+        base
+        + f"\n\n{peer_descriptions}\n"
         f"- 超时时间: {cfg.timeout_seconds} 秒\n"
     )
+
+
+_FALLBACK_SYSTEM_PROMPT = (
+    "你是解题 Agent，专门处理需要深度推理和复杂计算的数学、编程、逻辑、科学问题。\n\n"
+    "【强制要求】每次解题结束前必须调用 submit_solution 提交最终解答，否则任务将被视为失败。\n\n"
+    "工作流程：\n"
+    "1. 先用 get_chat_context 获取问题背景和文件路径上下文\n"
+    "2. 仔细分析问题，逐步推理，不要跳步\n"
+    "3. 如果问题涉及实时信息、数据查询或需要查阅资料，使用 search 联网搜索，"
+    "通过 read_page 读取有价值的页面获取详细信息\n"
+    "4. 使用 run_python 执行代码生成文件，使用 write_file 保存文件到沙箱\n"
+    "5. 最后调用 submit_solution 提交完整解答\n\n"
+    "文件路径规则（重要）：\n"
+    "- write_file / run_python 生成的文件默认在临时目录（通过 get_chat_context 获取路径）\n"
+    "- 临时目录的文件会被定期自动清理，不要依赖其长期存在\n"
+    "- 除非文件是需要长期复用的工具/文档/资源（如通用脚本、参考文档），否则一律放入临时目录\n"
+    "- 提交解答时说明生成的文件路径，主Agent将通过 sandbox_manager 工具读取和发送\n\n"
+    "搜索使用提示：\n"
+    "- 遇到不确定的知识点、最新信息、需要引用的数据时，主动搜索\n"
+    '- search 支持 mode 参数进行多角度搜索，如 mode="encyclopedia" 查百科类信息\n'
+    "- 搜索后先浏览摘要，只对有价值的结果使用 read_page 读取全文\n"
+    "- 每次解题任务开始时搜索会话自动重置\n\n"
+    "交互规则：\n"
+    "- 如果缺少关键信息无法解答，通过 submit_solution 返回说明，指出缺失什么信息\n"
+    "- 如果问题不属于你的能力范围，直接声明无法处理"
+)
 
 
 def build_problem_solver_toolset(
@@ -1170,9 +1183,14 @@ class ProblemSolverAgent:
         peer_descriptions: str = "",
         sandbox_service: Any = None,
         vision_provider: Any = None,
+        prompt_store: Any = None,
     ) -> None:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
+        if prompt_store is not None:
+            desc = prompt_store.get("problem_solver", "description", default="")
+            if desc:
+                self.description = desc
         self._manager = manager
         self._toolset = build_problem_solver_toolset(
             config=cfg,
@@ -1198,7 +1216,7 @@ class ProblemSolverAgent:
             toolset=self._toolset,
             description=self.description,
             system_prompt=_build_system_prompt(
-                cfg, peer_descriptions=peer_descriptions
+                cfg, peer_descriptions=peer_descriptions, prompt_store=prompt_store
             ),
             on_model_usage=_record_usage,
             max_iterations=20,
@@ -1297,6 +1315,7 @@ def build_problem_solver_agent(
     peer_descriptions: str = "",
     sandbox_service: Any = None,
     vision_provider: Any = None,
+    prompt_store: Any = None,
 ) -> ProblemSolverAgent:
     """构建解题 Agent 并关联到 Manager。
 
@@ -1309,6 +1328,7 @@ def build_problem_solver_agent(
         peer_descriptions: 同级 sub agent 描述
         sandbox_service: 沙箱文件服务，提供 run_python/write_file/read_file/list_files 工具
         vision_provider: 视觉模型 provider，提供 parse_image 工具
+        prompt_store: 提示词存储(提示词文件来源;None 时使用内置兜底)
     """
     cfg = (
         config
@@ -1327,6 +1347,7 @@ def build_problem_solver_agent(
         peer_descriptions=peer_descriptions,
         sandbox_service=sandbox_service,
         vision_provider=vision_provider,
+        prompt_store=prompt_store,
     )
     if manager is not None:
         manager.set_agent(agent)

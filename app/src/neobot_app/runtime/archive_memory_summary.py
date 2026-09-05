@@ -331,6 +331,24 @@ class ArchiveMemoryAutoSummaryService:
     def _counter_key(conversation_kind: str, conversation_id: str) -> str:
         return f"{conversation_kind}:{conversation_id}"
 
+    def _summary_limits(self) -> tuple[int, int]:
+        """返回 (个人 summary 上限, 群聊 summary 上限)。"""
+        archive = getattr(
+            getattr(getattr(self._config, "agent", None), "memory", None),
+            "archive",
+            None,
+        )
+        user_limit = 500
+        group_limit = 1500
+        if archive is not None:
+            raw_user = getattr(archive, "max_chars", None)
+            if isinstance(raw_user, int) and raw_user > 0:
+                user_limit = raw_user
+            raw_group = getattr(archive, "group_profile_max_chars", None)
+            if isinstance(raw_group, int) and raw_group > 0:
+                group_limit = raw_group
+        return user_limit, group_limit
+
     def _build_summary_prompt(
         self,
         *,
@@ -346,40 +364,54 @@ class ArchiveMemoryAutoSummaryService:
         )
         recent = "\n".join(f"- {_format_counter_message(message)}" for message in messages)
 
+        user_limit, group_limit = self._summary_limits()
         if conversation_kind == "group":
-            profile_instruction = (
-                f"\nUse archive_crud__read_archive to read the current 'group_profile' "
-                f"(key='{conversation_id}'), then use archive_crud__save_archive to update it "
-                f"with stable facts you've learned from the recent messages: group interests, "
-                f"atmosphere, inside jokes, common topics, member dynamics, group norms, "
-                f"recurring events, etc. Merge new findings into the existing profile. "
-                f"Keep it compact and factual.\n"
-            )
-            favorability_instruction = (
-                f"\nFor each active speaker in the recent messages, evaluate their behavior "
-                f"(attitude, interaction quality, cooperativeness, etc.) and use "
-                f"favorability__update_favorability to adjust their favorability. "
-                f"Positive behavior increases favorability, negative behavior decreases it. "
-                f"Each change must be within ±{self._favorability_max_change}. "
-                f"Only adjust for users who clearly showed notable behavior worth recording.\n"
+            summary_table = "group_summary"
+            full_table = "group_profile"
+            summary_limit = group_limit
+            content_scope = (
+                "the group's stable traits: members, atmosphere, inside jokes, "
+                "common topics, group norms, recurring events"
             )
         else:
-            profile_instruction = (
-                f"\nUse archive_crud__read_archive to read the current 'user_profile' "
-                f"(key='{conversation_id}'), then use archive_crud__save_archive to update it "
-                f"with stable facts you've learned from the recent messages: their preferences, "
-                f"interests, hobbies, personality traits, important life events, relationships, "
-                f"recurring concerns, etc. Merge new findings into the existing profile. "
-                f"Keep it compact and factual.\n"
+            summary_table = "user_summary"
+            full_table = "user_profile"
+            summary_limit = user_limit
+            content_scope = (
+                "the user's stable traits: preferences, interests, hobbies, personality, "
+                "important life events, relationships, recurring concerns"
             )
-            favorability_instruction = (
-                f"\nEvaluate the user's behavior in the recent messages (attitude, interaction "
-                f"quality, cooperativeness, etc.) and use favorability__update_favorability "
-                f"(user_id='{conversation_id}') to adjust their favorability. "
-                f"Positive behavior increases favorability, negative behavior decreases it. "
-                f"Change must be within ±{self._favorability_max_change}. "
-                f"Only adjust if the user clearly showed notable behavior worth recording.\n"
-            )
+
+        profile_instruction = (
+            f"\nMaintain TWO archive records for this {kind_label}:\n"
+            f"1. '{summary_table}' (key='{conversation_id}') — the strict-length summary.\n"
+            f"   Structure: write an OVERALL summary of {content_scope} FIRST at the very top, "
+            f"then summarize the recent content item by item (chronological order).\n"
+            f"   HARD LIMIT: {summary_limit} characters. If the existing summary is already "
+            f"at/near the limit, REWRITE and compress it with save_archive "
+            f"(merge into a tighter overall summary + chronological digest), "
+            f"NEVER append beyond the limit.\n"
+            f"2. '{full_table}' (key='{conversation_id}') — the full memory archive. "
+            f"Append/merge new stable facts completely; keep it unabridged (no truncation).\n"
+            f"Read both first with read_archive (if long, use offset pagination: "
+            f"negative offset reads from the tail, newer content is later), "
+            f"then update both with save_archive.\n"
+        )
+        favorability_instruction = (
+            f"\nFor each active speaker in the recent messages, evaluate their behavior "
+            f"(attitude, interaction quality, cooperativeness, etc.) and use "
+            f"favorability__update_favorability to adjust their favorability. "
+            f"Positive behavior increases favorability, negative behavior decreases it. "
+            f"Each change must be within ±{self._favorability_max_change}. "
+            f"Only adjust for users who clearly showed notable behavior worth recording.\n"
+        ) if conversation_kind == "group" else (
+            f"\nEvaluate the user's behavior in the recent messages (attitude, interaction "
+            f"quality, cooperativeness, etc.) and use favorability__update_favorability "
+            f"(user_id='{conversation_id}') to adjust their favorability. "
+            f"Positive behavior increases favorability, negative behavior decreases it. "
+            f"Change must be within ±{self._favorability_max_change}. "
+            f"Only adjust if the user clearly showed notable behavior worth recording.\n"
+        )
 
         item_instruction = ""
         if self._item_archive_enabled:

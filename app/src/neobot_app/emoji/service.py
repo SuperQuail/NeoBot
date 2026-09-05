@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -70,6 +71,12 @@ class EmojiService:
         self._refresh_task: asyncio.Task[None] | None = None
         self._adapter = adapter
         self._file_server = file_server
+        # 外部直接修改 emoji 目录(手动放置/文件操作 agent 写入)的即时感知:
+        # 读取入口检测目录快照变化 → 同步快速合并新文件 + 后台全量刷新
+        self._last_dir_snapshot: tuple[tuple[str, ...], int] | None = None
+        self._disk_sync_lock = threading.Lock()
+        self._disk_refresh_task: asyncio.Task[None] | None = None
+        self._scan_lock = asyncio.Lock()
 
     def bind_send_dependencies(self, adapter: Any, file_server: Any) -> None:
         """注入发送能力（适配器与文件服务器），供 send_sticker 使用。"""
@@ -78,6 +85,7 @@ class EmojiService:
 
     @property
     def emoji_count(self) -> int:
+        self._notify_disk_changed()
         return len(self._entries)
 
     @property
@@ -85,10 +93,12 @@ class EmojiService:
         return self._page_size
 
     def get_entry(self, number: int) -> EmojiEntry | None:
+        self._notify_disk_changed()
         return self._entries.get(number)
 
     def list_entries(self) -> list[tuple[int, EmojiEntry]]:
         """返回所有表情包，按使用次数从少到多排列。"""
+        self._notify_disk_changed()
         sorted_entries = sorted(self._entries.items(), key=lambda item: item[1].use_count)
         return sorted_entries
 
@@ -101,6 +111,7 @@ class EmojiService:
 
         Returns (items, total, has_more)
         """
+        self._notify_disk_changed()
         limit = limit if limit is not None else self._page_size
         sorted_entries = sorted(self._entries.items(), key=lambda item: item[1].use_count)
         total = len(sorted_entries)
@@ -110,6 +121,7 @@ class EmojiService:
 
     def search_entries(self, keyword: str, limit: int | None = None) -> list[tuple[int, EmojiEntry]]:
         """搜索表情包描述和文件名，按使用次数从少到多排列。"""
+        self._notify_disk_changed()
         limit = limit if limit is not None else self._page_size
         kw = keyword.lower()
         matches: list[tuple[int, EmojiEntry]] = []
@@ -128,6 +140,7 @@ class EmojiService:
 
         格式为 [编号]: [表情包：描述 | 已用N次]
         """
+        self._notify_disk_changed()
         if not self._entries:
             return ""
         limit = limit if limit is not None else self._page_size
@@ -144,9 +157,9 @@ class EmojiService:
         if total > limit:
             header += f"，当前显示第{offset + 1}-{min(offset + limit, total)}个"
             if offset > 0:
-                header += f"，往前翻页使用 offset={max(0, offset - limit)}"
+                header += f"，往前翻页: emoji_list(offset={max(0, offset - limit)})"
             if offset + limit < total:
-                header += f"，往后翻页使用 offset={offset + limit}"
+                header += f"，往后翻页: emoji_list(offset={offset + limit})"
         return header + "\n" + "\n".join(lines)
 
     async def send_sticker(
@@ -221,6 +234,8 @@ class EmojiService:
         """启动时扫描表情包文件夹"""
         self._emoji_dir.mkdir(parents=True, exist_ok=True)
         await self._scan_folder()
+        with self._disk_sync_lock:
+            self._last_dir_snapshot = self._dir_snapshot()
         self._refresh_task = asyncio.create_task(self._refresh_loop())
 
     async def stop(self) -> None:
@@ -231,6 +246,23 @@ class EmojiService:
             except asyncio.CancelledError:
                 pass
             self._refresh_task = None
+        if self._disk_refresh_task is not None:
+            task = self._disk_refresh_task
+            if not task.done():
+                # 优先等待即时刷新完成(DB 操作正常收尾),避免取消进行中的
+                # aiosqlite 查询导致 worker 线程在事件循环关闭后回调报错
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            self._disk_refresh_task = None
+        # 停止后置空快照:迟到读取只记录基线,不再触发新的后台刷新
+        with self._disk_sync_lock:
+            self._last_dir_snapshot = None
 
     async def add_image_bytes(
         self,
@@ -432,12 +464,16 @@ class EmojiService:
         """扫描表情包文件夹，并同步 txt、数据库与视觉解析结果。"""
         if not self._emoji_dir.exists():
             self._logger.warning(f"表情包目录不存在: {self._emoji_dir}")
+            with self._disk_sync_lock:
+                self._last_dir_snapshot = self._dir_snapshot()
             return
 
         image_files = self._list_image_files()
         if not image_files:
             self._logger.info("表情包目录为空")
             self._entries.clear()
+            with self._disk_sync_lock:
+                self._last_dir_snapshot = self._dir_snapshot()
             await self._cleanup_stale_emoji_records({})
             return
 
@@ -560,6 +596,8 @@ class EmojiService:
             use_counts,
             records_by_hash,
         )
+        with self._disk_sync_lock:
+            self._last_dir_snapshot = self._dir_snapshot()
         await self._cleanup_stale_emoji_records(hash_to_path)
 
     async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
@@ -756,11 +794,102 @@ class EmojiService:
             try:
                 await asyncio.sleep(self._REFRESH_INTERVAL_SECONDS)
                 self._logger.debug("开始定时刷新表情包")
-                await self._scan_folder()
+                await self._scan_safe()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._logger.error(f"表情包定时刷新失败: {exc}")
+
+    async def _scan_safe(self) -> None:
+        """带互斥的扫描(定时刷新与即时刷新不并发执行,避免重复解析/重复清理)。"""
+        async with self._scan_lock:
+            await self._scan_folder()
+
+    # ── 外部目录变化的即时感知(手动放文件/文件操作 agent 写入等) ──
+
+    def _dir_snapshot(self) -> tuple[tuple[str, ...], int]:
+        """当前目录快照:文件名列表 + 目录 mtime(廉价,每次读取调用)。"""
+        try:
+            files = tuple(
+                sorted(p.name for p in self._emoji_dir.iterdir() if p.is_file())
+            )
+        except OSError:
+            files = ()
+        try:
+            mtime = self._emoji_dir.stat().st_mtime_ns
+        except OSError:
+            mtime = -1
+        return files, mtime
+
+    def _notify_disk_changed(self) -> None:
+        """读取入口调用:检测 emoji 目录是否被外部直接修改。
+
+        背景:add_image_bytes/delete_entry 等写操作内部都会刷新索引,
+        但手动放置文件、文件操作 agent 直接写入目录等路径不经过本服务,
+        此前只能等待 300 秒定时刷新,导致 agent 添加表情包后看不到新列表。
+        这里在读取时检测目录变化,变化则:
+        1. 同步把新文件合并进索引(立即可见,不等视觉解析/数据库);
+        2. 安排后台全量刷新修正 use_count/描述/清理。
+        """
+        snapshot = self._dir_snapshot()
+        with self._disk_sync_lock:
+            if self._last_dir_snapshot is None:
+                # 服务未 start()(未完成初始扫描):只记录基线,不触发刷新,
+                # 避免在未初始化场景下启动后台数据库任务
+                self._last_dir_snapshot = snapshot
+                return
+            if snapshot == self._last_dir_snapshot:
+                return
+            self._last_dir_snapshot = snapshot
+            self._merge_disk_entries_fast()
+        self._schedule_disk_refresh()
+
+    def _merge_disk_entries_fast(self) -> None:
+        """同步快速合并:磁盘新文件立即进入索引。
+
+        描述取 txt 侧文件,否则标 [待解析];use_count 用旧条目值或 0;
+        精确数据由后台 _scan_folder 修正(编号经 _rebuild_mapping 保留)。
+        """
+        known = {entry.file_path for entry in self._entries.values()}
+        for path in self._list_image_files():
+            if path in known:
+                continue
+            text = _read_sidecar_text(path) or "[待解析]"
+            try:
+                prepared = prepare_local_image(path)
+                file_hash = prepared.file_hash
+            except Exception:
+                file_hash = ""
+            number = self._next_number
+            self._next_number += 1
+            self._entries[number] = EmojiEntry(
+                file_name=path.name,
+                file_path=path,
+                analysis_text=text,
+                file_hash=file_hash,
+                use_count=0,
+                image_source=None,
+            )
+            self._logger.info(
+                f"检测到表情包目录新增文件,已即时加入列表: {path.name} (#{number})"
+            )
+
+    def _schedule_disk_refresh(self) -> None:
+        """安排一次后台全量刷新(不等待视觉解析,避免阻塞读取)。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._disk_refresh_task is None or self._disk_refresh_task.done():
+            self._disk_refresh_task = loop.create_task(self._disk_refresh_guard())
+
+    async def _disk_refresh_guard(self) -> None:
+        try:
+            await self._scan_safe()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._logger.error(f"表情包即时刷新失败: {exc}")
 
 
 def _detect_image_suffix(image_bytes: bytes) -> str:

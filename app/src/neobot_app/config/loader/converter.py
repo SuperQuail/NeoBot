@@ -160,7 +160,11 @@ def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
     # 类型转换
     try:
         if expected_type is int and isinstance(value, (int, float, str)):
-            converted = int(value)
+            try:
+                converted = int(value)
+            except (OverflowError, ValueError):
+                # inf/nan 或超范围浮点不能转 int,按转换失败处理
+                return False, value
             if isinstance(value, float) and abs(converted - value) > 0.0001:
                 logger.warning(f"浮点数 {value} 转换为整数 {converted} 可能丢失精度")
             return True, converted

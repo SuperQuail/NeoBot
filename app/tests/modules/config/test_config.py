@@ -319,3 +319,36 @@ def test_load_invalid_type_value_falls_back_to_default_and_rewrites(monkeypatch,
     assert config_obj.bot.account == 0
     doc = tomlkit.parse(cfg_path.read_text(encoding="utf-8")).unwrap()
     assert doc["bot"]["account"] == 0
+
+
+def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
+    """迁移必须在 Config.load 时注册并生效(0.3.0 -> 0.4.0 清理提示词键),防止迁移成为死代码。"""
+    # Arrange
+    _clear_platform_env(monkeypatch)
+    for key, value in _DEEPSEEK_KEYS.items():
+        monkeypatch.setenv(key, value)
+    cfg_path = tmp_path / "bot.toml"
+    cfg_path.write_text(
+        'version = "0.3.0"\n'
+        "[bot]\naccount = 10001\n\n"
+        "[chat]\n"
+        'group_prompt_template = "旧群聊模板"\n'
+        'friend_prompt_template = "旧私聊模板"\n'
+        'long_reply_fallback_template = "旧兜底"\n'
+        'group_chat_resume_prompt_template = "旧恢复"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "neobot_app.config.loader.manager.backup_config", lambda *a, **k: None
+    )
+
+    # Act
+    config_obj = Config.load(cfg_path, BotConfig)
+
+    # Assert
+    assert config_obj.version == "0.4.0"
+    assert not hasattr(config_obj.chat, "group_prompt_template")
+    assert config_obj.bot.bot_data, "bot_data 必须保留"
+    raw = cfg_path.read_text(encoding="utf-8")
+    assert "group_prompt_template" not in raw
+    assert 'version = "0.4.0"' in raw

@@ -250,7 +250,9 @@ if TYPE_CHECKING:
     from neobot_app.observability.debug import DebugRecorder
     from neobot_app.message.numbering import MessageNumbering
     from neobot_app.message.queue import MessageQueue
+    from neobot_app.cache import CacheCalculator
     from neobot_app.prompt.builder import PromptBuilder
+    from neobot_app.prompt.store import PromptStore
     from neobot_app.willing.models import WillingDecision
     from neobot_app.willing.service import WillingService
     from neobot_app.image import ImageParseService
@@ -273,6 +275,7 @@ class ReplyOrchestrator:
         tts_service: Any = None,
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
+        context_recorder: Any = None,
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
@@ -285,9 +288,17 @@ class ReplyOrchestrator:
         runtime_events: Any = None,
         file_server: FileServer | None = None,
         skills_registry: Any = None,
+        prompt_store: PromptStore | None = None,
+        cache_calculator: CacheCalculator | None = None,
+        credential_manager: Any = None,
+        config_update_callback: Any = None,
+        sleep_service: Any = None,
     ) -> None:
         self._adapter = adapter
+        self._sleep_service = sleep_service
         self._prompt_builder = prompt_builder
+        self._prompt_store = prompt_store
+        self._cache_calculator = cache_calculator
         self._provider = provider
         self._group_queue = group_message_queue
         self._friend_queue = friend_message_queue
@@ -300,6 +311,7 @@ class ReplyOrchestrator:
             provider_error_message or "当前主回复模型不可用，请检查模型配置"
         )
         self._debug_recorder = debug_recorder
+        self._context_recorder = context_recorder
         self._logger = logger or NullLogger()
         self._drawing_manager = drawing_manager
         self._scheduled_task_manager = scheduled_task_manager
@@ -311,6 +323,8 @@ class ReplyOrchestrator:
         self._balance_checker = balance_checker
         self._runtime_events = runtime_events
         self._file_server = file_server
+        self._credential_manager = credential_manager
+        self._config_update_callback = config_update_callback
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._tool_executors: set[Any] = set()
@@ -866,14 +880,130 @@ class ReplyOrchestrator:
         value = getattr(bot, "nick_name", "Bot")
         return value.strip() if isinstance(value, str) and value.strip() else "Bot"
 
-    def _get_long_reply_fallback_template(self) -> str:
+    def _get_bot_account(self) -> int:
         if self._config is None:
-            return "{bot_name}懒得和你说道理，你不配听"
+            return 0
+        bot = getattr(self._config, "bot", None)
+        value = getattr(bot, "account", 0) or 0
+        return value
+
+    def _show_boundary_markers(self) -> bool:
+        if self._config is None:
+            return False
         chat = getattr(self._config, "chat", None)
-        value = getattr(chat, "long_reply_fallback_template", "")
-        if isinstance(value, str) and value.strip():
-            return value
-        return "{bot_name}懒得和你说道理，你不配听"
+        return bool(getattr(chat, "show_last_reply_markers", False))
+
+    # ── 成本计算管线(字符级缓存命中计算) ──
+
+    def _cost_pipeline_enabled(self) -> bool:
+        if self._config is None:
+            return False
+        chat = getattr(self._config, "chat", None)
+        return bool(getattr(chat, "cost_pipeline_enabled", True)) and self._cache_calculator is not None
+
+    def _get_cost_pipeline_threshold(self) -> int:
+        if self._config is not None:
+            chat = getattr(self._config, "chat", None)
+            val = getattr(chat, "cost_pipeline_threshold", None)
+            if isinstance(val, int) and val >= 0:
+                return val
+        return 20
+
+    def _provider_cache_key(self) -> str:
+        if self._provider is not None:
+            model = getattr(self._provider, "model", None)
+            if model:
+                return str(model)
+        return "chat"
+
+    def _record_cache_request(self, messages: list[dict], response: dict) -> None:
+        """记录一次聊天管线模型调用(构建缓存前缀单元)。
+
+        仅聊天管线接入;记忆总结/子Agent/非聊天模型不调用本方法。
+        成本管线关闭时不启用,不占用性能。
+        """
+        if not self._cost_pipeline_enabled():
+            return
+        calculator = self._cache_calculator
+        if calculator is None:
+            return
+        try:
+            from neobot_app.cache import serialize_messages, serialize_response_text
+
+            calculator.record(
+                self._provider_cache_key(),
+                serialize_messages(messages),
+                serialize_response_text(response),
+            )
+        except Exception:
+            self._logger.debug(
+                "缓存计算记录失败(忽略)", exc_info=True,
+            )
+
+    def _cache_continue_cheaper_than_restart(
+        self,
+        messages: list[dict],
+        system_prompt: str = "",
+        queue: MessageQueue | None = None,
+        queue_key: str = "",
+        numbering: Any = None,
+    ) -> bool:
+        """成本续用决策:计算缓存命中后的继续成本是否低于重启管线的输入成本。
+
+        - 继续成本:当前消息列表按缓存命中计价(命中前缀部分按 1/差价)
+        - 重启成本:重新构建的 [system + 角色消息] 全量输入按未命中计价
+          (即"重启一个聊天管线的输入成本")
+        - 存在有效命中时继续更便宜才续用
+        """
+        if not self._cost_pipeline_enabled():
+            return False
+        calculator = self._cache_calculator
+        if calculator is None:
+            return False
+        try:
+            from neobot_app.cache import serialize_messages
+
+            continue_text = serialize_messages(messages)
+            if not continue_text:
+                return False
+            continue_estimate = calculator.estimate_cost(
+                self._provider_cache_key(), continue_text
+            )
+            # 前置:必须存在有效缓存命中(否则"继续更便宜"无从谈起,
+            # 纯长度比较会受消息渲染差异干扰)
+            if not continue_estimate.cheaper_than_full_miss():
+                return False
+            continue_cost = continue_estimate.cost
+
+            # 重启管线的输入:system + 从队列重新构建的角色消息
+            restart_text = continue_text
+            if system_prompt and queue is not None and queue_key:
+                from neobot_app.prompt.role_messages import build_role_messages
+
+                fresh_roles = build_role_messages(
+                    queue,
+                    queue_key,
+                    numbering=numbering,
+                    bot_account=self._get_bot_account(),
+                    include_boundary_markers=self._show_boundary_markers(),
+                )
+                restart_text = serialize_messages(
+                    [{"role": "system", "content": system_prompt}] + fresh_roles
+                )
+            if not restart_text:
+                return False
+            restart_cost = float(len(restart_text))
+            return continue_cost < restart_cost
+        except Exception:
+            return False
+
+    def _get_long_reply_fallback_template(self) -> str:
+        default = "{bot_name}懒得和你说道理，你不配听"
+        if self._prompt_store is not None:
+            value = self._prompt_store.template("long_reply_fallback", default=default)
+            if value and value.strip():
+                return value
+        return default
 
     def _get_long_reply_max_length(self) -> int:
         if self._config is None:
@@ -919,6 +1049,88 @@ class ReplyOrchestrator:
 
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         self._debug_helper.record(stage, event, **extra)
+
+    async def _record_context(
+        self,
+        event: ReplyEvent,
+        messages: list[dict],
+        *,
+        iteration: int,
+        stage: str,
+        response: dict | None = None,
+    ) -> None:
+        """记录一轮模型调用的完整上下文与输出(debug 模式,滚动保留最近 100 轮)。
+
+        用于事后分析 token 构成:每轮迭代/每次模型调用一个文件,
+        内容为发送给模型的完整 messages(含 system prompt)、模型输出(response)
+        以及数据包中的 usage/缓存命中率。
+        """
+        recorder = self._context_recorder
+        if recorder is None:
+            return
+        try:
+            total_chars = 0
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if content is not None:
+                    total_chars += len(str(content))
+
+            # 模型输出与 usage(与 usage tracker 同一来源:extensions.usage)
+            output_text = ""
+            usage: dict | None = None
+            if isinstance(response, dict):
+                output_content = response.get("content")
+                if output_content is not None:
+                    output_text = str(output_content)
+                extensions = response.get("extensions")
+                if isinstance(extensions, dict):
+                    candidate = extensions.get("usage")
+                    if isinstance(candidate, dict):
+                        usage = candidate
+            cache_hit_rate: float | None = None
+            if usage is not None:
+                hit = usage.get("cache_hit_tokens", 0) or 0
+                miss = usage.get("cache_miss_tokens", 0) or 0
+                total = hit + miss
+                if total > 0:
+                    cache_hit_rate = round(hit / total, 4)
+
+            conv_ref = event.conversation_ref
+            from datetime import datetime, timezone
+
+            payload = {
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "stage": stage,
+                "event_id": event.event_id,
+                "mode": event.mode,
+                "conversation_kind": getattr(conv_ref, "kind", "") if conv_ref else "",
+                "conversation_id": getattr(conv_ref, "id", "") if conv_ref else "",
+                "iteration": iteration,
+                "messages_count": len(messages),
+                "total_chars": total_chars,
+                "estimated_tokens": self._estimate_tokens(messages),
+                "output_chars": len(output_text),
+                "output_estimated_tokens": int(len(output_text) / 0.75),
+                "usage": usage,
+                "cache_hit_tokens": (
+                    usage.get("cache_hit_tokens", 0) if usage else None
+                ),
+                "cache_miss_tokens": (
+                    usage.get("cache_miss_tokens", 0) if usage else None
+                ),
+                "cache_hit_rate": cache_hit_rate,
+                "messages": messages,
+                "response": response,
+            }
+            await asyncio.to_thread(recorder.record_context, payload)
+        except Exception as exc:
+            self._logger.debug(
+                "聊天上下文记录失败",
+                event_id=event.event_id,
+                error=str(exc),
+            )
 
     async def _emit_runtime_event(
         self, stage: str, event: ReplyEvent, **payload: object
@@ -1043,6 +1255,13 @@ class ReplyOrchestrator:
         await self._maybe_trigger_sticker(queue, queue_key, event)
 
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
+        role_messages = await self._build_role_messages(
+            event,
+            queue,
+            queue_key,
+            last_reply_message_id=last_reply_message_id,
+            all_new=all_new,
+        )
         prompt = await self._build_prompt(
             event,
             queue,
@@ -1057,7 +1276,7 @@ class ReplyOrchestrator:
         # pre-reply hooks：可短路跳过 AI 生成
         reply_text = await self._apply_pre_reply_hooks(event)
         if reply_text is None:
-            reply_text = await self._generate_reply(event, prompt)
+            reply_text = await self._generate_reply(event, prompt, role_messages)
 
         self._record_debug(
             "reply_generated", event, queue_key=queue_key, reply_text=reply_text
@@ -1271,8 +1490,17 @@ class ReplyOrchestrator:
         # 1. 克隆消息队列
         queue_copy = queue.clone(queue_key)
 
-        # 2. 构建 prompt（带编号）
+        # 2. 构建角色消息(聊天记录拆分为真实 user/assistant 消息,先于 system
+        #    构建以填充消息编号映射)与 system 提示词(不含聊天记录)
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
+        role_messages = await self._build_role_messages(
+            event,
+            queue_copy,
+            queue_key,
+            numbering=numbering,
+            last_reply_message_id=last_reply_message_id,
+            all_new=all_new,
+        )
         prompt = await self._build_prompt(
             event,
             queue_copy,
@@ -1306,20 +1534,22 @@ class ReplyOrchestrator:
                     union.update(tools)
                 allowed_tools = union
 
-        # 注入表情包列表
+        # 注入表情包列表(只注入一页的五分之一,避免占用过多上下文)
         if self._emoji_service is not None:
             emoji_page_size = (
                 getattr(getattr(self._config, "chat", None), "emoji_page_size", 50)
                 if self._config
                 else 50
             )
-            emoji_text = self._emoji_service.build_prompt_text(limit=emoji_page_size)
+            inject_limit = max(1, emoji_page_size // 5)
+            emoji_text = self._emoji_service.build_prompt_text(limit=inject_limit)
             if emoji_text:
                 emoji_total = self._emoji_service.emoji_count
                 search_hint = (
-                    f"\n当表情包数量过多（如{emoji_total}个）时可能需要搜索，"
-                    "正常情况下直接列表查看即可。可用 search_custom_emoji 按关键词搜索。"
-                    if emoji_total > emoji_page_size and allowed_tools is None
+                    f"\n当前共{emoji_total}个表情包，列表仅显示前{inject_limit}个；"
+                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索，"
+                    "或用 emoji_list 翻页查看全部。"
+                    if emoji_total > inject_limit and allowed_tools is None
                     else ""
                 )
                 prompt += (
@@ -1333,12 +1563,16 @@ class ReplyOrchestrator:
                     "</可用的表情包>"
                 )
 
-        # 注入 Skill 操作说明
+        # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
             skill_instructions = self._skill_manager.get_instructions()
             if skill_instructions:
                 prompt += (
-                    f"\n\n<Skill 操作说明>\n{skill_instructions}\n</Skill 操作说明>"
+                    "\n\n<Skill 操作说明>\n"
+                    f"{skill_instructions}\n"
+                    "需要某个技能的具体操作说明、参数细节或注意事项时,"
+                    "调用 skills__view_instructions 查看完整内容。"
+                    "\n</Skill 操作说明>"
                 )
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）
@@ -1359,9 +1593,10 @@ class ReplyOrchestrator:
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
-        # 3. 准备消息列表
+        # 3. 准备消息列表(system + 角色消息 + 后台通知)
         event.transition(ReplyState.GENERATING)
         messages: list[dict] = [{"role": "system", "content": prompt}]
+        messages.extend(role_messages)
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
@@ -1452,6 +1687,30 @@ class ReplyOrchestrator:
             await asyncio.sleep(wait_time)
             new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
             if new_entries:
+                # 睡眠拦截:睡眠中被@则唤醒并注入唤醒提示词,其余消息忽略
+                if self._sleeping():
+                    if self._entries_have_at_mention(new_entries):
+                        wake_prompt = self._wake_from_sleep() or ""
+                        self._logger.info(
+                            "睡眠中 wait 工具被@唤醒",
+                            queue_key=queue_key,
+                        )
+                        return (
+                            f"等待了 {wait_time} 秒,期间被@叫醒了。"
+                            f"{wake_prompt}"
+                        )
+                    self._logger.info(
+                        "睡眠中 wait 工具忽略新消息",
+                        queue_key=queue_key,
+                        count=len(new_entries),
+                    )
+                    return (
+                        f"等待了 {wait_time} 秒,期间收到新消息,"
+                        "但 Bot 正在睡觉,暂不处理。"
+                    )
+                # 刷新对比基准,避免多次 wait 的重复名提示基于过期快照
+                nonlocal previous_entries
+                previous_entries = queue_copy.entries(queue_key)
                 new_text = numbering.apply_new(
                     new_entries,
                     queue_copy,
@@ -1459,6 +1718,40 @@ class ReplyOrchestrator:
                     previous_entries=previous_entries,
                 )
                 if new_text:
+                    # wait 期间首次出现的群成员:档案一并注入工具结果
+                    # (登记到 rendered_user_ids 前必须真正渲染过,否则档案永远丢失)
+                    if is_group:
+                        from neobot_app.message.queue import QueueEntryType as _QET_W
+
+                        new_user_ids: list[str] = []
+                        for entry in new_entries:
+                            if (
+                                entry.kind == _QET_W.MESSAGE
+                                and entry.message is not None
+                            ):
+                                uid = getattr(entry.message, "user_id", None)
+                                if uid is not None:
+                                    uid_str = str(uid)
+                                    if uid_str not in rendered_user_ids:
+                                        rendered_user_ids.add(uid_str)
+                                        new_user_ids.append(uid_str)
+                        if new_user_ids:
+                            profile_service = getattr(
+                                self._prompt_builder, "_profile_service", None
+                            )
+                            if profile_service is not None:
+                                try:
+                                    member_profiles = (
+                                        await profile_service.render_specific_members(
+                                            new_user_ids
+                                        )
+                                    )
+                                except Exception:
+                                    member_profiles = ""
+                                if member_profiles:
+                                    new_text += (
+                                        f"\n\n[新出现的群友档案]\n{member_profiles}"
+                                    )
                     return f"等待了 {wait_time} 秒，期间收到新消息：\n{new_text}"
             return f"等待了 {wait_time} 秒，期间没有收到新消息。"
 
@@ -1593,6 +1886,13 @@ class ReplyOrchestrator:
 
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
+        current_user_id = None
+        try:
+            raw_user = getattr(event.message, "user_id", None)
+            if raw_user is not None:
+                current_user_id = int(raw_user)
+        except (TypeError, ValueError):
+            current_user_id = None
         reply_toolset = build_reply_toolset(
             send_reply_handler=send_reply_handler,
             willing_service=self._willing_service,
@@ -1616,17 +1916,20 @@ class ReplyOrchestrator:
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
+            current_user_id=current_user_id,
             skills_registry=self._markdown_skills,
             allowed_tools=allowed_tools,
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
-            ai_reply_check=self._get_ai_reply_check(),
-            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
+            ai_reply_check=self._get_ai_reply_check(),            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
             bot_name=self._get_bot_name(),
             long_reply_fallback_template=self._get_long_reply_fallback_template(),
             long_reply_max_length=self._get_long_reply_max_length(),
             long_reply_max_sentence_count=self._get_long_reply_max_sentence_count(),
             enable_ai_reply_regenerate=self._get_enable_ai_reply_regenerate(),
             logger=self._logger,
+            credential_manager=self._credential_manager,
+            config=self._config,
+            config_update_callback=self._config_update_callback,
         )
         self._tool_executors.add(reply_toolset.executor)
 
@@ -1644,6 +1947,13 @@ class ReplyOrchestrator:
             and event.conversation_ref.kind == "group"
         )
         group_lifespan = self._get_group_chat_reply_lifespan() if is_group else 0
+        # 成本管线续用预算:基础寿命(默认5)耗尽后,若缓存命中后的继续成本
+        # 低于重启管线的输入成本,可额外续用(默认20次),总寿命不超过 5+20
+        cost_pipeline_extension_budget = (
+            self._get_cost_pipeline_threshold()
+            if is_group and group_lifespan > 0 and self._cost_pipeline_enabled()
+            else 0
+        )
 
         # 记录已渲染的群成员用户ID，用于挂起恢复时补充新成员档案
         rendered_user_ids: set[str] = set()
@@ -1752,6 +2062,16 @@ class ReplyOrchestrator:
                     )
                     return
                 reset_silent_deadline()
+
+                self._record_cache_request(messages, response)
+
+                await self._record_context(
+                    event,
+                    messages,
+                    iteration=iteration + 1,
+                    stage="agent_model_call",
+                    response=response,
+                )
 
                 usage = (response.get("extensions") or {}).get("usage")
                 if isinstance(usage, dict) and hasattr(self._provider, "model"):
@@ -2039,28 +2359,39 @@ class ReplyOrchestrator:
                     break
 
                 # 注入此期间的新消息
-                previous_entries = queue_copy.entries(queue_key)
                 new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
                 if new_entries:
-                    new_text = numbering.apply_new(
+                    from neobot_app.message.queue import QueueEntryType as _QET3
+                    from neobot_app.prompt.role_messages import (
+                        build_role_messages_from_entries,
+                    )
+
+                    new_role_messages = build_role_messages_from_entries(
                         new_entries,
                         queue_copy,
-                        context_entries=queue_copy.entries(queue_key),
-                        previous_entries=previous_entries,
+                        queue_key,
+                        numbering=numbering,
+                        bot_account=self._get_bot_account(),
+                        include_boundary_markers=self._show_boundary_markers(),
                     )
-                    if new_text:
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": f"[期间新消息]\n{new_text}",
-                            }
-                        )
+                    if new_role_messages:
+                        messages.extend(new_role_messages)
                         self._record_debug(
                             "agent_new_messages_injected",
                             event,
                             queue_key=queue_key,
-                            injected_text=new_text,
+                            injected_count=len(new_role_messages),
                         )
+                    # 登记新消息中的用户ID,避免后续挂起恢复时重复渲染其档案
+                    if is_group:
+                        for entry in new_entries:
+                            if (
+                                entry.kind == _QET3.MESSAGE
+                                and entry.message is not None
+                            ):
+                                uid = getattr(entry.message, "user_id", None)
+                                if uid is not None:
+                                    rendered_user_ids.add(str(uid))
 
             # 保存编号映射（每轮更新）
             event.message_number_map = numbering.mapping
@@ -2086,12 +2417,32 @@ class ReplyOrchestrator:
                         cancelled=cancelled,
                     )
                     if group_lifespan <= 0:
-                        self._logger.info(
-                            "群聊回复管线寿命归零，结束管线",
-                            event_id=event.event_id,
-                            queue_key=queue_key,
-                        )
-                        break
+                        # 基础寿命耗尽:成本管线续用判断(缓存命中后继续成本
+                        # 低于重启管线输入成本时,额外续用,受阈值上限约束)
+                        if cost_pipeline_extension_budget > 0 and self._cache_continue_cheaper_than_restart(
+                            messages, prompt, queue, queue_key, numbering
+                        ):
+                            cost_pipeline_extension_budget -= 1
+                            group_lifespan = 1
+                            self._logger.info(
+                                "群聊回复管线成本续用(缓存命中后继续成本低于重启管线)",
+                                event_id=event.event_id,
+                                queue_key=queue_key,
+                                remaining_extension_budget=cost_pipeline_extension_budget,
+                            )
+                            self._record_debug(
+                                "group_pipeline_cost_extended",
+                                event,
+                                queue_key=queue_key,
+                                remaining_extension_budget=cost_pipeline_extension_budget,
+                            )
+                        else:
+                            self._logger.info(
+                                "群聊回复管线寿命归零，结束管线",
+                                event_id=event.event_id,
+                                queue_key=queue_key,
+                            )
+                            break
 
                     # 群聊挂起，等待新消息或后台通知
                     self._logger.debug(
@@ -2100,8 +2451,8 @@ class ReplyOrchestrator:
                         queue_key=queue_key,
                         remaining_lifespan=group_lifespan,
                     )
-                    new_entries, notification_text = await self._suspend_group_chat(
-                        queue, queue_copy, queue_key
+                    new_entries, notification_text, wake_prompt = (
+                        await self._suspend_group_chat(queue, queue_copy, queue_key)
                     )
                     if not new_entries and not notification_text:
                         self._logger.debug(
@@ -2126,9 +2477,20 @@ class ReplyOrchestrator:
                             notification=notification_text[:200],
                         )
 
-                    # 构建增量提示并注入（仅新消息+新成员档案）
+                    # 注入睡眠唤醒提示词(挂起期间被@唤醒)
+                    if wake_prompt:
+                        messages.append(
+                            {"role": "user", "content": f"[系统状态]{wake_prompt}"}
+                        )
+                        self._logger.info(
+                            "注入睡眠唤醒提示词(挂起期间被@唤醒)",
+                            event_id=event.event_id,
+                            queue_key=queue_key,
+                        )
+
+                    # 构建增量提示并注入（角色消息 + 新成员档案说明）
                     if new_entries:
-                        resume_content = await self._build_group_chat_resume_content(
+                        resume_messages = await self._build_group_chat_resume_messages(
                             new_entries,
                             queue_key,
                             rendered_user_ids,
@@ -2146,13 +2508,20 @@ class ReplyOrchestrator:
                                 uid = getattr(entry.message, "user_id", None)
                                 if uid is not None:
                                     rendered_user_ids.add(str(uid))
-                        if resume_content:
-                            messages.append({"role": "user", "content": resume_content})
+                        for resume_message in resume_messages:
+                            messages.append(resume_message)
+                        if resume_messages:
                             self._record_debug(
                                 "group_chat_resume_content_injected",
                                 event,
                                 queue_key=queue_key,
-                                injected_text=resume_content,
+                                injected_messages=[
+                                    {
+                                        "role": m.get("role"),
+                                        "content": (m.get("content") or "")[:200],
+                                    }
+                                    for m in resume_messages
+                                ],
                             )
 
                     # 重置静默超时计时器，避免挂起耗时触发超时保护
@@ -2211,31 +2580,27 @@ class ReplyOrchestrator:
                     notification=notification_text[:200],
                 )
 
-            # 注入新消息，继续下一轮 agent 循环
+            # 注入新消息(按发送者拆分为角色消息),继续下一轮 agent 循环
             if new_entries:
-                new_text = numbering.apply_new(
+                from neobot_app.prompt.role_messages import (
+                    build_role_messages_from_entries,
+                )
+
+                new_role_messages = build_role_messages_from_entries(
                     new_entries,
                     queue_copy,
-                    context_entries=queue_copy.entries(queue_key),
-                    previous_entries=[],
+                    queue_key,
+                    numbering=numbering,
+                    bot_account=self._get_bot_account(),
+                    include_boundary_markers=self._show_boundary_markers(),
                 )
-                if new_text:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"[收到新消息]\n{new_text}\n\n"
-                                "这是私聊对话。如果对方话没有说完或可能还有更多内容，"
-                                "请使用 wait 等待更多消息，不要直接结束对话。"
-                                "如果对话已自然结束或对方明确表示结束，可以不再回复。"
-                            ),
-                        }
-                    )
+                if new_role_messages:
+                    messages.extend(new_role_messages)
                     self._record_debug(
                         "private_chat_new_messages_injected",
                         event,
                         queue_key=queue_key,
-                        injected_text=new_text,
+                        injected_count=len(new_role_messages),
                     )
 
         if event.state == ReplyState.GENERATING and not event.is_terminal:
@@ -2243,6 +2608,34 @@ class ReplyOrchestrator:
                 event.transition(ReplyState.COMPLETED)
             except RuntimeError:
                 pass
+
+    # ── 睡眠拦截(挂起循环 / wait 工具共用) ──
+
+    def _sleeping(self) -> bool:
+        """是否处于睡眠中(群聊不触发回复;私聊不睡眠)。"""
+        service = getattr(self, "_sleep_service", None)
+        return service is not None and service.is_sleeping()
+
+    def _wake_from_sleep(self) -> str | None:
+        """结束睡眠并返回唤醒提示词;未在睡眠时返回 None。"""
+        service = getattr(self, "_sleep_service", None)
+        if service is None or not service.is_sleeping():
+            return None
+        service.wake(reason="at_mention_pipeline")
+        return service.wake_prompt()
+
+    def _entries_have_at_mention(self, entries: list) -> bool:
+        """检查条目列表中是否有 @bot 消息(与事件入口语义一致)。"""
+        from neobot_app.message.queue import QueueEntryType as _QET
+
+        if self._willing_service is None:
+            return False
+        for entry in entries:
+            if entry.kind != _QET.MESSAGE or entry.message is None:
+                continue
+            if self._willing_service.is_at_mentioned(entry.message):
+                return True
+        return False
 
     def _collect_new_entries(
         self,
@@ -2255,6 +2648,8 @@ class ReplyOrchestrator:
         使用指纹集合比对，而非位置分割：
         - 指纹在 snapshot 中已存在 → 不是新条目（即使推送顺序与 message_id 顺序不一致）
         - 指纹不在 snapshot 中 → 新条目（支持队列驱逐后的安全回退）
+        - 已被命令系统消费的消息（mark_command_consumed）不返回，但仍加入快照，
+          避免挂起循环反复拾取；命令回复已由事件入口发出，挂起管线不应再回复
         """
         from neobot_app.message.queue import QueueEntryType
 
@@ -2273,18 +2668,35 @@ class ReplyOrchestrator:
 
         # 在 source 中找出指纹不在 snapshot 中的新条目
         new_entries: list = []
+        skipped_consumed: list = []
         for entry in source_entries:
             fp = entry_fingerprint(entry)
             if fp and fp in snapshot_fingerprints:
                 continue  # 已存在于快照中
+            # 命令系统已消费的消息：跳过注入（仍加入快照，避免反复收集）
+            if (
+                entry.kind == QueueEntryType.MESSAGE
+                and entry.message is not None
+                and source.is_command_consumed(queue_key, entry.message.message_id)
+            ):
+                skipped_consumed.append(entry)
+                self._logger.debug(
+                    "挂起管线跳过命令已消费消息",
+                    queue_key=queue_key,
+                    message_id=entry.message.message_id,
+                )
+                continue
             new_entries.append(entry)
 
-        snapshot.append_entries(queue_key, new_entries)
+        snapshot.append_entries(queue_key, new_entries + skipped_consumed)
 
+        # 返回全部可渲染的新条目:消息 + 表情回应/戳一戳/撤回(时间戳除外)。
+        # 全量构建(role_messages)会渲染这些非消息条目,增量注入必须保持一致,
+        # 否则挂起/等待期间到达的回应/戳一戳/撤回会对模型"凭空消失"。
         return [
             entry
             for entry in new_entries
-            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
+            if entry.kind != QueueEntryType.TIMESTAMP
         ]
 
     def _consume_ai_reply_blocked_entries(self, entries: list) -> list:
@@ -2509,14 +2921,16 @@ class ReplyOrchestrator:
         source: MessageQueue,
         snapshot: MessageQueue,
         queue_key: str,
-    ) -> tuple[list, str | None]:
+    ) -> tuple[list, str | None, str | None]:
         """挂起等待群聊新消息或后台通知。
 
         新消息需通过回复意愿判断（@提及或概率命中）才结束挂起。
         - @提及：等待 at_mention_reply_delay_seconds 收集上下文后结束挂起
         - 普通意愿命中：立即结束挂起
         - 后台通知：立即中断挂起
-        返回 (新消息条目列表, 通知文本或None)；返回空列表且无通知表示超时。
+        - 睡眠中：非@消息忽略（不触发回复），@提及唤醒并注入唤醒提示词
+        返回 (新消息条目列表, 通知文本或None, 唤醒提示词或None)；
+        返回空列表且无通知表示超时。
         """
         from neobot_app.message.queue import QueueEntryType as _QET
 
@@ -2525,6 +2939,7 @@ class ReplyOrchestrator:
         deadline = monotonic_seconds() + suspend_secs
         all_new_entries: list = []
         notification_text: str | None = None
+        wake_prompt: str | None = None
         has_willing = False
         at_mention_deadline = 0.0
 
@@ -2578,6 +2993,25 @@ class ReplyOrchestrator:
             if current_new:
                 current_new = self._consume_ai_reply_blocked_entries(current_new)
             if current_new:
+                # 睡眠拦截:睡眠中非@消息忽略(已入快照,不会反复拾取),
+                # @提及唤醒并注入唤醒提示词,与事件入口语义一致
+                if self._sleeping():
+                    if not _has_at_mention(current_new):
+                        self._logger.info(
+                            "睡眠中,挂起管线忽略新消息",
+                            queue_key=queue_key,
+                            count=len(current_new),
+                        )
+                        continue
+                    wake_prompt = self._wake_from_sleep() or ""
+                    self._logger.info(
+                        "睡眠中,挂起管线被@唤醒",
+                        queue_key=queue_key,
+                    )
+                    all_new_entries.extend(current_new)
+                    has_willing = True
+                    at_mention_deadline = monotonic_seconds() + at_delay
+                    continue
                 all_new_entries.extend(current_new)
                 if not has_willing:
                     if _check_willing(current_new):
@@ -2635,11 +3069,11 @@ class ReplyOrchestrator:
 
         # 通知存在 → 总是返回（通知本身就是触发理由）
         if notification_text:
-            return all_new_entries, notification_text
+            return all_new_entries, notification_text, wake_prompt
 
         # 有意愿消息 → 返回
         if has_willing:
-            return all_new_entries, None
+            return all_new_entries, None, wake_prompt
 
         # 超时且无意愿消息 → 不触发回复
         self._logger.debug(
@@ -2647,18 +3081,23 @@ class ReplyOrchestrator:
             queue_key=queue_key,
             collected_count=len(all_new_entries),
         )
-        return [], None
+        return [], None, None
 
-    async def _build_group_chat_resume_content(
+    async def _build_group_chat_resume_messages(
         self,
         new_entries: list,
         queue_key: str,
         rendered_user_ids: set[str],
         numbering: Any,
         queue_copy: MessageQueue,
-    ) -> str:
-        """为群聊挂起恢复构建增量提示文本：仅包含新消息和新成员档案。"""
+    ) -> list[dict[str, str]]:
+        """为群聊挂起恢复构建增量消息列表。
+
+        新消息按发送者拆分为 user/assistant 角色消息;
+        新成员档案与当前时间渲染为一条 user 说明消息,附在新消息之前。
+        """
         from neobot_app.message.queue import QueueEntryType
+        from neobot_app.prompt.role_messages import build_role_messages_from_entries
 
         # 收集新消息中的用户ID
         new_user_ids: list[str] = []
@@ -2673,36 +3112,18 @@ class ReplyOrchestrator:
                         if uid_str not in rendered_user_ids:
                             new_user_ids.append(uid_str)
 
-        new_messages_text = ""
-        new_member_text = ""
-
-        # 新消息文本
-        if numbering is not None:
-            # 先回退快照以获取未包含新条目的状态
-            new_text = numbering.apply_new(
-                new_entries,
-                queue_copy,
-                context_entries=queue_copy.entries(queue_key),
-                previous_entries=[],
-            )
-            if new_text:
-                new_messages_text = f"[收到新消息]\n{new_text}"
-        else:
-            new_text_lines: list[str] = []
-            for entry in new_entries:
-                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                    text = getattr(entry.message, "raw_message", "") or str(
-                        entry.message
-                    )
-                    sender = getattr(entry.message, "sender", None)
-                    sender_name = getattr(sender, "nickname", None) or getattr(
-                        entry.message, "user_id", "?"
-                    )
-                    new_text_lines.append(f"{sender_name}: {text}")
-            if new_text_lines:
-                new_messages_text = "[收到新消息]\n" + "\n".join(new_text_lines)
+        # 新消息 -> 角色消息
+        role_messages = build_role_messages_from_entries(
+            new_entries,
+            queue_copy,
+            queue_key,
+            numbering=numbering,
+            bot_account=self._get_bot_account(),
+            include_boundary_markers=self._show_boundary_markers(),
+        )
 
         # 新成员档案
+        new_member_text = ""
         if new_user_ids and self._prompt_builder is not None:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
@@ -2712,46 +3133,49 @@ class ReplyOrchestrator:
                 if member_profiles:
                     new_member_text = f"[新出现的群友档案]\n{member_profiles}"
 
-        if not new_messages_text and not new_member_text:
-            return ""
+        resume_messages: list[dict[str, str]] = []
 
-        from neobot_app.time_context import get_current_time_and_lunar_date
+        # 说明消息(新成员档案 + 当前时间 + 续接说明),位于新消息之前
+        if new_member_text or role_messages:
+            from neobot_app.time_context import get_current_time_and_lunar_date
+            from neobot_app.utils.formater import safe_format
 
-        current_time = get_current_time_and_lunar_date()
-
-        template = (
-            getattr(
-                getattr(self._config, "chat", None),
-                "group_chat_resume_prompt_template",
-                None,
-            )
-            if self._config
-            else None
-        )
-        if not template:
-            template = (
-                "{new_messages}\n\n"
-                "{new_member_profiles}\n\n"
-                "<当前时间>{current_time}</当前时间>\n\n"
-                "这是群聊对话。请根据新消息决定是否需要回复。"
-            )
-
-        try:
-            return template.format(
-                new_messages=new_messages_text,
+            current_time = get_current_time_and_lunar_date()
+            template = ""
+            if self._prompt_store is not None:
+                template = self._prompt_store.template("group_chat_resume")
+            if not template:
+                template = (
+                    "{new_member_profiles}\n\n"
+                    "<当前时间>{current_time}</当前时间>\n\n"
+                    "这是群聊对话的续接。请根据新消息决定是否需要回复。"
+                )
+            # safe_format:自定义模板含未提供占位符/畸形花括号时保留可渲染部分,
+            # 而不是整段丢弃
+            context_text = safe_format(
+                template,
                 new_member_profiles=new_member_text,
                 current_time=current_time,
             )
-        except (ValueError, KeyError):
-            # Fallback: simple concatenation with current time
-            parts: list[str] = []
-            if new_messages_text:
-                parts.append(new_messages_text)
-            if new_member_text:
-                parts.append(new_member_text)
-            parts.append(f"<当前时间>{current_time}</当前时间>")
-            parts.append("这是群聊对话。请根据新消息决定是否需要回复。")
-            return "\n\n".join(parts)
+            # 模板缺少占位符时补齐档案/时间,避免内容静默丢失
+            parts = [context_text]
+            if new_member_text and "{new_member_profiles}" not in template:
+                parts.append(f"[新出现的群友档案]\n{new_member_text}")
+            if "{current_time}" not in template:
+                parts.append(f"<当前时间>{current_time}</当前时间>")
+            context_text = "\n\n".join(part for part in parts if part and part.strip())
+            if not context_text.strip():
+                parts = []
+                if new_member_text:
+                    parts.append(new_member_text)
+                parts.append(f"<当前时间>{current_time}</当前时间>")
+                parts.append("这是群聊对话的续接。请根据新消息决定是否需要回复。")
+                context_text = "\n\n".join(parts)
+            if context_text.strip():
+                resume_messages.append({"role": "user", "content": context_text})
+
+        resume_messages.extend(role_messages)
+        return resume_messages
 
     # ── Prompt 构建 ──
 
@@ -2842,6 +3266,39 @@ class ReplyOrchestrator:
 
     # ── LLM 生成 ──
 
+    async def _build_role_messages(
+        self,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_key: str,
+        *,
+        numbering: MessageNumbering | None = None,
+        last_reply_message_id: int | None = None,
+        all_new: bool = False,
+    ) -> list[dict[str, str]]:
+        """构建聊天记录的角色消息列表(user/assistant)。
+
+        必须优先于 system 提示词构建(消息编号在构建过程中填充,
+        system 中的 [聊天消息编号映射] 依赖这些编号)。
+        """
+        if self._prompt_builder is None:
+            return []
+        if event.conversation_ref is not None and event.conversation_ref.kind == "group":
+            return await self._prompt_builder.build_group_chat_messages(
+                group_id=int(queue_key),
+                message_queue=queue,
+                numbering=numbering,
+                last_reply_message_id=last_reply_message_id,
+                all_new=all_new,
+            )
+        return await self._prompt_builder.build_friend_chat_messages(
+            user_id=int(queue_key),
+            message_queue=queue,
+            numbering=numbering,
+            last_reply_message_id=last_reply_message_id,
+            all_new=all_new,
+        )
+
     def _resolve_last_reply(
         self,
         queue: MessageQueue,
@@ -2867,7 +3324,12 @@ class ReplyOrchestrator:
             return None, True
         return last_msg_id, False
 
-    async def _generate_reply(self, event: ReplyEvent, prompt: str) -> str:
+    async def _generate_reply(
+        self,
+        event: ReplyEvent,
+        prompt: str,
+        role_messages: list[dict[str, str]] | None = None,
+    ) -> str:
         event.transition(ReplyState.GENERATING)
         if self._provider is None:
             raise RuntimeError("未配置 chat provider，无法生成回复")
@@ -2875,6 +3337,8 @@ class ReplyOrchestrator:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": prompt},
         ]
+        if role_messages:
+            messages.extend(role_messages)
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             self._record_debug(
@@ -2907,6 +3371,17 @@ class ReplyOrchestrator:
             "model.call.after", event, messages=messages, response=response
         )
         response = after_model.payload.get("response", response)
+
+        self._record_cache_request(messages, response)
+
+        await self._record_context(
+            event,
+            messages,
+            iteration=1,
+            stage="common_model_call",
+            response=response,
+        )
+
         content = response.get("content", "")
 
         usage = (response.get("extensions") or {}).get("usage")
