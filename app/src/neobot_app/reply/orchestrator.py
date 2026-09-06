@@ -335,6 +335,7 @@ class ReplyOrchestrator:
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._tool_executors: set[Any] = set()
+        self._agent_tool_turns: dict[str, tuple[Any, Any, list[dict]]] = {}
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
         self._last_sentence_time: dict[str, float] = {}
@@ -404,6 +405,25 @@ class ReplyOrchestrator:
                 pass
         return text
 
+    async def handle_agent_tool_input(self, message: Any, *, kind: str, queue_key: str) -> str | None:
+        """Called only by real-message ingress, never by a model-facing tool."""
+        from neobot_app.agent_tools.invocation import CURRENT_HUMAN_MESSAGE
+        from neobot_app.agent_tools.contracts import ToolContext
+        from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+        if not CURRENT_HUMAN_MESSAGE.get() or self._skill_manager is None:
+            return None
+        shared = self._skill_manager.get("agent_tools")
+        if not isinstance(shared, AgentToolsSkill):
+            return None
+        user_id, message_id = getattr(message, "user_id", None), getattr(message, "message_id", None)
+        if user_id is None or message_id is None or not str(queue_key).isdigit():
+            return None
+        flow = f"{kind}:{queue_key}"
+        context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow, user_id=int(user_id), human_request=True)
+        from neobot_app.message.process import event_message__to_text
+        text = await event_message__to_text(message)
+        return await shared.runtime.accept_human_input(context, text, str(message_id))
+
     def start_reply(
         self,
         *,
@@ -421,8 +441,10 @@ class ReplyOrchestrator:
             return None
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
+        from neobot_app.agent_tools.invocation import CURRENT_HUMAN_MESSAGE
         event = ReplyEvent(
             mode=mode,
+            human_request=CURRENT_HUMAN_MESSAGE.get() and background_content is None,
             message=message,
             willing_decision=decision,
             conversation_ref=conversation_ref,
@@ -497,6 +519,13 @@ class ReplyOrchestrator:
             self._tasks.discard(task)
             if self._active_pipelines.get(pipeline_key) is task:
                 self._active_pipelines.pop(pipeline_key, None)
+            shared_turn = self._agent_tool_turns.pop(event.event_id, None)
+            if shared_turn is not None:
+                runtime, context, history = shared_turn
+                try:
+                    runtime.finish_turn(context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED})
+                except Exception as exc:
+                    self._logger.warning("agent goal continuation was not scheduled", error=str(exc))
             if on_reply_done is not None:
                 callback_task = asyncio.ensure_future(on_reply_done())
                 self._callback_tasks.add(callback_task)
@@ -723,6 +752,10 @@ class ReplyOrchestrator:
             "reply completion callbacks", lambda: _cancel_tasks(self._callback_tasks)
         )
         await _run_step("reply tool executors", _close_executors)
+        if self._skill_manager is not None:
+            shared_tools = self._skill_manager.get("agent_tools")
+            if shared_tools is not None:
+                await _run_step("shared agent tools", shared_tools.close)
         if self._drawing_manager is not None:
             await _run_step("drawing manager", self._drawing_manager.shutdown)
         if self._scheduled_task_manager is not None:
@@ -1950,6 +1983,8 @@ class ReplyOrchestrator:
             conv_kind=conv_kind,
             conv_id=conv_id,
             current_user_id=current_user_id,
+            human_request=event.human_request,
+            agent_history=messages,
             skills_registry=self._markdown_skills,
             allowed_tools=allowed_tools,
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
@@ -1966,6 +2001,16 @@ class ReplyOrchestrator:
             native_vision_provider=self._provider,
         )
         self._tool_executors.add(reply_toolset.executor)
+        if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
+            from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+            from neobot_app.agent_tools.contracts import ToolContext
+            shared_tools = self._skill_manager.get("agent_tools")
+            if isinstance(shared_tools, AgentToolsSkill):
+                flow = f"{conv_kind}:{conv_id}"
+                allowed = reply_toolset.executor.agent_tool_capabilities()
+                context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow, user_id=current_user_id,
+                                      human_request=event.human_request, allowed_tools=allowed)
+                self._agent_tool_turns[event.event_id] = (shared_tools.runtime, context, messages)
 
         tools = reply_toolset.definitions()
         native_vision_active = getattr(self._provider, "native_vision", False) is True

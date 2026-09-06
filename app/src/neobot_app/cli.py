@@ -10,6 +10,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# This branch must precede bootstrap/config imports: the frozen executable is
+# also a lazy stdio LSP worker, not a second Bot service.
+from neobot_app.agent_tools.lsp_defaults import PYTHON_LSP_WORKER_FLAG
+
+if PYTHON_LSP_WORKER_FLAG in sys.argv[1:]:
+    if sys.argv[1:] != [PYTHON_LSP_WORKER_FLAG]:
+        raise SystemExit("The internal Python LSP worker accepts no additional arguments")
+    from neobot_app.agent_tools.lsp_defaults import run_python_lsp_worker
+
+    run_python_lsp_worker()
+    raise SystemExit(0)
+
 from neobot_app.bootstrap import create_application
 from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import DATA_DIR

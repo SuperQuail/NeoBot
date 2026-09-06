@@ -433,6 +433,7 @@ def create_application() -> NeoBotApplication:
         vision_detect_service=vision_detect_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
+        agent_provider=provider,
     )
     plugin["host_facade"]._set_skills(skill_manager)
 

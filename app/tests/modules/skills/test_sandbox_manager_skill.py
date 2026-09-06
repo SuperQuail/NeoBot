@@ -355,17 +355,19 @@ async def test_write_file_ok_and_pipeline_key_fallback(make_sandbox):
     assert result["size"] == 7
 
 
-async def test_write_file_rejects_missing_params_or_empty_content(make_sandbox):
-    """异常路径：缺 chat_flow_id 或 content 为空时应拒绝写入。"""
-    skill = _make_skill(make_sandbox())
+async def test_write_file_rejects_missing_params_but_accepts_empty_content(make_sandbox):
+    """缺 chat_flow_id 仍拒绝；共享文件工具允许显式空字符串创建空文件。"""
+    sandbox = make_sandbox()
+    skill = _make_skill(sandbox)
 
     no_flow = _json_result(await skill.execute("write_file", {"path": "a.txt", "content": "x"}))
     empty_content = _json_result(await skill.execute("write_file", {"path": "a.txt", "content": "", "chat_flow_id": "g1"}))
 
     assert no_flow["ok"] is False
     assert "缺少必要参数" in no_flow["error"]
-    assert empty_content["ok"] is False
-    assert "content 不能为空" in empty_content["error"]
+    assert empty_content["ok"] is True
+    assert empty_content["size"] == 0
+    assert (sandbox.get_temp_dir("g1") / "a.txt").read_bytes() == b""
 
 
 async def test_write_file_rejects_traversal(make_sandbox):

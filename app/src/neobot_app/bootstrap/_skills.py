@@ -46,6 +46,7 @@ def build_skill_manager(
     vision_detect_service: Any = None,
     credential_manager: Any = None,
     sleep_service: Any = None,
+    agent_provider: Any = None,
 ) -> Any:
     return build_all_skills(
         disabled_skills=getattr(
@@ -81,6 +82,7 @@ def build_skill_manager(
         vision_detect_service=vision_detect_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
+        agent_provider=agent_provider,
     )
 
 

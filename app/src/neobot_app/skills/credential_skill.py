@@ -60,7 +60,12 @@ class CredentialSkill(SkillModule):
             "  - willing_global：设置全局回复意愿（运行时，影响所有群聊；私聊固定百分百"
             "不受影响；需次级管理员签发；临时调整一次用 one_time，反复调整可申请 timed）\n"
             "  - willing_config：查看/编辑 config 中的全局回复意愿系数（持久化+热重载；"
-            "需超级管理员签发）"
+            "需超级管理员签发）\n"
+            "  - agent_execute：Python/命令/持久终端执行（宿主进程权限，需超级管理员）\n"
+            "  - agent_shared_write：修改共享持久目录（需超级管理员）\n"
+            "  - agent_plan：批准计划进入执行（需超级管理员）\n"
+            "  - agent_goal：创建或恢复多轮目标（需超级管理员）\n"
+            "  - agent_ralph：启动有预算的独立尝试循环（需超级管理员）"
         )
 
     def reset(self) -> None:

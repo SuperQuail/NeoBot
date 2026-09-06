@@ -1149,6 +1149,24 @@ class AgentSelfHeal:
 
 
 @dataclass
+class AgentToolsConfig:
+    """DSH 风格共享工具；执行工具仍需现有管理员凭据。"""
+
+    enabled: bool = field(default=True, metadata={"description": "启用共享 agent 工具"})
+    mode: str = field(default="native", metadata={"description": "任务工具模式：native（精简普通模式，默认）/ ptc（程序编排）"})
+    ptc_enabled: bool = field(default=True, metadata={"description": "启用可选PTC能力；不改变默认普通模式"})
+    shell_enabled: bool = field(default=True, metadata={"description": "提供需凭据的 Python/命令工具"})
+    terminal_enabled: bool = field(default=True, metadata={"description": "提供需凭据的持久管道终端（非 PTY）"})
+    web_enabled: bool = field(default=True, metadata={"description": "提供联网搜索和网页读取"})
+    lsp_enabled: bool = field(default=True, metadata={"description": "默认启用项目依赖内的Python语言服务器（按需启动）"})
+    lsp_servers: dict = field(default_factory=dict, metadata={"description": "覆盖/扩展默认Python LSP：扩展名映射到command数组及language_id；关闭使用lsp_enabled=false"})
+    max_agent_iterations: int = field(default=20, metadata={"description": "每个子 agent 的工具调用轮数上限"})
+    max_goal_rounds: int = field(default=8, metadata={"description": "同一目标的最大自动轮数"})
+    max_child_agents: int = field(default=8, metadata={"description": "每个 owner 的子 agent 数量上限"})
+    max_output_bytes: int = field(default=262144, metadata={"description": "单次共享工具输出的最大 UTF-8 字节数"})
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -1162,6 +1180,7 @@ class Agent:
     file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
     self_healing: AgentSelfHeal = field(default_factory=AgentSelfHeal)
     vision_detect: VisionDetect = field(default_factory=VisionDetect)
+    tools: AgentToolsConfig = field(default_factory=AgentToolsConfig)
 
 
 @dataclass
