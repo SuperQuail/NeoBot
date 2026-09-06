@@ -214,7 +214,9 @@ class ReplyToolExecutor(ToolExecutor):
         credential_manager: Any = None,
         config: Any = None,
         config_update_callback: Any = None,
+        native_vision_provider: Any = None,
     ) -> None:
+        self._native_vision_provider = native_vision_provider
         self._send_reply = send_reply_handler
         self._willing = willing_service
         self._numbering = numbering
@@ -748,6 +750,7 @@ class ReplyToolExecutor(ToolExecutor):
         if self._allowed_tools:
             allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
             tools = [t for t in tools if t["function"]["name"] in allowed]
+        tools = [t for t in tools if self.is_tool_authorized(t["function"]["name"])]
         names: set[str] = set()
         for tool in tools:
             name = tool["function"]["name"]
@@ -757,14 +760,24 @@ class ReplyToolExecutor(ToolExecutor):
         return tools
 
     def is_tool_authorized(self, name: str) -> bool:
-        """Return whether the active skill policy permits a final tool name."""
+        """Apply both the skill allowlist and the live model capability policy."""
+        native_vision = getattr(self._native_vision_provider, "native_vision", False) is True
+        if name.startswith("image_context__") and not native_vision:
+            return False
+        if native_vision and name in {
+            "image_parse__parse_image",
+            "drawing__inspect_image",
+            "user_profile__analyze_user_avatar",
+        }:
+            return False
         return not self._allowed_tools or name in (
             _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
         )
 
-    @staticmethod
-    def authorization_error(name: str) -> str:
-        return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
+    def authorization_error(self, name: str) -> str:
+        if self._allowed_tools and name not in (_SKILL_GUARD_BASE_TOOLS | self._allowed_tools):
+            return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
+        return f"Error: 工具 {name} 与当前模型视觉能力不匹配，请使用当前提供的图片工具"
 
     async def execute(self, name: str, args: dict) -> str:
         # allowed-tools 白名单拦截（须在 skills__read_* 等所有路由之前）
@@ -2223,6 +2236,7 @@ def build_reply_toolset(
     credential_manager: Any = None,
     config: Any = None,
     config_update_callback: Any = None,
+    native_vision_provider: Any = None,
 ) -> Toolset:
     executor = ReplyToolExecutor(
         send_reply_handler=send_reply_handler,
@@ -2262,6 +2276,7 @@ def build_reply_toolset(
         credential_manager=credential_manager,
         config=config,
         config_update_callback=config_update_callback,
+        native_vision_provider=native_vision_provider,
     )
     definitions = executor.definitions()
     specs = [

@@ -20,6 +20,13 @@ from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.reply.sender import ReplySender
+from neobot_app.reply.vision_context import (
+    VISION_INSTRUCTIONS,
+    ReplyVisionContext,
+    append_image_context,
+    labelled_tool_images,
+    visible_content_length,
+)
 from neobot_app.statistics.tracker import get_usage_tracker
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
@@ -850,9 +857,17 @@ class ReplyOrchestrator:
                 return float(val)
         return 5.0
 
+    def _get_native_vision_default_image_count(self) -> int:
+        value = getattr(getattr(self._config, "chat", None), "native_vision_default_image_count", 4)
+        return value if type(value) is int and value >= 0 else 4
+
     @staticmethod
     def _estimate_tokens(messages: list[dict]) -> int:
-        total_chars = sum(len(str(m)) for m in messages)
+        total_chars = sum(
+            len(str({key: value for key, value in m.items() if key != "content"}))
+            + visible_content_length(m.get("content"))
+            for m in messages
+        )
         # 中文为主：1 字符 ≈ 1.3-1.5 token；用 /0.75 做偏保守估计
         return int(total_chars / 0.75)
 
@@ -956,6 +971,16 @@ class ReplyOrchestrator:
         - 存在有效命中时继续更便宜才续用
         """
         if not self._cost_pipeline_enabled():
+            return False
+        # The character-prefix calculator collapses multimodal blocks to one
+        # placeholder. Do not extend a pipeline based on that false cost saving.
+        if any(
+            isinstance(message.get("content"), list) and any(
+                isinstance(part, dict) and part.get("type") in {"image_url", "image", "file"}
+                for part in message["content"]
+            )
+            for message in messages
+        ):
             return False
         calculator = self._cache_calculator
         if calculator is None:
@@ -1566,6 +1591,14 @@ class ReplyOrchestrator:
         # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
             skill_instructions = self._skill_manager.get_instructions()
+            hidden_skill = (
+                "image_parse" if getattr(self._provider, "native_vision", False) is True
+                else "image_context"
+            )
+            skill_instructions = "\n".join(
+                line for line in skill_instructions.splitlines()
+                if not line.startswith(f"- {hidden_skill}:")
+            )
             if skill_instructions:
                 prompt += (
                     "\n\n<Skill 操作说明>\n"
@@ -1930,10 +1963,22 @@ class ReplyOrchestrator:
             credential_manager=self._credential_manager,
             config=self._config,
             config_update_callback=self._config_update_callback,
+            native_vision_provider=self._provider,
         )
         self._tool_executors.add(reply_toolset.executor)
 
         tools = reply_toolset.definitions()
+        native_vision_active = getattr(self._provider, "native_vision", False) is True
+        vision_context = ReplyVisionContext()
+        from neobot_app.skills.image_context_skill import ImageContextSkill
+
+        default_image_loader = ImageContextSkill(
+            adapter=self._adapter,
+            group_message_queue=queue_copy if conv_kind == "group" else None,
+            friend_message_queue=queue_copy if conv_kind != "group" else None,
+        )
+        if native_vision_active:
+            messages.append({"role": "user", "content": VISION_INSTRUCTIONS})
 
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = self._get_agent_max_iterations()
@@ -1982,9 +2027,18 @@ class ReplyOrchestrator:
             cancelled = False
             ai_check_prompted = False
 
-            for iteration in range(max_iterations):
+            vision_fallback_bonus = False
+            for iteration in range(max_iterations + 1):
+                if iteration >= max_iterations and not vision_fallback_bonus:
+                    break
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
+
+                current_vision = getattr(self._provider, "native_vision", False) is True
+                if current_vision != native_vision_active:
+                    native_vision_active = current_vision
+                    tools = reply_toolset.executor.definitions()
+                    messages.append({"role": "user", "content": "[视觉能力变更] 原生视觉已关闭，图片未发送；外部图片解析工具已恢复，请按需重新解析。"})
 
                 pipeline_key = f"{conv_kind}:{conv_id}"
                 notification_text = await self._poll_background_notifications(
@@ -2006,6 +2060,21 @@ class ReplyOrchestrator:
                         notification=notification_text[:200],
                     )
 
+                if native_vision_active:
+                    try:
+                        await asyncio.wait_for(
+                            vision_context.refresh_defaults(
+                                queue=queue_copy, queue_key=queue_key, numbering=numbering,
+                                loader=default_image_loader, pipeline_key=pipeline_key,
+                                max_images=self._get_native_vision_default_image_count(),
+                            ),
+                            timeout=max(0.1, silent_remaining() or self._get_dependency_timeout_seconds()),
+                        )
+                    except asyncio.TimeoutError:
+                        self._logger.warning("默认原生视觉图片加载超时", queue_key=queue_key)
+                request_messages = (
+                    vision_context.request_messages(messages) if native_vision_active else list(messages)
+                )
                 remaining = silent_remaining()
                 if remaining is not None and remaining <= 0:
                     cancel_for_silence("before_model")
@@ -2021,18 +2090,18 @@ class ReplyOrchestrator:
                         event,
                         queue_key=queue_key,
                         iteration=iteration + 1,
-                        messages=messages,
+                        messages=request_messages,
                         tools=tools if tools else None,
                         timeout_seconds=model_timeout,
                     )
                     if before_model.consumed and isinstance(before_model.result, dict):
                         response = before_model.result
                     else:
-                        messages = before_model.payload.get("messages", messages)
+                        request_messages = before_model.payload.get("messages", request_messages)
                         tools = before_model.payload.get("tools", tools)
                         response = await asyncio.wait_for(
                             self._provider.chat(
-                                messages, tools=tools if tools else None
+                                request_messages, tools=tools if tools else None
                             ),
                             timeout=model_timeout,
                         )
@@ -2041,7 +2110,7 @@ class ReplyOrchestrator:
                         event,
                         queue_key=queue_key,
                         iteration=iteration + 1,
-                        messages=messages,
+                        messages=request_messages,
                         response=response,
                     )
                     response = after_model.payload.get("response", response)
@@ -2063,11 +2132,11 @@ class ReplyOrchestrator:
                     return
                 reset_silent_deadline()
 
-                self._record_cache_request(messages, response)
+                self._record_cache_request(request_messages, response)
 
                 await self._record_context(
                     event,
-                    messages,
+                    request_messages,
                     iteration=iteration + 1,
                     stage="agent_model_call",
                     response=response,
@@ -2101,7 +2170,23 @@ class ReplyOrchestrator:
                 )
                 messages.append(response)
 
+                vision_just_disabled = native_vision_active and (
+                    getattr(self._provider, "native_vision", False) is not True
+                )
+                if vision_just_disabled:
+                    native_vision_active = False
+                    tools = reply_toolset.executor.definitions()
+                    self._record_debug(
+                        "native_vision_fallback", event, queue_key=queue_key,
+                        degradation=getattr(self._provider, "vision_degradation", None),
+                    )
                 tool_calls = response.get("tool_calls")
+                if not tool_calls and vision_just_disabled:
+                    vision_fallback_bonus = True
+                    # Retry once with the restored parser tools rather than sending
+                    # an answer produced without either images or a parser.
+                    messages.append({"role": "user", "content": "[原生视觉回退] 图片无法发送，非视觉模型及图片解析工具已恢复。请按需调用 image_parse__parse_image，不能声称已经看到图片。"})
+                    continue
                 if not tool_calls:
                     if not reply_sent:
                         content = response.get("content", "")
@@ -2149,6 +2234,7 @@ class ReplyOrchestrator:
                             reply_sent = True
                     break
 
+                image_parts: list[dict] = []
                 for tc in tool_calls:
                     function = tc.get("function", {}) if isinstance(tc, dict) else {}
                     if not isinstance(function, dict):
@@ -2266,6 +2352,11 @@ class ReplyOrchestrator:
                             tool_result=result,
                         )
                         result = after_tool.payload.get("tool_result", result)
+                        if getattr(self._provider, "native_vision", False) is True:
+                            from neobot_app.skills.image_context_skill import ImageContextResult
+
+                            if isinstance(result, ImageContextResult):
+                                image_parts.extend(labelled_tool_images(result, tool_call_id=str(tc.get("id", ""))))
                         safe_result = _redacted_tool_text(result, _MAX_TOOL_LOG_CHARS)
                         result = _bounded_tool_text(result)
                     except asyncio.TimeoutError:
@@ -2355,6 +2446,12 @@ class ReplyOrchestrator:
                             }
                         )
 
+                # Keep history textual; all automatic/manual images are assembled
+                # into a labelled user appendix at the END of every model request.
+                vision_context.manual_parts.extend(image_parts)
+                if vision_just_disabled:
+                    messages.append({"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"})
+
                 if reply_sent or cancelled:
                     break
 
@@ -2420,7 +2517,8 @@ class ReplyOrchestrator:
                         # 基础寿命耗尽:成本管线续用判断(缓存命中后继续成本
                         # 低于重启管线输入成本时,额外续用,受阈值上限约束)
                         if cost_pipeline_extension_budget > 0 and self._cache_continue_cheaper_than_restart(
-                            messages, prompt, queue, queue_key, numbering
+                            vision_context.request_messages(messages) if native_vision_active else messages,
+                            prompt, queue, queue_key, numbering
                         ):
                             cost_pipeline_extension_budget -= 1
                             group_lifespan = 1
@@ -2538,13 +2636,18 @@ class ReplyOrchestrator:
             if not is_private:
                 break
 
+            # Count the image appendix too; the automatic image budget must not
+            # bypass the existing total-context lifetime guard.
+            estimated_tokens = self._estimate_tokens(
+                vision_context.request_messages(messages) if native_vision_active else messages
+            )
             # Token 超限 → 结束（下次消息触发管线重启）
-            if self._estimate_tokens(messages) >= self._get_private_chat_max_tokens():
+            if estimated_tokens >= self._get_private_chat_max_tokens():
                 self._logger.info(
                     "私聊token超限，结束当前会话",
                     event_id=event.event_id,
                     queue_key=queue_key,
-                    estimated_tokens=self._estimate_tokens(messages),
+                    estimated_tokens=estimated_tokens,
                 )
                 break
 
@@ -3340,11 +3443,23 @@ class ReplyOrchestrator:
         if self._provider is None:
             raise RuntimeError("未配置 chat provider，无法生成回复")
 
-        messages: list[dict[str, str]] = [
+        messages: list[dict] = [
             {"role": "system", "content": prompt},
         ]
         if role_messages:
             messages.extend(role_messages)
+        common_image_parts: list[dict] = []
+        if getattr(self._provider, "native_vision", False) is True:
+            from neobot_app.skills.image_context_skill import ImageContextSkill
+
+            loader = ImageContextSkill(adapter=self._adapter)
+            loaded = await loader.load_message(
+                event.message, max_images=self._get_native_vision_default_image_count(),
+            )
+            common_image_parts = labelled_tool_images(loaded, tool_call_id="当前消息默认图片", automatic=True)
+            if not json.loads(loaded).get("ok"):
+                self._logger.warning("原生视觉图片加载失败", result=str(loaded))
+                messages.append({"role": "user", "content": f"[图片未加载，不能声称看过图片] {loaded}"})
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             self._record_debug(
@@ -3352,6 +3467,7 @@ class ReplyOrchestrator:
                 event,
                 notification=event.background_content[:200],
             )
+        append_image_context(messages, common_image_parts)
         timeout = self._get_model_response_timeout_seconds(event)
         before_model = await self._emit_runtime_event(
             "model.call.before", event, messages=messages, timeout_seconds=timeout

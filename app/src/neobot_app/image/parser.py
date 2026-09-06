@@ -41,7 +41,9 @@ class ImageParseService:
         image_analysis_service: ImageAnalysisService | None = None,
         adapter: OneBotAdapter | None = None,
         logger: Logger | None = None,
+        native_vision_provider: Any = None,
     ) -> None:
+        self._native_vision_provider = native_vision_provider
         self._vision_provider = vision_provider
         self._analysis = image_analysis_service
         self._adapter = adapter
@@ -53,7 +55,9 @@ class ImageParseService:
         message: ChatMessage,
         queue_key: str,
     ) -> None:
-        """异步解析消息中的所有图片，完成后用描述文本替换原图片段"""
+        """原生视觉保留原图；否则异步解析并替换为描述文本。"""
+        if getattr(self._native_vision_provider, "native_vision", False) is True:
+            return
         segments = getattr(message, "message", None)
         if not segments:
             return

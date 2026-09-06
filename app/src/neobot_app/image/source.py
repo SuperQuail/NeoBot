@@ -41,8 +41,63 @@ def _response_data_for_get_image(response: Any) -> dict | None:
     return None
 
 
-async def read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
-    """读取图片引用(base64:// / file:// / data: / 本地路径 / HTTP URL)。"""
+async def _read_bounded_image_ref(
+    ref: str, *, timeout: float, max_bytes: int
+) -> bytes | None:
+    """受限读取入口；在解码/读取/下载过程中限制大小，不影响旧调用。"""
+    from urllib.parse import unquote, urlsplit
+
+    try:
+        if ref.startswith(("base64://", "data:")):
+            if ref.startswith("data:"):
+                header, separator, payload = ref.partition(",")
+                if not separator or not header.lower().startswith("data:image/") or not header.endswith(";base64"):
+                    return None
+            else:
+                payload = ref[9:]
+            if len(payload) > 4 * ((max_bytes + 2) // 3):
+                return None
+            data = base64.b64decode(payload, validate=True)
+        elif ref.startswith(("http://", "https://")):
+            import httpx
+
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream("GET", ref) as response:
+                    response.raise_for_status()
+                    length = response.headers.get("content-length")
+                    if length is not None and int(length) > max_bytes:
+                        return None
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                        if len(data) + len(chunk) > max_bytes:
+                            return None
+                        data.extend(chunk)
+                    data = bytes(data)
+        else:
+            if ref.startswith("file://"):
+                parsed = urlsplit(ref)
+                if parsed.netloc not in ("", "localhost"):
+                    return None
+                ref = unquote(parsed.path)
+                # Path.as_uri() encodes Windows drive paths as file:///C:/...
+                if len(ref) >= 3 and ref[0] == "/" and ref[2] == ":":
+                    ref = ref[1:]
+            path = Path(ref).expanduser()
+            if not path.is_file() or path.stat().st_size > max_bytes:
+                return None
+            with path.open("rb") as handle:
+                data = handle.read(max_bytes + 1)
+        return data if len(data) <= max_bytes else None
+    except Exception:
+        return None
+
+
+async def read_image_ref(
+    ref: str, *, timeout: float = 30.0, max_bytes: int | None = None
+) -> bytes | None:
+    """读取图片引用；max_bytes 可选，设置后严格校验 base64 并限制 IO 大小。"""
+    if max_bytes is not None:
+        return await _read_bounded_image_ref(ref, timeout=timeout, max_bytes=max_bytes)
     if ref.startswith("base64://"):
         try:
             return base64.b64decode(ref[9:])
@@ -111,10 +166,17 @@ class ImageSourceResolver:
         adapter: Any = None,
         group_message_queue: Any = None,
         friend_message_queue: Any = None,
+        max_bytes: int | None = None,
     ) -> None:
         self._adapter = adapter
         self._group_queue = group_message_queue
         self._friend_queue = friend_message_queue
+        self._max_bytes = max_bytes
+
+    async def _read_ref(self, ref: str, *, timeout: float) -> bytes | None:
+        if self._max_bytes is None:
+            return await read_image_ref(ref, timeout=timeout)
+        return await read_image_ref(ref, timeout=timeout, max_bytes=self._max_bytes)
 
     async def resolve(
         self,
@@ -142,7 +204,7 @@ class ImageSourceResolver:
                 ref.startswith("base64://") or ref.startswith("data:")
             ):
                 ref = f"base64://{ref}"
-            data = await read_image_ref(ref, timeout=timeout)
+            data = await self._read_ref(ref, timeout=timeout)
             if data is None:
                 return None, "图片下载/解码失败(检查路径/URL/base64 是否有效)"
             return data, None
@@ -207,7 +269,7 @@ class ImageSourceResolver:
             response = await asyncio.wait_for(
                 self._adapter.get_msg(message_id), timeout=10
             )
-            data = getattr(response, "data", None)
+            data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)
         except Exception:
             try:
                 result = await self._adapter.call_api("get_msg", {"message_id": message_id})
@@ -323,15 +385,25 @@ class ImageSourceResolver:
 
         url = seg_data.get("url")
         if url:
-            try:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    resp = await client.get(str(url))
-                    resp.raise_for_status()
-                    return resp.content, None
-            except Exception:
-                pass  # fall through to file fallback
+            if self._max_bytes is not None:
+                content = await self._read_ref(str(url), timeout=timeout)
+                if content is not None:
+                    return content, None
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                        resp = await client.get(str(url))
+                        resp.raise_for_status()
+                        return resp.content, None
+                except Exception:
+                    pass  # fall through to file fallback
 
         file_name = seg_data.get("file")
+        # Native context also accepts OneBot inline/file references without an Adapter.
+        if file_name and self._max_bytes is not None:
+            content = await self._read_ref(str(file_name), timeout=timeout)
+            if content is not None:
+                return content, None
         if file_name and self._adapter is not None:
             try:
                 from neobot_adapter.request.message import get_image
@@ -341,7 +413,7 @@ class ImageSourceResolver:
                 if isinstance(img_data, dict):
                     img_ref = img_data.get("file") or img_data.get("url")
                     if img_ref:
-                        content = await read_image_ref(str(img_ref), timeout=timeout)
+                        content = await self._read_ref(str(img_ref), timeout=timeout)
                         if content is not None:
                             return content, None
                         return None, f"get_image 返回的图片引用下载失败(file={file_name})"

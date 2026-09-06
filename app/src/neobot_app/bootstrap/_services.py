@@ -219,6 +219,7 @@ def build_image_parse_service(
     adapter: Any,
     uow_factory: Any,
     logger_factory: Any,
+    native_vision_provider: Any = None,
 ) -> ImageParseService:
     image_analysis_service = build_image_analysis_service(
         uow_factory=uow_factory,
@@ -229,6 +230,7 @@ def build_image_parse_service(
         image_analysis_service=image_analysis_service,
         adapter=adapter,
         logger=logger_factory.get_logger("app.image_parse"),
+        native_vision_provider=native_vision_provider,
     )
 
 

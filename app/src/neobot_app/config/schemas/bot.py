@@ -40,6 +40,10 @@ class Bot:
 
 @dataclass
 class Chat:
+    native_vision_default_image_count: int = field(
+        default=4,
+        metadata={"description": "原生视觉每轮默认自动加载的图片数量，0 关闭自动加载；手动加图工具不受此数量限制"},
+    )
     max_group_chat_observations: Optional[int] = field(
         default=100,
         metadata={"description": "群聊观察上限"},
@@ -205,6 +209,10 @@ class ModelRegistration:
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
+    native_vision: bool = field(
+        default=False,
+        metadata={"description": "主推理模型可直接接收图片；DeepSeek 使用 deepseek-v4-flash-vision-exp，启用后需配置非视觉回退路由"},
+    )
 
 
 def _default_primary_chat_model() -> "ModelRegistration":
@@ -397,6 +405,10 @@ class AgentModelRouting:
     main_agent: int = field(
         default=0,
         metadata={"description": "主回复 Agent 使用的模型编号，0-3"},
+    )
+    main_agent_vision_fallback: int = field(
+        default=1,
+        metadata={"description": "主模型原生视觉不可用时的非视觉回退模型编号，0-3；必须不同于主模型且 native_vision=false"},
     )
     creator: int = field(
         default=1,

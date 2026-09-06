@@ -8,7 +8,8 @@ from typing import Any
 import httpx
 
 from neobot_chat.providers.base import BaseHTTPProvider
-from neobot_chat.schema.exceptions import ProviderError
+from neobot_chat.schema.exceptions import NativeVisionUnsupportedError, ProviderError
+from neobot_chat.providers.vision import contains_images, raise_if_image_unsupported, to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
@@ -31,8 +32,9 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
         extra_body: dict[str, Any] | None = None,
+        native_vision: bool = False,
     ):
-        super().__init__(api_key, base_url, timeout)
+        super().__init__(api_key, base_url, timeout, native_vision=native_vision)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -192,7 +194,10 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             payload: dict[str, Any] = {"role": message["role"]}
 
             if "content" in message:
-                payload["content"] = message.get("content")
+                content = message.get("content")
+                if message["role"] != "user" and contains_images(content):
+                    raise NativeVisionUnsupportedError("DeepSeek only accepts images in user messages")
+                payload["content"] = to_openai_content(content)
             if "tool_call_id" in message:
                 payload["tool_call_id"] = message["tool_call_id"]
             if "tool_calls" in message:
@@ -209,6 +214,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
     async def _raise_for_status_with_body(self, response: httpx.Response) -> None:
         if not response.is_error:
             return
+        await raise_if_image_unsupported(response)
         try:
             body = response.text
         except Exception:

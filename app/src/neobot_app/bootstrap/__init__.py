@@ -454,6 +454,7 @@ def create_application() -> NeoBotApplication:
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
     image_parse_service = build_image_parse_service(
         vision_provider=vision_provider,
+        native_vision_provider=provider,
         adapter=adapter,
         uow_factory=uow_factory,
         logger_factory=logger_factory,

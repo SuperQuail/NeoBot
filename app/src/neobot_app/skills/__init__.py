@@ -19,6 +19,7 @@ from neobot_app.skills.emoji_management import EmojiManagementSkill
 from neobot_app.skills.image_send import ImageSendSkill
 from neobot_app.skills.image_pool_skill import ImagePoolSkill
 from neobot_app.skills.image_parse_skill import ImageParseSkill
+from neobot_app.skills.image_context_skill import ImageContextSkill
 from neobot_app.skills.willingness_skill import WillingnessSkill
 from neobot_app.skills.reminder_skill import ReminderSkill
 from neobot_app.skills.birthday_skill import BirthdaySkill
@@ -234,6 +235,20 @@ def build_all_skills(
     if "image_send" not in disabled:
         skills_to_register.append(
             ImageSendSkill(adapter=adapter, file_server=file_server, image_pool=image_pool)
+        )
+
+    # Always registered independently of vision_provider; reply filters this
+    # native-context tool dynamically using its selected provider.native_vision.
+    if "image_context" not in disabled:
+        skills_to_register.append(
+            ImageContextSkill(
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+                image_pool=image_pool,
+                creator_image_service=creator_image_service,
+                emoji_service=emoji_service,
+            )
         )
 
     if "image_parse" not in disabled:
