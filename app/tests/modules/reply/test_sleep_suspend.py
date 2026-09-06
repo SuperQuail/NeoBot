@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -140,3 +141,77 @@ async def test_suspend_not_sleeping_plain_message_willing_hits():
     assert len(new_entries) == 1
     assert notification_text is None
     assert wake_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_suspend_during_sleep_blocked_at_does_not_wake():
+    """睡眠挂起中的被屏蔽 @ 不唤醒、不返回回复条目，仍更新快照。"""
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline = _orchestrator(sleep_service)
+    pipeline._willing_service.block_reason_for_message = lambda **kw: "runtime_blacklisted"
+    source = MessageQueue()
+    snapshot = MessageQueue()
+    source.push("42", _group_message(4, "blocked", at_bot=True))
+
+    result = await pipeline._suspend_group_chat(source, snapshot, "42")
+
+    assert result == ([], None, None)
+    assert sleep_service.is_sleeping()
+    assert pipeline._collect_new_entries(source, snapshot, "42") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", [True, False])
+async def test_wait_during_sleep_checks_at_block_reason(monkeypatch, blocked):
+    """真实 agent wait 入口仅允许未被屏蔽的 @ 结束睡眠。"""
+    from .test_orchestrator import (
+        _ScriptedProvider,
+        _make_decision,
+        _make_orchestrator,
+    )
+
+    source = MessageQueue()
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+
+    class _WaitProvider(_ScriptedProvider):
+        async def chat(self, messages, tools=None):
+            if not self.calls:
+                source.push("42", _group_message(6, "wake", at_bot=True))
+            return await super().chat(messages, tools)
+
+    provider = _WaitProvider([
+        {"content": "", "tool_calls": [{
+            "id": "sleep-wait", "type": "function",
+            "function": {"name": "wait", "arguments": '{"seconds": 1}'},
+        }]},
+        {"content": "", "tool_calls": []},
+    ])
+    pipeline = _make_orchestrator(provider=provider, group_queue=source)
+    pipeline._sleep_service = sleep_service
+    pipeline._willing_service = _FakeWilling(BOT)
+    pipeline._willing_service.block_reason_for_message = (
+        lambda **kw: "runtime_blacklisted" if blocked else ""
+    )
+
+    async def no_suspend(*args):
+        return [], None, None
+
+    monkeypatch.setattr(pipeline, "_suspend_group_chat", no_suspend)
+
+    try:
+        event = pipeline.start_reply(
+            message=_group_message(5, "start"), queue=source,
+            queue_key="42", decision=_make_decision(),
+        )
+        assert event is not None
+        await asyncio.wait_for(asyncio.gather(*pipeline._tasks), timeout=10)
+
+        assert event.error is None
+        assert len(provider.calls) >= 2
+        tool_messages = [m for m in provider.calls[1][0] if m.get("role") == "tool"]
+        assert any(("暂不处理" if blocked else "被@叫醒") in m["content"] for m in tool_messages)
+        assert sleep_service.is_sleeping() is blocked
+    finally:
+        await pipeline.shutdown()

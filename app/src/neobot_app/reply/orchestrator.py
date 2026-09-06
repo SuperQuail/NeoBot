@@ -1689,7 +1689,7 @@ class ReplyOrchestrator:
             if new_entries:
                 # 睡眠拦截:睡眠中被@则唤醒并注入唤醒提示词,其余消息忽略
                 if self._sleeping():
-                    if self._entries_have_at_mention(new_entries):
+                    if self._entries_have_at_mention(new_entries, queue_key=queue_key):
                         wake_prompt = self._wake_from_sleep() or ""
                         self._logger.info(
                             "睡眠中 wait 工具被@唤醒",
@@ -2624,8 +2624,8 @@ class ReplyOrchestrator:
         service.wake(reason="at_mention_pipeline")
         return service.wake_prompt()
 
-    def _entries_have_at_mention(self, entries: list) -> bool:
-        """检查条目列表中是否有 @bot 消息(与事件入口语义一致)。"""
+    def _entries_have_at_mention(self, entries: list, *, queue_key: str) -> bool:
+        """检查是否有未被硬性屏蔽的 @bot 消息(与睡眠事件入口一致)。"""
         from neobot_app.message.queue import QueueEntryType as _QET
 
         if self._willing_service is None:
@@ -2634,7 +2634,11 @@ class ReplyOrchestrator:
             if entry.kind != _QET.MESSAGE or entry.message is None:
                 continue
             if self._willing_service.is_at_mentioned(entry.message):
-                return True
+                block_reason = self._willing_service.block_reason_for_message(
+                    message=entry.message, queue_key=queue_key
+                )
+                if not block_reason:
+                    return True
         return False
 
     def _collect_new_entries(
@@ -2996,7 +3000,9 @@ class ReplyOrchestrator:
                 # 睡眠拦截:睡眠中非@消息忽略(已入快照,不会反复拾取),
                 # @提及唤醒并注入唤醒提示词,与事件入口语义一致
                 if self._sleeping():
-                    if not _has_at_mention(current_new):
+                    if not self._entries_have_at_mention(
+                        current_new, queue_key=queue_key
+                    ):
                         self._logger.info(
                             "睡眠中,挂起管线忽略新消息",
                             queue_key=queue_key,
