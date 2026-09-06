@@ -114,7 +114,8 @@ class OpenAIProvider(BaseHTTPProvider):
         }
 
         tool_calls: list[ToolCall] = []
-        for tc in choice.get("tool_calls", []):
+        # A no-tool completion may explicitly return JSON null.
+        for tc in (choice.get("tool_calls") or []):
             function = tc.get("function", {})
             tool_call = self._build_tool_call(
                 tool_id=tc.get("id"),
@@ -172,7 +173,7 @@ class OpenAIProvider(BaseHTTPProvider):
                 content_parts.append(content)
                 yield ChatChunk(delta=content)
 
-            for tc_delta in delta.get("tool_calls", []):
+            for tc_delta in (delta.get("tool_calls") or []):
                 idx = tc_delta.get("index")
                 if not isinstance(idx, int):
                     continue

@@ -271,7 +271,8 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             self._set_reasoning_content(result, reasoning_content)
 
         tool_calls: list[ToolCall] = []
-        for tc in raw_message.get("tool_calls", []):
+        # A no-tool completion may explicitly return JSON null.
+        for tc in (raw_message.get("tool_calls") or []):
             function = tc.get("function", {})
             tool_call = self._build_tool_call(
                 tool_id=tc.get("id"),
@@ -363,7 +364,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                 content_parts.append(content)
                 yield ChatChunk(delta=content)
 
-            for tc_delta in delta.get("tool_calls", []):
+            for tc_delta in (delta.get("tool_calls") or []):
                 idx = tc_delta.get("index")
                 if not isinstance(idx, int):
                     continue
