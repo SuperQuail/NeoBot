@@ -6,7 +6,13 @@
 from __future__ import annotations
 
 import glob as glob_module
+import hashlib
+import os
 import shutil
+import tempfile
+import threading
+from collections import OrderedDict
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +124,11 @@ class SandboxService:
         self._root = sandbox_root.resolve()
         self._lock = lock
         self._max_total_size = max_total_size_bytes
+        self._file_locks_guard = threading.Lock()
+        self._file_locks: dict[str, tuple[Any, int]] = {}
+        # Shared by all AgentFileTools facades using this service.
+        self._file_observations: OrderedDict = OrderedDict()
+        self._observations_guard = threading.Lock()
         self._allowed_read_dirs: list[Path] = []
         if allowed_read_dirs:
             for d in allowed_read_dirs:
@@ -145,6 +156,74 @@ class SandboxService:
         if not self._is_within_sandbox(candidate):
             raise PermissionError(f"路径越界: {relative_path}")
         return candidate
+
+    SHARED_DIRECTORIES = frozenset({"tools", "docs", "assets", "gift", "emoji", "gallery"})
+
+    def resolve_agent_path(self, value: str, *, owner: str, chat_flow_id: str,
+                           write: bool = False) -> Path:
+        """Trusted context only. Same-flow files are shared, observations are not.
+
+        Persistent resources require explicit shared:<allowlisted-directory>/...
+        Absolute paths are accepted only within the current flow (delivery reuse).
+        Symlinks/junctions are rejected, including links to another allowed root.
+        """
+        if not isinstance(owner, str) or not owner.strip():
+            raise PermissionError("trusted owner required")
+        if not isinstance(chat_flow_id, str) or not chat_flow_id.strip():
+            raise PermissionError("trusted chat_flow_id required")
+        if len(owner) > 512 or len(chat_flow_id) > 256:
+            raise ValueError("context too long")
+        # Existing temp paths sanitize ':' to '_'. Reject alias spellings rather
+        # than letting a different trusted flow identity enter that same folder.
+        if ":" in chat_flow_id:
+            kind, identifier = chat_flow_id.split(":", 1)
+            if kind not in {"group", "private"} or not identifier.isascii() or not identifier.isdecimal():
+                raise PermissionError("use canonical group:<digits>/private:<digits> flow identity")
+        else:
+            kind, _, identifier = chat_flow_id.partition("_")
+            if (chat_flow_id != self._sanitize_flow_id(chat_flow_id)
+                    or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-_." for ch in chat_flow_id)
+                    or (kind in {"group", "private"} and identifier.isdecimal())):
+                raise PermissionError("noncanonical or aliased flow identity")
+        if not isinstance(value, str) or not value or len(value) > 4096:
+            raise ValueError("invalid path")
+        value = value.replace("\\", "/")
+        if value.startswith("shared:"):
+            relative = value[7:]
+            parts = relative.split("/")
+            if parts[0] not in self.SHARED_DIRECTORIES:
+                raise PermissionError("shared directory is not allowlisted")
+            base = self._root / parts[0]
+            # Explicitly registered external resources remain read-only.
+            external = [p for p in self._allowed_read_dirs if p.name == parts[0]]
+            if external:
+                if write:
+                    raise PermissionError("shared resource is read-only")
+                base = external[0]
+            value = "/".join(parts[1:]) or "."
+        else:
+            base = self.get_temp_dir(chat_flow_id)
+        if ".." in value.split("/"):
+            raise PermissionError("parent traversal is not allowed")
+        # Reject Windows alternate streams, drive-relative paths, and device names.
+        raw = Path(value)
+        if not raw.is_absolute() and (raw.drive or ":" in value):
+            raise PermissionError("invalid relative path")
+        candidate = base / raw
+        for component in candidate.parts[1:]:
+            if ":" in component or (hasattr(os.path, "isreserved") and os.path.isreserved(component)):
+                raise PermissionError("reserved path component/alternate data stream")
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(base.absolute()):
+            raise PermissionError("path is outside current flow/shared directory")
+        for part in (candidate, *candidate.parents):
+            if part.is_symlink() or (hasattr(part, "is_junction") and part.is_junction()):
+                raise PermissionError("symlink/junction paths are not allowed")
+        if write and not self._is_within_sandbox(resolved):
+            raise PermissionError("write outside sandbox")
+        if not self.is_path_allowed(resolved):
+            raise PermissionError("path is not allowed")
+        return resolved
 
     def resolve_read_path(
         self,
@@ -208,25 +287,86 @@ class SandboxService:
             data = data[:MAX_TEXT_READ_BYTES]
         return data
 
-    async def write_file(self, path: Path, data: bytes) -> None:
-        """写入文件。父目录自动创建。"""
+    @contextmanager
+    def file_lock(self, path: Path):
+        """Per-canonical-file, cross-thread lock; idle entries are reclaimed."""
+        key = os.path.normcase(str(path.resolve()))
+        with self._file_locks_guard:
+            lock, users = self._file_locks.get(key, (threading.RLock(), 0))
+            self._file_locks[key] = (lock, users + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._file_locks_guard:
+                _, users = self._file_locks[key]
+                if users == 1:
+                    del self._file_locks[key]
+                else:
+                    self._file_locks[key] = (lock, users - 1)
+
+    def read_complete(self, path: Path, max_bytes: int = 16 * 1024 * 1024) -> bytes:
+        """Complete bounded read for editing, NEVER a display preview.
+
+        The old read_file byte-preview contract remains for existing consumers.
+        Too-large input fails rather than returning data safe-looking to overwrite.
+        """
+        if not self.is_path_allowed(path):
+            raise PermissionError(f"路径不允许: {path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"文件不存在: {path}")
+        with path.open("rb") as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError(f"file_too_large: limit {max_bytes} bytes")
+        return data
+
+    @staticmethod
+    def file_version(path: Path, data: bytes) -> str:
+        stat = path.stat()
+        metadata = f"{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_ino}:".encode()
+        return hashlib.sha256(metadata + data).hexdigest()
+
+    def atomic_write(self, path: Path, data: bytes) -> None:
+        """Caller holds file_lock; fsync then replace on the same filesystem."""
         resolved = path.resolve()
         if not self._is_within_sandbox(resolved):
             raise PermissionError(f"写入路径越界: {path}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_bytes(data)
+        fd, temporary = tempfile.mkstemp(prefix=".neobot-write-", dir=resolved.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if resolved.exists():
+                os.chmod(temporary, resolved.stat().st_mode)
+            os.replace(temporary, resolved)
+        finally:
+            if os.path.exists(temporary):
+                os.chmod(temporary, 0o600)
+                os.unlink(temporary)
+
+    async def write_file(self, path: Path, data: bytes) -> None:
+        """Trusted service API, atomic but deliberately not observation-gated.
+
+        Agent callers must use AgentFileTools (or the legacy skill adapter).
+        """
+        with self.file_lock(path):
+            self.atomic_write(path, data)
 
     async def delete_file(self, path: Path) -> None:
         """删除文件或空目录。"""
         resolved = path.resolve()
         if not self._is_within_sandbox(resolved):
             raise PermissionError(f"删除路径越界: {path}")
-        if resolved.is_dir():
-            shutil.rmtree(resolved)
-        elif resolved.is_file():
-            resolved.unlink()
-        else:
-            raise FileNotFoundError(f"路径不存在: {path}")
+        with self.file_lock(resolved):
+            if resolved.is_dir():
+                shutil.rmtree(resolved)
+            elif resolved.is_file():
+                resolved.unlink()
+            else:
+                raise FileNotFoundError(f"路径不存在: {path}")
 
     async def list_files(
         self,
@@ -288,8 +428,11 @@ class SandboxService:
             raise PermissionError(f"源路径越界: {src}")
         if not self._is_within_sandbox(dst_r):
             raise PermissionError(f"目标路径越界: {dst}")
-        dst_r.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_r), str(dst_r))
+        with ExitStack() as locks:
+            for path in sorted({src_r, dst_r}, key=lambda p: os.path.normcase(str(p))):
+                locks.enter_context(self.file_lock(path))
+            dst_r.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_r), str(dst_r))
 
     async def copy_file(self, src: Path, dst: Path) -> None:
         """复制文件。"""
@@ -299,8 +442,30 @@ class SandboxService:
             raise PermissionError(f"源路径不允许: {src}")
         if not self._is_within_sandbox(dst_r):
             raise PermissionError(f"目标路径越界: {dst}")
-        dst_r.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(src_r), str(dst_r))
+        if dst_r.is_dir():
+            dst_r = (dst_r / src_r.name).resolve()
+            if not self._is_within_sandbox(dst_r):
+                raise PermissionError(f"目标路径越界: {dst}")
+        with ExitStack() as locks:
+            for path in sorted({src_r, dst_r}, key=lambda p: os.path.normcase(str(p))):
+                locks.enter_context(self.file_lock(path))
+            if src_r == dst_r or (dst_r.exists() and os.path.samefile(src_r, dst_r)):
+                raise shutil.SameFileError(str(src_r))
+            dst_r.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".neobot-write-", dir=dst_r.parent)
+            os.close(fd)
+            try:
+                shutil.copyfile(src_r, temporary)
+                # Windows fsync requires a writable descriptor; apply source
+                # metadata only afterwards (it may include a read-only mode).
+                with open(temporary, "rb+") as stream:
+                    os.fsync(stream.fileno())
+                shutil.copystat(src_r, temporary)
+                os.replace(temporary, dst_r)
+            finally:
+                if os.path.exists(temporary):
+                    os.chmod(temporary, 0o600)
+                    os.unlink(temporary)
 
     # ── 内部方法 ──
 

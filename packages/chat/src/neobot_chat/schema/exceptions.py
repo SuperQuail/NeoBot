@@ -9,6 +9,10 @@ class ProviderError(ChatError):
     """Provider 相关错误（API 调用失败等）"""
 
 
+class NativeVisionUnsupportedError(ProviderError):
+    """图片输入被模型明确拒绝，或当前 provider 无法无损传递图片。"""
+
+
 class ToolError(ChatError):
     """工具执行错误"""
 

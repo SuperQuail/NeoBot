@@ -179,7 +179,7 @@ async def _handle_help(ctx: CommandContext) -> str | None:
 
 
 async def _handle_reboot(ctx: CommandContext) -> str:
-    """重启 Bot(进程内重建应用,cli 主循环支持)。"""
+    """重启 Bot(优雅关闭后由 CLI 重新启动全新进程)。"""
     if not ctx.service.request_restart():
         return "重启功能不可用(当前启动方式不支持)"
     return "正在重启…请稍候"

@@ -376,6 +376,7 @@ class AgentRegistry:
         previous_response: str | None = None,
         session_id: str | None = None,
         context: str | None = None,
+        execution_context: Any = None,
     ) -> str:
         if tasks is not None:
             if not isinstance(context, (str, type(None))):
@@ -409,6 +410,7 @@ class AgentRegistry:
                     previous_response=t.get("previous_response"),
                     session_id=t.get("session_id"),
                     context=context,
+                    execution_context=execution_context,
                 )
                 for t in tasks
             ]
@@ -441,7 +443,13 @@ class AgentRegistry:
             self._delegates.setdefault(generation, set()).add(delegate_task)
 
         try:
-            session_key = self._session_key(agent, session_id)
+            scoped_session_id = session_id
+            owner = getattr(execution_context, "owner", None)
+            flow = getattr(execution_context, "chat_flow_id", None)
+            if session_id and isinstance(owner, str) and isinstance(flow, str):
+                # Host provenance isolates resumed plugin-agent history across chats.
+                scoped_session_id = f"{flow}:{owner}:{session_id}"
+            session_key = self._session_key(agent, scoped_session_id)
             if session_key:
                 # Lock the full read/invoke/write transaction for one session.
                 lock = self._session_locks.setdefault(session_key, asyncio.Lock())
@@ -456,6 +464,7 @@ class AgentRegistry:
                             session_key,
                             previous_response,
                             context,
+                            execution_context,
                         )
                 finally:
                     users = self._session_lock_users.get(session_key, 1) - 1
@@ -466,7 +475,7 @@ class AgentRegistry:
                         if session_key not in self._sessions:
                             self._session_locks.pop(session_key, None)
             return await self._delegate_once(
-                registration, task, None, previous_response, context
+                registration, task, None, previous_response, context, execution_context
             )
         except asyncio.CancelledError:
             # 仅排空/关闭主动取消（预先标记）的委托转成友好文本；外部取消
@@ -515,6 +524,7 @@ class AgentRegistry:
         session_key: str | None,
         previous_response: str | None,
         context: str | None,
+        execution_context: Any = None,
     ) -> str:
         agent = registration.name
         agent_obj = registration.agent
@@ -531,6 +541,7 @@ class AgentRegistry:
                 {
                     "messages": messages,
                     "_delegate_context": context.strip() if context else "",
+                    "_agent_tool_context": execution_context,
                 }
             )
         )

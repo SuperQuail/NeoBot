@@ -39,6 +39,16 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `archive_summary` | 档案自动总结 | 1 |
 | `self_heal` | 自修复 Agent | 3（低成本非推理） |
 
+## 共享工具与 PTC
+
+主回复、解题与新子 agent 共用 `agent.tools` 任务工具模式，修改配置后重启切换：
+
+- `mode="native"`（默认）：直接使用精简文件、Python／shell、网络、默认 Python LSP、作业和基础任务／交互工具；不暴露 `run_code`、持久终端、goal、subagent、workflow、Ralph 或审计查询。
+- `mode="ptc"`：任务工具线上仅暴露 `run_code`，基础与复杂编排叶子只能通过其程序调用，不能直接调用。默认 `ptc_enabled=true` 表示 PTC 能力可用，但仍默认普通模式；关闭该能力时不能选择 PTC。旧 `both` 配置会告警并按精简普通模式加载；建议更新为 `native`。
+- 主聊天的聊天、图片、凭据、文件交付业务仍原生可见。仅重复 `sandbox_manager` 文本读写／编辑／glob／grep 别名隐藏且拒绝；目录列表、二进制及收发工具保留。
+
+敏感操作复用管理员凭据，模式切换不扩大继承 ACL 或真人权限，图片复用现有视觉链路。LSP 默认使用正式依赖 pylsp，`lsp_servers={}` 不表示禁用，需使用 `lsp_enabled=false`。完整清单、边界与配置见 [Agent 工具与 PTC](Agent工具与PTC.md)。
+
 ## 专职子 Agent
 
 ### Problem Solver（解题 Agent，[`app/src/neobot_app/agents/problem_solver.py`](../../app/src/neobot_app/agents/problem_solver.py)）
@@ -49,6 +59,8 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - 结果可保存到沙箱并返回文件路径（`allow_sandbox_output`）
 - 每个聊天流最多保留 `max_tasks_per_pipeline`（默认 5）个后台任务
 - 超时 `timeout_seconds`（默认 600s）、最大 Token `max_tokens`（默认 20480）、推理强度 `reasoning_effort`（默认 max）
+- 共享工具模式使用 canonical 工具和默认网络／Python LSP，不再注册旧 `search/read_page/search_status/write_file/read_file/parse_image` 别名
+- `get_chat_context` 与 `submit_solution` 协议保留：普通模式直接调用，PTC 中在 `run_code` 内调用；解题 Agent 的 PTC 线上仅有 `run_code`
 
 ### Self-Heal（自修复 Agent，[`app/src/neobot_app/agents/self_heal.py`](../../app/src/neobot_app/agents/self_heal.py)）
 

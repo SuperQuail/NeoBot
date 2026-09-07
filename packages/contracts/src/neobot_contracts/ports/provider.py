@@ -10,6 +10,11 @@ from typing import Any, Optional, Protocol, runtime_checkable
 class Provider(Protocol):
     """LLM Provider 接口，与 neobot_chat.providers.base.Provider 对齐"""
 
+    @property
+    def native_vision(self) -> bool:
+        """当前是否使用原生视觉；运行时回退后必须为 False。"""
+        ...
+
     async def chat(
         self,
         messages: list[dict[str, Any]],

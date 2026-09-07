@@ -61,7 +61,8 @@ _SKILL_GUARD_BASE_TOOLS = frozenset(
 _MAX_TOOL_TEXT_CHARS = 16 * 1024
 _MAX_SKILL_RESOURCE_BYTES = 1024 * 1024
 _SKILL_INTERNAL_KEYS = frozenset(
-    {"pipeline_key", "_numbering_mapping", "_delegate_context"}
+    {"pipeline_key", "_numbering_mapping", "_delegate_context", "_requester_id",
+     "_agent_tool_context", "_human_request", "_owner", "_source"}
 )
 _SESSION_ERROR_KEYS = frozenset({"error", "errors"})
 _SESSION_FAILURE_PREFIXES = ("未知工具", "工具执行失败", "错误")
@@ -202,6 +203,8 @@ class ReplyToolExecutor(ToolExecutor):
         conv_kind: str = "",
         conv_id: str = "",
         current_user_id: int | None = None,
+        human_request: bool = False,
+        agent_history: list[dict] | None = None,
         wait_cooldown_seconds: int = 60,
         ai_reply_check: bool = False,
         ai_reply_check_lightweight: bool = True,
@@ -214,7 +217,9 @@ class ReplyToolExecutor(ToolExecutor):
         credential_manager: Any = None,
         config: Any = None,
         config_update_callback: Any = None,
+        native_vision_provider: Any = None,
     ) -> None:
+        self._native_vision_provider = native_vision_provider
         self._send_reply = send_reply_handler
         self._willing = willing_service
         self._numbering = numbering
@@ -240,6 +245,8 @@ class ReplyToolExecutor(ToolExecutor):
         self._conv_kind = conv_kind
         self._conv_id = conv_id
         self._current_user_id = current_user_id
+        self._human_request = human_request
+        self._agent_history = agent_history if agent_history is not None else []
         self._ai_reply_check = ai_reply_check
         self._ai_reply_check_lightweight = ai_reply_check_lightweight
         self._bot_name = bot_name
@@ -748,6 +755,20 @@ class ReplyToolExecutor(ToolExecutor):
         if self._allowed_tools:
             allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
             tools = [t for t in tools if t["function"]["name"] in allowed]
+        tools = [t for t in tools if self.is_tool_authorized(t["function"]["name"])]
+        shared = self._shared_agent_tools()
+        if shared is not None and shared.runtime.mode == "ptc":
+            # SDK bindings must describe the current policy, not the global
+            # registration snapshot. Business tools retain their native schemas.
+            projected = shared.runtime.definitions(allowed_tools=self.agent_tool_capabilities())
+            if projected:
+                transport = projected[0]
+                transport["function"]["name"] = "agent_tools__run_code"
+                transport["function"]["description"] += (
+                    "\nNative business tools listed alongside this tool may also be called through tools.NAME(args), "
+                    "using their published argument schemas; the original executor rechecks authorization."
+                )
+                tools = [transport if d["function"]["name"] == "agent_tools__run_code" else d for d in tools]
         names: set[str] = set()
         for tool in tools:
             name = tool["function"]["name"]
@@ -756,20 +777,82 @@ class ReplyToolExecutor(ToolExecutor):
             names.add(name)
         return tools
 
+    def _shared_agent_tools(self) -> Any:
+        from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+        lookup = getattr(self._skill_manager, "get", None)
+        shared = lookup("agent_tools") if callable(lookup) else None
+        return shared if isinstance(shared, AgentToolsSkill) else None
+
+    def agent_tool_capabilities(self) -> frozenset[str]:
+        """Authorize program bindings independently of their wire presentation."""
+        shared = self._shared_agent_tools()
+        if shared is None:
+            return frozenset()
+        names = set(shared.runtime.capability_names())
+        if shared.runtime.config.ptc_enabled:
+            names.add("run_code")
+        return frozenset(name for name in names if self._policy_authorized(f"agent_tools__{name}"))
+
     def is_tool_authorized(self, name: str) -> bool:
-        """Return whether the active skill policy permits a final tool name."""
+        """Enforce mode/dedup at execution as well as in the displayed catalog."""
+        if not self._policy_authorized(name):
+            return False
+        shared = self._shared_agent_tools()
+        if shared is not None:
+            from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
+            if name.startswith("agent_tools__"):
+                return shared.runtime.is_wire_tool(name.removeprefix("agent_tools__"))
+            if name in LEGACY_FILE_ALIASES and LEGACY_FILE_ALIASES[name] in shared.runtime.capability_names():
+                return False
+        return True
+
+    def _policy_authorized(self, name: str) -> bool:
+        """Apply the skill allowlist and live model capability policy, not mode filtering."""
+        native_vision = getattr(self._native_vision_provider, "native_vision", False) is True
+        if name.startswith("image_context__") and not native_vision:
+            return False
+        if native_vision and name in {
+            "image_parse__parse_image",
+            "drawing__inspect_image",
+            "user_profile__analyze_user_avatar",
+        }:
+            return False
         return not self._allowed_tools or name in (
             _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
         )
 
-    @staticmethod
-    def authorization_error(name: str) -> str:
-        return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
+    def authorization_error(self, name: str) -> str:
+        if self._allowed_tools and name not in (_SKILL_GUARD_BASE_TOOLS | self._allowed_tools):
+            return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
+        shared = self._shared_agent_tools()
+        if shared is not None:
+            from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
+            if name in LEGACY_FILE_ALIASES:
+                return f"Error: 工具 {name} 已去重，请使用 agent_tools__{LEGACY_FILE_ALIASES[name]}（PTC时在run_code内调用）"
+            if name.startswith("agent_tools__") and not shared.runtime.is_wire_tool(name.removeprefix("agent_tools__")):
+                return f"Error: 工具 {name} 不在当前 {shared.runtime.mode} 模式的直接调用列表内"
+        return f"Error: 工具 {name} 与当前模型视觉能力不匹配，请使用当前提供的图片工具"
 
     async def execute(self, name: str, args: dict) -> str:
         # allowed-tools 白名单拦截（须在 skills__read_* 等所有路由之前）
         if not self.is_tool_authorized(name):
             return self.authorization_error(name)
+        if not name.startswith("agent_tools__") and self._skill_manager is not None:
+            from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+            from neobot_app.agent_tools.contracts import ToolContext
+            lookup = getattr(self._skill_manager, "get", None)
+            shared = lookup("agent_tools") if callable(lookup) else None
+            if isinstance(shared, AgentToolsSkill) and self._conv_kind in {"group", "private"} and str(self._conv_id).isdigit():
+                flow = f"{self._conv_kind}:{self._conv_id}"
+                context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow)
+                safe = {"cancel", "send_reply", "split_reply", "wait", "send_long_reply",
+                        "credential__request", "credential__check", "skills__read_manifest",
+                        "skills__read_resource", "skills__view_instructions", "check_background_tasks",
+                        "cancel_task", "agents__list", "image_context__add_image", "image_parse__parse_image",
+                        "sandbox_manager__read_file", "sandbox_manager__list_files",
+                        "sandbox_manager__glob_files", "sandbox_manager__grep_files"}
+                if shared.runtime.state.is_planning(context) and name not in safe:
+                    return json.dumps({"ok": False, "code": "PLAN_MODE", "error": "计划待审批，不能通过旧工具绕过执行限制"}, ensure_ascii=False)
         if name == "cancel":
             return await self._execute_cancel(args)
         if name == "split_reply":
@@ -849,9 +932,47 @@ class ReplyToolExecutor(ToolExecutor):
         raise ToolError(f"Unknown reply tool: {name}")
 
     async def _execute_skill(self, name: str, args: dict, token: Any) -> str:
-        if token is None:
-            return await self._skill_manager.execute(name, args)
-        return await self._skill_manager.execute(name, args, token=token)
+        if not name.startswith(("agent_tools__", "agents__", "background_trigger__", "sandbox_manager__")):
+            if token is None:
+                return await self._skill_manager.execute(name, args)
+            return await self._skill_manager.execute(name, args, token=token)
+        from neobot_app.agent_tools.contracts import ToolContext
+        from neobot_app.agent_tools.invocation import CURRENT_INVOCATION, ToolInvocation
+
+        if self._conv_kind not in {"group", "private"} or not str(self._conv_id).isdigit():
+            from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+            lookup = getattr(self._skill_manager, "get", None)
+            shared = lookup("agent_tools") if callable(lookup) else None
+            if name.startswith("agent_tools__") or isinstance(shared, AgentToolsSkill):
+                return json.dumps({"ok": False, "code": "CONTEXT_REQUIRED", "error": "缺少可信聊天身份"})
+            # Preserve host-only legacy callers when the shared runtime is absent.
+            if token is None:
+                return await self._skill_manager.execute(name, args)
+            return await self._skill_manager.execute(name, args, token=token)
+        flow = f"{self._conv_kind}:{self._conv_id}"
+        definitions = self.definitions()
+        allowed = self.agent_tool_capabilities()
+        context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow, user_id=self._current_user_id,
+                              human_request=self._human_request, allowed_tools=allowed)
+        external = [d for d in definitions if not d["function"]["name"].startswith("agent_tools__")]
+        image_parts: list[dict] = []
+        async def dispatch(external_name: str, external_args: dict) -> Any:
+            result = await self.execute(external_name, external_args)
+            image_parts.extend(getattr(result, "image_parts", []))
+            return result
+        invocation = ToolInvocation(context, dispatch, external, self._agent_history)
+        marker = CURRENT_INVOCATION.set(invocation)
+        try:
+            if token is None:
+                result = await self._skill_manager.execute(name, args)
+            else:
+                result = await self._skill_manager.execute(name, args, token=token)
+            if image_parts:
+                from neobot_app.skills.image_context_skill import ImageContextResult
+                return ImageContextResult(str(result), image_parts)
+            return result
+        finally:
+            CURRENT_INVOCATION.reset(marker)
 
     async def _execute_session_tool(
         self, name: str, args: dict, token: Any = None
@@ -2210,6 +2331,8 @@ def build_reply_toolset(
     conv_kind: str = "",
     conv_id: str = "",
     current_user_id: int | None = None,
+    human_request: bool = False,
+    agent_history: list[dict] | None = None,
     wait_cooldown_seconds: int = 60,
     ai_reply_check: bool = False,
     ai_reply_check_lightweight: bool = True,
@@ -2223,6 +2346,7 @@ def build_reply_toolset(
     credential_manager: Any = None,
     config: Any = None,
     config_update_callback: Any = None,
+    native_vision_provider: Any = None,
 ) -> Toolset:
     executor = ReplyToolExecutor(
         send_reply_handler=send_reply_handler,
@@ -2250,6 +2374,8 @@ def build_reply_toolset(
         conv_kind=conv_kind,
         conv_id=conv_id,
         current_user_id=current_user_id,
+        human_request=human_request,
+        agent_history=agent_history,
         wait_cooldown_seconds=wait_cooldown_seconds,
         ai_reply_check=ai_reply_check,
         ai_reply_check_lightweight=ai_reply_check_lightweight,
@@ -2262,6 +2388,7 @@ def build_reply_toolset(
         credential_manager=credential_manager,
         config=config,
         config_update_callback=config_update_callback,
+        native_vision_provider=native_vision_provider,
     )
     definitions = executor.definitions()
     specs = [

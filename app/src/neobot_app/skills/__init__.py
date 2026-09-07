@@ -19,6 +19,7 @@ from neobot_app.skills.emoji_management import EmojiManagementSkill
 from neobot_app.skills.image_send import ImageSendSkill
 from neobot_app.skills.image_pool_skill import ImagePoolSkill
 from neobot_app.skills.image_parse_skill import ImageParseSkill
+from neobot_app.skills.image_context_skill import ImageContextSkill
 from neobot_app.skills.willingness_skill import WillingnessSkill
 from neobot_app.skills.reminder_skill import ReminderSkill
 from neobot_app.skills.birthday_skill import BirthdaySkill
@@ -73,6 +74,7 @@ def build_all_skills(
     vision_detect_service: Any = None,
     credential_manager: Any = None,
     sleep_service: Any = None,
+    agent_provider: Any = None,
     **kwargs: Any,
 ) -> SkillManager:
     """创建 SkillManager 并注册所有可用的 Skill。
@@ -236,6 +238,20 @@ def build_all_skills(
             ImageSendSkill(adapter=adapter, file_server=file_server, image_pool=image_pool)
         )
 
+    # Always registered independently of vision_provider; reply filters this
+    # native-context tool dynamically using its selected provider.native_vision.
+    if "image_context" not in disabled:
+        skills_to_register.append(
+            ImageContextSkill(
+                adapter=adapter,
+                group_message_queue=group_message_queue,
+                friend_message_queue=friend_message_queue,
+                image_pool=image_pool,
+                creator_image_service=creator_image_service,
+                emoji_service=emoji_service,
+            )
+        )
+
     if "image_parse" not in disabled:
         skills_to_register.append(
             ImageParseSkill(
@@ -312,6 +328,7 @@ def build_all_skills(
         skills_to_register.append(
             SandboxManagerSkill(
                 sandbox_service=sandbox_service,
+                credential_manager=credential_manager,
                 sandbox_lock=sandbox_lock,
                 adapter=adapter,
                 file_server=file_server,
@@ -357,5 +374,21 @@ def build_all_skills(
 
     for skill in skills_to_register:
         mgr.register(skill)
+
+    tools_config = getattr(getattr(config, "agent", None), "tools", None)
+    if (sandbox_service is not None and "agent_tools" not in disabled
+            and getattr(tools_config, "enabled", True)):
+        from pathlib import Path
+        from neobot_app.agent_tools.runtime import AgentToolRuntime
+        from neobot_app.skills.agent_tools_skill import AgentToolsSkill
+        runtime = AgentToolRuntime(
+            sandbox_service, state_dir=Path(kwargs.get("data_dir", ".")) / "agent_tools",
+            credential_manager=credential_manager, provider=agent_provider,
+            vision_provider=vision_provider, skill_manager=mgr, notification_hub=notification_hub,
+            config=tools_config,
+        )
+        mgr.register(AgentToolsSkill(runtime))
+        if problem_solver_manager is not None:
+            problem_solver_manager.set_tool_runtime(runtime)
 
     return mgr

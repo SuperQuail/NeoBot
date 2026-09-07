@@ -372,7 +372,7 @@ class NeoBotApplication(Generic[T]):
         return self._restart_requested
 
     def request_restart(self) -> None:
-        """在核心优雅关闭后，请求完整的进程内重建。"""
+        """请求优雅关闭；CLI 在事件循环退出后以新进程重新启动。"""
         self._restart_requested = True
         self._shutdown_event.set()
 

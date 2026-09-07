@@ -7,8 +7,14 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
+
+from neobot_chat.providers.deepseek_offical import DeepSeekOfficalProvider
+from neobot_chat.providers.openai import OpenAIProvider
+from neobot_contracts.ports.logging import NullLogger
 
 from neobot_app.runtime.archive_memory_summary import (
     MAX_STORED_MESSAGE_CHARS,
@@ -172,6 +178,150 @@ async def test_summary_failure_keeps_counter_for_retry():
     state = json.loads(archive.raw("memory_counter", "group:222")["value"])
     assert state["count"] == 3
     assert len(state["messages"]) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_cls", [OpenAIProvider, DeepSeekOfficalProvider], ids=["openai", "deepseek"]
+)
+@pytest.mark.parametrize(
+    "final_fields", [{}, {"tool_calls": None}, {"tool_calls": []}],
+    ids=["missing", "null", "empty"],
+)
+@pytest.mark.parametrize("call_tool_first", [False, True], ids=["immediate", "after-tool"])
+async def test_real_provider_no_tool_completion_resets_counter(
+    provider_cls, final_fields, call_tool_first
+):
+    """Tools are optional: a final no-tool HTTP response completes the summary."""
+    archive = _FakeArchive()
+    logger = Mock(spec=NullLogger)
+    executor = AsyncMock(return_value="stored")
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "archive_set",
+            "description": "Update an archive record",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+        },
+    }]
+    arguments = {"value": "Likes Python"}
+    tool_call = {
+        "id": "archive-call-1",
+        "type": "function",
+        "function": {"name": "archive_set", "arguments": json.dumps(arguments)},
+    }
+    responses = []
+    if call_tool_first:
+        responses.append({
+            "message": {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+            "finish_reason": "tool_calls",
+        })
+    responses.append({
+        "message": {"role": "assistant", "content": "Done", **final_fields},
+        "finish_reason": "stop",
+    })
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        assert request.method == "POST"
+        assert request.url.path == "/chat/completions"
+        assert len(requests) <= len(responses), "HTTP loop continued after completion"
+        return httpx.Response(200, json={"choices": [responses[len(requests) - 1]]})
+
+    provider = provider_cls(api_key="test-key", model="test-model")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://archive.test"
+    )
+    service = ArchiveMemoryAutoSummaryService(
+        archive_memory_service=archive,
+        provider=provider,
+        config=_make_config(group_interval=2),
+        logger=logger,
+        tool_definitions=tools,
+        tool_executor=executor,
+    )
+    try:
+        await service.record_message(
+            conversation_kind="group", conversation_id="111", message_text="I like Python"
+        )
+        assert requests == []
+        assert json.loads(archive.raw("memory_counter", "group:111")["value"])["count"] == 1
+        await service.record_message(
+            conversation_kind="group", conversation_id="111", message_text="Still do"
+        )
+
+        assert len(requests) == (2 if call_tool_first else 1)
+        assert all(payload["tools"] == tools for payload in requests)
+        assert all(payload["tool_choice"] == "auto" for payload in requests)
+        assert [message["role"] for message in requests[0]["messages"]] == ["system", "user"]
+        if call_tool_first:
+            executor.assert_called_once_with("archive_set", arguments)
+            executor.assert_awaited_once_with("archive_set", arguments)
+            assert requests[1]["messages"][-2]["tool_calls"] == [tool_call]
+            assert requests[1]["messages"][-1] == {
+                "role": "tool", "tool_call_id": "archive-call-1", "content": "stored"
+            }
+        else:
+            executor.assert_not_called()
+        assert json.loads(archive.raw("memory_counter", "group:111")["value"]) == {
+            "count": 0, "messages": []
+        }
+        logger.warning.assert_not_called()
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_cls", [OpenAIProvider, DeepSeekOfficalProvider], ids=["openai", "deepseek"]
+)
+async def test_real_provider_http_failure_preserves_counter(provider_cls):
+    """A genuine HTTP error must not be mistaken for successful no-tool completion."""
+    archive = _FakeArchive()
+    logger = Mock(spec=NullLogger)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(401, json={"error": {"message": "invalid test key"}})
+
+    provider = provider_cls(api_key="test-key", model="test-model")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://archive.test"
+    )
+    service = ArchiveMemoryAutoSummaryService(
+        archive_memory_service=archive,
+        provider=provider,
+        config=_make_config(group_interval=2),
+        logger=logger,
+    )
+    try:
+        for text in ("first", "second"):
+            await service.record_message(
+                conversation_kind="group", conversation_id="222", message_text=text
+            )
+
+        assert len(requests) == 1  # Non-retryable HTTP error, not a tool loop.
+        assert json.loads(archive.raw("memory_counter", "group:222")["value"]) == {
+            "count": 2,
+            "messages": [
+                {"sender_id": "", "sender_name": "", "text": "first"},
+                {"sender_id": "", "sender_name": "", "text": "second"},
+            ],
+        }
+        logger.warning.assert_called_once()
+        assert logger.warning.call_args.args == (
+            "archive auto summary failed, counter preserved for retry",
+        )
+        assert "401" in logger.warning.call_args.kwargs["error"]
+        logger.info.assert_not_called()
+    finally:
+        await provider.close()
 
 
 @pytest.mark.asyncio

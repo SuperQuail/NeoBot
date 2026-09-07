@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -66,14 +65,16 @@ class SandboxManagerSkill(SkillModule):
             "  - 收到返回后请立即结束本轮回复，不要继续调用其他工具或使用 wait\n"
             "  - 系统会在下载完成后通过通知自动唤醒你，届时携带文件路径\n\n"
             "## chat_flow_id\n"
-            "取 pipeline_key 的值（格式 group:12345 或 private:12345）。\n\n"
+            "取 pipeline_key 的值（格式 group:12345 或 private:12345）。\n"
+            "生产调用由宿主绑定当前聊天和 owner；参数不能切换聊天，发送也仅允许当前聊天。\n"
+            "共享持久目录必须显式使用 shared:docs/... 等路径；共享修改需 agent_shared_write 凭据。\n"
+            "覆盖已有 base64 文件需 agent_execute 凭据。已有文本文件修改请先 read_file。\n\n"
             "## 临时目录 vs 沙箱根（重要）\n"
             "路径选择规则：除非文件是长期复用的工具/文档/资源，否则一律写入临时目录。\n"
             "write_file / write_file_base64 写入的文件位于临时目录（sandbox/temp/{chat_flow_id}/）。\n"
-            "read_file / edit_file / glob_files / grep_files / list_files 操作临时文件时，\n"
-            "必须显式传入 chat_flow_id（取 pipeline_key 的值），否则默认在沙箱根目录查找。\n"
-            "注意：读工具不会自动使用 pipeline_key 作为 chat_flow_id，你必须显式传递。\n"
-            "沙箱根目录仅用于访问持久化文件（tools/、docs/、assets/、gift/、emoji/ 等长期复用的资源）。\n\n"
+            "生产工具的相对路径始终基于宿主绑定的当前聊天临时目录，不能使用 ../ 切换聊天。\n"
+            "持久化资源必须显式使用 shared:tools/...、shared:docs/...、shared:assets/... 等白名单路径。\n"
+            "无调用上下文的宿主直调保留历史 root/chat_flow_id 路径接口；模型不能选择该模式。\n\n"
             "## 持久化文件操作（tools/docs/assets 目录）\n"
             "  操作前先调用 file_storage__read_storage_doc 查看索引\n"
             "  修改后调用 file_storage__update_storage_doc 更新索引"
@@ -90,17 +91,30 @@ class SandboxManagerSkill(SkillModule):
         adapter: Any = None,
         file_server: Any = None,
         hold_max_minutes: int = 120,
+        credential_manager: Any = None,
     ) -> None:
         self._sandbox = sandbox_service
+        from neobot_app.runtime.agent_file_tools import AgentFileTools
+        self._file_tools = AgentFileTools(sandbox_service) if sandbox_service is not None else None
+        self._file_owner = f"legacy-sandbox-skill:{id(self)}"
         self._lock = sandbox_lock
         self._adapter = adapter
         self._file_server = file_server
         self._hold_max_minutes = hold_max_minutes
+        from neobot_app.agent_tools.permissions import ToolPermissions
+        self._permissions = ToolPermissions(credential_manager)
 
     def reset(self) -> None:
         pass
 
     def _resolve_send_path(self, path_str: str, chat_flow_id: str | None = None) -> Path:
+        from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
+        invocation = CURRENT_INVOCATION.get()
+        if invocation is not None:
+            if self._file_tools is None:
+                raise PermissionError("sandbox_service required for model file delivery")
+            return self._file_tools.resolve_path(path_str, owner=invocation.context.owner,
+                                                 chat_flow_id=invocation.context.chat_flow_id)
         p = Path(path_str)
         if p.is_absolute() and p.exists():
             return p
@@ -125,15 +139,15 @@ class SandboxManagerSkill(SkillModule):
         return cid
 
     def get_tools(self) -> list[dict]:
-        return [
+        definitions = [
             # ── 读取 ──
             self._tool_def(
                 "read_file",
                 "读取沙箱内文件的内容。文本文件返回文本，二进制文件返回 base64。"
-                "操作临时文件时必须传入 chat_flow_id。",
+                "操作临时文件时必须传入 chat_flow_id；支持 offset/limit 行分页及 column 长行续读。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（当前聊天临时目录相对路径，持久化资源使用 shared:docs/... 等显式共享路径）"},
                         "chat_flow_id": {"type": "string", "description": "读取临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
@@ -174,11 +188,11 @@ class SandboxManagerSkill(SkillModule):
                 "edit_file",
                 "原地编辑沙箱内文本文件：查找 old_string 替换为 new_string。"
                 "old_string 必须在文件中唯一（除非设置 replace_all=true）。"
-                "这是修改文件的首选方式——不需要先读取再写入。"
+                "这是修改文件的首选方式；建议先 read_file，随后会校验版本防止覆盖他人更新。"
                 "编辑临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（当前聊天临时目录相对路径，持久化资源使用 shared:docs/... 等显式共享路径）"},
                         "old_string": {"type": "string", "description": "要被替换的文本片段"},
                         "new_string": {"type": "string", "description": "替换后的文本片段"},
                         "replace_all": {
@@ -234,7 +248,7 @@ class SandboxManagerSkill(SkillModule):
                 "删除沙箱内的文件或空目录。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（当前聊天临时目录相对路径，持久化资源使用 shared:docs/... 等显式共享路径）"},
                         "chat_flow_id": {"type": "string", "description": "删除临时文件时必传，取 pipeline_key 的值"},
                     },
                     "required": ["path"],
@@ -245,7 +259,7 @@ class SandboxManagerSkill(SkillModule):
                 "列出沙箱目录下的内容。列出临时文件时必须传入 chat_flow_id。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "目录路径（临时文件相对于临时目录，持久化文件相对于沙箱根），默认为 /"},
+                        "path": {"type": "string", "description": "目录路径（当前聊天相对路径或 shared:docs 等共享目录），默认为 ."},
                         "pattern": {"type": "string", "description": "可选，glob 模式过滤如 *.txt"},
                         "chat_flow_id": {"type": "string", "description": "列出临时文件时必传，取 pipeline_key 的值"},
                     },
@@ -281,7 +295,7 @@ class SandboxManagerSkill(SkillModule):
                 "将沙箱内的图片发送到聊天（以图片消息）。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（当前聊天临时目录相对路径，持久化资源使用 shared:docs/... 等显式共享路径）"},
                         "group_id": {"type": "string", "description": "可选，目标群号"},
                         "user_id": {"type": "string", "description": "可选，目标QQ号"},
                         "chat_flow_id": {"type": "string", "description": "发送临时文件时必传，取 pipeline_key 的值"},
@@ -294,7 +308,7 @@ class SandboxManagerSkill(SkillModule):
                 "将沙箱内的任意文件（PDF/文档/代码等）发送到聊天（以文件附件形式）。",
                 {
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径（临时文件相对于临时目录，持久化文件相对于沙箱根）"},
+                        "path": {"type": "string", "description": "文件路径（当前聊天临时目录相对路径，持久化资源使用 shared:docs/... 等显式共享路径）"},
                         "group_id": {"type": "string", "description": "目标群号"},
                         "user_id": {"type": "string", "description": "目标QQ号"},
                         "chat_flow_id": {"type": "string", "description": "发送临时文件时必传，取 pipeline_key 的值"},
@@ -333,12 +347,211 @@ class SandboxManagerSkill(SkillModule):
                 },
             ),
         ]
+        for definition in definitions:
+            function = definition.get("function", definition)
+            short_name = function["name"].rsplit("__", 1)[-1]
+            properties = function["parameters"]["properties"]
+            if short_name == "read_file":
+                properties.update({"offset": {"type": "integer", "minimum": 1},
+                                   "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
+                                   "column": {"type": "integer", "minimum": 0}})
+            elif short_name in {"write_file", "edit_file"}:
+                properties["expected_version"] = {"type": "string", "description": "read_file 返回的版本；已有文件写入需先完整读取"}
+        return definitions
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> str:
         handler = _HANDLERS.get(tool_name)
         if handler is None:
             return _json({"ok": False, "error": f"unknown sandbox_manager tool: {tool_name}"})
+        from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
+        invocation = CURRENT_INVOCATION.get()
+        if invocation is not None:
+            return await self._execute_trusted(tool_name, args, invocation.context)
+        # Direct, context-free calls are a host-only compatibility API.
         return await handler(self, args)
+
+    async def _execute_trusted(self, name: str, args: dict, context: Any) -> str:
+        """Production model entry. Never mint authority from tool arguments.
+
+        This is separate from the historical handlers so host-only integrations
+        retain their old contract without weakening flow-bound model calls.
+        """
+        from neobot_app.agent_tools.contracts import AgentToolError, ToolContext
+        from neobot_app.runtime.agent_file_tools import MAX_FILE_BYTES
+        try:
+            if not isinstance(context, ToolContext):
+                raise AgentToolError("CONTEXT_REQUIRED", "Trusted ToolContext required")
+            # Reply has already checked the qualified legacy skill capability.
+            # allowed_tools contains NEW runtime names, not legacy skill names.
+            if self._file_tools is None or self._sandbox is None:
+                raise AgentToolError("SANDBOX_REQUIRED", "sandbox_service 未配置")
+            if not isinstance(args, dict):
+                raise AgentToolError("INVALID_ARGS", "Tool arguments must be an object")
+            for key in ("chat_flow_id", "pipeline_key"):
+                if args.get(key) not in (None, "", context.chat_flow_id):
+                    raise AgentToolError("FLOW_MISMATCH", "Tool arguments cannot change the trusted chat flow")
+            if any(key in args for key in ("owner", "context", "invocation")):
+                raise AgentToolError("CONTEXT_REQUIRED", "Identity/context fields are host-only")
+            clean = {key: value for key, value in args.items() if key not in {"chat_flow_id", "pipeline_key"}}
+            bound = {**clean, "chat_flow_id": context.chat_flow_id}
+
+            def resolve(value, *, write=False):
+                if not isinstance(value, str) or not value:
+                    raise AgentToolError("INVALID_ARGS", "A nonempty string path is required")
+                return self._file_tools.resolve_path(value, owner=context.owner,
+                                                     chat_flow_id=context.chat_flow_id, write=write)
+
+            def shared(value):
+                return isinstance(value, str) and value.startswith("shared:")
+
+            async def execute_file(operation, values):
+                return await self._file_tools.execute(operation, values, owner=context.owner,
+                                                      chat_flow_id=context.chat_flow_id)
+
+            mapping = {"read_file": "read", "write_file": "write", "edit_file": "edit",
+                       "glob_files": "glob", "grep_files": "grep"}
+            if name in mapping:
+                operation = mapping[name]
+                raw = clean.get("file_path", clean.get("path", "." if operation in {"glob", "grep"} else None))
+                path = resolve(raw, write=operation in {"write", "edit"})
+                if operation in {"write", "edit"} and shared(raw):
+                    self._permissions.require(context, "agent_shared_write")
+                values = dict(clean)
+                if operation in {"glob", "grep"}:
+                    values.pop("file_path", None)
+                    values["path"] = raw
+                else:
+                    values.pop("path", None)
+                    values["file_path"] = raw
+                if operation == "grep":
+                    values["include"] = values.pop("glob", None) or "*"
+                    values["ignore_case"] = values.pop("-i", False)
+                    values["limit"] = values.pop("head_limit", 50)
+                    mode = values.pop("output_mode", "files_with_matches")
+                    if mode not in {"content", "count", "files_with_matches"}:
+                        raise AgentToolError("INVALID_ARGS", "Invalid output_mode")
+                if operation == "read":
+                    from neobot_app.runtime.sandbox_service import detect_file_type, MAX_BASE64_BYTES
+                    info = detect_file_type(path)
+                    if info["type"] in {"image", "binary"}:
+                        return _json({"ok": True, **info,
+                                      "note": "图片分析请使用 image_parse；发送请用 send_file/send_chat_file。"})
+                result = await execute_file(operation, values)
+                if operation == "read" and result.get("code") == "not_utf8":
+                    with path.open("rb") as stream:
+                        preview = stream.read(MAX_BASE64_BYTES)
+                    return _json({"ok": True, "type": "unknown_binary", "size": path.stat().st_size,
+                                  "content_base64": base64.b64encode(preview).decode(),
+                                  "truncated": path.stat().st_size > len(preview),
+                                  "note": "只读二进制预览；不可把预览作为完整文件覆盖。"})
+                if result.get("ok") and operation in {"glob", "grep"}:
+                    base = Path(result["root"])
+                    def relative(value):
+                        return str(Path(value).relative_to(base)) if Path(value) != base else Path(value).name
+                    if operation == "glob":
+                        result["matches"] = [{"path": relative(p), "is_dir": False} for p in result["paths"]]
+                    elif mode == "content":
+                        result["results"] = [{"file": relative(m["path"]), "line": m["lineNumber"], "text": m["line"]}
+                                             for m in result["matches"]]
+                    else:
+                        counts = {}
+                        for match in result["matches"]:
+                            key = relative(match["path"])
+                            counts[key] = counts.get(key, 0) + 1
+                        result["results"] = [{"file": key, "count" if mode == "count" else "match_count": count}
+                                             for key, count in counts.items()]
+                    if operation == "grep":
+                        result["total_matches"] = len(result["matches"])
+                return _json(result)
+
+            if name in {"move_file", "copy_file"}:
+                source, destination = clean.get("source"), clean.get("destination")
+                src = resolve(source, write=name == "move_file")
+                dst = resolve(destination, write=True)
+                # Service move/copy may append the basename for a directory target.
+                if dst.is_dir():
+                    resolve(destination.rstrip("/\\") + "/" + src.name, write=True)
+                if shared(destination) or (name == "move_file" and shared(source)):
+                    self._permissions.require(context, "agent_shared_write")
+                operation = self._sandbox.move_file if name == "move_file" else self._sandbox.copy_file
+                await operation(src, dst)
+                return _json({"ok": True})
+
+            if name == "list_files":
+                raw = clean.get("path") or "."
+                base = resolve(raw)
+                if clean.get("pattern"):
+                    result = await execute_file("glob", {"path": raw, "pattern": clean["pattern"]})
+                    if result.get("ok"):
+                        result["files"] = [{"name": Path(p).name, "path": p, "is_dir": False} for p in result["paths"]]
+                    return _json(result)
+                if not base.is_dir():
+                    raise NotADirectoryError(base)
+                import os
+                files, truncated = [], False
+                with os.scandir(base) as entries:
+                    for count, entry in enumerate(entries):
+                        if count >= 2000:
+                            truncated = True
+                            break
+                        try:
+                            path = resolve(raw.rstrip("/\\") + "/" + entry.name)
+                        except PermissionError:
+                            continue
+                        stat = path.stat()
+                        files.append({"name": path.name, "path": str(path), "is_dir": path.is_dir(),
+                                      "size": stat.st_size if path.is_file() else 0, "mtime": stat.st_mtime})
+                return _json({"ok": True, "files": files, "truncated": truncated})
+
+            if name == "hold_temp":
+                resolve(".", write=True)
+                return await _HANDLERS[name](self, bound)
+
+            raw = clean.get("save_name") if name == "download_file" else clean.get("path")
+            writing = name in {"delete_file", "write_file_base64", "download_file"}
+            path = resolve(raw, write=writing)
+            if name == "delete_file":
+                if shared(raw):
+                    self._permissions.require(context, "agent_shared_write")
+                await self._sandbox.delete_file(path)
+                return _json({"ok": True})
+            if name == "write_file_base64":
+                value = clean.get("content_base64")
+                if not isinstance(value, str) or len(value) > 4 * ((MAX_FILE_BYTES + 2) // 3):
+                    raise AgentToolError("INVALID_ARGS", "Invalid or oversized base64 content")
+                data = base64.b64decode(value, validate=True)
+                if len(data) > MAX_FILE_BYTES:
+                    raise AgentToolError("FILE_TOO_LARGE", "Binary write exceeds file limit")
+                with self._sandbox.file_lock(path):
+                    resolve(raw, write=True)
+                    if shared(raw):
+                        self._permissions.require(context, "agent_shared_write")
+                    elif path.exists():
+                        self._permissions.require(context, "agent_execute")
+                    self._sandbox.atomic_write(path, data)
+                return _json({"ok": True, "path": str(path), "size": len(data)})
+            if name == "download_file":
+                if shared(raw):
+                    self._permissions.require(context, "agent_shared_write")
+                bound["save_name"] = str(path)
+                return await _HANDLERS[name](self, bound)
+            if name in {"send_file", "send_chat_file"}:
+                kind, recipient = context.chat_flow_id.split(":", 1)
+                for key, expected in (("group_id", recipient if kind == "group" else ""),
+                                      ("user_id", recipient if kind == "private" else "")):
+                    if str(clean.get(key) or "") not in {"", expected}:
+                        raise AgentToolError("FLOW_MISMATCH", "File delivery recipient must be the trusted flow")
+                    bound[key] = expected
+                # Preserve explicit shared syntax: strict _resolve_send_path checks again.
+                bound["path"] = raw
+                return await _HANDLERS[name](self, bound)
+            raise AgentToolError("UNKNOWN_TOOL", name)
+        except AgentToolError as exc:
+            return _json({"ok": False, "code": exc.code, "error": str(exc), "details": exc.details})
+        except PermissionError as exc:
+            return _json({"ok": False, "code": "permission_denied", "error": str(exc)})
+        except (OSError, ValueError, TypeError) as exc:
+            return _json({"ok": False, "code": "file_error", "error": str(exc)})
 
 # ── Handlers ──
 
@@ -351,7 +564,6 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
     try:
         from neobot_app.runtime.sandbox_service import (
             MAX_BASE64_BYTES,
-            MAX_TEXT_READ_BYTES,
             detect_file_type,
         )
 
@@ -365,8 +577,6 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
 
         if ftype == "error":
             return _json({"ok": False, "error": f"无法读取文件: {rel_path}"})
-        if ftype == "empty":
-            return _json({"ok": True, "content": "", "size": 0})
 
         if ftype == "image":
             return _json({
@@ -392,60 +602,34 @@ async def _handle_read_file(self: SandboxManagerSkill, args: dict) -> str:
                 ),
             })
 
-        # 文本或未知类型 → 读取内容
-        data = await self._sandbox.read_file(path)
-
+        # UTF-8 is decoded from the COMPLETE bounded file, then paginated.
+        # This correctly handles a multibyte character straddling the old 64KiB cut.
+        result = await self._file_tools.execute_legacy(
+            "read", {**args, "file_path": rel_path}, owner=self._file_owner, chat_flow_id=chat_flow_id)
+        if result.get("ok"):
+            return _json(result)
+        # Unknown binary is only a preview; never register it as a complete read.
+        with path.open("rb") as stream:
+            preview = stream.read(MAX_BASE64_BYTES)
         try:
-            text = data.decode("utf-8")
-            if len(data) > MAX_TEXT_READ_BYTES:
-                return _json({
-                    "ok": True,
-                    "content": text[:MAX_TEXT_READ_BYTES],
-                    "size": len(data),
-                    "truncated": True,
-                    "note": (
-                        f"[PARTIAL view] 文本过大（{len(data)} 字节），仅返回前 {MAX_TEXT_READ_BYTES} 字节。"
-                        "如需查看后续内容，请使用 offset 参数再次读取。"
-                    ),
-                })
-            return _json({"ok": True, "content": text, "size": len(data)})
+            preview.decode("utf-8")
         except UnicodeDecodeError:
-            # 未知二进制（不在已知签名中），返回最小预览
-            preview_size = min(len(data), MAX_BASE64_BYTES)
-            truncated = len(data) > MAX_BASE64_BYTES
-            return _json({
-                "ok": True,
-                "type": "unknown_binary",
-                "content_base64": base64.b64encode(data[:preview_size]).decode(),
-                "size": len(data),
-                "truncated": truncated,
-                "note": (
-                    f"未知二进制格式（{len(data)} 字节）"
-                    + (f"，仅返回前 {MAX_BASE64_BYTES} 字节预览。" if truncated else "。")
-                    + "发送文件请使用 send_chat_file。"
-                ),
-            })
+            return _json({"ok": True, "type": "unknown_binary",
+                          "content_base64": base64.b64encode(preview).decode(),
+                          "size": size, "truncated": size > len(preview),
+                          "note": "二进制预览；发送文件请使用 send_chat_file。"})
+        return _json(result)
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_write_file(self: SandboxManagerSkill, args: dict) -> str:
-    """CC 风格：直接写文本内容。"""
-    if self._sandbox is None:
+    if self._file_tools is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    rel_path = str(args.get("path", "")).strip()
-    content = str(args.get("content", ""))
-    chat_flow_id = self._get_chat_flow_id(args)
-    if not rel_path or not chat_flow_id:
-        return _json({"ok": False, "error": "缺少必要参数 path/chat_flow_id"})
-    if not content:
-        return _json({"ok": False, "error": "content 不能为空"})
-    try:
-        data = content.encode("utf-8")
-        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
-        await self._sandbox.write_file(path, data)
-        return _json({"ok": True, "path": str(path), "size": len(data)})
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)})
+    flow = self._get_chat_flow_id(args)
+    if not args.get("path") or not flow or "content" not in args:
+        return _json({"ok": False, "error": "缺少必要参数 path/content/chat_flow_id"})
+    return _json(await self._file_tools.execute_legacy(
+        "write", args, owner=self._file_owner, chat_flow_id=flow))
 
 async def _handle_write_file_base64(self: SandboxManagerSkill, args: dict) -> str:
     """二进制内容通过 base64 写入。"""
@@ -465,143 +649,50 @@ async def _handle_write_file_base64(self: SandboxManagerSkill, args: dict) -> st
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_edit_file(self: SandboxManagerSkill, args: dict) -> str:
-    """CC 风格 Edit：读取→替换→写回。"""
-    if self._sandbox is None:
+    if self._file_tools is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    rel_path = str(args.get("path", "")).strip().lstrip("/")
-    old_string = str(args.get("old_string", ""))
-    new_string = str(args.get("new_string", ""))
-    replace_all = bool(args.get("replace_all", False))
-    if not rel_path:
-        return _json({"ok": False, "error": "缺少 path"})
-    if not old_string:
-        return _json({"ok": False, "error": "old_string 不能为空"})
-    try:
-        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        path = self._sandbox.resolve_path(rel_path, chat_flow_id)
-        data = await self._sandbox.read_file(path)
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return _json({"ok": False, "error": "文件不是文本格式，无法编辑"})
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)})
+    return _json(await self._file_tools.execute_legacy(
+        "edit", args, owner=self._file_owner, chat_flow_id=args.get("chat_flow_id") or None))
 
-    count = text.count(old_string)
-    if count == 0:
-        return _json({"ok": False, "error": f"未找到匹配的 old_string: {old_string[:80]}..."})
-    if count > 1 and not replace_all:
-        return _json({"ok": False, "error": f"old_string 出现了 {count} 次，不唯一。设置 replace_all=true 替换全部或用更精确的字符串"})
-    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
-    try:
-        await self._sandbox.write_file(path, new_text.encode("utf-8"))
-        return _json({"ok": True, "path": str(path), "replacements": count})
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)})
 
 async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
-    """CC 风格 Glob：按模式匹配文件路径。"""
-    if self._sandbox is None:
+    if self._file_tools is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    pattern = str(args.get("pattern", "")).strip()
-    base_path = str(args.get("path", "")).strip().lstrip("/") or "."
-    if not pattern:
-        return _json({"ok": False, "error": "缺少 pattern"})
-    try:
-        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        base = self._sandbox.resolve_read_path(base_path, chat_flow_id)
-        full_pattern = str(base / pattern)
-        import glob as glob_module
-        matches = []
-        for p in glob_module.iglob(full_pattern, recursive=True):
-            fp = Path(p)
-            if not self._sandbox.is_path_allowed(fp):
-                continue
-            stat = fp.stat()
-            matches.append({
-                "path": str(fp.relative_to(base)),
-                "size": stat.st_size,
-                "is_dir": fp.is_dir(),
-            })
-        # 排序，限制数量
-        matches.sort(key=lambda m: m["path"])
-        result = matches[:200]
-        return _json({"ok": True, "matches": result, "count": len(matches)})
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)})
+    result = await self._file_tools.execute_legacy(
+        "glob", args, owner=self._file_owner, chat_flow_id=args.get("chat_flow_id") or None)
+    if result.get("ok"):
+        base = Path(result["root"])
+        result["matches"] = [{"path": str(Path(p).relative_to(base)), "is_dir": False} for p in result["paths"]]
+    return _json(result)
+
 
 async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
-    """CC 风格 Grep：正则搜索文件内容。"""
-    if self._sandbox is None:
+    if self._file_tools is None:
         return _json({"ok": False, "error": "sandbox_service 未配置"})
-    pattern = str(args.get("pattern", ""))
-    base_path = str(args.get("path", "")).strip().lstrip("/") or "."
-    glob_filter = args.get("glob")
-    output_mode = str(args.get("output_mode", "files_with_matches")).strip()
-    case_insensitive = bool(args.get("-i", False))
-    head_limit = int(args.get("head_limit", 50))
-    if not pattern:
-        return _json({"ok": False, "error": "缺少 pattern"})
-
-    flags = re.IGNORECASE if case_insensitive else 0
-    try:
-        regex = re.compile(pattern, flags)
-    except re.error as e:
-        return _json({"ok": False, "error": f"正则表达式无效: {e}"})
-
-    try:
-        chat_flow_id = (args.get("chat_flow_id") or "").strip() or None
-        base = self._sandbox.resolve_read_path(base_path, chat_flow_id)
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)})
-
-    import glob as glob_module
-    if glob_filter:
-        search = str(base / glob_filter)
-        candidates = [Path(p) for p in glob_module.iglob(search, recursive=True)]
-    else:
-        candidates = list(base.rglob("*"))
-
-    results: list[dict] = []
-    files_searched = 0
-
-    for fp in candidates:
-        if not fp.is_file():
-            continue
-        if not self._sandbox.is_path_allowed(fp):
-            continue
-        # 跳过二进制文件
-        try:
-            text = fp.read_text("utf-8")
-        except (UnicodeDecodeError, PermissionError):
-            continue
-        files_searched += 1
-        lines = text.split("\n")
-        file_matches = []
-        for li, line in enumerate(lines, 1):
-            if regex.search(line):
-                file_matches.append({"line": li, "text": line[:500]})
-                if output_mode == "content" and len(file_matches) >= 20:
-                    break
-
-        if file_matches:
-            rel = str(fp.relative_to(base))
-            if output_mode == "content":
-                for m in file_matches:
-                    results.append({"file": rel, "line": m["line"], "text": m["text"]})
-            elif output_mode == "files_with_matches":
-                results.append({"file": rel, "match_count": len(file_matches)})
-            elif output_mode == "count":
-                results.append({"file": rel, "count": len(file_matches)})
-
-        if len(results) >= head_limit:
-            break
-
-    return _json({
-        "ok": True,
-        "results": results[:head_limit],
-        "total_matches": len(results),
-        "files_searched": files_searched,
-    })
+    mode = args.get("output_mode", "files_with_matches")
+    if mode not in {"content", "files_with_matches", "count"}:
+        return _json({"ok": False, "error": "invalid output_mode"})
+    translated = {**args, "include": args.get("glob") or "*",
+                  "ignore_case": args.get("-i", False), "limit": args.get("head_limit", 50)}
+    result = await self._file_tools.execute_legacy(
+        "grep", translated, owner=self._file_owner, chat_flow_id=args.get("chat_flow_id") or None)
+    if result.get("ok"):
+        base = Path(result["root"])
+        def relative(p):
+            return str(Path(p).relative_to(base)) if Path(p) != base else Path(p).name
+        if mode == "content":
+            result["results"] = [{"file": relative(m["path"]), "line": m["lineNumber"], "text": m["line"]}
+                                 for m in result["matches"]]
+        else:
+            counts: dict[str, int] = {}
+            for match in result["matches"]:
+                p = relative(match["path"])
+                counts[p] = counts.get(p, 0) + 1
+            result["results"] = [{"file": p, "count" if mode == "count" else "match_count": count}
+                                 for p, count in counts.items()]
+        result["total_matches"] = len(result["matches"])
+        # Counts explicitly describe the bounded matched prefix when truncated.
+    return _json(result)
 
 async def _handle_delete_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:

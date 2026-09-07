@@ -43,6 +43,7 @@ class Agent:
         provider: Provider,
         *,
         toolset: Toolset | None = None,
+        include_builtin_tools: bool = True,
         preprocessor: StatePreprocessor | None = None,
         agent_registry: AgentRegistry | None = None,
         skills: SkillRegistry | None = None,
@@ -64,6 +65,7 @@ class Agent:
         self.allowed_commands = list(allowed_commands or [])
         self.allowed_paths = self._build_allowed_paths(skills)
         self.tool_guard = tool_guard
+        self._strict_tools = not include_builtin_tools
         self._on_model_usage = on_model_usage
 
         builtin_toolset = build_builtin_toolset(
@@ -76,7 +78,8 @@ class Agent:
             allowed_commands=allowed_commands,
             output=output,
         )
-        self.toolset = Toolset.merge([builtin_toolset, toolset])
+        # Explicit tool-only agents must not implicitly expose host filesystem/shell tools.
+        self.toolset = Toolset.merge([builtin_toolset if include_builtin_tools else None, toolset])
         self._tool_specs = {spec.name: spec for spec in self.toolset.specs}
 
         self.skills = skills
@@ -292,7 +295,7 @@ class Agent:
     def _decide_tool_action(self, name: str, args: dict) -> ToolAccessAction:
         spec = self._tool_specs.get(name)
         if spec is None:
-            return "allow"
+            return "deny" if self._strict_tools else "allow"
         rule = spec.access_resolver(args, self._build_tool_guard_context(), self.toolset.policy)
         return self._resolve_rule(rule)
 

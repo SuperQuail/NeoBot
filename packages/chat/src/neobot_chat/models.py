@@ -59,6 +59,7 @@ class RegisteredModel:
     api_key: str
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
+    native_vision: bool = False
 
     @property
     def provider_kind(self) -> str:
@@ -75,6 +76,7 @@ class RegisteredModel:
             return AnthropicProvider(
                 api_key=self.api_key,
                 model=self.model_name,
+                native_vision=self.native_vision,
                 base_url=self.base_url,
                 max_tokens=self.settings.max_output_tokens or 4096,
                 timeout=self.settings.timeout_seconds,
@@ -87,6 +89,7 @@ class RegisteredModel:
             return DeepSeekOfficialProvider(
                 api_key=self.api_key,
                 model=self.model_name,
+                native_vision=self.native_vision,
                 base_url=self.base_url,
                 timeout=self.settings.timeout_seconds,
                 temperature=self.settings.temperature,
@@ -100,6 +103,7 @@ class RegisteredModel:
         return OpenAIProvider(
             api_key=self.api_key,
             model=self.model_name,
+            native_vision=self.native_vision,
             base_url=self.base_url,
             timeout=self.settings.timeout_seconds,
             temperature=self.settings.temperature,
