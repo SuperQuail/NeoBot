@@ -27,6 +27,11 @@ ACTION_REQUIRED_LEVEL: dict[str, int] = {
     "willing_global": PERM_SUB_ADMIN,
     # 查看/编辑 config 中的全局回复意愿系数(持久化,热重载)
     "willing_config": PERM_SUPER_ADMIN,
+    "agent_execute": PERM_SUPER_ADMIN,
+    "agent_shared_write": PERM_SUPER_ADMIN,
+    "agent_plan": PERM_SUPER_ADMIN,
+    "agent_goal": PERM_SUPER_ADMIN,
+    "agent_ralph": PERM_SUPER_ADMIN,
 }
 
 # 未登记动作的默认签发等级

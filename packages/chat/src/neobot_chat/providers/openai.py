@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.providers.vision import to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
 
@@ -23,8 +24,9 @@ class OpenAIProvider(BaseHTTPProvider):
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
         extra_body: dict[str, Any] | None = None,
+        native_vision: bool = False,
     ):
-        super().__init__(api_key, base_url, timeout)
+        super().__init__(api_key, base_url, timeout, native_vision=native_vision)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -70,7 +72,13 @@ class OpenAIProvider(BaseHTTPProvider):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": [
+                {
+                    **{key: value for key, value in message.items() if key != "extensions"},
+                    "content": to_openai_content(message.get("content")),
+                }
+                for message in messages
+            ],
         }
         if stream:
             payload["stream"] = True
@@ -106,7 +114,8 @@ class OpenAIProvider(BaseHTTPProvider):
         }
 
         tool_calls: list[ToolCall] = []
-        for tc in choice.get("tool_calls", []):
+        # A no-tool completion may explicitly return JSON null.
+        for tc in (choice.get("tool_calls") or []):
             function = tc.get("function", {})
             tool_call = self._build_tool_call(
                 tool_id=tc.get("id"),
@@ -164,7 +173,7 @@ class OpenAIProvider(BaseHTTPProvider):
                 content_parts.append(content)
                 yield ChatChunk(delta=content)
 
-            for tc_delta in delta.get("tool_calls", []):
+            for tc_delta in (delta.get("tool_calls") or []):
                 idx = tc_delta.get("index")
                 if not isinstance(idx, int):
                     continue

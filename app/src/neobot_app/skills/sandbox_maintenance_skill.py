@@ -28,28 +28,36 @@ class SandboxMaintenanceSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "沙箱维护 Skill 用于检查和管理 sandbox/ 下的文件。\n\n"
-            "## 核心规则\n"
-            "**清理前必须先阅读 sandbox/文件存储.md 了解当前存储规范。**\n"
-            "如文件存储.md 不存在，先检查 sandbox/ 目录结构，按默认规范创建文件存储.md\n"
-            "后再执行清理。**清理完成后必须调用 file_storage__update_storage_doc 更新索引。**\n\n"
-            "## 默认存储规范（文件存储.md 不存在时参考）\n"
+            "沙箱维护 Skill 用于检查和管理 sandbox/ 下的文件，不自动执行维护。\n\n"
+            "## 操作流程\n"
+            "1. 清理前先阅读 sandbox/文件存储.md；不存在时先检查目录结构。\n"
+            "2. 使用 get_maintenance_status、check_capacity 或 scan_temp_files 只读检查，"
+            "确认确有维护需要后再调用写入工具。\n"
+            "3. trigger_maintenance 会移动错放文件、清理垃圾文件和缓存目录、整理持久化文件，"
+            "并自动重建 文件存储.md；它不是只读扫描，也不只处理 tools/。\n"
+            "4. 检查返回的 skipped、renamed、moved、removed、doc_updated，"
+            "如有重命名或移动，核对依赖旧路径的引用；需要补充索引说明时再更新存储文档。\n\n"
+            "## 文件命名安全规则\n"
+            "- tools/、docs/、assets/ 的直属文件才参与命名整理，不递归重命名。\n"
+            "- 中文名保留原样；含中文、其他 Unicode 字符或中英混合的文件名整体保留，"
+            "不删除字符、不转拼音，也不修改其扩展名。\n"
+            "- 仅纯 ASCII 文件名参与 snake_case 规范化，保留扩展名；"
+            "空主名、点开头文件及符号链接不执行命名转换，目标名称已被占用时跳过。\n"
+            "- 已被旧版本改名为 .html 等名称的文件不会自动恢复；"
+            "须根据维护记录或备份确认原名，不能猜测改名或覆盖其他文件。\n\n"
+            "## 默认存储规范\n"
             "- tools/ — 可复用的工具脚本、程序\n"
             "- docs/ — 文档、参考资料、说明文件\n"
             "- assets/ — 静态资源（图片、字体、模板等）\n"
-            "- temp/ — 临时文件，按 chat_flow_id 分子目录，可随时清理\n"
+            "- temp/ — 按 chat_flow_id 分子目录的临时文件，先扫描再清理\n"
             "- gift/ — 礼物文件，由 gift skill 管理，勿手动编辑\n"
-            "- 文件命名统一使用 snake_case，中文名保留原样\n"
-            "- 根目录只保留 文件存储.md、TODO.md 和持久化目录\n\n"
-            "## 维护模式\n"
-            "系统不再自动执行维护，由你主动检查并决定是否需要清理。\n"
-            "收到维护提醒通知时，或在文件操作前，先检查沙箱状态。\n\n"
+            "- 根目录文档保留 文件存储.md、TODO.md\n\n"
             "## 工具列表\n"
-            "  scan_temp_files — 扫描临时目录，查看过期文件、嵌套、空目录（只读）\n"
-            "  clean_temp_files — 执行临时文件清理（删除过期文件、修复嵌套、清理空目录）\n"
-            "  trigger_maintenance — 触发一次完整的持久化文件维护\n"
-            "  get_maintenance_status — 查询上次维护时间和当前状态\n"
-            "  check_capacity — 检查沙箱当前容量使用情况"
+            "  scan_temp_files — 只读扫描临时目录\n"
+            "  clean_temp_files — 清理过期文件、修复临时目录嵌套、清理空目录\n"
+            "  trigger_maintenance — 执行持久化维护并更新索引，无变更时跳过\n"
+            "  get_maintenance_status — 只读查询维护状态\n"
+            "  check_capacity — 只读查询容量"
         )
 
     def __init__(
@@ -81,8 +89,9 @@ class SandboxMaintenanceSkill(SkillModule):
             ),
             self._tool_def(
                 "trigger_maintenance",
-                "手动触发一次沙箱持久化文件维护。包括文件整理、冗余清理、垃圾清理、文档更新。"
-                "如无文件变更则跳过。",
+                "执行沙箱维护（会移动、重命名和删除文件，并自动更新存储索引），无文件变更时跳过。"
+                "仅规范化 tools/docs/assets 直属文件的纯 ASCII 名称；中文及中英混合等 Unicode 文件名"
+                "保留原样，不生成空主名，目标名称已占用时跳过。",
                 {"properties": {}, "required": []},
             ),
             self._tool_def(

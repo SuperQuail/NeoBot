@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from neobot_app.agent_tools.invocation import human_message_entry, CURRENT_HUMAN_MESSAGE
+
 import asyncio
+import inspect
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -294,6 +297,21 @@ class EventPipeline:
             self._recent_message_ids.append(message_id)
         return False
 
+    async def _handle_agent_tool_input(self, message: Any, *, kind: str, queue_key: str, queue: Any) -> bool:
+        if self._is_bot_self(message) or not CURRENT_HUMAN_MESSAGE.get():
+            return False
+        handler = getattr(self._reply_orchestrator, "handle_agent_tool_input", None)
+        if not inspect.iscoroutinefunction(handler):
+            return False
+        reply = await handler(message, kind=kind, queue_key=queue_key)
+        if reply is None:
+            return False
+        queue.push(queue_key, message)
+        queue.mark_command_consumed(queue_key, getattr(message, "message_id", None))
+        self._start_command_sync_reply(message=message, queue=queue, queue_key=queue_key, background=reply)
+        return True
+
+    @human_message_entry
     async def handle_private_message_event(
         self,
         event: Dict[str, Any],
@@ -309,6 +327,8 @@ class EventPipeline:
             )
             return
         queue_key = str(message.user_id or "")
+        if await self._handle_agent_tool_input(message, kind="private", queue_key=queue_key, queue=self._friend_queue):
+            return
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(
             message, self._friend_queue, queue_key
@@ -474,6 +494,7 @@ class EventPipeline:
             decision=decision,
         )
 
+    @human_message_entry
     async def handle_group_message_event(
         self,
         event: Dict[str, Any],
@@ -489,6 +510,8 @@ class EventPipeline:
             )
             return
         queue_key = str(message.group_id or "")
+        if await self._handle_agent_tool_input(message, kind="group", queue_key=queue_key, queue=self._group_queue):
+            return
         await self._handle_inbound_raw_event(event)
         replied_messages = await self._fetch_replied_messages(
             message, self._group_queue, queue_key

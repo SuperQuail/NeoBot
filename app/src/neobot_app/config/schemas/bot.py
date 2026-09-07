@@ -40,6 +40,10 @@ class Bot:
 
 @dataclass
 class Chat:
+    native_vision_default_image_count: int = field(
+        default=4,
+        metadata={"description": "原生视觉每轮默认自动加载的图片数量，0 关闭自动加载；手动加图工具不受此数量限制"},
+    )
     max_group_chat_observations: Optional[int] = field(
         default=100,
         metadata={"description": "群聊观察上限"},
@@ -205,6 +209,10 @@ class ModelRegistration:
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
+    native_vision: bool = field(
+        default=False,
+        metadata={"description": "主推理模型可直接接收图片；DeepSeek 使用 deepseek-v4-flash-vision-exp，启用后需配置非视觉回退路由"},
+    )
 
 
 def _default_primary_chat_model() -> "ModelRegistration":
@@ -397,6 +405,10 @@ class AgentModelRouting:
     main_agent: int = field(
         default=0,
         metadata={"description": "主回复 Agent 使用的模型编号，0-3"},
+    )
+    main_agent_vision_fallback: int = field(
+        default=1,
+        metadata={"description": "主模型原生视觉不可用时的非视觉回退模型编号，0-3；必须不同于主模型且 native_vision=false"},
     )
     creator: int = field(
         default=1,
@@ -1137,6 +1149,24 @@ class AgentSelfHeal:
 
 
 @dataclass
+class AgentToolsConfig:
+    """DSH 风格共享工具；执行工具仍需现有管理员凭据。"""
+
+    enabled: bool = field(default=True, metadata={"description": "启用共享 agent 工具"})
+    mode: str = field(default="native", metadata={"description": "任务工具模式：native（精简普通模式，默认）/ ptc（程序编排）"})
+    ptc_enabled: bool = field(default=True, metadata={"description": "启用可选PTC能力；不改变默认普通模式"})
+    shell_enabled: bool = field(default=True, metadata={"description": "提供需凭据的 Python/命令工具"})
+    terminal_enabled: bool = field(default=True, metadata={"description": "提供需凭据的持久管道终端（非 PTY）"})
+    web_enabled: bool = field(default=True, metadata={"description": "提供联网搜索和网页读取"})
+    lsp_enabled: bool = field(default=True, metadata={"description": "默认启用项目依赖内的Python语言服务器（按需启动）"})
+    lsp_servers: dict = field(default_factory=dict, metadata={"description": "覆盖/扩展默认Python LSP：扩展名映射到command数组及language_id；关闭使用lsp_enabled=false"})
+    max_agent_iterations: int = field(default=20, metadata={"description": "每个子 agent 的工具调用轮数上限"})
+    max_goal_rounds: int = field(default=8, metadata={"description": "同一目标的最大自动轮数"})
+    max_child_agents: int = field(default=8, metadata={"description": "每个 owner 的子 agent 数量上限"})
+    max_output_bytes: int = field(default=262144, metadata={"description": "单次共享工具输出的最大 UTF-8 字节数"})
+
+
+@dataclass
 class Agent:
     """Agent 配置。"""
 
@@ -1150,6 +1180,7 @@ class Agent:
     file_operation: AgentFileOperation = field(default_factory=AgentFileOperation)
     self_healing: AgentSelfHeal = field(default_factory=AgentSelfHeal)
     vision_detect: VisionDetect = field(default_factory=VisionDetect)
+    tools: AgentToolsConfig = field(default_factory=AgentToolsConfig)
 
 
 @dataclass

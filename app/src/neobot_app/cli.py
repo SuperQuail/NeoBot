@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
 from typing import Any
+
+# This branch must precede bootstrap/config imports: the frozen executable is
+# also a lazy stdio LSP worker, not a second Bot service.
+from neobot_app.agent_tools.lsp_defaults import PYTHON_LSP_WORKER_FLAG
+
+if PYTHON_LSP_WORKER_FLAG in sys.argv[1:]:
+    if sys.argv[1:] != [PYTHON_LSP_WORKER_FLAG]:
+        raise SystemExit("The internal Python LSP worker accepts no additional arguments")
+    from neobot_app.agent_tools.lsp_defaults import run_python_lsp_worker
+
+    run_python_lsp_worker()
+    raise SystemExit(0)
 
 from neobot_app.bootstrap import create_application
 from neobot_app.config.loader.manager import ConfigLoadError
@@ -15,7 +28,8 @@ from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 
 
-async def run() -> None:
+async def run() -> bool:
+    """运行一轮应用，优雅关闭后将重启意图交给循环外的 CLI。"""
     loop = asyncio.get_running_loop()
     current_application = {"value": None}
 
@@ -34,13 +48,13 @@ async def run() -> None:
                     lambda _signum, _frame: loop.call_soon_threadsafe(request_stop),
                 )
 
-    while True:
-        application = create_application()
-        current_application["value"] = application
+    application = create_application()
+    current_application["value"] = application
+    try:
         await application.run_forever()
-        if not application.restart_requested:
-            break
-    current_application["value"] = None
+        return application.restart_requested
+    finally:
+        current_application["value"] = None
 
 
 def cmd_firewall_open(args: argparse.Namespace) -> None:
@@ -68,9 +82,9 @@ def cmd_firewall_open(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """启动机器人主程序。"""
+    """启动机器人；重启时先回收旧循环，再以原启动参数替换进程。"""
     try:
-        asyncio.run(run())
+        restart_requested = asyncio.run(run())
     except ConfigLoadError as exc:
         print(f"配置加载失败，无法启动机器人：\n{exc}")
         print("请补充上述缺失的环境变量（或禁用对应功能）后重新启动。")
@@ -79,6 +93,23 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"错误: {exc}")
     except KeyboardInterrupt:
         sys.exit(0)
+    else:
+        if restart_requested:
+            # asyncio.run 已取消剩余任务、关闭异步生成器/default executor 和 loop。
+            if getattr(sys, "frozen", False):
+                # PyInstaller 新顶层实例须重新解包，不能复用旧 onefile 的临时目录。
+                os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+                argv = [sys.executable, *sys.argv[1:]]
+            else:
+                # 保留解释器 flags 以及 -m / 脚本 / console entry 启动方式。
+                argv = [sys.executable, *sys.orig_argv[1:]]
+            if sys.platform == "win32":
+                import subprocess
+
+                # CRT _wexecv 会拼接 argv 而不转义，含空格参数须自行引用：
+                # https://learn.microsoft.com/cpp/c-runtime-library/exec-wexec-functions
+                argv = [subprocess.list2cmdline([arg]) for arg in argv]
+            os.execv(sys.executable, argv)
 
 
 def cmd_open_web(args: argparse.Namespace) -> None:

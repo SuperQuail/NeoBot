@@ -92,5 +92,9 @@ class AgentDelegationSkill(SkillModule):
         if tool_name == "delegate":
             # 只透传 registry.delegate 认识的参数，模型幻想的多余键不进入 **kwargs
             kwargs = {key: values[key] for key in _DELEGATE_PARAMS if key in values}
+            from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
+            invocation = CURRENT_INVOCATION.get()
+            if invocation is not None:
+                kwargs["execution_context"] = invocation.context
             return await self._registry.delegate(context=context, **kwargs)
         return f"Unknown agent tool: {tool_name}"

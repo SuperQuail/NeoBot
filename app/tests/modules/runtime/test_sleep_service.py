@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import neobot_app.runtime.sleep_service as sleep_module
 from neobot_app.runtime.sleep_service import (
     DEFAULT_WAKE_PROMPT,
@@ -101,6 +103,7 @@ def test_sleep_resets_when_called_again() -> None:
 def test_sleep_expires_by_time(monkeypatch) -> None:
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     service = SleepService()
     service.sleep(60)
     assert service.is_sleeping()
@@ -110,6 +113,61 @@ def test_sleep_expires_by_time(monkeypatch) -> None:
     assert not service.is_sleeping()  # 时间到自动醒来
     assert service.remaining_seconds() == 0
     assert service.wake_up_at() is None
+
+
+@pytest.mark.parametrize("wall_shift", [7200.0, -7200.0])
+def test_sleep_duration_ignores_wall_clock_adjustment(monkeypatch, wall_shift) -> None:
+    """系统时间前跳或回拨时，睡眠仍按实际经过时长到期。"""
+    clock = {"wall": 10000.0, "mono": 100.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: clock["wall"])
+    monkeypatch.setattr(
+        sleep_module, "monotonic_seconds", lambda: clock["mono"]
+    )
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+    service.sleep(3600)
+    assert service.wake_up_at() == 13600.0
+
+    clock["wall"] += wall_shift
+    clock["mono"] += 300
+
+    assert service.is_sleeping()
+    assert service.remaining_seconds() == 3300
+    assert service._sleep_elapsed_text() == "5 分钟"
+    clock["mono"] = 3699.0
+    assert service.is_sleeping()
+    assert service.remaining_seconds() == 1
+    clock["mono"] = 3700.0
+    assert not service.is_sleeping()
+    assert service.remaining_seconds() == 0
+    assert service.wake_up_at() is None
+    assert not service.is_sleeping()
+    expiry = [record for record in recorder.records if "Bot 睡眠到期" in record[0]]
+    assert len(expiry) == 1
+    assert expiry[0][1]["elapsed_text"] == "1 小时"
+
+
+def test_sleep_resets_monotonic_deadline_and_manual_wake(monkeypatch) -> None:
+    """重复 sleep 重新计时，主动唤醒后新睡眠不沿用旧截止时间。"""
+    clock = {"wall": 10000.0, "mono": 100.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: clock["wall"])
+    monkeypatch.setattr(
+        sleep_module, "monotonic_seconds", lambda: clock["mono"]
+    )
+    service = SleepService()
+    service.sleep(3600)
+
+    clock["mono"] = 400.0
+    service.sleep(120)
+    clock["mono"] = 519.0
+
+    assert service.remaining_seconds() == 1
+    assert service.wake(reason="awake_command")
+    assert service.wake_up_at() is None
+    assert service.remaining_seconds() == 0
+    service.sleep(60)
+    clock["mono"] = 579.0
+    assert not service.is_sleeping()
 
 
 # ── 唤醒提示词(自定义提示词系统) ──
@@ -168,6 +226,7 @@ def test_wake_logs_reason_and_elapsed(monkeypatch) -> None:
     """wake() 记录唤醒来源与已持续时长,便于定位提前结束原因。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
 
@@ -189,6 +248,7 @@ def test_sleep_expiry_logs_awake(monkeypatch) -> None:
     """睡眠到期自动醒来时打印日志(时间到与被动唤醒可区分)。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
 
@@ -210,6 +270,7 @@ def test_sleep_expiry_logs_awake(monkeypatch) -> None:
 def test_wake_without_reason_uses_unknown(monkeypatch) -> None:
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
     service.sleep(60)
@@ -223,6 +284,7 @@ def test_log_remaining_prints_during_sleep(monkeypatch) -> None:
     """睡眠中每分钟播报剩余时间(带可读文本与秒数)。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
 
@@ -241,6 +303,7 @@ def test_log_remaining_silent_when_awake(monkeypatch) -> None:
     """未睡眠时不打印剩余时间播报。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
 
@@ -255,6 +318,7 @@ async def test_ticker_loop_polls_remaining(monkeypatch) -> None:
     """ticker 循环按间隔播报剩余时间(睡眠中打印,醒来后停止)。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
     recorder = _LogRecorder()
     service = SleepService(logger=recorder)
     service.sleep(120)
