@@ -40,6 +40,7 @@ from neobot_app.statistics.tracker import (
 )
 from neobot_app.time_context import monotonic_seconds
 from neobot_app.web_search_package import WebSearchExecutor
+from neobot_app.agent_tools.contracts import AgentToolError, ToolContext
 
 if TYPE_CHECKING:
     pass
@@ -61,6 +62,7 @@ EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = "复杂问题解题（数学/编程/�
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")
 _SOLUTION_RESULT: ContextVar[str] = ContextVar("solution_result", default="")
 _CHAT_FLOW_ID: ContextVar[str] = ContextVar("solver_chat_flow_id", default="")
+_TOOL_CONTEXT: ContextVar[ToolContext | None] = ContextVar("solver_tool_context", default=None)
 
 
 def _tool_def(
@@ -142,6 +144,7 @@ class SolveTask:
     conversation_id: str
     question: str
     delegate_context: str = ""
+    execution_context: ToolContext | None = None
     status: str = "solving"  # solving | completed | failed | timeout
     markdown_solution: str | None = None
     error: str | None = None
@@ -168,10 +171,16 @@ class ProblemSolverManager:
         self._notification_queues: dict[str, asyncio.Queue[str]] = {}
         self._orchestrator: Any = None
         self._agent: Any = None
+        self._tool_runtime: Any = None
         self._closed = False
 
     def set_agent(self, agent: Any) -> None:
         self._agent = agent
+
+    def set_tool_runtime(self, runtime: Any) -> None:
+        self._tool_runtime = runtime
+        if self._agent is not None:
+            self._agent.set_tool_runtime(runtime)
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
@@ -266,8 +275,11 @@ class ProblemSolverManager:
         conversation_id: str,
         question: str,
         delegate_context: str = "",
+        execution_context: ToolContext | None = None,
     ) -> str:
         """提交后台解题任务。返回 JSON 状态字符串。"""
+        if self._tool_runtime is not None and not isinstance(execution_context, ToolContext):
+            return _json({"ok": False, "code": "CONTEXT_REQUIRED", "error": "解题工具要求可信调用上下文"})
         if self._closed:
             return _json({"ok": False, "error": "解题管理器已关闭"})
         if self._agent is None:
@@ -291,6 +303,10 @@ class ProblemSolverManager:
                 }
             )
 
+        if pipeline_key != f"{conversation_kind}:{conversation_id}":
+            return _json({"ok": False, "error": "会话身份与pipeline_key不一致"})
+        if execution_context is not None and execution_context.chat_flow_id != pipeline_key:
+            return _json({"ok": False, "error": "委派上下文不属于此聊天"})
         task = SolveTask(
             task_id=f"solve_{uuid4().hex[:12]}",
             pipeline_key=pipeline_key,
@@ -298,6 +314,7 @@ class ProblemSolverManager:
             conversation_id=conversation_id,
             question=question,
             delegate_context=delegate_context,
+            execution_context=execution_context,
         )
         self._tasks[task.task_id] = task
         self._enforce_task_limit(pipeline_key)
@@ -328,11 +345,18 @@ class ProblemSolverManager:
     async def _run_solve(self, task: SolveTask) -> None:
         """后台执行解题。"""
         try:
-            chat_flow_id = f"{task.conversation_kind.title()}_{task.conversation_id}"
+            chat_flow_id = f"{task.conversation_kind}:{task.conversation_id}"
+            tool_context = ToolContext(
+                owner=f"{task.pipeline_key}:{task.task_id}", chat_flow_id=task.pipeline_key,
+                agent_id=task.task_id, parent_agent_id="main", human_request=False,
+                user_id=task.execution_context.user_id if task.execution_context else None,
+                allowed_tools=task.execution_context.allowed_tools if task.execution_context else None,
+            )
             state: State = {
                 "messages": [{"role": "user", "content": task.question}],
                 "_delegate_context": task.delegate_context,
                 "_chat_flow_id": chat_flow_id,
+                "_agent_tool_context": tool_context,
             }
             result_state = await asyncio.wait_for(
                 self._agent._invoke_direct(state),
@@ -367,6 +391,7 @@ class ProblemSolverManager:
                     "messages": messages,
                     "_delegate_context": task.delegate_context,
                     "_chat_flow_id": chat_flow_id,
+                "_agent_tool_context": tool_context,
                 }
                 retry_timeout = max(self._config.timeout_seconds * 0.5, 120)
                 self._logger.info(
@@ -608,6 +633,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
         )
         self._sandbox = sandbox_service
         self._vision_provider = vision_provider
+        self._runtime: Any = None
 
     def reset_search(self) -> None:
         """复位搜索会话计数器，每次解题任务启动时调用。"""
@@ -617,6 +643,17 @@ class ProblemSolverToolExecutor(ToolExecutor):
         """释放执行器资源。"""
 
     def definitions(self) -> list[ToolDefinition]:
+        if self._runtime is None:
+            return self._legacy_definitions()
+        business = self._business_definitions()
+        tools = self._runtime.definitions(external=business)
+        return tools if self._runtime.mode == "ptc" else business + tools
+
+    def _business_definitions(self) -> list[ToolDefinition]:
+        return [d for d in self._legacy_definitions()
+                if d["function"]["name"] in {"get_chat_context", "submit_solution"}]
+
+    def _legacy_definitions(self) -> list[ToolDefinition]:
         tools = [
             _tool_def(
                 "get_chat_context",
@@ -785,6 +822,21 @@ class ProblemSolverToolExecutor(ToolExecutor):
         return tools
 
     async def execute(self, name: str, args: dict) -> str:
+        if self._runtime is not None:
+            context = _TOOL_CONTEXT.get()
+            if not isinstance(context, ToolContext):
+                return _json({"ok": False, "code": "CONTEXT_REQUIRED", "error": "缺少可信解题任务身份；不从提示词推断权限"})
+            try:
+                if name in self._runtime.capability_names() or name == "run_code":
+                    value = await self._runtime.execute(name, args, context,
+                        external_dispatch=self.execute, external_definitions=self._business_definitions())
+                    return _json(value)
+                if name not in {"get_chat_context", "submit_solution"}:
+                    raise AgentToolError("TOOL_DENIED", "Legacy aliases are not available; use the current canonical tool catalog")
+            except AgentToolError as exc:
+                return _json({"ok": False, "code": exc.code, "error": str(exc), "details": exc.details})
+            except (ValueError, OSError) as exc:
+                return _json({"ok": False, "code": "FILE_ERROR", "error": str(exc)})
         if name == "get_chat_context":
             context = _SOLVER_CHAT_CONTEXT.get("")
             chat_flow_id = self._parse_chat_flow_id()
@@ -795,7 +847,7 @@ class ProblemSolverToolExecutor(ToolExecutor):
                     f"\n[文件路径上下文]\n"
                     f"chat_flow_id: {chat_flow_id}\n"
                     f"临时目录: {temp_dir}\n"
-                    f"规则：write_file/run_python 输出的文件默认写入上述临时目录。"
+                    f"规则：write/run_python 输出的文件默认写入上述临时目录。"
                     f"除非文件是需要长期复用的工具/文档/资源，否则一律放入临时目录。"
                 )
             if not context:
@@ -824,6 +876,38 @@ class ProblemSolverToolExecutor(ToolExecutor):
         if name == "list_files":
             return await self._execute_list_files(args)
         return f"未知工具: {name}"
+
+    async def _execute_compatible_file(self, name: str, args: dict, context: ToolContext) -> dict:
+        required = {"write_file": "write", "read_file": "read", "list_files": "glob", "parse_image": "read_image"}[name]
+        if context.allowed_tools is not None and required not in context.allowed_tools:
+            raise AgentToolError("TOOL_DENIED", "Legacy file alias cannot bypass inherited tool permissions")
+        if name == "parse_image":
+            return await self._runtime.execute("read_image", {"file_path": args.get("image_path", ""),
+                "requirement": args.get("requirement", "请分析图片内容。")}, context)
+        raw = str(args.get("path") or ".")
+        path = self._runtime.files.resolve_path(raw, owner=context.owner, chat_flow_id=context.chat_flow_id,
+                                                write=name == "write_file")
+        if name == "list_files":
+            return {"ok": True, "files": (await self._sandbox.list_files(path))[:200]}
+        if name == "read_file":
+            return await self._runtime.execute("read", {"file_path": str(path)}, context)
+        import base64
+        encoded = args.get("content_base64", "")
+        if not isinstance(encoded, str) or len(encoded) > 1_048_576:
+            raise AgentToolError("INVALID_ARGS", "Expected bounded base64 content")
+        data = base64.b64decode(encoded, validate=True)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            if self._runtime.state.is_planning(context):
+                raise AgentToolError("PLAN_MODE", "Cannot write files in plan mode")
+            if self._runtime.files.is_shared_write("write", {"file_path": raw}):
+                self._runtime.permissions.require(context, "agent_shared_write")
+            if path.exists():
+                raise AgentToolError("FILE_EXISTS", "Binary write requires a new destination; use a new filename")
+            await self._sandbox.write_file(path, data)
+            return {"ok": True, "path": str(path), "size": len(data)}
+        return await self._runtime.execute("write", {"file_path": str(path), "content": text}, context)
 
     def _get_sandbox_work_dir(self) -> Path | None:
         """返回沙箱工作目录，供 run_python 的 cwd 和 write_file 使用。
@@ -1224,6 +1308,26 @@ class ProblemSolverAgent:
             logger=logger or NullLogger(),
         )
 
+    def set_tool_runtime(self, runtime: Any) -> None:
+        """Bind once during application assembly, before accepting solve tasks."""
+        executor = self._toolset.executor
+        executor._runtime = runtime
+        specs = [ToolSpec(d, _default_resolver) for d in executor.definitions()]
+        self._toolset = Toolset(executor=executor, specs=specs)
+        previous = self._agent
+        self._agent = Agent(
+            previous.provider, toolset=self._toolset, include_builtin_tools=False,
+            description=self.description,
+            system_prompt=(previous.system_prompt or "") + (
+                "\n当前任务模式为PTC，只能调用run_code；业务get_chat_context/submit_solution也在程序内调用。"
+                if runtime.mode == "ptc" else
+                "\n当前任务模式为普通模式，直接调用精简工具；复杂编排仅在PTC模式提供。"
+            ) + "新版文件工具使用read/write/edit/glob/grep，搜索使用web_search/web_fetch，图片使用read_image；旧同类别名不再提供。",
+            on_model_usage=previous._on_model_usage, max_iterations=previous.max_iterations,
+            command_timeout=previous.command_timeout, logger=previous._logger,
+        )
+        self.tool_definitions = self._toolset.definitions()
+
     async def invoke(self, state: State) -> State:
         """主 Agent 委托入口：提交后台解题任务并立即返回。"""
         if self._manager is None:
@@ -1239,8 +1343,12 @@ class ProblemSolverAgent:
 
         delegate_context = str(state.get("_delegate_context") or "")
 
-        # 从 delegate context 解析会话信息
-        conv_kind, conv_id = self._parse_conv_from_context(delegate_context)
+        # Authorization never comes from user-editable prompt prose.
+        trusted = state.get("_agent_tool_context")
+        if isinstance(trusted, ToolContext):
+            conv_kind, conv_id = trusted.chat_flow_id.split(":", 1)
+        else:
+            conv_kind, conv_id = None, None
         if not conv_kind or not conv_id:
             return {
                 "messages": [
@@ -1258,6 +1366,7 @@ class ProblemSolverAgent:
             conversation_id=conv_id,
             question=question_str,
             delegate_context=delegate_context,
+            execution_context=trusted,
         )
         return {
             "messages": [{"role": "assistant", "content": result_json}],
@@ -1281,17 +1390,22 @@ class ProblemSolverAgent:
         self._toolset.executor.reset_search()
         token = _SOLVER_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
         token_cf = _CHAT_FLOW_ID.set(str(state.get("_chat_flow_id") or ""))
+        trusted = state.get("_agent_tool_context")
+        token_tc = _TOOL_CONTEXT.set(trusted if isinstance(trusted, ToolContext) else None)
         token_m = CURRENT_USAGE_MODULE.set("agent:problem_solver")
         try:
             return await self._agent.invoke(state)
         finally:
             _SOLVER_CHAT_CONTEXT.reset(token)
             _CHAT_FLOW_ID.reset(token_cf)
+            _TOOL_CONTEXT.reset(token_tc)
             CURRENT_USAGE_MODULE.reset(token_m)
 
     async def stream_invoke(self, state: State) -> AsyncIterator[ChatChunk]:
         token = _SOLVER_CHAT_CONTEXT.set(str(state.get("_delegate_context") or ""))
         token_cf = _CHAT_FLOW_ID.set(str(state.get("_chat_flow_id") or ""))
+        trusted = state.get("_agent_tool_context")
+        token_tc = _TOOL_CONTEXT.set(trusted if isinstance(trusted, ToolContext) else None)
         token_m = CURRENT_USAGE_MODULE.set("agent:problem_solver")
         try:
             async for chunk in self._agent.stream_invoke(state):
@@ -1299,6 +1413,7 @@ class ProblemSolverAgent:
         finally:
             _SOLVER_CHAT_CONTEXT.reset(token)
             _CHAT_FLOW_ID.reset(token_cf)
+            _TOOL_CONTEXT.reset(token_tc)
             CURRENT_USAGE_MODULE.reset(token_m)
 
     async def close(self) -> None:

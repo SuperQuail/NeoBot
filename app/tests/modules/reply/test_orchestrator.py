@@ -1922,3 +1922,170 @@ async def test_cost_pipeline_disabled_keeps_base_lifespan(monkeypatch):
     # 基础寿命 1 耗尽后直接结束,不再调用挂起
     assert len(provider.calls) == 1, provider.calls
     await orch.shutdown()
+
+
+@pytest.mark.parametrize("degrade", [False, True])
+async def test_native_vision_tool_images_and_live_fallback(monkeypatch, degrade):
+    """Real skill/executor path: images survive bounding and follow the complete tool batch."""
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from neobot_app.skills.base import SkillManager
+    from neobot_app.skills.image_context_skill import ImageContextSkill
+    from neobot_app.skills.image_parse_skill import ImageParseSkill
+
+    buffer = BytesIO()
+    Image.new("RGB", (16, 16), "red").save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+
+    class VisionProvider(_ScriptedProvider):
+        native_vision = True
+        vision_degradation = None
+
+        async def chat(self, messages, tools=None):
+            if degrade and len(self.calls) == 1:
+                self.native_vision = False
+                self.vision_degradation = {"reason": "This model does not support image"}
+            return await super().chat(messages, tools=tools)
+
+    first = {
+        "role": "assistant", "content": "", "tool_calls": [
+            {"id": f"image-{i}", "type": "function", "function": {
+                "name": "image_context__add_image",
+                "arguments": json.dumps({"image_base64": encoded}),
+            }} for i in range(2)
+        ],
+    }
+    responses = [first, {"role": "assistant", "content": "未看到图" if degrade else "红色", "tool_calls": []}]
+    if degrade:
+        responses.append({"role": "assistant", "content": "已回退", "tool_calls": []})
+    provider = VisionProvider(responses)
+    skills = SkillManager()
+    skills.register(ImageContextSkill())
+    skills.register(ImageParseSkill(vision_provider=object()))
+    orch = _make_orchestrator(provider=provider)
+    orch._skill_manager = skills
+
+    no_suspend = AsyncMock(return_value=([], None))
+    monkeypatch.setattr(orch, "_suspend_private_chat", no_suspend)
+    monkeypatch.setattr(orch, "_get_private_chat_max_tokens", lambda: 7000)
+    event = orch.start_reply(
+        message=_make_private_message(), queue=MessageQueue(),
+        queue_key="123456", decision=_make_decision(),
+    )
+    await _wait_until_idle(orch)
+    assert event.error is None
+    assert event.generated_text == ("已回退" if degrade else "红色")
+    first_tools = {t["function"]["name"] for t in provider.calls[0][1]}
+    assert "image_context__add_image" in first_tools
+    assert "image_parse__parse_image" not in first_tools
+    messages = provider.calls[1][0]
+    tool_positions = [i for i, message in enumerate(messages) if message.get("role") == "tool"]
+    assert len(tool_positions) == 2
+    vision_message = messages[tool_positions[-1] + 1]
+    assert vision_message["role"] == "user"
+    assert len([p for p in vision_message["content"] if p.get("type") == "image_url"]) == 2
+    assert all(encoded not in messages[i]["content"] for i in tool_positions)
+    assert all("data:image/" not in messages[i]["content"] for i in tool_positions)
+    if not degrade:
+        no_suspend.assert_not_awaited()  # image appendix counts toward context lifetime
+    if degrade:
+        restored = {t["function"]["name"] for t in provider.calls[2][1]}
+        assert "image_parse__parse_image" in restored
+        assert "image_context__add_image" not in restored
+    await orch.shutdown()
+
+
+async def test_common_native_vision_loads_current_message_without_tools():
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from neobot_app.reply.event import ReplyEvent, ReplyState
+
+    buffer = BytesIO()
+    Image.new("RGB", (12, 12), "blue").save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    message = _make_private_message()
+    message.message = [MessageSegment(type="image", data={"file": f"base64://{encoded}"})]
+    provider = _ScriptedProvider([{"role": "assistant", "content": "蓝色"}])
+    provider.native_vision = True
+    orch = _make_orchestrator(provider=provider)
+    event = ReplyEvent(mode="common", message=message)
+    event.transition(ReplyState.BUILDING_PROMPT)
+    result = await orch._generate_reply(event, "描述图片")
+    assert result == "蓝色"
+    messages, tools = provider.calls[0]
+    assert tools is None
+    assert messages[-1]["role"] == "user"
+    assert any(part.get("type") == "image_url" for part in messages[-1]["content"])
+    await orch.shutdown()
+
+
+async def test_vision_fallback_on_final_iteration_gets_one_recovery_turn(monkeypatch):
+    class Provider(_ScriptedProvider):
+        native_vision = True
+
+        async def chat(self, messages, tools=None):
+            self.native_vision = False
+            return await super().chat(messages, tools)
+
+    class Config(_FakeConfig):
+        class chat(_FakeChat):
+            agent_max_iterations = 1
+
+    provider = Provider([
+        {"role": "assistant", "content": "尚未看到图", "tool_calls": []},
+        {"role": "assistant", "content": "已恢复", "tool_calls": []},
+    ])
+    orch = _make_orchestrator(provider=provider, config=Config())
+    monkeypatch.setattr(orch, "_suspend_private_chat", AsyncMock(return_value=([], None)))
+    event = orch.start_reply(message=_make_private_message(), queue=MessageQueue(), queue_key="123456", decision=_make_decision())
+    await _wait_until_idle(orch)
+    assert event.error is None
+    assert event.generated_text == "已恢复"
+    assert len(provider.calls) == 2
+    await orch.shutdown()
+
+
+@pytest.mark.parametrize("default_count", [0, 1, 4])
+async def test_agent_default_images_are_labelled_only_at_prompt_end(monkeypatch, default_count):
+    import base64
+    from io import BytesIO
+    from PIL import Image
+
+    class PromptBuilder(_FakePromptBuilder):
+        async def build_friend_chat_messages(self, **kwargs):
+            from neobot_app.prompt.role_messages import build_role_messages
+
+            return build_role_messages(
+                kwargs["message_queue"], str(kwargs["user_id"]), numbering=kwargs["numbering"],
+            )
+
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), "green").save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    queue = MessageQueue()
+    for i in range(1, 7):
+        message = _make_private_message(message_id=i)
+        message.message = [MessageSegment(type="image", data={"file": f"base64://{encoded}"})]
+        queue.push("123456", message)
+    provider = _ScriptedProvider([{"role": "assistant", "content": "绿色", "tool_calls": []}])
+    provider.native_vision = True
+    orch = _make_orchestrator(provider=provider, prompt_builder=PromptBuilder())
+    monkeypatch.setattr(orch, "_get_native_vision_default_image_count", lambda: default_count)
+    monkeypatch.setattr(orch, "_suspend_private_chat", AsyncMock(return_value=([], None)))
+    event = orch.start_reply(message=message, queue=queue, queue_key="123456", decision=_make_decision())
+    await _wait_until_idle(orch)
+    assert event.error is None
+    request = provider.calls[0][0]
+    text_messages = [m["content"] for m in request if isinstance(m["content"], str)]
+    assert sum("[图片]" in content for content in text_messages) == 6
+    assert all(encoded not in content for content in text_messages)
+    if default_count:
+        assert all(isinstance(m["content"], str) for m in request[:-1])
+        parts = request[-1]["content"]
+        assert sum(p["type"] == "image_url" for p in parts) == default_count
+        assert any("消息ID 6" in p.get("text", "") for p in parts)
+    else:
+        assert all(isinstance(m["content"], str) for m in request)
+    await orch.shutdown()

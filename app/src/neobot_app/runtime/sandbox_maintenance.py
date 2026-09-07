@@ -225,27 +225,37 @@ class SandboxMaintenanceManager:
     def _check_file_naming(
         self, file_path: Path, section: str, result: dict
     ) -> None:
-        """检查文件命名规范（统一 snake_case）。"""
+        """仅规范化纯 ASCII 文件名；中文等 Unicode 文件名完整保留。"""
         name = file_path.name
-        if name.startswith(".") or name in ("prepared",):
+        if (
+            not name.isascii()
+            or name.startswith(".")
+            or name == "prepared"
+            or file_path.is_symlink()
+        ):
             return
         stem = file_path.stem
-        if re.match(r"^[a-z][a-z0-9_\-]*$", stem):
+        if re.fullmatch(r"[a-z][a-z0-9_\-]*", stem):
             return
         new_stem = _to_snake_case(stem)
-        if new_stem == stem:
+        # 转换不得生成空主名、隐藏文件或路径；即使转换函数变更也保持保护。
+        if (
+            not new_stem
+            or new_stem == stem
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_\-]*", new_stem)
+        ):
             return
         new_name = new_stem + file_path.suffix
         new_path = file_path.parent / new_name
-        if not new_path.exists():
-            try:
-                file_path.rename(new_path)
-                result["renamed"].append(
-                    f"{section}/{file_path.name} -> {new_name}"
-                )
-                self._logger.debug(f"重命名: {file_path.name} -> {new_name}")
-            except OSError:
-                pass
+        # 断开的符号链接也占用目标名称，不能仅用 exists() 判断。
+        if new_path.exists() or new_path.is_symlink():
+            return
+        try:
+            file_path.rename(new_path)
+            result["renamed"].append(f"{section}/{name} -> {new_name}")
+            self._logger.debug(f"重命名: {name} -> {new_name}")
+        except OSError as exc:
+            self._logger.warning(f"重命名失败，保留原文件 {section}/{name}: {exc}")
 
     def _check_redundant_file(
         self, file_path: Path, section: str, result: dict
@@ -410,11 +420,13 @@ class SandboxMaintenanceManager:
 
 
 def _to_snake_case(name: str) -> str:
-    """将 CamelCase 或 mixedCase 转为 snake_case。"""
+    """规范化 ASCII 名称；Unicode 或转换后无有效字符的名称保留原样。"""
+    if not name.isascii():
+        return name
     s1 = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
     s2 = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", s1)
     s3 = re.sub(r"[^a-zA-Z0-9]+", "_", s2)
-    return s3.lower().strip("_")
+    return s3.lower().strip("_") or name
 
 
 def _extract_pending_todos(content: str) -> list[str]:

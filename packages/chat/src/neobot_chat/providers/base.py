@@ -9,6 +9,7 @@ import httpx
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_chat.schema.types import ChatChunk, Message, ToolDefinition
+from neobot_chat.providers.vision import raise_if_image_unsupported
 
 _RETRYABLE_HTTP_STATUSES = frozenset({500, 502, 503, 504})
 
@@ -19,6 +20,9 @@ def _is_transport_error(exc: BaseException) -> bool:
 
 class Provider(Protocol):
     """LLM Provider 接口：统一的 chat / stream / close 方法"""
+
+    @property
+    def native_vision(self) -> bool: ...
 
     async def chat(
         self, messages: list[Message], tools: list[ToolDefinition] | None = None
@@ -41,7 +45,9 @@ class BaseHTTPProvider:
         timeout: float = 120.0,
         extra_headers: dict[str, str] | None = None,
         logger: Logger | None = None,
+        native_vision: bool = False,
     ):
+        self.native_vision = native_vision
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -118,6 +124,7 @@ class BaseHTTPProvider:
             ):
                 await asyncio.sleep(base_delay * (2**attempt))
                 continue
+            await raise_if_image_unsupported(resp)
             if check_status is not None:
                 await check_status(resp)
             else:
@@ -149,6 +156,7 @@ class BaseHTTPProvider:
                     ):
                         await asyncio.sleep(base_delay * (2**attempt))
                         continue
+                    await raise_if_image_unsupported(resp)
                     if check_status is not None:
                         await check_status(resp)
                     else:

@@ -51,6 +51,7 @@ class ReplyEvent:
     pre_reply_message_id: int | None = None
     error: str | None = None
     background_content: str | None = None
+    human_request: bool = False
 
     def transition(self, new_state: ReplyState) -> None:
         allowed = _VALID_TRANSITIONS.get(self.state, set())

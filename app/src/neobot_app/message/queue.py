@@ -1197,7 +1197,9 @@ class MessageQueue:
             "record": lambda d: f"[语音:{d.get('file') or d.get('url') or '未知'}]",
             "video": lambda d: f"[视频:{d.get('file') or d.get('url') or '未知'}]",
             "at": lambda d: MessageQueue._format_at_segment(d),
-            "image": lambda d: f"[图片:{d.get('file') or d.get('url') or '未知'}]",
+            # Keep image references/inline base64 out of the textual prompt.
+            # Native image payloads are appended separately with message/index labels.
+            "image": lambda d: str(d.get("summary") or "[图片]")[:256],
             "share": lambda d: f"[分享:{d.get('title') or d.get('url') or '未知链接'}]",
             "reply": lambda d: f"[回复:消息ID={d.get('id', '未知')}]",
             "redbag": lambda d: f"[红包:{d.get('title') or '恭喜发财'}]",
@@ -1210,7 +1212,7 @@ class MessageQueue:
             "node": lambda d: f"[转发节点:ID={d.get('id', '未知')},发送者={d.get('name', '未知')}]",
             "xml": lambda d: f"[XML:{d.get('data') or 'XML内容'}]",
             "json": lambda d: f"[JSON:{d.get('data') or 'JSON内容'}]",
-            "cardimage": lambda d: f"[卡片图片:{d.get('file') or '未知'}]",
+            "cardimage": lambda d: str(d.get("summary") or "[卡片图片]")[:256],
             "tts": lambda d: f"[TTS:{d.get('text') or '语音内容'}]",
             "rps": lambda _d: "[猜拳]",
             "dice": lambda _d: "[骰子]",

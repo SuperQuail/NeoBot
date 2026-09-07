@@ -24,9 +24,9 @@ class BackgroundTriggerSkill(SkillModule):
     @property
     def instructions(self) -> str:
         return (
-            "后台任务 Skill — 这是你生成文件、运行代码、深度推理的唯一途径。\n\n"
-            "=== 必须使用本 skill 的场景 ===\n"
-            "以下任何场景都必须通过 submit_problem 提交，你自身没有能力完成：\n"
+            "后台任务 Skill — 将复杂或耗时的生成、计算和深度推理交给专职解题 agent。\n\n"
+            "=== 推荐使用本 skill 的场景 ===\n"
+            "简单文件操作可直接使用 agent_tools；复杂或长耗时工作可通过 submit_problem 提交：\n"
             "  文件生成：PDF、图片、Word/Excel/PPT、图表、代码文件、数据报表等一切文件\n"
             "  代码执行：任何需要运行 Python/Shell 的操作（计算、绘图、数据处理、格式转换）\n"
             "  深度推理：复杂数学、多步逻辑推演、多网页综合调研\n"
@@ -59,10 +59,10 @@ class BackgroundTriggerSkill(SkillModule):
         return [
             self._tool_def(
                 "submit_problem",
-                "【生成文件/运行代码/深度推理的唯一途径】"
+                "【复杂文件生成/计算/深度推理的后台入口】"
                 "将任务提交到后台 Agent 执行。后台 Agent 可以运行 Python 代码生成 PDF、图片、"
                 "Word/Excel/PPT、图表、代码文件等任意文件，也可以进行复杂计算、网页搜索、数据分析。"
-                "这是你唯一能完成文件生成和代码执行的方式——不要用 sandbox_manager__write_file 或 write_file_base64 替代。"
+                "简单文本可用 write/edit；二进制生成需 run_python 或此后台入口，代码执行仍须管理员凭据。"
                 "提交后立即结束本轮回复，等待系统通知唤醒。"
                 "完成后用 sandbox_manager__send_chat_file 将生成的文件发送到聊天。"
                 "适用：生成任何文件、复杂计算、数据分析、多步推理、网页调研。",
@@ -119,12 +119,16 @@ async def _handle_submit_problem(self: BackgroundTriggerSkill, args: dict) -> st
         if len(parts) != 2 or not parts[0] or not parts[1]:
             return _json({"ok": False, "error": f"无效的 pipeline_key: {pipeline_key}（缺少聊天流信息）"})
         conversation_kind, conversation_id = parts
+        from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
+        invocation = CURRENT_INVOCATION.get()
+        submit_context = {"execution_context": invocation.context} if invocation is not None else {}
         result = await self._manager.submit(
             pipeline_key=pipeline_key,
             conversation_kind=conversation_kind,
             conversation_id=conversation_id,
             question=question,
             delegate_context=str(args.get("context", "")),
+            **submit_context,
         )
         return result
     except Exception as e:

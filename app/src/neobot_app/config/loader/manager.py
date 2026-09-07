@@ -256,6 +256,7 @@ class Config:
                     api_key=platform_config.api_key,
                     pricing=pricing,
                     settings=settings,
+                    native_vision=getattr(getattr(models_config, name), "native_vision", False),
                 )
             )
             registered_count += 1

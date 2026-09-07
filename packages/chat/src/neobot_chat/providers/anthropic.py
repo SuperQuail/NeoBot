@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.providers.vision import contains_images, to_anthropic_content
+from neobot_chat.schema.exceptions import NativeVisionUnsupportedError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 from neobot_chat.utils import parse_tool_args
 
@@ -22,8 +24,9 @@ class AnthropicProvider(BaseHTTPProvider):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_body: dict[str, Any] | None = None,
+        native_vision: bool = False,
     ):
-        super().__init__(api_key, base_url, timeout)
+        super().__init__(api_key, base_url, timeout, native_vision=native_vision)
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -48,14 +51,21 @@ class AnthropicProvider(BaseHTTPProvider):
             match msg["role"]:
                 case "system":
                     content = msg.get("content")
+                    if contains_images(content):
+                        raise NativeVisionUnsupportedError("Anthropic system messages cannot contain images")
                     if isinstance(content, str) and content:
                         system_parts.append(content)
+                    elif isinstance(content, list):
+                        system_parts.extend(
+                            block["text"] for block in content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
                 case "assistant":
                     converted.append(self._convert_assistant_msg(msg))
                 case "tool":
                     converted.append(self._convert_tool_msg(msg))
                 case _:
-                    converted.append({"role": "user", "content": msg.get("content")})
+                    converted.append({"role": "user", "content": to_anthropic_content(msg.get("content"))})
         system = "\n\n".join(system_parts) if system_parts else None
         return system, converted
 
@@ -65,8 +75,8 @@ class AnthropicProvider(BaseHTTPProvider):
         content = msg.get("content")
         if isinstance(content, str) and content:
             blocks.append({"type": "text", "text": content})
-        elif isinstance(content, list):
-            blocks.extend(block for block in content if isinstance(block, dict))
+        elif isinstance(content, list) or contains_images(content):
+            blocks.extend(to_anthropic_content(content))
         for tc in msg.get("tool_calls", []):
             blocks.append(
                 {
@@ -86,7 +96,7 @@ class AnthropicProvider(BaseHTTPProvider):
                 {
                     "type": "tool_result",
                     "tool_use_id": msg["tool_call_id"],
-                    "content": msg["content"],
+                    "content": to_anthropic_content(msg["content"]),
                 }
             ],
         }

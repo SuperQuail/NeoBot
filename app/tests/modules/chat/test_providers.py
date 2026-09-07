@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -20,6 +22,89 @@ def _openai_provider(handler) -> OpenAIProvider:
         base_url="https://example.com",
     )
     return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_cls", [OpenAIProvider, DeepSeekOfficalProvider])
+@pytest.mark.parametrize(
+    "tool_fields",
+    [{}, {"tool_calls": None}, {"tool_calls": []}],
+    ids=["missing", "null", "empty"],
+)
+async def test_chat_accepts_no_tool_calls(provider_cls, tool_fields):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{"message": {
+                "role": "assistant", "content": "done", **tool_fields,
+            }}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+
+    provider = provider_cls(api_key="test-key", model="test-model")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        message = await provider.chat([{"role": "user", "content": "hello"}])
+        assert message["role"] == "assistant"
+        assert message["content"] == "done"
+        assert "tool_calls" not in message
+        assert message["extensions"]["usage"]["input_tokens"] == 3
+        assert message["extensions"]["usage"]["output_tokens"] == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_cls", [OpenAIProvider, DeepSeekOfficalProvider])
+@pytest.mark.parametrize(
+    "tool_fields",
+    [{}, {"tool_calls": None}, {"tool_calls": []}],
+    ids=["missing", "null", "empty"],
+)
+@pytest.mark.parametrize("with_tool_call", [False, True])
+async def test_stream_accepts_no_tool_calls_in_delta(
+    provider_cls, tool_fields, with_tool_call,
+):
+    tool_call = {
+        "id": "call-1", "type": "function",
+        "function": {"name": "read_archive", "arguments": "{}"},
+    }
+    deltas = [{"content": "do", **tool_fields}]
+    if with_tool_call:
+        deltas.append({"tool_calls": [{"index": 0, **tool_call}]})
+    deltas.append({"content": "ne", **tool_fields})
+    body = "".join(
+        "data: " + json.dumps({"choices": [{"delta": delta}]}) + "\n\n"
+        for delta in deltas
+    ) + "data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=body.encode(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    provider = provider_cls(api_key="test-key", model="test-model")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        chunks = [
+            chunk async for chunk in provider.stream(
+                [{"role": "user", "content": "hello"}],
+            )
+        ]
+        assert "".join(chunk.delta or "" for chunk in chunks) == "done"
+        message = chunks[-1].message
+        assert message is not None
+        assert message["content"] == "done"
+        if with_tool_call:
+            assert message["tool_calls"] == [tool_call]
+        else:
+            assert "tool_calls" not in message
+    finally:
+        await provider.close()
 
 
 @pytest.mark.asyncio

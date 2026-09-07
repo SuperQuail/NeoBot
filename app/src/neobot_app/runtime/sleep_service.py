@@ -17,7 +17,7 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.time_context import epoch_seconds, from_epoch_seconds
+from neobot_app.time_context import epoch_seconds, from_epoch_seconds, monotonic_seconds
 
 # 睡眠剩余时间播报间隔(秒)
 SLEEP_TICKER_INTERVAL_SECONDS = 60
@@ -88,14 +88,17 @@ class SleepService:
         self._max_seconds = max_seconds
         self._wake_up_at: float | None = None
         self._sleep_started_at: float | None = None
+        # 墙钟只用于展示；实际时长使用单调时钟，避免系统校时提前结束睡眠。
+        self._sleep_deadline: float | None = None
+        self._sleep_started_monotonic: float | None = None
 
     # ── 状态查询 ──
 
     def is_sleeping(self) -> bool:
         """是否处于睡眠中(时间已到自动视为醒来)。"""
-        if self._wake_up_at is None:
+        if self._sleep_deadline is None:
             return False
-        if epoch_seconds() >= self._wake_up_at:
+        if monotonic_seconds() >= self._sleep_deadline:
             self._wake_up_at = None
             self._logger.info(
                 "Bot 睡眠到期,自动醒来(控制台日志:睡眠完毕)",
@@ -103,6 +106,8 @@ class SleepService:
                 ended_at=epoch_seconds(),
             )
             self._sleep_started_at = None
+            self._sleep_deadline = None
+            self._sleep_started_monotonic = None
             return False
         return True
 
@@ -110,7 +115,7 @@ class SleepService:
         """剩余睡眠秒数(未在睡眠时返回 0)。"""
         if not self.is_sleeping():
             return 0
-        return max(0, int(self._wake_up_at - epoch_seconds()))
+        return max(0, int(self._sleep_deadline - monotonic_seconds()))
 
     def wake_up_at(self) -> float | None:
         """预计醒来的 epoch 秒;未在睡眠时返回 None。"""
@@ -158,8 +163,10 @@ class SleepService:
             return False, "睡眠时长必须大于 0"
         if seconds > self._max_seconds:
             return False, f"睡眠时长最多 {int(self._max_seconds // 3600)} 小时"
-        self._wake_up_at = epoch_seconds() + seconds
         self._sleep_started_at = epoch_seconds()
+        self._wake_up_at = self._sleep_started_at + seconds
+        self._sleep_started_monotonic = monotonic_seconds()
+        self._sleep_deadline = self._sleep_started_monotonic + seconds
         self._logger.info(
             "Bot 开始睡眠(控制台日志)",
             duration_seconds=int(seconds),
@@ -186,13 +193,15 @@ class SleepService:
             )
         self._wake_up_at = None
         self._sleep_started_at = None
+        self._sleep_deadline = None
+        self._sleep_started_monotonic = None
         return was_sleeping
 
     def _sleep_elapsed_text(self) -> str:
         """睡眠已持续时长的可读文本(用于结束日志;睡眠未开始/已清除时返回 '?')。"""
-        if self._sleep_started_at is None:
+        if self._sleep_started_monotonic is None:
             return "?"
-        elapsed = max(0.0, epoch_seconds() - self._sleep_started_at)
+        elapsed = max(0.0, monotonic_seconds() - self._sleep_started_monotonic)
         return format_sleep_duration(elapsed)
 
     # ── 唤醒提示词(参考自定义提示词系统,可被 data/prompts/custom 覆盖) ──
