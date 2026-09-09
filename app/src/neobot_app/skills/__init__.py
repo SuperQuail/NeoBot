@@ -35,6 +35,7 @@ from neobot_app.skills.browser_skill import BrowserSkill
 from neobot_app.skills.browser_network_skill import BrowserNetworkSkill
 from neobot_app.skills.browser_video_skill import BrowserVideoSkill
 from neobot_app.skills.balance_skill import BalanceSkill
+from neobot_app.skills.balance_query_skill import BalanceQuerySkill
 from neobot_app.skills.agent_delegation import AgentDelegationSkill
 from neobot_app.skills.credential_skill import CredentialSkill
 from neobot_app.skills.vision_detect_skill import VisionDetectSkill
@@ -364,6 +365,10 @@ def build_all_skills(
                 lifecycle_manager=browser_lifecycle_manager,
             )
         )
+
+    # ── 余额查询辅助（按 config 中每个模型的 balance_query_hint 发请求） ──
+    if "balance_query" not in disabled:
+        skills_to_register.append(BalanceQuerySkill())
 
     # ── DeepSeek 余额查询（仅当 BalanceChecker 已启用时注册） ──
     if "deepseek_balance" not in disabled and balance_checker is not None:

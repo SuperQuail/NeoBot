@@ -59,7 +59,6 @@ class NeoBotApplication(Generic[T]):
         drawing_manager: Any = None,
         background_coros: list | None = None,
         self_heal_manager: Any = None,
-        console_service: Any = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -107,9 +106,6 @@ class NeoBotApplication(Generic[T]):
         self._background_coros = background_coros or []
         self._background_tasks: list[asyncio.Task] = []
         self._self_heal_manager = self_heal_manager
-        self._console_service = console_service
-        if self._console_service is not None:
-            self._console_service.bind_application(self)
 
     async def start(self) -> None:
         if self._started:
@@ -120,14 +116,6 @@ class NeoBotApplication(Generic[T]):
         try:
             started.append("file_server")
             await self.file_server.start()
-            # 内置控制台独立于 QQ 连接, 必须提前启动:
-            # 即使后续步骤 (adapter 连接/插件/聊天流) 失败, 控制台也保持可用以排查问题
-            if self._console_service is not None:
-                started.append("console")
-                try:
-                    await self._console_service.start()
-                except Exception as exc:
-                    self._logger.error("内置控制台启动失败", error=str(exc))
             if self.tts_service is not None:
                 started.append("tts")
                 await self.tts_service.initialize()
@@ -259,8 +247,6 @@ class NeoBotApplication(Generic[T]):
             steps.append(("file server", self.file_server.stop))
         if self._engine is not None:
             steps.append(("database engine", self._engine.dispose))
-        if "console" in started and self._console_service is not None:
-            steps.append(("console service", self._console_service.stop))
 
         deferred = await self._run_cleanup_steps("startup rollback", steps)
         self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
@@ -391,8 +377,6 @@ class NeoBotApplication(Generic[T]):
     async def _stop_components(self) -> BaseException | None:
         self._shutdown_event.set()
         steps: list[tuple[str, Callable[[], Any]]] = []
-        if self._console_service is not None:
-            steps.append(("console service", self._console_service.stop))
         if self._self_heal_manager is not None:
             steps.append(("self heal manager", self._self_heal_manager.shutdown))
         if self._problem_solver_manager is not None:

@@ -121,6 +121,9 @@ cov.xml
 /OpenAPI/
 /.continue/
 
+# Node / 前端构建
+node_modules/
+
 # uv lock file
 uv.lock
 /test/reports/

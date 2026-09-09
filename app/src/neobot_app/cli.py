@@ -57,28 +57,53 @@ async def run() -> bool:
         current_application["value"] = None
 
 
+def _add_inbound_rule(program: str, port: int) -> bool:
+    """用 netsh 添加一条入站放行规则（仅 Windows，需要管理员权限）。"""
+    import subprocess
+
+    if sys.platform != "win32":
+        print("firewall-open 仅支持 Windows；Linux 请使用 ufw/firewalld 放行端口。")
+        return False
+    rule_name = f"NeoBot Dashboard {port}"
+    command = [
+        "netsh",
+        "advfirewall",
+        "firewall",
+        "add",
+        "rule",
+        f"name={rule_name}",
+        "dir=in",
+        "action=allow",
+        f"program={program}",
+        "protocol=TCP",
+        f"localport={port}",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=30, check=False
+        )
+    except Exception as exc:
+        print(f"执行 netsh 失败: {exc}")
+        return False
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "").strip()
+    print(f"添加失败 (TCP {port}): {detail or '请确认以管理员身份运行本命令。'}")
+    print("  手动命令: " + " ".join(command))
+    return False
+
+
 def cmd_firewall_open(args: argparse.Namespace) -> None:
-    """为控制台端口添加 Windows 防火墙入站放行规则 (需管理员权限)。"""
-    import sys as _sys
-
-    from neobot_app.console.firewall import add_inbound_allow_rule
-
-    program = _sys.executable
-    ports = list(dict.fromkeys([args.port, 9891, 9981]))
+    """为网页面板端口添加 Windows 防火墙入站放行规则 (需管理员权限)。"""
+    program = sys.executable
+    ports = list(dict.fromkeys([args.port, 9981]))
     added = 0
     for port in ports:
-        if add_inbound_allow_rule(program, port):
+        if _add_inbound_rule(program, port):
             print(f"已添加放行规则: {program} -> TCP {port}")
             added += 1
-        else:
-            print(
-                f"添加失败 (TCP {port}): 请确认以管理员身份运行本命令。\n"
-                f"  手动命令: netsh advfirewall firewall add rule "
-                f'name="NeoBot Console {port}" dir=in action=allow '
-                f'program="{program}" protocol=TCP localport={port}'
-            )
     if added == 0:
-        _sys.exit(1)
+        sys.exit(1)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -801,13 +826,13 @@ def main() -> None:
 
     # `neobot firewall-open`
     firewall_parser = sub.add_parser(
-        "firewall-open", help="放行控制台端口（Windows 防火墙，需管理员）",
-        description="为当前 Python 程序添加控制台端口的入站放行规则，"
+        "firewall-open", help="放行网页面板端口（Windows 防火墙，需管理员）",
+        description="为当前 Python 程序添加网页面板端口的入站放行规则，"
                     "解决'内网可访问、外网不可用'的问题。需以管理员身份运行。",
     )
     firewall_parser.add_argument(
         "--port", type=int, default=9981,
-        help="首选端口 (默认 9981；9891/9981 都会放行)",
+        help="网页面板端口 (默认 9981)",
     )
 
     # `neobot init [--force]`

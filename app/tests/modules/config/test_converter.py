@@ -9,7 +9,7 @@ import pytest
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
 from neobot_app.config.schemas.bot import (
     Chat,
-    Console,
+    Dashboard,
     DeepSeekModelSettings,
     Models,
 )
@@ -136,35 +136,44 @@ def test_dict_to_dataclass_enum_member_passthrough_and_string_fallback():
     assert result_string.color is _Color.RED
 
 
-def test_dict_to_dataclass_console_port_range_raises_value_error():
-    """Console 端口越界必须通过 __post_init__ 抛出 ValueError，非法值不能被静默接受。"""
+def test_dict_to_dataclass_dashboard_port_range_raises_value_error():
+    """Dashboard 端口越界必须通过 __post_init__ 抛出 ValueError，非法值不能被静默接受。"""
     # Arrange
-    raw = {"port": 0, "admin_port": 99999}
+    raw = {"port": 0}
 
     # Act / Assert
-    with pytest.raises(ValueError, match="console.port"):
-        dict_to_dataclass(raw, Console)
+    with pytest.raises(ValueError, match="dashboard.port"):
+        dict_to_dataclass(raw, Dashboard)
 
 
-def test_dict_to_dataclass_console_valid_range_converts():
-    """Console 端口在合法范围内必须正常转换并保留各字段值。"""
+def test_dict_to_dataclass_dashboard_valid_range_converts():
+    """Dashboard 端口在合法范围内必须正常转换并保留各字段值。"""
     # Arrange
     raw = {
         "port": 8080,
-        "admin_port": 9090,
-        "port_search_limit": 50,
         "session_timeout_minutes": 30,
+        "log_buffer_size": 800,
         "host": "0.0.0.0",
+        "base_path": "/panel",
     }
 
     # Act
-    result = dict_to_dataclass(raw, Console)
+    result = dict_to_dataclass(raw, Dashboard)
 
     # Assert
     assert result.port == 8080
-    assert result.admin_port == 9090
-    assert result.port_search_limit == 50
     assert result.session_timeout_minutes == 30
+    assert result.log_buffer_size == 800
+    assert result.base_path == "/panel"
+
+
+def test_dict_to_dataclass_dashboard_defaults_enabled_and_network_open():
+    """网页面板默认开启并对网络开放，端口默认 9981。"""
+    result = dict_to_dataclass({}, Dashboard)
+
+    assert result.enabled is True
+    assert result.host == "0.0.0.0"
+    assert result.port == 9981
 
 
 def test_dict_to_dataclass_probability_out_of_range_passes_through():

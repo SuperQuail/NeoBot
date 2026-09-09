@@ -9,6 +9,7 @@ import io
 import json
 import mimetypes
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -92,7 +93,8 @@ class CreatorImageService:
         adapter: OneBotAdapter,
         config: DrawServiceConfig,
         data_dir: Path = DATA_DIR,
-        model_name: str = "creator_image_model",
+        model_name: str = "creator_image_models_0",
+        model_names: Sequence[str] | None = None,
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
         markdown_dir: Path | None = None,
@@ -108,19 +110,32 @@ class CreatorImageService:
         self._vision_provider = vision_provider
         self._file_server = file_server
         self._image_pool = image_pool
-        self._model = get_registered_model(model_name)
+        names = tuple(model_names) if model_names else (model_name,)
+        self._model_names: tuple[str, ...] = tuple(dict.fromkeys(name for name in names if name))
+        if not self._model_names:
+            raise ValueError("至少需要一个生图模型注册名")
+        self._models: dict[str, Any] = {
+            name: get_registered_model(name) for name in self._model_names
+        }
+        self._default_model_name = self._model_names[0]
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
         self._gallery_dir = self._base_dir / "gallery"
         self._markdown_dir = markdown_dir
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._gallery_dir.mkdir(parents=True, exist_ok=True)
-        timeout = self._model.settings.timeout_seconds
-        self._client = httpx.AsyncClient(
-            base_url=self._model.base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {self._model.api_key}"},
-            timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
-        )
+        default_model = self._models[self._default_model_name]
+        timeout = default_model.settings.timeout_seconds
+        self._clients: dict[str, httpx.AsyncClient] = {}
+        for name, model in self._models.items():
+            model_timeout = float(model.settings.timeout_seconds or timeout)
+            self._clients[name] = httpx.AsyncClient(
+                base_url=model.base_url.rstrip("/"),
+                headers={"Authorization": f"Bearer {model.api_key}"},
+                timeout=httpx.Timeout(model_timeout, connect=min(model_timeout, 10.0)),
+            )
+        self._model = default_model
+        self._client = self._clients[self._default_model_name]
         # 用户可控 URL 下载使用无凭据 client，避免 API Key 外发
         self._public_client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
@@ -130,7 +145,8 @@ class CreatorImageService:
     async def close(self) -> None:
         await self._stop_cleanup_task()
         await self.cleanup_tmp()
-        await self._client.aclose()
+        for client in self._clients.values():
+            await client.aclose()
         await self._public_client.aclose()
 
     async def start(self) -> None:
@@ -138,6 +154,68 @@ class CreatorImageService:
 
     async def stop(self) -> None:
         await self._stop_cleanup_task()
+
+    # ------------------------------------------------------------------
+    # 生图模型选择（支持配置多个模型/供应商）
+    # ------------------------------------------------------------------
+
+    @property
+    def default_model_name(self) -> str:
+        return self._default_model_name
+
+    @property
+    def model_names(self) -> tuple[str, ...]:
+        return self._model_names
+
+    def available_models(self) -> list[dict[str, Any]]:
+        """可用生图模型清单（供绘图工具描述与面板展示）。"""
+        return [
+            {
+                "name": name,
+                "index": index,
+                "description": self._models[name].description,
+                "provider": self._models[name].provider_name,
+                "model_name": self._models[name].model_name,
+                "default": name == self._default_model_name,
+            }
+            for index, name in enumerate(self._model_names)
+        ]
+
+    def resolve_model_name(self, selector: str | None) -> str:
+        """把 Agent 给出的选择（序号 / 注册名 / 描述 / 供应商 / 模型名）解析为注册名。"""
+        if selector is None:
+            return self._default_model_name
+        raw = str(selector).strip()
+        if not raw:
+            return self._default_model_name
+        if raw in self._models:
+            return raw
+        if raw.isdigit():
+            index = int(raw)
+            if 0 <= index < len(self._model_names):
+                return self._model_names[index]
+        lowered = raw.casefold()
+        for name in self._model_names:
+            model = self._models[name]
+            candidates = {
+                str(model.description).casefold(),
+                str(model.provider_name).casefold(),
+                str(model.model_name).casefold(),
+            }
+            if lowered in candidates:
+                return name
+        for name in self._model_names:
+            model = self._models[name]
+            if lowered in str(model.model_name).casefold() or lowered in str(model.provider_name).casefold():
+                return name
+        available = "、".join(
+            f"{index}:{self._models[name].description or name}"
+            for index, name in enumerate(self._model_names)
+        )
+        raise ValueError(f"未知生图模型选择 {selector!r}；可用: {available}")
+
+    def _client_for(self, model_name: str) -> tuple[Any, httpx.AsyncClient]:
+        return self._models[model_name], self._clients[model_name]
 
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
@@ -346,17 +424,21 @@ class CreatorImageService:
         seed: int | None = None,
         image_source: str | None = None,
         conv_id: str = "",
+        model: str | None = None,
     ) -> CreatorImageRecord:
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt 不能为空")
 
+        resolved_name = self.resolve_model_name(model)
+        registered_model, client = self._client_for(resolved_name)
+
         payload: dict[str, Any] = {
-            "model": self._model.model_name,
+            "model": registered_model.model_name,
             "prompt": prompt,
             "image_size": image_size or DEFAULT_IMAGE_SIZE,
         }
-        payload.update(self._model.settings.extra_body or {})
+        payload.update(registered_model.settings.extra_body or {})
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
         if seed is not None:
@@ -379,7 +461,7 @@ class CreatorImageService:
         elif len(resolved_data_urls) > 1:
             payload["image"] = resolved_data_urls
 
-        response = await self._client.post("/images/generations", json=payload)
+        response = await client.post("/images/generations", json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

@@ -90,6 +90,10 @@ class DrawingSkill(SkillModule):
                 "  - 从不请求原生透明背景（外接生图 API 的透明功能不可靠）\n"
                 "  - 需要透明/抠图时：生成时用纯色背景（如纯绿 #00ff00，主体不用该色），"
                 "再调用 process_image(operation=\"remove_background\") 本地去底\n\n"
+                "【生图服务选择】\n"
+                "  - 配置了多个生图模型/供应商时，draw 的 provider 参数可指定服务（取值见工具参数说明）\n"
+                "  - 用户没有特别要求时不要指定，使用默认模型即可\n"
+                "  - 用户指定风格/供应商/模型，或默认模型不可用时，再按说明选择\n\n"
                 "【图片尺寸】\n"
                 "  常用尺寸：512x512（方形头像）、1024x1024（方形）、768x1024（竖向）、1024x768（横向）\n"
                 "  未指定时默认 1024x1024\n\n"
@@ -111,27 +115,60 @@ class DrawingSkill(SkillModule):
     def reset(self) -> None:
         pass
 
+    def _image_model_options(self) -> list[dict[str, Any]]:
+        service = self._image_service
+        available = getattr(service, "available_models", None)
+        if not callable(available):
+            return []
+        try:
+            models = available()
+        except Exception:
+            return []
+        return [item for item in models if isinstance(item, dict)]
+
+    def _provider_property(self) -> dict[str, Any] | None:
+        models = self._image_model_options()
+        if len(models) <= 1:
+            return None
+        lines = [
+            "可选，生图服务供应商/模型；当前配置了多个生图模型，未指定时使用第一个。可用："
+        ]
+        for item in models:
+            description = str(item.get("description") or item.get("name") or "")
+            provider = str(item.get("provider") or "")
+            model_name = str(item.get("model_name") or "")
+            default_mark = "（默认）" if item.get("default") else ""
+            lines.append(
+                f"[{item.get('index')}] {description}{default_mark}"
+                f"（供应商 {provider} / 模型 {model_name}）"
+            )
+        return {"type": "string", "description": "；".join(lines)}
+
     def get_tools(self) -> list[dict]:
+        draw_properties: dict[str, Any] = {
+            "prompt": {"type": "string", "description": "绘图提示词（正向描述，编写规范见操作说明）"},
+            "negative_prompt": {"type": "string", "description": "可选，负面提示词"},
+            "image_size": {"type": "string", "description": "可选，图片尺寸，如 512x512、1024x1024"},
+            "reference_id": {"type": "integer", "description": "可选，参考图 ID（图库中已有图片）"},
+            "references": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "可选，参考图路径列表（图库编号/池/表情包/url/file/chat 格式）",
+            },
+            "seed": {"type": "integer", "description": "可选，随机种子"},
+            "requester": {"type": "string", "description": "可选，委托者描述"},
+            "requirements": {"type": "string", "description": "可选，绘图要求描述"},
+        }
+        provider_property = self._provider_property()
+        if provider_property is not None:
+            draw_properties["provider"] = provider_property
         tools = [
             self._tool_def(
                 "draw",
                 "AI绘图。支持参考图/垫图/图生图。绘图为后台任务，提交后立即返回，完成后会通知主Agent。"
                 "涉及角色时先查图库立绘并参考（见操作说明）。",
                 {
-                    "properties": {
-                        "prompt": {"type": "string", "description": "绘图提示词（正向描述，编写规范见操作说明）"},
-                        "negative_prompt": {"type": "string", "description": "可选，负面提示词"},
-                        "image_size": {"type": "string", "description": "可选，图片尺寸，如 512x512、1024x1024"},
-                        "reference_id": {"type": "integer", "description": "可选，参考图 ID（图库中已有图片）"},
-                        "references": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "可选，参考图路径列表（图库编号/池/表情包/url/file/chat 格式）",
-                        },
-                        "seed": {"type": "integer", "description": "可选，随机种子"},
-                        "requester": {"type": "string", "description": "可选，委托者描述"},
-                        "requirements": {"type": "string", "description": "可选，绘图要求描述"},
-                    },
+                    "properties": draw_properties,
                     "required": ["prompt"],
                 },
             ),
@@ -328,6 +365,7 @@ async def _handle_draw(self: DrawingSkill, args: dict) -> str:
         negative_prompt=str(args.get("negative_prompt", "") or "") or None,
         image_size=str(args.get("image_size", "") or "") or None,
         seed=seed,
+        model=str(args.get("provider", "") or "") or None,
     )
 
 async def _handle_check_draw_status(self: DrawingSkill, args: dict) -> str:

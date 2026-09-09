@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
-from neobot_modloader import PluginHookBus, PluginHostFacade
+from neobot_modloader import DefaultServiceRegistry, PluginHookBus, PluginHostFacade
 
 from neobot_app.observability.logging import set_runtime_event_dispatcher
 from neobot_app.observability.output import RuntimeOutput
@@ -45,20 +46,43 @@ def build_plugin_host(
     runtime_output.set_runtime_events(hook_bus)
     set_runtime_event_dispatcher(hook_bus.dispatch_envelope)
 
-    host_facade = PluginHostFacade(events=hook_bus, output=runtime_output)
+    host_facade = PluginHostFacade(
+        events=hook_bus,
+        output=runtime_output,
+        services=DefaultServiceRegistry(),
+    )
 
     return {
         "reply_block_registry": reply_block_registry,
         "runtime_output": runtime_output,
         "hook_bus": hook_bus,
         "host_facade": host_facade,
+        "services": host_facade.services,
     }
+
+
+def register_host_services(host_facade: Any, services: dict[str, tuple[Any, str]]) -> None:
+    """把本体组件登记到宿主服务注册表，供官方/第三方插件读取。
+
+    services 形如 {名字: (对象, 说明)}；对象为 None 时跳过（表示该功能未启用）。
+    """
+    registry = getattr(host_facade, "services", None)
+    if registry is None:
+        return
+    for name, (service, description) in services.items():
+        if service is None:
+            continue
+        try:
+            registry.register(name, service, description=description, override=True)
+        except Exception as exc:
+            logger.warning(f"注册宿主服务失败 ({name}): {exc}")
 
 
 def register_config_reload_command(
     *,
     host_facade: Any,
     config: Any,
+    on_reload: Any = None,
 ) -> None:
     from neobot_app.bootstrap._config import _load_config
     from neobot_app.config.loader.manager import ConfigLoadError
@@ -73,6 +97,13 @@ def register_config_reload_command(
         config.reload(new_config)
         sync_data_files(SRC_DATA_DIR, DATA_DIR)
         sync_default_prompts(DATA_DIR, logger=logger)
+        if callable(on_reload):
+            try:
+                result = on_reload()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.warning(f"配置重载后处理失败: {exc}")
         await host_facade.lifecycle.fire("config.changed")
         return {
             "status": "ok",
@@ -242,7 +273,6 @@ def build_pipelines_and_app(
     drawing_manager: Any = None,
     background_coros: list | None = None,
     self_heal_manager: Any = None,
-    console_service: Any = None,
     command_service: Any = None,
     credential_manager: Any = None,
     sleep_service: Any = None,
@@ -315,5 +345,4 @@ def build_pipelines_and_app(
         drawing_manager=drawing_manager,
         background_coros=background_coros,
         self_heal_manager=self_heal_manager,
-        console_service=console_service,
     )

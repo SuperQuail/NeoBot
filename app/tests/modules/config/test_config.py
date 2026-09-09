@@ -272,7 +272,7 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
     assert "APIKey" not in message
     assert "vision_model" not in message
     assert "tts_model" not in message
-    assert "creator_image_model" not in message
+    assert "creator_image_models" not in message
     assert exited == []
 
 
@@ -322,7 +322,7 @@ def test_load_invalid_type_value_falls_back_to_default_and_rewrites(monkeypatch,
 
 
 def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
-    """迁移必须在 Config.load 时注册并生效(0.3.0 -> 0.4.0 清理提示词键),防止迁移成为死代码。"""
+    """迁移必须在 Config.load 时注册并链式生效(0.3.0 -> 0.4.0 -> 0.5.0),防止迁移成为死代码。"""
     # Arrange
     _clear_platform_env(monkeypatch)
     for key, value in _DEEPSEEK_KEYS.items():
@@ -346,9 +346,53 @@ def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.4.0"
+    assert config_obj.version == "0.5.0"
     assert not hasattr(config_obj.chat, "group_prompt_template")
     assert config_obj.bot.bot_data, "bot_data 必须保留"
     raw = cfg_path.read_text(encoding="utf-8")
     assert "group_prompt_template" not in raw
-    assert 'version = "0.4.0"' in raw
+    assert 'version = "0.5.0"' in raw
+
+
+def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path):
+    """0.4.0 -> 0.5.0: [console] 迁到 [dashboard]，生图模型迁移为列表。"""
+    # Arrange
+    _clear_platform_env(monkeypatch)
+    for key, value in _DEEPSEEK_KEYS.items():
+        monkeypatch.setenv(key, value)
+    cfg_path = tmp_path / "bot.toml"
+    cfg_path.write_text(
+        'version = "0.4.0"\n'
+        '[bot]\naccount = 10001\n\n'
+        '[console]\n'
+        'enabled = true\n'
+        'host = "127.0.0.1"\n'
+        'port = 9000\n'
+        'admin_enabled = false\n'
+        'admin_port = 9891\n'
+        'port_search_limit = 50\n\n'
+        '[models.creator_image_model]\n'
+        'description = "旧生图模型"\n'
+        'provider = "SiliconFlow"\n'
+        'model_name = "black-forest-labs/FLUX.1-schnell"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "neobot_app.config.loader.manager.backup_config", lambda *a, **k: None
+    )
+
+    # Act
+    config_obj = Config.load(cfg_path, BotConfig)
+
+    # Assert
+    assert config_obj.version == "0.5.0"
+    assert config_obj.dashboard.enabled is True
+    assert config_obj.dashboard.host == "127.0.0.1"
+    assert config_obj.dashboard.port == 9000
+    assert not hasattr(config_obj, "console")
+    assert len(config_obj.models.creator_image_models) == 1
+    assert config_obj.models.creator_image_models[0].description == "旧生图模型"
+    raw = cfg_path.read_text(encoding="utf-8")
+    assert "[console]" not in raw
+    assert "[dashboard]" in raw
+    assert "[[models.creator_image_models]]" in raw

@@ -56,3 +56,52 @@ def migrate_v3_to_v4(old: dict) -> dict:
         new[key] = value
 
     return new
+
+
+_DASHBOARD_CARRY_KEYS = (
+    "enabled",
+    "host",
+    "port",
+    "session_timeout_minutes",
+    "secure_cookies",
+    "trust_proxy_headers",
+)
+
+
+@Config.migration(from_version="0.4.0", to_version="0.5.0")
+def migrate_v4_to_v5(old: dict) -> dict:
+    """迁移 0.4.0 -> 0.5.0。
+
+    - [console] -> [dashboard]：双控制台合并为官方 dashboard 插件，admin_* 与
+      port_search_limit 不再需要，其余可直接沿用的字段保留。
+    - [models.creator_image_model] -> [[models.creator_image_models]]：
+      生图模型改为列表，允许配置多个模型/供应商。
+    """
+    new: dict[str, Any] = {"version": "0.5.0"}
+
+    for key, value in old.items():
+        if key in ("version", "console", "models"):
+            continue
+        new[key] = value
+
+    console = old.get("console")
+    if isinstance(console, dict):
+        dashboard = {
+            key: console[key]
+            for key in _DASHBOARD_CARRY_KEYS
+            if key in console
+        }
+        if dashboard:
+            new["dashboard"] = dashboard
+
+    models = old.get("models")
+    if isinstance(models, dict):
+        migrated_models = {
+            key: value for key, value in models.items() if key != "creator_image_model"
+        }
+        legacy_image_model = models.get("creator_image_model")
+        if isinstance(legacy_image_model, dict):
+            migrated_models["creator_image_models"] = [legacy_image_model]
+        new["models"] = migrated_models
+
+    return new

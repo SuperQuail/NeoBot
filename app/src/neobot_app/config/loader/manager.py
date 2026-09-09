@@ -105,20 +105,51 @@ class Config:
         return decorator
 
     @classmethod
+    def _resolve_migration_chain(
+        cls, current_version: str, target_version: str
+    ) -> list[tuple[str, str]]:
+        """解析 current -> target 的迁移链（支持多步迁移，如 0.3.0->0.4.0->0.5.0）。"""
+        chain: list[tuple[str, str]] = []
+        version = current_version
+        seen: set[str] = set()
+        while version != target_version:
+            if version in seen:
+                return []
+            seen.add(version)
+            candidates = [pair for pair in cls._migrations if pair[0] == version]
+            if not candidates:
+                return []
+            # 优先直达目标版本，否则按版本号排序取下一步
+            candidates.sort(key=lambda pair: (pair[1] != target_version, pair[1]))
+            step = candidates[0]
+            chain.append(step)
+            version = step[1]
+        return chain
+
+    @classmethod
     def _apply_migrations(
         cls, data: dict, current_version: str, target_version: str
     ) -> dict:
-        """应用配置迁移"""
+        """应用配置迁移（逐级链式执行，保证跨多个版本升级也能正确迁移）。"""
         if current_version == target_version:
             return data
 
-        migration_key = (current_version, target_version)
-        if migration_key in cls._migrations:
-            logger.info(f"应用配置迁移: {current_version} -> {target_version}")
-            return cls._migrations[migration_key](data)
+        chain = cls._resolve_migration_chain(current_version, target_version)
+        if not chain:
+            logger.warning(f"未找到迁移路径: {current_version} -> {target_version}")
+            return data
 
-        logger.warning(f"未找到迁移路径: {current_version} -> {target_version}")
-        return data
+        migrated = data
+        for from_version, to_version in chain:
+            logger.info(f"应用配置迁移: {from_version} -> {to_version}")
+            migrated = cls._migrations[(from_version, to_version)](migrated)
+            if not isinstance(migrated, dict):
+                raise TypeError(
+                    f"配置迁移 {from_version} -> {to_version} 必须返回 dict"
+                )
+            # 迁移函数可能忘记写版本号，这里强制推进，避免链式迁移卡住
+            migrated["version"] = to_version
+        return migrated
 
     @classmethod
     def register_models(cls, config_obj: Any):
@@ -150,7 +181,7 @@ class Config:
         def _feature_enabled(model_field_name: str) -> bool:
             if model_field_name == "tts_model":
                 return bool(getattr(getattr(config_obj, "tts", None), "enabled", False))
-            if model_field_name == "creator_image_model":
+            if model_field_name.startswith("creator_image_models"):
                 return bool(
                     getattr(getattr(config_obj, "agent", None), "creator", None)
                     and getattr(
@@ -164,21 +195,30 @@ class Config:
         pending: list[tuple] = []
         missing_items: list[str] = []
 
-        for model_field in fields(models_config):
-            model_config = getattr(models_config, model_field.name)
+        iter_registrations = getattr(models_config, "iter_registrations", None)
+        if callable(iter_registrations):
+            registrations = list(iter_registrations())
+        else:
+            registrations = [
+                (item.name, getattr(models_config, item.name))
+                for item in fields(models_config)
+                if is_dataclass(getattr(models_config, item.name))
+            ]
+
+        for registry_name, model_config in registrations:
             if not is_dataclass(model_config):
                 continue
-            if not _feature_enabled(model_field.name):
+            if not _feature_enabled(registry_name):
                 logger.info(
-                    f"{model_field.name} 对应功能未启用，跳过注册与校验"
+                    f"{registry_name} 对应功能未启用，跳过注册与校验"
                 )
                 continue
 
             provider_name = getattr(model_config, "provider", "").strip()
             model_name = getattr(model_config, "model_name", "").strip()
-            description = getattr(model_config, "description", model_field.name).strip()
+            description = getattr(model_config, "description", registry_name).strip()
             if (
-                model_field.name == "primary_chat_model"
+                registry_name == "primary_chat_model"
                 and "模型编号0" not in description
             ):
                 description = f"{description}（Agent模型编号0）"
@@ -198,8 +238,8 @@ class Config:
                     missing.append(f"平台 {provider_name}_APIKey 配置")
 
             if missing:
-                detail = f"模型 {model_field.name} 缺少: " + "、".join(missing)
-                if model_field.name in degradable_fields:
+                detail = f"模型 {registry_name} 缺少: " + "、".join(missing)
+                if registry_name in degradable_fields:
                     logger.warning(f"{detail}，该功能将被降级禁用")
                     continue
                 missing_items.append(detail)
@@ -231,7 +271,16 @@ class Config:
                 extra_body=_build_provider_extra_body(provider_name, settings_config),
             )
             pending.append(
-                (model_field.name, description, provider_name, model_name, platform_config, pricing, settings)
+                (
+                    registry_name,
+                    description,
+                    provider_name,
+                    model_name,
+                    platform_config,
+                    pricing,
+                    settings,
+                    bool(getattr(model_config, "native_vision", False)),
+                )
             )
 
         if missing_items:
@@ -245,7 +294,16 @@ class Config:
         registry.clear()
 
         registered_count = 0
-        for name, description, provider_name, model_name, platform_config, pricing, settings in pending:
+        for (
+            name,
+            description,
+            provider_name,
+            model_name,
+            platform_config,
+            pricing,
+            settings,
+            native_vision,
+        ) in pending:
             registry.register(
                 RegisteredModel(
                     name=name,
@@ -256,7 +314,7 @@ class Config:
                     api_key=platform_config.api_key,
                     pricing=pricing,
                     settings=settings,
-                    native_vision=getattr(getattr(models_config, name), "native_vision", False),
+                    native_vision=native_vision,
                 )
             )
             registered_count += 1

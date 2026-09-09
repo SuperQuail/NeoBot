@@ -24,6 +24,7 @@ class DrawTask:
     negative_prompt: str | None = None
     image_size: str | None = None
     seed: int | None = None
+    model: str | None = None
     status: str = "drawing"
     image_id: str | None = None
     error: str | None = None

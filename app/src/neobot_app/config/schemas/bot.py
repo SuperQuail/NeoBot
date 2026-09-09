@@ -216,6 +216,13 @@ class ModelRegistration:
             "自动回退到 vision_model（无需手选回退模型）"
         },
     )
+    balance_query_hint: str = field(
+        default="",
+        metadata={
+            "description": "该模型/供应商的余额查询方式（文本描述，可写请求地址、方法、鉴权与返回字段）。"
+            "留空表示没有查询提示，余额查询 skill 不会列出该模型"
+        },
+    )
 
 
 def _default_primary_chat_model() -> "ModelRegistration":
@@ -347,7 +354,7 @@ def _default_tts_model() -> "ModelRegistration":
 
 def _default_creator_image_model() -> "ModelRegistration":
     return ModelRegistration(
-        description="创作者Agent生图模型",
+        description="创作者Agent生图模型（默认）",
         provider="SiliconFlow",
         model_name="black-forest-labs/FLUX.1-schnell",
         settings=ModelSettings(
@@ -359,6 +366,10 @@ def _default_creator_image_model() -> "ModelRegistration":
             output_price_per_mtokens=0.0,
         ),
     )
+
+
+def _default_creator_image_models() -> "List[ModelRegistration]":
+    return [_default_creator_image_model()]
 
 
 @dataclass
@@ -389,16 +400,31 @@ class Models:
         default_factory=_default_tts_model,
         metadata={"description": "语音模型"},
     )
-    creator_image_model: ModelRegistration = field(
-        default_factory=_default_creator_image_model,
-        metadata={"description": "创作者Agent生图模型"},
+    creator_image_models: List[ModelRegistration] = field(
+        default_factory=_default_creator_image_models,
+        metadata={
+            "description": "创作者Agent生图模型列表；可配置多个模型/供应商，"
+            "供应商超过一个时由 Agent 按 description 自行选择"
+        },
     )
 
     def iter_registrations(self) -> Iterator[tuple[str, ModelRegistration]]:
+        """遍历全部已注册模型，列表字段按 序号 展开为 creator_image_models_0 等名字。"""
         for config_field in dataclass_fields(self):
             model = getattr(self, config_field.name)
             if isinstance(model, ModelRegistration):
                 yield config_field.name, model
+            elif isinstance(model, list):
+                for index, item in enumerate(model):
+                    if isinstance(item, ModelRegistration):
+                        yield f"{config_field.name}_{index}", item
+
+    @property
+    def creator_image_model_names(self) -> List[str]:
+        return [
+            f"creator_image_models_{index}"
+            for index, _ in enumerate(self.creator_image_models)
+        ]
 
 
 @dataclass
@@ -633,36 +659,67 @@ class Debug:
 
 
 @dataclass
-class Console:
-    """内置网页控制台配置。"""
+class Dashboard:
+    """内置网页面板（官方 dashboard 插件）配置。"""
 
     enabled: bool = field(
-        default=False,
-        metadata={"description": "是否启用可从外网访问的调试控制台"},
+        default=True,
+        metadata={"description": "是否启用网页面板（默认开启）"},
     )
     host: str = field(
         default="0.0.0.0",
-        metadata={"description": "调试控制台监听地址；外网访问通常使用 0.0.0.0"},
+        metadata={
+            "description": "网页面板监听地址；0.0.0.0 对网络开放（默认），127.0.0.1 仅本机"
+        },
     )
     port: int = field(
         default=9981,
-        metadata={"description": "调试控制台首选端口；占用时自动向后查找"},
+        metadata={"description": "网页面板监听端口，默认 9981"},
     )
-    admin_enabled: bool = field(
+    access_token: str = field(
+        default="",
+        metadata={
+            "description": "登录令牌；留空则自动生成并写入数据目录 dashboard/access_token.txt"
+        },
+    )
+    base_path: str = field(
+        default="",
+        metadata={"description": "访问路径前缀；留空表示直接以 根路径 访问"},
+    )
+    manage_plugins: bool = field(
         default=True,
-        metadata={"description": "是否启用仅本机可访问的管理员控制台"},
+        metadata={"description": "是否允许在面板内安装、更新、启停和卸载插件"},
     )
-    admin_port: int = field(
-        default=9891,
-        metadata={"description": "管理员控制台首选端口；占用时自动向后查找"},
-    )
-    port_search_limit: int = field(
-        default=100,
-        metadata={"description": "从首选端口开始查找的端口数量，最大 100"},
+    allow_remote_manage: bool = field(
+        default=True,
+        metadata={
+            "description": "是否允许非本机来源执行管理操作（改配置、改 .env、插件管理、重启）；"
+            "关闭后仅本机可管理，远程只能查看"
+        },
     )
     session_timeout_minutes: int = field(
-        default=60,
-        metadata={"description": "控制台无操作会话过期时间（分钟）"},
+        default=720,
+        metadata={"description": "面板无操作会话过期时间（分钟）"},
+    )
+    log_buffer_size: int = field(
+        default=500,
+        metadata={"description": "面板保留的日志缓冲条数"},
+    )
+    bot_info_cache_ttl: int = field(
+        default=300,
+        metadata={"description": "机器人信息缓存秒数"},
+    )
+    history_max_days: int = field(
+        default=30,
+        metadata={"description": "消息统计历史保留天数"},
+    )
+    login_max_failures: int = field(
+        default=5,
+        metadata={"description": "同一 IP 在限速窗口内允许的登录失败次数"},
+    )
+    login_rate_limit_window_seconds: int = field(
+        default=600,
+        metadata={"description": "登录限速窗口（秒）"},
     )
     secure_cookies: bool = field(
         default=False,
@@ -674,16 +731,23 @@ class Console:
     )
 
     def __post_init__(self) -> None:
-        for name in ("port", "admin_port"):
-            value = getattr(self, name)
-            if not 1 <= value <= 65535:
-                raise ValueError(f"console.{name} 必须在 1 到 65535 之间")
-        if not 1 <= self.port_search_limit <= 100:
-            raise ValueError("console.port_search_limit 必须在 1 到 100 之间")
-        if not 5 <= self.session_timeout_minutes <= 1440:
-            raise ValueError("console.session_timeout_minutes 必须在 5 到 1440 之间")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("dashboard.port 必须在 1 到 65535 之间")
+        if not 5 <= self.session_timeout_minutes <= 10080:
+            raise ValueError("dashboard.session_timeout_minutes 必须在 5 到 10080 之间")
+        if not 1 <= self.log_buffer_size <= 10000:
+            raise ValueError("dashboard.log_buffer_size 必须在 1 到 10000 之间")
+        if self.login_max_failures < 1:
+            raise ValueError("dashboard.login_max_failures 至少为 1")
+        if self.login_rate_limit_window_seconds < 1:
+            raise ValueError("dashboard.login_rate_limit_window_seconds 至少为 1")
         if not self.host.strip():
-            raise ValueError("console.host 不能为空")
+            raise ValueError("dashboard.host 不能为空")
+        normalized = self.base_path.strip()
+        if normalized and not normalized.startswith("/"):
+            raise ValueError("dashboard.base_path 必须以 / 开头")
+        if normalized.endswith("/"):
+            raise ValueError("dashboard.base_path 不能以 / 结尾")
 
 
 @dataclass
@@ -1219,7 +1283,7 @@ class WebSearchConfig:
 class BotConfig:
     """机器人主配置。"""
 
-    version: str = field(default="0.4.0", metadata={"description": "配置文件版本"})
+    version: str = field(default="0.5.0", metadata={"description": "配置文件版本"})
     bot: Bot = field(default_factory=Bot)
     chat: Chat = field(default_factory=Chat)
     models: Models = field(default_factory=Models)
@@ -1231,7 +1295,7 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
-    console: Console = field(default_factory=Console)
+    dashboard: Dashboard = field(default_factory=Dashboard)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
