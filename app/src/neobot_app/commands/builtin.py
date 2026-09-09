@@ -1,4 +1,4 @@
-"""内置命令:/help /reboot /add_admin /del_admin /sleep /awake /set_password。"""
+"""内置命令:/help /reboot /reload /add_admin /del_admin /sleep /awake /set_password。"""
 
 from __future__ import annotations
 
@@ -88,6 +88,13 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_awake,
         ),
         Command(
+            name="reload",
+            description="热重载配置(不重启进程),并报告哪些配置项需重启才生效",
+            permission=PERM_SUPER_ADMIN,
+            params=(),
+            handler=_handle_reload,
+        ),
+        Command(
             name="set_password",
             description="设置/重置网页面板登录密码(仅限私聊,避免泄露)",
             permission=PERM_SUPER_ADMIN,
@@ -102,6 +109,35 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_set_password,
         ),
     ]
+
+
+async def _handle_reload(ctx: CommandContext) -> str:
+    """不重启进程地重载配置，并列出「已生效 / 需重启」的配置项。"""
+    result = await ctx.service.reload_config()
+    if result is None:
+        return "配置热重载入口不可用，请重启 NeoBot 或在网页面板操作。"
+    if not result.get("ok"):
+        return f"配置重载失败：{result.get('message') or '未知错误'}"
+
+    lines = [str(result.get("message") or "配置已重载")]
+    changes = result.get("changes") or {}
+    hot = changes.get("hot_reload") or []
+    restart = changes.get("needs_restart") or []
+    if hot:
+        lines.append("")
+        lines.append("已生效：")
+        lines.extend(f"  {item['path']}: {item['before']} → {item['after']}" for item in hot[:8])
+        if len(hot) > 8:
+            lines.append(f"  …还有 {len(hot) - 8} 项")
+    if restart:
+        lines.append("")
+        lines.append("需重启 NeoBot 后生效：")
+        lines.extend(
+            f"  {item['path']}（{item.get('reason') or '构建期配置'}）" for item in restart[:8]
+        )
+        if len(restart) > 8:
+            lines.append(f"  …还有 {len(restart) - 8} 项")
+    return "\n".join(lines)
 
 
 def _render_command_list_markdown(commands: list[Command]) -> str:

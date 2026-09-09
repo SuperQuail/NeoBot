@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -392,6 +393,23 @@ def create_application() -> NeoBotApplication:
     )
 
     # ── 命令系统(被@触发、/ 前缀、权限树;先于 skill/插件构建,供其注入) ──
+    async def _reload_config_from_command() -> Any:
+        """QQ /reload 命令 -> 宿主 config.reload 命令（与面板按钮同一入口）。"""
+        commands = getattr(plugin["host_facade"], "commands", None)
+        caller = getattr(commands, "call", None)
+        if not callable(caller):
+            return None
+        result = caller("config.reload")
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, dict):
+            return None
+        return {
+            "ok": str(result.get("status") or "").lower() == "ok",
+            "message": str(result.get("message") or ""),
+            "changes": result.get("changes"),
+        }
+
     command_service = build_command_service(
         config=config,
         adapter=adapter,
@@ -399,6 +417,7 @@ def create_application() -> NeoBotApplication:
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
         sleep_service=sleep_service,
+        config_reload_callback=_reload_config_from_command,
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──

@@ -85,9 +85,14 @@ def register_config_reload_command(
     on_reload: Any = None,
 ) -> None:
     from neobot_app.bootstrap._config import _load_config
+    from neobot_app.config.hot_reload import diff_snapshot, snapshot, summarize_changes
     from neobot_app.config.loader.manager import ConfigLoadError
 
     async def _reload_config(**kwargs: Any) -> dict[str, Any]:
+        try:
+            before = snapshot(config)
+        except Exception:
+            before = None
         try:
             new_config = _load_config()
         except ConfigLoadError as exc:
@@ -105,18 +110,18 @@ def register_config_reload_command(
             except Exception as exc:
                 logger.warning(f"配置重载后处理失败: {exc}")
         await host_facade.lifecycle.fire("config.changed")
-        return {
-            "status": "ok",
-            "message": (
-                "配置已重载（部分生效）。"
-                "已生效：运行时按需读取的配置（提示词模板文件、概率系数、冷却时间、"
-                "名单等，含模型注册表——新建的 Provider 请求将使用新值）。"
-                "需重启 NeoBot 后生效：运行中的 LLM Provider（模型名/API Key/"
-                "base_url 已固化在现有实例中）、关键词规则（KeywordReactionBuilder "
-                "持有构建时快照）、TTS/表情包等构建期组件、缓存计算器参数"
-                "（缓存保留时间/命中差价）。成本管线开关与阈值、提示词模板文件实时生效。"
-            ),
-        }
+
+        changes = summarize_changes(diff_snapshot(before, config)) if before is not None else None
+        if changes is None:
+            message = "配置已重载（部分生效）：运行时读取的配置立即生效，构建期组件需重启。"
+        elif not changes["hot_reload_count"] and not changes["needs_restart_count"]:
+            message = "配置已重载，本次没有检测到配置项变化。"
+        else:
+            message = (
+                f"配置已热重载：{changes['hot_reload_count']} 项立即生效，"
+                f"{changes['needs_restart_count']} 项需重启后生效。"
+            )
+        return {"status": "ok", "message": message, "changes": changes}
 
     host_facade.commands.register(
         "config.reload",

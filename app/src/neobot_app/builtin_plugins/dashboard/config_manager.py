@@ -238,7 +238,9 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
 
 
 def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) -> list[dict[str, Any]]:
-    """把 dataclass 结构转换为前端可渲染的字段描述。"""
+    """把 dataclass 结构转换为前端可渲染的字段描述（含热重载标注）。"""
+    from neobot_app.config.hot_reload import classify
+
     descriptors: list[dict[str, Any]] = []
     if not is_dataclass(schema):
         return descriptors
@@ -249,6 +251,8 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
         value = getattr(instance, name, None) if instance is not None else None
         inner = _inner_types(field_type)
         target = inner[0] if inner else field_type
+        field_path = (*path, name)
+        hot_reload, restart_reason = classify(field_path)
         item: dict[str, Any] = {
             "name": name,
             "path": [*path, name],
@@ -260,6 +264,8 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             "kind": "scalar",
             "type": _type_name(field_type),
             "readonly": bool(field_obj.metadata.get("readonly", False)),
+            "hot_reload": hot_reload,
+            "restart_reason": restart_reason,
         }
         if is_dataclass(target):
             actual_schema = target
@@ -267,6 +273,12 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
                 actual_schema = type(value)
             item["kind"] = "group"
             item["fields"] = describe_dataclass(actual_schema, value, (*path, name))
+            scalars = _collect_scalar_fields(item["fields"])
+            hot_count = sum(1 for field in scalars if field.get("hot_reload"))
+            item["hot_reload"] = bool(scalars) and hot_count == len(scalars)
+            item["partial_hot_reload"] = 0 < hot_count < len(scalars)
+            item["hot_reload_count"] = hot_count
+            item["field_count"] = len(scalars)
         elif get_origin(target) is list:
             args = get_args(target)
             element = args[0] if args else Any
@@ -288,6 +300,17 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             item["kind"] = "dict"
         descriptors.append(item)
     return descriptors
+
+
+def _collect_scalar_fields(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """递归收集分组内的标量字段描述（用于汇总热重载状态）。"""
+    collected: list[dict[str, Any]] = []
+    for field in fields:
+        if field.get("kind") == "group":
+            collected.extend(_collect_scalar_fields(field.get("fields") or []))
+        elif field.get("kind") in {"scalar", "list", "dict"}:
+            collected.append(field)
+    return collected
 
 
 class BotConfigManager:

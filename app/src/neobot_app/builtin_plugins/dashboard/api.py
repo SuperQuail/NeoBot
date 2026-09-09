@@ -697,9 +697,11 @@ class DashboardApi:
         applied = False
         message = "配置已保存"
         if payload.get("reload"):
-            reload_result = await self._reload_config()
+            reload_result = await self._reload_config(with_changes=True)
             applied = bool(reload_result.get("ok"))
             message = str(reload_result.get("message") or message)
+            if reload_result.get("changes"):
+                document["changes"] = reload_result["changes"]
         document["can_manage"] = self.console.manage_plugins
         document["applied"] = applied
         document["message"] = message
@@ -718,15 +720,27 @@ class DashboardApi:
         return _json_ok({"message": "配置校验通过", "errors": []})
 
     async def config_reload(self, request: web.Request) -> web.Response:
+        """不重启进程的热重载：重载配置并返回「已生效 / 需重启」明细。"""
         denied = self._require_manage(request)
         if denied is not None:
             return denied
-        result = await self._reload_config()
+        result = await self._reload_config(with_changes=True)
         if result.get("ok"):
             return _json_ok(result)
         return _json_error(str(result.get("message") or "重载失败"), status=500)
 
-    async def _reload_config(self) -> dict[str, Any]:
+    async def _reload_config(self, *, with_changes: bool = False) -> dict[str, Any]:
+        from neobot_app.config.hot_reload import diff_snapshot, snapshot, summarize_changes
+
+        before: dict[str, Any] | None = None
+        if with_changes:
+            config_obj = self._models_config()
+            if config_obj is not None:
+                try:
+                    before = snapshot(config_obj)
+                except Exception:
+                    before = None
+
         commands = self._service("host_commands")
         caller = getattr(commands, "call", None) if commands is not None else None
         if not callable(caller):
@@ -737,10 +751,26 @@ class DashboardApi:
                 result = await result
         except Exception as exc:
             return {"ok": False, "message": f"配置重载失败: {exc}"}
-        if isinstance(result, dict):
-            ok = str(result.get("status") or "").lower() == "ok"
-            return {"ok": ok, "message": str(result.get("message") or "")}
-        return {"ok": False, "message": "配置重载返回异常"}
+        if not isinstance(result, dict):
+            return {"ok": False, "message": "配置重载返回异常"}
+        ok = str(result.get("status") or "").lower() == "ok"
+        payload: dict[str, Any] = {"ok": ok, "message": str(result.get("message") or "")}
+        if ok and before is not None:
+            after = self._models_config()
+            if after is not None:
+                try:
+                    changes = diff_snapshot(before, after)
+                    payload["changes"] = summarize_changes(changes)
+                    if changes:
+                        payload["message"] = (
+                            f"配置已热重载：{payload['changes']['hot_reload_count']} 项已生效，"
+                            f"{payload['changes']['needs_restart_count']} 项需重启"
+                        )
+                    else:
+                        payload["message"] = "配置已重载，本次没有检测到配置项变化"
+                except Exception as exc:
+                    self.logger.warning(f"配置差异计算失败: {exc}")
+        return payload
 
     async def env_get(self, request: web.Request) -> web.Response:
         try:
@@ -903,9 +933,11 @@ class DashboardApi:
         document["can_manage"] = self.console.manage_plugins
         document["message"] = message
         if payload.get("reload"):
-            reload_result = await self._reload_config()
+            reload_result = await self._reload_config(with_changes=True)
             document["applied"] = bool(reload_result.get("ok"))
             document["message"] = str(reload_result.get("message") or message)
+            if reload_result.get("changes"):
+                document["changes"] = reload_result["changes"]
         try:
             document["models"] = models_view(self._models_config())
         except Exception:

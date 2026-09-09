@@ -146,14 +146,33 @@ async def test_reload_missing_key_keeps_old_config(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reload_success_reports_restart_required_items(monkeypatch):
+async def test_reload_success_reports_hot_and_restart_items(monkeypatch):
+    """重载成功后必须报告：哪些改动立即生效、哪些需要重启。"""
+    from neobot_app.config.proxy import ConfigProxy
+    from neobot_app.config.schemas.bot import BotConfig
+
     reload_calls: list[int] = []
 
     class _FakeConfig:
+        def __init__(self) -> None:
+            self.inner = BotConfig()
+            self.proxy = ConfigProxy(self.inner)
+
         def reload(self, config) -> None:
             reload_calls.append(1)
+            # 模拟真实 ConfigProxy：替换内部配置对象
+            self.inner = config
+            self.proxy.reload(config)
 
-    monkeypatch.setattr("neobot_app.bootstrap._config._load_config", lambda: object())
+        def __getattr__(self, name):
+            return getattr(self.proxy, name)
+
+    new_config = BotConfig()
+    new_config.chat.group_chat_chance = 0.9
+    new_config.tts.enabled = not new_config.tts.enabled
+    monkeypatch.setattr(
+        "neobot_app.bootstrap._config._load_config", lambda: new_config
+    )
     monkeypatch.setattr(
         "neobot_app.bootstrap._pipeline.sync_data_files", lambda *a, **k: None
     )
@@ -164,8 +183,12 @@ async def test_reload_success_reports_restart_required_items(monkeypatch):
     result = await host.commands.handlers["config.reload"]()
 
     assert result["status"] == "ok"
-    assert "已生效" in result["message"]
-    assert "需重启" in result["message"]
+    changes = result["changes"]
+    hot_paths = {item["path"] for item in changes["hot_reload"]}
+    restart_paths = {item["path"] for item in changes["needs_restart"]}
+    assert "chat.group_chat_chance" in hot_paths
+    assert "tts.enabled" in restart_paths
+    assert "1 项立即生效" in result["message"]
     assert reload_calls == [1]
     assert host.lifecycle.fired == ["config.changed"]
 
