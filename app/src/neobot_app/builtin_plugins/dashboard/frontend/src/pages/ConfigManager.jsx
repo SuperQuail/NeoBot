@@ -1,11 +1,11 @@
 // ConfigManager.jsx —— 本体配置 / 环境变量 / 模型注册 在线管理
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/endpoints.js';
 import { toast } from '../components/Toast.jsx';
 import Icon from '../components/Icon.jsx';
 import Modal from '../components/Modal.jsx';
 import SchemaForm, { defaultsFromFields } from '../components/SchemaForm.jsx';
-import { setPath } from '../utils/paths.js';
+import { getPath, setPath } from '../utils/paths.js';
 
 const TABS = [
   ['config', '本体配置'],
@@ -13,6 +13,27 @@ const TABS = [
   ['models', '模型库'],
   ['assign', '模型分配'],
 ];
+
+function collectLeaves(value, path = [], out = []) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const key of Object.keys(value)) collectLeaves(value[key], [...path, key], out);
+  } else {
+    out.push({ path, value });
+  }
+  return out;
+}
+
+/** 比较一次分组修改，找出真正变化的叶子配置项（用于逐项历史）。 */
+function changedLeaves(before, after, basePath) {
+  const beforeMap = new Map(collectLeaves(before).map((item) => [item.path.join('.'), item.value]));
+  const changes = [];
+  for (const item of collectLeaves(after)) {
+    const key = item.path.join('.');
+    if (JSON.stringify(beforeMap.get(key) ?? null) === JSON.stringify(item.value ?? null)) continue;
+    changes.push({ path: [...basePath, ...item.path], before: beforeMap.get(key), after: item.value });
+  }
+  return changes;
+}
 
 export default function ConfigManager() {
   const [tab, setTab] = useState('config');
@@ -52,6 +73,13 @@ function BotConfigPanel() {
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(true);
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  const [history, setHistory] = useState({});
+  const [collapse, setCollapse] = useState({});
+  const [changes, setChanges] = useState(null);
+  const draftRef = useRef({});
+  draftRef.current = draft;
 
   const applyDoc = useCallback((data) => {
     setDoc(data);
@@ -59,6 +87,26 @@ function BotConfigPanel() {
     setSource(data.source || '');
     setErrors([]);
     setNotice(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setHistory({});
+  }, []);
+
+  const pushHistory = useCallback((path, value) => {
+    const key = path.join('.') || '(root)';
+    setHistory((previous) => ({
+      ...previous,
+      [key]: [{ value, at: new Date().toLocaleTimeString() }, ...(previous[key] || [])].slice(0, 20),
+    }));
+  }, []);
+
+  const recordChange = useCallback((path, before, after) => {
+    setUndoStack((stack) => [...stack, { path, before, after }].slice(-200));
+    setRedoStack([]);
+  }, []);
+
+  const applyValue = useCallback((path, value) => {
+    setDraft((previous) => setPath(previous, path, value));
   }, []);
 
   const read = useCallback(async () => {
@@ -84,8 +132,72 @@ function BotConfigPanel() {
   }, [doc, draft, source, mode]);
 
   const changeField = useCallback((path, value) => {
-    setDraft((previous) => setPath(previous, path, value));
-  }, []);
+    const before = getPath(draftRef.current, path);
+    if (JSON.stringify(before ?? null) === JSON.stringify(value ?? null)) return;
+    recordChange(path, before, value);
+    // 分组修改时按叶子路径记录历史，便于逐项查看/恢复
+    for (const leaf of changedLeaves(before, value, path)) {
+      pushHistory(leaf.path, leaf.before);
+    }
+    applyValue(path, value);
+  }, [applyValue, pushHistory, recordChange]);
+
+  const restoreValue = useCallback((path, value) => {
+    const before = getPath(draftRef.current, path);
+    recordChange(path, before, value);
+    pushHistory(path, before);
+    applyValue(path, value);
+  }, [applyValue, pushHistory, recordChange]);
+
+  const undo = useCallback(() => {
+    setUndoStack((stack) => {
+      if (!stack.length) return stack;
+      const entry = stack.at(-1);
+      applyValue(entry.path, entry.before);
+      setRedoStack((redo) => [...redo, entry]);
+      return stack.slice(0, -1);
+    });
+  }, [applyValue]);
+
+  const redo = useCallback(() => {
+    setRedoStack((stack) => {
+      if (!stack.length) return stack;
+      const entry = stack.at(-1);
+      applyValue(entry.path, entry.after);
+      setUndoStack((undoList) => [...undoList, entry]);
+      return stack.slice(0, -1);
+    });
+  }, [applyValue]);
+
+  const resetAllDefaults = useCallback(() => {
+    if (!doc) return;
+    if (!confirm('把所有配置项恢复为默认值？可撤销。')) return;
+    const next = structuredClone(draftRef.current || {});
+    const walk = (fields, node) => {
+      for (const field of fields || []) {
+        if (field.kind === 'group') {
+          if (!node[field.name] || typeof node[field.name] !== 'object') node[field.name] = {};
+          walk(field.fields, node[field.name]);
+        } else if (field.default !== undefined) {
+          node[field.name] = structuredClone(field.default);
+        }
+      }
+    };
+    walk(doc.schema || [], next);
+    recordChange([], structuredClone(draftRef.current), structuredClone(next));
+    setDraft(next);
+  }, [doc, recordChange]);
+
+  useEffect(() => {
+    function onKey(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); }
+      else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); redo(); }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
 
   const validate = async () => {
     setBusy('validate');
@@ -123,6 +235,7 @@ function BotConfigPanel() {
       return;
     }
     applyDoc(result.data);
+    setChanges(result.data.changes || null);
     setNotice({ text: result.data.message || '配置已保存', warning: !result.data.applied && reload });
     toast(result.data.message || '配置已保存', 'ok');
   };
@@ -131,8 +244,12 @@ function BotConfigPanel() {
     setBusy('reload');
     const result = await api.configReload();
     setBusy('');
-    if (result.ok) toast(result.data?.message || '配置已重载', 'ok');
-    else toast(result.error || '重载失败', 'err');
+    if (result.ok) {
+      setChanges(result.data?.changes || null);
+      toast(result.data?.message || '配置已重载', 'ok');
+    } else {
+      toast(result.error || '重载失败', 'err');
+    }
   };
 
   const restart = async () => {
@@ -192,7 +309,16 @@ function BotConfigPanel() {
         )}
         <div className="spacer" />
         <button className="btn" disabled={!!busy} onClick={validate}>校验</button>
-        <button className="btn" disabled={!!busy || !dirty} onClick={() => setDraft(doc.config)}>放弃修改</button>
+        <button className="btn" disabled={!!busy || !undoStack.length} title="撤销 (Ctrl+Z)" onClick={undo}>
+          <Icon name="undo" /> 撤销{undoStack.length ? ' ' + undoStack.length : ''}
+        </button>
+        <button className="btn" disabled={!!busy || !redoStack.length} title="重做 (Ctrl+Y)" onClick={redo}>
+          <Icon name="refresh" /> 重做
+        </button>
+        <button className="btn" disabled={!!busy || !doc} title="所有配置项恢复默认值" onClick={resetAllDefaults}>
+          全部恢复默认
+        </button>
+        <button className="btn" disabled={!!busy || !dirty} onClick={() => { applyDoc(doc); setChanges(null); }}>放弃修改</button>
         <button className="btn" disabled={!!busy} onClick={read}>重新读取</button>
         <button className="btn primary" disabled={!!busy || !dirty} onClick={() => save(true)}>
           <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
@@ -215,14 +341,46 @@ function BotConfigPanel() {
           </ul>
         </div>
       )}
+      {changes && (changes.hot_reload_count > 0 || changes.needs_restart_count > 0) && (
+        <div className="cfg-changes" role="status">
+          <strong>
+            热重载结果：{changes.hot_reload_count} 项已生效，{changes.needs_restart_count} 项需重启
+          </strong>
+          {changes.hot_reload?.length > 0 && (
+            <details open>
+              <summary>已生效（{changes.hot_reload.length}）</summary>
+              <ul className="cfg-errors">
+                {changes.hot_reload.slice(0, 12).map((item) => (
+                  <li key={item.path}><code>{item.path}</code> {item.before} → {item.after}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {changes.needs_restart?.length > 0 && (
+            <details>
+              <summary>需重启 NeoBot 后生效（{changes.needs_restart.length}）</summary>
+              <ul className="cfg-errors">
+                {changes.needs_restart.slice(0, 12).map((item) => (
+                  <li key={item.path}><code>{item.path}</code> {item.reason || '构建期配置'}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
 
       <div className="config-body">
         {mode === 'form' ? (
           <SchemaForm
             fields={doc.schema || []}
             values={draft}
+            baseline={doc.config || {}}
             disabled={!!busy}
             filter={filter}
+            history={history}
+            collapse={collapse}
+            onToggleCollapse={(key) => setCollapse((previous) => ({ ...previous, [key]: !previous[key] }))}
+            onRestore={restoreValue}
             onChange={changeField}
           />
         ) : (

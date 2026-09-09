@@ -80,3 +80,24 @@
   .assign-row { grid-template-columns: 1fr; }
   .service-row { grid-template-columns: 1fr; }
 }
+/* ── 热重载标记 / 配置历史 / 用量页 ── */
+.cfg-badges { display: inline-flex; gap: 6px; align-items: center; }
+.hot-badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
+.hot-badge.hot { color: var(--ok, #2f9e44); border-color: var(--ok, #2f9e44); }
+.hot-badge.cold { color: var(--warn, #d9822b); border-color: var(--warn, #d9822b); }
+.hot-badge.partial { color: var(--accent, #4a90e2); border-color: var(--accent, #4a90e2); }
+.cfg-collapse { border: none; background: transparent; color: inherit; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; }
+.cfg-collapse svg { width: 14px; height: 14px; transition: transform 0.15s ease; }
+.cfg-collapse[aria-expanded='true'] svg { transform: rotate(90deg); }
+.cfg-field-actions { display: inline-flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.cfg-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+.cfg-history li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.cfg-history code { font-size: 12px; word-break: break-all; }
+.cfg-changes { border: 1px solid var(--border); border-left: 3px solid var(--accent, #4a90e2); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
+.cfg-changes summary { cursor: pointer; margin-top: 6px; }
+.cfg-changes ul { margin: 4px 0 0; }
+
+.usage-page .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.usage-page .chart-axis { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; color: var(--muted, #889); margin-top: 4px; overflow: hidden; }
+.usage-page .chart-axis span { white-space: nowrap; }
+.usage-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }

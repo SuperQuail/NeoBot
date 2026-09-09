@@ -22,6 +22,8 @@ export const api = {
   statsApiCalls: (limit = 10) => getJSON('/api/stats/api-calls?limit=' + limit),
   statsActiveUsers: (limit = 10) => getJSON('/api/stats/active-users?limit=' + limit),
   statsUsage: (hours = 24) => getJSON('/api/stats/usage?hours=' + hours),
+  seriesUsage: (hours = 24, bucket = 'hour') =>
+    getResult('/api/series/usage?hours=' + hours + '&bucket=' + bucket),
 
   // 插件
   plugins: () => getJSON('/api/plugins'),
@@ -32,6 +34,7 @@ export const api = {
   pluginInstall: (repo, branch = 'main', replace = false) =>
     postJSON('/api/plugins/install', { repo, branch, replace }),
   pluginsCheckUpdates: () => getResult('/api/plugins/check-updates'),
+  pluginsProxySave: (body) => postJSON('/api/plugins/proxy', body),
   pluginConfig: (name) => getResult('/api/plugins/' + encodeURIComponent(name) + '/config'),
   pluginConfigSave: (name, body) =>
     postJSON('/api/plugins/' + encodeURIComponent(name) + '/config', body),

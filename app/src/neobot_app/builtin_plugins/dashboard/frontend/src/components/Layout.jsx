@@ -47,6 +47,16 @@ const NAV = [
     ),
   },
   {
+    to: '/usage',
+    label: '用量',
+    name: '用量统计',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 20V10" /><path d="M10 20V4" /><path d="M16 20v-6" /><path d="M22 20H2" />
+      </svg>
+    ),
+  },
+  {
     to: '/bots',
     label: '机器人',
     name: '机器人',

@@ -41,6 +41,9 @@ export default function Plugins() {
   const [installOpen, setInstallOpen] = useState(false);
   const [installRepo, setInstallRepo] = useState('');
   const [installBranch, setInstallBranch] = useState('main');
+  const [proxy, setProxy] = useState({});
+  const [proxyOpen, setProxyOpen] = useState(false);
+  const [proxyDraft, setProxyDraft] = useState({ mode: 'system', host: '127.0.0.1', port: 7890 });
   const searchRef = useRef(null);
   const actionsRef = useRef(null);
   const requestId = useRef(0);
@@ -64,6 +67,12 @@ export default function Plugins() {
     setItems(data.items || []);
     setConsolePlugin(data.console_plugin || '');
     setPermissions({ manage_enabled: data.manage_enabled ?? false, hot_reload: data.hot_reload ?? false });
+    setProxy(data.proxy || {});
+    setProxyDraft((current) => ({
+      mode: data.proxy?.mode || current.mode,
+      host: data.proxy?.host || current.host,
+      port: data.proxy?.port || current.port,
+    }));
     setSelectedId((current) => {
       if ((data.items || []).some((plugin) => pluginId(plugin) === current)) return current;
       if (dirtyRef.current || busyRef.current) return current;
@@ -107,7 +116,7 @@ export default function Plugins() {
     setConfigError('');
     setErrors([]);
     const target = items.find((plugin) => pluginId(plugin) === selectedId);
-    if (selectedId && permissions.manage_enabled && target && !target.official) read(selectedId);
+    if (selectedId && permissions.manage_enabled && target) read(selectedId);
     return () => { requestId.current++; };
   }, [selectedId, permissions.manage_enabled, read, items]);
 
@@ -215,9 +224,10 @@ export default function Plugins() {
   }
 
   const isConsole = selected?.name === consolePlugin;
-  const canEdit = !!selected && !selected.official && permissions.manage_enabled && !!configDocument && !loading;
+  const canEdit = !!selected && permissions.manage_enabled && !!configDocument && !loading;
   const canSave = canEdit && dirty && !operation && !errors.length;
-  const canReload = !!selected && !isConsole && permissions.manage_enabled && !operation && !dirty;
+  const canReload = !!selected && !isConsole && permissions.manage_enabled && !operation && !dirty
+    && selected.hot_reload !== false;
   const canManage = !!selected && permissions.manage_enabled && !operation && !dirty && selected.manageable;
 
   return <div className={`plugin-workspace ${mobileDetail ? 'show-detail' : ''}`}>
@@ -262,6 +272,9 @@ export default function Plugins() {
       </div>
       <div className="plugin-sidebar-footer">
         <span><i className="plugin-status-dot loaded" />{items.filter((plugin) => plugin.status === 'loaded').length} 个运行中</span>
+        <span className="muted small" title={proxy.description || ''}>{proxy.description || '代理：跟随系统'}</span>
+        <button className="icon-btn" aria-label="插件下载代理设置" title="插件下载代理设置" disabled={!!operation}
+          onClick={() => setProxyOpen(true)}><Icon name="settings" /></button>
         <button className="icon-btn" aria-label="刷新插件列表" title="刷新插件列表" disabled={!!operation} onClick={load}><Icon name="refresh" /></button></div>
     </aside>
     <section className="plugin-editor" aria-label="在线配置">
@@ -311,6 +324,14 @@ export default function Plugins() {
             <div className="plugin-meta">
               <span className={'source-badge' + (selected.official ? ' official' : '')}>{selected.official ? '官方插件' : '第三方插件'}</span>
               <span className="meta-chip">v{selected.version || '—'}</span>
+              <span className={'hot-badge ' + (selected.hot_reload === false ? 'cold' : 'hot')}
+                title={selected.hot_reload === false ? '插件本体不支持热重载，改动需重启 NeoBot' : '可在面板内直接重载插件'}>
+                {selected.hot_reload === false ? '本体需重启' : '可热重载'}
+              </span>
+              <span className={'hot-badge ' + (selected.config_hot_reload === false ? 'cold' : 'hot')}
+                title={selected.config_hot_reload === false ? '插件配置改动需重启 NeoBot' : '插件配置改动可不重启生效'}>
+                {selected.config_hot_reload === false ? '配置需重启' : '配置可热重载'}
+              </span>
               {selected.author && <span className="meta-chip">{selected.author}</span>}
               {selected.repo && /^https?:\/\//i.test(selected.repo) && <a className="meta-chip" href={selected.repo} target="_blank" rel="noopener noreferrer">插件仓库 <Icon name="external" /></a>}
               {selected.homepage && !selected.repo && /^https?:\/\//i.test(selected.homepage) && <a className="meta-chip" href={selected.homepage} target="_blank" rel="noopener noreferrer">主页 <Icon name="external" /></a>}
@@ -319,38 +340,36 @@ export default function Plugins() {
           </div>
           {!permissions.manage_enabled ? <div className="workspace-empty"><Icon name="settings" /><h3>当前为只读模式</h3>
             <p>请在「配置管理 → 本体配置 → dashboard」中开启 manage_plugins。</p></div> : <>
-            {selected.official ? (
-              <div className="workspace-empty">
-                <Icon name="settings" />
-                <h3>官方插件配置来自 config.toml</h3>
-                <p>请到「配置管理 → 本体配置」中修改 <code>{selected.name}</code> 分区，保存后重载即可生效。</p>
-                <a className="btn primary" href="#/config"><Icon name="settings" />前往配置管理</a>
-              </div>
-            ) : (
-              <>
-                <div className="config-tabs"><div role="tablist" aria-label="配置编辑方式">
-                  <button role="tab" aria-selected={mode === 'form'} className={mode === 'form' ? 'active' : ''}
-                    disabled={!configDocument?.form_supported || !!operation} onClick={() => changeMode('form')}><Icon name="settings" />配置表单</button>
-                  <button role="tab" aria-selected={mode === 'toml'} className={mode === 'toml' ? 'active' : ''}
-                    disabled={!configDocument || !!operation} onClick={() => changeMode('toml')}><Icon name="code" />TOML</button>
-                </div><span className="muted small">plugin.toml / config</span></div>
-                {notice && <div className={`config-notice ${notice.warning ? 'warning' : ''}`} role="status"><Icon name="check" />{notice.text}</div>}
-                {selected.error && <div className="workspace-error" role="alert">运行错误：{selected.error}</div>}
-                {configError && <div className="workspace-error" role="alert">{configError}
-                  <button className="btn-sm" disabled={!!operation} onClick={() => { if (!dirty || confirm('重新读取会放弃当前修改，是否继续？')) read(selectedId); }}>重新读取</button></div>}
-                {errors.length > 0 && <div className="workspace-error" role="alert">
-                  <ul className="cfg-errors">{errors.map((item, index) => <li key={index}><code>{item.path || '?'}</code> {item.message}</li>)}</ul>
-                </div>}
-                {loading ? <p className="empty muted" role="status">正在读取配置…</p> : configDocument && <div className="config-body" role="tabpanel">
-                  {mode === 'form' ? <SchemaForm key={`${selectedId}-${editorVersion}`} fields={configDocument.schema || []} values={draft}
-                    disabled={!!operation} onChange={changeField} /> : <>
-                    <p className="muted small">编辑 [config] 及其子表。插件名称、版本等信息保持不变。</p>
-                    <textarea className="toml-editor" aria-label="TOML 配置" spellCheck={false} disabled={!!operation}
-                      value={source} onChange={(event) => setSource(event.target.value)} />
-                  </>}
-                </div>}
-              </>
-            )}
+            <>
+              {selected.official && (
+                <div className="config-notice" role="status">
+                  <Icon name="settings" />
+                  官方插件配置来自本体 <code>config.toml</code> 的 <code>[{configDocument?.section || selected.config_section || selected.name}]</code> 分区，保存后写回该分区。
+                </div>
+              )}
+              <div className="config-tabs"><div role="tablist" aria-label="配置编辑方式">
+                <button role="tab" aria-selected={mode === 'form'} className={mode === 'form' ? 'active' : ''}
+                  disabled={!configDocument?.form_supported || !!operation} onClick={() => changeMode('form')}><Icon name="settings" />配置表单</button>
+                <button role="tab" aria-selected={mode === 'toml'} className={mode === 'toml' ? 'active' : ''}
+                  disabled={!configDocument?.source_available || !!operation} onClick={() => changeMode('toml')}><Icon name="code" />TOML</button>
+              </div><span className="muted small">{selected.official ? 'config.toml / ' + (configDocument?.section || selected.config_section || selected.name) : 'plugin.toml / config'}</span></div>
+              {notice && <div className={`config-notice ${notice.warning ? 'warning' : ''}`} role="status"><Icon name="check" />{notice.text}</div>}
+              {selected.error && <div className="workspace-error" role="alert">运行错误：{selected.error}</div>}
+              {configError && <div className="workspace-error" role="alert">{configError}
+                <button className="btn-sm" disabled={!!operation} onClick={() => { if (!dirty || confirm('重新读取会放弃当前修改，是否继续？')) read(selectedId); }}>重新读取</button></div>}
+              {errors.length > 0 && <div className="workspace-error" role="alert">
+                <ul className="cfg-errors">{errors.map((item, index) => <li key={index}><code>{item.path || '?'}</code> {item.message}</li>)}</ul>
+              </div>}
+              {loading ? <p className="empty muted" role="status">正在读取配置…</p> : configDocument && <div className="config-body" role="tabpanel">
+                {mode === 'form' ? <SchemaForm key={`${selectedId}-${editorVersion}`} fields={configDocument.schema || []} values={draft}
+                  baseline={configDocument.config || {}}
+                  disabled={!!operation} onChange={changeField} /> : <>
+                  <p className="muted small">编辑 [config] 及其子表。插件名称、版本等信息保持不变。</p>
+                  <textarea className="toml-editor" aria-label="TOML 配置" spellCheck={false} disabled={!!operation}
+                    value={source} onChange={(event) => setSource(event.target.value)} />
+                </>}
+              </div>}
+            </>
           </>}
         </div>
         <footer className="plugin-editor-footer" role="status"><span className={dirty ? 'dirty-label' : 'muted'}>
@@ -368,8 +387,42 @@ export default function Plugins() {
           value={installRepo} disabled={!!operation} onChange={(event) => setInstallRepo(event.target.value)} autoFocus /></label>
         <label className="field"><span>分支</span><input className="input" value={installBranch} disabled={!!operation} onChange={(event) => setInstallBranch(event.target.value)} /></label>
         <p className="muted small">只允许从 GitHub 下载；安装后自动启用并加载，官方插件不可被覆盖。</p>
-        <div className="modal-actions"><button type="button" className="btn" disabled={!!operation} onClick={() => setInstallOpen(false)}>取消</button>
+        <p className="muted small">当前下载代理：{proxy.description || '跟随系统'}。网络受限时可在此切换代理模式或端口。</p>
+        <div className="modal-actions">
+          <button type="button" className="btn" disabled={!!operation} onClick={() => setProxyOpen(true)}><Icon name="settings" />代理设置</button>
+          <button type="button" className="btn" disabled={!!operation} onClick={() => setInstallOpen(false)}>取消</button>
           <button className="btn primary" disabled={!!operation || !installRepo.trim()}>{operation === 'install' ? '安装中…' : '下载并安装'}</button></div>
+      </form>
+    </Modal>
+    <Modal open={proxyOpen} title="插件下载代理" onClose={() => { if (!operation) setProxyOpen(false); }}>
+      <form className="install-form" onSubmit={async (event) => {
+        event.preventDefault();
+        const result = await act('proxy', () => api.pluginsProxySave({
+          mode: proxyDraft.mode,
+          host: proxyDraft.host,
+          port: Number(proxyDraft.port) || 7890,
+        }), '代理设置已保存');
+        if (result?.ok) { setProxy(result.data.proxy || {}); setProxyOpen(false); }
+      }}>
+        <label className="field"><span>代理模式</span>
+          <select className="input" value={proxyDraft.mode} disabled={!!operation}
+            onChange={(event) => setProxyDraft({ ...proxyDraft, mode: event.target.value })}>
+            <option value="system">跟随系统 / 环境变量代理</option>
+            <option value="none">直连（不使用代理）</option>
+            <option value="custom">自定义 HTTP 代理</option>
+          </select></label>
+        {proxyDraft.mode === 'custom' && <>
+          <label className="field"><span>代理地址</span>
+            <input className="input" required value={proxyDraft.host} disabled={!!operation}
+              placeholder="127.0.0.1"
+              onChange={(event) => setProxyDraft({ ...proxyDraft, host: event.target.value })} /></label>
+          <label className="field"><span>代理端口</span>
+            <input className="input" type="number" min="1" max="65535" required value={proxyDraft.port} disabled={!!operation}
+              onChange={(event) => setProxyDraft({ ...proxyDraft, port: event.target.value })} /></label>
+        </>}
+        <p className="muted small">保存后写入 <code>config.toml</code> 的 <code>[plugins]</code>，下一次下载立即生效（无需重启）。</p>
+        <div className="modal-actions"><button type="button" className="btn" disabled={!!operation} onClick={() => setProxyOpen(false)}>取消</button>
+          <button className="btn primary" disabled={!!operation}>{operation === 'proxy' ? '保存中…' : '保存代理设置'}</button></div>
       </form>
     </Modal>
   </div>;

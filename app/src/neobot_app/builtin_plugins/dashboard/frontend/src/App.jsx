@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Plugins from './pages/Plugins.jsx';
 import ConfigManager from './pages/ConfigManager.jsx';
 import System from './pages/System.jsx';
+import Usage from './pages/Usage.jsx';
 import Bots from './pages/Bots.jsx';
 import Logs from './pages/Logs.jsx';
 import Login from './pages/Login.jsx';
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="plugins" element={<Plugins />} />
         <Route path="config" element={<ConfigManager />} />
         <Route path="system" element={<System />} />
+        <Route path="usage" element={<Usage />} />
         <Route path="bots" element={<Bots />} />
         <Route path="logs" element={<Logs />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
