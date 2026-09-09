@@ -3,12 +3,36 @@
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
+def _workspace_members(root: Path) -> list[str]:
+    """读取根 pyproject.toml 的 [tool.uv.workspace].members（如 packages/*、app）。"""
+    root_pyproject = root / "pyproject.toml"
+    if not root_pyproject.is_file():
+        return []
+    with root_pyproject.open("rb") as handle:
+        data = tomllib.load(handle)
+    members = data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    return [str(member) for member in members or []]
+
+
 def find_pyproject_files(root: Path) -> list[Path]:
-    """查找所有 pyproject.toml 文件"""
-    return list(root.glob("**/pyproject.toml"))
+    """查找工作区内的全部 pyproject.toml（根 + members 展开）。
+
+    只覆盖 uv workspace 成员，避免误改 dev-test/Reference 下的第三方副本。
+    """
+    files: list[Path] = []
+    root_pyproject = root / "pyproject.toml"
+    if root_pyproject.is_file():
+        files.append(root_pyproject)
+    for pattern in _workspace_members(root):
+        for member_dir in sorted(root.glob(pattern)):
+            candidate = member_dir / "pyproject.toml"
+            if candidate.is_file() and candidate not in files:
+                files.append(candidate)
+    return files
 
 
 def update_version(file_path: Path, new_version: str, root: Path) -> bool:
