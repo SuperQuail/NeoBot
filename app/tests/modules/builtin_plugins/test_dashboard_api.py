@@ -146,6 +146,7 @@ async def _start_panel(
     *,
     password: str | None = PASSWORD,
     trust_proxy: bool = False,
+    services=None,
 ):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -171,7 +172,7 @@ async def _start_panel(
         logger=_NullLogger(),
         adapter=_FakeAdapter(),
         plugin_control=control,
-        services=None,
+        services=services,
         config_path=config_path,
         env_path=env_path,
         backup_dir=tmp_path / "backup",

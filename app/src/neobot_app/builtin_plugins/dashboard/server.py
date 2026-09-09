@@ -220,6 +220,7 @@ class DashboardServer:
         self._route(app, "GET", "/api/stats/api-calls", self.api.stats_api_calls)
         self._route(app, "GET", "/api/stats/active-users", self.api.stats_active_users)
         self._route(app, "GET", "/api/stats/usage", self.api.stats_usage)
+        self._route(app, "GET", "/api/series/usage", self.api.series_usage)
         self._route(app, "GET", "/api/logs", self.api.logs)
         self._route(app, "GET", "/api/tasks", self.api.tasks)
         self._route(app, "GET", "/api/services", self.api.services)

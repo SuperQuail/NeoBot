@@ -338,6 +338,70 @@ class DashboardApi:
         limit = self._int_arg(request, "limit", 10, minimum=1, maximum=100)
         return _json_ok(self.metrics.active_users(limit))
 
+    async def series_usage(self, request: web.Request) -> web.Response:
+        """用量图表：按小时/天汇总金额与 Token，并给出模型/模块排行。"""
+        hours = self._int_arg(request, "hours", 24, minimum=1, maximum=24 * 365)
+        bucket = str(request.query.get("bucket") or "hour").strip().lower()
+        if bucket not in {"hour", "day"}:
+            bucket = "hour"
+        session_factory = self._service("usage_session_factory")
+        if session_factory is None:
+            return _json_ok(
+                {
+                    "available": False,
+                    "bucket": bucket,
+                    "hours": hours,
+                    "points": [],
+                    "models": [],
+                    "modules": [],
+                    "totals": {},
+                }
+            )
+        try:
+            import datetime as _dt
+
+            from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
+
+            cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
+            async with session_factory() as session:
+                repo = SqlAlchemyUsageRepository(session)
+                points = await repo.series_since(cutoff, bucket=bucket)
+                models = await repo.breakdown_by_model_since(cutoff, limit=12)
+                modules = await repo.breakdown_by_module_since(cutoff, limit=12)
+        except Exception as exc:
+            self.logger.warning(f"读取用量图表失败: {exc}")
+            return _json_ok(
+                {
+                    "available": False,
+                    "bucket": bucket,
+                    "hours": hours,
+                    "points": [],
+                    "models": [],
+                    "modules": [],
+                    "totals": {},
+                    "error": str(exc),
+                }
+            )
+        totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_cny": 0.0}
+        for point in points:
+            totals["calls"] += int(point["calls"])
+            totals["input_tokens"] += int(point["input_tokens"])
+            totals["output_tokens"] += int(point["output_tokens"])
+            totals["cost_cny"] += float(point["cost_cny"])
+        totals["cost_cny"] = round(totals["cost_cny"], 6)
+        return _json_ok(
+            {
+                "available": True,
+                "bucket": bucket,
+                "hours": hours,
+                "currency": "CNY",
+                "points": points,
+                "models": models,
+                "modules": modules,
+                "totals": totals,
+            }
+        )
+
     async def stats_usage(self, request: web.Request) -> web.Response:
         hours = self._int_arg(request, "hours", 24, minimum=1, maximum=24 * 365)
         session_factory = self._service("usage_session_factory")
