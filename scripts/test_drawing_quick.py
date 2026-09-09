@@ -1,11 +1,22 @@
-"""Quick connectivity test for GPTGOD drawing API."""
+"""Quick connectivity test for GPTGOD drawing API.
+
+密钥从环境变量读取，绝不写进脚本或提交到仓库：
+    set GPTGOD_API_KEY=sk-xxx            (Windows cmd)
+    $env:GPTGOD_API_KEY = "sk-xxx"       (PowerShell)
+"""
 import asyncio
+import os
+import sys
+
 import httpx
 import json
 
-BASE_URL = "https://api.gptgod.online/v1"
-API_KEY = "***REMOVED***"
-MODEL_NAME = "gpt-image-2"
+BASE_URL = os.environ.get("GPTGOD_BASE_URL", "https://api.gptgod.online/v1")
+API_KEY = os.environ.get("GPTGOD_API_KEY", "").strip()
+MODEL_NAME = os.environ.get("GPTGOD_MODEL", "gpt-image-2")
+
+if not API_KEY:
+    sys.exit("缺少 API Key：请设置环境变量 GPTGOD_API_KEY（不要把密钥写入脚本或提交到仓库）")
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",

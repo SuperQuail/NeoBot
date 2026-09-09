@@ -6,15 +6,20 @@ format used by CreatorImageService.generate_image().
 """
 import asyncio
 import base64
-import httpx
-import json
+import os
 import sys
 
-# ── Config from app/.env and app/data/config.toml ──
-BASE_URL = "https://api.gptgod.online/v1"
-API_KEY = "***REMOVED***"
-MODEL_NAME = "gpt-image-2"  # from config.toml [[models.creator_image_models]]
-DEFAULT_IMAGE_SIZE = "512x512"
+import httpx
+import json
+
+# ── 密钥从环境变量读取（GPTGOD_API_KEY），绝不写进脚本或提交到仓库 ──
+BASE_URL = os.environ.get("GPTGOD_BASE_URL", "https://api.gptgod.online/v1")
+API_KEY = os.environ.get("GPTGOD_API_KEY", "").strip()
+MODEL_NAME = os.environ.get("GPTGOD_MODEL", "gpt-image-2")
+DEFAULT_IMAGE_SIZE = os.environ.get("GPTGOD_IMAGE_SIZE", "512x512")
+
+if not API_KEY:
+    sys.exit("缺少 API Key：请设置环境变量 GPTGOD_API_KEY（不要把密钥写入脚本或提交到仓库）")
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
