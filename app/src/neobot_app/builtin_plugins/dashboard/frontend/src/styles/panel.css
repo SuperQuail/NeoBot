@@ -50,6 +50,15 @@
 .env-add { display: flex; gap: 8px; flex-wrap: wrap; }
 .env-add .input { min-width: 200px; flex: 1; }
 
+.assign-grid { display: flex; flex-direction: column; gap: 6px; }
+.assign-row { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.assign-label { display: flex; flex-direction: column; gap: 3px; }
+.assign-label strong { font-size: 13px; }
+.assign-control { display: flex; flex-direction: column; gap: 6px; }
+.assign-control .input { max-width: 420px; }
+.assign-choices { display: flex; flex-direction: column; gap: 4px; }
+.assign-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
 .model-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .model-table th { text-align: left; font-size: 12px; color: var(--muted, #889); padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .model-table td { padding: 7px 8px; border-bottom: 1px dashed var(--border); vertical-align: top; }
@@ -68,5 +77,6 @@
 @media (max-width: 900px) {
   .cfg-row { grid-template-columns: 1fr; }
   .env-row { grid-template-columns: 1fr; }
+  .assign-row { grid-template-columns: 1fr; }
   .service-row { grid-template-columns: 1fr; }
 }

@@ -387,19 +387,162 @@ async def test_config_save_rejects_invalid_payload(panel) -> None:
     assert response.json()["errors"]
 
 
-async def test_env_masks_secret_and_reveals_on_request(panel) -> None:
+async def test_env_never_exposes_secret(panel) -> None:
+    """敏感键只返回「是否已设置」：既无明文，也无掩码片段，且没有取回明文的接口。"""
     _, _, base, _ = panel
-    token, csrf = await _login(base)
+    token, _ = await _login(base)
     async with httpx.AsyncClient() as client:
         listed = await client.get(base + "/api/config/env", headers={"X-Token": token})
-        revealed = await client.get(
+        legacy = await client.get(
             base + "/api/config/env/DeepSeek_APIKey/value", headers={"X-Token": token}
         )
 
-    items = {item["key"]: item for item in listed.json()["items"]}
-    assert items["DeepSeek_APIKey"]["value"] != "sk-super-secret"
-    assert items["DeepSeek_APIKey"]["masked"] is True
-    assert revealed.json()["value"] == "sk-super-secret"
+    payload = listed.json()
+    entry = {item["key"]: item for item in payload["items"]}["DeepSeek_APIKey"]
+    assert entry["value"] == ""
+    assert entry["has_value"] is True
+    assert entry["masked"] is True
+    assert entry["sensitive"] is True
+    assert "source" not in payload
+    assert payload["secret_policy"] == "write_only"
+    assert "sk-super-secret" not in listed.text
+    assert legacy.status_code >= 400
+    assert "sk-super-secret" not in legacy.text
+
+
+def test_env_manager_keeps_secret_when_value_blank(tmp_path: Path) -> None:
+    """.env 保存：留空 = 保持原密钥，占位符不会被写回文件。"""
+    from neobot_app.builtin_plugins.dashboard.config_manager import EnvFileManager
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("DeepSeek_APIKey=sk-original\n", encoding="utf-8")
+    manager = EnvFileManager(env_path=env_path, backup_dir=tmp_path / "backup")
+
+    manager.save(updates={"DeepSeek_APIKey": "", "Other_URL": "https://example.com"})
+    text = env_path.read_text(encoding="utf-8")
+    assert "DeepSeek_APIKey=sk-original" in text
+    assert "Other_URL=https://example.com" in text
+
+    manager.save(updates={"DeepSeek_APIKey": "••••••••"})
+    assert "DeepSeek_APIKey=sk-original" in env_path.read_text(encoding="utf-8")
+
+    manager.save(updates={"DeepSeek_APIKey": "sk-updated"})
+    assert "DeepSeek_APIKey=sk-updated" in env_path.read_text(encoding="utf-8")
+
+
+async def test_env_add_platform_writes_url_and_key(panel) -> None:
+    """一键添加 API 供应商：写入 <平台名>_URL 与 <平台名>_APIKey，响应不含明文 Key。"""
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/config/env", headers={"X-Token": token})
+        response = await client.post(
+            base + "/api/config/env/platform",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={
+                "name": "MyProvider",
+                "url": "https://api.example.com/v1",
+                "api_key": "sk-my-provider-secret",
+                "revision": listed.json()["revision"],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    text = server.env_manager.env_path.read_text(encoding="utf-8")
+    assert "MyProvider_URL=https://api.example.com/v1" in text
+    assert "MyProvider_APIKey=sk-my-provider-secret" in text
+    platforms = {item["name"]: item for item in response.json()["platforms"]}
+    assert platforms["MyProvider"]["url"] == "https://api.example.com/v1"
+    assert platforms["MyProvider"]["has_key"] is True
+    assert "sk-my-provider-secret" not in response.text
+
+
+async def test_env_add_platform_validates_input(panel) -> None:
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        bad_name = await client.post(
+            base + "/api/config/env/platform",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"name": "我的平台", "url": "https://api.example.com"},
+        )
+        bad_url = await client.post(
+            base + "/api/config/env/platform",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"name": "MyProvider", "url": "api.example.com"},
+        )
+
+    assert bad_name.status_code == 400
+    assert "平台名" in bad_name.json()["error"]
+    assert bad_url.status_code == 400
+    assert "http" in bad_url.json()["error"]
+
+
+async def test_models_library_crud_and_assignments(panel) -> None:
+    """模型库单独存储：面板可新增/改绑/删除，调用方只引用 key。"""
+    _, _, base, config_path = panel
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+    entry = {
+        "key": "my-flux",
+        "description": "自定义生图模型",
+        "provider": "SiliconFlow",
+        "model_name": "black-forest-labs/FLUX.1-dev",
+        "native_vision": False,
+        "balance_query_hint": "",
+    }
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/config/models", headers={"X-Token": token})
+        created = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={"action": "upsert", "entry": entry, "revision": listed.json()["revision"]},
+        )
+        after_create = await client.get(base + "/api/config/models", headers={"X-Token": token})
+        bound = await client.post(
+            base + "/api/config/models/assignments",
+            headers=headers,
+            json={
+                "assignments": {"creator_image_models": ["my-flux"]},
+                "revision": after_create.json()["revision"],
+            },
+        )
+        blocked = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={"action": "delete", "key": "my-flux", "revision": bound.json()["revision"]},
+        )
+
+    assert created.status_code == 200, created.text
+    library = {item["key"]: item for item in created.json()["models"]["library"]}
+    assert library["my-flux"]["model_name"] == "black-forest-labs/FLUX.1-dev"
+    assert library["my-flux"]["assigned"] is False
+    assert bound.status_code == 200, bound.text
+    assert bound.json()["models"]["assignments"]["creator_image_models"] == ["my-flux"]
+    # 仍被调用方引用时不允许删除
+    assert blocked.status_code == 400
+    assert "引用" in blocked.json()["error"]
+    raw = config_path.read_text(encoding="utf-8")
+    assert 'key = "my-flux"' in raw
+    assert "creator_image_models = [\"my-flux\"]" in raw
+
+
+async def test_models_assignments_reject_unknown_key(panel) -> None:
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/config/models", headers={"X-Token": token})
+        response = await client.post(
+            base + "/api/config/models/assignments",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={
+                "assignments": {"primary_chat_model": "not-in-library"},
+                "revision": listed.json()["revision"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "模型库中不存在" in response.json()["error"]
 
 
 async def test_env_save_updates_file(panel) -> None:

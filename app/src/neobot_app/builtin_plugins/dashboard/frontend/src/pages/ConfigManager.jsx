@@ -3,13 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/endpoints.js';
 import { toast } from '../components/Toast.jsx';
 import Icon from '../components/Icon.jsx';
-import SchemaForm from '../components/SchemaForm.jsx';
+import Modal from '../components/Modal.jsx';
+import SchemaForm, { defaultsFromFields } from '../components/SchemaForm.jsx';
 import { setPath } from '../utils/paths.js';
 
 const TABS = [
   ['config', '本体配置'],
   ['env', '环境变量'],
-  ['models', '模型注册'],
+  ['models', '模型库'],
+  ['assign', '模型分配'],
 ];
 
 export default function ConfigManager() {
@@ -30,11 +32,12 @@ export default function ConfigManager() {
             </button>
           ))}
         </div>
-        <span className="muted small">config.toml / .env / 模型注册表</span>
+        <span className="muted small">config.toml / .env / 模型库与分配</span>
       </div>
       {tab === 'config' && <BotConfigPanel />}
       {tab === 'env' && <EnvPanel />}
       {tab === 'models' && <ModelsPanel />}
+      {tab === 'assign' && <AssignPanel />}
     </div>
   );
 }
@@ -286,14 +289,27 @@ function EnvPanel() {
   const visible = items.filter((item) => !filter || item.key.toLowerCase().includes(filter.toLowerCase()));
   const dirty = Object.keys(edits).length > 0 || deletes.length > 0;
 
-  const reveal = async (key) => {
-    const result = await api.envReveal(key);
+  const [adding, setAdding] = useState(false);
+  const [platform, setPlatform] = useState({ name: '', url: '', api_key: '' });
+
+  const openPlatform = (item) => {
+    setPlatform({ name: item?.name || '', url: item?.url || '', api_key: '' });
+    setAdding(true);
+  };
+
+  const submitPlatform = async () => {
+    setBusy('platform');
+    const result = await api.envAddPlatform({ ...platform, revision: doc?.revision });
+    setBusy('');
     if (!result.ok) {
-      toast(result.error || '无法显示该值', 'err');
+      toast(result.error || '添加供应商失败', 'err');
       return;
     }
-    setEdits((previous) => ({ ...previous, [key]: result.data.value }));
-    toast('已显示明文（操作已记录日志）', 'info');
+    setDoc(result.data);
+    setAdding(false);
+    setPlatform({ name: '', url: '', api_key: '' });
+    setNotice({ text: result.data.message || '供应商已添加', warning: false });
+    toast('供应商已添加', 'ok');
   };
 
   const save = async (reload) => {
@@ -338,6 +354,9 @@ function EnvPanel() {
           onChange={(event) => setFilter(event.target.value)}
         />
         <div className="spacer" />
+        <button className="btn" disabled={!!busy} onClick={() => openPlatform(null)}>
+          <Icon name="plus" /> 一键添加 API 供应商
+        </button>
         <button className="btn" disabled={!!busy} onClick={read}>重新读取</button>
         <button className="btn primary" disabled={!!busy || !dirty} onClick={() => save(true)}>
           <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
@@ -373,17 +392,23 @@ function EnvPanel() {
               <span className="env-value">
                 <input
                   className="input"
-                  type={item.sensitive && !edited ? 'password' : 'text'}
+                  type={item.sensitive ? 'password' : 'text'}
                   value={removed ? '' : value || ''}
                   disabled={removed || !!busy}
-                  placeholder={item.has_value ? '' : '未配置'}
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  placeholder={item.sensitive
+                    ? (item.has_value ? '已设置 · 留空则不修改' : '未设置')
+                    : (item.has_value ? '' : '未配置')}
                   onChange={(event) => setEdits((previous) => ({ ...previous, [item.key]: event.target.value }))}
                 />
               </span>
               <span className="muted small env-desc">{item.description || '—'}</span>
               <span className="env-actions">
-                {item.sensitive && item.has_value && (
-                  <button className="btn-sm" disabled={!!busy} onClick={() => reveal(item.key)}>显示</button>
+                {item.sensitive && (
+                  <span className={'tag ' + (item.has_value ? 'ok' : 'err')}>
+                    {item.has_value ? '已设置' : '未设置'}
+                  </span>
                 )}
                 {item.builtin ? (
                   <span className="muted small">内置</span>
@@ -421,6 +446,105 @@ function EnvPanel() {
         />
         <button className="btn" onClick={addCustom}><Icon name="plus" /> 添加</button>
       </div>
+
+      <div className="card-head">
+        <h3>API 供应商</h3>
+        <span className="muted small">{(doc?.platforms || []).length} 个</span>
+        <div className="spacer" />
+        <span className="muted small">API Key 只写不读，保存后无法再次查看</span>
+      </div>
+      {(doc?.platforms || []).length === 0 && (
+        <div className="empty muted">还没有平台，点击「一键添加 API 供应商」创建</div>
+      )}
+      {(doc?.platforms || []).length > 0 && (
+        <table className="model-table">
+          <thead><tr><th>平台名</th><th>API 地址</th><th>API Key</th><th>操作</th></tr></thead>
+          <tbody>
+            {(doc.platforms || []).map((item) => (
+              <tr key={item.name}>
+                <td>
+                  <code>{item.name}</code>
+                  {item.builtin && <span className="meta-chip">内置</span>}
+                </td>
+                <td className="muted small">{item.url || '—'}</td>
+                <td>
+                  <span className={'tag ' + (item.has_key ? 'ok' : 'err')}>
+                    {item.has_key ? '已设置' : '未设置'}
+                  </span>
+                </td>
+                <td>
+                  <button className="btn-sm" disabled={!!busy} onClick={() => openPlatform(item)}>
+                    更新 Key
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <Modal open={adding} title="添加 / 更新 API 供应商" onClose={() => setAdding(false)}>
+        <div className="cfg-row">
+          <div className="cfg-label">
+            <label htmlFor="platform-name">平台名</label>
+            <p>模型库里的「供应商」填这个名字，会写成 <code>平台名_URL</code> 与 <code>平台名_APIKey</code></p>
+          </div>
+          <div className="cfg-control">
+            <input
+              id="platform-name"
+              className="input"
+              autoFocus
+              spellCheck={false}
+              disabled={!!busy}
+              value={platform.name}
+              placeholder="例如 MyProvider"
+              onChange={(event) => setPlatform({ ...platform, name: event.target.value })}
+            />
+          </div>
+        </div>
+        <div className="cfg-row">
+          <div className="cfg-label">
+            <label htmlFor="platform-url">API 地址</label>
+            <p>以 http:// 或 https:// 开头，例如 https://api.example.com/v1</p>
+          </div>
+          <div className="cfg-control">
+            <input
+              id="platform-url"
+              className="input"
+              spellCheck={false}
+              disabled={!!busy}
+              value={platform.url}
+              placeholder="https://api.example.com/v1"
+              onChange={(event) => setPlatform({ ...platform, url: event.target.value })}
+            />
+          </div>
+        </div>
+        <div className="cfg-row">
+          <div className="cfg-label">
+            <label htmlFor="platform-key">API Key</label>
+            <p>只写不读：保存后无法查看，只能覆盖更新；留空则保持原有 Key</p>
+          </div>
+          <div className="cfg-control">
+            <input
+              id="platform-key"
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              spellCheck={false}
+              disabled={!!busy}
+              value={platform.api_key}
+              placeholder="sk-..."
+              onChange={(event) => setPlatform({ ...platform, api_key: event.target.value })}
+            />
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="btn" disabled={!!busy} onClick={() => setAdding(false)}>取消</button>
+          <button className="btn primary" disabled={!!busy} onClick={submitPlatform}>
+            <Icon name="save" /> {busy === 'platform' ? '保存中…' : '保存供应商'}
+          </button>
+        </div>
+      </Modal>
     </section>
   );
 }
@@ -428,49 +552,120 @@ function EnvPanel() {
 function ModelsPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [editing, setEditing] = useState(null);
+
+  const applyData = useCallback((payload) => {
+    setData(payload);
+  }, []);
 
   const read = useCallback(async () => {
     setLoading(true);
     const result = await api.configModels();
     setLoading(false);
-    if (result.ok) setData(result.data);
-  }, []);
+    if (!result.ok) {
+      toast(result.error || '读取模型库失败', 'err');
+      return;
+    }
+    applyData(result.data);
+  }, [applyData]);
 
   useEffect(() => {
     read();
   }, [read]);
 
-  const models = data?.models || [];
-  const platforms = data?.platforms || [];
+  const library = data?.library || [];
+  const schema = data?.entry_schema || [];
+
+  const startNew = () => setEditing({ isNew: true, draft: defaultsFromFields(schema) });
+
+  const startEdit = (item) => setEditing({ isNew: false, draft: structuredClone(item.entry || {}) });
+
+  const save = async () => {
+    if (!editing) return;
+    setBusy('save');
+    const result = await api.modelsLibrarySave({
+      action: 'upsert',
+      entry: editing.draft,
+      revision: data?.revision,
+    });
+    setBusy('');
+    if (!result.ok) {
+      toast(result.error || '保存模型失败', 'err');
+      return;
+    }
+    if (result.data?.models) applyData(result.data.models);
+    setEditing(null);
+    toast('模型已保存；重载配置后生效', 'ok');
+  };
+
+  const remove = async (item) => {
+    if (!confirm('确认从模型库删除 ' + item.key + '？')) return;
+    setBusy('delete');
+    const result = await api.modelsLibrarySave({
+      action: 'delete',
+      key: item.key,
+      revision: data?.revision,
+    });
+    setBusy('');
+    if (!result.ok) {
+      toast(result.error || '删除失败', 'err');
+      return;
+    }
+    if (result.data?.models) applyData(result.data.models);
+    toast('已删除 ' + item.key, 'ok');
+  };
+
+  const fields = useMemo(() => {
+    if (!editing) return [];
+    const bound = bindValues(schema, editing.draft);
+    if (editing.isNew) return bound;
+    return bound.map((field) => (field.name === 'key' ? { ...field, readonly: true } : field));
+  }, [editing, schema]);
 
   return (
     <section className="card config-card">
       <div className="card-head">
-        <h3>已注册模型</h3>
-        <span className="muted small">{models.length} 个</span>
+        <h3>模型库</h3>
+        <span className="muted small">{library.length} 个模型</span>
         <div className="spacer" />
-        <button className="btn-sm" onClick={read}>刷新</button>
+        <button className="btn-sm" disabled={!!busy} onClick={read}>刷新</button>
+        <button className="btn-sm primary" disabled={!!busy || !schema.length} onClick={startNew}>
+          <Icon name="plus" /> 新增模型
+        </button>
       </div>
-      {loading && !data && <p className="empty muted">正在读取模型注册表…</p>}
-      {data && models.length === 0 && <div className="empty muted">当前没有已注册的模型</div>}
-      {models.length > 0 && (
+      <p className="muted small">
+        模型单独存储在 <code>[models.registry]</code>，主对话 / Agent / 视觉 / TTS / 生图只引用 key；
+        同一个模型可被多个调用方复用，改一处全局生效。
+      </p>
+      {loading && !data && <p className="empty muted" role="status">正在读取模型库…</p>}
+      {data && library.length === 0 && <div className="empty muted">模型库为空，点击「新增模型」添加</div>}
+      {library.length > 0 && (
         <table className="model-table">
           <thead>
-            <tr><th>注册名</th><th>描述</th><th>供应商</th><th>模型</th><th>凭据</th></tr>
+            <tr><th>key</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody>
-            {models.map((model) => (
-              <tr key={model.name}>
-                <td><code>{model.name}</code></td>
-                <td>{model.description || '—'}</td>
-                <td>{model.provider}</td>
-                <td>{model.model_name}</td>
+            {library.map((item) => (
+              <tr key={item.key}>
+                <td><code>{item.key}</code></td>
+                <td>{item.description || '—'}</td>
                 <td>
-                  <span className={'tag ' + (model.api_key_configured ? 'ok' : 'err')}>
-                    {model.api_key_configured ? 'Key 已配置' : '缺 APIKey'}
+                  <div>{item.provider}</div>
+                  <div className="muted small">{item.model_name}</div>
+                </td>
+                <td>
+                  <span className={'tag ' + (item.key_configured ? 'ok' : 'err')}>
+                    {item.key_configured ? 'Key 已配置' : '缺 APIKey'}
                   </span>
-                  {!model.base_url_configured && <span className="tag err">缺 URL</span>}
-                  {model.native_vision && <span className="tag info">原生视觉</span>}
+                  {!item.url_configured && <span className="tag err">缺 URL</span>}
+                  {item.registered && <span className="tag ok">已注册</span>}
+                  {item.assigned && <span className="tag info">已引用</span>}
+                  {item.native_vision && <span className="tag info">原生视觉</span>}
+                </td>
+                <td>
+                  <button className="btn-sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</button>
+                  <button className="btn-sm danger" disabled={!!busy} onClick={() => remove(item)}>删除</button>
                 </td>
               </tr>
             ))}
@@ -478,29 +673,188 @@ function ModelsPanel() {
         </table>
       )}
 
-      <div className="card-head">
-        <h3>平台凭据</h3>
-        <span className="muted small">{platforms.length} 个</span>
-      </div>
-      {platforms.length === 0 && <div className="empty muted">没有读取到平台配置</div>}
-      {platforms.length > 0 && (
-        <table className="model-table">
-          <thead><tr><th>平台</th><th>URL</th><th>APIKey</th></tr></thead>
-          <tbody>
-            {platforms.map((platform) => (
-              <tr key={platform.name}>
-                <td>{platform.name}</td>
-                <td className="muted small">{platform.url || '—'}</td>
-                <td>
-                  <span className={'tag ' + (platform.has_key ? 'ok' : 'err')}>
-                    {platform.has_key ? '已配置' : '未配置'}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Modal
+        open={!!editing}
+        title={editing?.isNew ? '新增模型' : '编辑模型 ' + (editing?.draft?.key || '')}
+        onClose={() => setEditing(null)}
+      >
+        {editing && (
+          <>
+            <SchemaForm
+              fields={fields}
+              disabled={!!busy}
+              onChange={(path, value) => setEditing((previous) => ({ ...previous, draft: setPath(previous.draft, path, value) }))}
+            />
+            <div className="modal-actions">
+              <button className="btn" disabled={!!busy} onClick={() => setEditing(null)}>取消</button>
+              <button className="btn primary" disabled={!!busy} onClick={save}>
+                <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存模型'}
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
     </section>
   );
+}
+
+function AssignPanel() {
+  const [data, setData] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+
+  const applyData = useCallback((payload) => {
+    setData(payload);
+    const roles = payload?.assignments?.roles || {};
+    setDraft({
+      ...roles,
+      creator_image_models: [...(payload?.assignments?.creator_image_models || [])],
+    });
+  }, []);
+
+  const read = useCallback(async () => {
+    setLoading(true);
+    const result = await api.configModels();
+    setLoading(false);
+    if (!result.ok) {
+      toast(result.error || '读取模型分配失败', 'err');
+      return;
+    }
+    applyData(result.data);
+  }, [applyData]);
+
+  useEffect(() => {
+    read();
+  }, [read]);
+
+  const library = data?.library || [];
+  const roles = data?.roles_meta || [];
+
+  const labelOf = (key) => {
+    const item = library.find((entry) => entry.key === key);
+    if (!item) return key + '（模型库中不存在）';
+    return item.key + ' · ' + (item.description || item.model_name || item.provider);
+  };
+
+  const save = async () => {
+    setBusy('save');
+    const result = await api.modelsAssignmentsSave({
+      assignments: draft,
+      revision: data?.revision,
+    });
+    setBusy('');
+    if (!result.ok) {
+      toast(result.error || '保存失败', 'err');
+      return;
+    }
+    if (result.data?.models) applyData(result.data.models);
+    toast('模型分配已保存；重载配置后生效', 'ok');
+  };
+
+  if (loading && !data) {
+    return <section className="card"><p className="empty muted" role="status">正在读取模型分配…</p></section>;
+  }
+
+  return (
+    <section className="card config-card">
+      <div className="card-head">
+        <h3>模型分配</h3>
+        <span className="muted small">{library.length} 个可选模型</span>
+        <div className="spacer" />
+        <button className="btn-sm" disabled={!!busy} onClick={read}>重新读取</button>
+        <button className="btn-sm primary" disabled={!!busy} onClick={save}>
+          <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存分配'}
+        </button>
+      </div>
+      <p className="muted small">每个调用方只保存一个模型 key；生图模型可多选，Agent 会按模型描述自行选择供应商。</p>
+
+      <div className="assign-grid">
+        {roles.map((meta) => (
+          <div className="assign-row" key={meta.role}>
+            <div className="assign-label">
+              <strong>{meta.label}</strong>
+              <code className="muted small">{meta.role}</code>
+              {meta.required && <span className="meta-chip update-available">必须</span>}
+            </div>
+            <div className="assign-control">
+              {meta.multi ? (
+                <div className="assign-choices">
+                  {library.length === 0 && <span className="muted small">模型库为空</span>}
+                  {library.map((item) => {
+                    const checked = (draft.creator_image_models || []).includes(item.key);
+                    return (
+                      <label className="assign-choice" key={item.key}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!!busy}
+                          onChange={() => setDraft((previous) => {
+                            const current = previous.creator_image_models || [];
+                            return {
+                              ...previous,
+                              creator_image_models: checked
+                                ? current.filter((key) => key !== item.key)
+                                : [...current, item.key],
+                            };
+                          })}
+                        />
+                        <span>{labelOf(item.key)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <select
+                  className="input"
+                  disabled={!!busy}
+                  value={draft[meta.role] || ''}
+                  onChange={(event) => setDraft((previous) => ({ ...previous, [meta.role]: event.target.value }))}
+                >
+                  {!meta.required && <option value="">（不指定）</option>}
+                  {meta.required && !draft[meta.role] && <option value="">（请选择）</option>}
+                  {library.map((item) => (
+                    <option key={item.key} value={item.key}>{labelOf(item.key)}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card-head">
+        <h3>当前生效情况</h3>
+        <span className="muted small">重载配置后生效</span>
+      </div>
+      <table className="model-table">
+        <thead><tr><th>调用方</th><th>模型 key</th><th>供应商 / 模型</th><th>状态</th></tr></thead>
+        <tbody>
+          {(data?.roles || []).map((item, index) => (
+            <tr key={item.role + '-' + index}>
+              <td>{item.label}</td>
+              <td><code>{item.key || '—'}</code></td>
+              <td className="muted small">{[item.provider, item.model_name].filter(Boolean).join(' / ') || '—'}</td>
+              <td>
+                {item.missing && <span className="tag err">模型库中不存在</span>}
+                {!item.missing && item.registered && <span className="tag ok">已注册</span>}
+                {!item.missing && !item.registered && <span className="tag info">未注册</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function bindValues(fields, values) {
+  return (fields || []).map((field) => {
+    const value = values ? values[field.name] : undefined;
+    if (field.kind === 'group') {
+      const nested = value && typeof value === 'object' ? value : {};
+      return { ...field, value: nested, fields: bindValues(field.fields || [], nested) };
+    }
+    return { ...field, value: value === undefined ? field.value : value };
+  });
 }

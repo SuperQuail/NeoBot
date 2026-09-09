@@ -750,17 +750,39 @@ class DashboardApi:
         document["can_manage"] = self.console.manage_plugins
         return _json_ok(document)
 
-    async def env_reveal(self, request: web.Request) -> web.Response:
-        denied = self._require_manage(request, action="显示密钥")
+    async def env_platform_add(self, request: web.Request) -> web.Response:
+        """一键添加 API 供应商：写入 <平台名>_URL / <平台名>_APIKey（Key 只写不读）。"""
+        denied = self._require_manage(request, action="添加 API 供应商")
         if denied is not None:
             return denied
-        key = request.match_info["key"]
         try:
-            value = self._env_manager().reveal(key)
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        manager = self._env_manager()
+        try:
+            document = manager.add_platform(
+                name=str(payload.get("name") or ""),
+                url=str(payload.get("url") or ""),
+                api_key=str(payload.get("api_key") or payload.get("apiKey") or ""),
+                expected_revision=payload.get("revision"),
+            )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
         except ConfigValidationError as exc:
-            return _json_error(str(exc), status=400)
-        self.logger.info(f"面板显示密钥 ip={self.console.request_ip(request)} key={key}")
-        return _json_ok({"key": key, "value": value})
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"添加供应商失败: {exc}", status=500)
+        self.logger.info(
+            f"面板添加 API 供应商 ip={self.console.request_ip(request)} name={payload.get('name')}"
+        )
+        document["can_manage"] = self.console.manage_plugins
+        document["message"] = "供应商已写入 .env（API Key 只写不读，可在模型库中引用该平台）"
+        if payload.get("reload"):
+            reload_result = await self._reload_config()
+            document["applied"] = bool(reload_result.get("ok"))
+            document["message"] = str(reload_result.get("message") or document["message"])
+        return _json_ok(document)
 
     async def env_save(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)
@@ -791,13 +813,107 @@ class DashboardApi:
             document["message"] = str(reload_result.get("message") or document["message"])
         return _json_ok(document)
 
+    def _models_config(self) -> Any:
+        """优先用运行中的配置，其次用配置文件解析结果（面板早期也能读取模型库）。"""
+        config_obj = self._config_proxy()
+        if config_obj is not None and hasattr(config_obj, "models"):
+            return config_obj
+        try:
+            return self._config_manager().instance()
+        except Exception:
+            return None
+
     async def config_models(self, request: web.Request) -> web.Response:
         try:
-            payload = models_view()
+            payload = models_view(self._models_config())
         except Exception as exc:
             return _json_error(f"读取模型注册表失败: {exc}", status=500)
         payload["can_manage"] = self.console.manage_plugins
+        try:
+            payload["revision"] = self._config_manager().revision()
+        except Exception:
+            payload["revision"] = ""
         return _json_ok(payload)
+
+    async def models_library_save(self, request: web.Request) -> web.Response:
+        """模型库条目新增/更新/删除（只改 config.toml 的 [models.registry]）。"""
+        denied = self._require_manage(request, action="修改模型库")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        action = str(payload.get("action") or "upsert").strip().lower()
+        if action not in {"upsert", "delete"}:
+            return _json_error("action 只能是 upsert 或 delete", status=400)
+        manager = self._config_manager()
+        try:
+            if action == "delete":
+                document = manager.update_models(
+                    delete=str(payload.get("key") or ""),
+                    expected_revision=payload.get("revision"),
+                )
+            else:
+                document = manager.update_models(
+                    upsert=payload.get("entry") or payload.get("config") or {},
+                    expected_revision=payload.get("revision"),
+                )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
+        except ConfigValidationError as exc:
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"保存模型库失败: {exc}", status=500)
+        return await self._finish_config_write(request, document, payload, "模型库已保存")
+
+    async def models_assignments_save(self, request: web.Request) -> web.Response:
+        """调用方 -> 模型 key 分配（只改 config.toml 的 [models.assignments]）。"""
+        denied = self._require_manage(request, action="修改模型分配")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        assignments = payload.get("assignments")
+        if not isinstance(assignments, dict):
+            return _json_error("assignments 必须是对象", status=400)
+        try:
+            document = self._config_manager().update_models(
+                assignments=assignments,
+                expected_revision=payload.get("revision"),
+            )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
+        except ConfigValidationError as exc:
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"保存模型分配失败: {exc}", status=500)
+        return await self._finish_config_write(request, document, payload, "模型分配已保存")
+
+    async def _finish_config_write(
+        self,
+        request: web.Request,
+        document: dict[str, Any],
+        payload: dict[str, Any],
+        message: str,
+    ) -> web.Response:
+        """写配置后的统一收尾：可选重载 + 返回最新配置与模型视图。"""
+        document["can_manage"] = self.console.manage_plugins
+        document["message"] = message
+        if payload.get("reload"):
+            reload_result = await self._reload_config()
+            document["applied"] = bool(reload_result.get("ok"))
+            document["message"] = str(reload_result.get("message") or message)
+        try:
+            document["models"] = models_view(self._models_config())
+        except Exception:
+            document["models"] = None
+        self.logger.info(
+            f"面板修改配置 ip={self.console.request_ip(request)} action={message}"
+        )
+        return _json_ok(document)
 
     async def admin_restart(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)

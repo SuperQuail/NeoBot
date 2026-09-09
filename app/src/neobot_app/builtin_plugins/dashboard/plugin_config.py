@@ -89,8 +89,36 @@ def describe_mapping(data: dict[str, Any], path: tuple[str, ...] = ()) -> list[d
     return descriptors
 
 
+def _decorate_schema(descriptors: list[dict[str, Any]], original: Any) -> list[dict[str, Any]]:
+    """把敏感字段的默认值清空，只保留「是否已设置」，避免密钥回传到前端。"""
+    from .security import is_sensitive_key
+
+    if not isinstance(original, dict):
+        return descriptors
+    for item in descriptors:
+        name = str(item.get("name") or "")
+        raw = original.get(name)
+        if is_sensitive_key(name):
+            item["sensitive"] = True
+            item["has_value"] = bool(str(raw or "").strip())
+            item["value"] = ""
+            continue
+        if item.get("kind") == "group":
+            _decorate_schema(item.get("fields") or [], raw)
+        elif item.get("kind") == "model_list":
+            entries = raw if isinstance(raw, list) else []
+            for index, entry in enumerate(item.get("items") or []):
+                _decorate_schema(
+                    entry.get("fields") or [],
+                    entries[index] if index < len(entries) else None,
+                )
+            if entries:
+                _decorate_schema(item.get("item_fields") or [], entries[0])
+    return descriptors
+
+
 class PluginConfigEditor:
-    """单个插件的 plugin.toml 配置读写。"""
+    """单个插件的 plugin.toml 配置读写（密钥只写不读）。"""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -115,13 +143,22 @@ class PluginConfigEditor:
         config = document.get("config") or {}
         if not isinstance(config, dict):
             raise PluginConfigError("plugin.toml 的 [config] 必须是 table")
-        data = _jsonable(dict(config.unwrap() if hasattr(config, "unwrap") else config))
+        from .security import has_secret_value, mask_mapping
+
+        original = _jsonable(dict(config.unwrap() if hasattr(config, "unwrap") else config))
+        secret_present = has_secret_value(original)
+        masked = mask_mapping(original)
+        # schema 从打码后的数据构建，避免分组 value 里残留明文
+        schema = _decorate_schema(describe_mapping(masked), original)
         return {
             "path": str(self.path),
             "revision": self.revision(),
-            "source": tomlkit.dumps(config) if hasattr(config, "unwrap") else "",
-            "config": data,
-            "schema": describe_mapping(data),
+            # 含密钥时不返回源码，避免绕过脱敏拿到明文
+            "source": "" if secret_present else (tomlkit.dumps(config) if hasattr(config, "unwrap") else ""),
+            "source_available": not secret_present,
+            "secret_policy": "write_only",
+            "config": masked,
+            "schema": schema,
             "form_supported": True,
             "name": str(document.get("name") or self.path.parent.name),
             "version": str(document.get("version") or ""),
@@ -134,24 +171,35 @@ class PluginConfigEditor:
         source: str | None = None,
         expected_revision: str | None = None,
     ) -> dict[str, Any]:
+        from .security import has_secret_value, restore_mapping
+
         document = self._document()
         if expected_revision is not None and expected_revision != self.revision():
             raise PluginConfigConflictError("插件配置已被其它会话修改，请重新读取后再保存")
+        table = document.get("config")
+        original = _jsonable(
+            dict(table.unwrap() if hasattr(table, "unwrap") else table)
+        ) if table is not None and hasattr(table, "get") else {}
         if source is not None:
+            if has_secret_value(original):
+                raise PluginConfigError(
+                    "该插件配置含密钥，已禁用源码编辑；请使用表单模式（密钥只能更新，不能读取）"
+                )
             try:
                 table = tomlkit.parse(source)
             except Exception as exc:
                 raise PluginConfigError(f"TOML 解析失败: {exc}") from exc
             document["config"] = table
         else:
-            table = document.get("config")
             if table is None or not hasattr(table, "get"):
                 table = tomlkit.table()
                 document["config"] = table
+            # 占位符/空值 -> 沿用原密钥；新值 -> 覆盖（密钥只能更新，不能读取）
+            submitted = restore_mapping(dict(config or {}), original)
             for key in list(table.keys()):
-                if key not in (config or {}):
+                if key not in submitted:
                     del table[key]
-            for key, value in (config or {}).items():
+            for key, value in submitted.items():
                 table[key] = tomlkit.item(value)
         if self.path.is_file():
             try:

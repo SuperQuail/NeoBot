@@ -43,13 +43,77 @@ def is_sensitive_key(key: str) -> bool:
 
 
 def mask_secret(value: str, *, keep: int = 4) -> str:
-    """保留首尾少量字符用于辨认，其余打码。"""
+    """保留首尾少量字符用于辨认，其余打码（仅用于日志，禁止用于接口响应）。"""
     text = str(value or "")
     if not text:
         return ""
     if len(text) <= keep * 2:
         return "*" * len(text)
     return f"{text[:keep]}{'*' * 8}{text[-keep:]}"
+
+
+#: 密钥占位符：前端只能看到它，真实值永远不出网、也不落盘
+SECRET_PLACEHOLDER = "••••••••"
+
+
+def has_secret_value(data: Any) -> bool:
+    """判断（嵌套）配置里是否存在非空的敏感字段。"""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if is_sensitive_key(key) and isinstance(value, str) and value.strip():
+                return True
+            if has_secret_value(value):
+                return True
+        return False
+    if isinstance(data, (list, tuple)):
+        return any(has_secret_value(item) for item in data)
+    return False
+
+
+def mask_mapping(data: Any) -> Any:
+    """递归打码：键名命中敏感规则的字符串值替换为占位符。"""
+    if isinstance(data, dict):
+        masked: dict[str, Any] = {}
+        for key, value in data.items():
+            name = str(key)
+            if is_sensitive_key(name) and isinstance(value, str) and value:
+                masked[name] = SECRET_PLACEHOLDER
+            else:
+                masked[name] = mask_mapping(value)
+        return masked
+    if isinstance(data, (list, tuple)):
+        return [mask_mapping(item) for item in data]
+    return data
+
+
+def restore_mapping(submitted: Any, original: Any) -> Any:
+    """保存时把占位符/空值还原成原值（仅敏感键）。
+
+    - 提交的敏感键等于占位符或空字符串：沿用原值（原值不存在则删除该键）；
+    - 提交了新的非空值：以新值为准（只能更新，不能读取）。
+    """
+    if isinstance(submitted, dict):
+        base = original if isinstance(original, dict) else {}
+        restored: dict[str, Any] = {}
+        for key, value in submitted.items():
+            name = str(key)
+            if is_sensitive_key(name) and isinstance(value, str):
+                if value == SECRET_PLACEHOLDER or not value.strip():
+                    previous = base.get(name)
+                    if isinstance(previous, str) and previous:
+                        restored[name] = previous
+                    continue
+                restored[name] = value
+                continue
+            restored[name] = restore_mapping(value, base.get(name))
+        return restored
+    if isinstance(submitted, list):
+        base_list = original if isinstance(original, list) else []
+        return [
+            restore_mapping(item, base_list[index] if index < len(base_list) else None)
+            for index, item in enumerate(submitted)
+        ]
+    return submitted
 
 
 def secrets_equal(left: str, right: str) -> bool:

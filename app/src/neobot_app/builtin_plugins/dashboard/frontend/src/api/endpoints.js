@@ -42,9 +42,11 @@ export const api = {
   configValidate: (body) => postJSON('/api/config/validate', body),
   configReload: () => postJSON('/api/config/reload'),
   configModels: () => getResult('/api/config/models'),
+  modelsLibrarySave: (body) => postJSON('/api/config/models/library', body),
+  modelsAssignmentsSave: (body) => postJSON('/api/config/models/assignments', body),
   env: () => getResult('/api/config/env'),
   envSave: (body) => postJSON('/api/config/env', body),
-  envReveal: (key) => getResult('/api/config/env/' + encodeURIComponent(key) + '/value'),
+  envAddPlatform: (body) => postJSON('/api/config/env/platform', body),
 
   // 管理
   restart: () => postJSON('/api/admin/restart'),

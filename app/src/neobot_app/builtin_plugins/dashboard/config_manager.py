@@ -303,7 +303,8 @@ class BotConfigManager:
     def revision(self) -> str:
         return _revision_of(self.config_path)
 
-    def read(self) -> dict[str, Any]:
+    def instance(self) -> BotConfig:
+        """按当前文件解析出的配置对象（不触发模型注册）。"""
         source = ""
         if self.config_path.is_file():
             source = self.config_path.read_text(encoding="utf-8-sig")
@@ -313,7 +314,19 @@ class BotConfigManager:
             raise ConfigValidationError(
                 [{"path": "config.toml", "message": f"TOML 解析失败: {exc}"}]
             ) from exc
-        instance = dict_to_dataclass(parsed, BotConfig) if parsed else BotConfig()
+        return dict_to_dataclass(parsed, BotConfig) if parsed else BotConfig()
+
+    def read(self) -> dict[str, Any]:
+        source = ""
+        if self.config_path.is_file():
+            source = self.config_path.read_text(encoding="utf-8-sig")
+        instance = self.instance()
+        try:
+            parsed = tomlkit.parse(source).unwrap() if source else {}
+        except Exception as exc:
+            raise ConfigValidationError(
+                [{"path": "config.toml", "message": f"TOML 解析失败: {exc}"}]
+            ) from exc
         return {
             "path": str(self.config_path),
             "revision": self.revision(),
@@ -367,6 +380,174 @@ class BotConfigManager:
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
         _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
         return self.read()
+
+    # ------------------------------------------------------------------
+    # 模型库 / 调用方分配
+    # ------------------------------------------------------------------
+
+    def _models_document(self, parsed: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """取出模型库与分配表；文件里没有时用默认值补全（首次编辑即落盘）。"""
+        defaults = BotConfig()
+        models_raw = parsed.get("models") if isinstance(parsed.get("models"), dict) else {}
+        library_raw = models_raw.get("registry")
+        if isinstance(library_raw, list) and library_raw:
+            library = [dict(item) for item in library_raw if isinstance(item, dict)]
+        else:
+            library = [_jsonable(item) for item in defaults.models.registry]
+        assignments_raw = models_raw.get("assignments")
+        if isinstance(assignments_raw, dict):
+            assignments = {str(key): value for key, value in assignments_raw.items()}
+        else:
+            assignments = _jsonable(defaults.models.assignments)
+        return library, assignments
+
+    def update_models(
+        self,
+        *,
+        upsert: dict[str, Any] | None = None,
+        delete: str | None = None,
+        assignments: dict[str, Any] | None = None,
+        expected_revision: str | None = None,
+        max_backups: int = 15,
+    ) -> dict[str, Any]:
+        """模型库增删改 + 调用方分配，只改动 config.toml 的 [models] 段。"""
+        from neobot_app.config.schemas.bot import ModelAssignments, normalize_model_key
+
+        if expected_revision is not None and expected_revision != self.revision():
+            raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
+
+        document = (
+            tomlkit.parse(self.config_path.read_text(encoding="utf-8-sig"))
+            if self.config_path.is_file()
+            else tomlkit.document()
+        )
+        current = document.unwrap() if self.config_path.is_file() else {}
+        library, current_assignments = self._models_document(current)
+
+        errors: list[dict[str, str]] = []
+        if delete is not None:
+            target = normalize_model_key(str(delete))
+            references = [
+                role
+                for role, key in _assignment_items(current_assignments)
+                if key == target
+            ]
+            if references:
+                labels = "、".join(ROLE_LABELS.get(role, role) for role in references)
+                raise ConfigValidationError(
+                    [
+                        {
+                            "path": "models.registry",
+                            "message": f"模型 {target} 仍被以下调用方引用，请先改绑再删除: {labels}",
+                        }
+                    ]
+                )
+            if not any(str(item.get("key") or "") == target for item in library):
+                raise ConfigValidationError(
+                    [{"path": "models.registry", "message": f"模型库中不存在 {target}"}]
+                )
+            library = [item for item in library if str(item.get("key") or "") != target]
+        elif upsert is not None:
+            entry = {str(key): value for key, value in dict(upsert).items()}
+            entry["key"] = normalize_model_key(str(entry.get("key") or ""))
+            if not entry["key"]:
+                raise ConfigValidationError(
+                    [{"path": "models.registry.key", "message": "模型 key 不能为空"}]
+                )
+            for index, item in enumerate(library):
+                if str(item.get("key") or "") == entry["key"]:
+                    library[index] = {**item, **entry}
+                    break
+            else:
+                library.append(entry)
+
+        if assignments is not None:
+            valid_roles = set(ModelAssignments.SINGLE_ROLES) | {"creator_image_models"}
+            unknown = [str(role) for role in assignments if str(role) not in valid_roles]
+            if unknown:
+                errors.append(
+                    {
+                        "path": "models.assignments",
+                        "message": "未知调用方: " + "、".join(sorted(unknown)),
+                    }
+                )
+            library_keys = {str(item.get("key") or "") for item in library}
+            for role in ModelAssignments.SINGLE_ROLES:
+                if role not in assignments:
+                    continue
+                key = str(assignments.get(role) or "").strip()
+                if key and key not in library_keys:
+                    errors.append(
+                        {
+                            "path": f"models.assignments.{role}",
+                            "message": f"模型库中不存在 key: {key}",
+                        }
+                    )
+                if not key and role not in ("vision_model", "tts_model"):
+                    errors.append(
+                        {"path": f"models.assignments.{role}", "message": "该调用方必须指定模型"}
+                    )
+                current_assignments[role] = key
+            images = assignments.get("creator_image_models")
+            if images is not None:
+                if not isinstance(images, list):
+                    errors.append(
+                        {
+                            "path": "models.assignments.creator_image_models",
+                            "message": "应为数组",
+                        }
+                    )
+                else:
+                    cleaned = [
+                        str(item or "").strip()
+                        for item in images
+                        if str(item or "").strip()
+                    ]
+                    for key in cleaned:
+                        if key not in library_keys:
+                            errors.append(
+                                {
+                                    "path": "models.assignments.creator_image_models",
+                                    "message": f"模型库中不存在 key: {key}",
+                                }
+                            )
+                    current_assignments["creator_image_models"] = cleaned
+        if errors:
+            raise ConfigValidationError(errors)
+
+        new_config = dict(current)
+        new_config["models"] = {
+            "registry": library,
+            "assignments": current_assignments,
+        }
+        config_errors = self.validate(config=new_config)
+        if config_errors:
+            raise ConfigValidationError(config_errors)
+
+        _merge_into_document(document, _diff_document(current, new_config))
+        if self.config_path.is_file():
+            backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
+        source = tomlkit.dumps(document)
+        _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
+        return self.read()
+
+
+def _assignment_items(assignments: dict[str, Any]) -> list[tuple[str, str]]:
+    """展开「调用方 -> 模型 key」，生图列表逐项展开。"""
+    items: list[tuple[str, str]] = []
+    for role in ROLE_LABELS:
+        value = assignments.get(role)
+        if role == "creator_image_models":
+            if isinstance(value, list):
+                items.extend(
+                    ("creator_image_models", str(item).strip())
+                    for item in value
+                    if str(item or "").strip()
+                )
+            continue
+        if isinstance(value, str) and value.strip():
+            items.append((role, value.strip()))
+    return items
 
 
 _DELETE = object()
@@ -433,7 +614,13 @@ class EnvFileManager:
         return metadata
 
     def read(self, *, mask: bool = True) -> dict[str, Any]:
-        from .security import is_sensitive_key, mask_secret
+        """读取 .env。
+
+        安全约定：敏感键（APIKey/Token/密码等）的值永不出网，只返回
+        has_value（是否已设置）；非敏感键照常返回。源码原文同样不返回，
+        避免绕过脱敏直接拿到密钥。
+        """
+        from .security import is_sensitive_key
 
         builtin = self._builtin_metadata()
         entries: list[dict[str, Any]] = []
@@ -456,7 +643,7 @@ class EnvFileManager:
             entries.append(
                 {
                     "key": key,
-                    "value": mask_secret(value) if (mask and sensitive) else value,
+                    "value": "" if (mask and sensitive) else value,
                     "has_value": bool(value),
                     "masked": bool(mask and sensitive and value),
                     "description": description,
@@ -486,23 +673,94 @@ class EnvFileManager:
             "path": str(self.env_path),
             "revision": self.revision(),
             "items": entries,
-            "source": self.env_path.read_text(encoding="utf-8-sig") if self.env_path.is_file() else "",
+            "platforms": self.platforms(),
+            "source_available": False,
+            "secret_policy": "write_only",
         }
 
-    def reveal(self, key: str) -> str:
-        target = str(key or "").strip()
-        if not ENV_KEY_RE.fullmatch(target):
-            raise ConfigValidationError([{"path": key, "message": "非法环境变量名"}])
+    def platforms(self) -> list[dict[str, Any]]:
+        """列出内置与自定义 API 平台：平台名、URL 以及 Key 是否已配置。"""
+        values = self._current_values()
+        names: dict[str, dict[str, Any]] = {}
+
+        def record(name: str, *, builtin: bool) -> None:
+            entry = names.setdefault(
+                name,
+                {
+                    "name": name,
+                    "url": "",
+                    "has_key": False,
+                    "url_env": f"{name}_URL",
+                    "key_env": f"{name}_APIKey",
+                    "builtin": builtin,
+                },
+            )
+            entry["builtin"] = entry["builtin"] or builtin
+            url = values.get(f"{name}_URL")
+            if url:
+                entry["url"] = url
+            if values.get(f"{name}_APIKey"):
+                entry["has_key"] = True
+
+        for field_obj in fields(EnvConfig):
+            env_key = str(field_obj.metadata.get("env_key") or field_obj.name.upper())
+            for suffix in ("_URL", "_APIKey"):
+                if env_key.endswith(suffix):
+                    record(env_key[: -len(suffix)], builtin=True)
+        for key in values:
+            for suffix in ("_URL", "_APIKey"):
+                if key.endswith(suffix):
+                    record(key[: -len(suffix)], builtin=False)
+        return sorted(names.values(), key=lambda item: item["name"].casefold())
+
+    def add_platform(
+        self,
+        *,
+        name: str,
+        url: str,
+        api_key: str = "",
+        expected_revision: str | None = None,
+    ) -> dict[str, Any]:
+        """一键添加 API 供应商：写入 <平台名>_URL 与 <平台名>_APIKey。
+
+        Key 为只写字段：保存后无法再读取，只能覆盖更新。
+        """
+        normalized = EnvConfig._normalize_platform_name(str(name or ""))
+        if not ENV_KEY_RE.fullmatch(normalized):
+            raise ConfigValidationError(
+                [
+                    {
+                        "path": "name",
+                        "message": "平台名只能包含字母、数字与下划线，且不能以数字开头（例如 MyProvider）",
+                    }
+                ]
+            )
+        normalized_url = str(url or "").strip()
+        if not normalized_url:
+            raise ConfigValidationError([{"path": "url", "message": "请填写平台 API 地址"}])
+        if not re.match(r"^https?://", normalized_url):
+            raise ConfigValidationError(
+                [{"path": "url", "message": "API 地址必须以 http:// 或 https:// 开头"}]
+            )
+        updates = {f"{normalized}_URL": normalized_url}
+        key_value = str(api_key or "").strip()
+        if key_value:
+            updates[f"{normalized}_APIKey"] = key_value
+        return self.save(updates=updates, expected_revision=expected_revision)
+
+    def _current_values(self) -> dict[str, str]:
+        values: dict[str, str] = {}
         if not self.env_path.is_file():
-            return ""
+            return values
         for line in self.env_path.read_text(encoding="utf-8-sig").splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or "=" not in stripped:
                 continue
-            candidate, value = stripped.split("=", 1)
-            if candidate.strip() == target:
-                return value.strip()
-        return ""
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            if key:
+                values[key] = value.strip()
+        return values
 
     def save(
         self,
@@ -511,16 +769,41 @@ class EnvFileManager:
         deletes: list[str] | None = None,
         expected_revision: str | None = None,
     ) -> dict[str, Any]:
-        updates = {str(key): str(value) for key, value in (updates or {}).items()}
+        """保存 .env。
+
+        - 只写入相对当前文件真正变化的键；
+        - 敏感键（APIKey/Token 等）只能写入新值：空值视为「未改动」，
+          占位符不会被写回文件，从而保证密钥不可读、不可被误覆盖。
+        """
+        from .security import SECRET_PLACEHOLDER, is_sensitive_key
+
+        raw_updates = {str(key): str(value) for key, value in (updates or {}).items()}
         deletes = [str(key) for key in (deletes or [])]
         errors: list[dict[str, str]] = []
-        for key in [*updates, *deletes]:
+        for key in [*raw_updates, *deletes]:
             if not ENV_KEY_RE.fullmatch(key):
                 errors.append({"path": key, "message": "非法环境变量名"})
         if errors:
             raise ConfigValidationError(errors)
         if expected_revision is not None and expected_revision != self.revision():
             raise ConfigConflictError(".env 已被其它会话修改，请重新读取后再保存")
+
+        current = self._current_values()
+        updates: dict[str, str] = {}
+        for key, value in raw_updates.items():
+            if key in deletes:
+                continue
+            if value == SECRET_PLACEHOLDER:
+                continue
+            if is_sensitive_key(key) and not value.strip():
+                # 敏感键留空 = 保持原值（面板不会回传明文）
+                continue
+            if current.get(key, "") == value and key in current:
+                continue
+            updates[key] = value
+        deletes = [key for key in deletes if key in current]
+        if not updates and not deletes:
+            return self.read()
 
         lines: list[str] = []
         if self.env_path.is_file():
@@ -557,33 +840,149 @@ class EnvFileManager:
         return self.read()
 
 
-def models_view() -> dict[str, Any]:
-    """已注册模型与平台凭据状态（用于面板展示与排查）。"""
+#: 角色 -> 面板显示名
+ROLE_LABELS: dict[str, str] = {
+    "primary_chat_model": "主对话模型（Agent 编号 0）",
+    "agent_model_1": "Agent 模型编号 1",
+    "agent_model_2": "Agent 模型编号 2",
+    "agent_model_3": "Agent 模型编号 3",
+    "vision_model": "视觉 / 图像识别模型",
+    "tts_model": "语音（TTS）模型",
+    "creator_image_models": "创作者生图模型（可多个）",
+}
+
+
+def models_view(config: Any = None) -> dict[str, Any]:
+    """模型库 + 调用方分配 + 平台凭据状态（用于面板展示与排查）。
+
+    config 为运行中的配置代理时展示模型库与分配关系；否则只展示运行时注册表。
+    """
     from neobot_chat import get_model_registry
 
     registry = get_model_registry()
-    models: list[dict[str, Any]] = []
+    registered_names = set(registry.names)
     platforms: dict[str, dict[str, Any]] = {}
-    for name, registered in registry.items():
-        platform = EnvConfig.get_api_platform_config(registered.provider_name)
-        platforms[platform.name] = {
+
+    def platform_payload(provider: str) -> dict[str, Any]:
+        platform = EnvConfig.get_api_platform_config(provider) if provider else None
+        if platform is None:
+            return {"name": provider or "", "url": "", "has_key": False}
+        payload = {
             "name": platform.name,
             "url": platform.url or "",
             "has_key": bool(platform.api_key),
         }
-        models.append(
+        platforms[platform.name] = payload
+        return payload
+
+    models_config = getattr(config, "models", None) if config is not None else None
+    library: list[dict[str, Any]] = []
+    assignments: dict[str, Any] = {}
+    roles: list[dict[str, Any]] = []
+
+    if models_config is not None and hasattr(models_config, "iter_definitions"):
+        by_key = models_config.by_key()
+        assigned_keys = {key for _role, key in models_config.assignments.items()}
+        for key, definition in models_config.iter_definitions():
+            platform = platform_payload(str(getattr(definition, "provider", "") or ""))
+            library.append(
+                {
+                    "key": key,
+                    "description": str(getattr(definition, "description", "") or ""),
+                    "provider": str(getattr(definition, "provider", "") or ""),
+                    "model_name": str(getattr(definition, "model_name", "") or ""),
+                    "native_vision": bool(getattr(definition, "native_vision", False)),
+                    "has_balance_hint": bool(
+                        str(getattr(definition, "balance_query_hint", "") or "").strip()
+                    ),
+                    "assigned": key in assigned_keys,
+                    "registered": key in registered_names,
+                    "url_configured": bool(platform.get("url")),
+                    "key_configured": bool(platform.get("has_key")),
+                    # 完整条目（供面板编辑；模型条目不含密钥）
+                    "entry": _jsonable(definition),
+                }
+            )
+        assignments = {
+            "roles": {
+                role: models_config.assignments.role_key(role)
+                for role in models_config.assignments.SINGLE_ROLES
+            },
+            "creator_image_models": list(models_config.assignments.image_keys()),
+        }
+        for role in models_config.assignments.SINGLE_ROLES:
+            key = models_config.assignments.role_key(role)
+            definition = by_key.get(key)
+            roles.append(
+                {
+                    "role": role,
+                    "label": ROLE_LABELS.get(role, role),
+                    "key": key,
+                    "missing": definition is None,
+                    "description": str(getattr(definition, "description", "") or "") if definition else "",
+                    "provider": str(getattr(definition, "provider", "") or "") if definition else "",
+                    "model_name": str(getattr(definition, "model_name", "") or "") if definition else "",
+                    "registered": key in registered_names,
+                }
+            )
+        image_roles = [
+            {
+                "role": "creator_image_models",
+                "label": ROLE_LABELS["creator_image_models"],
+                "key": key,
+                "missing": by_key.get(key) is None,
+                "description": str(getattr(by_key.get(key), "description", "") or "") if by_key.get(key) else "",
+                "provider": str(getattr(by_key.get(key), "provider", "") or "") if by_key.get(key) else "",
+                "model_name": str(getattr(by_key.get(key), "model_name", "") or "") if by_key.get(key) else "",
+                "registered": key in registered_names,
+            }
+            for key in models_config.assignments.image_keys()
+        ]
+        roles.extend(image_roles)
+
+    # 运行时注册表（可能包含库中没有的旧式条目）
+    registered: list[dict[str, Any]] = []
+    for name, item in registry.items():
+        platform = platform_payload(str(getattr(item, "provider_name", "") or ""))
+        registered.append(
             {
                 "name": name,
-                "description": registered.description,
-                "provider": registered.provider_name,
-                "model_name": registered.model_name,
-                "base_url_configured": bool(registered.base_url),
-                "api_key_configured": bool(registered.api_key),
-                "native_vision": bool(registered.native_vision),
-                "registered": True,
+                "description": str(getattr(item, "description", "") or ""),
+                "provider": str(getattr(item, "provider_name", "") or ""),
+                "model_name": str(getattr(item, "model_name", "") or ""),
+                "native_vision": bool(getattr(item, "native_vision", False)),
+                "url_configured": bool(platform.get("url")),
+                "key_configured": bool(platform.get("has_key")),
             }
         )
+
+    from neobot_app.config.schemas.bot import ModelAssignments, ModelDefinition
+
+    roles_meta = [
+        {
+            "role": role,
+            "label": ROLE_LABELS.get(role, role),
+            "multi": False,
+            "required": role not in ("vision_model", "tts_model"),
+        }
+        for role in ModelAssignments.SINGLE_ROLES
+    ]
+    roles_meta.append(
+        {
+            "role": "creator_image_models",
+            "label": ROLE_LABELS["creator_image_models"],
+            "multi": True,
+            "required": False,
+        }
+    )
+
     return {
-        "models": models,
+        "library": library,
+        "assignments": assignments,
+        "roles": roles,
+        "roles_meta": roles_meta,
+        "role_labels": ROLE_LABELS,
+        "entry_schema": describe_dataclass(ModelDefinition, None),
+        "registered": registered,
         "platforms": sorted(platforms.values(), key=lambda item: item["name"]),
     }
