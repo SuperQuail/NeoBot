@@ -1149,12 +1149,21 @@ def models_view(config: Any = None) -> dict[str, Any]:
         env_key = str(field_obj.metadata.get("env_key") or field_obj.name.upper())
         if env_key.endswith("_URL"):
             provider_names.add(env_key[: -len("_URL")])
+    def _canonical(name: str) -> str:
+        text = str(name or "").strip()
+        if not text:
+            return ""
+        try:
+            return str(EnvConfig._normalize_platform_name(text))
+        except Exception:
+            return text
+
     for item in library:
-        name = str(item.get("provider") or "").strip()
+        name = _canonical(item.get("provider"))
         if name:
             provider_names.add(name)
     for item in registered:
-        name = str(item.get("provider") or "").strip()
+        name = _canonical(item.get("provider"))
         if name:
             provider_names.add(name)
 

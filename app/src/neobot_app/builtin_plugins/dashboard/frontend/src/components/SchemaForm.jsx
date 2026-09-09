@@ -64,6 +64,65 @@ function FieldActions({ descriptor, disabled, changed, onRestore, onShowHistory,
   );
 }
 
+/** 下拉选择 + 自定义输入：选项列表来自后端，仍允许手填新值。 */
+function ComboboxField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount }) {
+  const options = Array.isArray(descriptor.options) ? descriptor.options : [];
+  const current = value === undefined || value === null ? '' : String(value);
+  const inOptions = options.includes(current);
+  // 默认始终展示下拉；当前值不在候选里时，作为「（自定义）」选项保留
+  const [custom, setCustom] = useState(false);
+  const fieldId = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
+
+  const header = (
+    <div className="cfg-label">
+      <label htmlFor={fieldId}>
+        {descriptor.name}{descriptor.readonly && <span className="muted small"> · 只读</span>}
+      </label>
+      {descriptor.description && <p>{descriptor.description}</p>}
+      <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
+    </div>
+  );
+
+  return (
+    <div className="cfg-row">
+      {header}
+      <div className="cfg-control">
+        {custom ? (
+          <div className="config-input-wrap">
+            <input id={fieldId} className="input" disabled={disabled} spellCheck={false} autoComplete="off"
+              value={current} placeholder="输入自定义值"
+              onChange={(event) => onChange(event.target.value)} />
+            {options.length > 0 && (
+              <button type="button" className="btn-sm" disabled={disabled}
+                onClick={() => setCustom(false)}>从列表选择</button>
+            )}
+          </div>
+        ) : (
+          <select id={fieldId} className="input" disabled={disabled}
+            value={inOptions ? current : (current ? '__current__' : '')}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === '__custom__') { setCustom(true); return; }
+              if (next === '__current__') return;
+              onChange(next);
+            }}>
+            {!inOptions && current !== '' && (
+              <option value="__current__">{current}（自定义）</option>
+            )}
+            <option value="">（未选择）</option>
+            {options.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+            <option value="__custom__">自定义…</option>
+          </select>
+        )}
+        <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
+          onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+      </div>
+    </div>
+  );
+}
+
 function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount }) {
   const [reveal, setReveal] = useState(false);
   const [text, setText] = useState(value === undefined || value === null ? '' : String(value));
@@ -100,6 +159,12 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
   }
 
   const options = Array.isArray(descriptor.options) ? descriptor.options : null;
+  if (options && options.length && !descriptor.options_strict) {
+    return (
+      <ComboboxField descriptor={descriptor} value={value} onChange={onChange} disabled={disabled}
+        changed={changed} onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+    );
+  }
   if (options && options.length && descriptor.options_strict) {
     return (
       <div className="cfg-row">
@@ -142,7 +207,6 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
             type={numeric ? 'number' : secret && !reveal ? 'password' : 'text'}
             step={descriptor.type === 'float' ? 'any' : undefined}
             min={descriptor.min} max={descriptor.max}
-            list={options && options.length ? id + '-options' : undefined}
             autoComplete="off" spellCheck={false} aria-invalid={!!error}
             value={numeric ? text : value ?? ''}
             onChange={(event) => {
@@ -161,11 +225,7 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
               aria-pressed={reveal} onClick={() => setReveal(!reveal)}><Icon name="eye" /></button>
           )}
         </div>
-        {options && options.length > 0 && (
-          <datalist id={id + '-options'}>
-            {options.map((option) => <option key={option} value={option} />)}
-          </datalist>
-        )}
+
         {error && <span className="field-error" role="alert">{error}</span>}
         <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
           onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
