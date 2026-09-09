@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_app.message.numbering import MessageNumbering
+from neobot_app.utils.http import image_http_client
 
 
 def _response_data_for_get_image(response: Any) -> dict | None:
@@ -59,9 +60,10 @@ async def _read_bounded_image_ref(
                 return None
             data = base64.b64decode(payload, validate=True)
         elif ref.startswith(("http://", "https://")):
-            import httpx
 
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with image_http_client(
+                timeout=timeout, follow_redirects=True, url=ref
+            ) as client:
                 async with client.stream("GET", ref) as response:
                     response.raise_for_status()
                     length = response.headers.get("content-length")
@@ -120,9 +122,10 @@ async def read_image_ref(
         except OSError:
             return None
     try:
-        import httpx
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with image_http_client(
+            timeout=timeout, follow_redirects=True, url=ref
+        ) as client:
             resp = await client.get(ref)
             resp.raise_for_status()
             return resp.content
@@ -381,7 +384,6 @@ class ImageSourceResolver:
         self, seg_data: dict, *, timeout: float = 30.0
     ) -> tuple[bytes | None, str | None]:
         """从 segment data 下载图片字节(URL 直下,失败走 get_image API)。"""
-        import httpx
 
         url = seg_data.get("url")
         if url:
@@ -391,7 +393,9 @@ class ImageSourceResolver:
                     return content, None
             else:
                 try:
-                    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    async with image_http_client(
+                        timeout=timeout, follow_redirects=True, url=url
+                    ) as client:
                         resp = await client.get(str(url))
                         resp.raise_for_status()
                         return resp.content, None
