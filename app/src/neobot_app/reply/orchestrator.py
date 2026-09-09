@@ -941,6 +941,13 @@ class ReplyOrchestrator:
         chat = getattr(self._config, "chat", None)
         return bool(getattr(chat, "show_last_reply_markers", False))
 
+    def _inject_member_archives(self) -> bool:
+        """群聊是否注入群员个人档案（默认 False，由 agent 按需读取）。"""
+        if self._config is None:
+            return False
+        chat = getattr(self._config, "chat", None)
+        return bool(getattr(chat, "inject_member_archives", False))
+
     # ── 成本计算管线(字符级缓存命中计算) ──
 
     def _cost_pipeline_enabled(self) -> bool:
@@ -1809,7 +1816,8 @@ class ReplyOrchestrator:
                                 try:
                                     member_profiles = (
                                         await profile_service.render_specific_members(
-                                            new_user_ids
+                                            new_user_ids,
+                                            include_archives=self._inject_member_archives(),
                                         )
                                     )
                                 except Exception:
@@ -3282,7 +3290,8 @@ class ReplyOrchestrator:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
                 member_profiles = await profile_service.render_specific_members(
-                    new_user_ids
+                    new_user_ids,
+                    include_archives=self._inject_member_archives(),
                 )
                 if member_profiles:
                     new_member_text = f"[新出现的群友档案]\n{member_profiles}"

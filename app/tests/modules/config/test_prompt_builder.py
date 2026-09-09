@@ -17,8 +17,9 @@ class _FakeProfileService:
         return "测试群名"
 
     async def render_group_member_list(
-        self, group_id, message_queue, *, archive_fetch_window=None
+        self, group_id, message_queue, *, archive_fetch_window=None, include_archives=False
     ):
+        self.last_include_archives = include_archives
         return "成员列表：小明、小红"
 
     async def render_bot_group_admin_status(self, group_id, bot_account, message_queue):
@@ -138,6 +139,35 @@ async def test_build_group_prompt_appends_memory_list_without_placeholder():
 
     # Assert
     assert "小明生日是明天" in prompt
+
+
+async def test_group_prompt_omits_member_archives_and_hints_on_demand_read():
+    """群聊默认只注入群档案：不注入群员档案，并给出按需读取引导。"""
+    # Arrange
+    builder = _make_builder("你好{bot_name}|{member_list}")
+
+    # Act
+    prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+
+    # Assert
+    assert builder._profile_service.last_include_archives is False
+    assert "群友记忆" in prompt
+    assert "archive_crud__read_archive" in prompt
+    assert "user_summary" in prompt and "user_profile" in prompt
+
+
+async def test_group_prompt_injects_member_archives_when_configured():
+    """inject_member_archives=True 时恢复旧行为：注入群员档案且不加按需读取引导。"""
+    # Arrange
+    builder = _make_builder("你好{bot_name}|{member_list}")
+    builder._config.chat.inject_member_archives = True
+
+    # Act
+    prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+
+    # Assert
+    assert builder._profile_service.last_include_archives is True
+    assert "群友记忆" not in prompt
 
 
 async def test_build_group_prompt_tolerates_unknown_placeholder():

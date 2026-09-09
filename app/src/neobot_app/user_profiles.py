@@ -171,7 +171,14 @@ class UserProfileService:
         message_queue: Any | None = None,
         *,
         archive_fetch_window: int | None = None,
+        include_archives: bool = False,
     ) -> str:
+        """渲染群成员列表。
+
+        include_archives 默认 False：不注入群员档案（只注入群档案），
+        由 agent 用 archive_crud__read_archive 按需读取，避免每次回复都
+        把窗口内所有群员的档案塞进提示词。
+        """
         members = self._collect_group_members_from_queue(
             group_id, message_queue, window=archive_fetch_window,
         )
@@ -192,7 +199,9 @@ class UserProfileService:
                 user_id,
                 observed_fields=self._observed_fields_from_group_member(member),
             )
-            archive_text = await self._fetch_user_archive(str(user_id))
+            archive_text = (
+                await self._fetch_user_archive(str(user_id)) if include_archives else None
+            )
             rendered = self._format_group_member_line(index, member, profile, archive_text=archive_text)
             if rendered:
                 lines.append(rendered)
@@ -201,12 +210,20 @@ class UserProfileService:
     async def render_specific_members(
         self,
         user_ids: list[str | int],
+        *,
+        include_archives: bool = False,
     ) -> str:
-        """为指定的用户ID列表渲染群成员档案文本，用于挂起恢复时补充新成员档案。"""
+        """为指定的用户ID列表渲染群成员文本，用于挂起恢复时补充新成员信息。
+
+        include_archives 默认 False，与群聊提示词一致：不注入群员档案，
+        由 agent 按需读取。
+        """
         lines: list[str] = []
         for index, user_id in enumerate(user_ids, start=1):
             profile = await self.ensure_user_profile(str(user_id))
-            archive_text = await self._fetch_user_archive(str(user_id))
+            archive_text = (
+                await self._fetch_user_archive(str(user_id)) if include_archives else None
+            )
             member = SimpleNamespace(
                 user_id=int(user_id),
                 nickname=getattr(profile, "nick_name", None),
@@ -274,8 +291,9 @@ class UserProfileService:
                     return (
                         f"[记忆较长(共{len(value)}字),以下为开头部分]\n"
                         f"{head}\n"
-                        "[完整记忆可用 archive_crud__read_archive 分页阅读:"
-                        "offset 负数从尾部向前翻页(越后的内容越新)]"
+                        "[完整记忆用 archive_crud__read_archive 按需读取:"
+                        "先 mode='outline' 看大纲,再 offset 分页读正文;"
+                        "offset 为负数时从尾部向前翻页(越后的内容越新)]"
                     )
                 return value
         return None

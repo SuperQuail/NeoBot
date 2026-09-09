@@ -232,6 +232,17 @@ class SkillManager:
             tools.extend(_deep_copy(tool) for tool in registration.tools)
         return tools
 
+    def get_skill_tools(self, name: str) -> list[dict]:
+        """返回指定 Skill 的工具定义（已加 ``{name}__`` 前缀）。
+
+        子 agent / 专用 agent 只挂载部分 Skill 时必须用本方法取定义，
+        否则工具名缺少前缀，SkillManager.execute 无法路由。
+        """
+        registration = self._skills.get(name)
+        if registration is None:
+            return []
+        return [_deep_copy(tool) for tool in registration.tools]
+
     def capture_execution_token(self, prefixed_name: str) -> SkillExecutionToken | None:
         parsed = self._parse_name(prefixed_name)
         if parsed is None:

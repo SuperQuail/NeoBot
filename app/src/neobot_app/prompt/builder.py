@@ -100,11 +100,15 @@ class PromptBuilder:
         group_description_map = self._config.chat.group_description or {}
         group_description = group_description_map.get(group_id_str, "")
         archive_fetch_window = getattr(self._config.chat, "archive_fetch_window", None)
+        inject_member_archives = self._inject_member_archives()
         member_list = await self._profile_service.render_group_member_list(
             group_id,
             message_queue,
             archive_fetch_window=archive_fetch_window,
+            include_archives=inject_member_archives,
         )
+        if member_list and not inject_member_archives:
+            member_list = f"{member_list}\n{_MEMBER_ARCHIVE_HINT}"
         bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
             group_id,
             self._config.bot.account,
@@ -320,11 +324,22 @@ class PromptBuilder:
                     return (
                         f"[记忆较长(共{len(value)}字),以下为开头部分]\n"
                         f"{head}\n"
-                        "[完整记忆可用 archive_crud__read_archive 分页阅读:"
-                        "offset 负数从尾部向前翻页(越后的内容越新)]"
+                        "[完整记忆用 archive_crud__read_archive 按需读取:"
+                        "先 mode='outline' 看大纲,再 offset 分页读正文;"
+                        "offset 为负数时从尾部向前翻页(越后的内容越新)]"
                     )
                 return value
         return None
+
+    def _inject_member_archives(self) -> bool:
+        """群聊是否注入群员个人档案；默认 False，群员档案由 agent 按需读取。"""
+        return bool(
+            getattr(
+                getattr(self._config, "chat", None),
+                "inject_member_archives",
+                False,
+            )
+        )
 
     def _group_profile_max_chars(self) -> int:
         archive = getattr(
@@ -337,6 +352,14 @@ class PromptBuilder:
             if isinstance(limit, int) and limit > 0:
                 return limit
         return 1500
+
+
+_MEMBER_ARCHIVE_HINT = (
+    "<群友记忆>群友的长期记忆未在此注入。需要某位群友的记忆时，用 "
+    "archive_crud__read_archive 按需读取：table_name 优先 user_summary、缺失时用 user_profile，"
+    "key 为该群友的 QQ 号；先 mode='outline' 看大纲，再用 offset 分页读正文，"
+    "offset 为负数时从尾部向前翻页（越靠后的内容越新）。</群友记忆>"
+)
 
 
 def _build_bot_other_name(config: BotConfigSchema) -> str:

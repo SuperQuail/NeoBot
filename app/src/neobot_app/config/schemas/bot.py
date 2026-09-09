@@ -821,6 +821,17 @@ class AgentMemoryTrigger:
         default=200,
         metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
     )
+    prompt_snippet_chars: Optional[int] = field(
+        default=120,
+        metadata={
+            "description": "总结提示词中每条消息的最大展示字符数；超出部分截断，"
+            "模型可用 archive_crud__read_pending_messages 按需读取全文；0表示不截断"
+        },
+    )
+    max_tool_rounds: Optional[int] = field(
+        default=20,
+        metadata={"description": "单次记忆总结最多允许的工具调用轮次，防止工具失败时反复重试烧token"},
+    )
 
 
 @dataclass
@@ -1352,7 +1363,14 @@ class EnhancedChat(Chat):
     )
     archive_fetch_window: Optional[int] = field(
         default=20,
-        metadata={"description": "档案获取窗口；只对消息队列中最新的此数量消息的发送者获取个人档案，戳一戳等同0.2条消息"},
+        metadata={"description": "群成员列表窗口；只列出消息队列中最新的此数量消息的发送者，戳一戳等同0.2条消息"},
+    )
+    inject_member_archives: Optional[bool] = field(
+        default=False,
+        metadata={
+            "description": "群聊提示词是否注入群成员的个人档案；默认 false（只注入群档案），"
+            "群员档案由 agent 用 archive_crud__read_archive 按需读取"
+        },
     )
     poke_weight: Optional[float] = field(
         default=0.2,
