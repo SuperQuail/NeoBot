@@ -58,6 +58,7 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 | `sandbox_manager` | 沙箱管理 |
 | `sandbox_maintenance` | 沙箱持久化维护 |
 | `deepseek_balance` | DeepSeek 余额查询（仅在余额检查启用时注册） |
+| `balance_query` | 按各模型 `balance_query_hint` 查询供应商余额（配套按需读取的 `balance-query` 技能） |
 | `agents`（agent_delegation） | 子 Agent 委托 |
 | `willingness` | 回复意愿设置 |
 
@@ -74,6 +75,7 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 ## 相关配置
 
 - `agent.skill.disabled_skills`：禁用的 skill 名称列表（黑名单），空列表表示全部启用
+- `models.*.balance_query_hint`：各模型的余额查询方式（地址/方法/鉴权/返回字段）；配置后会生成按需读取的 `balance-query` Markdown 技能
 - `agent.file_operation.enabled`：是否启用文件操作 Agent
 
 ## 相关代码文件

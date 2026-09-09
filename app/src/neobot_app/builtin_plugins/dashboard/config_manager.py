@@ -259,6 +259,7 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             "value": _jsonable(value),
             "kind": "scalar",
             "type": _type_name(field_type),
+            "readonly": bool(field_obj.metadata.get("readonly", False)),
         }
         if is_dataclass(target):
             actual_schema = target

@@ -13,7 +13,7 @@ import sys
 # ── Config from app/.env and app/data/config.toml ──
 BASE_URL = "https://api.gptgod.online/v1"
 API_KEY = "***REMOVED***"
-MODEL_NAME = "gpt-image-2"  # from config.toml [models.creator_image_model]
+MODEL_NAME = "gpt-image-2"  # from config.toml [[models.creator_image_models]]
 DEFAULT_IMAGE_SIZE = "512x512"
 
 HEADERS = {

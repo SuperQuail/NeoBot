@@ -1,6 +1,15 @@
 /* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
 
 .config-page { display: flex; flex-direction: column; gap: 16px; }
+
+.btn:disabled,
+.btn.primary:disabled,
+.btn.danger:disabled,
+.btn-sm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
 .cfg-top-tabs { align-items: center; justify-content: space-between; }
 
 .config-card { display: flex; flex-direction: column; gap: 14px; }

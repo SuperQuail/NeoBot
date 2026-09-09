@@ -24,6 +24,8 @@ function ScalarField({ descriptor, value, onChange, disabled }) {
   const [error, setError] = useState('');
   const id = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
   const secret = SECRET_RE.test(descriptor.name);
+  const locked = disabled || descriptor.readonly;
+  const longText = typeof value === 'string' && (value.length > 120 || value.includes('\n'));
 
   if (typeof value === 'boolean' || descriptor.type === 'bool') {
     return (
@@ -50,10 +52,31 @@ function ScalarField({ descriptor, value, onChange, disabled }) {
   }
 
   const numeric = descriptor.type === 'int' || descriptor.type === 'float';
+  if (longText) {
+    return (
+      <div className="cfg-row">
+        <div className="cfg-label">
+          <label htmlFor={id}>{descriptor.name}</label>
+          {descriptor.description && <p>{descriptor.description}</p>}
+        </div>
+        <div className="cfg-control">
+          <textarea
+            id={id}
+            className="input"
+            rows={Math.min(8, Math.max(3, String(value).split('\n').length))}
+            spellCheck={false}
+            disabled={locked}
+            value={value ?? ''}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="cfg-row">
       <div className="cfg-label">
-        <label htmlFor={id}>{descriptor.name}</label>
+        <label htmlFor={id}>{descriptor.name}{descriptor.readonly && <span className="muted small"> · 只读</span>}</label>
         {descriptor.description && <p>{descriptor.description}</p>}
       </div>
       <div className="cfg-control">
@@ -61,7 +84,7 @@ function ScalarField({ descriptor, value, onChange, disabled }) {
           <input
             id={id}
             className="input"
-            disabled={disabled}
+            disabled={locked}
             type={numeric ? 'number' : secret && !reveal ? 'password' : 'text'}
             step={descriptor.type === 'float' ? 'any' : undefined}
             autoComplete="off"

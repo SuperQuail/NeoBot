@@ -22,7 +22,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `agent_model_3` | deepseek-v4-flash（非推理） | 低成本任务（编号 3） |
 | `vision_model` | Qwen/Qwen3-VL-8B-Instruct | 图像识别 |
 | `tts_model` | FunAudioLLM/CosyVoice2-0.5B | 语音合成 |
-| `creator_image_model` | black-forest-labs/FLUX.1-schnell | 生图 |
+| `creator_image_models`（列表） | black-forest-labs/FLUX.1-schnell | 生图（可配置多个模型/供应商） |
 
 ## Agent 模型路由（`agent_model` 配置）
 

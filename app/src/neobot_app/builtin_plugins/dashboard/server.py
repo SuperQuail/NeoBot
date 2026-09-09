@@ -64,8 +64,8 @@ class DashboardServer:
         self.host_commands = host_commands
 
         self.base_path = config.prefix
-        self.manage_plugins = bool(config.manage_plugins)
-        self.allow_remote_manage = bool(config.allow_remote_manage)
+        self._manage_plugins = bool(config.manage_plugins)
+        self._allow_remote_manage = bool(config.allow_remote_manage)
         self.secure_cookies = bool(config.secure_cookies)
         self.trust_proxy = bool(config.trust_proxy_headers)
 
@@ -107,6 +107,33 @@ class DashboardServer:
     @property
     def uptime_seconds(self) -> int:
         return int(max(0.0, time.time() - self._started_at))
+
+    def _live_section(self) -> Any:
+        """读取本体内存中的 [dashboard] 配置，使管理开关在重载后立即生效。"""
+        services = self.services
+        getter = getattr(services, "get", None) if services is not None else None
+        if not callable(getter):
+            return None
+        try:
+            proxy = getter("config")
+        except Exception:
+            return None
+        section = getattr(proxy, "dashboard", None) if proxy is not None else None
+        return section
+
+    @property
+    def manage_plugins(self) -> bool:
+        section = self._live_section()
+        if section is not None:
+            return bool(getattr(section, "manage_plugins", self._manage_plugins))
+        return self._manage_plugins
+
+    @property
+    def allow_remote_manage(self) -> bool:
+        section = self._live_section()
+        if section is not None:
+            return bool(getattr(section, "allow_remote_manage", self._allow_remote_manage))
+        return self._allow_remote_manage
 
     async def start(self) -> str | None:
         app = self._make_app()
