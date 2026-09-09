@@ -69,7 +69,7 @@ class DebugHelper:
             await send_with_timeout(conv_ref, provider_error_message)
         except Exception as send_exc:
             self._logger.error(
-                "Provider unavailable notice failed",
+                "模型不可用提示发送失败",
                 event_id=getattr(event, "event_id", "?"),
                 error=str(send_exc),
             )

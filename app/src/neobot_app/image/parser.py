@@ -104,7 +104,7 @@ class ImageParseService:
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 self._logger.warning(
-                    "image parse wait timed out",
+                    "图片解析等待超时",
                     queue_key=queue_key,
                     timeout_seconds=timeout,
                     task_count=len(tasks),
@@ -245,7 +245,7 @@ class ImageParseService:
             return text if text else None
         except asyncio.TimeoutError:
             self._logger.warning(
-                "vision model call timed out",
+                "视觉模型调用超时",
                 timeout_seconds=60.0,
                 image_bytes_len=len(image_bytes),
             )

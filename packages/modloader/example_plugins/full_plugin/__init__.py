@@ -53,4 +53,4 @@ async def advice_agent(task: str, request: AgentRequest, config: Config) -> str:
 
 @plugin.on_load
 async def loaded(ctx) -> None:
-    ctx.logger.info("full_plugin loaded")
+    ctx.logger.info("full_plugin 已加载")

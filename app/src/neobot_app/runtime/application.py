@@ -308,14 +308,14 @@ class NeoBotApplication(Generic[T]):
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 self._logger.error(
-                    f"{label} interrupted during {phase}",
+                    f"{label} 在 {phase} 阶段被中断",
                     error_type=type(exc).__name__,
                     error=str(exc),
                 )
                 return exc
             if isinstance(exc, asyncio.CancelledError):
                 self._logger.warning(
-                    f"{label} cancelled during {phase}",
+                    f"{label} 在 {phase} 阶段被取消",
                     error_type=type(exc).__name__,
                 )
                 current = asyncio.current_task()
@@ -325,7 +325,7 @@ class NeoBotApplication(Generic[T]):
                     return exc
                 return None
             self._logger.warning(
-                f"{label} failed during {phase}",
+                f"{label} 在 {phase} 阶段失败",
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
@@ -506,5 +506,5 @@ class NeoBotApplication(Generic[T]):
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                self._logger.warning("report generation failed", error=str(exc))
+                self._logger.warning("报告生成失败", error=str(exc))
                 await asyncio.sleep(60)

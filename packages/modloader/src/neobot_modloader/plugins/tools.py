@@ -403,7 +403,7 @@ def _log_tool_failure(context: Any, tool_name: str, exc: Exception) -> None:
         warning = getattr(logger, "warning", None)
         if callable(warning):
             warning(
-                "plugin tool execution failed",
+                "插件工具执行失败",
                 tool=tool_name,
                 error_type=type(exc).__name__,
             )
@@ -412,7 +412,7 @@ def _log_tool_failure(context: Any, tool_name: str, exc: Exception) -> None:
         pass
     try:
         _LOGGER.warning(
-            "plugin tool execution failed: tool=%s error_type=%s",
+            "插件工具执行失败：tool=%s error_type=%s",
             tool_name,
             type(exc).__name__,
         )

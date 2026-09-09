@@ -276,7 +276,7 @@ class SelfHealManager:
             await self._maybe_trigger()
         except Exception as exc:
             # Never let the sink's coroutine fail loudly
-            self._logger.debug("self_heal trigger evaluation failed", error=str(exc))
+            self._logger.debug("自修复触发条件评估失败", error=str(exc))
 
     def _has_traceback(self) -> bool:
         return any(bool(e.get("traceback")) for e in self._buffer)
@@ -445,7 +445,7 @@ class SelfHealManager:
             )
         except Exception as exc:
             self._logger.warning(
-                "self_heal start notification publish failed",
+                "自修复开始通知发布失败",
                 task_id=heal.task_id,
                 error=str(exc),
             )
@@ -600,7 +600,7 @@ class SelfHealManager:
             )
         except Exception as exc:
             self._logger.warning(
-                "self_heal result notification publish failed",
+                "自修复结果通知发布失败",
                 task_id=heal.task_id,
                 error=str(exc),
             )

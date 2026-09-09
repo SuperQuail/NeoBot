@@ -191,7 +191,7 @@ class EventPipeline:
                 pass
             except Exception as exc:
                 self._logger.warning(
-                    f"{label} background task failed",
+                    f"{label} 后台任务失败",
                     error=str(exc),
                     **(context or {}),
                 )
@@ -236,14 +236,14 @@ class EventPipeline:
             )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "inbound pipeline timed out",
+                "入站处理管线超时",
                 timeout_seconds=self._get_dependency_timeout_seconds(),
                 event_type=event.get("post_type"),
                 message_type=event.get("message_type"),
             )
         except Exception as exc:
             self._logger.warning(
-                "inbound pipeline failed",
+                "入站处理管线失败",
                 error=str(exc),
                 event_type=event.get("post_type"),
                 message_type=event.get("message_type"),
@@ -432,7 +432,7 @@ class EventPipeline:
                             self._friend_queue.push(user_id, msg)
                         except Exception as exc:
                             self._logger.debug(
-                                "warmup push message failed",
+                                "预热推送消息失败",
                                 user_id=user_id,
                                 error=str(exc),
                             )
@@ -443,7 +443,7 @@ class EventPipeline:
                     )
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "private chat warmup timed out",
+                    "私聊预热超时",
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
@@ -584,7 +584,7 @@ class EventPipeline:
                 self._post_reply_willing.setdefault(queue_key, []).append(message)
                 return
             self._logger.warning(
-                "stale replying queue state cleared",
+                "已清理过期的回复中队列状态",
                 queue_key=queue_key,
                 kind="group",
             )
@@ -629,7 +629,7 @@ class EventPipeline:
             )
         except Exception as exc:
             self._logger.warning(
-                "archive auto summary record failed",
+                "档案自动总结记录失败",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 error=str(exc),
@@ -654,7 +654,7 @@ class EventPipeline:
                 )
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "fetch replied message timed out",
+                    "获取被回复消息超时",
                     message_id=message_id,
                     queue_key=queue_key,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
@@ -662,7 +662,7 @@ class EventPipeline:
                 continue
             except Exception as exc:
                 self._logger.debug(
-                    "failed to fetch replied message",
+                    "获取被回复消息失败",
                     message_id=message_id,
                     error=str(exc),
                 )
@@ -941,7 +941,7 @@ class EventPipeline:
                 and not self._has_active_reply_pipeline("group", queue_key)
             ):
                 self._logger.warning(
-                    "stale replying queue state cleared",
+                    "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",
                 )
@@ -985,7 +985,7 @@ class EventPipeline:
                 and not self._has_active_reply_pipeline("group", queue_key)
             ):
                 self._logger.warning(
-                    "stale replying queue state cleared",
+                    "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",
                 )
@@ -1038,7 +1038,7 @@ class EventPipeline:
             )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "refresh user profile timed out",
+                "刷新用户资料超时",
                 user_id=message.user_id,
                 timeout_seconds=self._get_dependency_timeout_seconds(),
             )
@@ -1121,7 +1121,7 @@ class EventPipeline:
                     operator_name = profile.nick_name
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "reaction profile lookup timed out",
+                    "表情回应用户资料查询超时",
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
@@ -1228,7 +1228,7 @@ class EventPipeline:
                         return str(nick_name)
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "resolve name profile lookup timed out",
+                    "解析名称时用户资料查询超时",
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
@@ -1251,7 +1251,7 @@ class EventPipeline:
                     )
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "resolve group member name timed out",
+                    "解析群成员名称超时",
                     group_id=group_id,
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
@@ -1268,7 +1268,7 @@ class EventPipeline:
                     return resp.data.nickname or f"QQ:{user_id}"
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "resolve stranger name timed out",
+                    "解析陌生人名称超时",
                     user_id=user_id,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
