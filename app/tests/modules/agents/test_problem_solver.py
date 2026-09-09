@@ -12,6 +12,29 @@ from neobot_app.agents.problem_solver import (
 )
 
 
+# ── 回归: provider 不可用时降级，不抛 AttributeError ──
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str, **_kwargs) -> None:
+        self.warnings.append(message)
+
+
+def test_build_problem_solver_agent_returns_none_without_provider() -> None:
+    """provider 为 None（主模型与解题模型都不可用）时降级返回 None。"""
+    from neobot_app.agents.problem_solver import build_problem_solver_agent
+
+    logger = _RecordingLogger()
+
+    agent = build_problem_solver_agent(None, logger=logger)
+
+    assert agent is None
+    assert logger.warnings and "provider 不可用" in logger.warnings[0]
+
+
 class _FakeHub:
     """假通知中心：publish 返回可配置的 started，记录调用。"""
 

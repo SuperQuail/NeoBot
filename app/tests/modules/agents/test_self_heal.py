@@ -48,6 +48,71 @@ def _make_manager(daily_limit: int = 5, hub_delay: float = 0.0) -> SelfHealManag
     return manager
 
 
+# ── 回归: 主 provider 不可用时的降级（AttributeError 崩溃修复） ──
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str, **_kwargs) -> None:
+        self.warnings.append(message)
+
+    def debug(self, *_a, **_k) -> None:
+        pass
+
+    def info(self, *_a, **_k) -> None:
+        pass
+
+    def error(self, *_a, **_k) -> None:
+        pass
+
+
+def test_build_self_heal_agent_returns_none_without_provider() -> None:
+    """provider 为 None（主模型配置错误）时不得抛 AttributeError，只降级并告警。"""
+    from neobot_app.agents.self_heal import build_self_heal_agent
+
+    logger = _RecordingLogger()
+
+    agent = build_self_heal_agent(None, logger=logger)
+
+    assert agent is None
+    assert logger.warnings and "provider 不可用" in logger.warnings[0]
+
+
+def test_build_self_heal_agent_wiring_skips_without_provider() -> None:
+    """装配入口在 provider 不可用时直接跳过，不触碰 manager。"""
+    from types import SimpleNamespace
+
+    from neobot_app.bootstrap._runtime import build_self_heal_agent_wiring
+
+    class _Factory:
+        def __init__(self) -> None:
+            self.logger = _RecordingLogger()
+
+        def get_logger(self, _name: str) -> _RecordingLogger:
+            return self.logger
+
+    factory = _Factory()
+    manager = _make_manager()
+
+    result = build_self_heal_agent_wiring(
+        config=SimpleNamespace(),
+        manager=manager,
+        provider=None,
+        provider_logger=factory.logger,
+        sandbox_service=None,
+        logger_factory=factory,
+        data_dir=Path("."),
+        source_roots=[],
+        log_file=None,
+    )
+
+    assert result is None
+    assert factory.logger.warnings and "跳过装配" in factory.logger.warnings[0]
+    assert manager._agent is not None  # 未被替换/清空
+
+
 async def test_concurrent_trigger_starts_single_heal() -> None:
     manager = _make_manager(hub_delay=0.05)
     heal_starts = []
