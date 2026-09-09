@@ -429,6 +429,11 @@ class DashboardApi:
         snapshot = self._find_snapshot(control, name)
         if snapshot is None:
             return _json_error(f"插件不存在: {name}", status=404)
+        if name == self.console.plugin_name:
+            return _json_error(
+                "不能从面板内部停用面板自身；请修改 config.toml 的 [dashboard].enabled 后重启 NeoBot",
+                status=400,
+            )
         target_enabled = not bool(snapshot.enabled)
         result = await control.set_enabled(name, target_enabled)
         return _operation_response(result, f"{'已启用' if target_enabled else '已停用'} {name}")

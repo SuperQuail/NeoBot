@@ -1,4 +1,4 @@
-// Login.jsx —— 登录页(移植自旧 login.html)
+// Login.jsx —— 登录页（访问令牌登录，沿用原视觉风格）
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiLogin, checkAuth, getToken, setToken } from '../api/client.js';
@@ -30,12 +30,12 @@ export default function Login() {
     e.preventDefault();
     setError('');
     const t = token.trim();
-    if (!t) return setError('请输入 access_token');
+    if (!t) return setError('请输入访问令牌');
     setBusy(true);
     const r = await apiLogin(t);
     setBusy(false);
     if (!r.ok) return setError(r.error);
-    setToken(r.token);
+    setToken(r.token, r.csrf);
     navigate('/dashboard', { replace: true });
   };
 
@@ -50,7 +50,7 @@ export default function Login() {
       <form className="login-card" onSubmit={onSubmit} autoComplete="off">
         <div className="login-header">
           <div className="login-logo">
-            <img src={import.meta.env.BASE_URL + 'image/icon.webp'} alt="NeoBot Logo" onError={(e) => (e.target.style.display = 'none')} />
+            <img src="./image/icon.webp" alt="NeoBot Logo" onError={(e) => (e.target.style.display = 'none')} />
           </div>
           <div className="login-title">
             <span className="title-main">NeoBot</span>
@@ -61,7 +61,7 @@ export default function Login() {
         {error && <div className="login-err">{error}</div>}
 
         <div className="login-field">
-          <label htmlFor="token">Access Token</label>
+          <label htmlFor="token">访问令牌</label>
           <div className="login-input-wrap">
             <svg className="login-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
@@ -70,12 +70,13 @@ export default function Login() {
               id="token"
               type="password"
               required
-              placeholder="粘贴启动日志里的 Access Token"
+              placeholder="粘贴启动日志里的访问令牌"
               value={token}
               onChange={(e) => setTok(e.target.value)}
               autoFocus
             />
           </div>
+          <p className="muted small">令牌来自 config.toml 的 dashboard.access_token，或数据目录 plugins_data/dashboard/access_token.txt</p>
         </div>
 
         <button type="submit" className="login-btn" disabled={busy}>

@@ -1,0 +1,5 @@
+fix(dashboard): 面板自身禁止在内部停用/重载，登录页补充 CSRF
+
+- /api/plugins/{name}/toggle 拒绝停用面板自身（会中断当前连接）
+- 前端登录后保存 CSRF 令牌，写操作自动携带
+- 重新构建前端产物
