@@ -15,10 +15,12 @@ from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import DefaultServiceRegistry, PluginHostFacade
 from neobot_modloader.installer import (
+    PROXY_MODES,
     PluginInstallError,
     PluginInstallResult,
     PluginInstaller,
     PluginUpdateCheck,
+    ProxySettings,
     RepoSpec,
     compare_versions,
 )
@@ -59,12 +61,14 @@ __all__ = [
     "DiscoveredPlugin",
     "FilesystemPluginLoader",
     "OFFICIAL_SOURCE",
+    "PROXY_MODES",
     "PluginInstallError",
     "PluginInstallResult",
     "PluginInstaller",
     "PluginStateEntry",
     "PluginStateStore",
     "PluginUpdateCheck",
+    "ProxySettings",
     "RepoSpec",
     "THIRD_PARTY_SOURCE",
     "compare_versions",
