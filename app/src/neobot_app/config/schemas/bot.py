@@ -205,6 +205,22 @@ class DeepSeekModelSettings(ModelSettings):
     )
 
 
+#: 模型类型：决定面板中的用途分组与默认描述（不限制调用方引用）
+MODEL_TYPE_LABELS: Dict[str, str] = {
+    "chat": "对话 / 推理模型",
+    "image": "生图模型",
+    "vision": "图像识别模型",
+    "tts": "语音（TTS）模型",
+    "other": "其它",
+}
+
+
+def normalize_model_type(value: Any) -> str:
+    """归一模型类型；未知值原样保留（便于配置里使用自定义类型）。"""
+    text = str(value or "").strip().lower()
+    return text or "chat"
+
+
 @dataclass
 class ModelDefinition:
     """模型库中的一个模型；调用方通过 key 引用它。"""
@@ -215,9 +231,19 @@ class ModelDefinition:
             "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线"
         },
     )
+    model_type: str = field(
+        default="chat",
+        metadata={
+            "description": "模型类型：用于面板分组与筛选（对话 / 生图 / 图像识别 / 语音）",
+            "options": list(MODEL_TYPE_LABELS),
+            "options_strict": True,
+        },
+    )
     description: str = field(
-        default="主对话模型",
-        metadata={"description": "模型用途说明（Agent 选择生图模型时也会参考）"},
+        default="",
+        metadata={
+            "description": "模型用途说明（留空时按类型自动生成；Agent 选择生图模型时也会参考）"
+        },
     )
     provider: str = field(
         default="DeepSeek",
@@ -253,6 +279,13 @@ class ModelDefinition:
 
     def __post_init__(self) -> None:
         self.key = normalize_model_key(self.key)
+        self.model_type = normalize_model_type(self.model_type)
+        if not str(self.description or "").strip():
+            self.description = MODEL_TYPE_LABELS.get(self.model_type, "模型")
+
+    @property
+    def type_label(self) -> str:
+        return MODEL_TYPE_LABELS.get(self.model_type, self.model_type)
 
     @property
     def display_name(self) -> str:
@@ -266,6 +299,7 @@ ModelRegistration = ModelDefinition
 def _default_primary_chat_model() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-pro",
+        model_type="chat",
         description="主对话模型（Agent模型编号0）",
         provider="DeepSeek",
         model_name="deepseek-v4-pro",
@@ -290,6 +324,7 @@ def _default_primary_chat_model() -> "ModelDefinition":
 def _default_agent_model_1() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-max",
+        model_type="chat",
         description="Agent模型编号1：deepseek-v4-flash max 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -314,6 +349,7 @@ def _default_agent_model_1() -> "ModelDefinition":
 def _default_agent_model_2() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-high",
+        model_type="chat",
         description="Agent模型编号2：deepseek-v4-flash high 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -338,6 +374,7 @@ def _default_agent_model_2() -> "ModelDefinition":
 def _default_agent_model_3() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-off",
+        model_type="chat",
         description="Agent模型编号3：deepseek-v4-flash 非推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -362,6 +399,7 @@ def _default_agent_model_3() -> "ModelDefinition":
 def _default_vision_model() -> "ModelDefinition":
     return ModelDefinition(
         key="qwen3-vl-8b",
+        model_type="vision",
         description="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
@@ -381,6 +419,7 @@ def _default_vision_model() -> "ModelDefinition":
 def _default_tts_model() -> "ModelDefinition":
     return ModelDefinition(
         key="cosyvoice2",
+        model_type="tts",
         description="语音模型",
         provider="硅基流动",
         model_name="FunAudioLLM/CosyVoice2-0.5B",
@@ -399,6 +438,7 @@ def _default_tts_model() -> "ModelDefinition":
 def _default_creator_image_model() -> "ModelDefinition":
     return ModelDefinition(
         key="flux-schnell",
+        model_type="image",
         description="创作者Agent生图模型（默认）",
         provider="SiliconFlow",
         model_name="black-forest-labs/FLUX.1-schnell",

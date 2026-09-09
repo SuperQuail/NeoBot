@@ -303,6 +303,7 @@ class Config:
                     settings,
                     bool(getattr(model_config, "native_vision", False)),
                     bool(getattr(model_config, "use_system_proxy", False)),
+                    str(getattr(model_config, "model_type", "chat") or "chat"),
                 )
             )
 
@@ -327,6 +328,7 @@ class Config:
             settings,
             native_vision,
             use_system_proxy,
+            model_type,
         ) in pending:
             registry.register(
                 RegisteredModel(
@@ -340,6 +342,7 @@ class Config:
                     settings=settings,
                     native_vision=native_vision,
                     use_system_proxy=use_system_proxy,
+                    model_type=model_type,
                 )
             )
             registered_count += 1

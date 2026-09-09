@@ -1024,6 +1024,18 @@ class EnvFileManager:
 
 
 #: 角色 -> 面板显示名
+#: 角色 -> 期望的模型类型（面板按类型排序/标注，不强制限制）
+ROLE_MODEL_TYPES: dict[str, str] = {
+    "primary_chat_model": "chat",
+    "agent_model_1": "chat",
+    "agent_model_2": "chat",
+    "agent_model_3": "chat",
+    "vision_model": "vision",
+    "tts_model": "tts",
+    "creator_image_models": "image",
+}
+
+
 ROLE_LABELS: dict[str, str] = {
     "primary_chat_model": "主对话模型（Agent 编号 0）",
     "agent_model_1": "Agent 模型编号 1",
@@ -1074,6 +1086,14 @@ def models_view(config: Any = None) -> dict[str, Any]:
                     "description": str(getattr(definition, "description", "") or ""),
                     "provider": str(getattr(definition, "provider", "") or ""),
                     "model_name": str(getattr(definition, "model_name", "") or ""),
+                    "model_type": str(getattr(definition, "model_type", "chat") or "chat"),
+                    "type_label": str(
+                        getattr(definition, "type_label", "")
+                        or MODEL_TYPE_LABELS.get(
+                            str(getattr(definition, "model_type", "chat") or "chat"),
+                            str(getattr(definition, "model_type", "") or ""),
+                        )
+                    ),
                     "native_vision": bool(getattr(definition, "native_vision", False)),
                     "use_system_proxy": bool(
                         getattr(definition, "use_system_proxy", False)
@@ -1142,7 +1162,11 @@ def models_view(config: Any = None) -> dict[str, Any]:
             }
         )
 
-    from neobot_app.config.schemas.bot import ModelAssignments, ModelDefinition
+    from neobot_app.config.schemas.bot import (
+        MODEL_TYPE_LABELS,
+        ModelAssignments,
+        ModelDefinition,
+    )
 
     provider_names: set[str] = set(EnvConfig.PLATFORM_NAME_ALIASES.values())
     for field_obj in fields(EnvConfig):
@@ -1181,6 +1205,10 @@ def models_view(config: Any = None) -> dict[str, Any]:
             "label": ROLE_LABELS.get(role, role),
             "multi": False,
             "required": role not in ("vision_model", "tts_model"),
+            "model_type": ROLE_MODEL_TYPES.get(role, "chat"),
+            "model_type_label": MODEL_TYPE_LABELS.get(
+                ROLE_MODEL_TYPES.get(role, "chat"), ""
+            ),
         }
         for role in ModelAssignments.SINGLE_ROLES
     ]
@@ -1190,6 +1218,10 @@ def models_view(config: Any = None) -> dict[str, Any]:
             "label": ROLE_LABELS["creator_image_models"],
             "multi": True,
             "required": False,
+            "model_type": ROLE_MODEL_TYPES["creator_image_models"],
+            "model_type_label": MODEL_TYPE_LABELS.get(
+                ROLE_MODEL_TYPES["creator_image_models"], ""
+            ),
         }
     )
 
@@ -1202,6 +1234,8 @@ def models_view(config: Any = None) -> dict[str, Any]:
         "entry_schema": describe_dataclass(ModelDefinition, None),
         "provider_options": sorted(provider_names, key=str.casefold),
         "model_name_options": model_name_options,
+        "model_type_labels": dict(MODEL_TYPE_LABELS),
+        "role_model_types": dict(ROLE_MODEL_TYPES),
         "registered": registered,
         "platforms": sorted(platforms.values(), key=lambda item: item["name"]),
     }

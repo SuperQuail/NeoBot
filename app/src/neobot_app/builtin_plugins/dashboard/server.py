@@ -244,6 +244,7 @@ class DashboardServer:
         self._route(app, "POST", "/api/config/models/library", self.api.models_library_save)
         self._route(app, "POST", "/api/config/models/assignments", self.api.models_assignments_save)
         self._route(app, "POST", "/api/config/models/test", self.api.models_test)
+        self._route(app, "POST", "/api/config/models/provider-models", self.api.models_provider_models)
         self._route(app, "GET", "/api/config/env", self.api.env_get)
         self._route(app, "POST", "/api/config/env", self.api.env_save)
         self._route(app, "POST", "/api/config/env/platform", self.api.env_platform_add)

@@ -48,6 +48,7 @@ export const api = {
   modelsLibrarySave: (body) => postJSON('/api/config/models/library', body),
   modelsAssignmentsSave: (body) => postJSON('/api/config/models/assignments', body),
   modelsTest: (body) => postJSON('/api/config/models/test', body),
+  modelsProviderModels: (body) => postJSON('/api/config/models/provider-models', body),
   env: () => getResult('/api/config/env'),
   envSave: (body) => postJSON('/api/config/env', body),
   envAddPlatform: (body) => postJSON('/api/config/env/platform', body),

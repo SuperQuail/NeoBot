@@ -60,6 +60,8 @@ class RegisteredModel:
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
     native_vision: bool = False
+    #: 模型类型（chat / image / vision / tts / other），仅用于展示与分组
+    model_type: str = "chat"
     #: 是否跟随系统/环境变量代理；默认 False = 直连
     use_system_proxy: bool = False
 

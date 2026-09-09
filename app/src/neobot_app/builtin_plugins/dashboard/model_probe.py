@@ -59,6 +59,95 @@ def _model_matches(target: str, candidate: str) -> bool:
     return left == right or right.endswith("/" + left) or left.endswith("/" + right)
 
 
+@dataclass(slots=True)
+class ProviderModelList:
+    """供应商可用模型列表。"""
+
+    ok: bool
+    models: list[str] = field(default_factory=list)
+    status: int | None = None
+    latency_ms: int | None = None
+    url: str = ""
+    message: str = ""
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "models": list(self.models),
+            "status": self.status,
+            "latency_ms": self.latency_ms,
+            "url": self.url,
+            "message": self.message,
+            "detail": self.detail,
+        }
+
+
+async def list_provider_models(
+    *,
+    base_url: str,
+    api_key: str = "",
+    use_system_proxy: bool = False,
+    timeout: float = 20.0,
+) -> ProviderModelList:
+    """读取供应商的 /models 列表（部分供应商不支持时返回空列表与原因）。"""
+    url = _endpoint(base_url, "models")
+    if not url:
+        return ProviderModelList(ok=False, message="供应商未配置 URL")
+    headers = {"Authorization": f"Bearer {api_key}"} if str(api_key or "").strip() else {}
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(float(timeout), connect=min(float(timeout), 10.0)),
+            trust_env=bool(use_system_proxy),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.ConnectError as exc:
+        return ProviderModelList(
+            ok=False, url=url, message="无法连接供应商（DNS/网络/代理问题）", detail=str(exc)[:300]
+        )
+    except httpx.TimeoutException:
+        return ProviderModelList(ok=False, url=url, message=f"连接超时（{timeout:.0f}s）")
+    except Exception as exc:  # noqa: BLE001
+        return ProviderModelList(
+            ok=False, url=url, message=f"拉取失败: {type(exc).__name__}", detail=str(exc)[:300]
+        )
+    latency = int((time.perf_counter() - started) * 1000)
+    if response.status_code in (401, 403):
+        return ProviderModelList(
+            ok=False, status=response.status_code, latency_ms=latency, url=url,
+            message="鉴权失败（请检查供应商 APIKey）", detail=response.text[:300],
+        )
+    if response.status_code >= 400:
+        return ProviderModelList(
+            ok=False, status=response.status_code, latency_ms=latency, url=url,
+            message=f"供应商返回 HTTP {response.status_code}", detail=response.text[:300],
+        )
+    try:
+        payload = response.json()
+    except Exception:
+        return ProviderModelList(
+            ok=False, status=response.status_code, latency_ms=latency, url=url,
+            message="响应不是 JSON，无法解析模型列表", detail=response.text[:300],
+        )
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    models: list[str] = []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                name = str(item.get("id") or item.get("name") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name and name not in models:
+                models.append(name)
+    models.sort(key=str.casefold)
+    return ProviderModelList(
+        ok=True, models=models, status=response.status_code, latency_ms=latency, url=url,
+        message=f"读取到 {len(models)} 个模型" if models else "供应商未返回模型列表",
+    )
+
+
 async def probe_model(
     *,
     provider: str,

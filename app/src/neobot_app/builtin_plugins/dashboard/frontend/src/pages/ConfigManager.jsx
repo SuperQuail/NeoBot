@@ -713,6 +713,9 @@ function ModelsPanel() {
   const [busy, setBusy] = useState('');
   const [editing, setEditing] = useState(null);
   const [probe, setProbe] = useState(null);
+  const [providerModels, setProviderModels] = useState([]);
+  const [pulling, setPulling] = useState('');
+  const pulledRef = useRef('');
 
   const applyData = useCallback((payload) => {
     setData(payload);
@@ -740,13 +743,14 @@ function ModelsPanel() {
 
   const startEdit = (item) => setEditing({ isNew: false, draft: structuredClone(item.entry || {}) });
 
-  const save = async () => {
+  const save = async (reload = false) => {
     if (!editing) return;
     setBusy('save');
     const result = await api.modelsLibrarySave({
       action: 'upsert',
       entry: editing.draft,
       revision: data?.revision,
+      reload,
     });
     setBusy('');
     if (!result.ok) {
@@ -754,8 +758,9 @@ function ModelsPanel() {
       return;
     }
     if (result.data?.models) applyData(result.data.models);
+    else await read();
     setEditing(null);
-    toast('模型已保存；重载配置后生效', 'ok');
+    toast(result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效'), 'ok');
   };
 
   const remove = async (item) => {
@@ -775,6 +780,25 @@ function ModelsPanel() {
     toast('已删除 ' + item.key, 'ok');
   };
 
+  const pullProviderModels = useCallback(async (provider, useSystemProxy) => {
+    const name = String(provider || '').trim();
+    if (!name) return;
+    setPulling(name);
+    const result = await api.modelsProviderModels({
+      provider: name,
+      use_system_proxy: !!useSystemProxy,
+    });
+    setPulling('');
+    const payload = result.data || {};
+    if (!result.ok || !payload.ok) {
+      setProviderModels([]);
+      toast(payload.message || result.error || '拉取供应商模型列表失败', 'err');
+      return;
+    }
+    setProviderModels(payload.models || []);
+    toast('已拉取 ' + (payload.models || []).length + ' 个模型', 'ok');
+  }, []);
+
   const runProbe = async (target) => {
     const label = target.key || target.entry?.key || 'draft';
     setBusy('test:' + label);
@@ -793,16 +817,33 @@ function ModelsPanel() {
     });
   };
 
+  const modelNameOptions = useMemo(() => {
+    const merged = [...(data?.model_name_options || []), ...providerModels];
+    return [...new Set(merged.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  }, [data, providerModels]);
+
   const fields = useMemo(() => {
     if (!editing) return [];
     const bound = bindValues(schema, editing.draft).map((field) => {
       if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
-      if (field.name === 'model_name') return { ...field, options: data?.model_name_options || [] };
+      if (field.name === 'model_name') return { ...field, options: modelNameOptions };
+      if (field.name === 'model_type') return { ...field, options: Object.keys(data?.model_type_labels || {}) };
       return field;
     });
     if (editing.isNew) return bound;
     return bound.map((field) => (field.name === 'key' ? { ...field, readonly: true } : field));
-  }, [editing, schema, data]);
+  }, [editing, schema, data, modelNameOptions]);
+
+  // 打开编辑器或切换供应商时，自动拉取该供应商的模型列表（失败不阻塞）
+  useEffect(() => {
+    if (!editing) return;
+    const provider = String(editing.draft?.provider || '').trim();
+    if (!provider) return;
+    const token = provider + '|' + (editing.draft?.use_system_proxy ? '1' : '0');
+    if (pulledRef.current === token) return;
+    pulledRef.current = token;
+    pullProviderModels(provider, editing.draft?.use_system_proxy);
+  }, [editing, pullProviderModels]);
 
   return (
     <section className="card config-card">
@@ -824,22 +865,28 @@ function ModelsPanel() {
       {library.length > 0 && (
         <table className="model-table">
           <thead>
-            <tr><th>key</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
+            <tr><th>key</th><th>类型</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody>
             {library.map((item) => (
               <tr key={item.key}>
                 <td><code>{item.key}</code></td>
+                <td><span className="tag info">{item.type_label || item.model_type || '—'}</span></td>
                 <td>{item.description || '—'}</td>
                 <td>
                   <div>{item.provider}</div>
                   <div className="muted small">{item.model_name}</div>
                 </td>
                 <td>
-                  <span className={'tag ' + (item.key_configured ? 'ok' : 'err')}>
-                    {item.key_configured ? 'Key 已配置' : '缺 APIKey'}
+                  <span className={'tag ' + (item.key_configured ? 'ok' : 'err')}
+                    title={'API Key 来自供应商环境变量 ' + item.provider + '_APIKey，模型本身不保存密钥'}>
+                    {item.key_configured ? '供应商 Key 已配置' : '供应商缺 Key'}
                   </span>
-                  {!item.url_configured && <span className="tag err">缺 URL</span>}
+                  {!item.url_configured && (
+                    <span className="tag err" title={'请在环境变量中配置 ' + item.provider + '_URL'}>
+                      供应商缺 URL
+                    </span>
+                  )}
                   {item.registered && <span className="tag ok">已注册</span>}
                   {item.assigned && <span className="tag info">已引用</span>}
                   {item.native_vision && <span className="tag info">原生视觉</span>}
@@ -872,13 +919,20 @@ function ModelsPanel() {
               onChange={(path, value) => setEditing((previous) => ({ ...previous, draft: setPath(previous.draft, path, value) }))}
             />
             <div className="modal-actions">
+              <button className="btn" disabled={!!busy || !editing.draft?.provider}
+                onClick={() => pullProviderModels(editing.draft?.provider, editing.draft?.use_system_proxy)}>
+                <Icon name="download" /> {pulling ? '拉取中…' : '拉取供应商模型'}
+              </button>
               <button className="btn" disabled={!!busy}
                 onClick={() => runProbe({ entry: editing.draft, key: editing.draft?.key })}>
                 {busy === 'test:' + (editing.draft?.key || 'draft') ? '测试中…' : '测试连通性'}
               </button>
               <button className="btn" disabled={!!busy} onClick={() => setEditing(null)}>取消</button>
-              <button className="btn primary" disabled={!!busy} onClick={save}>
-                <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存模型'}
+              <button className="btn" disabled={!!busy} onClick={() => save(false)}>
+                <Icon name="save" /> {busy === 'save' ? '保存中…' : '仅保存'}
+              </button>
+              <button className="btn primary" disabled={!!busy} onClick={() => save(true)}>
+                <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
               </button>
             </div>
           </>
@@ -953,7 +1007,19 @@ function AssignPanel() {
   const labelOf = (key) => {
     const item = library.find((entry) => entry.key === key);
     if (!item) return key + '（模型库中不存在）';
-    return item.key + ' · ' + (item.description || item.model_name || item.provider);
+    const type = item.type_label ? '[' + item.type_label + '] ' : '';
+    return type + item.key + ' · ' + (item.description || item.model_name || item.provider);
+  };
+
+  /** 与该角色类型匹配的模型排在前面，其余仍可选。 */
+  const sortedLibrary = (role) => {
+    const expected = data?.role_model_types?.[role] || '';
+    return [...library].sort((left, right) => {
+      const leftMatch = left.model_type === expected ? 0 : 1;
+      const rightMatch = right.model_type === expected ? 0 : 1;
+      if (leftMatch !== rightMatch) return leftMatch - rightMatch;
+      return left.key.localeCompare(right.key);
+    });
   };
 
   const save = async () => {
@@ -994,13 +1060,14 @@ function AssignPanel() {
             <div className="assign-label">
               <strong>{meta.label}</strong>
               <code className="muted small">{meta.role}</code>
+              {meta.model_type_label && <span className="tag info">{meta.model_type_label}</span>}
               {meta.required && <span className="meta-chip update-available">必须</span>}
             </div>
             <div className="assign-control">
               {meta.multi ? (
                 <div className="assign-choices">
                   {library.length === 0 && <span className="muted small">模型库为空</span>}
-                  {library.map((item) => {
+                  {sortedLibrary(meta.role).map((item) => {
                     const checked = (draft.creator_image_models || []).includes(item.key);
                     return (
                       <label className="assign-choice" key={item.key}>
@@ -1032,7 +1099,7 @@ function AssignPanel() {
                 >
                   {!meta.required && <option value="">（不指定）</option>}
                   {meta.required && !draft[meta.role] && <option value="">（请选择）</option>}
-                  {library.map((item) => (
+                  {sortedLibrary(meta.role).map((item) => (
                     <option key={item.key} value={item.key}>{labelOf(item.key)}</option>
                   ))}
                 </select>

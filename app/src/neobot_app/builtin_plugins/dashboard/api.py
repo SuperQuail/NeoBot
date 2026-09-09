@@ -22,6 +22,7 @@ from .config_manager import (
     describe_pydantic_model,
     models_view,
 )
+from .model_probe import list_provider_models
 from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
 from neobot_app.panel_auth import PasswordPolicyError
 
@@ -1103,26 +1104,76 @@ class DashboardApi:
         return _json_ok(document)
 
     def _models_config(self) -> Any:
-        """优先用运行中的配置，其次用配置文件解析结果（面板早期也能读取模型库）。"""
+        """读取模型库：以 config.toml 为准，读不到时退回运行中的配置。
+
+        面板编辑的是文件，若优先用运行中的配置对象，保存后（未重载）列表不会更新，
+        刷新页面也看不到新模型，因此这里以文件解析结果为主。
+        """
+        try:
+            instance = self._config_manager().instance()
+            if hasattr(instance, "models"):
+                return instance
+        except Exception as exc:
+            self.logger.warning(f"读取 config.toml 失败，改用运行中配置: {exc}")
         config_obj = self._config_proxy()
         if config_obj is not None and hasattr(config_obj, "models"):
             return config_obj
-        try:
-            return self._config_manager().instance()
-        except Exception:
-            return None
+        return None
 
     async def config_models(self, request: web.Request) -> web.Response:
         try:
             payload = models_view(self._models_config())
         except Exception as exc:
             return _json_error(f"读取模型注册表失败: {exc}", status=500)
+        # 把 .env 里的自定义平台合并进供应商候选（面板添加供应商后立即可选）
+        try:
+            env_platforms = {str(item.get("name") or "") for item in self._env_manager().platforms()}
+            merged = set(payload.get("provider_options") or []) | {name for name in env_platforms if name}
+            payload["provider_options"] = sorted(merged, key=str.casefold)
+            payload["platforms"] = self._env_manager().platforms()
+        except Exception as exc:
+            self.logger.warning(f"读取平台列表失败: {exc}")
         payload["can_manage"] = self.console.manage_plugins
         try:
             payload["revision"] = self._config_manager().revision()
         except Exception:
             payload["revision"] = ""
         return _json_ok(payload)
+
+    async def models_provider_models(self, request: web.Request) -> web.Response:
+        """拉取某个供应商的可用模型列表（供模型编辑时选择）。"""
+        denied = self._require_manage(request, action="拉取供应商模型列表")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        from neobot_app.config.schemas.env import EnvConfig
+
+        provider = str(payload.get("provider") or "").strip()
+        if not provider:
+            return _json_error("请先选择供应商", status=400)
+        platform = EnvConfig.get_api_platform_config(provider)
+        if not platform or not platform.url:
+            return _json_error(f"供应商 {provider} 未配置 URL（请在环境变量中填写 {provider}_URL）", status=400)
+        try:
+            timeout = float(payload.get("timeout") or 20.0)
+        except (TypeError, ValueError):
+            timeout = 20.0
+        result = await list_provider_models(
+            base_url=platform.url or "",
+            api_key=platform.api_key or "",
+            use_system_proxy=bool(payload.get("use_system_proxy", False)),
+            timeout=max(3.0, min(timeout, 60.0)),
+        )
+        data = result.to_dict()
+        data["provider"] = provider
+        self.logger.info(
+            f"面板拉取供应商模型 ip={self.console.request_ip(request)} "
+            f"provider={provider} ok={result.ok} count={len(result.models)}"
+        )
+        return _json_ok(data)
 
     async def models_library_save(self, request: web.Request) -> web.Response:
         """模型库条目新增/更新/删除（只改 config.toml 的 [models.registry]）。"""
