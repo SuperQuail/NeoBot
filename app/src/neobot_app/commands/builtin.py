@@ -1,4 +1,4 @@
-"""内置命令:/help /reboot /add_admin /del_admin。"""
+"""内置命令:/help /reboot /add_admin /del_admin /sleep /awake /set_password。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,13 @@ from neobot_app.commands.model import (
     Command,
     CommandContext,
     permission_name,
+)
+from neobot_app.panel_auth import (
+    MAX_PASSWORD_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    PasswordPolicyError,
+    generate_password,
+    get_panel_password_store,
 )
 from neobot_app.runtime.sleep_service import parse_sleep_duration
 
@@ -79,6 +86,20 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             permission=PERM_SUB_ADMIN,
             params=(),
             handler=_handle_awake,
+        ),
+        Command(
+            name="set_password",
+            description="设置/重置网页面板登录密码(仅限私聊,避免泄露)",
+            permission=PERM_SUPER_ADMIN,
+            usage="[新密码]",
+            params=(
+                (
+                    "新密码",
+                    f"可选。留空则自动生成一个随机密码并回复给你;"
+                    f"自定义密码需 {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} 个字符,首尾不能有空格",
+                ),
+            ),
+            handler=_handle_set_password,
         ),
     ]
 
@@ -249,6 +270,40 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     if result.startswith("错误"):
         return result
     return f"已{action}次级管理员 QQ {target_qq}。\n当前次级管理员: {'、'.join(str(qq) for qq in sorted(current)) or '(无)'}"
+
+
+async def _handle_set_password(ctx: CommandContext) -> str:
+    """设置/重置网页面板登录密码(仅私聊,仅超级管理员)。"""
+    if ctx.kind != "private":
+        return (
+            "为避免密码泄露,请在私聊中使用该命令:"
+            "私聊发送 /set_password <新密码>(留空则自动生成)"
+        )
+
+    store = get_panel_password_store()
+    supplied = (ctx.raw_args or "").strip()
+    if supplied:
+        password = supplied
+        generated = False
+    else:
+        password = generate_password()
+        generated = True
+
+    try:
+        store.set_password(password)
+    except PasswordPolicyError as exc:
+        return (
+            f"密码不符合要求:{exc}\n"
+            f"用法:/set_password <新密码>;留空则由 Bot 生成随机密码"
+        )
+
+    lines = ["网页面板登录密码已更新,面板中已登录的会话已立即失效。"]
+    if generated:
+        lines.append(f"自动生成的密码:{password}")
+        lines.append("请立即保存;如需自定义,可再次发送 /set_password <新密码>。")
+    else:
+        lines.append("新密码已生效,请妥善保存。")
+    return "\n".join(lines)
 
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:

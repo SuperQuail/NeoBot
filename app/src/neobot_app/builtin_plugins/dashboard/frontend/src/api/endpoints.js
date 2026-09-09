@@ -3,7 +3,8 @@ import { getJSON, getResult, postJSON } from './client.js';
 
 export const api = {
   // 鉴权
-  login: (token) => postJSON('/api/auth/login', { access_token: token }),
+  login: (password) => postJSON('/api/auth/login', { password }),
+  setup: (password, confirm) => postJSON('/api/auth/setup', { password, confirm }),
   logout: () => postJSON('/api/auth/logout'),
   me: () => getResult('/api/auth/me'),
 

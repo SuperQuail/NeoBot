@@ -15,6 +15,9 @@ import pytest
 
 from neobot_app.builtin_plugins.dashboard.config import DashboardConfig
 from neobot_app.builtin_plugins.dashboard.server import DashboardServer
+from neobot_app.panel_auth import PanelPasswordStore
+
+PASSWORD = "NeoBot-Panel-2026"
 
 
 class _NullLogger:
@@ -99,8 +102,12 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-@pytest.fixture()
-async def panel(tmp_path: Path):
+async def _start_panel(
+    tmp_path: Path,
+    *,
+    password: str | None = PASSWORD,
+    trust_proxy: bool = False,
+):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'version = "0.5.0"\n[dashboard]\nenabled = true\nport = 9981\n', encoding="utf-8"
@@ -108,13 +115,20 @@ async def panel(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text("DeepSeek_APIKey=sk-super-secret\n", encoding="utf-8")
 
+    data_dir = tmp_path / "data"
+    if password is not None:
+        PanelPasswordStore(data_dir / "auth.json").set_password(password)
+
     control = _FakeControl()
     server = DashboardServer(
         plugin_name="dashboard",
         config=DashboardConfig(
-            enabled=True, host="127.0.0.1", port=_free_port(), access_token="test-token"
+            enabled=True,
+            host="127.0.0.1",
+            port=_free_port(),
+            trust_proxy_headers=trust_proxy,
         ),
-        data_dir=tmp_path / "data",
+        data_dir=data_dir,
         logger=_NullLogger(),
         adapter=_FakeAdapter(),
         plugin_control=control,
@@ -124,19 +138,22 @@ async def panel(tmp_path: Path):
         backup_dir=tmp_path / "backup",
     )
     await server.start()
-    base = f"http://127.0.0.1:{server.bound_port}"
+    return server, control, f"http://127.0.0.1:{server.bound_port}", config_path
+
+
+@pytest.fixture()
+async def panel(tmp_path: Path):
+    server, control, base, config_path = await _start_panel(tmp_path)
     try:
         yield server, control, base, config_path
     finally:
         await server.stop()
 
 
-async def _login(base: str) -> tuple[str, str]:
+async def _login(base: str, password: str = PASSWORD) -> tuple[str, str]:
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            base + "/api/auth/login", json={"access_token": "test-token"}
-        )
-    assert response.status_code == 200
+        response = await client.post(base + "/api/auth/login", json={"password": password})
+    assert response.status_code == 200, response.text
     payload = response.json()
     return payload["token"], payload["csrf_token"]
 
@@ -153,15 +170,106 @@ async def test_healthz_and_auth_status(panel) -> None:
     assert status.json()["authenticated"] is False
 
 
-async def test_login_rejects_wrong_token(panel) -> None:
+async def test_login_rejects_wrong_password(panel) -> None:
     _, _, base, _ = panel
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            base + "/api/auth/login", json={"access_token": "wrong"}
+            base + "/api/auth/login", json={"password": "wrong-password"}
         )
 
     assert response.status_code == 401
     assert response.json()["ok"] is False
+
+
+async def test_status_reports_password_configured(panel) -> None:
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/auth/status")
+
+    payload = response.json()
+    assert payload["configured"] is True
+    assert payload["setup_required"] is False
+    assert payload["loopback"] is True
+
+
+async def test_unconfigured_panel_blocks_external_access(tmp_path: Path) -> None:
+    """未设置密码时，外网来源必须被拒绝，且提示设置方式。"""
+    server, _, base, _ = await _start_panel(
+        tmp_path, password=None, trust_proxy=True
+    )
+    try:
+        headers = {"X-Forwarded-For": "203.0.113.9"}
+        async with httpx.AsyncClient() as client:
+            status = await client.get(base + "/api/auth/status", headers=headers)
+            overview = await client.get(base + "/api/overview", headers=headers)
+            login = await client.post(
+                base + "/api/auth/login", json={"password": PASSWORD}, headers=headers
+            )
+            setup = await client.post(
+                base + "/api/auth/setup",
+                json={"password": PASSWORD, "confirm": PASSWORD},
+                headers=headers,
+            )
+
+        assert status.json()["loopback"] is False
+        assert status.json()["setup_allowed"] is False
+        assert overview.status_code == 403
+        assert "外网" in overview.json()["error"]
+        assert login.status_code == 403
+        assert setup.status_code == 403
+        assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
+async def test_unconfigured_panel_allows_loopback_setup(tmp_path: Path) -> None:
+    """本机访问未配置密码的面板时，只允许进入设置流程。"""
+    server, _, base, _ = await _start_panel(tmp_path, password=None)
+    try:
+        async with httpx.AsyncClient() as client:
+            status = await client.get(base + "/api/auth/status")
+            blocked = await client.get(base + "/api/overview")
+            weak = await client.post(
+                base + "/api/auth/setup", json={"password": "short", "confirm": "short"}
+            )
+            mismatch = await client.post(
+                base + "/api/auth/setup",
+                json={"password": PASSWORD, "confirm": PASSWORD + "x"},
+            )
+            ok = await client.post(
+                base + "/api/auth/setup",
+                json={"password": PASSWORD, "confirm": PASSWORD},
+            )
+            overview = await client.get(
+                base + "/api/overview", headers={"X-Token": ok.json()["token"]}
+            )
+
+        assert status.json()["setup_allowed"] is True
+        assert blocked.status_code == 403
+        assert blocked.json()["setup_required"] is True
+        assert weak.status_code == 400
+        assert mismatch.status_code == 400
+        assert ok.status_code == 200
+        assert server.passwords.verify(PASSWORD) is True
+        assert overview.status_code == 200
+    finally:
+        await server.stop()
+
+
+async def test_password_change_invalidates_existing_sessions(panel) -> None:
+    server, _, base, _ = panel
+    token, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        before = await client.get(base + "/api/overview", headers={"X-Token": token})
+        server.passwords.set_password("NeoBot-Rotated-2026")
+        after = await client.get(base + "/api/overview", headers={"X-Token": token})
+        relogin = await client.post(
+            base + "/api/auth/login", json={"password": "NeoBot-Rotated-2026"}
+        )
+
+    assert before.status_code == 200
+    assert after.status_code == 401
+    assert relogin.status_code == 200
 
 
 async def test_requires_authentication(panel) -> None:

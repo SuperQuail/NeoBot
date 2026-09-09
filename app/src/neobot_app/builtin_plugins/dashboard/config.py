@@ -15,7 +15,6 @@ class DashboardConfig(BaseModel):
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = Field(default=9981, ge=1, le=65535)
-    access_token: str = ""
     base_path: str = ""
     manage_plugins: bool = True
     allow_remote_manage: bool = True

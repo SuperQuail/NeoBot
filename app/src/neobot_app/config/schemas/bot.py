@@ -664,7 +664,10 @@ class Dashboard:
 
     enabled: bool = field(
         default=True,
-        metadata={"description": "是否启用网页面板（默认开启）"},
+        metadata={
+            "description": "是否启用网页面板（默认开启）。登录密码不在此配置："
+            "未设置密码时只能从本机进入设置页，或由超级管理员在 QQ 私聊执行 /set_password"
+        },
     )
     host: str = field(
         default="0.0.0.0",
@@ -675,12 +678,6 @@ class Dashboard:
     port: int = field(
         default=9981,
         metadata={"description": "网页面板监听端口，默认 9981"},
-    )
-    access_token: str = field(
-        default="",
-        metadata={
-            "description": "登录令牌；留空则自动生成并写入数据目录 dashboard/access_token.txt"
-        },
     )
     base_path: str = field(
         default="",

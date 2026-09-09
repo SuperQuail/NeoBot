@@ -13,6 +13,8 @@ from typing import Any
 
 from aiohttp import web
 
+from neobot_app.panel_auth import get_panel_password_store
+
 from . import system as system_module
 from .api import DashboardApi, _json_error
 from .config import DashboardConfig
@@ -21,7 +23,6 @@ from .metrics import Metrics
 from .security import (
     LoginLimiter,
     SessionStore,
-    TokenStore,
     client_ip,
     is_loopback,
     secrets_equal,
@@ -74,8 +75,7 @@ class DashboardServer:
             max_failures=config.login_max_failures,
             window_seconds=float(config.login_rate_limit_window_seconds),
         )
-        self.token_store = TokenStore(self.data_dir / "access_token.txt")
-        self.token, self.token_source = self.token_store.resolve(config.access_token)
+        self.passwords = get_panel_password_store(self.data_dir / "auth.json")
 
         self.metrics = Metrics(
             data_dir=self.data_dir,
@@ -173,11 +173,13 @@ class DashboardServer:
             url=self.public_url,
             local_url=f"http://127.0.0.1:{port}{prefix}/",
             listen_host=self.config.host,
-            token_source=self.token_source,
+            password_configured=self.passwords.configured,
         )
-        self.logger.info(
-            f"网页面板访问令牌（{self.token_source}）: {self.token}"
-        )
+        if not self.passwords.configured:
+            self.logger.warning(
+                "网页面板尚未设置登录密码：此时不允许外网访问。"
+                "请在本机打开面板按提示设置密码，或由超级管理员在 QQ 私聊发送 /set_password 设置"
+            )
         return self.public_url
 
     async def stop(self) -> None:
@@ -204,6 +206,7 @@ class DashboardServer:
 
         self._route(app, "GET", "/healthz", self._healthz)
         self._route(app, "GET", "/api/auth/status", self.api.auth_status)
+        self._route(app, "POST", "/api/auth/setup", self.api.auth_setup)
         self._route(app, "POST", "/api/auth/login", self.api.auth_login)
         self._route(app, "POST", "/api/auth/logout", self.api.auth_logout)
         self._route(app, "GET", "/api/auth/me", self.api.auth_me)
@@ -273,12 +276,40 @@ class DashboardServer:
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
         path = self._strip_base(request.path)
+        ip = self.request_ip(request)
+        loopback = is_loopback(ip)
+        configured = self.passwords.configured
+
+        if not configured:
+            # 未设置密码：禁止外网访问；本机只允许进入设置流程。
+            # 状态接口与静态资源始终可访问，便于前端展示明确的提示。
+            if path == "/api/auth/status" or not path.startswith(_API_PREFIX):
+                return await handler(request)
+            if not loopback:
+                return _json_error(
+                    "面板尚未设置登录密码，已禁止外网访问。"
+                    "请在本机打开面板设置密码，或由超级管理员在 QQ 私聊发送 /set_password 设置",
+                    status=403,
+                    setup_required=True,
+                    loopback=False,
+                )
+            if path == "/api/auth/setup":
+                return await handler(request)
+            return _json_error(
+                "面板尚未设置登录密码，请先在本机完成设置",
+                status=403,
+                setup_required=True,
+                loopback=True,
+            )
+
         public = {
             "/healthz",
             "/",
             "/favicon.ico",
             "/api/auth/status",
             "/api/auth/login",
+            # 已配置密码时由处理器直接返回「请直接登录」，避免暴露为需登录接口
+            "/api/auth/setup",
         }
         if not path.startswith(_API_PREFIX) and path not in public and not path.startswith("/assets/") and not path.startswith("/image/"):
             # 静态资源与 SPA 页面本身不需要鉴权（数据全部来自 /api）
@@ -287,7 +318,9 @@ class DashboardServer:
             return await handler(request)
 
         token = request.headers.get("X-Token") or request.cookies.get(COOKIE_NAME) or ""
-        session = self.sessions.get(token)
+        session = self.sessions.get(
+            token, password_revision=self.passwords.revision
+        )
         if session is None:
             return _json_error("需要登录", status=401)
         request["dashboard_session"] = session
@@ -375,8 +408,17 @@ class DashboardServer:
     # 会话 / 令牌 / 机器人信息
     # ------------------------------------------------------------------
 
-    def verify_token(self, supplied: str) -> bool:
-        return secrets_equal(str(supplied or "").strip(), self.token)
+    def verify_password(self, supplied: str) -> bool:
+        """校验面板密码（恒定时间比较，由 PanelPasswordStore 负责）。"""
+        return self.passwords.verify(supplied)
+
+    def create_session(self, request: web.Request) -> Any:
+        """登录成功后创建会话（绑定当前密码版本）。"""
+        return self.sessions.create(
+            ip=self.request_ip(request),
+            user_agent=request.headers.get("User-Agent", ""),
+            password_revision=self.passwords.revision,
+        )
 
     def request_ip(self, request: web.Request) -> str:
         return client_ip(request, trust_proxy=self.trust_proxy)
@@ -470,7 +512,7 @@ class DashboardServer:
             "host": self.config.host,
             "port": self.bound_port or self.config.port,
             "base_path": self.base_path,
-            "token_source": self.token_source,
+            "password_configured": self.passwords.configured,
             "manage_plugins": self.manage_plugins,
             "allow_remote_manage": self.allow_remote_manage,
             "loopback_only": is_loopback(self.config.host),

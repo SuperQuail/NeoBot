@@ -2,6 +2,8 @@
 
 .config-page { display: flex; flex-direction: column; gap: 16px; }
 
+.login-hints { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+
 .btn:disabled,
 .btn.primary:disabled,
 .btn.danger:disabled,

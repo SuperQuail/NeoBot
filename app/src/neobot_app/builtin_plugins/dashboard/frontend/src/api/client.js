@@ -1,5 +1,5 @@
 // client.js —— 统一鉴权 fetch 客户端
-// token 存 localStorage，请求头带 X-Token；写操作带 X-CSRF-Token；401 跳登录页。
+// 登录用面板密码；会话 token 存 localStorage，请求头带 X-Token；写操作带 X-CSRF-Token；401 跳登录页。
 
 const TOKEN_KEY = 'neobot-dashboard-token';
 const CSRF_KEY = 'neobot-dashboard-csrf';
@@ -9,11 +9,7 @@ const API_BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
 const withBase = (path) => (API_BASE === '.' ? path : API_BASE + path);
 
 export function getToken() {
-  return (
-    localStorage.getItem(TOKEN_KEY) ||
-    new URLSearchParams(location.search).get('token') ||
-    ''
-  );
+  return localStorage.getItem(TOKEN_KEY) || '';
 }
 export function setToken(t, csrf = '') {
   if (t) localStorage.setItem(TOKEN_KEY, t);
@@ -34,17 +30,45 @@ function gotoLogin(reason) {
   }
 }
 
+// 面板鉴权状态（公开接口，用于判断是否需要设置密码）
+export async function authStatus() {
+  try {
+    const r = await fetch(withBase('/api/auth/status'), { cache: 'no-store' });
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 // 登录（不触发 401 跳转，失败返回错误供页面展示）
-export async function apiLogin(token) {
+export async function apiLogin(password) {
   try {
     const r = await fetch(withBase('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: token }),
+      body: JSON.stringify({ password }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok || !data.token) {
       return { ok: false, error: data.error || '登录失败 (HTTP ' + r.status + ')' };
+    }
+    return { ok: true, token: data.token, csrf: data.csrf_token || '' };
+  } catch (e) {
+    return { ok: false, error: '网络错误: ' + e.message };
+  }
+}
+
+// 本机首次设置密码（仅未配置密码且来源为本机时可用）
+export async function apiSetup(password, confirm) {
+  try {
+    const r = await fetch(withBase('/api/auth/setup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, confirm }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.token) {
+      return { ok: false, error: data.error || '设置密码失败 (HTTP ' + r.status + ')' };
     }
     return { ok: true, token: data.token, csrf: data.csrf_token || '' };
   } catch (e) {

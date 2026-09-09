@@ -1,8 +1,10 @@
-"""面板安全：登录令牌、会话、限速与脱敏。
+"""面板安全：会话、限速与脱敏。
 
 设计要点：
-- 令牌来源优先级：config.access_token > 数据目录 access_token.txt > 自动生成并落盘（0600）。
+- 登录凭据是面板密码（app/src/neobot_app/panel_auth.py 负责存储与校验），
+  未设置密码时不允许外网访问，只能从本机进入设置流程。
 - 会话使用内存随机 token + HttpOnly Cookie，并绑定 CSRF token；写操作必须带 X-CSRF-Token。
+- 会话记录创建时的密码 revision，密码被修改后旧会话立即失效。
 - 登录按 IP 限速，超过阈值临时锁定，防公网暴力破解。
 - 所有对外输出都经过脱敏，避免把 API Key 写进日志/接口响应。
 """
@@ -84,6 +86,7 @@ class Session:
     last_seen_at: float
     ip: str = ""
     user_agent: str = ""
+    password_revision: int = 0
 
     def touch(self, *, timeout_seconds: float) -> bool:
         now = time.time()
@@ -114,7 +117,9 @@ class SessionStore:
     def timeout_seconds(self) -> float:
         return self._timeout
 
-    def create(self, *, ip: str = "", user_agent: str = "") -> Session:
+    def create(
+        self, *, ip: str = "", user_agent: str = "", password_revision: int = 0
+    ) -> Session:
         self.prune()
         if len(self._sessions) >= self._max_sessions:
             oldest = min(self._sessions.values(), key=lambda item: item.last_seen_at)
@@ -127,15 +132,23 @@ class SessionStore:
             last_seen_at=now,
             ip=ip,
             user_agent=user_agent[:200],
+            password_revision=int(password_revision),
         )
         self._sessions[session.token] = session
         return session
 
-    def get(self, token: str | None) -> Session | None:
+    def get(self, token: str | None, *, password_revision: int | None = None) -> Session | None:
         if not token:
             return None
         session = self._sessions.get(token)
         if session is None:
+            return None
+        if (
+            password_revision is not None
+            and session.password_revision != int(password_revision)
+        ):
+            # 密码已被修改：旧会话立即失效
+            self._sessions.pop(token, None)
             return None
         if not session.touch(timeout_seconds=self._timeout):
             self._sessions.pop(token, None)
@@ -204,37 +217,3 @@ class LoginLimiter:
     def reset(self, ip: str) -> None:
         self._failures.pop(ip, None)
 
-
-class TokenStore:
-    """登录令牌的读取/生成与持久化。"""
-
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-
-    def resolve(self, configured: str) -> tuple[str, str]:
-        """返回 (token, source)；source 取值 config / file / auto。"""
-        candidate = str(configured or "").strip()
-        if candidate:
-            return candidate, "config"
-        if self.path.is_file():
-            try:
-                stored = self.path.read_text(encoding="utf-8").strip()
-            except OSError:
-                stored = ""
-            if stored:
-                return stored, "file"
-        token = secrets.token_urlsafe(32)
-        self.persist(token)
-        return token, "auto"
-
-    def persist(self, token: str) -> bool:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(token, encoding="utf-8")
-            try:
-                self.path.chmod(0o600)
-            except OSError:
-                pass
-            return True
-        except OSError:
-            return False

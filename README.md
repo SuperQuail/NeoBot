@@ -48,7 +48,7 @@ pip install neobot-app
 NeoBot 只有一个网页面板，由**官方内置插件 `dashboard`** 提供（源码在 `app/src/neobot_app/builtin_plugins/dashboard/`，前端产物随包分发，使用面板不需要 Node.js）。
 
 - 默认**开启**并监听 `0.0.0.0:9981`（即默认对网络开放）；只在本机使用可把 `host` 改为 `127.0.0.1`。
-- 用**访问令牌**登录：优先读 `config.toml` 的 `[dashboard].access_token`，否则读数据目录 `plugins_data/dashboard/access_token.txt`，都没有时自动生成并打印在启动日志里。
+- 用**面板密码**登录：未设置密码时不允许外网访问，只能在本机打开面板按提示设置，或由超级管理员在 QQ 私聊发送 `/set_password <新密码>`（留空自动生成）。密码以 PBKDF2 哈希保存在 `plugins_data/dashboard/auth.json`，修改后旧会话立即失效。
 - 端口被占用时从 `dashboard.port` 起最多向后尝试 10 个端口，并在启动日志打印告警。
 - 页面包含：仪表盘（运行概览/系统资源/消息趋势/最近日志）、插件管理（官方与第三方分组、启停、热重载、安装/更新/卸载、在线配置）、配置管理（`config.toml` 表单/TOML 编辑、`.env` 编辑与密钥按需显示、模型注册表）、系统状态（进程资源/宿主服务/后台任务/模型用量）、机器人详情、日志。
 
@@ -57,7 +57,6 @@ NeoBot 只有一个网页面板，由**官方内置插件 `dashboard`** 提供�
 enabled = true
 host = "0.0.0.0"      # 对网络开放；127.0.0.1 仅本机
 port = 9981
-access_token = ""     # 留空自动生成并写入 plugins_data/dashboard/access_token.txt
 manage_plugins = true # 关闭后面板内所有写操作变为只读
 allow_remote_manage = true  # 关闭后远程只能查看，改配置/管插件仅限本机
 ```

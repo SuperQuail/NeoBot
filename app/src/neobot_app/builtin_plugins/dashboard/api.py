@@ -22,6 +22,8 @@ from .config_manager import (
     models_view,
 )
 from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
+from neobot_app.panel_auth import PasswordPolicyError
+
 from .security import client_ip, is_loopback
 
 
@@ -108,19 +110,60 @@ class DashboardApi:
     # ------------------------------------------------------------------
 
     async def auth_status(self, request: web.Request) -> web.Response:
+        ip = self.console.request_ip(request)
+        loopback = is_loopback(ip)
+        configured = self.console.passwords.configured
         return _json_ok(
             {
                 "authenticated": False,
-                "loopback": is_loopback(self.console.request_ip(request)),
-                "can_manage": self.console.manage_plugins
-                and (
-                    self.console.allow_remote_manage
-                    or is_loopback(self.console.request_ip(request))
-                ),
+                "configured": configured,
+                "setup_required": not configured,
+                "setup_allowed": (not configured) and loopback,
+                "loopback": loopback,
+                "can_manage": configured
+                and self.console.manage_plugins
+                and (self.console.allow_remote_manage or loopback),
                 "base_path": self.console.base_path,
                 "version": self.console.version,
             }
         )
+
+    async def auth_setup(self, request: web.Request) -> web.Response:
+        """本机首次设置面板密码（未设置密码时仅回环地址可用）。"""
+        ip = self.console.request_ip(request)
+        if self.console.passwords.configured:
+            return _json_error("面板密码已设置，请直接登录", status=400)
+        if not is_loopback(ip):
+            return _json_error(
+                "只能在本机设置面板密码；外网访问请由超级管理员在 QQ 私聊发送 /set_password 设置",
+                status=403,
+            )
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        password = str(payload.get("password") or "")
+        confirm = str(payload.get("confirm") or "")
+        if confirm and confirm != password:
+            return _json_error("两次输入的密码不一致")
+        try:
+            self.console.passwords.set_password(password)
+        except PasswordPolicyError as exc:
+            return _json_error(str(exc))
+        session = self.console.create_session(request)
+        response = _json_ok(
+            {
+                "token": session.token,
+                "csrf_token": session.csrf_token,
+                "message": "面板密码已设置，登录成功",
+                "session": session.to_payload(
+                    timeout_seconds=self.console.sessions.timeout_seconds
+                ),
+            }
+        )
+        self.console.set_session_cookie(response, session.token)
+        self.logger.warning(f"面板密码已设置 ip={ip}")
+        return response
 
     async def auth_me(self, request: web.Request) -> web.Response:
         session = request.get("dashboard_session")
@@ -128,6 +171,7 @@ class DashboardApi:
         return _json_ok(
             {
                 "authenticated": True,
+                "configured": self.console.passwords.configured,
                 "session": session.to_payload(timeout_seconds=self.console.sessions.timeout_seconds)
                 if session is not None
                 else {},
@@ -153,15 +197,19 @@ class DashboardApi:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
-        supplied = str(payload.get("access_token") or payload.get("token") or "")
-        if not self.console.verify_token(supplied):
+        supplied = str(payload.get("password") or "")
+        if not self.console.passwords.configured:
+            return _json_error(
+                "面板尚未设置密码，请在本机设置或由超级管理员在 QQ 私聊发送 /set_password",
+                status=403,
+                setup_required=True,
+            )
+        if not self.console.verify_password(supplied):
             self.console.limiter.record_failure(ip)
             self.logger.warning(f"面板登录失败 ip={ip}")
-            return _json_error("访问令牌不正确", status=401)
+            return _json_error("密码不正确", status=401)
         self.console.limiter.reset(ip)
-        session = self.console.sessions.create(
-            ip=ip, user_agent=request.headers.get("User-Agent", "")
-        )
+        session = self.console.create_session(request)
         response = _json_ok(
             {
                 "token": session.token,
