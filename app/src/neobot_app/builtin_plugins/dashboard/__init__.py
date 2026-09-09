@@ -23,6 +23,9 @@ plugin = Plugin(
     description="NeoBot 网页面板：运行监测、日志、插件管理、本体配置在线编辑",
     author="NeoBot",
     config=DashboardConfig,
+    # 面板自身持有 HTTP 服务与监听端口：热重载会中断当前连接，配置改动也需重启绑定
+    hot_reload=False,
+    config_hot_reload=False,
 )
 
 LATENCY_INTERVAL_SECONDS = 15.0

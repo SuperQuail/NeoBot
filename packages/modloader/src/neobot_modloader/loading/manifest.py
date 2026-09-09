@@ -60,6 +60,16 @@ def read_optional_text(metadata: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
+def read_optional_bool(metadata: dict[str, Any], key: str, default: bool | None = None) -> bool | None:
+    """读取可选的布尔字段；缺失时返回 default。"""
+    if key not in metadata:
+        return default
+    value = metadata.get(key)
+    if not isinstance(value, bool):
+        raise TypeError(f"plugin.toml 的 {key} 必须是 bool")
+    return value
+
+
 def read_tags(metadata: dict[str, Any]) -> tuple[str, ...]:
     value = metadata.get("tags")
     if value is None:

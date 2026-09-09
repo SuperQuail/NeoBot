@@ -13,6 +13,7 @@ import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -47,6 +48,53 @@ _VERSION_PART_RE = re.compile(r"\d+|[A-Za-z]+")
 
 class PluginInstallError(RuntimeError):
     """插件安装 / 更新 / 卸载失败。"""
+
+
+#: 代理模式：system=跟随操作系统/环境变量代理，none=直连，custom=自定义 HTTP 代理
+PROXY_MODES = ("system", "none", "custom")
+
+
+@dataclass(frozen=True, slots=True)
+class ProxySettings:
+    """插件下载代理设置。"""
+
+    mode: str = "system"
+    host: str = "127.0.0.1"
+    port: int = 7890
+
+    def __post_init__(self) -> None:
+        mode = str(self.mode or "system").strip().lower()
+        if mode not in PROXY_MODES:
+            raise ValueError(f"代理模式只能是 {', '.join(PROXY_MODES)}")
+        host = str(self.host or "").strip()
+        if mode == "custom" and not host:
+            raise ValueError("自定义代理必须填写代理地址")
+        port = int(self.port)
+        if not 1 <= port <= 65535:
+            raise ValueError("代理端口必须在 1-65535 之间")
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "host", host)
+        object.__setattr__(self, "port", port)
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "host": self.host,
+            "port": self.port,
+            "description": self.description,
+        }
+
+    @property
+    def description(self) -> str:
+        if self.mode == "none":
+            return "直连（不使用代理）"
+        if self.mode == "custom":
+            return f"自定义代理 {self.url}"
+        return "跟随系统代理"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +192,7 @@ class PluginInstaller:
         max_extracted_bytes: int = MAX_EXTRACTED_BYTES,
         max_archive_entries: int = MAX_ARCHIVE_ENTRIES,
         fetcher: Callable[[str], Awaitable[bytes]] | None = None,
+        proxy: ProxySettings | None = None,
     ) -> None:
         self.plugin_dir = Path(plugin_dir).resolve()
         self._logger = logger or NullLogger()
@@ -153,6 +202,41 @@ class PluginInstaller:
         self._max_extracted_bytes = int(max_extracted_bytes)
         self._max_archive_entries = int(max_archive_entries)
         self._fetcher = fetcher
+        self._proxy = proxy or ProxySettings()
+
+    # ------------------------------------------------------------------
+    # 代理
+    # ------------------------------------------------------------------
+
+    @property
+    def proxy(self) -> ProxySettings:
+        return self._proxy
+
+    def set_proxy(
+        self,
+        *,
+        mode: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> ProxySettings:
+        """更新代理设置（面板可随时切换，下一次下载即生效）。"""
+        current = self._proxy
+        self._proxy = ProxySettings(
+            mode=current.mode if mode is None else mode,
+            host=current.host if host is None else host,
+            port=current.port if port is None else port,
+        )
+        return self._proxy
+
+    def _build_opener(self) -> urllib.request.OpenerDirector:
+        proxy = self._proxy
+        if proxy.mode == "none":
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        if proxy.mode == "custom":
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url})
+            )
+        return urllib.request.build_opener()
 
     @property
     def backup_dir(self) -> Path:
@@ -209,7 +293,8 @@ class PluginInstaller:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            opener = self._build_opener()
+            with opener.open(request, timeout=self._timeout) as response:
                 declared = response.headers.get("content-length")
                 if declared is not None:
                     try:

@@ -19,12 +19,34 @@ from .config_manager import (
     ConfigConflictError,
     ConfigValidationError,
     EnvFileManager,
+    describe_pydantic_model,
     models_view,
 )
 from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
 from neobot_app.panel_auth import PasswordPolicyError
 
 from .security import client_ip, is_loopback
+
+
+def _pydantic_errors(exc: Any) -> list[dict[str, str]]:
+    """把 pydantic 校验错误转换为面板统一的 {path, message} 列表。"""
+    errors: list[dict[str, str]] = []
+    raw = getattr(exc, "errors", None)
+    if callable(raw):
+        try:
+            for item in raw():
+                location = item.get("loc") or ()
+                errors.append(
+                    {
+                        "path": ".".join(str(part) for part in location) or "config",
+                        "message": str(item.get("msg") or "取值非法"),
+                    }
+                )
+        except Exception:
+            errors = []
+    if not errors:
+        errors.append({"path": "config", "message": str(exc)})
+    return errors
 
 
 def _json_ok(data: Any = None, **extra: Any) -> web.Response:
@@ -439,6 +461,12 @@ class DashboardApi:
             "dependencies": list(snapshot.dependencies),
             "python_dependencies": list(snapshot.python_dependencies),
             "missing_python_dependencies": list(snapshot.missing_python_dependencies),
+            "hot_reload": bool(getattr(snapshot, "hot_reload", True)),
+            "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
+            "hot_reloadable": bool(getattr(snapshot, "hot_reloadable", True)),
+            "config_section": self._official_config_section(snapshot.name)
+            if getattr(snapshot, "official", False)
+            else "",
         }
 
     async def plugins(self, request: web.Request) -> web.Response:
@@ -463,6 +491,71 @@ class DashboardApi:
                 "hot_reload": True,
                 "installer": bool(getattr(control, "installer_available", False)),
                 "console_plugin": self.console.plugin_name,
+                "proxy": self._installer_proxy(control),
+                "proxy_modes": ["system", "none", "custom"],
+            }
+        )
+
+    def _installer_proxy(self, control: Any) -> dict[str, Any]:
+        getter = getattr(control, "installer_proxy", None)
+        if callable(getter):
+            try:
+                return dict(getter())
+            except Exception:
+                return {}
+        return {}
+
+    def _official_config_section(self, name: str) -> str:
+        try:
+            from neobot_app.bootstrap._skills import OFFICIAL_CONFIG_SECTIONS
+
+            return str(OFFICIAL_CONFIG_SECTIONS.get(str(name)) or "")
+        except Exception:
+            return ""
+
+    async def plugins_proxy_save(self, request: web.Request) -> web.Response:
+        """插件下载代理设置：写入 config.toml 的 [plugins] 并立即生效。"""
+        denied = self._require_manage(request, action="修改插件代理设置")
+        if denied is not None:
+            return denied
+        control = self._plugin_control()
+        if control is None:
+            return _json_error("插件运行时不可用", status=503)
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        setter = getattr(control, "set_installer_proxy", None)
+        if not callable(setter):
+            return _json_error("插件安装器不可用", status=503)
+        mode = str(payload.get("mode") or "system").strip().lower()
+        host = str(payload.get("host") or "127.0.0.1").strip()
+        try:
+            port = int(payload.get("port") or 7890)
+        except (TypeError, ValueError):
+            return _json_error("代理端口必须是数字", status=400)
+        try:
+            settings = setter(mode=mode, host=host, port=port)
+        except Exception as exc:
+            return _json_error(f"代理设置无效: {exc}", status=400)
+        if payload.get("persist", True):
+            try:
+                self._config_manager().update_plugins_proxy(
+                    mode=mode,
+                    host=host,
+                    port=port,
+                    expected_revision=payload.get("revision"),
+                )
+            except ConfigConflictError as exc:
+                return _json_error(str(exc), status=409)
+            except ConfigValidationError as exc:
+                return _json_error(str(exc), status=400, errors=exc.errors)
+            except Exception as exc:
+                return _json_error(f"保存代理设置失败: {exc}", status=500)
+        return _json_ok(
+            {
+                "message": f"插件下载代理已切换为{settings.get('description') or mode}",
+                "proxy": settings,
             }
         )
 
@@ -596,9 +689,7 @@ class DashboardApi:
         name = request.match_info["name"]
         snapshot = self._find_snapshot(control, name) if control is not None else None
         if snapshot is not None and snapshot.official:
-            return _json_error(
-                "官方插件配置来自 config.toml，请到「配置管理」页面修改", status=400
-            )
+            return self._official_config_document(control, name, snapshot)
         path = self._plugin_manifest_path(snapshot)
         if path is None:
             return _json_error(f"插件 {name} 没有 plugin.toml，无法在线编辑配置", status=404)
@@ -606,9 +697,51 @@ class DashboardApi:
             document = PluginConfigEditor(path).read()
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
+        document["official"] = False
         document["can_reload"] = True
+        document["hot_reload"] = bool(getattr(snapshot, "hot_reload", True))
+        document["config_hot_reload"] = bool(getattr(snapshot, "config_hot_reload", True))
         document["manage_enabled"] = self.console.manage_plugins
         return _json_ok(document)
+
+    def _official_config_document(
+        self, control: Any, name: str, snapshot: Any
+    ) -> web.Response:
+        """官方插件配置：直接读写 config.toml 的同名分区。"""
+        section = self._official_config_section(name)
+        if not section:
+            return _json_error(
+                f"官方插件 {name} 没有对应的 config.toml 分区，无法在线编辑", status=404
+            )
+        manager = self._config_manager()
+        try:
+            values = manager.section_values(section)
+            revision = manager.revision()
+        except Exception as exc:
+            return _json_error(f"读取插件配置失败: {exc}", status=500)
+        model = control.config_model(name) if control is not None else None
+        schema = describe_pydantic_model(model, values)
+        return _json_ok(
+            {
+                "official": True,
+                "name": name,
+                "section": section,
+                "path": str(manager.config_path),
+                "values": values,
+                "config": values,
+                "schema": schema,
+                "form_supported": bool(schema),
+                "source": "",
+                "source_available": False,
+                "secret_policy": "write_only",
+                "revision": revision,
+                "hot_reload": bool(getattr(snapshot, "hot_reload", True)),
+                "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
+                "can_reload": bool(getattr(snapshot, "hot_reload", True)),
+                "can_manage": self.console.manage_plugins,
+                "message": "官方插件配置来自 config.toml 的同名分区，保存后会写回该分区",
+            }
+        )
 
     async def plugin_config_save(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)
@@ -617,17 +750,15 @@ class DashboardApi:
         control = self._plugin_control()
         name = request.match_info["name"]
         snapshot = self._find_snapshot(control, name) if control is not None else None
-        if snapshot is not None and snapshot.official:
-            return _json_error(
-                "官方插件配置来自 config.toml，请到「配置管理」页面修改", status=400
-            )
-        path = self._plugin_manifest_path(snapshot)
-        if path is None:
-            return _json_error(f"插件 {name} 没有 plugin.toml，无法在线编辑配置", status=404)
         try:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
+        if snapshot is not None and snapshot.official:
+            return await self._official_config_save(control, name, snapshot, payload)
+        path = self._plugin_manifest_path(snapshot)
+        if path is None:
+            return _json_error(f"插件 {name} 没有 plugin.toml，无法在线编辑配置", status=404)
         editor = PluginConfigEditor(path)
         try:
             document = editor.save(
@@ -648,9 +779,73 @@ class DashboardApi:
             message = (
                 f"配置已保存并重载 {name}" if outcome.ok else f"配置已保存，但重载失败: {outcome.error or outcome.state}"
             )
+        document["official"] = False
         document["can_reload"] = True
         document["applied"] = applied
         document["message"] = message
+        return _json_ok(document)
+
+    async def _official_config_save(
+        self, control: Any, name: str, snapshot: Any, payload: dict[str, Any]
+    ) -> web.Response:
+        """保存官方插件配置：校验 -> 写回 config.toml 分区 -> 可选热重载。"""
+        section = self._official_config_section(name)
+        if not section:
+            return _json_error(
+                f"官方插件 {name} 没有对应的 config.toml 分区，无法在线编辑", status=404
+            )
+        values = payload.get("config")
+        if not isinstance(values, dict):
+            values = payload.get("values")
+        if not isinstance(values, dict):
+            return _json_error("缺少配置内容（config）", status=400)
+
+        model = control.config_model(name) if control is not None else None
+        if model is not None:
+            current = self._config_manager().section_values(section)
+            try:
+                model.model_validate({**current, **values})
+            except Exception as exc:
+                return _json_error(
+                    "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
+                )
+        try:
+            document = self._config_manager().update_section(
+                section, values, expected_revision=payload.get("revision")
+            )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
+        except ConfigValidationError as exc:
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"保存插件配置失败: {exc}", status=500)
+
+        applied = False
+        message = f"已写回 config.toml 的 [{section}] 分区"
+        reload_requested = bool(payload.get("reload"))
+        if reload_requested:
+            if bool(getattr(snapshot, "config_hot_reload", True)):
+                result = await self._reload_config(with_changes=True)
+                applied = bool(result.get("ok"))
+                message = str(result.get("message") or message)
+                if result.get("changes"):
+                    document["changes"] = result["changes"]
+                if (
+                    applied
+                    and bool(getattr(snapshot, "hot_reload", True))
+                    and control is not None
+                ):
+                    outcome = await control.reload(name)
+                    message += (
+                        f"；插件 {name} 已重载"
+                        if outcome.ok
+                        else f"；插件 {name} 重载失败: {outcome.error or outcome.state}"
+                    )
+            else:
+                message += "；该插件配置需要重启 NeoBot 才能生效"
+        document["applied"] = applied
+        document["message"] = message
+        document["official"] = True
         return _json_ok(document)
 
     # ------------------------------------------------------------------

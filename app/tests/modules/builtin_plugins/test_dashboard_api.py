@@ -40,7 +40,14 @@ class _FakeAdapter:
 
 
 class _FakeSnapshot:
-    def __init__(self, name: str, *, source: str = "third_party") -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        source: str = "third_party",
+        hot_reload: bool = True,
+        config_hot_reload: bool = True,
+    ) -> None:
         self.name = name
         self.version = "1.0.0"
         self.state = "running"
@@ -59,6 +66,8 @@ class _FakeSnapshot:
         self.homepage = ""
         self.license = ""
         self.tags = ()
+        self.hot_reload = hot_reload
+        self.config_hot_reload = config_hot_reload
 
     @property
     def official(self) -> bool:
@@ -68,15 +77,45 @@ class _FakeSnapshot:
     def manageable(self) -> bool:
         return not self.official
 
+    @property
+    def hot_reloadable(self) -> bool:
+        return self.hot_reload and self.kind != "unknown"
+
 
 class _FakeControl:
     def __init__(self) -> None:
         self.snapshots = [
-            _FakeSnapshot("dashboard", source="official"),
+            _FakeSnapshot(
+                "dashboard", source="official", hot_reload=False, config_hot_reload=False
+            ),
             _FakeSnapshot("demo"),
         ]
         self.installer_available = True
         self.enabled_calls: list[tuple[str, bool]] = []
+        self.proxy_mode = "system"
+
+    def installer_proxy(self) -> dict:
+        from neobot_modloader.installer import ProxySettings
+
+        return ProxySettings(mode=self.proxy_mode).to_dict()
+
+    def set_installer_proxy(self, *, mode=None, host=None, port=None) -> dict:
+        from neobot_modloader.installer import ProxySettings
+
+        settings = ProxySettings(
+            mode=mode or self.proxy_mode,
+            host=host or "127.0.0.1",
+            port=port or 7890,
+        )
+        self.proxy_mode = settings.mode
+        return settings.to_dict()
+
+    def config_model(self, name: str):
+        if name != "dashboard":
+            return None
+        from neobot_app.builtin_plugins.dashboard.config import DashboardConfig
+
+        return DashboardConfig
 
     def snapshot(self):
         return list(self.snapshots)
@@ -562,6 +601,87 @@ async def test_env_save_updates_file(panel) -> None:
 
     assert response.status_code == 200
     assert "MyProvider_URL=https://example.com/v1" in panel[0].env_manager.env_path.read_text(encoding="utf-8")
+
+
+async def test_plugins_payload_reports_hot_reload_and_proxy(panel) -> None:
+    """插件列表必须带热重载标注、官方插件配置分区与代理设置。"""
+    _, _, base, _ = panel
+    token, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/plugins", headers={"X-Token": token})
+
+    payload = response.json()
+    items = {item["name"]: item for item in payload["items"]}
+    assert items["demo"]["hot_reload"] is True
+    assert items["demo"]["config_hot_reload"] is True
+    assert items["demo"]["config_section"] == ""
+    assert items["dashboard"]["official"] is True
+    assert items["dashboard"]["config_section"] == "dashboard"
+    assert payload["proxy"]["mode"] == "system"
+    assert payload["proxy_modes"] == ["system", "none", "custom"]
+
+
+async def test_plugins_proxy_save_writes_config(panel) -> None:
+    """切换插件下载代理：写入 config.toml 的 [plugins] 并校验非法输入。"""
+    server, _, base, config_path = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        saved = await client.post(
+            base + "/api/plugins/proxy",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"mode": "custom", "host": "127.0.0.1", "port": 1080},
+        )
+        invalid = await client.post(
+            base + "/api/plugins/proxy",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"mode": "bogus"},
+        )
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["proxy"]["mode"] == "custom"
+    raw = config_path.read_text(encoding="utf-8")
+    assert 'proxy_mode = "custom"' in raw
+    assert "proxy_port = 1080" in raw
+    assert invalid.status_code == 400
+    assert server.plugin_control.proxy_mode == "custom"
+
+
+async def test_official_plugin_config_read_and_save(panel) -> None:
+    """官方插件配置可直接在面板编辑，写回 config.toml 的同名分区。"""
+    _, _, base, config_path = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        read = await client.get(
+            base + "/api/plugins/dashboard/config", headers={"X-Token": token}
+        )
+        payload = read.json()
+        saved = await client.post(
+            base + "/api/plugins/dashboard/config",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={
+                "config": {"log_buffer_size": 600},
+                "revision": payload["revision"],
+            },
+        )
+        invalid = await client.post(
+            base + "/api/plugins/dashboard/config",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"config": {"port": 70000}, "revision": payload["revision"]},
+        )
+
+    assert read.status_code == 200, read.text
+    assert payload["official"] is True
+    assert payload["section"] == "dashboard"
+    assert payload["values"]["port"] == 9981
+    assert any(field["name"] == "port" for field in payload["schema"])
+    assert payload["config_hot_reload"] is False
+
+    assert saved.status_code == 200, saved.text
+    raw = config_path.read_text(encoding="utf-8")
+    assert "log_buffer_size = 600" in raw
+
+    assert invalid.status_code == 400
+    assert invalid.json()["errors"]
 
 
 async def test_logs_endpoint_shape(panel) -> None:

@@ -43,6 +43,8 @@ class LoadedPlugin:
     homepage: str = ""
     license: str = ""
     tags: tuple[str, ...] = ()
+    hot_reload: bool = True
+    config_hot_reload: bool = True
 
     @property
     def official(self) -> bool:
@@ -82,6 +84,8 @@ class DiscoveredPlugin:
     homepage: str = ""
     license: str = ""
     tags: tuple[str, ...] = ()
+    hot_reload: bool = True
+    config_hot_reload: bool = True
 
     @property
     def official(self) -> bool:

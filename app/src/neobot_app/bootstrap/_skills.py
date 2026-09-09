@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from neobot_modloader import PluginInstaller, PluginRuntime, PluginStateStore
+from neobot_modloader.installer import ProxySettings
 
 from neobot_app.builtin_plugins import builtin_plugin_dirs
 from neobot_app.core import DATA_DIR
@@ -176,9 +177,15 @@ def build_plugin_runtime(
         DATA_DIR / "plugin_state.json",
         logger=logger_factory.get_logger("modloader.state"),
     )
+    plugins_config = getattr(config, "plugins", None)
     installer = PluginInstaller(
         plugin_dir=plugin_dir,
         logger=logger_factory.get_logger("modloader.installer"),
+        proxy=ProxySettings(
+            mode=str(getattr(plugins_config, "proxy_mode", "system") or "system"),
+            host=str(getattr(plugins_config, "proxy_host", "127.0.0.1") or "127.0.0.1"),
+            port=int(getattr(plugins_config, "proxy_port", 7890) or 7890),
+        ),
     )
     plugin_runtime = PluginRuntime(
         plugin_dir=plugin_dir,

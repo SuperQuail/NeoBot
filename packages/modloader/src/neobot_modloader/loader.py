@@ -11,6 +11,7 @@ from neobot_modloader.loading.importer import PluginModuleImporter
 from neobot_modloader.loading.manifest import (
     read_dependencies,
     read_manifest,
+    read_optional_bool,
     read_optional_text,
     read_python_dependencies,
     read_tags,
@@ -176,6 +177,10 @@ class FilesystemPluginLoader:
                 homepage=read_optional_text(metadata, "homepage"),
                 license=read_optional_text(metadata, "license"),
                 tags=read_tags(metadata),
+                hot_reload=bool(read_optional_bool(metadata, "hot_reload", True)),
+                config_hot_reload=bool(
+                    read_optional_bool(metadata, "config_hot_reload", True)
+                ),
             )
         except Exception as exc:
             return PluginLoadError(name=manifest_name, plugin_dir=path, error=exc)
@@ -209,6 +214,8 @@ class FilesystemPluginLoader:
                 module_names=module_names,
                 source_path=path,
                 source=self.source,
+                hot_reload=bool(getattr(plugin, "hot_reload", True)),
+                config_hot_reload=bool(getattr(plugin, "config_hot_reload", True)),
             )
         except Exception as exc:
             self.clear_module_cache(module_names)
@@ -257,6 +264,12 @@ class FilesystemPluginLoader:
                 priority = int(getattr(plugin, "priority", 0) or 0)
             if min_neobot_version is None:
                 min_neobot_version = getattr(plugin, "min_neobot_version", None)
+            hot_reload = read_optional_bool(metadata, "hot_reload", None)
+            if hot_reload is None:
+                hot_reload = bool(getattr(plugin, "hot_reload", True))
+            config_hot_reload = read_optional_bool(metadata, "config_hot_reload", None)
+            if config_hot_reload is None:
+                config_hot_reload = bool(getattr(plugin, "config_hot_reload", True))
             return LoadedPlugin(
                 name=plugin_name,
                 version=plugin_version,
@@ -277,6 +290,8 @@ class FilesystemPluginLoader:
                 homepage=read_optional_text(metadata, "homepage"),
                 license=read_optional_text(metadata, "license"),
                 tags=read_tags(metadata),
+                hot_reload=bool(hot_reload),
+                config_hot_reload=bool(config_hot_reload),
             )
         except Exception as exc:
             self.clear_module_cache(module_names)

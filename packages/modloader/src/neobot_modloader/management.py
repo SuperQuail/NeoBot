@@ -37,6 +37,10 @@ class PluginSnapshot:
     homepage: str = ""
     license: str = ""
     tags: tuple[str, ...] = ()
+    #: 插件本体是否支持不重启进程的重载
+    hot_reload: bool = True
+    #: 插件配置改动是否支持不重启进程生效
+    config_hot_reload: bool = True
 
     @property
     def official(self) -> bool:
@@ -49,7 +53,8 @@ class PluginSnapshot:
 
     @property
     def hot_reloadable(self) -> bool:
-        return self.kind != "unknown"
+        """可热重载 = 插件自己声明支持 + 运行时能定位插件代码。"""
+        return bool(self.hot_reload) and self.kind != "unknown"
 
 
 class PluginControlFacade:
@@ -133,3 +138,30 @@ class PluginControlFacade:
     @property
     def installer_available(self) -> bool:
         return getattr(self._runtime, "installer", None) is not None
+
+    def config_model(self, name: str) -> Any | None:
+        """插件声明的配置模型（pydantic BaseModel），未声明时返回 None。"""
+        getter = getattr(self._runtime, "plugin_config_model", None)
+        if callable(getter):
+            return getter(name)
+        return None
+
+    def installer_proxy(self) -> dict[str, Any]:
+        """当前插件下载代理设置。"""
+        getter = getattr(self._runtime, "installer_proxy", None)
+        if callable(getter):
+            return dict(getter())
+        return {}
+
+    def set_installer_proxy(
+        self,
+        *,
+        mode: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> dict[str, Any]:
+        """切换插件下载代理（下次下载立即生效）。"""
+        setter = getattr(self._runtime, "set_installer_proxy", None)
+        if not callable(setter):
+            raise RuntimeError("插件安装器不可用")
+        return dict(setter(mode=mode, host=host, port=port))

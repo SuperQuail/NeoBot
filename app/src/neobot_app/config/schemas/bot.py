@@ -678,6 +678,20 @@ class Plugins:
 
     enabled: bool = field(default=True, metadata={"description": "是否启用插件"})
     dir: str = field(default="./plugins", metadata={"description": "插件目录"})
+    proxy_mode: str = field(
+        default="system",
+        metadata={
+            "description": "插件下载代理模式：system 跟随系统/环境变量代理，none 直连，custom 使用自定义 HTTP 代理"
+        },
+    )
+    proxy_host: str = field(
+        default="127.0.0.1",
+        metadata={"description": "自定义代理地址（proxy_mode=custom 时生效）"},
+    )
+    proxy_port: int = field(
+        default=7890,
+        metadata={"description": "自定义代理端口（proxy_mode=custom 时生效）"},
+    )
 
 
 @dataclass

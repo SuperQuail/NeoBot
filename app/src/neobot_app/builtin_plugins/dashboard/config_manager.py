@@ -302,6 +302,56 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
     return descriptors
 
 
+#: pydantic 字段类型 -> 面板字段类型
+_PYDANTIC_TYPE_NAMES = {
+    "boolean": "bool",
+    "integer": "int",
+    "number": "float",
+    "string": "str",
+}
+
+
+def describe_pydantic_model(model: Any, values: Any = None) -> list[dict[str, Any]]:
+    """把 pydantic 配置模型转换为面板可渲染的字段描述（官方插件配置用）。"""
+    if model is None or not hasattr(model, "model_fields"):
+        return []
+    data = dict(values or {})
+    descriptors: list[dict[str, Any]] = []
+    for name, info in model.model_fields.items():
+        annotation = getattr(info, "annotation", None)
+        type_name = _PYDANTIC_TYPE_NAMES.get(
+            str(getattr(annotation, "__name__", annotation)), "str"
+        )
+        extra = getattr(info, "json_schema_extra", None) or {}
+        metadata = getattr(info, "metadata", ()) or ()
+        minimum = maximum = None
+        for item in metadata:
+            if hasattr(item, "ge") and item.ge is not None:
+                minimum = item.ge
+            if hasattr(item, "le") and item.le is not None:
+                maximum = item.le
+        descriptor: dict[str, Any] = {
+            "name": name,
+            "path": [name],
+            "label": str(getattr(info, "title", "") or name),
+            "description": str(getattr(info, "description", "") or ""),
+            "required": bool(getattr(info, "is_required", lambda: False)()),
+            "default": _jsonable(getattr(info, "default", None)),
+            "value": _jsonable(data.get(name, getattr(info, "default", None))),
+            "kind": "scalar",
+            "type": type_name,
+            "readonly": bool(isinstance(extra, dict) and extra.get("readonly")),
+            "hot_reload": True,
+            "restart_reason": "",
+        }
+        if minimum is not None:
+            descriptor["min"] = minimum
+        if maximum is not None:
+            descriptor["max"] = maximum
+        descriptors.append(descriptor)
+    return descriptors
+
+
 def _collect_scalar_fields(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """递归收集分组内的标量字段描述（用于汇总热重载状态）。"""
     collected: list[dict[str, Any]] = []
@@ -401,6 +451,111 @@ class BotConfigManager:
             )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
+        _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
+        return self.read()
+
+    # ------------------------------------------------------------------
+    # 官方插件配置段（config.toml 的同名分区）
+    # ------------------------------------------------------------------
+
+    def section_values(self, section: str) -> dict[str, Any]:
+        """读取 config.toml 中某个分区（官方插件配置）的当前值。"""
+        instance = self.instance()
+        target = getattr(instance, str(section), None)
+        if target is None:
+            return {}
+        if is_dataclass(target) and not isinstance(target, type):
+            return _jsonable(target)
+        if isinstance(target, dict):
+            return _jsonable(target)
+        return {}
+
+    def update_section(
+        self,
+        section: str,
+        values: dict[str, Any],
+        *,
+        expected_revision: str | None = None,
+        max_backups: int = 15,
+    ) -> dict[str, Any]:
+        """只更新 config.toml 中某个分区的字段（官方插件配置直接编辑）。"""
+        name = str(section or "").strip()
+        if not name or not name.isidentifier():
+            raise ConfigValidationError(
+                [{"path": "section", "message": "非法配置分区名"}]
+            )
+        if expected_revision is not None and expected_revision != self.revision():
+            raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
+
+        document = (
+            tomlkit.parse(self.config_path.read_text(encoding="utf-8-sig"))
+            if self.config_path.is_file()
+            else tomlkit.document()
+        )
+        current = document.unwrap() if self.config_path.is_file() else {}
+        base = current.get(name)
+        merged = dict(base) if isinstance(base, dict) else {}
+        merged.update({str(key): value for key, value in (values or {}).items()})
+
+        new_config = dict(current)
+        new_config[name] = merged
+        errors = self.validate(config=new_config)
+        if errors:
+            raise ConfigValidationError(errors)
+
+        _merge_into_document(document, _diff_document(current, new_config))
+        if self.config_path.is_file():
+            backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
+        source = tomlkit.dumps(document)
+        _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
+        return self.read()
+
+    # ------------------------------------------------------------------
+    # 插件系统（代理设置）
+    # ------------------------------------------------------------------
+
+    def update_plugins_proxy(
+        self,
+        *,
+        mode: str,
+        host: str,
+        port: int,
+        expected_revision: str | None = None,
+    ) -> dict[str, Any]:
+        """写入 config.toml 的 [plugins] 代理字段（只改这三个键）。"""
+        from neobot_modloader.installer import ProxySettings
+
+        try:
+            settings = ProxySettings(mode=mode, host=host, port=port)
+        except Exception as exc:
+            raise ConfigValidationError([{"path": "plugins.proxy", "message": str(exc)}]) from exc
+        if expected_revision is not None and expected_revision != self.revision():
+            raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
+
+        document = (
+            tomlkit.parse(self.config_path.read_text(encoding="utf-8-sig"))
+            if self.config_path.is_file()
+            else tomlkit.document()
+        )
+        current = document.unwrap() if self.config_path.is_file() else {}
+        plugins_raw = current.get("plugins")
+        if not isinstance(plugins_raw, dict):
+            plugins_raw = _jsonable(BotConfig().plugins)
+        plugins_raw = dict(plugins_raw)
+        plugins_raw["proxy_mode"] = settings.mode
+        plugins_raw["proxy_host"] = settings.host
+        plugins_raw["proxy_port"] = settings.port
+
+        new_config = dict(current)
+        new_config["plugins"] = plugins_raw
+        errors = self.validate(config=new_config)
+        if errors:
+            raise ConfigValidationError(errors)
+
+        _merge_into_document(document, _diff_document(current, new_config))
+        if self.config_path.is_file():
+            backup_config(self.config_path, self.backup_dir, max_backups=15)
+        source = tomlkit.dumps(document)
         _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
         return self.read()
 

@@ -18,7 +18,12 @@ from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import TrackedPluginHostFacade
 from neobot_modloader.installer import PluginInstaller, PluginUpdateCheck
-from neobot_modloader.loading.manifest import read_dependencies, read_manifest, read_python_dependencies
+from neobot_modloader.loading.manifest import (
+    read_dependencies,
+    read_manifest,
+    read_optional_bool,
+    read_python_dependencies,
+)
 from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.loader import (
     DiscoveredPlugin,
@@ -124,6 +129,8 @@ class PluginRuntime:
         self._loaded_modules: dict[str, tuple[str, ...]] = {}
         self._loaded_paths: dict[str, Path] = {}
         self._loaded_sources: dict[str, str] = {}
+        #: 已加载插件解析后的热重载能力（plugin.toml 优先，其次 Plugin() 声明）
+        self._loaded_flags: dict[str, tuple[bool, bool]] = {}
         self._operation_gate = asyncio.Lock()
         self._operation_locks: dict[str, ReentrantLock] = {}
         self._operation_paths: dict[Path, str] = {}
@@ -545,6 +552,17 @@ class PluginRuntime:
                 path=self._loaded_paths.get(name),
             )
 
+        flags = self._loaded_flags.get(name)
+        if flags is not None and not flags[0]:
+            return PluginOperationResult(
+                ok=False,
+                name=name,
+                state=self._state_value(name),
+                error="该插件声明不支持热重载，请重启 NeoBot",
+                requires_restart=True,
+                path=plugin_path,
+            )
+
         old_record = self.manager.get_record(name)
         old_modules = self._loaded_modules.get(name, ())
         old_path = self._loaded_paths.get(name) or plugin_path
@@ -954,6 +972,7 @@ class PluginRuntime:
             state = self._state_value(result.name)
             if state == PluginState.UNLOADED.value and result.missing_python_dependencies:
                 state = PluginState.ERROR.value
+            loaded_flags = self._loaded_flags.get(result.name)
             snapshots.append(
                 PluginSnapshot(
                     name=result.name,
@@ -974,6 +993,12 @@ class PluginRuntime:
                     homepage=result.homepage,
                     license=result.license,
                     tags=result.tags,
+                    hot_reload=(
+                        loaded_flags[0] if loaded_flags else result.hot_reload
+                    ),
+                    config_hot_reload=(
+                        loaded_flags[1] if loaded_flags else result.config_hot_reload
+                    ),
                 )
             )
             seen_names.add(result.name)
@@ -1003,10 +1028,46 @@ class PluginRuntime:
                     dependencies=tuple(getattr(plugin, "dependencies", ()) or ()),
                     python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
                     source=self._loaded_sources.get(name, THIRD_PARTY_SOURCE),
+                    hot_reload=bool(getattr(plugin, "hot_reload", True)),
+                    config_hot_reload=bool(getattr(plugin, "config_hot_reload", True)),
                 )
             )
 
         return sorted(snapshots, key=lambda item: item.name.lower())
+
+    def plugin_config_model(self, name: str) -> Any | None:
+        """返回插件声明的配置模型（pydantic BaseModel），未声明时返回 None。
+
+        面板用它为官方插件生成表单并做保存前校验。
+        """
+        record = self.manager.get_record(name)
+        plugin = record.plugin if record is not None else None
+        model = getattr(plugin, "config_model", None)
+        return model if isinstance(model, type) else None
+
+    # ------------------------------------------------------------------
+    # 插件下载代理
+    # ------------------------------------------------------------------
+
+    def installer_proxy(self) -> dict[str, Any]:
+        """当前插件下载代理设置（安装器不可用时返回空字典）。"""
+        installer = self.installer
+        if installer is None:
+            return {}
+        return installer.proxy.to_dict()
+
+    def set_installer_proxy(
+        self,
+        *,
+        mode: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> dict[str, Any]:
+        """切换插件下载代理；下一次下载立即生效。"""
+        installer = self.installer
+        if installer is None:
+            raise RuntimeError("插件安装器不可用")
+        return installer.set_proxy(mode=mode, host=host, port=port).to_dict()
 
     async def set_enabled(self, name: str, enabled: bool) -> PluginOperationResult:
         """启用 / 停用插件并持久化状态；官方插件与第三方插件使用同一套机制。"""
@@ -1022,6 +1083,7 @@ class PluginRuntime:
             if self._state_store is not None:
                 self._state_store.set_enabled(name, False)
             self._loaded_sources.pop(name, None)
+            self._loaded_flags.pop(name, None)
             return PluginOperationResult(
                 ok=True,
                 name=name,
@@ -1475,6 +1537,8 @@ class PluginRuntime:
             dependencies=dependencies,
             python_dependencies=python_dependencies,
             missing_python_dependencies=missing,
+            hot_reload=bool(read_optional_bool(metadata, "hot_reload", True)),
+            config_hot_reload=bool(read_optional_bool(metadata, "config_hot_reload", True)),
         )
 
     def _official_config(self, loaded: LoadedPlugin) -> Mapping[str, Any]:
@@ -1539,6 +1603,10 @@ class PluginRuntime:
             self._loaded_modules[loaded.name] = loaded.module_names
             self._loaded_paths[loaded.name] = self._path_for_loaded(loaded)
             self._loaded_sources[loaded.name] = loaded.source
+            self._loaded_flags[loaded.name] = (
+                bool(getattr(loaded, "hot_reload", True)),
+                bool(getattr(loaded, "config_hot_reload", True)),
+            )
             return True
         except Exception as exc:
             self.logger.exception(f"插件注册失败 ({loaded.name}): {exc}")
