@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import re
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -10,10 +11,14 @@ from neobot_modloader.loading.importer import PluginModuleImporter
 from neobot_modloader.loading.manifest import (
     read_dependencies,
     read_manifest,
+    read_optional_text,
     read_python_dependencies,
+    read_tags,
     validate_manifest_conflicts,
 )
 from neobot_modloader.loading.models import (
+    OFFICIAL_SOURCE,
+    THIRD_PARTY_SOURCE,
     DiscoveredPlugin,
     LoadedPlugin,
     PluginDiscoveryResult,
@@ -25,10 +30,32 @@ from neobot_modloader.plugin import Plugin
 from neobot_modloader.plugins.registration import validate_plugin_name
 
 
+EnabledResolver = Callable[[str, bool], bool]
+
+
 class FilesystemPluginLoader:
-    def __init__(self, logger: Logger | None = None) -> None:
+    """从单个目录扫描并导入插件。
+
+    source 标记本加载器扫描到的插件来源（official / third_party），
+    enabled_resolver 让运行时用持久化状态覆盖 plugin.toml 里的 enabled。
+    """
+
+    def __init__(
+        self,
+        logger: Logger | None = None,
+        *,
+        source: str = THIRD_PARTY_SOURCE,
+        namespace: str = "neobot_user_plugins",
+        enabled_resolver: EnabledResolver | None = None,
+    ) -> None:
         self._logger = logger or NullLogger()
-        self._importer = PluginModuleImporter()
+        self.source = source
+        self._importer = PluginModuleImporter(namespace)
+        self._enabled_resolver = enabled_resolver
+
+    @property
+    def official(self) -> bool:
+        return self.source == OFFICIAL_SOURCE
 
     def discover_all(self, plugin_dir: Path) -> list[PluginDiscoveryResult]:
         plugin_dir = plugin_dir.resolve()
@@ -62,12 +89,13 @@ class FilesystemPluginLoader:
         for entry in sorted(plugin_dir.iterdir(), key=lambda item: item.name):
             if entry.name.startswith("_"):
                 continue
+            result: PluginLoadResult | None = None
             if entry.is_file() and entry.suffix == ".py":
-                results.append(self._load_file(entry))
+                result = self._load_file(entry)
             elif entry.is_dir() and (entry / "__init__.py").is_file():
                 result = self._load_package(entry)
-                if result is not None:
-                    results.append(result)
+            if result is not None:
+                results.append(result)
         ordered = order_results(results)
         retained = {id(result) for result in ordered if isinstance(result, LoadedPlugin)}
         for result in results:
@@ -86,11 +114,27 @@ class FilesystemPluginLoader:
     def clear_module_cache(self, module_names: tuple[str, ...]) -> None:
         self._importer.clear_module_cache(module_names)
 
+    def resolve_enabled(self, name: str, default: bool) -> bool:
+        if self._enabled_resolver is None:
+            return default
+        try:
+            return bool(self._enabled_resolver(name, default))
+        except Exception as exc:
+            self._logger.warning(f"读取插件启用状态失败 ({name})，按默认值处理: {exc}")
+            return default
+
     def _discover_file(self, path: Path) -> PluginDiscoveryResult:
         name = path.stem
         try:
             self._validate_plugin_name(name)
-            return DiscoveredPlugin(name=name, version="0.1.0", plugin_dir=path.parent, source_path=path)
+            return DiscoveredPlugin(
+                name=name,
+                version="0.1.0",
+                plugin_dir=path.parent,
+                source_path=path,
+                source=self.source,
+                enabled=self.resolve_enabled(name, True),
+            )
         except Exception as exc:
             return PluginLoadError(name=name, plugin_dir=path.parent, error=exc)
 
@@ -119,22 +163,31 @@ class FilesystemPluginLoader:
                 plugin_dir=path,
                 description=description,
                 author=author,
-                enabled=enabled,
+                enabled=self.resolve_enabled(name, enabled),
                 dependencies=dependencies,
                 priority=priority,
                 min_neobot_version=min_neobot_version,
                 python_dependencies=python_dependencies,
                 missing_python_dependencies=missing_python_dependencies(python_dependencies),
                 source_path=path,
+                source=self.source,
+                repo=read_optional_text(metadata, "repo"),
+                branch=read_optional_text(metadata, "branch"),
+                homepage=read_optional_text(metadata, "homepage"),
+                license=read_optional_text(metadata, "license"),
+                tags=read_tags(metadata),
             )
         except Exception as exc:
             return PluginLoadError(name=manifest_name, plugin_dir=path, error=exc)
 
-    def _load_file(self, path: Path) -> PluginLoadResult:
+    def _load_file(self, path: Path) -> PluginLoadResult | None:
         name = path.stem
         module_names: tuple[str, ...] = ()
         try:
             self._validate_plugin_name(name)
+            if not self.resolve_enabled(name, True):
+                self._logger.info(f"插件已禁用，跳过加载: {path}")
+                return None
             module = self._importer.import_module(path, name)
             module_names = self._importer.last_module_names
             plugin = self._create_plugin(module)
@@ -155,6 +208,7 @@ class FilesystemPluginLoader:
                 python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
                 module_names=module_names,
                 source_path=path,
+                source=self.source,
             )
         except Exception as exc:
             self.clear_module_cache(module_names)
@@ -169,11 +223,11 @@ class FilesystemPluginLoader:
             enabled = metadata.get("enabled", True)
             if not isinstance(enabled, bool):
                 raise TypeError("plugin.toml 的 enabled 必须是 bool")
-            if not enabled:
-                self._logger.info(f"插件已禁用，跳过加载: {path}")
-                return None
             name = str(metadata.get("name") or path.name)
             self._validate_plugin_name(name)
+            if not self.resolve_enabled(name, enabled):
+                self._logger.info(f"插件已禁用，跳过加载: {path}")
+                return None
             version = str(metadata.get("version") or "0.1.0")
             description = str(metadata.get("description") or "")
             author = str(metadata.get("author") or "")
@@ -217,6 +271,12 @@ class FilesystemPluginLoader:
                 python_dependencies=python_dependencies,
                 module_names=module_names,
                 source_path=path,
+                source=self.source,
+                repo=read_optional_text(metadata, "repo"),
+                branch=read_optional_text(metadata, "branch"),
+                homepage=read_optional_text(metadata, "homepage"),
+                license=read_optional_text(metadata, "license"),
+                tags=read_tags(metadata),
             )
         except Exception as exc:
             self.clear_module_cache(module_names)

@@ -136,6 +136,115 @@ class DefaultCapabilityRegistry(_Registry):
 
 
 # ---------------------------------------------------------------------------
+# ServiceRegistry — 宿主服务只读注册表
+# ---------------------------------------------------------------------------
+
+
+class DefaultServiceRegistry:
+    """宿主服务注册表。
+
+    本体在装配阶段注册核心服务（config / adapter / 各管理器等），
+    插件通过 ctx.plugin_host.services 读取，无需让插件依赖具体装配代码。
+    未注册的名字返回 None 或抛出带可用名字清单的 KeyError。
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    def register(
+        self,
+        name: str,
+        service: Any,
+        *,
+        description: str = "",
+        override: bool = False,
+    ) -> None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("服务名必须是非空字符串")
+        key = name.strip()
+        if key in self._entries and not override:
+            raise ValueError(f"服务已注册: {key!r}")
+        self._entries[key] = {"service": service, "description": str(description or "")}
+
+    def unregister(self, name: str) -> bool:
+        return self._entries.pop(str(name), None) is not None
+
+    def has(self, name: str) -> bool:
+        return str(name) in self._entries
+
+    def get(self, name: str, default: Any = None) -> Any:
+        entry = self._entries.get(str(name))
+        return default if entry is None else entry["service"]
+
+    def require(self, name: str) -> Any:
+        entry = self._entries.get(str(name))
+        if entry is None:
+            available = ", ".join(sorted(self._entries)) or "（无）"
+            raise KeyError(f"宿主服务未注册: {name!r}；可用服务: {available}")
+        return entry["service"]
+
+    def names(self) -> list[str]:
+        return list(self._entries)
+
+    def describe(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": key,
+                "description": entry["description"],
+                "available": entry["service"] is not None,
+            }
+            for key, entry in self._entries.items()
+        ]
+
+
+class _TrackedServiceRegistry:
+    def __init__(
+        self,
+        registry: DefaultServiceRegistry,
+        record_cleanup: Callable[[Callable[[], None]], None],
+    ) -> None:
+        self._registry = registry
+        self._record_cleanup = record_cleanup
+
+    def register(
+        self,
+        name: str,
+        service: Any,
+        *,
+        description: str = "",
+        override: bool = False,
+    ) -> None:
+        self._registry.register(name, service, description=description, override=override)
+        entry = self._registry.get(name)
+        self._record_cleanup(
+            lambda name=name, entry=entry: self._unregister_if_current(name, entry)
+        )
+
+    def unregister(self, name: str) -> bool:
+        return self._registry.unregister(name)
+
+    def has(self, name: str) -> bool:
+        return self._registry.has(name)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return self._registry.get(name, default)
+
+    def require(self, name: str) -> Any:
+        return self._registry.require(name)
+
+    def names(self) -> list[str]:
+        return self._registry.names()
+
+    def describe(self) -> list[dict[str, Any]]:
+        return self._registry.describe()
+
+    def _unregister_if_current(self, name: str, entry: Any) -> bool:
+        if self._registry.get(name) is not entry:
+            return False
+        return self._registry.unregister(name)
+
+
+# ---------------------------------------------------------------------------
 # LifecycleHooks — 生命周期钩子
 # ---------------------------------------------------------------------------
 
@@ -170,6 +279,7 @@ class TrackedPluginHostFacade:
         self._queries = _TrackedQueryRegistry(host.queries, record_cleanup)
         self._capabilities = _TrackedCapabilityRegistry(host.capabilities, record_cleanup)
         self._lifecycle = _TrackedLifecycleHooks(host.lifecycle, record_cleanup)
+        self._services = _TrackedServiceRegistry(host.services, record_cleanup)
 
     @property
     def events(self) -> RuntimeInterceptionRegistry:
@@ -194,6 +304,10 @@ class TrackedPluginHostFacade:
     @property
     def lifecycle(self) -> "_TrackedLifecycleHooks":
         return self._lifecycle
+
+    @property
+    def services(self) -> "_TrackedServiceRegistry":
+        return self._services
 
     def register_skill(self, skill: Any) -> None:
         """注册 Skill，插件卸载时自动注销（仅当仍是原实例时）。"""
@@ -355,6 +469,7 @@ class PluginHostFacade:
         capabilities: DefaultCapabilityRegistry | None = None,
         lifecycle: DefaultLifecycleHooks | None = None,
         skills: Any = None,
+        services: DefaultServiceRegistry | None = None,
     ) -> None:
         self._events = events or _NullRuntimeInterceptionRegistry()
         self._output = output or NullOutput()
@@ -363,6 +478,7 @@ class PluginHostFacade:
         self._capabilities = capabilities or DefaultCapabilityRegistry()
         self._lifecycle = lifecycle or DefaultLifecycleHooks()
         self._skills = skills or _NullSkillRegistry()
+        self._services = services or DefaultServiceRegistry()
 
     @property
     def events(self) -> RuntimeInterceptionRegistry:
@@ -390,6 +506,10 @@ class PluginHostFacade:
     @property
     def lifecycle(self) -> DefaultLifecycleHooks:
         return self._lifecycle
+
+    @property
+    def services(self) -> DefaultServiceRegistry:
+        return self._services
 
     def register_skill(self, skill: Any) -> None:
         """注册一个外部 Skill 模块。

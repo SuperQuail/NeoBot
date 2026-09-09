@@ -11,6 +11,7 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.screenshot import ScreenshotPort
+from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
 from neobot_modloader.users import UserDirectory
@@ -154,8 +155,10 @@ class RuntimePluginContext:
         record_skill_cleanup: Any | None = None,
         screenshots: ScreenshotPort | None = None,
         app_commands: Any | None = None,
+        source: str = THIRD_PARTY_SOURCE,
     ) -> None:
         self._plugin_name = plugin_name
+        self._source = str(source or THIRD_PARTY_SOURCE)
         self._plugin_dir = plugin_dir
         self._data_dir = data_dir
         self._config = dict(config or {})
@@ -192,6 +195,15 @@ class RuntimePluginContext:
     @property
     def plugin_name(self) -> str:
         return self._plugin_name
+
+    @property
+    def source(self) -> str:
+        """插件来源：official（随本体分发）/ third_party（数据目录安装）。"""
+        return self._source
+
+    @property
+    def official(self) -> bool:
+        return self._source == OFFICIAL_SOURCE
 
     @property
     def plugin_dir(self) -> Path:
