@@ -32,7 +32,7 @@ class TTSService:
         self,
         config: TTSConfig,
         *,
-        model_name: str = "tts_model",
+        model_name: str = "tts_model",  # TTS 模型 key（bootstrap 传 [models.assignments].tts_model）
         logger: Logger | None = None,
         file_server=None,
     ) -> None:

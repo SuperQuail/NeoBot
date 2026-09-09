@@ -207,28 +207,34 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     """嵌套 dataclass 必须递归转换，且通过默认值自动识别 DeepSeekModelSettings 子类。"""
     # Arrange
     raw = {
-        "primary_chat_model": {
-            "provider": "DeepSeek",
-            "model_name": "deepseek-chat",
-            "settings": {
-                "deepseek_thinking_mode": "random",
-                "deepseek_reasoning_effort": "max",
-            },
-        }
+        "registry": [
+            {
+                "key": "deepseek-v4-pro",
+                "provider": "DeepSeek",
+                "model_name": "deepseek-chat",
+                "settings": {
+                    "deepseek_thinking_mode": "random",
+                    "deepseek_reasoning_effort": "max",
+                },
+            }
+        ]
     }
 
     # Act
     models = dict_to_dataclass(raw, Models)
 
     # Assert
-    primary = models.primary_chat_model
+    primary = models.get("deepseek-v4-pro")
+    assert primary is not None
     assert primary.provider == "DeepSeek"
     assert primary.model_name == "deepseek-chat"
     assert isinstance(primary.settings, DeepSeekModelSettings)
     assert primary.settings.deepseek_thinking_mode == "random"
     assert primary.settings.deepseek_reasoning_effort == "max"
     assert primary.pricing.input_price_per_mtokens == 0.0
-    assert isinstance(models.agent_model_1.settings, DeepSeekModelSettings)
+    # 调用方只引用 key，未在 registry 里出现的默认条目不应被隐式保留
+    assert models.assignments.primary_chat_model == "deepseek-v4-pro"
+    assert [item.key for item in models.registry] == ["deepseek-v4-pro"]
 
 
 def test_dataclass_to_toml_fills_defaults_and_marks_required_missing():

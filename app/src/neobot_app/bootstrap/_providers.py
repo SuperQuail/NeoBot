@@ -13,6 +13,16 @@ from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 VISION_MODEL_NAME = "vision_model"
 
 
+def resolve_vision_model_name(config: BotConfigSchema) -> str:
+    """视觉模型引用的 key（找不到时回退到旧角色名）。"""
+    assignments = getattr(getattr(config, "models", None), "assignments", None)
+    key = str(getattr(assignments, "vision_model", "") or "").strip() if assignments else ""
+    models = getattr(config, "models", None)
+    if key and models is not None and hasattr(models, "get") and models.get(key) is not None:
+        return key
+    return VISION_MODEL_NAME
+
+
 def build_main_provider(
     *,
     config: BotConfigSchema,
@@ -26,8 +36,13 @@ def build_main_provider(
     主模型声明原生视觉但无法处理图片时，同样自动切换到视觉模型并保留图片。
     """
     main_model_name = resolve_agent_model_name(config, "main_agent", default_index=0)
+    vision_model_name = resolve_vision_model_name(config)
     provider = None
-    main_config = getattr(config.models, main_model_name)
+    main_config = (
+        config.models.get(main_model_name)
+        if hasattr(config.models, "get")
+        else getattr(config.models, main_model_name, None)
+    )
     if getattr(main_config, "native_vision", False):
         startup_reason = None
         try:
@@ -37,14 +52,16 @@ def build_main_provider(
             startup_reason = "配置的原生视觉 provider 无法创建"
         if provider is not None and not getattr(provider, "native_vision", False):
             startup_reason = "配置启用了原生视觉，但实际 provider 未暴露图片发送能力"
-        fallback = vision_provider or build_vision_provider(logger=logger)
+        fallback = vision_provider or build_vision_provider(
+            logger=logger, model_name=vision_model_name
+        )
         if fallback is None:
-            error = "视觉模型不可用，无法建立原生视觉回退；请检查 vision_model 配置"
+            error = "视觉模型不可用，无法建立原生视觉回退；请检查 vision_model 分配与配置"
             logger.error(error)
             return None, error
         provider = NativeVisionFallbackProvider(
             provider, fallback, logger=logger,
-            primary_name=main_model_name, fallback_name=VISION_MODEL_NAME,
+            primary_name=main_model_name, fallback_name=vision_model_name,
             startup_reason=startup_reason, strip_images=False,
         )
     else:
@@ -55,9 +72,11 @@ def build_main_provider(
 
     if provider is None:
         # 主模型不可用：自动回退到视觉模型（而不是让用户手选另一个模型）
-        fallback = vision_provider or build_vision_provider(logger=logger)
+        fallback = vision_provider or build_vision_provider(
+            logger=logger, model_name=vision_model_name
+        )
         if fallback is not None:
-            logger.warning(f"主对话模型不可用，已自动回退到视觉模型({VISION_MODEL_NAME})")
+            logger.warning(f"主对话模型不可用，已自动回退到视觉模型({vision_model_name})")
             return fallback, None
 
     error_message = None
@@ -68,12 +87,12 @@ def build_main_provider(
     return provider, error_message
 
 
-def build_vision_provider(*, logger: Any) -> Any:
+def build_vision_provider(*, logger: Any, model_name: str = VISION_MODEL_NAME) -> Any:
     """创建视觉模型 provider（失败返回 None）。"""
     try:
-        return create_provider("vision_model")
+        return create_provider(model_name)
     except Exception as exc:
-        logger.warning(f"无法创建视觉模型 provider: {exc}")
+        logger.warning(f"无法创建视觉模型 provider({model_name}): {exc}")
         return None
 
 

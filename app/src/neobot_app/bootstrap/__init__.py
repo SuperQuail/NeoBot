@@ -29,6 +29,7 @@ from neobot_app.bootstrap._commands import (
 from neobot_app.bootstrap._providers import (
     build_main_provider,
     build_vision_provider,
+    resolve_vision_model_name,
 )
 from neobot_app.bootstrap._services import (
     build_adapter_service,
@@ -267,7 +268,9 @@ def create_application() -> NeoBotApplication:
 
     provider_logger = logger_factory.get_logger("app.provider")
     # 视觉模型先创建：既用于图片解析，也作为主模型不可用时的自动回退路由。
-    vision_provider = build_vision_provider(logger=provider_logger)
+    vision_provider = build_vision_provider(
+        logger=provider_logger, model_name=resolve_vision_model_name(config)
+    )
     provider, provider_error_message = build_main_provider(
         config=config, logger=provider_logger, vision_provider=vision_provider,
     )

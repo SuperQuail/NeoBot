@@ -93,7 +93,7 @@ class CreatorImageService:
         adapter: OneBotAdapter,
         config: DrawServiceConfig,
         data_dir: Path = DATA_DIR,
-        model_name: str = "creator_image_models_0",
+        model_name: str = "",  # 生图模型 key（由 bootstrap 传入 [models.assignments].creator_image_models）
         model_names: Sequence[str] | None = None,
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
@@ -110,7 +110,7 @@ class CreatorImageService:
         self._vision_provider = vision_provider
         self._file_server = file_server
         self._image_pool = image_pool
-        names = tuple(model_names) if model_names else (model_name,)
+        names = tuple(model_names) if model_names else ((model_name,) if model_name else ())
         self._model_names: tuple[str, ...] = tuple(dict.fromkeys(name for name in names if name))
         if not self._model_names:
             raise ValueError("至少需要一个生图模型注册名")

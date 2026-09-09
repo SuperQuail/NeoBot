@@ -1,5 +1,15 @@
+import re
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Dict, Iterator, List, Optional, TypedDict
+from typing import Any, ClassVar, Dict, Iterator, List, Optional, TypedDict
+
+_MODEL_KEY_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def normalize_model_key(value: Any) -> str:
+    """把模型 key 规范化为 [A-Za-z0-9_.-]{1,64}（非法字符替换为 -）。"""
+    text = str(value or "").strip()
+    text = _MODEL_KEY_RE.sub("-", text).strip("-.")
+    return text[:64]
 
 
 class KeyWordRule(TypedDict, total=False):
@@ -192,12 +202,18 @@ class DeepSeekModelSettings(ModelSettings):
 
 
 @dataclass
-class ModelRegistration:
-    """单个模型注册配置。"""
+class ModelDefinition:
+    """模型库中的一个模型；调用方通过 key 引用它。"""
 
+    key: str = field(
+        default="",
+        metadata={
+            "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线"
+        },
+    )
     description: str = field(
         default="主对话模型",
-        metadata={"description": "模型用途说明"},
+        metadata={"description": "模型用途说明（Agent 选择生图模型时也会参考）"},
     )
     provider: str = field(
         default="DeepSeek",
@@ -208,7 +224,7 @@ class ModelRegistration:
         metadata={"description": "模型名"},
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)
-    settings: ModelSettings = field(default_factory=ModelSettings)
+    settings: DeepSeekModelSettings = field(default_factory=DeepSeekModelSettings)
     native_vision: bool = field(
         default=False,
         metadata={
@@ -224,9 +240,21 @@ class ModelRegistration:
         },
     )
 
+    def __post_init__(self) -> None:
+        self.key = normalize_model_key(self.key)
 
-def _default_primary_chat_model() -> "ModelRegistration":
-    return ModelRegistration(
+    @property
+    def display_name(self) -> str:
+        return self.description or self.model_name or self.key
+
+
+#: 兼容旧名称（历史配置与外部脚本可能仍引用 ModelRegistration）
+ModelRegistration = ModelDefinition
+
+
+def _default_primary_chat_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-pro",
         description="主对话模型（Agent模型编号0）",
         provider="DeepSeek",
         model_name="deepseek-v4-pro",
@@ -248,8 +276,9 @@ def _default_primary_chat_model() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_1() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_1() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-max",
         description="Agent模型编号1：deepseek-v4-flash max 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -271,8 +300,9 @@ def _default_agent_model_1() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_2() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_2() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-high",
         description="Agent模型编号2：deepseek-v4-flash high 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -294,8 +324,9 @@ def _default_agent_model_2() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_3() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_3() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-off",
         description="Agent模型编号3：deepseek-v4-flash 非推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -317,8 +348,9 @@ def _default_agent_model_3() -> "ModelRegistration":
     )
 
 
-def _default_vision_model() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_vision_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="qwen3-vl-8b",
         description="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
@@ -335,8 +367,9 @@ def _default_vision_model() -> "ModelRegistration":
     )
 
 
-def _default_tts_model() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_tts_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="cosyvoice2",
         description="语音模型",
         provider="硅基流动",
         model_name="FunAudioLLM/CosyVoice2-0.5B",
@@ -352,8 +385,9 @@ def _default_tts_model() -> "ModelRegistration":
     )
 
 
-def _default_creator_image_model() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_creator_image_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="flux-schnell",
         description="创作者Agent生图模型（默认）",
         provider="SiliconFlow",
         model_name="black-forest-labs/FLUX.1-schnell",
@@ -368,63 +402,134 @@ def _default_creator_image_model() -> "ModelRegistration":
     )
 
 
-def _default_creator_image_models() -> "List[ModelRegistration]":
-    return [_default_creator_image_model()]
+def _default_model_library() -> "List[ModelDefinition]":
+    """默认模型库：模型单独存储，调用方只引用 key。"""
+    return [
+        _default_primary_chat_model(),
+        _default_agent_model_1(),
+        _default_agent_model_2(),
+        _default_agent_model_3(),
+        _default_vision_model(),
+        _default_tts_model(),
+        _default_creator_image_model(),
+    ]
+
+
+@dataclass
+class ModelAssignments:
+    """各调用方引用的模型 key（在模型库 [models.registry] 中定义）。"""
+
+    primary_chat_model: str = field(
+        default="deepseek-v4-pro",
+        metadata={"description": "Agent模型编号0（主对话模型）引用的模型 key"},
+    )
+    agent_model_1: str = field(
+        default="deepseek-v4-flash-max",
+        metadata={"description": "Agent模型编号1引用的模型 key"},
+    )
+    agent_model_2: str = field(
+        default="deepseek-v4-flash-high",
+        metadata={"description": "Agent模型编号2引用的模型 key"},
+    )
+    agent_model_3: str = field(
+        default="deepseek-v4-flash-off",
+        metadata={"description": "Agent模型编号3引用的模型 key"},
+    )
+    vision_model: str = field(
+        default="qwen3-vl-8b",
+        metadata={"description": "图像识别模型引用的模型 key"},
+    )
+    tts_model: str = field(
+        default="cosyvoice2",
+        metadata={"description": "语音模型引用的模型 key"},
+    )
+    creator_image_models: List[str] = field(
+        default_factory=lambda: ["flux-schnell"],
+        metadata={
+            "description": "创作者Agent生图模型列表（引用 key）；配置多个时由 Agent 按描述自行选择"
+        },
+    )
+
+    #: 单值角色（顺序即面板展示顺序；ClassVar 表示不是配置字段）
+    SINGLE_ROLES: ClassVar[tuple[str, ...]] = (
+        "primary_chat_model",
+        "agent_model_1",
+        "agent_model_2",
+        "agent_model_3",
+        "vision_model",
+        "tts_model",
+    )
+
+    def role_key(self, role: str) -> str:
+        return str(getattr(self, role, "") or "").strip()
+
+    def items(self) -> Iterator[tuple[str, str]]:
+        """产出 (角色名, 模型 key)；生图列表逐项产出，角色名统一为 creator_image_models。"""
+        for role in self.SINGLE_ROLES:
+            key = self.role_key(role)
+            if key:
+                yield role, key
+        for item in self.creator_image_models:
+            key = str(item or "").strip()
+            if key:
+                yield "creator_image_models", key
+
+    def image_keys(self) -> List[str]:
+        return [str(item or "").strip() for item in self.creator_image_models if str(item or "").strip()]
 
 
 @dataclass
 class Models:
-    """模型注册配置集合。"""
+    """模型库 + 调用方分配。
 
-    primary_chat_model: ModelRegistration = field(
-        default_factory=_default_primary_chat_model,
-        metadata={"description": "Agent模型编号0（主对话模型）"},
-    )
-    agent_model_1: ModelRegistration = field(
-        default_factory=_default_agent_model_1,
-        metadata={"description": "Agent模型编号1"},
-    )
-    agent_model_2: ModelRegistration = field(
-        default_factory=_default_agent_model_2,
-        metadata={"description": "Agent模型编号2"},
-    )
-    agent_model_3: ModelRegistration = field(
-        default_factory=_default_agent_model_3,
-        metadata={"description": "Agent模型编号3"},
-    )
-    vision_model: ModelRegistration = field(
-        default_factory=_default_vision_model,
-        metadata={"description": "图像识别模型"},
-    )
-    tts_model: ModelRegistration = field(
-        default_factory=_default_tts_model,
-        metadata={"description": "语音模型"},
-    )
-    creator_image_models: List[ModelRegistration] = field(
-        default_factory=_default_creator_image_models,
+    模型单独存储在 registry 中，各调用方（主对话/Agent/视觉/TTS/生图）只引用 key，
+    这样同一个模型可以被多个调用方复用，改一处即可全局生效。
+    """
+
+    registry: List[ModelDefinition] = field(
+        default_factory=_default_model_library,
         metadata={
-            "description": "创作者Agent生图模型列表；可配置多个模型/供应商，"
-            "供应商超过一个时由 Agent 按 description 自行选择"
+            "description": "模型库：每个模型单独存储（key/描述/供应商/模型名/参数/价格），"
+            "调用方通过 key 引用"
         },
     )
+    assignments: ModelAssignments = field(
+        default_factory=ModelAssignments,
+        metadata={"description": "各调用方引用的模型 key"},
+    )
 
-    def iter_registrations(self) -> Iterator[tuple[str, ModelRegistration]]:
-        """遍历全部已注册模型，列表字段按 序号 展开为 creator_image_models_0 等名字。"""
-        for config_field in dataclass_fields(self):
-            model = getattr(self, config_field.name)
-            if isinstance(model, ModelRegistration):
-                yield config_field.name, model
-            elif isinstance(model, list):
-                for index, item in enumerate(model):
-                    if isinstance(item, ModelRegistration):
-                        yield f"{config_field.name}_{index}", item
+    def by_key(self) -> Dict[str, ModelDefinition]:
+        return {item.key: item for item in self.registry if item.key}
+
+    def get(self, key: str) -> Optional[ModelDefinition]:
+        return self.by_key().get(str(key or "").strip())
+
+    def iter_definitions(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """遍历模型库：(key, 模型定义)。"""
+        for item in self.registry:
+            if item.key:
+                yield item.key, item
+
+    def iter_role_models(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """遍历调用方实际引用的模型：(角色名, 模型定义)；key 缺失时跳过。"""
+        library = self.by_key()
+        for role, key in self.assignments.items():
+            definition = library.get(key)
+            if definition is not None:
+                yield role, definition
+
+    def iter_registrations(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """兼容旧接口：等价于 iter_role_models()。"""
+        return self.iter_role_models()
+
+    def missing_assignment_keys(self) -> List[str]:
+        """返回引用了但模型库里不存在的 key。"""
+        library = self.by_key()
+        return sorted({key for _role, key in self.assignments.items() if key not in library})
 
     @property
     def creator_image_model_names(self) -> List[str]:
-        return [
-            f"creator_image_models_{index}"
-            for index, _ in enumerate(self.creator_image_models)
-        ]
+        return self.assignments.image_keys()
 
 
 @dataclass
@@ -1281,7 +1386,7 @@ class BotConfig:
     """机器人主配置。"""
 
     version: str = field(
-        default="0.5.0",
+        default="0.6.0",
         metadata={"description": "配置文件版本（由程序维护，请勿手动修改）", "readonly": True},
     )
     bot: Bot = field(default_factory=Bot)

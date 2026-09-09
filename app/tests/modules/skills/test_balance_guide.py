@@ -25,15 +25,18 @@ class FakeRegistry:
 
 def test_document_only_lists_models_with_hint() -> None:
     config = BotConfig()
-    config.models.primary_chat_model.balance_query_hint = "GET https://api.example.com/user/balance，Authorization: Bearer <key>"
+    primary = config.models.get("deepseek-v4-pro")
+    assert primary is not None
+    primary.balance_query_hint = "GET https://api.example.com/user/balance，Authorization: Bearer <key>"
 
     document, count = build_balance_query_document(config)
 
     assert count == 1
-    assert "primary_chat_model" in document
+    # 余额提示属于模型本身，文档按模型 key 列出
+    assert "## deepseek-v4-pro" in document
     assert "https://api.example.com/user/balance" in document
     # 未配置提示的模型不出现在文档里
-    assert "agent_model_1" not in document
+    assert "deepseek-v4-flash-max" not in document
     assert document.rstrip().endswith(NO_HINT_NOTE)
 
 
@@ -47,7 +50,9 @@ def test_document_without_any_hint_still_contains_note() -> None:
 
 def test_sync_writes_file_and_registers_skill(tmp_path: Path) -> None:
     config = BotConfig()
-    config.models.vision_model.balance_query_hint = "GET https://vision.example.com/balance"
+    vision = config.models.get("qwen3-vl-8b")
+    assert vision is not None
+    vision.balance_query_hint = "GET https://vision.example.com/balance"
     registry = FakeRegistry()
 
     ok = sync_balance_query_skill(

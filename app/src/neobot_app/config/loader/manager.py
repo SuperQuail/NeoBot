@@ -153,12 +153,12 @@ class Config:
 
     @classmethod
     def register_models(cls, config_obj: Any):
-        """根据配置自动注册模型。
+        """根据「模型库 + 调用方引用」注册模型。
 
-        未启用功能的模型（creator_image_model、tts_model）跳过注册与 Key 校验；
-        无启用开关的模型（vision_model）缺 Key 时降级跳过并警告；
-        必需对话模型（primary_chat_model、agent_model_1..3）缺 Key 时
-        收集全部缺失项后抛出 ConfigLoadError，不直接退出进程。
+        每个模型库条目按 key 注册一次；调用方（主对话/Agent/视觉/TTS/生图）
+        只引用 key。未启用功能的模型（creator_image_models、tts_model）跳过注册与
+        Key 校验；无启用开关的模型（vision_model）缺 Key 时降级跳过并警告；
+        必需对话模型缺 Key 时收集全部缺失项后抛出 ConfigLoadError。
         """
         models_config = getattr(config_obj, "models", None)
         if models_config is None:
@@ -175,13 +175,13 @@ class Config:
             get_model_registry,
         )
 
-        # 无独立 enabled 开关、缺 Key 时可降级跳过的模型字段
-        degradable_fields = {"vision_model", "tts_model"}
+        # 无独立 enabled 开关、缺 Key 时可降级跳过的角色
+        degradable_roles = {"vision_model", "tts_model"}
 
-        def _feature_enabled(model_field_name: str) -> bool:
-            if model_field_name == "tts_model":
+        def _feature_enabled(role: str) -> bool:
+            if role == "tts_model":
                 return bool(getattr(getattr(config_obj, "tts", None), "enabled", False))
-            if model_field_name.startswith("creator_image_models"):
+            if role == "creator_image_models":
                 return bool(
                     getattr(getattr(config_obj, "agent", None), "creator", None)
                     and getattr(
@@ -195,9 +195,27 @@ class Config:
         pending: list[tuple] = []
         missing_items: list[str] = []
 
-        iter_registrations = getattr(models_config, "iter_registrations", None)
-        if callable(iter_registrations):
-            registrations = list(iter_registrations())
+        # 调用方引用了模型库里不存在的 key：必需角色报错，可降级角色仅告警
+        library_keys = (
+            set(models_config.by_key()) if hasattr(models_config, "by_key") else set()
+        )
+        assignments = getattr(models_config, "assignments", None)
+        if assignments is not None and hasattr(assignments, "items"):
+            for ref_role, ref_key in assignments.items():
+                if ref_key in library_keys:
+                    continue
+                if not _feature_enabled(ref_role):
+                    logger.info(f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_key}")
+                    continue
+                detail = f"调用方 {ref_role} 引用了模型库中不存在的 key: {ref_key}"
+                if ref_role in degradable_roles:
+                    logger.warning(f"{detail}，该功能将被降级禁用")
+                    continue
+                missing_items.append(detail)
+
+        iter_role_models = getattr(models_config, "iter_role_models", None)
+        if callable(iter_role_models):
+            registrations = list(iter_role_models())
         else:
             registrations = [
                 (item.name, getattr(models_config, item.name))
@@ -205,22 +223,25 @@ class Config:
                 if is_dataclass(getattr(models_config, item.name))
             ]
 
-        for registry_name, model_config in registrations:
+        registered_keys: set[str] = set()
+        for role, model_config in registrations:
             if not is_dataclass(model_config):
                 continue
-            if not _feature_enabled(registry_name):
-                logger.info(
-                    f"{registry_name} 对应功能未启用，跳过注册与校验"
-                )
+            if not _feature_enabled(role):
+                logger.info(f"{role} 对应功能未启用，跳过注册与校验")
+                continue
+
+            key = str(getattr(model_config, "key", "") or "").strip()
+            if not key:
+                missing_items.append(f"{role} 引用的模型缺少 key（模型库条目的 key 不能为空）")
+                continue
+            if key in registered_keys:
                 continue
 
             provider_name = getattr(model_config, "provider", "").strip()
             model_name = getattr(model_config, "model_name", "").strip()
-            description = getattr(model_config, "description", registry_name).strip()
-            if (
-                registry_name == "primary_chat_model"
-                and "模型编号0" not in description
-            ):
+            description = getattr(model_config, "description", key).strip()
+            if role == "primary_chat_model" and "模型编号0" not in description:
                 description = f"{description}（Agent模型编号0）"
 
             missing: list[str] = []
@@ -238,12 +259,13 @@ class Config:
                     missing.append(f"平台 {provider_name}_APIKey 配置")
 
             if missing:
-                detail = f"模型 {registry_name} 缺少: " + "、".join(missing)
-                if registry_name in degradable_fields:
+                detail = f"模型 {key}（{role}）缺少: " + "、".join(missing)
+                if role in degradable_roles:
                     logger.warning(f"{detail}，该功能将被降级禁用")
                     continue
                 missing_items.append(detail)
                 continue
+            registered_keys.add(key)
 
             pricing_config = getattr(model_config, "pricing", None)
             settings_config = getattr(model_config, "settings", None)
@@ -272,7 +294,7 @@ class Config:
             )
             pending.append(
                 (
-                    registry_name,
+                    key,
                     description,
                     provider_name,
                     model_name,

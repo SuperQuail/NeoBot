@@ -23,8 +23,11 @@ _KEYWORDS = "余额 查询余额 账户余额 balance 充值 额度 用量"
 
 
 def _model_entries(config: Any) -> list[tuple[str, Any]]:
+    """模型库里的全部模型（余额提示属于模型本身，与调用方无关）。"""
     models = getattr(config, "models", None)
-    iterator = getattr(models, "iter_registrations", None)
+    iterator = getattr(models, "iter_definitions", None)
+    if not callable(iterator):
+        iterator = getattr(models, "iter_registrations", None)
     if not callable(iterator):
         return []
     return [(str(name), model) for name, model in iterator()]
