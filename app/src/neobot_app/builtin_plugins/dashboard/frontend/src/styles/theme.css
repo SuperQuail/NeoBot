@@ -190,6 +190,12 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 .install-form .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .install-form .field span { font-size: 12px; color: var(--muted); }
 .install-form .input { width: 100%; }
+.modal.modal-wide { width: 880px; max-width: 96vw; }
+.modal.modal-wide .modal-body { max-height: 74vh; overflow: auto; }
+/* 弹窗内表单改为「标签在上、控件在下」，避免窄列把数值/说明挤断 */
+.modal .cfg-row { grid-template-columns: 1fr; gap: 6px; }
+.modal .cfg-row .cfg-control { width: 100%; }
+.modal .cfg-group .cfg-section-heading { flex-wrap: wrap; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 
 /* ---- 机器人详情 ---- */

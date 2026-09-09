@@ -567,6 +567,97 @@ async def test_models_library_crud_and_assignments(panel) -> None:
     assert "creator_image_models = [\"my-flux\"]" in raw
 
 
+async def test_models_view_exposes_options_and_proxy_flag(panel) -> None:
+    """模型库视图需提供下拉候选值与代理开关，字段描述带 options。"""
+    _, _, base, _ = panel
+    token, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/config/models", headers={"X-Token": token})
+
+    payload = response.json()
+    assert "DeepSeek" in payload["provider_options"]
+    assert isinstance(payload["model_name_options"], list)
+    entry = next(item for item in payload["library"] if item["key"] == "deepseek-v4-pro")
+    assert entry["use_system_proxy"] is False
+    assert entry["entry"]["use_system_proxy"] is False
+
+    fields = {field["name"]: field for field in payload["entry_schema"]}
+    assert fields["use_system_proxy"]["type"] == "bool"
+    assert fields["provider"]["kind"] == "scalar"
+    settings = {field["name"]: field for field in fields["settings"]["fields"]}
+    assert settings["deepseek_thinking_mode"]["options"] == ["enabled", "disabled", "random"]
+    assert settings["deepseek_thinking_mode"]["options_strict"] is True
+    assert settings["deepseek_reasoning_effort"]["options"] == ["high", "max"]
+
+
+async def test_models_test_endpoint_reports_missing_credentials(panel) -> None:
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        missing = await client.post(
+            base + "/api/config/models/test",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"key": "deepseek-v4-pro"},
+        )
+        unknown = await client.post(
+            base + "/api/config/models/test",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"key": "no-such-model"},
+        )
+
+    assert missing.status_code == 200
+    payload = missing.json()
+    assert payload["ok"] is False
+    assert "未配置" in payload["message"]
+    assert payload["proxy"] is False
+    assert unknown.status_code == 404
+
+
+async def test_models_test_endpoint_returns_probe_result(panel, monkeypatch) -> None:
+    from neobot_app.builtin_plugins.dashboard import model_probe
+
+    calls: list[dict] = []
+
+    async def fake_probe(**kwargs):
+        calls.append(kwargs)
+        return model_probe.ModelProbeResult(
+            ok=True,
+            reachable=True,
+            authorized=True,
+            model_found=True,
+            status=200,
+            latency_ms=42,
+            url="https://api.example.com/models",
+            proxy=kwargs["use_system_proxy"],
+            message="连接正常，模型可用",
+        )
+
+    monkeypatch.setattr(model_probe, "probe_model", fake_probe)
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/config/models/test",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={
+                "entry": {
+                    "key": "draft-model",
+                    "provider": "MyProvider",
+                    "model_name": "my-model",
+                    "use_system_proxy": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["latency_ms"] == 42
+    assert payload["proxy"] is True
+    assert calls and calls[-1]["use_system_proxy"] is True
+    assert calls[-1]["provider"] == "MyProvider"
+
+
 async def test_models_assignments_reject_unknown_key(panel) -> None:
     _, _, base, _ = panel
     token, csrf = await _login(base)

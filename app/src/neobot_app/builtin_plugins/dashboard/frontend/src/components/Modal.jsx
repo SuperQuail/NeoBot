@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 
-export default function Modal({ open, title, onClose, children }) {
+export default function Modal({ open, title, onClose, children, size = 'default' }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(onClose);
   const titleId = useId();
@@ -29,7 +29,7 @@ export default function Modal({ open, title, onClose, children }) {
   if (!open) return null;
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+      <div className={'modal' + (size && size !== 'default' ? ' modal-' + size : '')} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 id={titleId}>{title}</h3>
           <button className="icon-btn" aria-label="关闭对话框" onClick={onClose}>

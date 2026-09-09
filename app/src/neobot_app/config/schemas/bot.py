@@ -184,13 +184,17 @@ class DeepSeekModelSettings(ModelSettings):
     deepseek_thinking_mode: str = field(
         default="enabled",
         metadata={
-            "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启"
+            "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启",
+            "options": ["enabled", "disabled", "random"],
+            "options_strict": True,
         },
     )
     deepseek_reasoning_effort: str = field(
         default="high",
         metadata={
-            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max"
+            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max",
+            "options": ["high", "max"],
+            "options_strict": True,
         },
     )
     deepseek_random_thinking_probability: float = field(
@@ -230,6 +234,13 @@ class ModelDefinition:
         metadata={
             "description": "该模型可直接接收图片块；主推理模型开启后，不可用或无法处理图片时"
             "自动回退到 vision_model（无需手选回退模型）"
+        },
+    )
+    use_system_proxy: bool = field(
+        default=False,
+        metadata={
+            "description": "该模型是否跟随系统/环境变量代理访问；默认关闭（直连），"
+            "仅在需要通过本地代理（如 Clash）访问供应商时开启"
         },
     )
     balance_query_hint: str = field(

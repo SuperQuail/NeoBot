@@ -54,6 +54,7 @@ class TTSService:
                 self._model.settings.timeout_seconds,
                 connect=min(self._model.settings.timeout_seconds, 10.0),
             ),
+            trust_env=bool(getattr(self._model, "use_system_proxy", False)),
         )
 
     @property

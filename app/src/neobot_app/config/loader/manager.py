@@ -302,6 +302,7 @@ class Config:
                     pricing,
                     settings,
                     bool(getattr(model_config, "native_vision", False)),
+                    bool(getattr(model_config, "use_system_proxy", False)),
                 )
             )
 
@@ -325,6 +326,7 @@ class Config:
             pricing,
             settings,
             native_vision,
+            use_system_proxy,
         ) in pending:
             registry.register(
                 RegisteredModel(
@@ -337,6 +339,7 @@ class Config:
                     pricing=pricing,
                     settings=settings,
                     native_vision=native_vision,
+                    use_system_proxy=use_system_proxy,
                 )
             )
             registered_count += 1

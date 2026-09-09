@@ -712,6 +712,7 @@ function ModelsPanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [editing, setEditing] = useState(null);
+  const [probe, setProbe] = useState(null);
 
   const applyData = useCallback((payload) => {
     setData(payload);
@@ -774,12 +775,34 @@ function ModelsPanel() {
     toast('已删除 ' + item.key, 'ok');
   };
 
+  const runProbe = async (target) => {
+    const label = target.key || target.entry?.key || 'draft';
+    setBusy('test:' + label);
+    const result = await api.modelsTest(target);
+    setBusy('');
+    const payload = result.data || {};
+    if (!result.ok && !payload.message) {
+      toast(result.error || '测试失败', 'err');
+      return;
+    }
+    setProbe({
+      ...payload,
+      key: payload.key || target.key || target.entry?.key || '',
+      provider: payload.provider || target.entry?.provider || '',
+      model_name: payload.model_name || target.entry?.model_name || '',
+    });
+  };
+
   const fields = useMemo(() => {
     if (!editing) return [];
-    const bound = bindValues(schema, editing.draft);
+    const bound = bindValues(schema, editing.draft).map((field) => {
+      if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
+      if (field.name === 'model_name') return { ...field, options: data?.model_name_options || [] };
+      return field;
+    });
     if (editing.isNew) return bound;
     return bound.map((field) => (field.name === 'key' ? { ...field, readonly: true } : field));
-  }, [editing, schema]);
+  }, [editing, schema, data]);
 
   return (
     <section className="card config-card">
@@ -820,9 +843,13 @@ function ModelsPanel() {
                   {item.registered && <span className="tag ok">已注册</span>}
                   {item.assigned && <span className="tag info">已引用</span>}
                   {item.native_vision && <span className="tag info">原生视觉</span>}
+                  {item.use_system_proxy && <span className="tag info">系统代理</span>}
                 </td>
                 <td>
                   <button className="btn-sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</button>
+                  <button className="btn-sm" disabled={!!busy} onClick={() => runProbe({ key: item.key })}>
+                    {busy === 'test:' + item.key ? '测试中…' : '测试'}
+                  </button>
                   <button className="btn-sm danger" disabled={!!busy} onClick={() => remove(item)}>删除</button>
                 </td>
               </tr>
@@ -833,6 +860,7 @@ function ModelsPanel() {
 
       <Modal
         open={!!editing}
+        size="wide"
         title={editing?.isNew ? '新增模型' : '编辑模型 ' + (editing?.draft?.key || '')}
         onClose={() => setEditing(null)}
       >
@@ -844,12 +872,45 @@ function ModelsPanel() {
               onChange={(path, value) => setEditing((previous) => ({ ...previous, draft: setPath(previous.draft, path, value) }))}
             />
             <div className="modal-actions">
+              <button className="btn" disabled={!!busy}
+                onClick={() => runProbe({ entry: editing.draft, key: editing.draft?.key })}>
+                {busy === 'test:' + (editing.draft?.key || 'draft') ? '测试中…' : '测试连通性'}
+              </button>
               <button className="btn" disabled={!!busy} onClick={() => setEditing(null)}>取消</button>
               <button className="btn primary" disabled={!!busy} onClick={save}>
                 <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存模型'}
               </button>
             </div>
           </>
+        )}
+      </Modal>
+
+      <Modal open={!!probe} size="wide" title="模型连通性测试" onClose={() => setProbe(null)}>
+        {probe && (
+          <div className="probe-result">
+            <p className={'probe-headline ' + (probe.ok ? 'ok' : 'err')}>
+              <Icon name={probe.ok ? 'check' : 'more'} /> {probe.message || (probe.ok ? '连接正常' : '测试未通过')}
+            </p>
+            <table className="model-table">
+              <tbody>
+                <tr><th>模型</th><td><code>{probe.key || '（未保存草稿）'}</code></td></tr>
+                <tr><th>供应商 / 模型名</th><td>{probe.provider || '—'} / <code>{probe.model_name || '—'}</code></td></tr>
+                <tr><th>请求地址</th><td className="muted small">{probe.url || '—'}</td></tr>
+                <tr><th>代理</th><td>{probe.proxy ? '跟随系统代理' : '直连（不使用代理）'}</td></tr>
+                <tr><th>网络可达</th><td>{probe.reachable ? '是' : '否'}</td></tr>
+                <tr><th>鉴权</th><td>{probe.authorized ? '通过' : '未通过'}</td></tr>
+                <tr>
+                  <th>模型是否存在</th>
+                  <td>{probe.model_found === true ? '已找到' : probe.model_found === false ? '未在模型列表中' : '未检查'}</td>
+                </tr>
+                <tr><th>HTTP / 耗时</th><td>{probe.status ?? '—'} / {probe.latency_ms != null ? probe.latency_ms + ' ms' : '—'}</td></tr>
+                {probe.detail && <tr><th>详情</th><td className="muted small">{probe.detail}</td></tr>}
+              </tbody>
+            </table>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setProbe(null)}>关闭</button>
+            </div>
+          </div>
         )}
       </Modal>
     </section>

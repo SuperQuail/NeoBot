@@ -133,6 +133,7 @@ class CreatorImageService:
                 base_url=model.base_url.rstrip("/"),
                 headers={"Authorization": f"Bearer {model.api_key}"},
                 timeout=httpx.Timeout(model_timeout, connect=min(model_timeout, 10.0)),
+                trust_env=bool(getattr(model, "use_system_proxy", False)),
             )
         self._model = default_model
         self._client = self._clients[self._default_model_name]

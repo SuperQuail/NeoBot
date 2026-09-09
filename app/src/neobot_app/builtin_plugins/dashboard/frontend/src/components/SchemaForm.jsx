@@ -99,6 +99,25 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
     );
   }
 
+  const options = Array.isArray(descriptor.options) ? descriptor.options : null;
+  if (options && options.length && descriptor.options_strict) {
+    return (
+      <div className="cfg-row">
+        {header}
+        <div className="cfg-control">
+          <select id={id} className="input" disabled={locked} value={value ?? ''}
+            onChange={(event) => onChange(event.target.value)}>
+            {options.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
+            onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+        </div>
+      </div>
+    );
+  }
+
   const numeric = descriptor.type === 'int' || descriptor.type === 'float';
   if (longText) {
     return (
@@ -123,6 +142,7 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
             type={numeric ? 'number' : secret && !reveal ? 'password' : 'text'}
             step={descriptor.type === 'float' ? 'any' : undefined}
             min={descriptor.min} max={descriptor.max}
+            list={options && options.length ? id + '-options' : undefined}
             autoComplete="off" spellCheck={false} aria-invalid={!!error}
             value={numeric ? text : value ?? ''}
             onChange={(event) => {
@@ -141,6 +161,11 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
               aria-pressed={reveal} onClick={() => setReveal(!reveal)}><Icon name="eye" /></button>
           )}
         </div>
+        {options && options.length > 0 && (
+          <datalist id={id + '-options'}>
+            {options.map((option) => <option key={option} value={option} />)}
+          </datalist>
+        )}
         {error && <span className="field-error" role="alert">{error}</span>}
         <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
           onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />

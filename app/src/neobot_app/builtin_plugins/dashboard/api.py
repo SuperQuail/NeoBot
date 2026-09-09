@@ -1156,6 +1156,71 @@ class DashboardApi:
             return _json_error(f"保存模型库失败: {exc}", status=500)
         return await self._finish_config_write(request, document, payload, "模型库已保存")
 
+    async def models_test(self, request: web.Request) -> web.Response:
+        """测试模型连通性：网络是否可达、鉴权是否通过、模型名是否存在。
+
+        传 `key` 测试模型库中已保存的条目；传 `entry` 测试尚未保存的草稿。
+        代理行为跟随条目的 `use_system_proxy`（默认直连）。
+        """
+        denied = self._require_manage(request, action="测试模型连通性")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        from neobot_app.config.schemas.env import EnvConfig
+
+        from .model_probe import probe_model
+
+        entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else None
+        key = str(payload.get("key") or "").strip()
+        if entry is None:
+            config_obj = self._models_config()
+            models_config = getattr(config_obj, "models", None) if config_obj else None
+            definition = models_config.get(key) if models_config is not None else None
+            if definition is None:
+                return _json_error(f"模型库中不存在 {key}", status=404)
+            entry = {
+                "provider": getattr(definition, "provider", ""),
+                "model_name": getattr(definition, "model_name", ""),
+                "use_system_proxy": bool(
+                    getattr(definition, "use_system_proxy", False)
+                ),
+            }
+        provider = str(entry.get("provider") or "").strip()
+        model_name = str(entry.get("model_name") or "").strip()
+        use_system_proxy = bool(entry.get("use_system_proxy", False))
+        platform = EnvConfig.get_api_platform_config(provider) if provider else None
+        try:
+            timeout = float(payload.get("timeout") or 20.0)
+        except (TypeError, ValueError):
+            timeout = 20.0
+        timeout = max(3.0, min(timeout, 120.0))
+
+        result = await probe_model(
+            provider=provider,
+            model_name=model_name,
+            base_url=(platform.url if platform else "") or "",
+            api_key=(platform.api_key if platform else "") or "",
+            use_system_proxy=use_system_proxy,
+            timeout=timeout,
+        )
+        data = result.to_dict()
+        data.update(
+            {
+                "key": key,
+                "provider": provider,
+                "model_name": model_name,
+                "has_credentials": bool(platform and platform.url and platform.api_key),
+            }
+        )
+        self.logger.info(
+            f"面板测试模型 ip={self.console.request_ip(request)} key={key or '-'} "
+            f"ok={result.ok} status={result.status} proxy={use_system_proxy}"
+        )
+        return _json_ok(data)
+
     async def models_assignments_save(self, request: web.Request) -> web.Response:
         """调用方 -> 模型 key 分配（只改 config.toml 的 [models.assignments]）。"""
         denied = self._require_manage(request, action="修改模型分配")

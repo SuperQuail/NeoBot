@@ -267,6 +267,11 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             "hot_reload": hot_reload,
             "restart_reason": restart_reason,
         }
+        options = field_obj.metadata.get("options")
+        if isinstance(options, (list, tuple)) and options:
+            item["options"] = [str(value) for value in options]
+            if field_obj.metadata.get("options_strict"):
+                item["options_strict"] = True
         if is_dataclass(target):
             actual_schema = target
             if is_dataclass(value) and isinstance(value, target):
@@ -1070,6 +1075,9 @@ def models_view(config: Any = None) -> dict[str, Any]:
                     "provider": str(getattr(definition, "provider", "") or ""),
                     "model_name": str(getattr(definition, "model_name", "") or ""),
                     "native_vision": bool(getattr(definition, "native_vision", False)),
+                    "use_system_proxy": bool(
+                        getattr(definition, "use_system_proxy", False)
+                    ),
                     "has_balance_hint": bool(
                         str(getattr(definition, "balance_query_hint", "") or "").strip()
                     ),
@@ -1136,6 +1144,28 @@ def models_view(config: Any = None) -> dict[str, Any]:
 
     from neobot_app.config.schemas.bot import ModelAssignments, ModelDefinition
 
+    provider_names: set[str] = set(EnvConfig.PLATFORM_NAME_ALIASES.values())
+    for field_obj in fields(EnvConfig):
+        env_key = str(field_obj.metadata.get("env_key") or field_obj.name.upper())
+        if env_key.endswith("_URL"):
+            provider_names.add(env_key[: -len("_URL")])
+    for item in library:
+        name = str(item.get("provider") or "").strip()
+        if name:
+            provider_names.add(name)
+    for item in registered:
+        name = str(item.get("provider") or "").strip()
+        if name:
+            provider_names.add(name)
+
+    model_name_options = sorted(
+        {
+            *(str(item.get("model_name") or "").strip() for item in library),
+            *(str(item.get("model_name") or "").strip() for item in registered),
+        }
+        - {""}
+    )
+
     roles_meta = [
         {
             "role": role,
@@ -1161,6 +1191,8 @@ def models_view(config: Any = None) -> dict[str, Any]:
         "roles_meta": roles_meta,
         "role_labels": ROLE_LABELS,
         "entry_schema": describe_dataclass(ModelDefinition, None),
+        "provider_options": sorted(provider_names, key=str.casefold),
+        "model_name_options": model_name_options,
         "registered": registered,
         "platforms": sorted(platforms.values(), key=lambda item: item["name"]),
     }

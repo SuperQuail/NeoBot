@@ -101,3 +101,8 @@
 .usage-page .chart-axis { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; color: var(--muted, #889); margin-top: 4px; overflow: hidden; }
 .usage-page .chart-axis span { white-space: nowrap; }
 .usage-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+/* ── 模型连通性测试结果 ── */
+.probe-result .probe-headline { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+.probe-result .probe-headline.ok { color: var(--ok, #2f9e44); }
+.probe-result .probe-headline.err { color: var(--err, #d9534f); }
+.probe-result .model-table th { width: 150px; white-space: nowrap; }

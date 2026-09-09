@@ -60,6 +60,8 @@ class RegisteredModel:
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
     native_vision: bool = False
+    #: 是否跟随系统/环境变量代理；默认 False = 直连
+    use_system_proxy: bool = False
 
     @property
     def provider_kind(self) -> str:
@@ -83,6 +85,7 @@ class RegisteredModel:
                 temperature=self.settings.temperature,
                 top_p=self.settings.top_p,
                 extra_body=self.settings.extra_body,
+                use_system_proxy=self.use_system_proxy,
             )
 
         if self.provider_kind == "deepseek":
@@ -98,6 +101,7 @@ class RegisteredModel:
                 frequency_penalty=self.settings.frequency_penalty,
                 presence_penalty=self.settings.presence_penalty,
                 extra_body=self.settings.extra_body,
+                use_system_proxy=self.use_system_proxy,
             )
 
         return OpenAIProvider(
@@ -112,6 +116,7 @@ class RegisteredModel:
             frequency_penalty=self.settings.frequency_penalty,
             presence_penalty=self.settings.presence_penalty,
             extra_body=self.settings.extra_body,
+            use_system_proxy=self.use_system_proxy,
         )
 
 
