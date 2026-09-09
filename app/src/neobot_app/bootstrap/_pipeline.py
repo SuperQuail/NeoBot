@@ -122,6 +122,11 @@ def build_problem_solver_agent_wiring(
         fallback_provider=provider,
         logger=provider_logger,
     )
+    if ps_provider is None:
+        logger_factory.get_logger("app.problem_solver").warning(
+            "problem solver agent 未启用：provider 不可用，跳过装配"
+        )
+        return
     build_problem_solver_agent(
         ps_provider,
         config=problem_solver_config,

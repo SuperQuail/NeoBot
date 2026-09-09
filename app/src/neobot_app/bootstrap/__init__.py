@@ -559,7 +559,11 @@ def create_application() -> NeoBotApplication:
     maintenance_coros = []
     # 睡眠剩余时间播报：睡眠期间每分钟打印剩余时间（仅日志，不回复）
     maintenance_coros.append(sleep_service.ticker())
-    if sandbox["sandbox_service"] is not None and admin_accounts:
+    if (
+        sandbox["sandbox_service"] is not None
+        and admin_accounts
+        and provider is not None
+    ):
         maintenance_coros.append(
             _make_maintenance_coro(
                 provider=provider,
