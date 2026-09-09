@@ -1,7 +1,7 @@
 // SchemaForm.jsx —— 由后端字段描述驱动的通用配置表单
 // 支持：标量、布尔、数组、字典、嵌套对象（分组，可折叠）、对象数组（如多个生图模型）。
 // 另支持：恢复默认值、数值历史、热重载标记（hot_reload / restart_reason）。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 import Modal from './Modal.jsx';
 import { getPath, joinPath, matchPath } from '../utils/paths.js';
@@ -69,9 +69,23 @@ function ComboboxField({ descriptor, value, onChange, disabled, changed, onResto
   const options = Array.isArray(descriptor.options) ? descriptor.options : [];
   const current = value === undefined || value === null ? '' : String(value);
   const inOptions = options.includes(current);
-  // 默认始终展示下拉；当前值不在候选里时，作为「（自定义）」选项保留
-  const [custom, setCustom] = useState(false);
+  // 无候选时直接进入自定义输入；有候选时展示下拉（当前值不在候选里则作为「（自定义）」选项保留）
+  const [custom, setCustom] = useState(options.length === 0);
+  const previousCount = useRef(options.length);
   const fieldId = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
+
+  useEffect(() => {
+    const had = previousCount.current;
+    previousCount.current = options.length;
+    if (options.length === 0) {
+      setCustom(true);
+      return;
+    }
+    // 刚拉取到候选（0 -> N）：用户没输入过内容就回到下拉
+    if (had === 0) {
+      setCustom((active) => (active && current !== '' && !options.includes(current) ? active : false));
+    }
+  }, [options, current]);
 
   const header = (
     <div className="cfg-label">

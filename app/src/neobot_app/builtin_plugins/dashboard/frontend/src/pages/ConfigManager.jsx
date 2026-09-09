@@ -714,6 +714,7 @@ function ModelsPanel() {
   const [editing, setEditing] = useState(null);
   const [probe, setProbe] = useState(null);
   const [providerModels, setProviderModels] = useState([]);
+  const [pulledProvider, setPulledProvider] = useState('');
   const [pulling, setPulling] = useState('');
   const pulledRef = useRef('');
 
@@ -786,6 +787,7 @@ function ModelsPanel() {
     const name = String(provider || '').trim();
     if (!name) return;
     setPulling(name);
+    setPulledProvider(name);
     const result = await api.modelsProviderModels({
       provider: name,
       use_system_proxy: !!useSystemProxy,
@@ -793,8 +795,9 @@ function ModelsPanel() {
     setPulling('');
     const payload = result.data || {};
     if (!result.ok || !payload.ok) {
+      // 拉取失败：回落到「该供应商在模型库中用过的模型」（等同于未拉取）
       setProviderModels([]);
-      // 自动拉取失败不打扰用户（例如供应商还没配 Key），手动点击时才提示
+      setPulledProvider('');
       if (!silent) toast(payload.message || result.error || '拉取供应商模型列表失败', 'err');
       return;
     }
@@ -820,10 +823,22 @@ function ModelsPanel() {
     });
   };
 
+  const currentProvider = String(editing?.draft?.provider || '').trim();
+
+  // 未拉取时：只列出「当前供应商在模型库里已用过」的模型名；拉取后：只用拉取到的列表
   const modelNameOptions = useMemo(() => {
-    const merged = [...(data?.model_name_options || []), ...providerModels];
-    return [...new Set(merged.filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  }, [data, providerModels]);
+    if (pulledProvider && pulledProvider.toLowerCase() === currentProvider.toLowerCase()) {
+      return [...new Set(providerModels.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    }
+    const names = library
+      .filter(
+        (item) =>
+          String(item.provider || '').trim().toLowerCase() === currentProvider.toLowerCase()
+      )
+      .map((item) => String(item.model_name || '').trim())
+      .filter(Boolean);
+    return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+  }, [pulledProvider, providerModels, currentProvider, library]);
 
   // 引用名（key）不进表单：新建时按模型名自动生成，已有条目只读展示
   const fields = useMemo(() => {
@@ -837,6 +852,15 @@ function ModelsPanel() {
         return field;
       });
   }, [editing, schema, data, modelNameOptions]);
+
+  // 切换供应商时清掉上一个供应商的拉取结果
+  useEffect(() => {
+    if (!editing) return;
+    if (pulledProvider && pulledProvider.toLowerCase() !== currentProvider.toLowerCase()) {
+      setProviderModels([]);
+      setPulledProvider('');
+    }
+  }, [editing, currentProvider, pulledProvider]);
 
   // 打开编辑器或切换供应商时，自动拉取该供应商的模型列表（失败不阻塞）
   useEffect(() => {
