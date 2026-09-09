@@ -228,7 +228,9 @@ class ModelDefinition:
     key: str = field(
         default="",
         metadata={
-            "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线"
+            "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线；"
+            "面板不展示，新建时按模型名自动生成",
+            "hidden": True,
         },
     )
     model_type: str = field(

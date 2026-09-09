@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -1188,6 +1189,7 @@ class DashboardApi:
         if action not in {"upsert", "delete"}:
             return _json_error("action 只能是 upsert 或 delete", status=400)
         manager = self._config_manager()
+        resolved: dict[str, Any] = {}
         try:
             if action == "delete":
                 document = manager.update_models(
@@ -1198,6 +1200,7 @@ class DashboardApi:
                 document = manager.update_models(
                     upsert=payload.get("entry") or payload.get("config") or {},
                     expected_revision=payload.get("revision"),
+                    resolved=resolved,
                 )
         except ConfigConflictError as exc:
             return _json_error(str(exc), status=409)
@@ -1205,7 +1208,17 @@ class DashboardApi:
             return _json_error(str(exc), status=400, errors=exc.errors)
         except Exception as exc:
             return _json_error(f"保存模型库失败: {exc}", status=500)
-        return await self._finish_config_write(request, document, payload, "模型库已保存")
+        response = await self._finish_config_write(
+            request, document, payload, "模型库已保存"
+        )
+        if resolved.get("key"):
+            try:
+                body = json.loads(response.body.decode("utf-8"))
+            except Exception:
+                return response
+            body["saved_key"] = resolved["key"]
+            return web.json_response(body)
+        return response
 
     async def models_test(self, request: web.Request) -> web.Response:
         """测试模型连通性：网络是否可达、鉴权是否通过、模型名是否存在。

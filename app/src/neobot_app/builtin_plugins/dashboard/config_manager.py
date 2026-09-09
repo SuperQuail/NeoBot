@@ -266,6 +266,7 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             "readonly": bool(field_obj.metadata.get("readonly", False)),
             "hot_reload": hot_reload,
             "restart_reason": restart_reason,
+            "hidden": bool(field_obj.metadata.get("hidden", False)),
         }
         options = field_obj.metadata.get("options")
         if isinstance(options, (list, tuple)) and options:
@@ -592,8 +593,13 @@ class BotConfigManager:
         assignments: dict[str, Any] | None = None,
         expected_revision: str | None = None,
         max_backups: int = 15,
+        resolved: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """模型库增删改 + 调用方分配，只改动 config.toml 的 [models] 段。"""
+        """模型库增删改 + 调用方分配，只改动 config.toml 的 [models] 段。
+
+        `upsert` 未提供 key（引用名）时，按模型名自动生成唯一引用名；
+        生成的引用名通过 `resolved`（可选出参）返回给调用方。
+        """
         from neobot_app.config.schemas.bot import ModelAssignments, normalize_model_key
 
         if expected_revision is not None and expected_revision != self.revision():
@@ -634,8 +640,11 @@ class BotConfigManager:
             entry = {str(key): value for key, value in dict(upsert).items()}
             entry["key"] = normalize_model_key(str(entry.get("key") or ""))
             if not entry["key"]:
-                raise ConfigValidationError(
-                    [{"path": "models.registry.key", "message": "模型 key 不能为空"}]
+                # 面板不暴露引用名：按「模型名」自动生成（重名时追加序号）
+                entry["key"] = _derive_model_key(
+                    str(entry.get("model_name") or ""),
+                    str(entry.get("model_type") or "chat"),
+                    {str(item.get("key") or "") for item in library},
                 )
             for index, item in enumerate(library):
                 if str(item.get("key") or "") == entry["key"]:
@@ -643,6 +652,8 @@ class BotConfigManager:
                     break
             else:
                 library.append(entry)
+            if resolved is not None:
+                resolved["key"] = entry["key"]
 
         if assignments is not None:
             valid_roles = set(ModelAssignments.SINGLE_ROLES) | {"creator_image_models"}
@@ -713,6 +724,21 @@ class BotConfigManager:
         source = tomlkit.dumps(document)
         _atomic_write(self.config_path, source if source.endswith("\n") else source + "\n")
         return self.read()
+
+
+def _derive_model_key(model_name: str, model_type: str, existing: set[str]) -> str:
+    """按模型名生成引用名（key）：小写、非字母数字转连字符，重名时追加 -2/-3…"""
+    raw = str(model_name or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", raw).strip("-._")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    base = (slug or f"{str(model_type or 'model').strip().lower()}-model")[:60]
+    key = base
+    counter = 2
+    while key in existing:
+        key = f"{base}-{counter}"[:64]
+        counter += 1
+    return key
 
 
 def _assignment_items(assignments: dict[str, Any]) -> list[tuple[str, str]]:

@@ -760,7 +760,9 @@ function ModelsPanel() {
     if (result.data?.models) applyData(result.data.models);
     else await read();
     setEditing(null);
-    toast(result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效'), 'ok');
+    const savedKey = result.data?.saved_key;
+    const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
+    toast(savedKey ? baseMessage + '（引用名 ' + savedKey + '）' : baseMessage, 'ok');
   };
 
   const remove = async (item) => {
@@ -780,7 +782,7 @@ function ModelsPanel() {
     toast('已删除 ' + item.key, 'ok');
   };
 
-  const pullProviderModels = useCallback(async (provider, useSystemProxy) => {
+  const pullProviderModels = useCallback(async (provider, useSystemProxy, { silent = false } = {}) => {
     const name = String(provider || '').trim();
     if (!name) return;
     setPulling(name);
@@ -792,11 +794,12 @@ function ModelsPanel() {
     const payload = result.data || {};
     if (!result.ok || !payload.ok) {
       setProviderModels([]);
-      toast(payload.message || result.error || '拉取供应商模型列表失败', 'err');
+      // 自动拉取失败不打扰用户（例如供应商还没配 Key），手动点击时才提示
+      if (!silent) toast(payload.message || result.error || '拉取供应商模型列表失败', 'err');
       return;
     }
     setProviderModels(payload.models || []);
-    toast('已拉取 ' + (payload.models || []).length + ' 个模型', 'ok');
+    if (!silent) toast('已拉取 ' + (payload.models || []).length + ' 个模型', 'ok');
   }, []);
 
   const runProbe = async (target) => {
@@ -822,16 +825,17 @@ function ModelsPanel() {
     return [...new Set(merged.filter(Boolean))].sort((a, b) => a.localeCompare(b));
   }, [data, providerModels]);
 
+  // 引用名（key）不进表单：新建时按模型名自动生成，已有条目只读展示
   const fields = useMemo(() => {
     if (!editing) return [];
-    const bound = bindValues(schema, editing.draft).map((field) => {
-      if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
-      if (field.name === 'model_name') return { ...field, options: modelNameOptions };
-      if (field.name === 'model_type') return { ...field, options: Object.keys(data?.model_type_labels || {}) };
-      return field;
-    });
-    if (editing.isNew) return bound;
-    return bound.map((field) => (field.name === 'key' ? { ...field, readonly: true } : field));
+    return bindValues(schema, editing.draft)
+      .filter((field) => field.name !== 'key' && !field.hidden)
+      .map((field) => {
+        if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
+        if (field.name === 'model_name') return { ...field, options: modelNameOptions };
+        if (field.name === 'model_type') return { ...field, options: Object.keys(data?.model_type_labels || {}) };
+        return field;
+      });
   }, [editing, schema, data, modelNameOptions]);
 
   // 打开编辑器或切换供应商时，自动拉取该供应商的模型列表（失败不阻塞）
@@ -842,7 +846,7 @@ function ModelsPanel() {
     const token = provider + '|' + (editing.draft?.use_system_proxy ? '1' : '0');
     if (pulledRef.current === token) return;
     pulledRef.current = token;
-    pullProviderModels(provider, editing.draft?.use_system_proxy);
+    pullProviderModels(provider, editing.draft?.use_system_proxy, { silent: true });
   }, [editing, pullProviderModels]);
 
   return (
@@ -865,7 +869,7 @@ function ModelsPanel() {
       {library.length > 0 && (
         <table className="model-table">
           <thead>
-            <tr><th>key</th><th>类型</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
+            <tr><th>引用名</th><th>类型</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody>
             {library.map((item) => (
@@ -913,6 +917,11 @@ function ModelsPanel() {
       >
         {editing && (
           <>
+            <p className="muted small model-key-hint">
+              引用名（key）：
+              <code>{editing.draft?.key || '保存时按模型名自动生成'}</code>
+              <span className="muted"> · 调用方通过它引用该模型，无需手动填写</span>
+            </p>
             <SchemaForm
               fields={fields}
               disabled={!!busy}

@@ -106,3 +106,6 @@
 .probe-result .probe-headline.ok { color: var(--ok, #2f9e44); }
 .probe-result .probe-headline.err { color: var(--err, #d9534f); }
 .probe-result .model-table th { width: 150px; white-space: nowrap; }
+/* 模型编辑弹窗里的引用名提示 */
+.model-key-hint { margin: 0 0 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-key-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface-2, rgba(127,127,127,.1)); }

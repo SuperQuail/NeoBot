@@ -240,6 +240,68 @@ async def test_provider_then_pull_models_then_save_visible_immediately(
         await panel["server"].stop()
 
 
+async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> None:
+    """面板不再填写引用名：后端按模型名自动生成，重名自动追加序号。"""
+    panel = simulated_panel
+    base = panel["base"]
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+
+    async with httpx.AsyncClient() as client:
+        models = await client.get(base + "/api/config/models", headers={"X-Token": token})
+        revision = models.json()["revision"]
+        entry = {
+            "model_type": "image",
+            "description": "自动引用名模型",
+            "provider": PROVIDER,
+            "model_name": "Stub/Image XL",  # 大小写与斜杠都会被规整
+        }
+        first = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={"action": "upsert", "entry": entry, "revision": revision},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["saved_key"] == "stub-image-xl"
+
+        # 同名再来一个 -> 自动加序号
+        second = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={
+                "action": "upsert",
+                "entry": entry,
+                "revision": first.json()["revision"],
+            },
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["saved_key"] == "stub-image-xl-2"
+
+        keys = {item["key"] for item in second.json()["models"]["library"]}
+        assert {"stub-image-xl", "stub-image-xl-2"} <= keys
+
+        # 编辑已有条目时保留原引用名
+        again = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={
+                "action": "upsert",
+                "entry": {
+                    "key": "stub-image-xl",
+                    "model_type": "image",
+                    "description": "改过的描述",
+                    "provider": PROVIDER,
+                    "model_name": "Stub/Image XL",
+                },
+                "revision": second.json()["revision"],
+            },
+        )
+        assert again.status_code == 200, again.text
+        library = {item["key"]: item for item in again.json()["models"]["library"]}
+        assert library["stub-image-xl"]["description"] == "改过的描述"
+        assert len([k for k in library if k.startswith("stub-image-xl")]) == 2
+
+
 async def test_model_type_and_registration_after_reload(simulated_panel) -> None:
     """保存并重载后：模型类型进入注册表，密钥来自供应商而不是模型条目。"""
     panel = simulated_panel
