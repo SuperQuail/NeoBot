@@ -483,6 +483,17 @@ async def save(text: str, config: Config, ctx, logger) -> str:
 支持：`config: Config`（插件配置）、`ctx` / `context`、`logger`、`data_dir: Path`、
 `plugin_dir: Path`、`host`、`plugins`、`plugin_control`、`users: UserDirectory`。
 
+约定名注入遵循「类型注解优先」：参数带注解时按类型匹配 DI（例如 `ctx: str` 是模型参数，
+不会被注入上下文）。唯一例外是 `event`——它注入的是原始事件字典，没有对应的运行时类型，
+因此 `event`、`event: dict`、`event: dict[str, Any]`、`event: Mapping[str, Any]`
+都会被注入当前事件：
+
+```python
+@plugin.message(priority=-100)
+async def count_message(event: dict[str, Any]) -> None:
+    print(event["user_id"])
+```
+
 > 注：`Reply` 仅建议在命令/消息处理器中注入（此时携带当前事件上下文）。
 > 工具处理器中的 `reply` 参数没有可用的回复事件，行为不可依赖；
 > 工具如需发送消息，请使用自身能力或其他处理器完成。
