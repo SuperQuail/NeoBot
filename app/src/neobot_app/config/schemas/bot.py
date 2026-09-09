@@ -211,7 +211,10 @@ class ModelRegistration:
     settings: ModelSettings = field(default_factory=ModelSettings)
     native_vision: bool = field(
         default=False,
-        metadata={"description": "主推理模型可直接接收图片；DeepSeek 使用 deepseek-v4-flash-vision-exp，启用后需配置非视觉回退路由"},
+        metadata={
+            "description": "该模型可直接接收图片块；主推理模型开启后，不可用或无法处理图片时"
+            "自动回退到 vision_model（无需手选回退模型）"
+        },
     )
 
 
@@ -405,10 +408,6 @@ class AgentModelRouting:
     main_agent: int = field(
         default=0,
         metadata={"description": "主回复 Agent 使用的模型编号，0-3"},
-    )
-    main_agent_vision_fallback: int = field(
-        default=1,
-        metadata={"description": "主模型原生视觉不可用时的非视觉回退模型编号，0-3；必须不同于主模型且 native_vision=false"},
     )
     creator: int = field(
         default=1,

@@ -130,6 +130,49 @@ async def test_explicit_image_rejection_downgrades_once_with_notice(provider_cla
     assert primary._client.is_closed
 
 
+
+
+class VisionProvider(TextProvider):
+    native_vision = True
+    model = "vision-model"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_vision_capable_fallback_keeps_images_and_tools(stream):
+    """视觉模型作为回退时：图片原样转发、工具不过滤、能力保持可用。"""
+    def handler(request):
+        return httpx.Response(400, json={"error": {"message": "This model does not support image"}})
+
+    primary = with_transport(OpenAIProvider, handler)
+    fallback = VisionProvider()
+    provider = NativeVisionFallbackProvider(primary, fallback, logger=Mock())
+    tools = [{"type": "function", "function": {"name": name, "parameters": {}}} for name in ["image_context__add_image", "other__tool"]]
+    original = deepcopy(MESSAGES)
+    try:
+        if stream:
+            response = [chunk async for chunk in provider.stream(MESSAGES, tools)][-1].message
+        else:
+            response = await provider.chat(MESSAGES, tools)
+        assert provider.native_vision is True
+        assert provider.model == "vision-model"
+        notice = response["extensions"]["native_vision_fallback"]
+        assert notice["to_model"] == "fallback"
+        assert "视觉模型" in notice["notice"]
+        sent_messages, sent_tools = fallback.calls[0]
+        assert messages_have_images(sent_messages)
+        assert DATA_URL in str(sent_messages)
+        assert [t["function"]["name"] for t in sent_tools] == ["image_context__add_image", "other__tool"]
+        assert MESSAGES == original
+    finally:
+        await provider.close()
+
+
+def test_strip_images_with_vision_fallback_is_rejected():
+    """显式要求剥离图片时，视觉回退属于配置矛盾，必须报错。"""
+    primary = with_transport(OpenAIProvider, lambda request: httpx.Response(200, json=OK_BODY))
+    with pytest.raises(ValidationError):
+        NativeVisionFallbackProvider(primary, VisionProvider(), logger=Mock(), strip_images=True)
+
 @pytest.mark.parametrize("provider_class", PROVIDERS)
 @pytest.mark.parametrize("status,body", [
     (400, "Invalid image URL"), (400, "Image exceeds size limit"),
