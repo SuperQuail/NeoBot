@@ -1,0 +1,22 @@
+#!/bin/sh
+# 提交前扫描暂存区，阻止密钥进入仓库。
+# 启用方式（每个克隆一次）：git config core.hooksPath .githooks
+python_bin=""
+for candidate in python python3 py; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    python_bin="$candidate"
+    break
+  fi
+done
+if [ -z "$python_bin" ]; then
+  echo "[pre-commit] 未找到 python，跳过密钥扫描" >&2
+  exit 0
+fi
+output=$("$python_bin" scripts/check_secrets.py --staged 2>&1)
+status=$?
+if [ "$status" -ne 0 ]; then
+  echo "$output" >&2
+  echo "[pre-commit] 检测到疑似密钥（解释器: $python_bin），提交已阻止；确认为占位符时可写入 .secretsignore" >&2
+  exit 1
+fi
+exit 0
