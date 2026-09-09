@@ -72,6 +72,10 @@ def validate_public_url(url: str) -> bool:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
+    if parsed.netloc.count(":") > 1 and not parsed.netloc.startswith("["):
+        # 未加方括号的 IPv6 字面量（如 http://fc00::1/）：URL 语法非法，直接拒绝，
+        # 否则 urlparse 会把 "fc00" 当成主机名去做 DNS 解析，白等数秒
+        return False
     hostname = parsed.hostname
     if not hostname:
         return False
@@ -82,6 +86,11 @@ def validate_public_url(url: str) -> bool:
         ip = None
     if ip is not None:
         return ip.is_global
+
+    if ":" in hostname:
+        # 含冒号却解析不出 IP 的主机名（例如未加方括号的 IPv6 字面量）语法非法：
+        # 直接判为非公网，避免走 DNS 解析白等几秒
+        return False
 
     if _looks_like_encoded_ip(hostname):
         return False

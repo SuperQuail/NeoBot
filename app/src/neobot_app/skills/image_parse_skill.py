@@ -56,6 +56,8 @@ async def _read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
             return path.read_bytes()
         except OSError:
             return None
+    if not ref.startswith(("http://", "https://")):
+        return None  # 非 URL 引用无需创建 HTTP 客户端
     try:
         async with image_http_client(
             timeout=timeout, follow_redirects=True, url=ref

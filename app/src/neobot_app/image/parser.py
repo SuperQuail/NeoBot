@@ -313,6 +313,8 @@ async def _read_image_ref(ref: str) -> bytes | None:
     path = Path(ref).expanduser()
     if path.exists() and path.is_file():
         return path.read_bytes()
+    if not ref.startswith(("http://", "https://")):
+        return None  # 非 URL 引用无需创建 HTTP 客户端
     async with image_http_client(timeout=30.0, url=ref) as client:
         resp = await client.get(ref)
         resp.raise_for_status()

@@ -76,6 +76,44 @@ def make_sandbox(tmp_data_dir: Path):
     return _make
 
 
+# ── httpx 客户端构造加速 ──
+
+@pytest.fixture(scope="session", autouse=True)
+def _cache_httpx_ssl_context() -> Iterator[None]:
+    """测试进程内缓存 httpx 的默认 SSL 上下文。
+
+    httpx 每构造一个客户端都会重新加载 CA 证书（本机实测约 0.8s/次；开启系统代理
+    时约 2.4s/次），而测试会创建大量客户端，累计可达一分钟以上。SSLContext 可安全
+    复用，因此这里只加载一次。
+
+    只影响默认路径（verify=True 且未显式传 cert）；显式 verify/cert 的调用照旧。
+    """
+    from httpx import _config
+    from httpx._transports import default as _transports_default
+
+    originals = {
+        _config: _config.create_ssl_context,
+        _transports_default: _transports_default.create_ssl_context,
+    }
+    cache: dict[bool, object] = {}
+
+    def _cached(verify: object = True, cert: object = None, trust_env: bool = True):
+        if verify is not True or cert is not None:
+            return originals[_config](verify=verify, cert=cert, trust_env=trust_env)
+        if trust_env not in cache:
+            cache[trust_env] = originals[_config](
+                verify=verify, cert=cert, trust_env=trust_env
+            )
+        return cache[trust_env]
+
+    _config.create_ssl_context = _cached
+    _transports_default.create_ssl_context = _cached
+    try:
+        yield
+    finally:
+        for module, original in originals.items():
+            module.create_ssl_context = original
+
 # ── BugStore (bug_tracker 数据层, 供 test_runner GUI 相关的测试) ──
 
 @pytest.fixture()

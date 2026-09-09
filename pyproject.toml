@@ -35,6 +35,12 @@ asyncio_mode = "auto"
 testpaths = ["app/tests", "packages/modloader/tests"]
 pythonpath = ["app/src", "packages/contracts/src"]
 addopts = "--tb=short"
+# 每个用例默认 60s 超时：任何挂死（事件循环卡住、真实网络等待、死锁）都会
+# 立即打印调用栈并结束本次运行，避免整轮测试被单个用例拖住浪费时间。
+# 需要更长时间的用例（浏览器 / 真实 LLM / 网络）在用例上标注：
+#   @pytest.mark.timeout(300)
+timeout = 60
+timeout_method = "thread"
 markers = [
     "browser: 需要真实浏览器环境的测试 (不会在 CI 默认运行)",
     "network: 需要网络访问的测试",
@@ -49,5 +55,6 @@ dev = [
     "pyinstaller>=6.19.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.26.0",
+    "pytest-timeout>=2.3.1",
     "ruff>=0.15.5",
 ]
