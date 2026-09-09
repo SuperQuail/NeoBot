@@ -2,27 +2,31 @@
 
 NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任务编排，多个专职子 Agent 负责特定领域任务，所有 Agent 通过模型编号路由到不同配置的 LLM。
 
-## 模型注册表（`models` 配置）
+## 模型库与调用方（`models` 配置）
 
-每个模型注册项（`ModelRegistration`）包含：
+模型**单独存储**在模型库 `[[models.registry]]`，每个条目（`ModelDefinition`）包含：
 
-- `description`：用途说明
-- `provider`：供应商（DeepSeek / OpenAI / Anthropic / 硅基流动 SiliconFlow）
+- `key`：调用方引用名（唯一，字母/数字/下划线/点/短横线）
+- `description`：用途说明（生图模型还会作为 Agent 选择依据）
+- `provider`：供应商（DeepSeek / OpenAI / Anthropic / 硅基流动 SiliconFlow …）
 - `model_name`：模型名
 - `pricing`：计费（每百万 Token 输入/输出/缓存命中价格，`billing_metric` 用于非 Token 计费平台）
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
+- `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式
 
-默认注册 7 个模型：
+调用方在 `[models.assignments]` 中只保存 key，因此同一个模型可以被多个调用方复用：
 
-| 字段 | 默认模型 | 用途 |
+| 调用方字段 | 默认 key | 用途 |
 |---|---|---|
 | `primary_chat_model` | deepseek-v4-pro | 主对话（Agent 编号 0） |
-| `agent_model_1` | deepseek-v4-flash（max 推理） | 子 Agent（编号 1） |
-| `agent_model_2` | deepseek-v4-flash（high 推理） | 子 Agent（编号 2） |
-| `agent_model_3` | deepseek-v4-flash（非推理） | 低成本任务（编号 3） |
-| `vision_model` | Qwen/Qwen3-VL-8B-Instruct | 图像识别 |
-| `tts_model` | FunAudioLLM/CosyVoice2-0.5B | 语音合成 |
-| `creator_image_models`（列表） | black-forest-labs/FLUX.1-schnell | 生图（可配置多个模型/供应商） |
+| `agent_model_1` | deepseek-v4-flash-max | 子 Agent（编号 1，max 推理） |
+| `agent_model_2` | deepseek-v4-flash-high | 子 Agent（编号 2，high 推理） |
+| `agent_model_3` | deepseek-v4-flash-off | 低成本任务（编号 3，非推理） |
+| `vision_model` | qwen3-vl-8b | 图像识别（缺 Key 时降级） |
+| `tts_model` | cosyvoice2 | 语音合成（TTS 关闭时不注册） |
+| `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 key） |
+
+注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同名 key 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
 
 ## Agent 模型路由（`agent_model` 配置）
 

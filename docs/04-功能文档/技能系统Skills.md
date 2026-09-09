@@ -75,7 +75,7 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 ## 相关配置
 
 - `agent.skill.disabled_skills`：禁用的 skill 名称列表（黑名单），空列表表示全部启用
-- `models.*.balance_query_hint`：各模型的余额查询方式（地址/方法/鉴权/返回字段）；配置后会生成按需读取的 `balance-query` Markdown 技能
+- `models.registry[].balance_query_hint`：各模型的余额查询方式（地址/方法/鉴权/返回字段）；配置后会生成按需读取的 `balance-query` Markdown 技能
 - `agent.file_operation.enabled`：是否启用文件操作 Agent
 
 ## 相关代码文件
