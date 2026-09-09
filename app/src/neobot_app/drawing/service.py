@@ -457,12 +457,43 @@ class CreatorImageService:
                 if url:
                     resolved_data_urls.append(url)
 
-        if len(resolved_data_urls) == 1:
-            payload["image"] = resolved_data_urls[0]
-        elif len(resolved_data_urls) > 1:
-            payload["image"] = resolved_data_urls
+        settings = registered_model.settings
+        image_api = str(getattr(settings, "image_api", "auto") or "auto").strip().lower()
+        if image_api not in {"auto", "edits", "generations"}:
+            image_api = "auto"
+        reference_param = str(
+            getattr(settings, "image_reference_param", "image") or "image"
+        ).strip() or "image"
 
-        response = await client.post("/images/generations", json=payload)
+        response: httpx.Response | None = None
+        if resolved_data_urls and image_api in {"auto", "edits"}:
+            # 参考图必须走 /images/edits（multipart）：部分中转站会静默忽略
+            # /images/generations 上的 image 字段，导致「参考图不生效」
+            response = await self._post_edits(
+                client,
+                registered_model,
+                payload=payload,
+                references=resolved_data_urls,
+            )
+            if response is not None and response.status_code in {400, 404, 405}:
+                if image_api == "edits":
+                    pass  # 显式指定 edits 时不回退，交给下方 raise_for_status 报错
+                else:
+                    self._logger.warning(
+                        f"参考图接口 /images/edits 返回 {response.status_code}，"
+                        f"回退到 /images/generations（字段 {reference_param}）"
+                    )
+                    response = None
+        if response is None:
+            if resolved_data_urls:
+                # 复数形式的字段名（images / image_urls / reference_images）用数组，
+                # 单数形式（image / image_url / input_image）单张时用字符串
+                payload[reference_param] = (
+                    list(resolved_data_urls)
+                    if len(resolved_data_urls) > 1 or reference_param.endswith("s")
+                    else resolved_data_urls[0]
+                )
+            response = await client.post("/images/generations", json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -1628,6 +1659,51 @@ class CreatorImageService:
             raise PermissionError(f"文件引用越界: {value}")
         return path
 
+    async def _post_edits(
+        self,
+        client: httpx.AsyncClient,
+        registered_model: Any,
+        *,
+        payload: dict[str, Any],
+        references: list[str],
+    ) -> httpx.Response | None:
+        """参考图生图：multipart 调用 /images/edits（OpenAI 标准形态）。
+
+        参考图必须是 data URL；否则返回 None，由调用方回退到 /images/generations。
+        单张参考图字段名用 `image`，多张用重复的 `image[]`。
+        """
+        decoded: list[tuple[bytes, str]] = []
+        for data_url in references:
+            raw, mime = _decode_data_url(data_url)
+            if raw is None:
+                return None
+            decoded.append((raw, mime))
+        if not decoded:
+            return None
+
+        data: dict[str, Any] = {
+            "model": payload.get("model") or registered_model.model_name,
+            "prompt": str(payload.get("prompt") or ""),
+            "size": payload.get("image_size") or DEFAULT_IMAGE_SIZE,
+        }
+        for key, value in payload.items():
+            if key in {"model", "prompt", "image_size", "image", "images"} or value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                data[key] = value
+            else:
+                data[key] = json.dumps(value, ensure_ascii=False)
+
+        field = "image" if len(decoded) == 1 else "image[]"
+        files = [
+            (field, (f"reference_{index + 1}{_extension_for_mime(mime)}", raw, mime))
+            for index, (raw, mime) in enumerate(decoded)
+        ]
+        self._logger.debug(
+            "参考图生图请求 /images/edits", count=len(decoded), field=field
+        )
+        return await client.post("/images/edits", data=data, files=files)
+
     async def _extract_image_bytes(self, data: dict[str, Any]) -> bytes:
         items = data.get("data")
         if not isinstance(items, list) or not items:
@@ -1693,6 +1769,36 @@ class CreatorImageService:
         data = base64.b64encode(file_path.read_bytes()).decode("utf-8")
         mime = mime_type or mimetypes.guess_type(file_path.name)[0] or "image/png"
         return f"data:{mime};base64,{data}"
+
+
+#: data URL -> 文件扩展名
+_MIME_EXTENSIONS: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+}
+
+
+def _extension_for_mime(mime: str) -> str:
+    return _MIME_EXTENSIONS.get(str(mime or "").lower(), ".png")
+
+
+def _decode_data_url(value: str) -> tuple[bytes | None, str]:
+    """解析 data URL，返回 (原始字节, mime)；非 base64 data URL 返回 (None, "")。"""
+    text = str(value or "")
+    if not text.startswith("data:") or "," not in text:
+        return None, ""
+    header, _, encoded = text.partition(",")
+    if "base64" not in header.lower():
+        return None, ""
+    mime = header[len("data:") :].split(";")[0].strip() or "image/png"
+    try:
+        return base64.b64decode(encoded), mime
+    except Exception:
+        return None, ""
 
 
 def _record_payload(record: CreatorImageRecord) -> dict[str, Any]:

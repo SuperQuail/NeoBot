@@ -173,6 +173,23 @@ class ModelSettings:
         default=0.0,
         metadata={"description": "存在惩罚"},
     )
+    image_api: str = field(
+        default="auto",
+        metadata={
+            "description": "生图接口形态（仅生图模型使用）：auto 有参考图时走 /images/edits（失败回退 "
+            "/images/generations），edits 始终走 /images/edits（multipart），generations 始终走 "
+            "/images/generations（参考图作为 JSON 字段传递）",
+            "options": ["auto", "edits", "generations"],
+            "options_strict": True,
+        },
+    )
+    image_reference_param: str = field(
+        default="image",
+        metadata={
+            "description": "generations 模式下参考图的 JSON 字段名（不同中转站可能是 image / images / "
+            "image_url / image_urls / input_image）"
+        },
+    )
 
 
 @dataclass

@@ -33,6 +33,10 @@ class ModelSettings:
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
+    #: 生图接口形态：auto / edits / generations（仅生图模型使用）
+    image_api: str = "auto"
+    #: generations 模式下参考图的 JSON 字段名
+    image_reference_param: str = "image"
 
 
 def _normalize_provider_kind(provider_name: str) -> str:

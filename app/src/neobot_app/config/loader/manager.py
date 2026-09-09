@@ -291,6 +291,10 @@ class Config:
                 ),
                 presence_penalty=getattr(settings_config, "presence_penalty", None),
                 extra_body=_build_provider_extra_body(provider_name, settings_config),
+                image_api=str(getattr(settings_config, "image_api", "auto") or "auto"),
+                image_reference_param=str(
+                    getattr(settings_config, "image_reference_param", "image") or "image"
+                ),
             )
             pending.append(
                 (
