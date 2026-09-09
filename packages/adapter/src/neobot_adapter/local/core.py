@@ -237,7 +237,7 @@ class LocalCore:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.call_api(action, params, timeout, websocket))
-        self._logger.error("LocalCore.call_api_sync cannot run inside the active event loop")
+        self._logger.error("LocalCore.call_api_sync 不能在已运行的事件循环内调用")
         return None
 
     async def _dispatch_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -808,7 +808,7 @@ class LocalCore:
         try:
             self._packet_callback(dict(event))
         except Exception as exc:
-            self._logger.warning("local adapter packet callback failed", error=str(exc))
+            self._logger.warning("本地适配器收包回调失败", error=str(exc))
 
     @staticmethod
     def _coerce_numeric(value: Any) -> int | str:

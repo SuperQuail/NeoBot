@@ -210,13 +210,13 @@ class ScheduledTaskManager:
 
     async def start(self) -> None:
         if not self.enabled:
-            self._logger.info("Scheduled task manager is disabled")
+            self._logger.info("定时任务管理器已禁用")
             return
         if self._runner is not None and not self._runner.done():
             return
         self._stopping.clear()
         self._runner = asyncio.create_task(self._run_loop())
-        self._logger.info("Scheduled task manager started")
+        self._logger.info("定时任务管理器已启动")
 
     async def shutdown(self) -> None:
         self._stopping.set()
@@ -227,7 +227,7 @@ class ScheduledTaskManager:
         self._notification_queues.clear()
         self._last_reminder_at.clear()
         self._reminder_attempts.clear()
-        self._logger.info("Scheduled task manager stopped")
+        self._logger.info("定时任务管理器已停止")
 
     async def poll_notification(self, pipeline_key: str) -> str | None:
         if self._notification_hub is not None:
@@ -242,7 +242,7 @@ class ScheduledTaskManager:
         try:
             notification = queue.get_nowait()
             self._logger.info(
-                "Scheduled task notification polled",
+                "已轮询定时任务通知",
                 pipeline_key=pipeline_key,
                 notification_preview=notification[:120],
             )
@@ -255,7 +255,7 @@ class ScheduledTaskManager:
             try:
                 await self.scan_due_tasks()
             except Exception as exc:
-                self._logger.warning("Scheduled task scan failed", error=str(exc))
+                self._logger.warning("定时任务扫描失败", error=str(exc))
             await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def scan_due_tasks(self, now: datetime | None = None) -> None:
@@ -279,7 +279,7 @@ class ScheduledTaskManager:
                 plan = self._plan_task_scan(task, now)
             except Exception as exc:
                 self._logger.warning(
-                    "Scheduled task scan planning failed",
+                    "定时任务扫描规划失败",
                     task_id=task.task_uuid,
                     error=str(exc),
                 )
@@ -294,7 +294,7 @@ class ScheduledTaskManager:
                 plan.notified = await self._remind_bindings(plan.task, plan.window, now)
             except Exception as exc:
                 self._logger.warning(
-                    "Scheduled task reminder dispatch failed",
+                    "定时任务提醒派发失败",
                     task_id=plan.task.task_uuid,
                     error=str(exc),
                 )
@@ -305,7 +305,7 @@ class ScheduledTaskManager:
                 continue
             if plan.finalize_requires_notified and not plan.notified:
                 self._logger.info(
-                    "Skipping scheduled task finalize: reminder not delivered",
+                    "跳过定时任务收尾：提醒未送达",
                     task_id=plan.task.task_uuid,
                     window_key=plan.window.key,
                 )
@@ -329,7 +329,7 @@ class ScheduledTaskManager:
                     await uow.commit()
             except Exception as exc:
                 self._logger.warning(
-                    "Scheduled task finalize failed",
+                    "定时任务收尾失败",
                     task_id=plan.task.task_uuid,
                     error=str(exc),
                 )
@@ -425,7 +425,7 @@ class ScheduledTaskManager:
                 reminded = await self._remind_if_due(task, binding, window, now)
             except Exception as exc:
                 self._logger.warning(
-                    "Scheduled task reminder failed for binding",
+                    "定时任务提醒绑定失败",
                     task_id=task.task_uuid,
                     pipeline_key=f"{binding.kind}:{binding.id}",
                     error=str(exc),
@@ -468,7 +468,7 @@ class ScheduledTaskManager:
                 return True
             except Exception as exc:
                 self._logger.warning(
-                    "Scheduled task notification publish failed",
+                    "定时任务通知发布失败",
                     task_id=task.task_uuid,
                     pipeline_key=pipeline_key,
                     error=str(exc),
@@ -492,7 +492,7 @@ class ScheduledTaskManager:
                         return True
                 except Exception as exc:
                     self._logger.warning(
-                        "Scheduled task background reply failed",
+                        "定时任务后台回复失败",
                         task_id=task.task_uuid,
                         pipeline_key=pipeline_key,
                         error=str(exc),
@@ -501,7 +501,7 @@ class ScheduledTaskManager:
         queue = self._notification_queues.setdefault(pipeline_key, asyncio.Queue())
         await queue.put(prompt)
         self._logger.info(
-            "Scheduled task reminder queued",
+            "定时任务提醒已入队",
             task_id=task.task_uuid,
             pipeline_key=pipeline_key,
         )

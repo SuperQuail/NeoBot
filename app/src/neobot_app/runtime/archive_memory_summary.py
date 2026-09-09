@@ -85,7 +85,7 @@ class ArchiveMemoryAutoSummaryService:
             return
         if self._provider is None:
             self._logger.debug(
-                "archive auto summary skipped because provider is unavailable",
+                "档案自动总结跳过：provider 不可用",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
             )
@@ -198,7 +198,7 @@ class ArchiveMemoryAutoSummaryService:
 
                 if tool_failures >= MAX_TOOL_FAILURES:
                     self._logger.warning(
-                        "archive auto summary aborted after repeated tool failures",
+                        "档案自动总结因工具连续失败而中止",
                         conversation_kind=conversation_kind,
                         conversation_id=conversation_id,
                         tool_failures=tool_failures,
@@ -208,7 +208,7 @@ class ArchiveMemoryAutoSummaryService:
             if tool_failures and not tool_successes:
                 # 全程没有任何工具成功 = 什么都没写进去，保留计数器待下次重试。
                 self._logger.warning(
-                    "archive auto summary wrote nothing, counter preserved for retry",
+                    "档案自动总结未写入任何内容，保留计数器待重试",
                     conversation_kind=conversation_kind,
                     conversation_id=conversation_id,
                     tool_failures=tool_failures,
@@ -217,7 +217,7 @@ class ArchiveMemoryAutoSummaryService:
 
             await self._save_counter(counter_key, {"count": 0, "messages": []})
             self._logger.info(
-                "archive profiles updated",
+                "档案已更新",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 message_count=len(messages),
@@ -226,7 +226,7 @@ class ArchiveMemoryAutoSummaryService:
             return True
         except Exception as exc:
             self._logger.warning(
-                "archive auto summary failed, counter preserved for retry",
+                "档案自动总结失败，保留计数器待重试",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
                 error=str(exc),
@@ -329,7 +329,7 @@ class ArchiveMemoryAutoSummaryService:
             )
         except Exception as exc:
             self._logger.warning(
-                "archive auto summary flush: failed to list counters",
+                "档案自动总结刷新：列举计数器失败",
                 error=str(exc),
             )
             return
@@ -375,7 +375,7 @@ class ArchiveMemoryAutoSummaryService:
                         )
             except Exception as exc:
                 self._logger.warning(
-                    "archive auto summary flush: failed for counter",
+                    "档案自动总结刷新：处理计数器失败",
                     key=item.key,
                     error=str(exc),
                 )
@@ -389,7 +389,7 @@ class ArchiveMemoryAutoSummaryService:
 
         if flushed:
             self._logger.info(
-                "archive auto summary flushed on shutdown",
+                "关闭时已刷新档案自动总结",
                 flushed_count=flushed,
             )
 

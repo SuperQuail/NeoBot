@@ -56,7 +56,7 @@ class UserProfileService:
             )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "user profile adapter call timed out",
+                "用户资料适配器调用超时",
                 action=action,
                 timeout_seconds=self._get_dependency_timeout_seconds(),
                 **log_fields,

@@ -525,7 +525,7 @@ class ReplyOrchestrator:
                 try:
                     runtime.finish_turn(context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED})
                 except Exception as exc:
-                    self._logger.warning("agent goal continuation was not scheduled", error=str(exc))
+                    self._logger.warning("agent 目标续跑未能调度", error=str(exc))
             if on_reply_done is not None:
                 callback_task = asyncio.ensure_future(on_reply_done())
                 self._callback_tasks.add(callback_task)
@@ -538,7 +538,7 @@ class ReplyOrchestrator:
                         pass
                     except Exception as exc:
                         self._logger.warning(
-                            "reply done callback failed",
+                            "回复完成回调失败",
                             event_id=event.event_id,
                             pipeline_key=pipeline_key,
                             error=str(exc),
@@ -696,14 +696,14 @@ class ReplyOrchestrator:
             except BaseException as exc:
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     self._logger.error(
-                        f"{label} interrupted during orchestrator shutdown",
+                        f"{label} 在关闭编排器时被中断",
                         error_type=type(exc).__name__,
                         error=str(exc),
                     )
                     deferred = exc
                 elif isinstance(exc, asyncio.CancelledError):
                     self._logger.warning(
-                        f"{label} cancelled during orchestrator shutdown"
+                        f"{label} 在关闭编排器时被取消"
                     )
                     current = asyncio.current_task()
                     if deferred_cancel is not None:
@@ -712,7 +712,7 @@ class ReplyOrchestrator:
                         deferred = deferred or exc
                 else:
                     self._logger.warning(
-                        f"{label} failed during orchestrator shutdown",
+                        f"{label} 在关闭编排器时失败",
                         error_type=type(exc).__name__,
                         error=str(exc),
                     )
@@ -738,7 +738,7 @@ class ReplyOrchestrator:
             for result in results:
                 if isinstance(result, BaseException):
                     self._logger.warning(
-                        "reply tool executor close failed",
+                        "回复工具执行器关闭失败",
                         error_type=type(result).__name__,
                         error=str(result),
                     )
@@ -2177,7 +2177,7 @@ class ReplyOrchestrator:
                     except RuntimeError:
                         pass
                     self._logger.warning(
-                        "agent mode model call timed out",
+                        "agent 模式模型调用超时",
                         event_id=event.event_id,
                         queue_key=queue_key,
                         timeout_seconds=self._get_model_response_timeout_seconds(event),
@@ -2415,7 +2415,7 @@ class ReplyOrchestrator:
                     except asyncio.TimeoutError:
                         tool_error = f"工具 {name} 执行超时"
                         self._logger.warning(
-                            "agent tool timed out",
+                            "agent 工具调用超时",
                             event_id=event.event_id,
                             queue_key=queue_key,
                             tool=name,
@@ -2918,7 +2918,7 @@ class ReplyOrchestrator:
                     return notification
         except asyncio.TimeoutError:
             self._logger.warning(
-                "background notification poll timed out",
+                "后台通知轮询超时",
                 pipeline_key=pipeline_key,
                 timeout_seconds=self._get_dependency_timeout_seconds(),
             )
@@ -3396,7 +3396,7 @@ class ReplyOrchestrator:
                 return str(after_prompt.payload.get("prompt", prompt))
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "group prompt build timed out",
+                    "群聊提示词构建超时",
                     event_id=event.event_id,
                     queue_key=queue_key,
                     timeout_seconds=self._get_prompt_timeout_seconds(),
@@ -3420,7 +3420,7 @@ class ReplyOrchestrator:
             return str(after_prompt.payload.get("prompt", prompt))
         except asyncio.TimeoutError:
             self._logger.warning(
-                "private prompt build timed out",
+                "私聊提示词构建超时",
                 event_id=event.event_id,
                 queue_key=queue_key,
                 timeout_seconds=self._get_prompt_timeout_seconds(),
@@ -3538,7 +3538,7 @@ class ReplyOrchestrator:
             except asyncio.TimeoutError:
                 event.error = f"AI response timed out after {timeout:.0f}s"
                 self._logger.warning(
-                    "common mode model call timed out",
+                    "common 模式模型调用超时",
                     event_id=event.event_id,
                     timeout_seconds=timeout,
                 )

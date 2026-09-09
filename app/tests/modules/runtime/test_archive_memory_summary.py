@@ -317,7 +317,7 @@ async def test_real_provider_http_failure_preserves_counter(provider_cls):
         }
         logger.warning.assert_called_once()
         assert logger.warning.call_args.args == (
-            "archive auto summary failed, counter preserved for retry",
+            "档案自动总结失败，保留计数器待重试",
         )
         assert "401" in logger.warning.call_args.kwargs["error"]
         logger.info.assert_not_called()
@@ -573,8 +573,8 @@ async def test_summary_aborts_after_repeated_tool_failures_and_keeps_counter():
     assert json.loads(archive.raw("memory_counter", "group:777")["value"])["count"] == 1
     logger.info.assert_not_called()
     warnings = [call.args[0] for call in logger.warning.call_args_list]
-    assert "archive auto summary aborted after repeated tool failures" in warnings
-    assert "archive auto summary wrote nothing, counter preserved for retry" in warnings
+    assert "档案自动总结因工具连续失败而中止" in warnings
+    assert "档案自动总结未写入任何内容，保留计数器待重试" in warnings
 
 
 @pytest.mark.asyncio

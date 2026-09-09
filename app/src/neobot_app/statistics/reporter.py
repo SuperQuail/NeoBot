@@ -31,10 +31,10 @@ class UsageReportService:
                 content = await self._build_report(delta)
                 filename = f"费用统计-{label}.md"
                 (REPORT_DIR / filename).write_text(content, encoding="utf-8")
-                self._logger.debug("usage report written", file=filename)
+                self._logger.debug("用量报告已写入", file=filename)
             except Exception as exc:
                 self._logger.warning(
-                    "failed to generate usage report",
+                    "生成用量报告失败",
                     label=label,
                     error=str(exc),
                 )

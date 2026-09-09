@@ -58,8 +58,14 @@ class DebugRecorder:
     def log_dir(self) -> Path:
         return self._log_dir
 
+    # 周期性元事件（心跳/生命周期）数量大且内容固定，记录只会刷屏并让调试包文件暴涨。
+    _IGNORED_POST_TYPES = frozenset({"meta_event"})
+
     def record_packet(self, packet: dict[str, Any]) -> None:
-        self._logger.debug("记录数据包", post_type=packet.get("post_type", ""))
+        post_type = str(packet.get("post_type") or "")
+        if post_type in self._IGNORED_POST_TYPES:
+            return
+        self._logger.debug("记录数据包", post_type=post_type)
         self._write_jsonl(
             "packets.jsonl",
             {
