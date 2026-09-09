@@ -6,37 +6,29 @@ from typing import Any
 
 from neobot_chat import create_provider
 from neobot_chat.providers.native_vision import NativeVisionFallbackProvider
-from neobot_app.assembly.agents import AGENT_MODEL_NAMES, resolve_agent_model_name
+from neobot_app.assembly.agents import resolve_agent_model_name
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
+
+
+VISION_MODEL_NAME = "vision_model"
 
 
 def build_main_provider(
     *,
     config: BotConfigSchema,
     logger: Any,
+    vision_provider: Any = None,
 ) -> tuple[Any, str | None]:
-    """创建主对话 provider。返回 (provider, error_message)。"""
+    """创建主对话 provider。返回 (provider, error_message)。
+
+    主模型不可用（创建失败）时自动回退到视觉模型（vision_model）：视觉模型本身
+    具备完整对话能力，保证 Bot 仍能正常回复，不需要用户再手选回退模型。
+    主模型声明原生视觉但无法处理图片时，同样自动切换到视觉模型并保留图片。
+    """
     main_model_name = resolve_agent_model_name(config, "main_agent", default_index=0)
     provider = None
     main_config = getattr(config.models, main_model_name)
     if getattr(main_config, "native_vision", False):
-        # Resolve strictly: an invalid fallback must not silently choose another model.
-        index = getattr(config.agent_model, "main_agent_vision_fallback", 1)
-        fallback_name = AGENT_MODEL_NAMES.get(index) if type(index) is int else None
-        if fallback_name is None or fallback_name == main_model_name:
-            error = "原生视觉回退配置无效：main_agent_vision_fallback 必须为不同于主模型的 0-3 编号"
-            logger.error(error)
-            return None, error
-        if getattr(getattr(config.models, fallback_name), "native_vision", False):
-            error = "原生视觉回退配置无效：回退模型必须设置 native_vision=false"
-            logger.error(error)
-            return None, error
-        try:
-            fallback = create_provider(fallback_name)
-        except Exception as exc:
-            error = f"无法创建原生视觉非视觉回退 provider({fallback_name}): {exc}"
-            logger.error(error)
-            return None, error
         startup_reason = None
         try:
             provider = create_provider(main_model_name)
@@ -45,16 +37,28 @@ def build_main_provider(
             startup_reason = "配置的原生视觉 provider 无法创建"
         if provider is not None and not getattr(provider, "native_vision", False):
             startup_reason = "配置启用了原生视觉，但实际 provider 未暴露图片发送能力"
+        fallback = vision_provider or build_vision_provider(logger=logger)
+        if fallback is None:
+            error = "视觉模型不可用，无法建立原生视觉回退；请检查 vision_model 配置"
+            logger.error(error)
+            return None, error
         provider = NativeVisionFallbackProvider(
             provider, fallback, logger=logger,
-            primary_name=main_model_name, fallback_name=fallback_name,
-            startup_reason=startup_reason,
+            primary_name=main_model_name, fallback_name=VISION_MODEL_NAME,
+            startup_reason=startup_reason, strip_images=False,
         )
     else:
         try:
             provider = create_provider(main_model_name)
         except Exception as exc:
             logger.error(f"无法创建主对话 chat provider({main_model_name}): {exc}")
+
+    if provider is None:
+        # 主模型不可用：自动回退到视觉模型（而不是让用户手选另一个模型）
+        fallback = vision_provider or build_vision_provider(logger=logger)
+        if fallback is not None:
+            logger.warning(f"主对话模型不可用，已自动回退到视觉模型({VISION_MODEL_NAME})")
+            return fallback, None
 
     error_message = None
     if provider is None:
