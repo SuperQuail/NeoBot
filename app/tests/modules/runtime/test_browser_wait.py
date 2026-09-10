@@ -68,3 +68,34 @@ async def test_concurrent_hold_on_multiple_flows() -> None:
     assert manager.is_held("flow-a") is True
     assert manager.is_held("flow-b") is True
     assert manager.active_flow_count == 2
+
+
+def test_stale_flow_without_tabs_is_reclaimed() -> None:
+    """标签页关光后剩下的空流状态必须能被回收，否则长期运行会无限堆积。"""
+    manager = BrowserLifecycleManager(idle_timeout_minutes=10)
+    manager.track_tab_open("flow-1", "tab-1")
+    manager.track_tab_close("flow-1", "tab-1")
+    manager.touch("flow-2")
+    for cid in ("flow-1", "flow-2"):
+        manager._flows[cid].last_access = time.time() - 9999
+
+    stale = manager._get_stale_flow_ids()
+
+    assert sorted(stale) == ["flow-1", "flow-2"]
+    # 没有标签页的流不会被闲置关闭流程选中（它只负责关页面）
+    assert manager._get_idle_flows() == []
+
+
+def test_stale_reclaim_keeps_live_and_held_flows() -> None:
+    manager = BrowserLifecycleManager(idle_timeout_minutes=10)
+    manager.track_tab_open("live", "tab-1")
+    manager.track_tab_close("live", "tab-1")
+    manager.touch("fresh")
+    manager.hold("held", minutes=30)
+    manager._flows["live"].last_access = time.time() - 9999
+    manager._flows["held"].last_access = time.time() - 9999
+
+    stale = manager._get_stale_flow_ids()
+
+    assert stale == ["live"]
+    assert manager.is_held("held") is True
