@@ -239,8 +239,20 @@ class LspTools:
                 raise ValueError("Invalid deployment LSP server configuration")
             # Resolve the executable before entering any owner-controlled cwd.
             # Otherwise a planted workspace executable could shadow a PATH name.
+            #
+            # ⚠️ 不要改回 str(Path(executable).resolve()) / os.path.realpath()。
+            # 绝对化但**不**解析符号链接：Linux/macOS 上 .venv/bin/python 是指向
+            # 基础解释器的符号链接，resolve() 会穿透它，子进程于是用基础
+            # 解释器启动——而启动参数带 -I（隔离模式），既看不到 venv 的
+            # site-packages 也不认 PYTHONPATH，pylsp 就装在那个 venv 里，结果是
+            # LSP 永远起不来（lsp_protocol_error: Language server failed or
+            # returned an invalid response），且只在 Linux/macOS 复现。
+            # 回归防护见 test_lsp.py::test_deployment_executable_through_link_keeps_link_path
+            # 与 test_lsp_defaults.py（CI 是 ubuntu-latest，改错会立刻红）。
+            # abspath 只做路径规范化；对 PATH 里的命令（如 pyright）同样更安全：
+            # 不穿透 shim/链接，交给它自己的启动逻辑。
             executable = shutil.which(command[0]) or command[0]
-            configured_command = [str(Path(executable).resolve()), *command[1:]]
+            configured_command = [os.path.abspath(executable), *command[1:]]
             self._servers[extension.lower()] = (configured_command, language)
         self._timeout = timeout_seconds
         self._max_servers = max_servers

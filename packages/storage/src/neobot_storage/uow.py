@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from neobot_contracts.ports.unit_of_work import UnitOfWork
 
-from neobot_storage._retry import _is_locked_error, retry_on_lock
+from neobot_storage._retry import _is_locked_error
 from neobot_storage.repositories.memory import SqlAlchemyMemoryRepository
 from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
@@ -41,12 +41,16 @@ class SqlAlchemyUnitOfWork:
         await self._session.close()
 
     async def commit(self) -> None:
-        if self._session._proxied._is_clean():
-            await retry_on_lock(
-                self._session.commit,
-                on_retry=self._session.rollback,
-            )
-            return
+        """提交事务；锁冲突一律显式失败。
+
+        ``retry_on_lock`` 的正确用法是让**调用方重放整个事务体**
+        （见 ``statistics/tracker.py``），而不是 rollback 之后重试 ``commit()``：
+        后者会把已经发往数据库的 Core DML 连同事务一起丢掉，在 commit 成功
+        返回的同时静默丢失写入——仓库层大量使用
+        ``session.execute(insert(...).on_conflict_do_update())``，这类写入
+        不会体现在 ORM 的 new/dirty/deleted 状态里，因此不能靠
+        ``session._proxied._is_clean()``（私有 API）判断「提交是空操作」。
+        """
         try:
             await self._session.commit()
         except Exception as exc:

@@ -32,6 +32,7 @@ class OneBotAdapter:
         packet_callback: Callable[[Dict[str, Any]], None] | None = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
+        access_token: str = "",
     ) -> None:
         self._logger: Logger = logger if logger is not None else NullLogger()
         self._core = AdapterCore(
@@ -39,6 +40,7 @@ class OneBotAdapter:
             packet_callback=packet_callback,
             host=host,
             port=port,
+            access_token=access_token,
         )
         self._dispatcher = EventDispatcher(self._logger)
         self._dispatch_task: Optional[asyncio.Task[None]] = None

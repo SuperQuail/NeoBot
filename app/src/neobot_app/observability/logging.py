@@ -23,19 +23,37 @@ _REDACTED = "***REDACTED***"
 # 敏感信息脱敏模式：sk- 前缀的 OpenAI 风格 Key，以及常见键值形式的
 # key/token/password/secret/authorization/bearer。值边界限定为空白/逗号/分号，
 # 避免吞掉相邻内容；纯单词 "token" 等不会被误伤。
+#
+# 键名允许带前缀（``DEEPSEEK_APIKEY=``、``client_secret=``、``csrf_token=``）：
+# 旧写法用 ``\b`` 卡词边界，而下划线是词字符，导致这些形态整类漏脱敏。
 _REDACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(
-        r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)"
-        r"\b\s*[=:]\s*(?:(?:bearer|token)\s+)?[^\s,;]+"
+        r"(?i)(?<![A-Za-z0-9])[A-Za-z0-9_]*"
+        r"(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|password|"
+        r"passwd|pwd|secret|credential|authorization)"
+        r"\s*[=:]\s*(?:(?:bearer|token)\s+)?[^\s,;\"']+"
     ),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+    # 无分隔符的裸形态：「密码是 hunter2」。值必须含数字且不短于 6 位，
+    # 否则会把 "password strength is weak" 这类正常句子一起脱敏。
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])(?:password|passwd|pwd|secret|token|api[_-]?key)"
+        r"(?:\s+is)?\s*[=:]?\s+(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{6,}"
+    ),
+    # URL 内嵌凭据：https://user:password@host/...
+    re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"),
 )
+
+_URL_USERINFO_RE = _REDACTION_PATTERNS[-1]
 
 
 def redact_sensitive(text: str) -> str:
     """将文本中的常见敏感信息（API Key / token / password 等）替换为 ***REDACTED***。"""
     for pattern in _REDACTION_PATTERNS:
+        if pattern is _URL_USERINFO_RE:
+            text = pattern.sub(rf"\1{_REDACTED}@", text)
+            continue
         text = pattern.sub(_REDACTED, text)
     return text
 
@@ -53,7 +71,14 @@ def _redacting_filter(record: dict[str, Any]) -> bool:
     （保留原 traceback 对象）挂回 record；文件 sink 使用 _file_sink_format
     （函数式 format，不含 {exception}）避免 loguru 渲染原始 traceback 的
     未脱敏源码行，密钥不再泄露。
+
+    控制台与文件 sink 都挂这个 filter，且 record 在各 sink 间共享，因此用标记
+    保证只执行一次（否则 traceback 会被追加两遍）。
     """
+    extra = record.setdefault("extra", {})
+    if extra.get("_redaction_applied"):
+        return True
+    extra["_redaction_applied"] = True
     record["message"] = redact_sensitive(record["message"])
     exc = record.get("exception")
     if not exc:
@@ -243,6 +268,9 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
         format=console_format,
         level="DEBUG",
         colorize=True,
+        # 控制台此前没有挂脱敏 filter：密钥会以明文进 stderr（容器/重定向日志
+        # 同样会落盘）。挂上后 record 被改写，后续 sink 也拿到脱敏文本。
+        filter=_redacting_filter,
     )
 
     if log_dir is not None:

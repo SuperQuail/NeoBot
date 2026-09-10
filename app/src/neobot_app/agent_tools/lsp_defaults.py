@@ -22,6 +22,10 @@ def default_python_lsp_servers() -> dict[str, dict[str, Any]]:
     cannot shadow the installed server. A frozen executable is *not* Python; it
     re-enters only the dedicated stdio worker, never ``Bot.exe -m pylsp``.
     """
+    # ⚠️ sys.executable 在 Linux/macOS 上可能是符号链接（uv / pyenv / 系统
+    # python3 建的 venv 都如此）：这里必须原样使用，下游（LspTools、部署配置
+    # 解析）也不得用 Path.resolve()/realpath() 解析它——穿透到基础解释器后
+    # 子进程看不到 venv 的 site-packages，pylsp 起不来。详见 lsp.py 中的说明。
     command = (
         [sys.executable, PYTHON_LSP_WORKER_FLAG]
         if getattr(sys, "frozen", False)

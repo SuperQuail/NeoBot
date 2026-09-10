@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -25,6 +26,10 @@ DEFAULT_MAX_TOOL_ROUNDS = 20
 # 工具执行失败(未知工具/执行异常)累计达到该次数即中止本次总结，避免模型反复重试烧 token。
 MAX_TOOL_FAILURES = 3
 _TOOL_FAILURE_MARKERS = ("未知工具", "工具执行失败", "Tool error")
+#: 计数器解析缓存的存活时间：缓存把「每条消息一次 DB 读 + json.loads」降到
+#: 「每 30 秒一次」，同时保证外部对该行的修改（模型经 archive_crud 写
+#: memory_counter、另一进程、人工改库）在有限时间内重新可见。
+_COUNTER_CACHE_TTL_SECONDS = 30.0
 
 
 class ArchiveMemoryAutoSummaryService:
@@ -46,6 +51,10 @@ class ArchiveMemoryAutoSummaryService:
         self._config = config
         self._logger = logger or NullLogger()
         self._locks: dict[str, asyncio.Lock] = {}
+        #: 计数器状态的解析缓存（键 = conversation_kind:conversation_id，值 =
+        #: (计数器, 载入时刻)）。见 _cached_counter：避免每条消息都重新读库并
+        #: json.loads 整个 blob，同时靠 TTL 让外部修改在有限时间内可见。
+        self._counter_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self._tool_definitions = tool_definitions or []
         self._tool_executor = tool_executor
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
@@ -97,7 +106,7 @@ class ArchiveMemoryAutoSummaryService:
 
         counter_key = self._counter_key(conversation_kind, conversation_id)
         async with self._counter_lock(counter_key):
-            state = await self._load_counter(counter_key)
+            state = await self._cached_counter(counter_key)
             messages = list(state.get("messages", []))
             messages.append(
                 {
@@ -288,6 +297,26 @@ class ArchiveMemoryAutoSummaryService:
                 del self._locks[counter_key]
             lock.release()
 
+    async def _cached_counter(self, key: str) -> dict[str, Any]:
+        """读取计数器状态（带进程内解析缓存，缓存有 TTL）。
+
+        record_message 每条消息都要读一次计数器，而它是一整个 JSON blob
+        （间隔 500 条 × 800 字符 ≈ 400KB）：在事件循环上每条消息做一次 DB 读 +
+        json.loads 是实实在在的开销。缓存解析结果后，读路径只在缓存过期（或首次）
+        时落到 DB；写路径仍然每条都落库，因此崩溃丢失窗口与原来一致。
+
+        缓存必须过期：计数器行的外部修改（模型通过 archive_crud 写
+        memory_counter、另一个进程、人工改库）在旧实现里是可见的——永不重读会
+        让本进程把陈旧 blob 整块写回，撤消外部的删除/清零。
+        """
+        now = time.monotonic()
+        cached = self._counter_cache.get(key)
+        if cached is not None and now - cached[1] < _COUNTER_CACHE_TTL_SECONDS:
+            return cached[0]
+        fresh = await self._load_counter(key)
+        self._counter_cache[key] = (fresh, now)
+        return fresh
+
     async def _load_counter(self, key: str) -> dict[str, Any]:
         item = await self._archive.get(COUNTER_TABLE, key)
         if item is None or not item.value:
@@ -316,6 +345,8 @@ class ArchiveMemoryAutoSummaryService:
             json.dumps(state, ensure_ascii=False),
             ["auto_summary_counter"],
         )
+        # 同步缓存，避免下次读到过期内容（尤其是总结成功后的清零）
+        self._counter_cache[key] = (state, time.monotonic())
 
     async def flush_all(self) -> None:
         """关闭时并发刷新所有待处理的计数器。

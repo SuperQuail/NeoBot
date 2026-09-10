@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_contracts.ports.clock import SystemClock
-from neobot_storage import run_migrations, sqlite_url
+from neobot_storage import backup_sqlite_database, run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
@@ -236,7 +236,16 @@ def create_application() -> NeoBotApplication:
         config=config, logger=logger_factory.get_logger("app.context")
     )
 
-    db_url = sqlite_url(DATA_DIR / "neobot.db")
+    # 迁移前先留一份可回滚快照：alembic 迁移里存在不可逆操作
+    # （如 0021 的去重 DELETE），失败时没有备份就只能人工恢复。
+    db_path = DATA_DIR / "neobot.db"
+    db_url = sqlite_url(db_path)
+    db_backup_logger = logger_factory.get_logger("app.db_backup")
+    backup_path = backup_sqlite_database(
+        db_path, DATA_DIR / "db_backup", logger=db_backup_logger
+    )
+    if backup_path is not None:
+        db_backup_logger.info(f"迁移前已备份数据库: {backup_path}")
     run_migrations(db_url)
     _engine, uow_factory = build_storage(db_url)
 
@@ -337,10 +346,12 @@ def create_application() -> NeoBotApplication:
         data_dir=DATA_DIR,
     )
     if sandbox["temp_cleaner"] is not None:
-        sandbox["temp_cleaner"].logger = logger_factory.get_logger("app.temp_cleaner")
+        # 两个类的字段名是 _logger：写成 .logger 只是往实例上挂了个死属性，
+        # 生产里它们始终用构造时的 NullLogger，所有清理失败都不可见。
+        sandbox["temp_cleaner"]._logger = logger_factory.get_logger("app.temp_cleaner")
     if sandbox["sandbox_maintenance_manager"] is not None:
-        sandbox["sandbox_maintenance_manager"].logger = (
-            logger_factory.get_logger("app.sandbox_maintenance")
+        sandbox["sandbox_maintenance_manager"]._logger = logger_factory.get_logger(
+            "app.sandbox_maintenance"
         )
 
     # ── 解题 Agent 装配 ──

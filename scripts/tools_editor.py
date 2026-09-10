@@ -24,7 +24,6 @@ import threading
 import time
 import uuid
 import tkinter as tk
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -577,7 +576,7 @@ class ToolExecutionEnv:
             conv_type = args.get("conversation_type", "group")
             # TTS: generate audio then send
             segments = [
-                {"type": "record", "data": {"file": f"http://localhost:8080/files/tts/virtual_sample.wav"}},
+                {"type": "record", "data": {"file": "http://localhost:8080/files/tts/virtual_sample.wav"}},
             ]
             if conv_type == "group":
                 resp = await ws.send_api("send_group_msg", {"group_id": target_id, "message": segments})
@@ -747,9 +746,9 @@ class DelegateStreamWindow:
         info_frame = ttk.Frame(self._window)
         info_frame.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(8, 4))
 
-        ttk.Label(info_frame, text=f"Agent:", font=("", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Label(info_frame, text="Agent:", font=("", 9, "bold")).pack(side=tk.LEFT)
         ttk.Label(info_frame, text=self._agent_name, foreground="#0066CC").pack(side=tk.LEFT, padx=(4, 20))
-        ttk.Label(info_frame, text=f"Task:", font=("", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Label(info_frame, text="Task:", font=("", 9, "bold")).pack(side=tk.LEFT)
         task_display = self._task[:80] + "..." if len(self._task) > 80 else self._task
         ttk.Label(info_frame, text=task_display, foreground="#333").pack(side=tk.LEFT, padx=(4, 20))
 
@@ -1070,7 +1069,6 @@ class ToolsEditorApp:
             from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
             from neobot_app.config.loader.manager import Config
             from neobot_contracts.ports.logging import NullLogger as NL
-            from neobot_chat.models import get_model_registry
             from neobot_chat import AgentRegistry as AR, create_provider as cp
 
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -1121,7 +1119,7 @@ class ToolsEditorApp:
             if ps_config is not None and getattr(ps_config, "enabled", True):
                 try:
                     from neobot_app.agents.problem_solver import (
-                        build_problem_solver_agent, ProblemSolverAgentConfig,
+                        build_problem_solver_agent,
                     )
                     provider = _factory("problem_solver")
                     if provider is not None:

@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 from aiohttp import web
 from neobot_app.time_context import epoch_seconds
+from neobot_app.utils.atomic import atomic_write_text
 
 
 @dataclass
@@ -365,9 +366,10 @@ class FileServer:
         if not self._metadata_file.exists():
             return
         try:
-            with open(self._metadata_file) as f:
+            with open(self._metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as exc:
+            logging.warning("读取文件元数据失败（按空处理）: %s", exc)
             return
         loaded: Dict[str, FileMetadata] = {}
         for key, value in data.items():
@@ -386,10 +388,19 @@ class FileServer:
         self._files = loaded
 
     def _save_metadata(self) -> None:
-        """保存元数据"""
+        """保存元数据。
+
+        原子写入：这里记录已上传文件的过期时间，写一半被杀会留下截断的 JSON，
+        重启后整份元数据丢失、临时文件再也清不掉。编码固定 UTF-8，避免
+        中文文件名在非 UTF-8 默认编码下写入失败（旧实现静默吞掉异常）。
+        """
         try:
-            with open(self._metadata_file, "w") as f:
-                json.dump({k: asdict(v) for k, v in self._files.items()}, f)
-        except Exception:
-            pass
+            atomic_write_text(
+                self._metadata_file,
+                json.dumps(
+                    {k: asdict(v) for k, v in self._files.items()}, ensure_ascii=False
+                ),
+            )
+        except Exception as exc:
+            logging.warning("保存文件元数据失败: %s", exc)
 

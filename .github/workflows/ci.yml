@@ -1,0 +1,45 @@
+name: CI
+
+# 每次推送到 main / 每个 PR：先跑静态检查，再跑测试。
+# browser / network / slow / llm 四个标记用于隔离依赖外部环境的用例；当前仓库里
+# 只有 browser 有实际用例，新增真实网络/真实 LLM 用例时请务必打上对应标记，
+# 否则它们会进入 CI 默认集合（--strict-markers 会拦下拼错的标记名）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试与静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: 安装依赖（全部工作区包 + dev 组，严格用锁文件）
+        run: uv sync --all-packages --locked
+
+      - name: ruff（阻断）
+        run: uv run ruff check .
+
+      # --strict-markers：标记写错（例如把 network 打成 netwrok）会直接失败，
+      # 而不是让用例静默落进默认运行集合。
+      - name: 测试（阻断；排除 browser / network / slow / llm）
+        run: uv run pytest --strict-markers -m "not browser and not network and not slow and not llm"
+
+      # 存量类型错误约 820 条，先只暴露不阻断；清理到可接受规模后再摘掉
+      # continue-on-error。
+      - name: mypy（暂不阻断）
+        continue-on-error: true
+        run: uv run mypy app/src packages

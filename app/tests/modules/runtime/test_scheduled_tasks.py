@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from neobot_app.bootstrap import _skills as skill_bootstrap
+from neobot_app.runtime import scheduled_tasks as scheduled_tasks_module
 from neobot_app.runtime.scheduled_tasks import (
     ScheduledTaskConfig,
     ScheduledTaskManager,
@@ -194,6 +195,42 @@ async def test_scheduled_task_repository_rejects_invalid_time_window(tmp_path):
                 )
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_active_tasks_paginates_beyond_single_page():
+    """活跃任务超过单页上限时必须翻页取全。
+
+    只取第一页会让排在第 501 位之后的任务永远不被扫描，提醒静默不触发。
+    """
+    page_size = scheduled_tasks_module._ACTIVE_TASK_PAGE_SIZE
+    rows = [object() for _ in range(page_size + 1)]
+    calls: list[tuple[int, int]] = []
+
+    class _Repo:
+        async def list_active(self, *, limit: int, offset: int = 0):
+            calls.append((limit, offset))
+            return rows[offset : offset + limit]
+
+    class _Uow:
+        scheduled_tasks = _Repo()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    manager = ScheduledTaskManager(
+        uow_factory=_Uow,
+        config=ScheduledTaskConfig(poll_interval_seconds=60),
+        notification_hub=_FakeHub(),
+    )
+
+    tasks = await manager._list_active_tasks()
+
+    assert len(tasks) == page_size + 1
+    assert calls == [(page_size, 0), (page_size, page_size)]
 
 
 class _FakeHub:

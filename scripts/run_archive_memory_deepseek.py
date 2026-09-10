@@ -365,7 +365,6 @@ async def main() -> None:
     config = BotConfig()
     config.agent.memory.archive.allow_delete = True
 
-    archive_model = args.archive_model or args.model
     agent_registry = None
     main_agent = None
     try:

@@ -6,6 +6,7 @@ import inspect
 import io
 import threading
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, get_type_hints
 
@@ -299,18 +300,101 @@ class PluginHookBus:
             return None
 
 
-@contextlib.contextmanager
-def _capture_output(output: OutputPort, *, source: str, target: str | None = None):
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        yield
+# ── 输出捕获：按任务上下文路由，避免进程级重定向跨 await 串台 ──
+
+_CAPTURE_STDOUT: ContextVar[io.StringIO | None] = ContextVar(
+    "plugin_capture_stdout", default=None
+)
+_CAPTURE_STDERR: ContextVar[io.StringIO | None] = ContextVar(
+    "plugin_capture_stderr", default=None
+)
+
+
+class _ContextRoutedStream:
+    """按 contextvars 路由 write 的 stdout/stderr 代理。
+
+    ``contextlib.redirect_stdout`` 换掉的是**进程级** ``sys.stdout``，而插件
+    钩子是并发 await 的：某个任务进入捕获后，其它任务（含宿主的日志/print）
+    都会写进它的缓冲区，输出被记到别的插件名下；更糟的是异常退出顺序不巧时
+    ``sys.stdout`` 会被还原成已失效的 StringIO，此后进程所有 print 静默丢失。
+    这里改为「安装一次代理 + 按任务上下文路由」，各任务互不干扰。
+    """
+
+    def __init__(self, fallback: Any, variable: ContextVar) -> None:
+        self._fallback = fallback
+        self._variable = variable
+
+    def write(self, data: str) -> int:
+        sink = self._variable.get()
+        if sink is not None:
+            return sink.write(data)
+        if self._fallback is None:
+            # pythonw / PyInstaller --noconsole 等无控制台环境里 sys.stdout 是
+            # None，CPython 对它的 print() 本来是静默 no-op；代理若不判空，
+            # 就会把整个进程的 print 变成 AttributeError。
+            return len(data)
+        return self._fallback.write(data)
+
+    def writelines(self, lines: Any) -> None:
+        # 不实现的话会经 __getattr__ 直通真实流，捕获窗口内也拿不到输出。
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        if self._variable.get() is None and self._fallback is not None:
+            self._fallback.flush()
+
+    def __getattr__(self, item: str) -> Any:
+        # 其余属性（encoding / isatty / fileno …）透传给原始流
+        return getattr(self._fallback, item)
+
+
+def _install_context_routed_streams() -> None:
+    """确保 sys.stdout/sys.stderr 是上下文路由代理（可重复调用）。"""
+    import sys
+
+    if not isinstance(sys.stdout, _ContextRoutedStream):
+        sys.stdout = _ContextRoutedStream(sys.stdout, _CAPTURE_STDOUT)
+    if not isinstance(sys.stderr, _ContextRoutedStream):
+        sys.stderr = _ContextRoutedStream(sys.stderr, _CAPTURE_STDERR)
+
+
+def _emit_captured(
+    output: OutputPort,
+    *,
+    source: str,
+    target: str | None,
+    stdout: io.StringIO,
+    stderr: io.StringIO,
+) -> None:
     stdout_text = stdout.getvalue().strip()
     stderr_text = stderr.getvalue().strip()
-    if stdout_text:
-        output.write(stdout_text, source=source, target=target)
-    if stderr_text:
-        output.error(stderr_text, source=source, target=target)
+    try:
+        if stdout_text:
+            output.write(stdout_text, source=source, target=target)
+        if stderr_text:
+            output.error(stderr_text, source=source, target=target)
+    except Exception:
+        # 上报失败不能影响钩子调用链本身
+        pass
+
+
+@contextlib.contextmanager
+def _capture_output(output: OutputPort, *, source: str, target: str | None = None):
+    _install_context_routed_streams()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    token_out = _CAPTURE_STDOUT.set(stdout)
+    token_err = _CAPTURE_STDERR.set(stderr)
+    try:
+        yield
+    finally:
+        _CAPTURE_STDOUT.reset(token_out)
+        _CAPTURE_STDERR.reset(token_err)
+        # 在 finally 里上报：处理器抛异常时也不丢已经产生的输出
+        _emit_captured(
+            output, source=source, target=target, stdout=stdout, stderr=stderr
+        )
 
 
 def _extract_event_model(handler: EventHandler) -> type[BaseModel] | None:

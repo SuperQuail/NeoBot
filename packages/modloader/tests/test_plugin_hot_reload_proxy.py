@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from neobot_modloader import Plugin, PluginRuntime, PluginStateStore
+from neobot_modloader import PluginRuntime, PluginStateStore
 from neobot_modloader.installer import PluginInstaller, ProxySettings
 from neobot_modloader.management import PluginSnapshot
 

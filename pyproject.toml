@@ -58,3 +58,26 @@ dev = [
     "pytest-timeout>=2.3.1",
     "ruff>=0.15.5",
 ]
+
+[tool.ruff]
+# 起步用保守规则集（ruff 经典默认 E4/E7/E9/F）：先把「未使用导入 / 未定义名字 /
+# 语法级问题」这类确定性缺陷挡在 CI 外，规则集再逐步扩大。
+target-version = "py313"
+line-length = 120
+exclude = [
+    "app/src/neobot_app/builtin_plugins/dashboard/web",
+    "app/src/neobot_app/builtin_plugins/dashboard/frontend",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# 起步配置：存量类型错误较多，先不启用严格模式，仅用于暴露问题（CI 中暂不阻断）。
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = false
+exclude = [
+    "app/src/neobot_app/builtin_plugins/dashboard/web/",
+    "app/src/neobot_app/builtin_plugins/dashboard/frontend/",
+]

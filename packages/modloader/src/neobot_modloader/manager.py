@@ -498,9 +498,38 @@ class DefaultPluginManager:
             self._cleanup_callbacks(record, collected, baseline)
             self._unsubscribe_all(record, collected, baseline)
             await self._cleanup_agents(record, collected, baseline)
+            await self._close_plugin_databases(record, collected, baseline)
         finally:
             record._teardown_depth -= 1
         return collected
+
+    async def _close_plugin_databases(
+        self,
+        record: PluginRecord,
+        errors: list[Exception],
+        cancellation_baseline: int,
+    ) -> None:
+        """关闭插件声明的数据库引擎。
+
+        on_stop 是唯一的关闭入口，而插件处于 ERROR 状态时 _stop_plugin_locked
+        会跳过 on_stop（callback_needed 只认 LOADED/RUNNING）：声明了数据库的
+        插件若在 on_load/on_start 阶段失败，引擎会一直挂着，Windows 上持续
+        锁住插件数据库文件。这里纳入统一的 teardown，覆盖全部失败路径。
+        """
+        close_databases = getattr(record.plugin, "close_databases", None)
+        if not callable(close_databases):
+            return
+        try:
+            await self._maybe_await(close_databases())
+        except asyncio.CancelledError as exc:
+            error = _cancelled_failure(f"插件数据库关闭被取消 ({record.name})", exc)
+            errors.append(error)
+            self._logger.exception(f"插件数据库关闭失败 ({record.name}): {exc}")
+            if _cancellation_requested_since(cancellation_baseline):
+                raise
+        except Exception as exc:
+            errors.append(exc)
+            self._logger.exception(f"插件数据库关闭失败 ({record.name}): {exc}")
 
     def _unsubscribe_all(
         self,
