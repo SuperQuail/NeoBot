@@ -43,6 +43,7 @@ async def _make_service(tmp_path, monkeypatch) -> tuple[CreatorImageService, obj
         adapter=None,
         config=DrawServiceConfig(gallery_capacity=10, gallery_page_size=50),
         data_dir=tmp_path / "data",
+        model_names=["fake-model"],
     )
     return service, engine, uow_factory
 

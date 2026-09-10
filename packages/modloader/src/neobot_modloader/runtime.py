@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -16,7 +17,14 @@ from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import TrackedPluginHostFacade
-from neobot_modloader.loading.manifest import read_dependencies, read_manifest, read_python_dependencies
+from neobot_modloader.installer import PluginInstaller, PluginUpdateCheck
+from neobot_modloader.loading.manifest import (
+    read_dependencies,
+    read_manifest,
+    read_optional_bool,
+    read_python_dependencies,
+)
+from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.loader import (
     DiscoveredPlugin,
     FilesystemPluginLoader,
@@ -27,6 +35,9 @@ from neobot_modloader.loader import (
 from neobot_modloader.management import PluginControlFacade, PluginOperationResult, PluginSnapshot
 from neobot_modloader.manager import DefaultPluginManager, ReentrantLock
 from neobot_modloader.plugins.registration import validate_plugin_name
+from neobot_modloader.state import PluginStateStore
+
+OfficialConfigProvider = Callable[[str], "Mapping[str, Any] | None"]
 
 
 class OperationBusy(Exception):
@@ -68,9 +79,21 @@ class PluginRuntime:
         app_commands: Any | None = None,
         dependency_installer: PythonDependencyInstaller | None = None,
         auto_install_dependencies: bool = False,
+        builtin_plugin_dirs: Sequence[Path] | None = None,
+        state_store: PluginStateStore | None = None,
+        official_config_provider: OfficialConfigProvider | None = None,
+        installer: PluginInstaller | None = None,
+        user_plugins_enabled: bool = True,
     ) -> None:
         self.plugin_dir = plugin_dir.resolve()
         self.data_dir = data_dir.resolve()
+        self.user_plugins_enabled = bool(user_plugins_enabled)
+        self._official_dirs = tuple(
+            Path(path).resolve() for path in (builtin_plugin_dirs or ())
+        )
+        self._state_store = state_store
+        self._official_config_provider = official_config_provider
+        self.installer = installer
         self.adapter = adapter
         self.logger_factory = logger_factory
         self.agent_registry = agent_registry
@@ -88,12 +111,26 @@ class PluginRuntime:
             output=self.output,
         )
         self.host = host
-        self.loader = loader or FilesystemPluginLoader(logger=self._get_logger("modloader.loader"))
+        enabled_resolver = self._resolve_enabled_state if self._state_store is not None else None
+        self.loader = loader or FilesystemPluginLoader(
+            logger=self._get_logger("modloader.loader"),
+            source=THIRD_PARTY_SOURCE,
+            enabled_resolver=enabled_resolver,
+        )
+        self.official_loader = FilesystemPluginLoader(
+            logger=self._get_logger("modloader.loader.official"),
+            source=OFFICIAL_SOURCE,
+            namespace="neobot_builtin_plugins",
+            enabled_resolver=enabled_resolver,
+        )
         self.manager = manager or DefaultPluginManager(logger=self._get_logger("modloader.manager"))
         self.dependency_installer = dependency_installer or PythonDependencyInstaller(logger=self.logger)
         self.auto_install_dependencies = auto_install_dependencies
         self._loaded_modules: dict[str, tuple[str, ...]] = {}
         self._loaded_paths: dict[str, Path] = {}
+        self._loaded_sources: dict[str, str] = {}
+        #: 已加载插件解析后的热重载能力（plugin.toml 优先，其次 Plugin() 声明）
+        self._loaded_flags: dict[str, tuple[bool, bool]] = {}
         self._operation_gate = asyncio.Lock()
         self._operation_locks: dict[str, ReentrantLock] = {}
         self._operation_paths: dict[Path, str] = {}
@@ -102,20 +139,81 @@ class PluginRuntime:
         self._scan_guard = threading.RLock()
         self.control = _RuntimePluginControlFacade(self)
 
+    def _resolve_enabled_state(self, name: str, default: bool) -> bool:
+        store = self._state_store
+        if store is None:
+            return default
+        return store.is_enabled(name, default)
+
+    @property
+    def builtin_plugin_dirs(self) -> tuple[Path, ...]:
+        return self._official_dirs
+
+    @property
+    def state_store(self) -> PluginStateStore | None:
+        return self._state_store
+
+    def scan_dirs(self) -> list[tuple[Path, FilesystemPluginLoader]]:
+        """按优先级返回 (目录, 加载器)：官方插件目录在前，第三方插件目录在后。"""
+        directories: list[tuple[Path, FilesystemPluginLoader]] = [
+            (path, self.official_loader) for path in self._official_dirs
+        ]
+        if self.user_plugins_enabled:
+            directories.append((self.plugin_dir, self.loader))
+        return directories
+
     def discover_all(self) -> list[DiscoveredPlugin | PluginLoadError]:
-        self.plugin_dir.mkdir(parents=True, exist_ok=True)
-        return self.loader.discover_all(self.plugin_dir)
+        results: list[DiscoveredPlugin | PluginLoadError] = []
+        official_names: set[str] = set()
+        for directory, loader in self.scan_dirs():
+            for result in loader.discover_all(directory):
+                if isinstance(result, PluginLoadError):
+                    results.append(result)
+                    continue
+                if result.source == OFFICIAL_SOURCE:
+                    official_names.add(result.name)
+                elif result.name in official_names:
+                    self.logger.warning(
+                        f"第三方插件与官方插件同名，已忽略第三方副本: {result.name}"
+                    )
+                    continue
+                results.append(result)
+        return results
 
     def load_all(self, *, auto_install_dependencies: bool | None = None) -> None:
-        self.plugin_dir.mkdir(parents=True, exist_ok=True)
+        if self.user_plugins_enabled:
+            self.plugin_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        for path in self._official_dirs:
+            if not path.exists():
+                self.logger.warning(f"官方插件目录不存在: {path}")
         self.logger.info(f"插件目录: {self.plugin_dir}")
 
         install = self.auto_install_dependencies if auto_install_dependencies is None else auto_install_dependencies
         if install:
             self._confirm_and_install_missing_dependencies()
 
-        results = self.loader.load_all(self.plugin_dir)
+        results = []
+        official_names: set[str] = set()
+        for directory, loader in self.scan_dirs():
+            for result in loader.load_all(directory):
+                if isinstance(result, LoadedPlugin) and result.source == OFFICIAL_SOURCE:
+                    official_names.add(result.name)
+                results.append(result)
+        deduped = []
+        for result in results:
+            if (
+                isinstance(result, LoadedPlugin)
+                and result.source != OFFICIAL_SOURCE
+                and result.name in official_names
+            ):
+                self.logger.warning(
+                    f"第三方插件与官方插件同名，已忽略第三方副本: {result.name}"
+                )
+                self.loader.clear_module_cache(result.module_names)
+                continue
+            deduped.append(result)
+        results = deduped
         loaded_count = 0
         error_count = 0
         # 同步扫描整体无 await，检查-注册在事件循环内原子；scan guard 防止多线程重复进入。
@@ -454,6 +552,17 @@ class PluginRuntime:
                 path=self._loaded_paths.get(name),
             )
 
+        flags = self._loaded_flags.get(name)
+        if flags is not None and not flags[0]:
+            return PluginOperationResult(
+                ok=False,
+                name=name,
+                state=self._state_value(name),
+                error="该插件声明不支持热重载，请重启 NeoBot",
+                requires_restart=True,
+                path=plugin_path,
+            )
+
         old_record = self.manager.get_record(name)
         old_modules = self._loaded_modules.get(name, ())
         old_path = self._loaded_paths.get(name) or plugin_path
@@ -463,7 +572,7 @@ class PluginRuntime:
 
         install = self.auto_install_dependencies if auto_install_dependencies is None else auto_install_dependencies
         if install:
-            discovered = self.loader.discover_all(self.plugin_dir)
+            discovered = self.discover_all()
             missing = []
             for item in discovered:
                 if isinstance(item, DiscoveredPlugin) and item.name == name:
@@ -852,6 +961,7 @@ class PluginRuntime:
                         path=path,
                         kind=self._kind_for_path(path),
                         error=_error_text(result.error),
+                        source=self._source_for_path(path),
                     )
                 )
                 seen_names.add(result.name)
@@ -862,6 +972,7 @@ class PluginRuntime:
             state = self._state_value(result.name)
             if state == PluginState.UNLOADED.value and result.missing_python_dependencies:
                 state = PluginState.ERROR.value
+            loaded_flags = self._loaded_flags.get(result.name)
             snapshots.append(
                 PluginSnapshot(
                     name=result.name,
@@ -876,6 +987,18 @@ class PluginRuntime:
                     dependencies=result.dependencies,
                     python_dependencies=result.python_dependencies,
                     missing_python_dependencies=result.missing_python_dependencies,
+                    source=result.source,
+                    repo=result.repo,
+                    branch=result.branch,
+                    homepage=result.homepage,
+                    license=result.license,
+                    tags=result.tags,
+                    hot_reload=(
+                        loaded_flags[0] if loaded_flags else result.hot_reload
+                    ),
+                    config_hot_reload=(
+                        loaded_flags[1] if loaded_flags else result.config_hot_reload
+                    ),
                 )
             )
             seen_names.add(result.name)
@@ -904,10 +1027,187 @@ class PluginRuntime:
                     author=str(getattr(plugin, "author", "") or ""),
                     dependencies=tuple(getattr(plugin, "dependencies", ()) or ()),
                     python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
+                    source=self._loaded_sources.get(name, THIRD_PARTY_SOURCE),
+                    hot_reload=bool(getattr(plugin, "hot_reload", True)),
+                    config_hot_reload=bool(getattr(plugin, "config_hot_reload", True)),
                 )
             )
 
         return sorted(snapshots, key=lambda item: item.name.lower())
+
+    def plugin_config_model(self, name: str) -> Any | None:
+        """返回插件声明的配置模型（pydantic BaseModel），未声明时返回 None。
+
+        面板用它为官方插件生成表单并做保存前校验。
+        """
+        record = self.manager.get_record(name)
+        plugin = record.plugin if record is not None else None
+        model = getattr(plugin, "config_model", None)
+        return model if isinstance(model, type) else None
+
+    # ------------------------------------------------------------------
+    # 插件下载代理
+    # ------------------------------------------------------------------
+
+    def installer_proxy(self) -> dict[str, Any]:
+        """当前插件下载代理设置（安装器不可用时返回空字典）。"""
+        installer = self.installer
+        if installer is None:
+            return {}
+        return installer.proxy.to_dict()
+
+    def set_installer_proxy(
+        self,
+        *,
+        mode: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> dict[str, Any]:
+        """切换插件下载代理；下一次下载立即生效。"""
+        installer = self.installer
+        if installer is None:
+            raise RuntimeError("插件安装器不可用")
+        return installer.set_proxy(mode=mode, host=host, port=port).to_dict()
+
+    async def set_enabled(self, name: str, enabled: bool) -> PluginOperationResult:
+        """启用 / 停用插件并持久化状态；官方插件与第三方插件使用同一套机制。"""
+        path = self._loaded_paths.get(name) or self._find_plugin_path(name)
+        if path is None:
+            return PluginOperationResult(ok=False, name=name, error=f"插件未找到: {name}")
+        if not enabled:
+            record = self.manager.get_record(name)
+            if record is not None:
+                result = await self.unload_plugin(name)
+                if not result.ok:
+                    return result
+            if self._state_store is not None:
+                self._state_store.set_enabled(name, False)
+            self._loaded_sources.pop(name, None)
+            self._loaded_flags.pop(name, None)
+            return PluginOperationResult(
+                ok=True,
+                name=name,
+                state=PluginState.UNLOADED.value,
+                path=path,
+            )
+        if self._state_store is not None:
+            self._state_store.set_enabled(name, True)
+        return await self.load_plugin_path(path, start=True)
+
+    async def install_plugin(
+        self,
+        repo: str,
+        *,
+        branch: str | None = None,
+        replace: bool = False,
+        start: bool = True,
+    ) -> PluginOperationResult:
+        if self.installer is None:
+            return PluginOperationResult(ok=False, name="", error="插件安装器未配置")
+        result = await self.installer.install(repo, branch=branch, replace=replace)
+        if not result.ok:
+            return PluginOperationResult(
+                ok=False, name=result.name, error=result.error, path=result.path
+            )
+        if self._state_store is not None:
+            self._state_store.set_enabled(result.name, True)
+        if result.path is None:
+            return PluginOperationResult(ok=True, name=result.name)
+        outcome = await self.load_plugin_path(result.path, start=start)
+        if outcome.ok:
+            return PluginOperationResult(
+                ok=True,
+                name=outcome.name,
+                state=outcome.state,
+                path=outcome.path,
+            )
+        return PluginOperationResult(
+            ok=False,
+            name=result.name,
+            state=outcome.state,
+            error=f"{result.message}，但加载失败: {outcome.error or outcome.state}",
+            path=result.path,
+        )
+
+    async def uninstall_plugin(self, name: str) -> PluginOperationResult:
+        if self.installer is None:
+            return PluginOperationResult(ok=False, name=name, error="插件安装器未配置")
+        if self.is_official(name):
+            return PluginOperationResult(
+                ok=False, name=name, error=f"官方插件随本体分发，不能卸载: {name}"
+            )
+        path = self._loaded_paths.get(name) or self._find_plugin_path(name)
+        if self.manager.get_record(name) is not None:
+            stopped = await self.unload_plugin(name)
+            if not stopped.ok:
+                return stopped
+        result = await self.installer.uninstall(name)
+        if not result.ok:
+            return PluginOperationResult(ok=False, name=name, error=result.error, path=path)
+        if self._state_store is not None:
+            self._state_store.forget(name)
+        self._loaded_sources.pop(name, None)
+        self._loaded_paths.pop(name, None)
+        return PluginOperationResult(
+            ok=True,
+            name=name,
+            state=PluginState.UNLOADED.value,
+            error=result.message or None,
+            path=result.path,
+        )
+
+    async def check_plugin_update(self, name: str) -> PluginUpdateCheck:
+        snapshot = self._snapshot_for(name)
+        if snapshot is None:
+            return PluginUpdateCheck(
+                name=name, current_version="", status="error", error=f"插件未找到: {name}"
+            )
+        if snapshot.official:
+            return PluginUpdateCheck(
+                name=name,
+                current_version=snapshot.version,
+                status="unknown",
+                error="官方插件随本体更新",
+            )
+        if self.installer is None:
+            return PluginUpdateCheck(
+                name=name,
+                current_version=snapshot.version,
+                status="error",
+                error="插件安装器未配置",
+            )
+        return await self.installer.check_update(
+            name,
+            repo=snapshot.repo,
+            branch=snapshot.branch,
+            current_version=snapshot.version,
+        )
+
+    async def check_plugin_updates(self) -> list[PluginUpdateCheck]:
+        checks: list[PluginUpdateCheck] = []
+        for snapshot in self.snapshot_plugins():
+            if snapshot.official or not snapshot.repo:
+                continue
+            checks.append(await self.check_plugin_update(snapshot.name))
+        return checks
+
+    def _snapshot_for(self, name: str) -> PluginSnapshot | None:
+        for snapshot in self.snapshot_plugins():
+            if snapshot.name == name:
+                return snapshot
+        return None
+
+    def _source_for_path(self, path: Path | None) -> str:
+        if path is None:
+            return THIRD_PARTY_SOURCE
+        resolved = path.resolve()
+        for root in self._official_dirs:
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            return OFFICIAL_SOURCE
+        return THIRD_PARTY_SOURCE
 
     def _confirm_and_install_missing_dependencies(self) -> None:
         missing: list[str] = []
@@ -1064,6 +1364,7 @@ class PluginRuntime:
             self._loaded_modules.pop(name, None)
         if self._loaded_paths.get(name) == path or self.manager.get_record(name) is None:
             self._loaded_paths.pop(name, None)
+            self._loaded_sources.pop(name, None)
         self._prune_operation_state(name, path)
         self._prune_operation_lock(name)
 
@@ -1136,11 +1437,28 @@ class PluginRuntime:
         return str(state)
 
     def _is_path_under_plugin_dir(self, path: Path) -> bool:
-        try:
-            path.resolve().relative_to(self.plugin_dir)
-        except ValueError:
-            return False
-        return True
+        resolved = path.resolve()
+        roots = [self.plugin_dir, *self._official_dirs]
+        for root in roots:
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            return True
+        return False
+
+    def plugin_source(self, name: str) -> str:
+        """插件来源；未加载的插件通过发现结果推断。"""
+        source = self._loaded_sources.get(name)
+        if source is not None:
+            return source
+        for result in self.discover_all():
+            if isinstance(result, DiscoveredPlugin) and result.name == name:
+                return result.source
+        return THIRD_PARTY_SOURCE
+
+    def is_official(self, name: str) -> bool:
+        return self.plugin_source(name) == OFFICIAL_SOURCE
 
     def _kind_for_path(self, path: Path | None) -> str:
         if path is None:
@@ -1219,7 +1537,27 @@ class PluginRuntime:
             dependencies=dependencies,
             python_dependencies=python_dependencies,
             missing_python_dependencies=missing,
+            hot_reload=bool(read_optional_bool(metadata, "hot_reload", True)),
+            config_hot_reload=bool(read_optional_bool(metadata, "config_hot_reload", True)),
         )
+
+    def _official_config(self, loaded: LoadedPlugin) -> Mapping[str, Any]:
+        """官方插件的配置来自本体配置（BotConfig 的对应分区）。"""
+        provider = self._official_config_provider
+        if loaded.source != OFFICIAL_SOURCE or provider is None:
+            return loaded.config
+        try:
+            provided = provider(loaded.name)
+        except Exception as exc:
+            self.logger.warning(f"读取官方插件配置失败 ({loaded.name}): {exc}")
+            return loaded.config
+        if provided is None:
+            return loaded.config
+        try:
+            return dict(provided)
+        except Exception as exc:
+            self.logger.warning(f"官方插件配置格式非法 ({loaded.name}): {exc}")
+            return loaded.config
 
     def _register(self, loaded: LoadedPlugin) -> bool:
         try:
@@ -1238,7 +1576,7 @@ class PluginRuntime:
                 plugin_name=loaded.name,
                 plugin_dir=loaded.plugin_dir,
                 data_dir=plugin_data_dir,
-                config=loaded.config,
+                config=self._official_config(loaded),
                 logger=logger,
                 adapter=self.adapter,
                 hook_bus=self.hook_bus,
@@ -1259,10 +1597,16 @@ class PluginRuntime:
                 screenshots=self.screenshots,
                 app_commands=self._app_commands,
                 plugin_control=self.control,
+                source=loaded.source,
             )
             self.manager.register(loaded.plugin, context)
             self._loaded_modules[loaded.name] = loaded.module_names
             self._loaded_paths[loaded.name] = self._path_for_loaded(loaded)
+            self._loaded_sources[loaded.name] = loaded.source
+            self._loaded_flags[loaded.name] = (
+                bool(getattr(loaded, "hot_reload", True)),
+                bool(getattr(loaded, "config_hot_reload", True)),
+            )
             return True
         except Exception as exc:
             self.logger.exception(f"插件注册失败 ({loaded.name}): {exc}")

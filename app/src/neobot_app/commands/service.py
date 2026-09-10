@@ -18,6 +18,7 @@ from neobot_app.commands.registry import CommandRegistry
 SendCallback = Callable[[str, str, str, int | None], Awaitable[Any]]
 ConfigSaveCallback = Callable[[list[int]], Awaitable[str]]
 RestartCallback = Callable[[], Any]
+ConfigReloadCallback = Callable[[], Awaitable[Any]]
 
 
 class CommandService:
@@ -36,6 +37,7 @@ class CommandService:
         markdown_image_converter: Any = None,
         file_server: Any = None,
         sleep_service: Any = None,
+        config_reload_callback: ConfigReloadCallback | None = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -48,6 +50,7 @@ class CommandService:
         self._markdown_image_converter = markdown_image_converter
         self._file_server = file_server
         self._sleep_service = sleep_service
+        self._config_reload_callback = config_reload_callback
         if register_builtins:
             for command in build_builtin_commands(self):
                 self._registry.register(command)
@@ -63,6 +66,20 @@ class CommandService:
             return False
         self._restart_callback()
         return True
+
+    def set_config_reload_callback(self, callback: ConfigReloadCallback) -> None:
+        """注入配置热重载回调（/reload 命令使用）。"""
+        self._config_reload_callback = callback
+
+    async def reload_config(self) -> dict[str, Any] | None:
+        """触发不重启进程的配置热重载；未注入回调时返回 None。"""
+        callback = self._config_reload_callback
+        if callback is None:
+            return None
+        result = callback()
+        if hasattr(result, "__await__"):
+            result = await result
+        return result if isinstance(result, dict) else None
 
     @property
     def permissions(self) -> PermissionManager:

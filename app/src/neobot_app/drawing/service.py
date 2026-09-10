@@ -9,6 +9,7 @@ import io
 import json
 import mimetypes
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -92,7 +93,8 @@ class CreatorImageService:
         adapter: OneBotAdapter,
         config: DrawServiceConfig,
         data_dir: Path = DATA_DIR,
-        model_name: str = "creator_image_model",
+        model_name: str = "",  # 生图模型 key（由 bootstrap 传入 [models.assignments].creator_image_models）
+        model_names: Sequence[str] | None = None,
         emoji_service: "EmojiService | None" = None,
         vision_provider: Provider | None = None,
         markdown_dir: Path | None = None,
@@ -108,19 +110,33 @@ class CreatorImageService:
         self._vision_provider = vision_provider
         self._file_server = file_server
         self._image_pool = image_pool
-        self._model = get_registered_model(model_name)
+        names = tuple(model_names) if model_names else ((model_name,) if model_name else ())
+        self._model_names: tuple[str, ...] = tuple(dict.fromkeys(name for name in names if name))
+        if not self._model_names:
+            raise ValueError("至少需要一个生图模型注册名")
+        self._models: dict[str, Any] = {
+            name: get_registered_model(name) for name in self._model_names
+        }
+        self._default_model_name = self._model_names[0]
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
         self._gallery_dir = self._base_dir / "gallery"
         self._markdown_dir = markdown_dir
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._gallery_dir.mkdir(parents=True, exist_ok=True)
-        timeout = self._model.settings.timeout_seconds
-        self._client = httpx.AsyncClient(
-            base_url=self._model.base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {self._model.api_key}"},
-            timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
-        )
+        default_model = self._models[self._default_model_name]
+        timeout = default_model.settings.timeout_seconds
+        self._clients: dict[str, httpx.AsyncClient] = {}
+        for name, model in self._models.items():
+            model_timeout = float(model.settings.timeout_seconds or timeout)
+            self._clients[name] = httpx.AsyncClient(
+                base_url=model.base_url.rstrip("/"),
+                headers={"Authorization": f"Bearer {model.api_key}"},
+                timeout=httpx.Timeout(model_timeout, connect=min(model_timeout, 10.0)),
+                trust_env=bool(getattr(model, "use_system_proxy", False)),
+            )
+        self._model = default_model
+        self._client = self._clients[self._default_model_name]
         # 用户可控 URL 下载使用无凭据 client，避免 API Key 外发
         self._public_client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
@@ -130,7 +146,8 @@ class CreatorImageService:
     async def close(self) -> None:
         await self._stop_cleanup_task()
         await self.cleanup_tmp()
-        await self._client.aclose()
+        for client in self._clients.values():
+            await client.aclose()
         await self._public_client.aclose()
 
     async def start(self) -> None:
@@ -138,6 +155,68 @@ class CreatorImageService:
 
     async def stop(self) -> None:
         await self._stop_cleanup_task()
+
+    # ------------------------------------------------------------------
+    # 生图模型选择（支持配置多个模型/供应商）
+    # ------------------------------------------------------------------
+
+    @property
+    def default_model_name(self) -> str:
+        return self._default_model_name
+
+    @property
+    def model_names(self) -> tuple[str, ...]:
+        return self._model_names
+
+    def available_models(self) -> list[dict[str, Any]]:
+        """可用生图模型清单（供绘图工具描述与面板展示）。"""
+        return [
+            {
+                "name": name,
+                "index": index,
+                "description": self._models[name].description,
+                "provider": self._models[name].provider_name,
+                "model_name": self._models[name].model_name,
+                "default": name == self._default_model_name,
+            }
+            for index, name in enumerate(self._model_names)
+        ]
+
+    def resolve_model_name(self, selector: str | None) -> str:
+        """把 Agent 给出的选择（序号 / 注册名 / 描述 / 供应商 / 模型名）解析为注册名。"""
+        if selector is None:
+            return self._default_model_name
+        raw = str(selector).strip()
+        if not raw:
+            return self._default_model_name
+        if raw in self._models:
+            return raw
+        if raw.isdigit():
+            index = int(raw)
+            if 0 <= index < len(self._model_names):
+                return self._model_names[index]
+        lowered = raw.casefold()
+        for name in self._model_names:
+            model = self._models[name]
+            candidates = {
+                str(model.description).casefold(),
+                str(model.provider_name).casefold(),
+                str(model.model_name).casefold(),
+            }
+            if lowered in candidates:
+                return name
+        for name in self._model_names:
+            model = self._models[name]
+            if lowered in str(model.model_name).casefold() or lowered in str(model.provider_name).casefold():
+                return name
+        available = "、".join(
+            f"{index}:{self._models[name].description or name}"
+            for index, name in enumerate(self._model_names)
+        )
+        raise ValueError(f"未知生图模型选择 {selector!r}；可用: {available}")
+
+    def _client_for(self, model_name: str) -> tuple[Any, httpx.AsyncClient]:
+        return self._models[model_name], self._clients[model_name]
 
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
@@ -346,17 +425,21 @@ class CreatorImageService:
         seed: int | None = None,
         image_source: str | None = None,
         conv_id: str = "",
+        model: str | None = None,
     ) -> CreatorImageRecord:
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt 不能为空")
 
+        resolved_name = self.resolve_model_name(model)
+        registered_model, client = self._client_for(resolved_name)
+
         payload: dict[str, Any] = {
-            "model": self._model.model_name,
+            "model": registered_model.model_name,
             "prompt": prompt,
             "image_size": image_size or DEFAULT_IMAGE_SIZE,
         }
-        payload.update(self._model.settings.extra_body or {})
+        payload.update(registered_model.settings.extra_body or {})
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
         if seed is not None:
@@ -374,12 +457,43 @@ class CreatorImageService:
                 if url:
                     resolved_data_urls.append(url)
 
-        if len(resolved_data_urls) == 1:
-            payload["image"] = resolved_data_urls[0]
-        elif len(resolved_data_urls) > 1:
-            payload["image"] = resolved_data_urls
+        settings = registered_model.settings
+        image_api = str(getattr(settings, "image_api", "auto") or "auto").strip().lower()
+        if image_api not in {"auto", "edits", "generations"}:
+            image_api = "auto"
+        reference_param = str(
+            getattr(settings, "image_reference_param", "image") or "image"
+        ).strip() or "image"
 
-        response = await self._client.post("/images/generations", json=payload)
+        response: httpx.Response | None = None
+        if resolved_data_urls and image_api in {"auto", "edits"}:
+            # 参考图必须走 /images/edits（multipart）：部分中转站会静默忽略
+            # /images/generations 上的 image 字段，导致「参考图不生效」
+            response = await self._post_edits(
+                client,
+                registered_model,
+                payload=payload,
+                references=resolved_data_urls,
+            )
+            if response is not None and response.status_code in {400, 404, 405}:
+                if image_api == "edits":
+                    pass  # 显式指定 edits 时不回退，交给下方 raise_for_status 报错
+                else:
+                    self._logger.warning(
+                        f"参考图接口 /images/edits 返回 {response.status_code}，"
+                        f"回退到 /images/generations（字段 {reference_param}）"
+                    )
+                    response = None
+        if response is None:
+            if resolved_data_urls:
+                # 复数形式的字段名（images / image_urls / reference_images）用数组，
+                # 单数形式（image / image_url / input_image）单张时用字符串
+                payload[reference_param] = (
+                    list(resolved_data_urls)
+                    if len(resolved_data_urls) > 1 or reference_param.endswith("s")
+                    else resolved_data_urls[0]
+                )
+            response = await client.post("/images/generations", json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -1545,6 +1659,51 @@ class CreatorImageService:
             raise PermissionError(f"文件引用越界: {value}")
         return path
 
+    async def _post_edits(
+        self,
+        client: httpx.AsyncClient,
+        registered_model: Any,
+        *,
+        payload: dict[str, Any],
+        references: list[str],
+    ) -> httpx.Response | None:
+        """参考图生图：multipart 调用 /images/edits（OpenAI 标准形态）。
+
+        参考图必须是 data URL；否则返回 None，由调用方回退到 /images/generations。
+        单张参考图字段名用 `image`，多张用重复的 `image[]`。
+        """
+        decoded: list[tuple[bytes, str]] = []
+        for data_url in references:
+            raw, mime = _decode_data_url(data_url)
+            if raw is None:
+                return None
+            decoded.append((raw, mime))
+        if not decoded:
+            return None
+
+        data: dict[str, Any] = {
+            "model": payload.get("model") or registered_model.model_name,
+            "prompt": str(payload.get("prompt") or ""),
+            "size": payload.get("image_size") or DEFAULT_IMAGE_SIZE,
+        }
+        for key, value in payload.items():
+            if key in {"model", "prompt", "image_size", "image", "images"} or value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                data[key] = value
+            else:
+                data[key] = json.dumps(value, ensure_ascii=False)
+
+        field = "image" if len(decoded) == 1 else "image[]"
+        files = [
+            (field, (f"reference_{index + 1}{_extension_for_mime(mime)}", raw, mime))
+            for index, (raw, mime) in enumerate(decoded)
+        ]
+        self._logger.debug(
+            "参考图生图请求 /images/edits", count=len(decoded), field=field
+        )
+        return await client.post("/images/edits", data=data, files=files)
+
     async def _extract_image_bytes(self, data: dict[str, Any]) -> bytes:
         items = data.get("data")
         if not isinstance(items, list) or not items:
@@ -1610,6 +1769,36 @@ class CreatorImageService:
         data = base64.b64encode(file_path.read_bytes()).decode("utf-8")
         mime = mime_type or mimetypes.guess_type(file_path.name)[0] or "image/png"
         return f"data:{mime};base64,{data}"
+
+
+#: data URL -> 文件扩展名
+_MIME_EXTENSIONS: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+}
+
+
+def _extension_for_mime(mime: str) -> str:
+    return _MIME_EXTENSIONS.get(str(mime or "").lower(), ".png")
+
+
+def _decode_data_url(value: str) -> tuple[bytes | None, str]:
+    """解析 data URL，返回 (原始字节, mime)；非 base64 data URL 返回 (None, "")。"""
+    text = str(value or "")
+    if not text.startswith("data:") or "," not in text:
+        return None, ""
+    header, _, encoded = text.partition(",")
+    if "base64" not in header.lower():
+        return None, ""
+    mime = header[len("data:") :].split(";")[0].strip() or "image/png"
+    try:
+        return base64.b64decode(encoded), mime
+    except Exception:
+        return None, ""
 
 
 def _record_payload(record: CreatorImageRecord) -> dict[str, Any]:

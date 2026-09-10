@@ -46,6 +46,7 @@ class BaseHTTPProvider:
         extra_headers: dict[str, str] | None = None,
         logger: Logger | None = None,
         native_vision: bool = False,
+        use_system_proxy: bool = False,
     ):
         self.native_vision = native_vision
         self.api_key = api_key
@@ -53,6 +54,8 @@ class BaseHTTPProvider:
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
         self._logger = logger or NullLogger()
+        #: 是否跟随系统/环境变量代理（httpx trust_env）；默认 False = 直连
+        self.use_system_proxy = bool(use_system_proxy)
         self._client: httpx.AsyncClient | None = None
 
     def _build_headers(self) -> dict[str, str]:
@@ -92,6 +95,7 @@ class BaseHTTPProvider:
                 headers=self._build_headers(),
                 timeout=httpx.Timeout(self.timeout, connect=10.0),
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                trust_env=self.use_system_proxy,
             )
         return self._client
 

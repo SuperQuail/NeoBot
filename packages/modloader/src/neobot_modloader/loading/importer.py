@@ -15,7 +15,10 @@ _MODULE_GENERATION = count(1)
 
 
 class PluginModuleImporter:
-    def __init__(self) -> None:
+    """按文件路径导入插件模块，每次导入使用全新的模块命名空间。"""
+
+    def __init__(self, namespace: str = "neobot_user_plugins") -> None:
+        self.namespace = namespace
         self.last_module_names: tuple[str, ...] = ()
 
     def clear_module_cache(self, module_names: tuple[str, ...]) -> None:
@@ -33,7 +36,7 @@ class PluginModuleImporter:
         # Every candidate gets a fresh package namespace. This prevents package
         # children from being reused while the previous generation is still active.
         module_name = self.module_name(path, plugin_name)
-        namespace = sys.modules.setdefault("neobot_user_plugins", ModuleType("neobot_user_plugins"))
+        namespace = sys.modules.setdefault(self.namespace, ModuleType(self.namespace))
         namespace.__path__ = []
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -60,4 +63,4 @@ class PluginModuleImporter:
     def module_name(self, path: Path, plugin_name: str) -> str:
         digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
         safe_name = re.sub(r"\W", "_", plugin_name)
-        return f"neobot_user_plugins.{safe_name}_{digest}_g{next(_MODULE_GENERATION)}"
+        return f"{self.namespace}.{safe_name}_{digest}_g{next(_MODULE_GENERATION)}"

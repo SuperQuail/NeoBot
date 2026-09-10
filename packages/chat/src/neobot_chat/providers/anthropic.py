@@ -25,8 +25,15 @@ class AnthropicProvider(BaseHTTPProvider):
         top_p: float | None = None,
         extra_body: dict[str, Any] | None = None,
         native_vision: bool = False,
+        use_system_proxy: bool = False,
     ):
-        super().__init__(api_key, base_url, timeout, native_vision=native_vision)
+        super().__init__(
+            api_key,
+            base_url,
+            timeout,
+            native_vision=native_vision,
+            use_system_proxy=use_system_proxy,
+        )
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature

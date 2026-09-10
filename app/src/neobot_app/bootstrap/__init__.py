@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,6 @@ from neobot_contracts.ports.clock import SystemClock
 from neobot_storage import run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
-from neobot_app.console import ConsoleService, ConsoleTelemetry
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import (
@@ -30,6 +30,7 @@ from neobot_app.bootstrap._commands import (
 from neobot_app.bootstrap._providers import (
     build_main_provider,
     build_vision_provider,
+    resolve_vision_model_name,
 )
 from neobot_app.bootstrap._services import (
     build_adapter_service,
@@ -66,8 +67,10 @@ from neobot_app.bootstrap._pipeline import (
     build_problem_solver_agent_wiring,
     build_reply_orchestrator,
     register_config_reload_command,
+    register_host_services,
 )
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
+from neobot_app.skills.balance_guide import sync_balance_query_skill
 
 
 _MAINTENANCE_SYSTEM_PROMPT = (
@@ -249,9 +252,6 @@ def create_application() -> NeoBotApplication:
 
     # ── 插件主机基础设施 ──
     plugin = build_plugin_host(logger_factory=logger_factory)
-    register_config_reload_command(
-        host_facade=plugin["host_facade"], config=config
-    )
 
     # ── 记忆 / 用户画像 / 意愿 / 提示词 ──
     memory_svcs = build_memory_services(
@@ -269,7 +269,9 @@ def create_application() -> NeoBotApplication:
 
     provider_logger = logger_factory.get_logger("app.provider")
     # 视觉模型先创建：既用于图片解析，也作为主模型不可用时的自动回退路由。
-    vision_provider = build_vision_provider(logger=provider_logger)
+    vision_provider = build_vision_provider(
+        logger=provider_logger, model_name=resolve_vision_model_name(config)
+    )
     provider, provider_error_message = build_main_provider(
         config=config, logger=provider_logger, vision_provider=vision_provider,
     )
@@ -362,6 +364,22 @@ def create_application() -> NeoBotApplication:
     # 否则该目录是死配置；discover 以裸 name 为 key，插件技能经 register_many
     # 以 owner:name 为 key，二者互不冲突（同名裸名与限定名也不会撞）
     markdown_skill_registry = SkillRegistry(root=DATA_DIR / "skills").discover()
+    sync_balance_query_skill(
+        registry=markdown_skill_registry,
+        data_dir=DATA_DIR,
+        config=config,
+        logger=logger_factory.get_logger("app.skills"),
+    )
+    register_config_reload_command(
+        host_facade=plugin["host_facade"],
+        config=config,
+        on_reload=lambda: sync_balance_query_skill(
+            registry=markdown_skill_registry,
+            data_dir=DATA_DIR,
+            config=config,
+            logger=logger_factory.get_logger("app.skills"),
+        ),
+    )
     balance_checker = build_balance_checker(
         config=config,
         notification_hub=notification_hub,
@@ -375,6 +393,23 @@ def create_application() -> NeoBotApplication:
     )
 
     # ── 命令系统(被@触发、/ 前缀、权限树;先于 skill/插件构建,供其注入) ──
+    async def _reload_config_from_command() -> Any:
+        """QQ /reload 命令 -> 宿主 config.reload 命令（与面板按钮同一入口）。"""
+        commands = getattr(plugin["host_facade"], "commands", None)
+        caller = getattr(commands, "call", None)
+        if not callable(caller):
+            return None
+        result = caller("config.reload")
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, dict):
+            return None
+        return {
+            "ok": str(result.get("status") or "").lower() == "ok",
+            "message": str(result.get("message") or ""),
+            "changes": result.get("changes"),
+        }
+
     command_service = build_command_service(
         config=config,
         adapter=adapter,
@@ -382,6 +417,7 @@ def create_application() -> NeoBotApplication:
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
         sleep_service=sleep_service,
+        config_reload_callback=_reload_config_from_command,
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
@@ -538,14 +574,6 @@ def create_application() -> NeoBotApplication:
         config_update_callback=_make_chat_config_update_callback(config),
         sleep_service=sleep_service,
     )
-    console_telemetry = ConsoleTelemetry()
-    plugin["hook_bus"].subscribe_runtime(
-        console_telemetry.capture,
-        kind="reply_lifecycle",
-        stage="model.call.after",
-        priority=-100,
-        logger=logger_factory.get_logger("app.console.telemetry"),
-    )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
     if scheduled_task_manager is not None:
@@ -577,31 +605,56 @@ def create_application() -> NeoBotApplication:
             )
         )
 
-    # ── 内置控制台 / 管线 / 网关 / 应用 ──
-    def _vision_detect_probe() -> dict[str, Any]:
-        """控制台 /api/services 的 vision_detect 状态探测。"""
-        service = vision_detect_service
-        if service is None:
-            return {"Vision detect": False}
-        return {
-            "Vision detect": service.available,
-            "Vision detect ONNX": service.onnx_available,
-        }
-
-    console_service = ConsoleService(
-        config=config,
-        data_dir=DATA_DIR,
-        logger=logger_factory.get_logger("app.console"),
-        group_queue=group_queue,
-        friend_queue=friend_queue,
-        telemetry=console_telemetry,
-        reply_orchestrator=reply_orchestrator,
-        drawing_manager=drawing_manager,
-        scheduled_task_manager=scheduled_task_manager,
-        problem_solver_manager=problem_solver_manager,
-        service_probe=_vision_detect_probe,
+    # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
+    register_host_services(
+        plugin["host_facade"],
+        {
+            "config": (config, "配置代理（运行时可重载）"),
+            "adapter": (adapter, "OneBot 适配器"),
+            "logger_factory": (logger_factory, "日志工厂"),
+            "host_commands": (plugin["host_facade"].commands, "宿主命令注册表"),
+            "group_queue": (group_queue, "群消息队列"),
+            "friend_queue": (friend_queue, "好友消息队列"),
+            "reply_orchestrator": (reply_orchestrator, "回复编排器"),
+            "emoji_service": (emoji_service, "表情包服务"),
+            "tts_service": (tts_service, "语音合成服务"),
+            "file_server": (file_server, "文件服务器"),
+            "image_pool": (image_pool, "图片暂存池"),
+            "drawing_manager": (drawing_manager, "后台绘图管理器"),
+            "creator_image_service": (creator_image_service, "生图服务"),
+            "scheduled_task_manager": (scheduled_task_manager, "定时任务管理器"),
+            "problem_solver_manager": (problem_solver_manager, "解题 Agent 管理器"),
+            "notification_hub": (notification_hub, "后台通知中心"),
+            "self_heal_manager": (self_heal_manager, "自修复管理器"),
+            "browser_lifecycle_manager": (browser["browser_lifecycle_manager"], "浏览器生命周期管理器"),
+            "vision_detect_service": (vision_detect_service, "本地视觉检测服务"),
+            "vision_provider": (vision_provider, "视觉模型 Provider"),
+            "provider": (provider, "主模型 Provider"),
+            "command_service": (command_service, "命令服务"),
+            "credential_manager": (credential_manager, "凭据管理器"),
+            "sleep_service": (sleep_service, "睡眠服务"),
+            "cache_calculator": (cache_calculator, "缓存命中计算器"),
+            "skill_manager": (skill_manager, "Skill 管理器"),
+            "markdown_skill_registry": (markdown_skill_registry, "Markdown Skill 注册表"),
+            "agent_registry": (agent_registry, "Agent 注册表"),
+            "usage_tracker": (usage["tracker"], "模型用量追踪器"),
+            "usage_session_factory": (
+                getattr(usage["tracker"], "_session_factory", None),
+                "用量数据库会话工厂",
+            ),
+            "report_service": (usage["report_service"], "用量报告服务"),
+            "archive_memory_service": (memory_svcs["archive_memory_service"], "档案记忆服务"),
+            "profile_service": (memory_svcs["profile_service"], "用户画像服务"),
+            "willing_service": (memory_svcs["willing_service"], "回复意愿服务"),
+            "chat_stream": (memory_svcs["chat_stream"], "聊天流管理器"),
+            "bot_detector": (memory_svcs["bot_detector"], "官方 Bot 检测器"),
+            "sandbox_service": (sandbox["sandbox_service"], "沙箱服务"),
+            "prompt_store": (prompt_store, "提示词存储"),
+            "plugin_runtime": (plugin_runtime, "插件运行时"),
+        },
     )
 
+    # ── 管线 / 网关 / 应用 ──
     application = build_pipelines_and_app(
         adapter=adapter,
         memory=memory_svcs["memory"],
@@ -635,11 +688,13 @@ def create_application() -> NeoBotApplication:
         drawing_manager=drawing_manager,
         background_coros=maintenance_coros,
         self_heal_manager=self_heal_manager,
-        console_service=console_service,
         command_service=command_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
     )
+
+    # 面板等服务需要读取 application（重启入口）
+    register_host_services(plugin["host_facade"], {"application": (application, "应用运行时")})
 
     # 命令 /reboot:绑定应用重启回调
     if command_service is not None:

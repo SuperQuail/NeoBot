@@ -192,6 +192,7 @@ class BackgroundDrawingManager:
         negative_prompt: str | None = None,
         image_size: str | None = None,
         seed: int | None = None,
+        model: str | None = None,
     ) -> str:
         """提交后台绘图任务。返回 JSON 状态字符串。"""
         if not self.background_enabled:
@@ -231,6 +232,7 @@ class BackgroundDrawingManager:
             negative_prompt=negative_prompt,
             image_size=image_size,
             seed=seed,
+            model=model,
         )
         self._tasks[task.task_id] = task
         self._enforce_task_limit(pipeline_key)
@@ -275,6 +277,7 @@ class BackgroundDrawingManager:
                 seed=task.seed,
                 image_source=image_source,
                 conv_id=f"{task.conversation_kind}:{task.conversation_id}",
+                model=task.model,
             )
             task.status = "completed"
             task.image_id = record.image_id
