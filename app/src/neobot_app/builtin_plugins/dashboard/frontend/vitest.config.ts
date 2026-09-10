@@ -4,8 +4,8 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  // 与 vite.config.ts 一致：产物走相对路径，支持 base_path 前缀
-  base: './',
+  // 与 vite.config.ts 一致：与应用同源部署，产物由 /bridge/ 提供
+  base: '/bridge/',
   test: {
     environment: 'jsdom',
     globals: true,

@@ -1,9 +1,9 @@
-// 路由与侧栏回归测试 —— 7 条导航、当前项高亮、工作区页隐藏全局头部
+// 路由与侧栏回归测试 —— 8 条一级导航（含舰桥）、当前项高亮、工作区页隐藏全局头部
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
-import { setToken } from '../api/client';
+import { clearToken, setToken } from '../api/client';
 
 vi.mock('../api/client.js', async () => {
   const actual = await vi.importActual('../api/client.js');
@@ -23,8 +23,10 @@ vi.mock('../pages/System.jsx', () => ({ default: () => <div data-testid="page-sy
 vi.mock('../pages/Usage.jsx', () => ({ default: () => <div data-testid="page-usage" /> }));
 vi.mock('../pages/Bots.jsx', () => ({ default: () => <div data-testid="page-bots" /> }));
 vi.mock('../pages/Logs.jsx', () => ({ default: () => <div data-testid="page-logs" /> }));
+// 3D 舰桥是懒加载路由：测试里替换成占位组件，避免在 jsdom 里初始化 WebGL
+vi.mock('../bridge/bridge.jsx', () => ({ default: () => <div data-testid="page-bridge" /> }));
 
-const NAV_LABELS = ['主页', '插件', '配置', '系统', '用量', '机器人', '日志'];
+const NAV_LABELS = ['舰桥', '主页', '插件', '配置', '系统', '用量', '机器人', '日志'];
 
 function renderAt(path: string) {
   return render(
@@ -40,13 +42,37 @@ beforeEach(() => {
 });
 
 describe('应用外壳', () => {
-  it('侧栏固定渲染 7 条一级导航', () => {
+  it('侧栏固定渲染 8 条一级导航（舰桥 + 7 个经典面板）', () => {
     renderAt('/dashboard');
 
     for (const label of NAV_LABELS) {
       expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
     expect(screen.getAllByRole('link')).toHaveLength(NAV_LABELS.length);
+  });
+
+  it('舰桥路由渲染 3D 控制台且不套经典面板的侧栏', async () => {
+    renderAt('/bridge');
+
+    expect(await screen.findByTestId('page-bridge')).toBeInTheDocument();
+    // 舰桥是整屏场景，不能出现经典面板的页头
+    expect(screen.queryByText('NeoBot 面板')).not.toBeInTheDocument();
+  });
+
+  it('未登录访问舰桥会被鉴权拦截', async () => {
+    // 注意：setToken('') 是空操作（实现里对空值直接 return），登出必须用 clearToken
+    clearToken();
+    render(
+      <MemoryRouter initialEntries={['/bridge']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    // 未登录时 RequireAuth 会重定向到登录页，舰桥内容不应挂载
+    await waitFor(() => {
+      expect(screen.queryByTestId('page-bridge')).not.toBeInTheDocument();
+    });
+    expect(await screen.findByPlaceholderText('请输入面板密码')).toBeInTheDocument();
   });
 
   it('非工作区页面渲染全局头部与面包屑', () => {

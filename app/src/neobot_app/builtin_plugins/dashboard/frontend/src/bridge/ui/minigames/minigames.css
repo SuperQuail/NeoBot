@@ -1,0 +1,686 @@
+/* minigames.css —— 舰载小游戏专用样式（全部类名以 mg- 前缀，避免与面板样式互相污染）
+ *
+ * 三个小游戏共用一套「全息终端」外观：深色视窗 + 青色描边 + 等宽数字。
+ * 主题令牌（--brand / --err / --warn …）来自 styles/theme.css，明暗主题下都能用；
+ * 视窗本身的深色是刻意的（三维星野与电路板在浅色底上不可读）。
+ */
+
+.mg-root {
+  /* 局部令牌：只在小游戏内部生效，避免污染全局调色板 */
+  --mg-bg: #04101d;
+  --mg-bg-soft: #0a2136;
+  --mg-line: rgba(125, 211, 252, 0.28);
+  --mg-line-soft: rgba(125, 211, 252, 0.14);
+  --mg-text: #e7f6ff;
+  --mg-dim: #8fb4c9;
+  --mg-accent: #38bdf8;
+  --mg-accent-2: #7dd3fc;
+  --mg-warn: #fbbf24;
+  --mg-danger: #fb7185;
+  --mg-ok: #34d399;
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  padding: 14px;
+  box-sizing: border-box;
+  color: var(--mg-text);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(56, 189, 248, 0.16), transparent 45%),
+    linear-gradient(180deg, #061726 0%, var(--mg-bg) 60%, #030b14 100%);
+  border: 1px solid var(--mg-line);
+  border-radius: var(--radius, 14px);
+  box-shadow: inset 0 0 60px -30px rgba(56, 189, 248, 0.6);
+  overflow: hidden;
+}
+
+/* ---- 抬头 ---- */
+.mg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--mg-line-soft);
+}
+.mg-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.mg-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  color: var(--mg-accent-2);
+  border: 1px solid var(--mg-line);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+.mg-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.mg-head-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mg-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--mg-line);
+  color: var(--mg-dim);
+  background: rgba(56, 189, 248, 0.08);
+  white-space: nowrap;
+}
+.mg-chip.is-ok {
+  color: var(--mg-ok);
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.1);
+}
+.mg-chip.is-warn {
+  color: var(--mg-warn);
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.1);
+}
+.mg-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  background: rgba(251, 113, 133, 0.16);
+  color: var(--mg-danger);
+}
+.mg-badge.is-hazard {
+  animation: mg-blink 1.4s steps(2, end) infinite;
+}
+@keyframes mg-blink {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ---- 按钮 ---- */
+.mg-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mg-text);
+  background: rgba(125, 211, 252, 0.1);
+  border: 1px solid var(--mg-line);
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    transform 0.1s;
+}
+.mg-btn:hover:not(:disabled) {
+  border-color: var(--mg-accent);
+  background: rgba(56, 189, 248, 0.2);
+}
+.mg-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.mg-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.mg-btn:focus-visible {
+  outline: 2px solid var(--mg-accent-2);
+  outline-offset: 2px;
+}
+.mg-btn.is-primary {
+  background: linear-gradient(135deg, var(--mg-accent-2), var(--mg-accent));
+  border-color: transparent;
+  color: #04121f;
+}
+.mg-btn.is-ghost {
+  background: transparent;
+  font-weight: 500;
+}
+
+/* ---- 通用进度条 / 遥测 ---- */
+.mg-bar-row {
+  display: grid;
+  grid-template-columns: 80px minmax(60px, 1fr) 62px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.mg-bar-label {
+  color: var(--mg-dim);
+}
+.mg-bar-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-align: right;
+}
+.mg-bar {
+  height: 8px;
+  border-radius: 6px;
+  background: rgba(125, 211, 252, 0.12);
+  border: 1px solid var(--mg-line-soft);
+  overflow: hidden;
+}
+.mg-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.12s linear;
+}
+.mg-bar-fill.is-ok {
+  background: linear-gradient(90deg, #34d399, #22d3ee);
+}
+.mg-bar-fill.is-warn {
+  background: linear-gradient(90deg, #fbbf24, #f97316);
+}
+.mg-bar-fill.is-err {
+  background: linear-gradient(90deg, #fb7185, #ef4444);
+}
+
+.mg-telemetry {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+.mg-telemetry > div {
+  background: rgba(125, 211, 252, 0.07);
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.mg-telemetry dt {
+  color: var(--mg-dim);
+  font-size: 11px;
+}
+.mg-telemetry dd {
+  margin: 2px 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---- 简报 / 结算浮层 ---- */
+.mg-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px;
+  text-align: center;
+  background: rgba(3, 11, 20, 0.86);
+  backdrop-filter: blur(3px);
+  z-index: 3;
+}
+.mg-overlay-title {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.6px;
+  color: var(--mg-accent-2);
+}
+.mg-overlay-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.mg-brief {
+  margin: 0;
+  max-width: 48ch;
+  line-height: 1.7;
+  font-size: 13px;
+}
+.mg-scoring {
+  margin: 0;
+  max-width: 52ch;
+  font-size: 12px;
+  color: var(--mg-dim);
+  line-height: 1.6;
+}
+.mg-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mg-warn);
+  max-width: 52ch;
+  line-height: 1.6;
+}
+
+/* ---- 说明书 ---- */
+.mg-help {
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(125, 211, 252, 0.05);
+}
+.mg-help-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--mg-accent-2);
+  letter-spacing: 0.5px;
+}
+.mg-help-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--mg-dim);
+}
+.mg-help-strip {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mg-dim);
+  text-align: center;
+  letter-spacing: 0.3px;
+}
+
+/* ================= 舰炮演习 ================= */
+.mg-stage {
+  position: relative;
+  flex: 1;
+  min-height: 300px;
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #061a2c 0%, #030d18 100%);
+  overflow: hidden;
+  touch-action: none;
+  cursor: crosshair;
+  /* 瞄准时按住左键拖动，不能顺手把说明文字选中 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mg-turret-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.mg-flat {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.mg-flat-blip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  min-width: 6px;
+  min-height: 6px;
+  background: radial-gradient(circle at 35% 35%, #dfe7ee, #6b7c8c 70%);
+  box-shadow: 0 0 12px rgba(223, 231, 238, 0.35);
+  aspect-ratio: 1;
+}
+.mg-flat-blip.is-drone {
+  border-radius: 4px;
+  background: radial-gradient(circle at 35% 35%, #bae6fd, #0284c7 70%);
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.6);
+}
+.mg-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--mg-accent-2), var(--mg-accent-2)) center / 2px 44px no-repeat,
+    linear-gradient(var(--mg-accent-2), var(--mg-accent-2)) center / 44px 2px no-repeat;
+  opacity: 0.75;
+  mask-image: radial-gradient(circle, transparent 30%, #000 34%);
+  -webkit-mask-image: radial-gradient(circle, transparent 30%, #000 34%);
+}
+.mg-hud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  pointer-events: none;
+  z-index: 2;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+}
+.mg-hud-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.mg-hud-clock {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--mg-accent-2);
+}
+.mg-hud-score {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 22px;
+  font-weight: 700;
+}
+.mg-hud-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 320px;
+}
+.mg-hud .mg-telemetry {
+  pointer-events: none;
+}
+.mg-touch-pad {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  pointer-events: auto;
+}
+.mg-touch-pad .mg-btn {
+  min-width: 44px;
+  height: 30px;
+  padding: 0 8px;
+}
+
+/* ================= 配电回路修复 ================= */
+.mg-circuit-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.05) 1px, transparent 1px),
+    linear-gradient(180deg, #061a2c 0%, #03101c 100%);
+  background-size:
+    26px 26px,
+    26px 26px,
+    auto;
+  min-height: 280px;
+}
+.mg-circuit-grid {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 560px;
+}
+.mg-circuit-cell {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 9px;
+  border: 1px solid var(--mg-line-soft);
+  background: rgba(6, 30, 48, 0.85);
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    transform 0.08s;
+}
+.mg-circuit-cell:hover:not(:disabled) {
+  border-color: var(--mg-accent);
+  background: rgba(56, 189, 248, 0.16);
+}
+.mg-circuit-cell:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.mg-circuit-cell:focus-visible {
+  outline: 2px solid var(--mg-accent-2);
+  outline-offset: 1px;
+}
+.mg-circuit-cell:disabled {
+  cursor: default;
+}
+.mg-circuit-cell.is-empty {
+  border-style: dashed;
+  opacity: 0.5;
+}
+.mg-circuit-cell.is-live {
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(56, 189, 248, 0.5);
+}
+.mg-circuit-cell.is-source {
+  border-color: var(--mg-warn);
+  background: rgba(251, 191, 36, 0.14);
+}
+.mg-circuit-cell.is-sink {
+  border-color: var(--mg-line);
+}
+.mg-circuit-cell.is-powered {
+  border-color: var(--mg-ok);
+  background: rgba(52, 211, 153, 0.18);
+  box-shadow: 0 0 14px -2px rgba(52, 211, 153, 0.6);
+}
+.mg-circuit-art {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.mg-circuit-pipe {
+  stroke: rgba(143, 180, 201, 0.7);
+  stroke-width: 14;
+  stroke-linecap: round;
+}
+.mg-circuit-hub {
+  fill: rgba(143, 180, 201, 0.55);
+}
+.mg-circuit-cell.is-live .mg-circuit-pipe {
+  stroke: var(--mg-accent-2);
+}
+.mg-circuit-cell.is-live .mg-circuit-hub {
+  fill: var(--mg-accent);
+}
+.mg-circuit-cell.is-powered .mg-circuit-pipe {
+  stroke: var(--mg-ok);
+}
+.mg-circuit-cell.is-powered .mg-circuit-hub {
+  fill: #a7f3d0;
+}
+.mg-circuit-cell.is-source .mg-circuit-pipe {
+  stroke: var(--mg-warn);
+}
+.mg-circuit-cell.is-source .mg-circuit-hub {
+  fill: #fde68a;
+}
+.mg-circuit-tag {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--mg-text);
+  background: rgba(3, 11, 20, 0.7);
+  border-radius: 4px;
+  padding: 0 4px;
+  pointer-events: none;
+}
+.mg-circuit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(125, 211, 252, 0.05);
+}
+.mg-circuit-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mg-accent-2);
+  min-height: 18px;
+}
+.mg-circuit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ================= 货舱调度 ================= */
+.mg-cargo-stage {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  padding: 10px;
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #061a2c 0%, #03101c 100%);
+}
+.mg-cargo-board {
+  display: grid;
+  grid-template-columns: minmax(200px, 320px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .mg-cargo-board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.mg-cargo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--mg-line);
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.08);
+  min-height: 132px;
+}
+.mg-cargo-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mg-cargo-name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.mg-cargo-bays {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.mg-cargo-bay {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--mg-line);
+  background: rgba(125, 211, 252, 0.07);
+  color: var(--mg-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    transform 0.08s;
+}
+.mg-cargo-bay:hover:not(:disabled) {
+  border-color: var(--mg-accent);
+  background: rgba(56, 189, 248, 0.18);
+}
+.mg-cargo-bay:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.mg-cargo-bay:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mg-cargo-bay:focus-visible {
+  outline: 2px solid var(--mg-accent-2);
+  outline-offset: 2px;
+}
+.mg-cargo-bay-no {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--mg-accent-2);
+  line-height: 1;
+}
+.mg-cargo-bay-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.mg-cargo-bay-hint {
+  font-size: 11px;
+  color: var(--mg-dim);
+  line-height: 1.4;
+}
+.mg-cargo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--mg-line-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(125, 211, 252, 0.05);
+}
+.mg-cargo-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--mg-dim);
+  min-height: 62px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.mg-cargo-log li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .mg-root {
+    min-height: 420px;
+    padding: 10px;
+  }
+  .mg-hud-clock {
+    font-size: 18px;
+  }
+  .mg-hud-score {
+    font-size: 17px;
+  }
+}
+
+/* 矮视窗（笔记本分屏 / 横屏手机）：解除最小高度，让视窗跟着宿主高度收缩，
+ * 否则 .bridge-minigame-host 的 18px 内边距会被撑破。 */
+@media (max-height: 640px) {
+  .mg-root {
+    min-height: 0;
+  }
+  .mg-stage {
+    min-height: 180px;
+  }
+  .mg-cargo-stage {
+    min-height: 160px;
+  }
+  .mg-help-list {
+    line-height: 1.5;
+  }
+}

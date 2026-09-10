@@ -2,24 +2,34 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
-// 面板由官方 dashboard 插件提供，支持 base_path 前缀访问，
-// 因此资源使用相对路径（base: './'），产物输出到 ../web。
+// 面板由官方 dashboard 插件提供，产物输出到 ../web 并随 Python 包入库。
+//
+// base 取 '/bridge/' 而不是 './'：React.lazy 动态导入的 chunk 是用 import.meta.url
+// 解析的，相对 base 下会退化成「相对当前页面路径」——从 /bridge/ 进入没问题，
+// 但一旦地址栏变成 /bridge/xxx（SPA 深链），chunk 就会请求到错误目录而 404。
+// 用绝对 base 后 chunk 与静态资源的 URL 恒定指向 /bridge/assets/*，服务端只需把
+// /bridge/* 映射到 web/ 目录（见 dashboard/server.py 的 _bridge_asset）。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: './',
+  base: '/bridge/',
   build: {
     outDir: '../web',
     emptyOutDir: true,
     assetsDir: 'assets',
     sourcemap: false,
+    // three.js 单块 500KB+ 是预期内的（它本来就只在进入 #/bridge 时懒加载），
+    // 把阈值提高，避免每次构建都刷一条无意义的告警。
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        // three.js 单独成块：升级依赖不会让面板主 chunk 的缓存整块失效
+        manualChunks: (id: string) => (id.includes('node_modules/three') ? 'three' : undefined),
+      },
+    },
   },
   server: {
     port: 5173,
-    // changeOrigin 必须为 false：后端对 /api/auth/login 与 /api/auth/setup 会校验
-    // Origin 与 Host 同源（防 CSRF），而字符串简写会被 Vite 展开成
-    // { target, changeOrigin: true }，把 Host 改写成 localhost:9981，
-    // 于是浏览器发来的 Origin: http://localhost:5173 对不上，登录直接 403。
-    // 保留浏览器原始 Host 后两者天然同源，生产环境的校验语义不受影响。
+    // 开发服务器下 /bridge/ 之外的静态资源（图标、图片）仍按根路径访问
     proxy: {
       '/api': { target: 'http://localhost:9981', changeOrigin: false },
       '/image': { target: 'http://localhost:9981', changeOrigin: false },

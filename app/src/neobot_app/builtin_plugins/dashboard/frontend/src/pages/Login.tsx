@@ -27,7 +27,7 @@ export default function Login() {
       const status = await authStatus();
       if (!alive) return;
       if (status && status.authenticated) {
-        navigate('/dashboard', { replace: true });
+        navigate('/bridge', { replace: true });
         return;
       }
       if (status && status.configured === false) {
@@ -36,7 +36,7 @@ export default function Login() {
       }
       setMode('login');
       const t = getToken();
-      if (t && (await checkAuth(t))) navigate('/dashboard', { replace: true });
+      if (t && (await checkAuth(t))) navigate('/bridge', { replace: true });
     })();
     return () => { alive = false; };
   }, [navigate]);
@@ -57,7 +57,7 @@ export default function Login() {
     setBusy(false);
     if (!result.ok) return setError(result.error || '登录失败');
     setToken(result.token || '', result.csrf);
-    navigate('/dashboard', { replace: true });
+    navigate('/bridge', { replace: true });
   };
 
   const title = mode === 'setup' ? '设置面板密码' : '登 录';

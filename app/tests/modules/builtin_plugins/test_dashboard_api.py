@@ -982,3 +982,93 @@ async def test_loopback_panel_does_not_warn(tmp_path: Path) -> None:
         assert logger.warnings == []
     finally:
         await server.stop()
+
+
+# ---------------------------------------------------------------------------
+# 3D 舰桥（/bridge/**）
+#
+# 舰桥是 React.lazy 的独立 chunk，构建产物固定在 /bridge/ 下提供（Vite base='/bridge/'），
+# 因此这里守住四件事：入口可访问、静态资源带正确 MIME、缺失资源必须 404 而不是回 HTML、
+# 以及带前缀的 API 与根路径 API 行为一致（否则 3D 面板所有接口都会 404）。
+# ---------------------------------------------------------------------------
+
+
+async def test_bridge_entry_serves_spa_html(panel) -> None:
+    """未登录也能拿到舰桥入口 HTML（数据接口才需要鉴权），且不允许被缓存。"""
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        root = await client.get(base + "/bridge/")
+        deep_link = await client.get(base + "/bridge/ship/engineering")
+
+    assert root.status_code == 200
+    assert root.headers["content-type"].startswith("text/html")
+    assert root.headers["cache-control"] == "no-store"
+    # SPA 深链没有对应文件，同样回落到入口 HTML
+    assert deep_link.status_code == 200
+    assert deep_link.headers["content-type"].startswith("text/html")
+    # 入口引用的资源必须挂在 /bridge/ 前缀下（对应 vite.config.ts 的 base）
+    assert "/bridge/assets/" in root.text
+
+
+async def test_bridge_static_assets_and_missing_file_returns_404(panel) -> None:
+    """构建产物按扩展名正确返回；不存在的资源必须 404，不能回 HTML。"""
+    _, _, base, _ = panel
+    from neobot_app.builtin_plugins.dashboard.server import _STATIC_DIR
+
+    assets = sorted((_STATIC_DIR / "assets").glob("*.js"))
+    if not assets:
+        pytest.skip("web/ 产物缺失（未执行 pnpm run build）")
+
+    async with httpx.AsyncClient() as client:
+        asset = await client.get(base + "/bridge/assets/" + assets[0].name)
+        missing = await client.get(base + "/bridge/assets/does-not-exist.js")
+
+    assert asset.status_code == 200
+    assert "javascript" in asset.headers["content-type"]
+    assert missing.status_code == 404
+
+
+async def test_bridge_prefixed_api_matches_root_api(panel) -> None:
+    """同一处理器同时注册在根路径与 /bridge 前缀下，两边行为必须一致。"""
+    _, _, base, _ = panel
+    token, _ = await _login(base)
+    headers = {"X-Token": token}
+    async with httpx.AsyncClient() as client:
+        plain = await client.get(base + "/api/system", headers=headers)
+        prefixed = await client.get(base + "/bridge/api/system", headers=headers)
+        unauth = await client.get(base + "/bridge/api/system")
+
+    assert plain.status_code == 200
+    assert prefixed.status_code == 200
+    # 带前缀的接口同样受鉴权保护，不能因为前缀不同就绕过会话校验
+    assert unauth.status_code == 401
+
+
+async def test_bridge_api_prefixed_write_requires_csrf(panel) -> None:
+    """带前缀的写操作仍然要过 CSRF 校验。
+
+    用 /api/auth/logout 而不是 /api/config/reload：这里要验证的是「路由前缀不会绕过
+    CSRF 中间件」，logout 是依赖最少的一个写接口（不需要 services 注入）。
+    """
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        blocked = await client.post(base + "/bridge/api/auth/logout", headers={"X-Token": token})
+        allowed = await client.post(
+            base + "/bridge/api/auth/logout",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+        )
+
+    assert blocked.status_code == 403
+    assert allowed.status_code == 200
+
+
+async def test_bridge_asset_rejects_path_traversal(panel) -> None:
+    """路径穿越必须被挡住，不能读到 web/ 之外的文件。"""
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        escaped = await client.get(base + "/bridge/assets/..%2f..%2f..%2fserver.py")
+
+    assert escaped.status_code in {403, 404}
+    assert "DashboardServer" not in escaped.text
+

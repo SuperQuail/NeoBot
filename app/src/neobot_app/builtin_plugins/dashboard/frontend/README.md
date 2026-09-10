@@ -47,4 +47,35 @@ src/
   styles/       tailwind.css（基座+令牌桥接）· theme.css · panel.css · workspace.css · plugins.css
   test/         Vitest 用例与 setup
   utils/        cn.ts（类名合并）· format.ts · paths.ts
+  bridge/       3D 舰载控制台（第一人称太空战舰主题，见下节）
 ```
+
+## 3D 舰载控制台（`src/bridge/`）
+
+路由 `#/bridge` 是**整屏的 three.js 第一人称场景**（NeoBot 号战舰内部），
+面板的全部功能都以「舰内终端 + 全息投影」的形式呈现，数据与 2D 面板完全同源（同一个 `api` 客户端）。
+
+- **懒加载**：`three.js` 单独成 chunk（`manualChunks`），只有进入 `#/bridge` 才下载，不影响经典面板首屏
+- **产物路径**：`vite.config.ts` 的 `base` 是 `/bridge/`（不是 `'./'`）。React.lazy 的 chunk 由 `import.meta.url` 解析，
+  相对 base 在 SPA 深链下会请求到错误目录；绝对 base 后服务端只需把 `/bridge/*` 映射到 `web/`
+- **服务端**：`dashboard/server.py` 的 `_bridge_asset` 提供 `/bridge/**`（存在即发文件、无扩展名回落到入口 HTML）
+
+| 目录 | 职责 |
+|---|---|
+| `core/layout.ts` | **坐标契约**：舱室/走廊/舱门尺寸，几何与碰撞体共用同一份常量 |
+| `core/collision.ts` | AABB 分轴推进、步高吸附、射线拾取、卡死脱困 |
+| `core/player.ts` | 第一人称控制器（MC 手感：4.5m/s 行走、约 1.1m 跳跃、头部起伏） |
+| `core/engine.ts` | 渲染循环、交互目标判定、舱门感应、镜头震动 |
+| `core/input.ts` | 键鼠 + 指针锁定 + 触屏摇杆 |
+| `core/vitals.ts` | 真实系统指标 → 四项「舰况」读数（能源/生命保障/舰体/主机温度） |
+| `core/store.ts` | 探索进度存档（访问记录、物资、成就、小游戏成绩），localStorage |
+| `core/sound.ts` | WebAudio 实时合成音效（无音频资源文件） |
+| `three/ship.ts` | 舰体几何、8 座终端道具、物资投放、舱门动画 |
+| `three/textures.ts` | 全部程序化 CanvasTexture（金属板、格栅、警示条、终端屏幕…） |
+| `ui/panels/` | 8 个全息终端面板（对应 2D 面板的各页面功能） |
+| `ui/minigames/` | 三个舰内小游戏（近防炮演习 / 配电回路检修 / 货舱调度） |
+| `ui/Hud.tsx` · `ui/Boot.tsx` · `ui/Overlays.tsx` | 抬头显示器、登舰引导、舰桥浮层 |
+
+**测试**：`src/test/bridge.test.tsx` 守住布局契约（终端必须落在可通行舱室内、贴墙距离合理）、
+碰撞求解（贴墙滑行、门洞可通行、步高吸附、射线遮挡）与舰况换算；`src/test/sound.test.ts` 守住无音频设备时的降级。
+jsdom 没有 WebGL，因此 3D 场景与全息面板组件不在此层断言——引擎的纯逻辑（布局/碰撞/换算/存档）全部可测。

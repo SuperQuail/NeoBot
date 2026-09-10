@@ -35,6 +35,9 @@ _STATIC_DIR = Path(__file__).resolve().parent / "web"
 _INDEX_FILE = _STATIC_DIR / "index.html"
 _API_PREFIX = "/api/"
 _PORT_SEARCH_LIMIT = 10
+#: 3D 舰桥产物的固定挂载点。前端 Vite base 也是 /bridge/（见 frontend/vite.config.ts），
+#: 因此它的 API 请求形如 /bridge/api/**，服务端要把同一批处理器再注册到这个前缀下。
+_BRIDGE_PREFIX = "/bridge"
 
 #: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
 _PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
@@ -306,14 +309,19 @@ class DashboardServer:
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)
         self._route(app, "GET", "/assets/{name}", self._asset)
+        # 3D 舰载控制台（React.lazy 的 chunk 使用绝对 base /bridge/，见 frontend/vite.config.ts）
+        self._route(app, "GET", "/bridge/{tail:.*}", self._bridge_asset)
         self._route(app, "GET", "/", self._index)
         self._route(app, "GET", "/{tail:.*}", self._spa_fallback)
         return app
 
     def _route(self, app: web.Application, method: str, path: str, handler: Any) -> None:
         app.router.add_route(method, path, handler)
-        if self.base_path:
-            prefixed = f"{self.base_path}{path}" if path != "/" else f"{self.base_path}/"
+        # 同一处理器注册三份：根路径、base_path 前缀、3D 舰桥前缀。
+        # 舰桥产物固定从 /bridge/ 提供，它的相对 API 请求也带这个前缀；
+        # 不注册的话 3D 面板所有接口都会 404。
+        for prefix in {self.base_path, _BRIDGE_PREFIX} - {""}:
+            prefixed = f"{prefix}{path}" if path != "/" else f"{prefix}/"
             app.router.add_route(method, prefixed, handler)
 
     # ------------------------------------------------------------------
@@ -404,18 +412,41 @@ class DashboardServer:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        # 3D 舰桥的纹理全部由 canvas 现场生成，没有任何外链资源，因此 CSP 可以保持严格：
+        # script/style 只允许同源（style 需要 unsafe-inline，React 内联样式与 Tailwind 运行期
+        # 注入都依赖它）；img 允许 data: 与 blob:（canvas 转纹理 / 导出缩略图）；
+        # worker-src 单独放开 blob:，为将来可能引入的 three.js Worker（如 KTX2 解码）留出通道，
+        # 但不放开 script-src 'unsafe-eval'，避免自毁 CSP 的防护价值。
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+            "default-src 'self'; img-src 'self' data: blob: https:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
+            "worker-src 'self' blob:; font-src 'self' data:; "
+            "base-uri 'none'; form-action 'none'"
         )
         if self._strip_base(request.path).startswith(_API_PREFIX):
             response.headers["Cache-Control"] = "no-store"
+        elif response.content_type == "text/html":
+            # 入口 HTML 必须每次校验，否则升级后浏览器会拿旧的 chunk 清单
+            response.headers["Cache-Control"] = "no-store"
 
     def _strip_base(self, path: str) -> str:
-        if self.base_path and path.startswith(self.base_path):
-            stripped = path[len(self.base_path) :]
-            return stripped or "/"
-        return path
+        """还原出「不带部署前缀」的路径，供路由判定与鉴权使用。
+
+        依次剥离 base_path 与 /bridge：两者可能叠加（例如反向代理挂在 /neobot 下，
+        舰桥就是 /neobot/bridge/api/...），因此要循环剥到不能再剥为止。
+        """
+        prefixes = [prefix for prefix in (self.base_path, _BRIDGE_PREFIX) if prefix]
+        stripped = path
+        changed = True
+        while changed:
+            changed = False
+            for prefix in prefixes:
+                if stripped.startswith(prefix):
+                    candidate = stripped[len(prefix) :]
+                    if candidate == "" or candidate.startswith("/"):
+                        stripped = candidate or "/"
+                        changed = True
+        return stripped
 
     # ------------------------------------------------------------------
     # 静态资源
@@ -426,7 +457,7 @@ class DashboardServer:
             return web.Response(
                 text=(
                     "网页面板前端资源缺失。\n"
-                    f"请在 {_STATIC_DIR.parent / 'frontend'} 目录执行 npm install && npm run build 生成 web/ 产物。"
+                    f"请在 {_STATIC_DIR.parent / 'frontend'} 目录执行 pnpm install && pnpm run build 生成 web/ 产物。"
                 ),
                 content_type="text/plain",
                 status=503,
@@ -438,6 +469,17 @@ class DashboardServer:
         if path.startswith(_API_PREFIX):
             return _json_error("接口不存在", status=404)
         return await self._index(request)
+
+    async def _bridge_asset(self, request: web.Request) -> web.StreamResponse:
+        """3D 舰桥的静态资源：/bridge/** 全部落在 web/ 目录内。
+
+        SPA 深链（例如 /bridge/ship/engineering）没有对应文件，同样回落到入口 HTML，
+        因此这里把「文件存在就发文件、否则发 HTML」合并成一个处理器。
+        """
+        tail = request.match_info.get("tail", "")
+        if not tail:
+            return await self._index(request)
+        return self._static_relative(tail)
 
     async def _asset(self, request: web.Request) -> web.StreamResponse:
         return self._static_file("assets", request.match_info.get("name", ""))
@@ -452,17 +494,31 @@ class DashboardServer:
         return web.Response(status=404)
 
     def _static_file(self, folder: str, name: str) -> web.StreamResponse:
-        candidate = (Path(folder) / name).as_posix()
-        if ".." in Path(candidate).parts or not candidate:
+        return self._static_relative(f"{folder}/{name}")
+
+    def _static_relative(self, relative: str) -> web.StreamResponse:
+        """安全地提供 web/ 下的相对路径；不存在时回落到入口 HTML（SPA 语义）。"""
+        candidate = Path(relative).as_posix().lstrip("/")
+        if not candidate or ".." in Path(candidate).parts:
             return web.Response(status=404)
         target = (_STATIC_DIR / candidate).resolve()
         try:
             target.relative_to(_STATIC_DIR.resolve())
         except ValueError:
             return web.Response(status=404)
-        if not target.is_file():
+        # 带扩展名却找不到文件：说明资源真的缺失，必须 404 而不是回 HTML——
+        # 否则浏览器会把 HTML 当 JS/CSS 解析，报出难以定位的 MIME 错误。
+        if target.is_file():
+            headers = {"Cache-Control": "public, max-age=3600"}
+            return web.FileResponse(target, headers=headers)
+        if Path(candidate).suffix:
             return web.Response(status=404)
-        return web.FileResponse(target, headers={"Cache-Control": "public, max-age=3600"})
+        if _INDEX_FILE.is_file():
+            return web.FileResponse(
+                _INDEX_FILE,
+                headers={"Cache-Control": "no-store", "Content-Type": "text/html"},
+            )
+        return web.Response(status=404)
 
     async def _healthz(self, request: web.Request) -> web.StreamResponse:
         return web.json_response(

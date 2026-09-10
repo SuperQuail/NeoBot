@@ -1,6 +1,6 @@
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useLayoutEffect, useRef } from 'react';
-import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu } from 'lucide-react';
+import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Rocket } from 'lucide-react';
 import { ToastHost } from './Toast';
 import SidebarTooltip from './SidebarTooltip';
 import { clearToken } from '../api/client';
@@ -92,6 +92,16 @@ export default function Layout() {
         </div>
 
         <nav className="nav">
+          {/* 舰桥入口：3D 舰载控制台是整屏场景，不套用本布局，因此用普通 Link */}
+          <Link
+            to="/bridge"
+            className="nav-item nav-item-bridge"
+            data-tooltip="舰桥"
+            aria-label="舰桥"
+          >
+            <Rocket size={20} strokeWidth={2} aria-hidden="true" />
+          </Link>
+
           {NAV.map((n) => (
             <NavLink
               key={n.to}

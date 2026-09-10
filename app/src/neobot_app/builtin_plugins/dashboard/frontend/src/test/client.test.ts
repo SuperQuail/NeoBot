@@ -31,7 +31,7 @@ describe('api/client 鉴权与错误处理', () => {
     await getJSON('/api/system');
 
     const { url, headers } = callArgs(fetchMock);
-    expect(url).toBe('/api/system');
+    expect(url).toBe('/bridge/api/system');
     expect(headers.get('X-Token')).toBe('tk-1');
   });
 
@@ -66,13 +66,14 @@ describe('api/client 鉴权与错误处理', () => {
     await expect(getJSON('/api/overview')).resolves.toBeNull();
   });
 
-  it('base_path 前缀由 BASE_URL 提供（本面板为相对路径 ./）', async () => {
+  it('接口前缀跟随构建 base（Vite base 为 /bridge/，服务端同时接受 /bridge/api/**）', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({}));
     vi.stubGlobal('fetch', fetchMock);
 
     await getJSON('/api/auth/status');
 
-    // 当前构建 base 为 './'，请求应保持根相对路径，不出现 './' 前缀
-    expect(callArgs(fetchMock).url).toBe('/api/auth/status');
+    // 面板产物固定在 /bridge/ 下提供，因此 API 也走同前缀；
+    // 服务端靠 base_path 之外再注册一份 /bridge/api/** 路由来接受它。
+    expect(callArgs(fetchMock).url).toBe('/bridge/api/auth/status');
   });
 });

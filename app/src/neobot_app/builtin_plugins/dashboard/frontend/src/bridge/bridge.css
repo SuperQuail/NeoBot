@@ -1,0 +1,1390 @@
+/* bridge.css —— 3D 舰载控制台的全部样式
+ *
+ * 与 2D 面板的关系：面板沿用 theme.css 的浅/深色变量，而舰内是「座舱玻璃 +
+ * 全息投影」，因此这里在 .bridge 作用域内重定义一组深色变量——既保证舰内观感
+ * 统一（无论浏览器是浅色还是深色主题），又不影响经典控制台的现有样式。
+ * 面板组件在舰内渲染时会读到被覆盖后的变量，自动变成全息配色。
+ */
+
+.bridge {
+  /* 舰内专用调色板 */
+  --bg: #04070e;
+  --panel: rgba(9, 20, 33, 0.82);
+  --panel-solid: #0a1622;
+  --panel-2: rgba(14, 30, 48, 0.7);
+  --border: rgba(80, 200, 255, 0.22);
+  --border-strong: rgba(90, 214, 255, 0.45);
+  --text: #dff2ff;
+  --text-dim: #8fb3c9;
+  --muted: #6d8ea4;
+  --accent: #3fe0ff;
+  --accent-2: #7cf7d0;
+  --accent-soft: rgba(63, 224, 255, 0.14);
+  --warn: #ffb454;
+  --danger: #ff5f6d;
+  --ok: #52e39b;
+
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans, 'Segoe UI', 'Noto Sans SC', system-ui, sans-serif);
+  /* 舰内界面不接受整页滚动：所有滚动都发生在面板内部 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.bridge-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.bridge-minigame .bridge-canvas {
+  filter: saturate(0.55) brightness(0.6);
+}
+
+/* ------------------------------------------------------------------ */
+/* 抬头显示器                                                          */
+/* ------------------------------------------------------------------ */
+
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.hud > * {
+  pointer-events: none;
+}
+
+.hud button,
+.hud a {
+  pointer-events: auto;
+}
+
+.hud-dimmed .hud-crosshair,
+.hud-dimmed .hud-prompt,
+.hud-dimmed .hud-nearby,
+.hud-dimmed .hud-keys {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.hud-glass {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(120, 220, 255, 0.07), transparent 60%),
+    radial-gradient(90% 70% at 50% 110%, rgba(20, 90, 140, 0.16), transparent 70%);
+  mix-blend-mode: screen;
+}
+
+.hud-scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(140, 230, 255, 0.035) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-scanlines {
+    display: none;
+  }
+}
+
+.hud-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  background: linear-gradient(180deg, rgba(3, 9, 16, 0.86), transparent);
+}
+
+.hud-badge {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.hud-badge-code {
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--accent);
+  text-shadow: 0 0 12px rgba(63, 224, 255, 0.5);
+}
+
+.hud-badge-name {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.hud-zone {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.hud-zone-code {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+}
+
+.hud-zone-label {
+  font-weight: 600;
+}
+
+.hud-meta {
+  display: flex;
+  gap: 14px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* 舰况读数 */
+.hud-vitals {
+  position: absolute;
+  top: 74px;
+  right: 18px;
+  width: 218px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+}
+
+.hud-vital-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.hud-vital-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.hud-vital-bar {
+  margin-top: 4px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(120, 200, 255, 0.12);
+  overflow: hidden;
+}
+
+.hud-vital-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #2ea8d8, var(--accent));
+  transition: width 0.5s ease;
+}
+
+.hud-vital-caution .hud-vital-bar > span {
+  background: linear-gradient(90deg, #d78b2a, var(--warn));
+}
+
+.hud-vital-critical .hud-vital-bar > span {
+  background: linear-gradient(90deg, #c02c3c, var(--danger));
+}
+
+.hud-vital-critical .hud-vital-value {
+  color: var(--danger);
+}
+
+.hud-vitals-note {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* 探索进度 */
+.hud-explore {
+  position: absolute;
+  top: 74px;
+  left: 18px;
+  width: 186px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+}
+
+.hud-explore-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+}
+
+.hud-explore-value {
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-explore-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(120, 200, 255, 0.12);
+  overflow: hidden;
+}
+
+.hud-explore-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.4s ease;
+}
+
+.hud-explore-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 准星与交互提示 */
+.hud-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.hud-crosshair {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+}
+
+.hud-crosshair-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(220, 245, 255, 0.85);
+  box-shadow: 0 0 6px rgba(120, 230, 255, 0.9);
+}
+
+.hud-crosshair-ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(180, 230, 255, 0.35);
+  border-radius: 50%;
+  transition:
+    border-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.hud-crosshair-active .hud-crosshair-ring {
+  border-color: var(--accent-2);
+  transform: scale(1.25);
+  box-shadow: 0 0 14px rgba(124, 247, 208, 0.4);
+}
+
+.hud-prompt {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgba(6, 20, 32, 0.86);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+}
+
+.hud-prompt:hover {
+  border-color: var(--accent-2);
+}
+
+.hud-prompt kbd {
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hud-prompt-distance {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.hud-nearby {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: rgba(6, 20, 32, 0.6);
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+/* 通知 */
+.hud-notices {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  max-width: min(560px, 80vw);
+}
+
+.hud-notice {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(6, 20, 32, 0.9);
+  font-size: 13px;
+  animation: hud-notice-in 0.24s ease;
+}
+
+.hud-notice-good {
+  border-color: rgba(82, 227, 155, 0.5);
+  color: #b6ffe0;
+}
+
+.hud-notice-warn {
+  border-color: rgba(255, 180, 84, 0.55);
+  color: #ffdca8;
+}
+
+@keyframes hud-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 键位提示 */
+.hud-keys {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  justify-content: center;
+  padding: 10px 16px 12px;
+  background: linear-gradient(0deg, rgba(3, 9, 16, 0.9), transparent);
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.hud-keys kbd,
+.ov-shell kbd,
+.ov-manual kbd,
+.boot kbd,
+.hologram kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: rgba(120, 200, 255, 0.1);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.92em;
+  text-align: center;
+}
+
+.hud-lock-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 6, 12, 0.35);
+}
+
+.hud-lock-hint span {
+  padding: 10px 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgba(6, 20, 32, 0.85);
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  animation: hud-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.hud-critical {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px;
+  background: linear-gradient(180deg, rgba(150, 20, 35, 0.92), rgba(120, 10, 25, 0.5));
+  border-bottom: 1px solid rgba(255, 95, 109, 0.6);
+  color: #ffe6e9;
+  font-size: 13px;
+}
+
+.hud-alert .hud-glass {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(255, 90, 110, 0.12), transparent 62%);
+}
+
+/* ------------------------------------------------------------------ */
+/* 舰桥工具条                                                          */
+/* ------------------------------------------------------------------ */
+
+.bridge-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 58px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(5, 14, 24, 0.86);
+  backdrop-filter: blur(8px);
+  z-index: 12;
+}
+
+.bridge-dock button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bridge-dock button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.dock-key {
+  font-size: 10.5px;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+}
+
+/* ------------------------------------------------------------------ */
+/* 登舰引导                                                            */
+/* ------------------------------------------------------------------ */
+
+.boot {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px 20px;
+  overflow: auto;
+  background:
+    radial-gradient(80% 60% at 50% 0%, rgba(30, 110, 170, 0.28), transparent 70%),
+    linear-gradient(180deg, #050a13, #03060c);
+  z-index: 20;
+}
+
+.boot-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(90, 200, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(90, 200, 255, 0.07) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(70% 60% at 50% 40%, #000 30%, transparent 100%);
+}
+
+.boot-panel {
+  position: relative;
+  width: min(880px, 100%);
+  padding: 26px 30px 22px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(6, 16, 27, 0.9);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+
+.boot-head h1 {
+  margin: 6px 0 10px;
+  font-size: 26px;
+  letter-spacing: 0.06em;
+}
+
+.boot-head p {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.75;
+  font-size: 13.5px;
+}
+
+.boot-code {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  color: var(--accent);
+}
+
+.boot-checks {
+  list-style: none;
+  margin: 20px 0;
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(10, 24, 38, 0.6);
+  font-size: 12.5px;
+  min-height: 186px;
+}
+
+.boot-checks li {
+  display: grid;
+  grid-template-columns: 12px 130px 1fr;
+  align-items: center;
+  gap: 10px;
+  animation: boot-line 0.22s ease;
+}
+
+@keyframes boot-line {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.boot-check-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.is-ok .boot-check-dot {
+  background: var(--ok);
+  box-shadow: 0 0 10px rgba(82, 227, 155, 0.7);
+}
+
+.is-warn .boot-check-dot {
+  background: var(--warn);
+  box-shadow: 0 0 10px rgba(255, 180, 84, 0.7);
+}
+
+.is-bad .boot-check-dot {
+  background: var(--danger);
+  box-shadow: 0 0 10px rgba(255, 95, 109, 0.7);
+}
+
+.boot-check-label {
+  color: var(--text-dim);
+}
+
+.boot-check-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.boot-check-pending {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.boot-controls h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+
+.boot-controls dl {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.boot-controls dl > div {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.boot-controls dt {
+  white-space: nowrap;
+}
+
+.boot-controls dd {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.boot-save {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin: 18px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.boot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.boot-primary,
+.boot-secondary,
+.boot-ghost {
+  padding: 10px 20px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.boot-primary {
+  background: linear-gradient(120deg, #1d84b8, #35d2e8);
+  border-color: transparent;
+  color: #04121c;
+  font-weight: 700;
+}
+
+.boot-primary:hover:not(:disabled),
+.boot-secondary:hover:not(:disabled),
+.boot-ghost:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(30, 150, 210, 0.28);
+}
+
+.boot-primary:disabled,
+.boot-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.boot-ghost {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.boot-foot {
+  margin: 16px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------------------------ */
+/* 渲染失败                                                            */
+/* ------------------------------------------------------------------ */
+
+.bridge-fatal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 14px;
+  padding: 32px;
+  text-align: center;
+  background: #05080f;
+  z-index: 30;
+}
+
+.bridge-fatal h2 {
+  margin: 0;
+  color: var(--danger);
+}
+
+.bridge-fatal p {
+  margin: 0;
+  max-width: 620px;
+  color: var(--text-dim);
+  line-height: 1.8;
+}
+
+.bridge-fatal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.bridge-fatal-actions button {
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.bridge-fatal-actions button:first-child {
+  background: var(--accent);
+  color: #04121c;
+  font-weight: 700;
+  border-color: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* 浮层（终端总览 / 导航 / 物资 / 手册）                                */
+/* ------------------------------------------------------------------ */
+
+.ov-backdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 26px;
+  background: rgba(2, 6, 12, 0.62);
+  backdrop-filter: blur(3px);
+  z-index: 24;
+}
+
+/* 背景点击区：铺满整层、置于浮层之下，键盘与读屏都能触发关闭 */
+.ov-backdrop-hit {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.ov-shell {
+  position: relative;
+  width: min(620px, 100%);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: rgba(7, 18, 30, 0.96);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.6);
+  animation: ov-in 0.18s ease;
+}
+
+.ov-shell-wide {
+  width: min(920px, 100%);
+}
+
+@keyframes ov-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ov-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ov-head h2 {
+  margin: 2px 0 0;
+  font-size: 17px;
+}
+
+.ov-code {
+  font-size: 10.5px;
+  letter-spacing: 0.24em;
+  color: var(--accent);
+}
+
+.ov-close {
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  letter-spacing: 0.1em;
+}
+
+.ov-close:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ov-body {
+  padding: 16px 18px;
+  overflow: auto;
+  flex: 1;
+}
+
+.ov-foot {
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.ov-terminal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
+  gap: 10px;
+}
+
+.ov-terminal {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(11, 26, 42, 0.7);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ov-terminal:hover {
+  border-color: var(--accent);
+  background: rgba(16, 40, 62, 0.85);
+}
+
+.ov-terminal.is-active {
+  border-color: var(--accent-2);
+  box-shadow: inset 0 0 0 1px rgba(124, 247, 208, 0.35);
+}
+
+.ov-terminal-hot {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 6px;
+}
+
+.ov-terminal-code {
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+}
+
+.ov-terminal-name {
+  font-weight: 600;
+}
+
+.ov-terminal-title,
+.ov-terminal-sys {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.ov-terminal-flag {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ov-terminal-flag.is-ok {
+  color: var(--ok);
+}
+
+.ov-vitals-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.ov-vital {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+}
+
+.ov-vital-caution {
+  color: var(--warn);
+  border-color: rgba(255, 180, 84, 0.45);
+}
+
+.ov-vital-critical {
+  color: var(--danger);
+  border-color: rgba(255, 95, 109, 0.5);
+}
+
+.ov-nav-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ov-nav-item {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(11, 26, 42, 0.6);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ov-nav-item:hover {
+  border-color: var(--accent);
+  background: rgba(16, 40, 62, 0.85);
+}
+
+.ov-nav-key {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.ov-nav-main {
+  display: grid;
+}
+
+.ov-nav-main em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.ov-nav-zone {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+}
+
+.ov-inventory-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.ov-inventory {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.ov-inventory li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(11, 26, 42, 0.55);
+}
+
+.ov-inventory li.is-empty {
+  opacity: 0.55;
+}
+
+.ov-item-main {
+  display: grid;
+  gap: 2px;
+}
+
+.ov-item-name {
+  font-weight: 600;
+}
+
+.ov-item-hint,
+.ov-item-effect {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.ov-item-effect {
+  color: var(--muted);
+}
+
+.ov-item-count {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-item-count button {
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ov-item-count button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ov-manual {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.ov-manual h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+}
+
+.ov-manual ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+.ov-manual-actions {
+  margin-top: 16px;
+}
+
+.ov-ghost {
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ov-ghost:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ov-note {
+  margin: 14px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------------------------ */
+/* 全息终端机框（ui/panels 的宿主）                                     */
+/* ------------------------------------------------------------------ */
+
+.bridge-panel-host {
+  position: absolute;
+  inset: 42px 42px 74px;
+  display: grid;
+  place-items: stretch;
+  z-index: 22;
+}
+
+.hologram {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(10, 34, 52, 0.94), rgba(6, 18, 30, 0.96));
+  box-shadow:
+    0 0 0 1px rgba(63, 224, 255, 0.08),
+    0 24px 70px rgba(0, 0, 0, 0.6),
+    inset 0 0 60px rgba(40, 160, 220, 0.08);
+  overflow: hidden;
+}
+
+.hologram-noise {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(130, 230, 255, 0.03) 0 1px,
+    transparent 1px 4px
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hologram-noise {
+    display: none;
+  }
+}
+
+.hologram-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(8, 26, 40, 0.7);
+}
+
+.hologram-id {
+  display: grid;
+  gap: 2px;
+  min-width: 168px;
+}
+
+.hologram-code {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+}
+
+.hologram-terminal {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+}
+
+.hologram-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.hologram-title h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.hologram-title p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.hologram-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.hologram-actions button {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hologram-actions button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.hologram-close {
+  border-color: var(--border-strong) !important;
+  color: var(--text) !important;
+}
+
+.hologram-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  /* 面板内容需要能选中复制（日志、配置），覆盖舰内的全局禁选 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.hologram-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.hologram-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(82, 227, 155, 0.8);
+  animation: hud-pulse 2s ease-in-out infinite;
+}
+
+.hologram-hint {
+  margin-left: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* 小游戏宿主                                                          */
+/* ------------------------------------------------------------------ */
+
+.bridge-minigame-host {
+  position: absolute;
+  inset: 0;
+  z-index: 26;
+  padding: 18px;
+  display: grid;
+  background: rgba(2, 6, 12, 0.55);
+}
+
+/* ------------------------------------------------------------------ */
+/* 窄屏适配：舰内界面在手机竖屏下重排                                    */
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 860px) {
+  .hud-explore {
+    display: none;
+  }
+
+  .hud-vitals {
+    top: auto;
+    bottom: 96px;
+    right: 10px;
+    width: 168px;
+    padding: 9px;
+    font-size: 11px;
+  }
+
+  .hud-keys {
+    font-size: 10px;
+    gap: 3px 9px;
+  }
+
+  .hud-top {
+    padding: 8px 12px;
+  }
+
+  .hud-meta {
+    display: none;
+  }
+
+  .bridge-dock {
+    bottom: 44px;
+    gap: 4px;
+    padding: 5px 6px;
+  }
+
+  .bridge-dock button {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .bridge-panel-host {
+    inset: 8px 8px 100px;
+  }
+
+  .hologram-head {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .hologram-id {
+    min-width: 0;
+  }
+
+  .boot-controls dl > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
