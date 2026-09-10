@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from neobot_app.reply.orchestrator import _scrub_secret_values
 
+#: 拼接构造，避免本文件自身出现真实形态的密钥字面量（仓库有密钥扫描测试）。
+_FAKE_KEY = "sk-" + "proj-" + "ABCdef123456789"
+
 
 def test_bare_sk_key_is_scrubbed() -> None:
     text = _scrub_secret_values(
-        "OpenAIError: Incorrect API key provided: sk-proj-ABCdef123456789"
+        f"OpenAIError: Incorrect API key provided: {_FAKE_KEY}"
     )
 
-    assert "sk-proj-ABCdef123456789" not in text
+    assert _FAKE_KEY not in text
     assert "<redacted>" in text
 
 
