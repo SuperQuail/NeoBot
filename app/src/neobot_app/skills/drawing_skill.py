@@ -60,19 +60,19 @@ class DrawingSkill(SkillModule):
                 "  1. 先用 gallery_search 搜索该角色名/特征，检查图库是否有立绘\n"
                 "     - 多关键词可空格分隔（如「弥音 立绘」），提高匹配精度\n"
                 "     - 搜索你自己的形象时，用「弥音」或你的角色特征（粉色头发、猫娘等）\n"
-                "  2. 有立绘 → 将编号填入 draw 的 reference_id（或 references），参考立绘生图\n"
+                "  2. 有立绘 → 将 gallery_no（或 image_id）填入 draw 的 reference_id / references，参考立绘生图\n"
                 "  3. 没有 → 如实告知用户「图库没有该角色立绘，将按描述创作」，然后正常绘图\n"
                 "  4. 用户明确表示「不用参考/随意画/自由发挥/别看图库」时，跳过查图库\n\n"
                 "【参考绘图工作流】\n"
                 "  1. 调用 gallery_search 查找目标图片（关键词搜索，空则换词或 gallery_list 浏览）\n"
                 "  2. 取结果里的 image_id，写进 references=[\"gallery:<image_id>\"]（多张就多项）\n"
-                "     - gallery_list/gallery_search 的每一项都带 image_id（稳定）与 number（序号，会漂移）\n"
-                "     - 单张也可以用 reference_id=<number>，但序号随图库增删/更新变化，容易指错图\n"
+                "     - 每一项都带 image_id（主键）与 gallery_no（固定编号，入库时分配一次）\n"
+                "     - 单张也可以用 reference_id=<gallery_no>，编号不会随图库增删/更新变化\n"
                 "  3. 图暂存缓存池时用 pool:<key> 引用\n\n"
                 "【references 参数完整格式】\n"
                 "  数组每项一个来源标识：\n"
-                "  - 图库（推荐）：\"gallery:<image_id>\"，也接受 \"gallery:<序号>\"\n"
-                "  - 裸值：\"<image_id>\"（图库图片主键）或 \"<序号>\"（图库序号）\n"
+                "  - 图库（推荐）：\"gallery:<image_id>\"，也接受 \"gallery:<gallery_no>\"（固定编号）\n"
+                "  - 裸值：\"<image_id>\"（图库图片主键）或 \"<gallery_no>\"（图库固定编号）\n"
                 "  - 缓存池：\"pool:<key>\"\n"
                 "  - 表情包：\"emoji:<编号>\"\n"
                 "  - 外部链接：\"url:<URL>\" 或直接写 https://...\n"
@@ -101,7 +101,7 @@ class DrawingSkill(SkillModule):
                 "  常用尺寸：512x512（方形头像）、1024x1024（方形）、768x1024（竖向）、1024x768（横向）\n"
                 "  未指定时默认 1024x1024\n\n"
                 "【process_image 用法】\n"
-                "  参数 image 支持图片 ID（tmp_xxx / g_xxx）或来源描述符（gallery:<编号>/emoji:<编号>/file:<路径>/url:<URL>/chat:<消息ID>:<索引>）\n"
+                "  参数 image 支持图片 ID（tmp_xxx / g_xxx）或来源描述符（gallery:<图库编号>/emoji:<编号>/file:<路径>/url:<URL>/chat:<消息ID>:<索引>）\n"
                 "  操作：resize（等比缩放，传 width/height）、crop（crop_box=[左,上,右,下]）、"
                 "to_png / to_jpeg（格式转换）、remove_background（去底透明，可指定 background_color）\n"
                 "  处理结果保存到临时目录并返回新图片 ID，可直接发送或入库\n\n"
@@ -161,8 +161,9 @@ class DrawingSkill(SkillModule):
             "reference_id": {
                 "type": "integer",
                 "description": (
-                    "可选，单张参考图的图库序号（gallery_list/gallery_search 返回的 number）。"
-                    "序号会随图库增删与更新变化，建议改用 references=[\"gallery:<image_id>\"] 传稳定主键"
+                    "可选，单张参考图的图库固定编号（gallery_list/gallery_search 返回的 gallery_no）。"
+                    "编号在入库时分配一次，不随图库增删与更新变化；"
+                    "多张参考图用 references，也可以用 references=[\"gallery:<image_id>\"] 传主键"
                 ),
             },
             "references": {
@@ -170,8 +171,8 @@ class DrawingSkill(SkillModule):
                 "items": {"type": "string"},
                 "description": (
                     "可选，参考图列表，每项一个来源标识。推荐格式："
-                    "gallery:<image_id>（图库图片，最稳）；"
-                    "也支持 gallery:<序号>、<image_id>、<序号>、pool:<key>、"
+                    "gallery:<image_id> 或 gallery:<gallery_no>（图库图片，编号固定）；"
+                    "也支持裸 <image_id>/<gallery_no>、pool:<key>、"
                     "emoji:<编号>、url:<URL>、file:<绝对路径>、chat:<聊天编号>:<图片序号>"
                 ),
             },
@@ -219,7 +220,7 @@ class DrawingSkill(SkillModule):
                     "process_image",
                     "本地图片后处理：缩放、裁切、格式转换、去底透明。"
                     "image 参数支持图片 ID（如 tmp_xxx / g_xxx）或来源描述符"
-                    "（gallery:<编号>/emoji:<编号>/file:<路径>/url:<URL>/chat:<消息ID>:<索引>）。"
+                    "（gallery:<图库编号>/emoji:<编号>/file:<路径>/url:<URL>/chat:<消息ID>:<索引>）。"
                     "处理结果保存到临时目录并返回新图片 ID。",
                     {
                         "properties": {

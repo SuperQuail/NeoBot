@@ -16,6 +16,8 @@ class CreatorImageAccess(Protocol):
 
     async def get_by_hash(self, file_hash: str) -> Optional[CreatorImageRecord]: ...
 
+    async def get_by_gallery_no(self, gallery_no: int) -> Optional[CreatorImageRecord]: ...
+
     async def set(
         self,
         image_id: str,
@@ -29,6 +31,7 @@ class CreatorImageAccess(Protocol):
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
         image_source: Optional[str] = None,
+        gallery_no: Optional[int] = None,
     ) -> CreatorImageRecord: ...
 
     async def delete(self, image_id: str) -> bool: ...
@@ -38,6 +41,8 @@ class CreatorImageAccess(Protocol):
     async def rename(self, image_id: str, new_file_path: str) -> CreatorImageRecord: ...
 
     async def count(self, *, source: Optional[str] = None) -> int: ...
+
+    async def next_gallery_no(self) -> int: ...
 
     async def list(
         self,

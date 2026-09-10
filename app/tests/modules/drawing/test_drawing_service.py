@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import os
 from types import SimpleNamespace
 
@@ -318,11 +319,17 @@ async def test_dedup_keeps_newest_sidecar(tmp_path, monkeypatch):
         await service.close()
 
 
-async def _seed_gallery(service, uow_factory, image_id: str, description: str, prompt: str = "") -> None:
+_GALLERY_NOS = itertools.count(1)
+
+
+async def _seed_gallery(
+    service, uow_factory, image_id: str, description: str, prompt: str = ""
+) -> int:
+    """种一张图库图片，返回它入库时分配的固定编号。"""
     path = service._gallery_dir / f"{image_id}.png"
     path.write_bytes(_png_bytes())
     async with uow_factory() as uow:
-        await uow.creator_images.set(
+        record = await uow.creator_images.set(
             image_id,
             source="gallery",
             file_hash="h" * 64 + image_id[:4],
@@ -332,8 +339,10 @@ async def _seed_gallery(service, uow_factory, image_id: str, description: str, p
             mime_type="image/png",
             original_width=4,
             original_height=4,
+            gallery_no=next(_GALLERY_NOS),
         )
         await uow.commit()
+    return record.gallery_no
 
 
 async def test_search_images_multi_keyword_ranks_full_matches(tmp_path, monkeypatch):
@@ -357,10 +366,10 @@ async def test_search_images_multi_keyword_ranks_full_matches(tmp_path, monkeypa
 async def test_process_image_resize_and_crop(tmp_path, monkeypatch):
     service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
     try:
-        await _seed_gallery(service, uow_factory, "g_src", "源图片")
+        gallery_no = await _seed_gallery(service, uow_factory, "g_src", "源图片")
 
         resized = await service.process_image(
-            image="gallery:1", operation="resize", width=20
+            image=f"gallery:{gallery_no}", operation="resize", width=20
         )
         assert resized.source == "tmp"
         from PIL import Image
@@ -369,7 +378,7 @@ async def test_process_image_resize_and_crop(tmp_path, monkeypatch):
             assert img.size == (20, 20), f"等比缩放 4x4 → 20x20,实际 {img.size}"
 
         cropped = await service.process_image(
-            image="gallery:1", operation="crop", crop_box=[0, 0, 2, 2]
+            image=f"gallery:{gallery_no}", operation="crop", crop_box=[0, 0, 2, 2]
         )
         with Image.open(cropped.file_path) as img:
             assert img.size == (2, 2)

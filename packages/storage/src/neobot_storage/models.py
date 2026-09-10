@@ -153,6 +153,7 @@ class CreatorImageData(Base):
     original_width: Mapped[int | None] = mapped_column(Integer)
     original_height: Mapped[int | None] = mapped_column(Integer)
     image_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    gallery_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -160,6 +161,7 @@ class CreatorImageData(Base):
     __table_args__ = (
         Index("ix_creator_images_source_updated_at", "source", "updated_at"),
         Index("ix_creator_images_file_hash", "file_hash"),
+        Index("ix_creator_images_gallery_no", "gallery_no", unique=True),
     )
 
 

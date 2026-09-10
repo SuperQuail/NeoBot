@@ -199,7 +199,7 @@ class ImageContextSkill(SkillModule):
             "msg_number": "聊天显示编号；回复引用图片时选被回复消息编号",
             "message_id": "真实 OneBot 消息ID，不是显示编号",
             "image_index": "图片索引，从0开始，默认0",
-            "gallery_id": "图库列表中的编号，从1开始",
+            "gallery_id": "图库固定编号（gallery_list/gallery_search 的 gallery_no）",
             "emoji_id": "表情包编号，从1开始",
         }.items():
             properties[name] = {"type": "integer", "description": desc}

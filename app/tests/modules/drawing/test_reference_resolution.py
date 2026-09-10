@@ -1,4 +1,4 @@
-"""参考图引用解析：gallery: 前缀、序号与 image_id 两种口径必须一致。"""
+"""参考图引用解析：gallery: 前缀、固定编号与 image_id 两种口径必须一致。"""
 
 from __future__ import annotations
 
@@ -62,8 +62,22 @@ async def _seed(service, uow_factory, image_ids: list[str]) -> None:
                 mime_type="image/png",
                 original_width=4,
                 original_height=4,
+                gallery_no=index,
             )
         await uow.commit()
+
+
+async def _add_gallery_image(service, image_id: str, description: str):
+    """走服务真实入库路径，让编号由服务分配。"""
+    path = service._gallery_dir / f"{image_id}.png"
+    path.write_bytes(_png_bytes())
+    return await service._upsert_record(
+        image_id,
+        source="gallery",
+        file_path=path,
+        prompt=None,
+        description=description,
+    )
 
 
 async def test_gallery_prefix_accepts_both_number_and_image_id(tmp_path, monkeypatch):
@@ -74,9 +88,9 @@ async def test_gallery_prefix_accepts_both_number_and_image_id(tmp_path, monkeyp
     service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
     try:
         await _seed(service, uow_factory, ["g_first", "g_second"])
-        numbers = await service.gallery_number_map()
-        assert set(numbers) == {"g_first", "g_second"}
-        assert sorted(numbers.values()) == [1, 2]
+        records = await service.list_images(source="gallery", limit=9999, offset=0)
+        numbers = {record.image_id: record.gallery_no for record in records}
+        assert numbers == {"g_first": 1, "g_second": 2}
 
         for image_id, number in numbers.items():
             by_number = await service._resolve_reference(f"gallery:{number}")
@@ -89,18 +103,49 @@ async def test_gallery_prefix_accepts_both_number_and_image_id(tmp_path, monkeyp
         await engine.dispose()
 
 
-async def test_number_map_and_reference_lookup_agree(tmp_path, monkeypatch):
-    """gallery_list/search 展示的 number 必须与 reference_id 解析出的图一致。"""
+async def test_gallery_no_lookup_agrees_with_records(tmp_path, monkeypatch):
+    """gallery_list/search 展示的 gallery_no 必须与 reference_id 解析出的图一致。"""
     service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
     try:
         await _seed(service, uow_factory, ["g_a", "g_b", "g_c"])
-        numbers = await service.gallery_number_map()
         records = await service.list_images(source="gallery", limit=9999, offset=0)
 
         assert len(records) == 3
-        for index, record in enumerate(records, start=1):
-            assert numbers[record.image_id] == index
-            assert (await service._get_reference_by_number(index)).image_id == record.image_id
+        assert sorted(record.gallery_no for record in records) == [1, 2, 3]
+        for record in records:
+            found = await service._get_reference_by_gallery_no(record.gallery_no)
+            assert found.image_id == record.image_id
+        # 编号与列表顺序无关：第二张图无论排在哪儿都是 2 号
+        assert (await service._get_reference_by_gallery_no(2)).image_id == "g_b"
+    finally:
+        await service.close()
+        await engine.dispose()
+
+
+async def test_gallery_number_is_assigned_once_and_never_floats(tmp_path, monkeypatch):
+    """固定编号：入库分配一次，改描述/删除都不会让编号指到别的图片。"""
+    service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
+    try:
+        first = await _add_gallery_image(service, "g_one", "一")
+        second = await _add_gallery_image(service, "g_two", "二")
+        assert (first.gallery_no, second.gallery_no) == (1, 2)
+
+        # 改描述会刷新 updated_at、翻转列表顺序，但编号必须不变
+        updated = await service.update_image_description(image_id="g_one", description="一改")
+        assert updated.gallery_no == 1
+        records = await service.list_images(source="gallery", limit=9999, offset=0)
+        assert [record.image_id for record in records] == ["g_one", "g_two"]
+        assert {record.image_id: record.gallery_no for record in records} == {
+            "g_one": 1,
+            "g_two": 2,
+        }
+
+        # 删除 1 号后：2 号仍是 2 号，新图拿 3（已删除的编号不回收）
+        assert await service.gallery_delete(image_id="g_one") is True
+        third = await _add_gallery_image(service, "g_three", "三")
+        assert third.gallery_no == 3
+        assert (await service._get_reference_by_gallery_no(2)).image_id == "g_two"
+        assert await service._get_reference_by_gallery_no(1) is None
     finally:
         await service.close()
         await engine.dispose()
@@ -112,7 +157,7 @@ async def test_missing_gallery_reference_reports_clear_error(tmp_path, monkeypat
         await _seed(service, uow_factory, ["g_only"])
         with pytest.raises(LookupError) as excinfo:
             await service._resolve_reference("gallery:99")
-        assert "序号" in str(excinfo.value)
+        assert "图库编号" in str(excinfo.value)
 
         with pytest.raises(LookupError) as excinfo:
             await service._resolve_reference("gallery:g_missing")
@@ -144,8 +189,8 @@ async def test_pool_source_accepts_gallery_image_id(tmp_path, monkeypatch):
         path = await service.resolve_source_to_path("gallery:g_pool")
         assert path.name == "g_pool.png"
 
-        numbers = await service.gallery_number_map()
-        by_number = await service.resolve_source_to_path(f"gallery:{numbers['g_pool']}")
+        records = await service.list_images(source="gallery", limit=9999, offset=0)
+        by_number = await service.resolve_source_to_path(f"gallery:{records[0].gallery_no}")
         assert by_number == path
     finally:
         await service.close()

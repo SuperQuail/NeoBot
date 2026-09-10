@@ -28,10 +28,6 @@ class FakeImageService:
         self.list_calls.append((limit, offset))
         return self.images
 
-    async def gallery_number_map(self) -> dict[str, int]:
-        """序号映射：与真实服务一致地按全量列表顺序编号。"""
-        return {item.image_id: index for index, item in enumerate(self.images, start=1)}
-
     async def search_images(self, keyword: str) -> list[Any]:
         self.search_calls.append(keyword)
         return self.images
@@ -57,9 +53,10 @@ class FakeImageService:
         return self.import_result
 
 
-def _record(image_id: str, description: str = "测试图"):
+def _record(image_id: str, description: str = "测试图", gallery_no: int = 1):
     return SimpleNamespace(
         image_id=image_id,
+        gallery_no=gallery_no,
         description=description,
         prompt="a cat",
         source="gallery",
@@ -75,7 +72,7 @@ def _parse(text: str) -> dict:
 async def test_gallery_list_paginates_with_offset():
     """正常路径：gallery_list 应按 page/page_size 计算 offset 传给服务。"""
     service = FakeImageService()
-    service.images = [_record("g1"), _record("g2")]
+    service.images = [_record("g1", gallery_no=7), _record("g2", gallery_no=3)]
     skill = GallerySkill(creator_image_service=service)
 
     result = _parse(await skill.execute("gallery_list", {"page": 3, "page_size": 10}))
@@ -84,9 +81,25 @@ async def test_gallery_list_paginates_with_offset():
     assert service.list_calls == [(10, 20)]
     assert result["total"] == 2
     assert result["items"][0]["image_id"] == "g1"
-    # 每个条目都要带可直接用于 drawing__draw.reference_id 的序号
-    assert [item["number"] for item in result["items"]] == [1, 2]
+    # gallery_no 必须是记录自带的固定编号，不能按列表下标重新编号
+    assert [item["gallery_no"] for item in result["items"]] == [7, 3]
     assert result["page"] == 3
+
+
+async def test_gallery_list_tolerates_record_without_gallery_no():
+    """边界：记录没有编号属性时返回 null，而不是抛异常。"""
+    service = FakeImageService()
+    service.images = [
+        SimpleNamespace(
+            image_id="g9", description="旧记录", prompt=None, source="gallery",
+            created_at=None, file_path="/tmp/g9.png",
+        )
+    ]
+    skill = GallerySkill(creator_image_service=service)
+
+    result = _parse(await skill.execute("gallery_list", {}))
+
+    assert result["items"][0]["gallery_no"] is None
 
 
 async def test_gallery_list_include_paths():

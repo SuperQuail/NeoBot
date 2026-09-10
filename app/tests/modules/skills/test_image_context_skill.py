@@ -250,14 +250,14 @@ async def test_gallery_numbers_and_persistent_ids(image_path, png, args):
     from neobot_app.drawing.service import CreatorImageService
     service = object.__new__(CreatorImageService)
     record = SimpleNamespace(file_path=str(image_path))
-    service._get_reference_by_number = AsyncMock(return_value=record)
+    service._get_reference_by_gallery_no = AsyncMock(return_value=record)
     service._get_existing = AsyncMock(return_value=record)
     skill = ImageContextSkill(creator_image_service=service)
     assert_image(await skill.execute("add_image", args), png)
     if "g_test" in args.values() or "tmp_test" in args.values():
         service._get_existing.assert_awaited_once()
     else:
-        service._get_reference_by_number.assert_awaited_once_with(2)
+        service._get_reference_by_gallery_no.assert_awaited_once_with(2)
 
 
 @pytest.mark.parametrize("args", [{"emoji_id": 3}, {"source": "emoji:3"}, {"source": "e:3"}])

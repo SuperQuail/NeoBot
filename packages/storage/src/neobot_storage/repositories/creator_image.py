@@ -36,6 +36,14 @@ class SqlAlchemyCreatorImageAccess:
             return None
         return self._to_domain(row)
 
+    async def get_by_gallery_no(self, gallery_no: int) -> Optional[CreatorImageRecord]:
+        stmt = select(CreatorImageData).where(CreatorImageData.gallery_no == gallery_no)
+        result = await self._session.execute(stmt)
+        row = result.scalars().first()
+        if row is None:
+            return None
+        return self._to_domain(row)
+
     async def set(
         self,
         image_id: str,
@@ -49,6 +57,7 @@ class SqlAlchemyCreatorImageAccess:
         original_width: Optional[int] = None,
         original_height: Optional[int] = None,
         image_source: Optional[str] = None,
+        gallery_no: Optional[int] = None,
     ) -> CreatorImageRecord:
         now = now_utc()
 
@@ -64,10 +73,12 @@ class SqlAlchemyCreatorImageAccess:
                 original_width=original_width,
                 original_height=original_height,
                 image_source=image_source,
+                gallery_no=gallery_no,
                 created_at=now,
                 updated_at=now,
                 version=1,
             )
+            # set_ 里不含 gallery_no：编号只在首次入库时分配，后续更新保持不变
             stmt = stmt.on_conflict_do_update(
                 index_elements=["image_id"],
                 set_={
@@ -100,6 +111,7 @@ class SqlAlchemyCreatorImageAccess:
                     original_width=original_width,
                     original_height=original_height,
                     image_source=image_source,
+                    gallery_no=gallery_no,
                     created_at=now,
                     updated_at=now,
                     version=1,
@@ -115,6 +127,9 @@ class SqlAlchemyCreatorImageAccess:
                 row.original_width = original_width
                 row.original_height = original_height
                 row.image_source = image_source
+                if row.gallery_no is None and gallery_no is not None:
+                    # 只为历史遗留（编号为空）的记录补号，已分配的编号不动
+                    row.gallery_no = gallery_no
                 row.updated_at = now
                 row.version += 1
 
@@ -151,6 +166,12 @@ class SqlAlchemyCreatorImageAccess:
             stmt = stmt.where(CreatorImageData.source == source)
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
+
+    async def next_gallery_no(self) -> int:
+        """下一个可用的图库编号：现有编号最大值 + 1（已删除的编号不回收）。"""
+        result = await self._session.execute(select(func.max(CreatorImageData.gallery_no)))
+        current = result.scalar_one_or_none()
+        return int(current or 0) + 1
 
     async def list(
         self,
@@ -223,6 +244,7 @@ class SqlAlchemyCreatorImageAccess:
             updated_at=SqlAlchemyCreatorImageAccess._normalize_datetime(row.updated_at),
             version=row.version,
             image_source=row.image_source,
+            gallery_no=row.gallery_no,
         )
 
     @staticmethod
