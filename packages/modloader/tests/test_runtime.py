@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_modloader.host import PluginHostFacade
-from neobot_modloader.loader import DiscoveredPlugin, LoadedPlugin
+from neobot_modloader.loader import DiscoveredPlugin, LoadedPlugin, PluginLoadError
 from neobot_modloader.runtime import PluginRuntime
 from neobot_contracts.ports.plugin import PluginState
 
@@ -1341,6 +1341,68 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.ok)
             self.assertEqual(result.state, PluginState.UNLOADED.value)
             self.assertIsNone(result.error)
+
+    async def test_plugin_requiring_newer_neobot_is_not_loaded(self) -> None:
+        """min_neobot_version 高于当前版本时必须拒绝加载，而不是照常注册。"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "future"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                'name = "future"\nmin_neobot_version = "9.0.0"\n',
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('future')\n",
+                encoding="utf-8",
+            )
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                host_version="0.6.0",
+            )
+
+            runtime.load_all()
+
+            self.assertEqual(runtime.manager.names(), [])
+            errors = [
+                result
+                for result in runtime.discover_all()
+                if isinstance(result, PluginLoadError)
+            ]
+            self.assertEqual([error.name for error in errors], ["future"])
+            self.assertIn("9.0.0", str(errors[0].error))
+
+    async def test_plugin_with_satisfied_min_version_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "compatible"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                'name = "compatible"\nmin_neobot_version = "0.6.0"\n',
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('compatible')\n",
+                encoding="utf-8",
+            )
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                host_version="0.6.1",
+            )
+
+            runtime.load_all()
+
+            self.assertEqual(runtime.manager.names(), ["compatible"])
 
 
 if __name__ == "__main__":
