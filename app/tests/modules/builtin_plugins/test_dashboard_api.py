@@ -861,3 +861,55 @@ async def test_auth_setup_still_works_with_json_from_loopback(tmp_path: Path) ->
         assert server.passwords.configured is True
     finally:
         await server.stop()
+
+
+class _RecordingLogger(_NullLogger):
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str = "", *args, **kwargs) -> None:
+        self.warnings.append(str(message))
+
+
+async def _start_panel_with_host(tmp_path: Path, *, host: str) -> tuple[DashboardServer, _RecordingLogger]:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "0.5.0"\n', encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("DeepSeek_APIKey=sk-super-secret\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    PanelPasswordStore(data_dir / "auth.json").set_password(PASSWORD)
+    logger = _RecordingLogger()
+    server = DashboardServer(
+        plugin_name="dashboard",
+        config=DashboardConfig(
+            enabled=True, host=host, port=_free_port(), secure_cookies=False
+        ),
+        data_dir=data_dir,
+        logger=logger,
+        adapter=_FakeAdapter(),
+        plugin_control=_FakeControl(),
+        config_path=config_path,
+        env_path=env_path,
+        backup_dir=tmp_path / "backup",
+    )
+    await server.start()
+    return server, logger
+
+
+async def test_non_loopback_panel_warns_about_plaintext_credentials(
+    tmp_path: Path,
+) -> None:
+    """面板对网络开放且未启用 Secure Cookie 时必须给出启动告警。"""
+    server, logger = await _start_panel_with_host(tmp_path, host="0.0.0.0")
+    try:
+        assert any("Secure Cookie" in message for message in logger.warnings)
+    finally:
+        await server.stop()
+
+
+async def test_loopback_panel_does_not_warn(tmp_path: Path) -> None:
+    server, logger = await _start_panel_with_host(tmp_path, host="127.0.0.1")
+    try:
+        assert logger.warnings == []
+    finally:
+        await server.stop()

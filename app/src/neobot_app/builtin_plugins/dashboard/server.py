@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from neobot_adapter.utils.net import is_loopback_host
 from neobot_app.panel_auth import get_panel_password_store
 
 from . import system as system_module
@@ -212,6 +213,14 @@ class DashboardServer:
             self.logger.warning(
                 "网页面板尚未设置登录密码：此时不允许外网访问。"
                 "请在本机打开面板按提示设置密码，或由超级管理员在 QQ 私聊发送 /set_password 设置"
+            )
+        elif not is_loopback_host(self.config.host) and not self.secure_cookies:
+            # 默认 host=0.0.0.0 是「对网络开放」：面板已有登录与 CSRF，但纯 HTTP 下
+            # 登录凭据与 Cookie 可被同网段嗅探，这里每次启动都提醒一次。
+            self.logger.warning(
+                f"网页面板监听 {self.config.host}（对网络开放）且未启用 Secure Cookie："
+                "HTTP 明文下登录凭据可能被同网段嗅探。仅本机使用请把 dashboard.host 改为 127.0.0.1；"
+                "跨机/公网访问请经 HTTPS 反向代理，并在确认 HTTPS 生效后把 dashboard.secure_cookies 设为 true"
             )
         return self.public_url
 
