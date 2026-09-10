@@ -1,10 +1,13 @@
 import asyncio
+import hmac
 import json
 import os
 import queue
 import threading
 import time
+from http import HTTPStatus
 from typing import Any, Callable, Iterator, Optional
+from urllib.parse import parse_qs, urlparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
@@ -27,6 +30,43 @@ def _env_ci(name: str) -> str | None:
     for key, value in os.environ.items():
         if key.casefold() == target:
             return value
+    return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    """监听地址是否仅限本机（用于「未配置 token 且对外监听」的告警）。"""
+    normalized = str(host or "").strip().casefold()
+    if normalized in {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}:
+        return True
+    return normalized.startswith("127.")
+
+
+def _extract_access_token(headers: Any, path: str) -> Optional[str]:
+    """按 OneBot 11 鉴权规范从握手中取出 access token。
+
+    反向 WebSocket 由框架（客户端）在握手请求头里带
+    ``Authorization: Bearer <access_token>``；同时兼容 query 参数
+    ``?access_token=``（规范对 HTTP / 正向 WebSocket 给出的兜底形式，
+    部分框架对反向 WS 也只提供填 URL 的入口）。
+    """
+    authorization = None
+    if headers is not None:
+        try:
+            authorization = headers.get("Authorization")
+        except Exception:
+            authorization = None
+    if authorization:
+        parts = str(authorization).split(None, 1)
+        if len(parts) == 2 and parts[0].casefold() == "bearer":
+            return parts[1].strip()
+        # 宽容处理只填 token、未带 Bearer 前缀的框架
+        return str(authorization).strip()
+
+    raw_path = str(path or "")
+    if "?" in raw_path:
+        values = parse_qs(urlparse(raw_path).query).get("access_token") or []
+        if values and str(values[0]).strip():
+            return str(values[0]).strip()
     return None
 
 
@@ -54,6 +94,7 @@ class AdapterCore:
         packet_callback: Callable[[dict[str, Any]], None] | None = None,
         host: str | None = None,
         port: int | None = None,
+        access_token: str = "",
     ):
         """初始化适配器核心
 
@@ -64,9 +105,12 @@ class AdapterCore:
                   缺省 0.0.0.0
             port: 反向 WebSocket 监听端口；None 时读环境变量 NEO_BOT_ADAPTER_PORT，
                   缺省 8080
+            access_token: 反向 WebSocket 握手鉴权的 access token（OneBot 11 规范）。
+                  留空表示不校验（与历史行为一致）
         """
         self.host = host
         self.port = port
+        self.access_token = str(access_token or "").strip()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -211,14 +255,30 @@ class AdapterCore:
             )
             port = int(env_port) if env_port else 8080
         self._async_stop_event = asyncio.Event()
-        # 监听指定路径 /onebot；10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载
+        if not self.access_token and not _is_loopback_host(host):
+            logger.warning(
+                "反向 WebSocket 未配置 access token 且监听非回环地址 "
+                f"({host}:{port})：该网段内任何主机都能连入并注入伪造事件。"
+                "请在 [adapter].reverse_ws_access_token 与 OneBot 框架反向 WS 的 "
+                "token 中填入同一个值。"
+            )
+        # 路径（文档约定 /onebot）由框架自己配置，服务端不限制；
+        # 10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载。
+        serve_kwargs: dict[str, Any] = {"max_size": 10 * 2**20}
+        if self.access_token:
+            # OneBot 11 鉴权：反向 WebSocket 由框架（客户端）在握手请求头中
+            # 携带 Authorization: Bearer <access_token>，服务端在此校验。
+            serve_kwargs["process_request"] = self._authorize_handshake
         server = await websockets.serve(
             self._handle_client,
             host,
             port,
-            max_size=10 * 2**20,
+            **serve_kwargs,
         )
-        logger.info(f"反向 WebSocket 服务运行于 ws://{host}:{port}")
+        logger.info(
+            f"反向 WebSocket 服务运行于 ws://{host}:{port}"
+            f"（access token 校验：{'已启用' if self.access_token else '未启用'}）"
+        )
         try:
             if not self._stop_event.is_set():
                 await self._async_stop_event.wait()
@@ -255,6 +315,41 @@ class AdapterCore:
                 logger.warning(f"服务器关闭异常: {exc}")
             self.active_connections.clear()
             self._connection_established.clear()
+
+    async def _authorize_handshake(self, *args: Any) -> Any:
+        """反向 WebSocket 握手鉴权（OneBot 11 规范的 access token 校验）。
+
+        仅在本端配置了 access token 时注册为 ``process_request`` 钩子；
+        未配置时连接行为与历史版本完全一致。
+
+        兼容 websockets 两代 API：
+        - 新版 asyncio 实现：``process_request(connection, request)``
+          拒绝时返回 ``connection.respond(...)``；
+        - 旧版 legacy 实现：``process_request(path, request_headers)``
+          拒绝时返回 ``(status, headers, body)``。
+        """
+        if not self.access_token:
+            return None
+
+        connection: Any = None
+        headers: Any = None
+        path = ""
+        if len(args) == 2 and hasattr(args[1], "headers"):
+            connection, request = args
+            headers = request.headers
+            path = getattr(request, "path", "") or ""
+        else:
+            path = args[0] if args else ""
+            headers = args[1] if len(args) > 1 else None
+
+        supplied = _extract_access_token(headers, path)
+        if supplied is not None and hmac.compare_digest(supplied, self.access_token):
+            return None
+
+        logger.warning("反向 WebSocket 握手被拒绝：access token 缺失或不匹配")
+        if connection is not None:
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        return (HTTPStatus.UNAUTHORIZED, [], b"unauthorized\n")
 
     async def _handle_client(self, websocket):
         logger.info("框架已连接")

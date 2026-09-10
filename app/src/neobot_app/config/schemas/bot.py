@@ -834,6 +834,17 @@ class Adapter:
             )
         },
     )
+    reverse_ws_access_token: str = field(
+        default="",
+        metadata={
+            "description": (
+                "OneBot 反向 WebSocket 握手鉴权的 access token（onebot 模式，"
+                "OneBot 11 规范）：框架侧在握手请求头带 Authorization: Bearer <token>，"
+                "本端校验一致才接受连接。留空表示不校验（此时监听非回环地址会告警）。"
+                "也可用环境变量 NEO_BOT_ADAPTER_TOKEN / NEOBOT_ADAPTER_TOKEN 配置"
+            )
+        },
+    )
 
 
 
