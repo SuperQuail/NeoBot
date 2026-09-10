@@ -486,9 +486,6 @@ async def _handle_patch_archive(self: ArchiveCRUDSkill, args: dict) -> str:
 async def _handle_read_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
-    blocked = _table_guard(self, str(args.get("table_name", "")).strip())
-    if blocked is not None:
-        return blocked
     try:
         mode = str(args.get("mode") or "full").strip().lower()
         if mode not in ("full", "outline"):
@@ -511,6 +508,16 @@ async def _handle_read_archive(self: ArchiveCRUDSkill, args: dict) -> str:
         if items_raw:
             results = []
             for it in items_raw:
+                if not isinstance(it, dict):
+                    return _json({"ok": False, "error": "items 元素必须是对象"})
+                # 逐项校验：items 批量模式与单条读取走同一套 allowed_tables 限制，
+                # 否则只要顶层 table_name 合法（或干脆不填），就能借 items 里的任意
+                # 表名读到任何档案。
+                blocked = _table_guard(self, str(it.get("table_name", "")).strip())
+                if blocked is not None:
+                    return blocked
+                if it.get("key") is None:
+                    return _json({"ok": False, "error": "items 元素缺少 key"})
                 item = await self._archive_service.get(it["table_name"], it["key"])
                 if item:
                     results.append(_payload(item))
@@ -518,6 +525,9 @@ async def _handle_read_archive(self: ArchiveCRUDSkill, args: dict) -> str:
         table_name = args.get("table_name")
         key = args.get("key")
         if table_name and key:
+            blocked = _table_guard(self, str(table_name).strip())
+            if blocked is not None:
+                return blocked
             item = await self._archive_service.get(table_name, key)
             if item:
                 return _json({"ok": True, "item": _payload(item)})

@@ -130,6 +130,49 @@ async def test_allowed_tables_blocks_read() -> None:
     assert result["ok"] is False
 
 
+async def test_allowed_tables_blocks_every_item_of_batch_read() -> None:
+    """items 批量读取必须逐项校验，不能只看顶层 table_name。
+
+    否则只要顶层填一个合法表名，就能用 items 里的任意表名读到未授权的档案。
+    """
+    skill, service = _skill(allowed_tables=("user_profile",))
+    service.items[("secret_table", "k")] = SimpleNamespace(
+        table_name="secret_table", key="k", value="TOP-SECRET", version=1
+    )
+
+    result = json.loads(
+        await skill.execute(
+            "read_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "items": [{"table_name": "secret_table", "key": "k"}],
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert "secret_table" in result["error"]
+    assert "TOP-SECRET" not in json.dumps(result, ensure_ascii=False)
+
+
+async def test_batch_read_returns_allowed_items() -> None:
+    skill, service = _skill(allowed_tables=("user_profile",))
+    service.items[("user_profile", "1")] = SimpleNamespace(
+        table_name="user_profile", key="1", value="hello", version=1
+    )
+
+    result = json.loads(
+        await skill.execute(
+            "read_archive",
+            {"items": [{"table_name": "user_profile", "key": "1"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert len(result["items"]) == 1
+
+
 async def test_empty_allowed_tables_means_unrestricted() -> None:
     skill, service = _skill()
 
