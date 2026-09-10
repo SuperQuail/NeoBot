@@ -465,6 +465,10 @@ class DashboardApi:
                 payload["scheduled"] = value if isinstance(value, list) else []
             except Exception as exc:
                 payload["scheduled_error"] = str(exc)
+        elif manager is not None:
+            # 显式报错而不是静默留空：接口改名/缺失时面板会直接显示原因，
+            # 不会让「定时任务列表恒为空」这种问题再次无声无息。
+            payload["scheduled_error"] = "scheduled_task_manager 未提供 list_tasks 接口"
         drawing = self._service("drawing_manager")
         status = getattr(drawing, "list_active", None) if drawing is not None else None
         if callable(status):
