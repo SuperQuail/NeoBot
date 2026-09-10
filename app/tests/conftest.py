@@ -9,11 +9,46 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
+
+
+# ── 进程级状态隔离 ──
+
+@pytest.fixture(autouse=True)
+def _isolate_process_state() -> Iterator[None]:
+    """隔离跨用例的全局副作用：os.environ 与模型注册表。
+
+    配置加载路径会直接写 ``os.environ``（``load_env``）并调用
+    ``register_models``，这些副作用不受 ``monkeypatch`` 追踪；漏到后续用例会
+    造成与顺序相关的假失败（例如面板用例断言「未配置 APIKey」时，却拿到了
+    前一个模块写进环境的密钥）。
+    """
+    environ_snapshot = dict(os.environ)
+
+    registry = None
+    registry_snapshot: tuple = ()
+    try:
+        from neobot_chat import get_model_registry
+
+        registry = get_model_registry()
+        registry_snapshot = registry.items()
+    except Exception:
+        registry = None
+
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(environ_snapshot)
+        if registry is not None:
+            registry.clear()
+            for _name, model in registry_snapshot:
+                registry.register(model, replace=True)
 
 
 # ── 事件循环 ──
