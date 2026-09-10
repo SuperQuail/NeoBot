@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +26,7 @@ from .model_probe import list_provider_models
 from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
 from neobot_app.panel_auth import PasswordPolicyError
 
-from .security import client_ip, is_loopback
+from .security import is_loopback
 
 
 def _pydantic_errors(exc: Any) -> list[dict[str, str]]:

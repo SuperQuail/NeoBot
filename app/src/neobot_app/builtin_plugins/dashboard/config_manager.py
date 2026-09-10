@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 import tempfile
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 

@@ -8,7 +8,6 @@ on_load/on_start 失败，引擎会一直挂着——Windows 上锁住数据库�
 
 from __future__ import annotations
 
-import asyncio
 
 from neobot_contracts.ports.plugin import PluginState
 from neobot_modloader.manager import DefaultPluginManager

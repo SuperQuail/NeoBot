@@ -36,7 +36,6 @@ from neobot_app.drawing.config import (
     ImageGenerationError,
 )
 from neobot_app.message.image_pipeline import (
-    prepare_local_image,
     prepare_local_image_async,
 )
 from neobot_app.utils.http import image_http_client, is_local_or_private_url

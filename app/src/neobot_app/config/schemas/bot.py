@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass, field, fields as dataclass_fields
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, Iterator, List, Optional, TypedDict
 
 _MODEL_KEY_RE = re.compile(r"[^A-Za-z0-9_.-]+")

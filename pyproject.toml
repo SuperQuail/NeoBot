@@ -58,3 +58,16 @@ dev = [
     "pytest-timeout>=2.3.1",
     "ruff>=0.15.5",
 ]
+
+[tool.ruff]
+# 起步用保守规则集（ruff 经典默认 E4/E7/E9/F）：先把「未使用导入 / 未定义名字 /
+# 语法级问题」这类确定性缺陷挡在 CI 外，规则集再逐步扩大。
+target-version = "py313"
+line-length = 120
+exclude = [
+    "app/src/neobot_app/builtin_plugins/dashboard/web",
+    "app/src/neobot_app/builtin_plugins/dashboard/frontend",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

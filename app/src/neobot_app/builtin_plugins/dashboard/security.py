@@ -16,7 +16,6 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|password|secret|credential|authorization)")
