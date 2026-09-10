@@ -286,6 +286,50 @@ async def test_forwarded_for_cannot_forge_loopback(tmp_path: Path) -> None:
         await server.stop()
 
 
+async def test_login_works_behind_reverse_proxy_with_forwarded_host(
+    tmp_path: Path,
+) -> None:
+    """经反向代理访问（Host 被改写）时登录必须可用。
+
+    文档推荐「公网经 HTTPS 反向代理访问」：浏览器地址栏是域名，而到达 NeoBot 的
+    Host 可能是 127.0.0.1:9981。只比 Host 会让登录/首设密码永久 403，面板彻底
+    不可用；开启 trust_proxy_headers 时应接受代理写入的 X-Forwarded-Host。
+    """
+    server, _, base, _ = await _start_panel(tmp_path, trust_proxy=True)
+    try:
+        headers = {
+            "Origin": "https://bot.example.com",
+            "X-Forwarded-Host": "bot.example.com",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/login", json={"password": PASSWORD}, headers=headers
+            )
+
+        assert response.status_code == 200, response.text
+    finally:
+        await server.stop()
+
+
+async def test_login_rejects_origin_not_matching_forwarded_host(
+    tmp_path: Path,
+) -> None:
+    server, _, base, _ = await _start_panel(tmp_path, trust_proxy=True)
+    try:
+        headers = {
+            "Origin": "https://evil.example",
+            "X-Forwarded-Host": "bot.example.com",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/login", json={"password": PASSWORD}, headers=headers
+            )
+
+        assert response.status_code == 403
+    finally:
+        await server.stop()
+
+
 async def test_unconfigured_panel_allows_loopback_setup(tmp_path: Path) -> None:
     """本机访问未配置密码的面板时，只允许进入设置流程。"""
     server, _, base, _ = await _start_panel(tmp_path, password=None)

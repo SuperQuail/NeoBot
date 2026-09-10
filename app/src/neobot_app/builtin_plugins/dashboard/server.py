@@ -40,7 +40,7 @@ _PORT_SEARCH_LIMIT = 10
 _PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
 
 
-def _cross_site_guard(request: web.Request) -> web.Response | None:
+def _cross_site_guard(request: web.Request, *, trust_proxy: bool = False) -> web.Response | None:
     """登录/首次设置密码的跨站防护。
 
     这两个端点在建立会话之前，没有 CSRF token 可用，因此改用两条与浏览器行为
@@ -51,6 +51,11 @@ def _cross_site_guard(request: web.Request) -> web.Response | None:
        ``text/plain``，而 aiohttp 的 ``request.json()`` 并不校验 Content-Type，
        所以「text/plain 表单伪造 JSON 体」这类 CSRF 由这条拦住；
     2. 若带 ``Origin``，其主机必须与请求 ``Host`` 同源。
+
+    反向代理部署下浏览器地址栏是公网域名，而到达这里的 ``Host`` 可能是
+    ``127.0.0.1:9981``（nginx 默认不改写 Host），只比 Host 会让「经 HTTPS 反向
+    代理访问」的用户永远登录不上。因此开启 ``trust_proxy_headers`` 时，
+    额外接受 ``X-Forwarded-Host``（由代理写入、客户端无法控制）。
 
     返回非 None 表示应当直接以该响应拒绝请求。
     """
@@ -63,8 +68,14 @@ def _cross_site_guard(request: web.Request) -> web.Response | None:
     origin = request.headers.get("Origin")
     if origin:
         origin_host = (urlparse(origin).netloc or "").casefold()
-        request_host = (request.headers.get("Host") or "").casefold()
-        if origin_host and request_host and origin_host != request_host:
+        accepted = {(request.headers.get("Host") or "").casefold()}
+        if trust_proxy:
+            for value in (request.headers.get("X-Forwarded-Host") or "").split(","):
+                candidate = value.strip().casefold()
+                if candidate:
+                    accepted.add(candidate)
+        accepted.discard("")
+        if origin_host and accepted and origin_host not in accepted:
             return _json_error("跨站请求已被拒绝", status=403)
     return None
 
@@ -333,7 +344,9 @@ class DashboardServer:
             and request.method in {"POST", "PUT", "PATCH", "DELETE"}
         ):
             # 会话建立前无法校验 CSRF token，用 Content-Type / Origin 兜住跨站提交
-            guarded = _cross_site_guard(request)
+            guarded = _cross_site_guard(
+                request, trust_proxy=self.config.trust_proxy_headers
+            )
             if guarded is not None:
                 return guarded
 
