@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -140,3 +141,81 @@ def test_plugins_proxy_save_survives_extra_keys(tmp_path: Path) -> None:
     saved = config_path.read_text(encoding="utf-8")
     assert "proxy_port = 7890" in saved
     assert "[my_plugin]" in saved
+
+
+def test_adapter_tokens_are_not_returned_by_read(tmp_path: Path) -> None:
+    """config.toml 里的 token 不能出现在面板响应里（只回「是否已设置」）。"""
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        "\n[adapter]\n"
+        'local_auth_token = "LTOK-SECRET"\n'
+        'reverse_ws_access_token = "RTOK-SECRET"\n',
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    dumped = json.dumps(document, ensure_ascii=False)
+
+    assert "LTOK-SECRET" not in dumped
+    assert "RTOK-SECRET" not in dumped
+    assert document["config"]["adapter"]["local_auth_token"] == ""
+    assert document["secrets_set"]["adapter.local_auth_token"] is True
+    assert document["secrets_set"]["adapter.reverse_ws_access_token"] is True
+
+
+def test_masked_tokens_survive_form_save(tmp_path: Path) -> None:
+    """掩码后的空串回传不能被当成「用户清空」，否则一次表单保存就抹掉 token。"""
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        "\n[adapter]\n"
+        'local_auth_token = "LTOK-SECRET"\n'
+        "\n[dashboard]\n"
+        "port = 9981\n",
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    payload = {
+        **document["config"],
+        "dashboard": {**document["config"]["dashboard"], "port": 9999},
+    }
+    manager.save(config=payload)
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert "port = 9999" in saved
+    assert "LTOK-SECRET" in saved
+
+
+def test_explicit_token_value_still_updates(tmp_path: Path) -> None:
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n\n[adapter]\nlocal_auth_token = "old"\n',
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    adapter = {**document["config"]["adapter"], "local_auth_token": "new-token"}
+    manager.save(config={**document["config"], "adapter": adapter})
+
+    assert 'local_auth_token = "new-token"' in config_path.read_text(encoding="utf-8")
+
+
+def test_masked_source_roundtrip_keeps_token(tmp_path: Path) -> None:
+    """TOML 原文模式：脱敏后的原文保存回去时，未改动的密钥行必须还原。"""
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n\n[adapter]\nlocal_auth_token = "LTOK-SECRET"\n',
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    assert "LTOK-SECRET" not in document["source"]
+    assert '"***"' in document["source"]
+
+    manager.save(source=document["source"])
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert 'local_auth_token = "LTOK-SECRET"' in saved
+    assert "***" not in saved

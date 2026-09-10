@@ -117,6 +117,13 @@ class DashboardApi:
             )
         return None
 
+    def _can_manage(self, request: web.Request) -> bool:
+        """是否有管理权限（与 _require_manage 同判据，用于按权限裁剪响应）。"""
+        return self.console.manage_plugins and (
+            self.console.allow_remote_manage
+            or is_loopback(self.console.request_ip(request))
+        )
+
     async def _read_json(self, request: web.Request) -> dict[str, Any]:
         if not request.can_read_body:
             return {}
@@ -935,6 +942,14 @@ class DashboardApi:
         except Exception as exc:
             return _json_error(f"读取配置失败: {exc}", status=500)
         document["can_manage"] = self.console.manage_plugins
+        if not self._can_manage(request):
+            # config.toml 里也有机密（adapter.local_auth_token /
+            # adapter.reverse_ws_access_token）。结构化 config/schema 已按字段掩码，
+            # 但原文与 raw 副本同样带明文，只读会话不得获取——与 .env 侧
+            # 「密钥只回是否已设置」的约定保持一致。
+            document["source"] = ""
+            document["raw"] = {}
+            document["secrets_hidden"] = True
         return _json_ok(document)
 
     async def config_save(self, request: web.Request) -> web.Response:

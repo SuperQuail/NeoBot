@@ -16,7 +16,7 @@ import re
 import tempfile
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Iterator, Union, get_args, get_origin
 
 import tomlkit
 
@@ -29,6 +29,7 @@ from neobot_app.config.schemas.bot import (
     ModelDefinition,
 )
 from neobot_app.config.schemas.env import EnvConfig
+from neobot_app.builtin_plugins.dashboard.security import is_sensitive_key
 
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_STRING_LENGTH = 200_000
@@ -411,15 +412,23 @@ class BotConfigManager:
             raise ConfigValidationError(
                 [{"path": "config.toml", "message": f"TOML 解析失败: {exc}"}]
             ) from exc
+        secret_state: dict[str, bool] = {}
+        config_payload = _mask_sensitive_leaves(_jsonable(instance), secret_state)
+        raw_payload = _mask_sensitive_leaves(_jsonable(parsed), None)
+        schema_payload = describe_dataclass(BotConfig, instance)
+        for item in schema_payload:
+            _mask_schema_defaults(item, secret_state, (str(item.get("name") or ""),))
         return {
             "path": str(self.config_path),
             "revision": self.revision(),
-            "source": source,
-            "config": _jsonable(instance),
-            "raw": _jsonable(parsed),
-            "schema": describe_dataclass(BotConfig, instance),
+            "source": _mask_toml_source(source),
+            "config": config_payload,
+            "raw": raw_payload,
+            "schema": schema_payload,
             "version": str(getattr(instance, "version", "")),
             "form_supported": True,
+            # 密钥字段只回「是否已设置」（与 .env 的 masked/has_value 语义一致）
+            "secrets_set": secret_state,
         }
 
     def validate(self, *, source: str | None = None, config: Any = None) -> list[dict[str, str]]:
@@ -442,6 +451,11 @@ class BotConfigManager:
         expected_revision: str | None = None,
         max_backups: int = 15,
     ) -> dict[str, Any]:
+        if source is not None and self.config_path.is_file():
+            # 原文模式的输入来自面板（密钥行是占位符）：先还原再校验/写入。
+            source = _restore_masked_source(
+                self.config_path.read_text(encoding="utf-8-sig"), source
+            )
         errors = self.validate(source=source, config=config)
         if errors:
             raise ConfigValidationError(errors)
@@ -452,7 +466,10 @@ class BotConfigManager:
                 else tomlkit.document()
             )
             current = document.unwrap() if self.config_path.is_file() else {}
-            _merge_into_document(document, _diff_document(current, config or {}, BotConfig))
+            # 面板拿到的密钥字段是掩码后的空串（见 read()）：回传的空串要还原成
+            # 文件里的现有值，否则一次表单保存就把 token 抹掉。
+            submitted = _restore_masked_secrets(current, config or {})
+            _merge_into_document(document, _diff_document(current, submitted, BotConfig))
             source = tomlkit.dumps(document)
         if expected_revision is not None and expected_revision != self.revision():
             raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
@@ -809,6 +826,158 @@ def _managed_tree(schema: type) -> dict[str, Any]:
                 tree[field_obj.name] = None
     _MANAGED_TREES[schema] = tree
     return tree
+
+
+def _mask_sensitive_leaves(data: Any, found: dict[str, bool] | None = None, path: tuple[str, ...] = ()) -> Any:
+    """把密钥类字段的值替换为空串，并记录「是否已设置」。
+
+    config.toml 里也有机密（``adapter.local_auth_token`` /
+    ``adapter.reverse_ws_access_token``）：认证/反向 WS 的 token 落到面板响应里，
+    任何已登录会话（含只读、远程）都能拿到并冒充 OneBot 框架注入伪造事件。
+    这里与 .env 的处理保持一致：只回「是否已设置」，不回值。
+    """
+    if isinstance(data, dict):
+        masked: dict[str, Any] = {}
+        for key, value in data.items():
+            child_path = (*path, str(key))
+            if is_sensitive_key(key):
+                has_value = bool(value)
+                if isinstance(value, str) and value:
+                    has_value = True
+                if found is not None:
+                    found[".".join(child_path)] = has_value
+                masked[key] = "" if isinstance(value, str) or value is None else value
+                continue
+            masked[key] = _mask_sensitive_leaves(value, found, child_path)
+        return masked
+    if isinstance(data, list):
+        return [_mask_sensitive_leaves(item, found, (*path, str(index))) for index, item in enumerate(data)]
+    return data
+
+
+_SECRET_PLACEHOLDER = "***"
+_TOML_SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*(?:#.*)?$")
+#: 只匹配「简单键 = 引号字符串/单 token（可带行尾注释）」，复杂值（数组、多行、
+#: 时间）原样放过：面板不需要脱敏它们，误改反而是数据损坏。
+_TOML_KEY_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_\-]+)(?P<sep>\s*=\s*)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^#\s]+)(?P<tail>\s*(?:#.*)?)$"
+)
+
+
+def _iter_secret_lines(source: str) -> Iterator[tuple[str, re.Match[str]]]:
+    """逐行产出 (当前分区名, 匹配到的密钥行)。"""
+    section = ""
+    for line in source.splitlines():
+        header = _TOML_SECTION_RE.match(line.strip())
+        if header:
+            section = header.group("name").strip()
+            continue
+        match = _TOML_KEY_LINE_RE.match(line)
+        if match and is_sensitive_key(match.group("key")):
+            yield section, match
+
+
+def _mask_toml_source(source: str) -> str:
+    """把原文里密钥键的值替换为占位符（面板响应不回明文）。"""
+    out: list[str] = []
+    for line in source.splitlines():
+        match = _TOML_KEY_LINE_RE.match(line)
+        if match and is_sensitive_key(match.group("key")):
+            out.append(
+                f'{match.group("indent")}{match.group("key")}{match.group("sep")}'
+                f'"{_SECRET_PLACEHOLDER}"{match.group("tail")}'
+            )
+            continue
+        out.append(line)
+    text = "\n".join(out)
+    return text + "\n" if source.endswith("\n") else text
+
+
+def _restore_masked_source(current_source: str, submitted: str) -> str:
+    """提交原文里仍是占位符的密钥键，还原成磁盘上的现有值。
+
+    面板原文是脱敏后返回的：用户没动那一行（提交回来仍是 ``***``）时必须还原，
+    否则一次保存就把 token 写成字面量 ``***``。
+    """
+    originals = {
+        (section, match.group("key")): match.group("value")
+        for section, match in _iter_secret_lines(current_source)
+    }
+    if not originals:
+        return submitted
+    out: list[str] = []
+    section = ""
+    for line in submitted.splitlines():
+        header = _TOML_SECTION_RE.match(line.strip())
+        if header:
+            section = header.group("name").strip()
+            out.append(line)
+            continue
+        match = _TOML_KEY_LINE_RE.match(line)
+        if match and is_sensitive_key(match.group("key")):
+            if match.group("value").strip("\"'") == _SECRET_PLACEHOLDER:
+                original = originals.get((section, match.group("key")))
+                if original is not None:
+                    out.append(
+                        f'{match.group("indent")}{match.group("key")}'
+                        f'{match.group("sep")}{original}{match.group("tail")}'
+                    )
+                    continue
+        out.append(line)
+    text = "\n".join(out)
+    return text + "\n" if submitted.endswith("\n") else text
+
+
+def _mask_schema_defaults(
+    item: dict[str, Any], found: dict[str, bool], path: tuple[str, ...]
+) -> None:
+    """schema 描述里的 default/value 同样不能带出密钥明文。"""
+    if path and is_sensitive_key(path[-1]):
+        for key in ("default", "value"):
+            if item.get(key):
+                found[".".join(path)] = True
+            item[key] = ""
+        return
+    # 分区节点自身也带 default/value（整段配置的字典副本），里面的密钥要一并掩码。
+    for key in ("default", "value"):
+        value = item.get(key)
+        if isinstance(value, (dict, list)):
+            item[key] = _mask_sensitive_leaves(value, found, path)
+    for child in item.get("fields") or []:
+        if isinstance(child, dict):
+            _mask_schema_defaults(child, found, (*path, str(child.get("name") or "")))
+    for child in item.get("item_fields") or []:
+        if isinstance(child, dict):
+            _mask_schema_defaults(child, found, (*path, str(child.get("name") or "")))
+
+
+def _restore_masked_secrets(current: Any, submitted: Any, path: tuple[str, ...] = ()) -> Any:
+    """把被掩码的密钥字段还原成文件里的现有值。
+
+    掩码后的空串回传时不能当成「用户清空」——否则面板保存会把 token 抹掉。
+    想清空请用 TOML 模式直接编辑。
+    """
+    if isinstance(current, dict) and isinstance(submitted, dict):
+        restored: dict[str, Any] = {}
+        for key, value in submitted.items():
+            child_path = (*path, str(key))
+            existing = current.get(key)
+            if is_sensitive_key(key) and value == "" and isinstance(existing, str) and existing:
+                restored[key] = existing
+                continue
+            restored[key] = _restore_masked_secrets(existing, value, child_path)
+        return restored
+    if isinstance(current, list) and isinstance(submitted, list):
+        return [
+            _restore_masked_secrets(
+                current[index] if index < len(current) else None,
+                item,
+                (*path, str(index)),
+            )
+            for index, item in enumerate(submitted)
+        ]
+    return submitted
 
 
 def _filter_managed(
