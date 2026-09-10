@@ -29,6 +29,7 @@ from neobot_app.core import DATA_DIR
 from neobot_app.drawing.config import (
     DEFAULT_IMAGE_SIZE,
     DEFAULT_OUTPUT_FORMAT,
+    GALLERY_SCAN_LIMIT,
     GALLERY_SOURCE,
     TMP_SOURCE,
     _IMAGE_EXTENSIONS,
@@ -1484,14 +1485,28 @@ class CreatorImageService:
         if count >= self._config.gallery_capacity:
             raise ValueError(f"图库容量已满（{self._config.gallery_capacity}）")
 
+    async def gallery_number_map(self) -> dict[str, int]:
+        """图库序号映射：image_id → 从 1 开始的序号。
+
+        序号是「按当前列表顺序数第几个」，会随图库增删与更新而变化，
+        因此只作为参考；稳定的引用请用 image_id。
+        本方法与 _get_reference_by_number 使用同一次查询口径，
+        保证 gallery_list/gallery_search 展示的序号与 reference_id 解析一致。
+        """
+        records = await self.list_images(
+            source=GALLERY_SOURCE, limit=GALLERY_SCAN_LIMIT, offset=0
+        )
+        return {record.image_id: index for index, record in enumerate(records, start=1)}
+
     async def _get_reference_by_number(self, reference_id: int) -> CreatorImageRecord | None:
         if reference_id <= 0:
             return None
-        # list_images with a large limit to ensure we get the reference
-        references = await self.list_images(source=GALLERY_SOURCE, limit=9999, offset=0)
-        if reference_id > len(references):
+        records = await self.list_images(
+            source=GALLERY_SOURCE, limit=GALLERY_SCAN_LIMIT, offset=0
+        )
+        if reference_id > len(records):
             return None
-        return references[reference_id - 1]
+        return records[reference_id - 1]
 
     async def _resolve_reference(self, ref_str: str, *, conv_id: str = "") -> str | None:
         """解析参考图字符串，返回 base64 data URL。"""
@@ -1509,6 +1524,22 @@ class CreatorImageService:
             prefix, _, value = ref.partition(":")
             prefix = prefix.lower().strip()
             value = value.strip()
+
+            if prefix in ("gallery", "g", "image", "img"):
+                # 模型经常把图库引用写成 gallery:<序号> 或 gallery:<image_id>，
+                # 两种都要接受：纯数字按序号解析，其余按 image_id 解析。
+                if value.lstrip("-").isdigit() and int(value) > 0:
+                    record = await self._get_reference_by_number(int(value))
+                    if record is None:
+                        raise LookupError(
+                            f"图库序号 {value} 不存在（图库共 "
+                            f"{len(await self.list_images(source=GALLERY_SOURCE, limit=GALLERY_SCAN_LIMIT, offset=0))} 张）"
+                        )
+                    return self._image_data_url(Path(record.file_path), record.mime_type)
+                record = await self._get_existing(value)
+                if record is None:
+                    raise LookupError(f"图库中不存在 image_id={value}")
+                return self._image_data_url(Path(record.file_path), record.mime_type)
 
             if prefix == "pool":
                 if self._image_pool is None:
@@ -1558,7 +1589,11 @@ class CreatorImageService:
         if record is not None:
             return self._image_data_url(Path(record.file_path), record.mime_type)
 
-        raise LookupError(f"无法解析参考图: {ref}")
+        raise LookupError(
+            f"无法解析参考图: {ref}；支持格式："
+            "gallery:<image_id 或 序号>、<image_id>、<序号>、pool:<key>、"
+            "emoji:<编号>、url:<URL>、file:<路径>、chat:<消息编号>:<图片序号>"
+        )
 
     async def resolve_source_to_path(self, source: str) -> Path:
         """将 source 描述符解析为本地文件路径。
@@ -1567,7 +1602,7 @@ class CreatorImageService:
 
         支持的格式:
           - chat:<msg_id>:<img_index>
-          - gallery:<编号>
+          - gallery:<image_id> 或 gallery:<序号>
           - emoji:<编号> 或 e:<编号>
           - url:<URL>
           - file:<路径>
@@ -1591,11 +1626,15 @@ class CreatorImageService:
             return path
 
         if prefix == "gallery":
-            if not value.lstrip("-").isdigit() or int(value) <= 0:
-                raise ValueError(f"图库编号无效: {value}")
-            record = await self._get_reference_by_number(int(value))
-            if record is None:
-                raise LookupError(f"图库编号 {value} 不存在")
+            # 与 _resolve_reference 一致：数字按序号，其余按 image_id
+            if value.lstrip("-").isdigit() and int(value) > 0:
+                record = await self._get_reference_by_number(int(value))
+                if record is None:
+                    raise LookupError(f"图库序号 {value} 不存在")
+            else:
+                record = await self._get_existing(value)
+                if record is None:
+                    raise LookupError(f"图库中不存在 image_id={value}")
             return Path(record.file_path)
 
         if prefix in ("e", "emoji"):

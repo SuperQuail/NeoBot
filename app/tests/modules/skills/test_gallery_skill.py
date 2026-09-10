@@ -24,9 +24,13 @@ class FakeImageService:
         self.delete_result = True
         self.import_result: list[dict] = [{"ok": True}]
 
-    async def list_images(self, limit: int, offset: int) -> list[Any]:
+    async def list_images(self, limit: int, offset: int, source: Any = None) -> list[Any]:
         self.list_calls.append((limit, offset))
         return self.images
+
+    async def gallery_number_map(self) -> dict[str, int]:
+        """序号映射：与真实服务一致地按全量列表顺序编号。"""
+        return {item.image_id: index for index, item in enumerate(self.images, start=1)}
 
     async def search_images(self, keyword: str) -> list[Any]:
         self.search_calls.append(keyword)
@@ -80,6 +84,9 @@ async def test_gallery_list_paginates_with_offset():
     assert service.list_calls == [(10, 20)]
     assert result["total"] == 2
     assert result["items"][0]["image_id"] == "g1"
+    # 每个条目都要带可直接用于 drawing__draw.reference_id 的序号
+    assert [item["number"] for item in result["items"]] == [1, 2]
+    assert result["page"] == 3
 
 
 async def test_gallery_list_include_paths():

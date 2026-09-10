@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 
 TMP_SOURCE = "tmp"
 GALLERY_SOURCE = "gallery"
+# 序号/检索口径的统一扫描上限：gallery_list/search 展示的序号与 reference_id
+# 解析必须来自同一次查询，否则模型拿到的编号会指向另一张图。
+GALLERY_SCAN_LIMIT = 9999
 DEFAULT_IMAGE_SIZE = "512x512"
 DEFAULT_OUTPUT_FORMAT = "png"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}

@@ -65,16 +65,19 @@ class DrawingSkill(SkillModule):
                 "  4. 用户明确表示「不用参考/随意画/自由发挥/别看图库」时，跳过查图库\n\n"
                 "【参考绘图工作流】\n"
                 "  1. 调用 gallery_search 查找目标图片（关键词搜索，空则换词或 gallery_list 浏览）\n"
-                "  2. 将编号填入 draw 的 reference_id（单张）或 references（多张）\n"
+                "  2. 取结果里的 image_id，写进 references=[\"gallery:<image_id>\"]（多张就多项）\n"
+                "     - gallery_list/gallery_search 的每一项都带 image_id（稳定）与 number（序号，会漂移）\n"
+                "     - 单张也可以用 reference_id=<number>，但序号随图库增删/更新变化，容易指错图\n"
                 "  3. 图暂存缓存池时用 pool:<key> 引用\n\n"
                 "【references 参数完整格式】\n"
-                "  数组每项支持：\n"
-                "  - 图库编号：如 \"3\"（来自 gallery_list/gallery_search 返回的编号）\n"
+                "  数组每项一个来源标识：\n"
+                "  - 图库（推荐）：\"gallery:<image_id>\"，也接受 \"gallery:<序号>\"\n"
+                "  - 裸值：\"<image_id>\"（图库图片主键）或 \"<序号>\"（图库序号）\n"
                 "  - 缓存池：\"pool:<key>\"\n"
                 "  - 表情包：\"emoji:<编号>\"\n"
-                "  - 外部链接：\"url:<URL>\"\n"
+                "  - 外部链接：\"url:<URL>\" 或直接写 https://...\n"
                 "  - 本地文件：\"file:<路径>\"\n"
-                "  - 聊天图片：\"chat:<message_id>\" 或 \"chat:<message_id>:<image_index>\"（index 默认 1）\n\n"
+                "  - 聊天图片：\"chat:<聊天编号>:<图片序号>\"（图片序号默认 1；聊天编号是对话里的显示编号）\n\n"
                 "【提示词编写规范（精简指导）】\n"
                 "  1. 结构顺序：场景/背景 → 主体 → 细节 → 约束\n"
                 "  2. 用户描述已经很具体时，只做规范化整理，不要擅自添加新内容\n"
@@ -149,11 +152,22 @@ class DrawingSkill(SkillModule):
             "prompt": {"type": "string", "description": "绘图提示词（正向描述，编写规范见操作说明）"},
             "negative_prompt": {"type": "string", "description": "可选，负面提示词"},
             "image_size": {"type": "string", "description": "可选，图片尺寸，如 512x512、1024x1024"},
-            "reference_id": {"type": "integer", "description": "可选，参考图 ID（图库中已有图片）"},
+            "reference_id": {
+                "type": "integer",
+                "description": (
+                    "可选，单张参考图的图库序号（gallery_list/gallery_search 返回的 number）。"
+                    "序号会随图库增删与更新变化，建议改用 references=[\"gallery:<image_id>\"] 传稳定主键"
+                ),
+            },
             "references": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "可选，参考图路径列表（图库编号/池/表情包/url/file/chat 格式）",
+                "description": (
+                    "可选，参考图列表，每项一个来源标识。推荐格式："
+                    "gallery:<image_id>（图库图片，最稳）；"
+                    "也支持 gallery:<序号>、<image_id>、<序号>、pool:<key>、"
+                    "emoji:<编号>、url:<URL>、file:<绝对路径>、chat:<聊天编号>:<图片序号>"
+                ),
             },
             "seed": {"type": "integer", "description": "可选，随机种子"},
             "requester": {"type": "string", "description": "可选，委托者描述"},

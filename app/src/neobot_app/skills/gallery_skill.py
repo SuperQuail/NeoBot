@@ -11,8 +11,14 @@ from neobot_app.skills.base import SkillModule
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
-def _format_image_item(record: Any, return_paths: bool) -> dict[str, Any]:
-    """将 CreatorImageRecord 格式化为 dict。"""
+def _format_image_item(
+    record: Any, return_paths: bool, *, number: int | None = None
+) -> dict[str, Any]:
+    """将 CreatorImageRecord 格式化为 dict。
+
+    number 是图库序号（1 起），可直接作为 drawing__draw 的 reference_id；
+    image_id 是稳定主键，建议优先用它（序号会随图库增删/更新而变化）。
+    """
     item = {
         "image_id": record.image_id,
         "description": record.description,
@@ -20,6 +26,8 @@ def _format_image_item(record: Any, return_paths: bool) -> dict[str, Any]:
         "source": record.source,
         "created_at": str(record.created_at) if record.created_at else None,
     }
+    if number is not None:
+        item["number"] = number
     if return_paths:
         item["path"] = record.file_path
     return item
@@ -53,9 +61,12 @@ class GallerySkill(SkillModule):
             "全部命中的结果排在最前，用于精确查找角色立绘\n"
             "  3. 如果 gallery_search 返回空，尝试换关键词或更宽泛的搜索词\n"
             "  4. 如果用户只是想浏览图库内容，用 gallery_list 分页查看\n"
-            "  5. gallery_list 和 gallery_search 返回的每个结果都有一个编号\n"
-            "     - 此编号可直接用于 drawing__draw 的 reference_id 参数\n"
-            "     - 也可用于 image_pool__put(source=\"gallery:<编号>\") 存入缓存池\n"
+            "  5. gallery_list 和 gallery_search 的每个结果都带两个标识\n"
+            "     - image_id：稳定主键，引用图片一律优先用它\n"
+            "       drawing__draw 用 references=[\"gallery:<image_id>\"]；"
+            "image_pool__put 用 source=\"gallery:<image_id>\"\n"
+            "     - number：当前列表里的序号，等价于 drawing__draw 的 reference_id\n"
+            "       序号会随图库增删与更新变化，只适合「刚查完立刻用」的场景\n"
             "  6. 如果找不到用户描述的图片，如实告知，不要编造编号\n\n"
 
             "【角色立绘参考（配合绘图）】\n"
@@ -233,6 +244,17 @@ class GallerySkill(SkillModule):
 
 # ── Handlers ──
 
+async def _gallery_numbers(service: Any) -> dict[str, int]:
+    """取 image_id → 图库序号 映射；服务不支持时返回空表（条目里就不带 number）。"""
+    getter = getattr(service, "gallery_number_map", None)
+    if not callable(getter):
+        return {}
+    try:
+        return await getter()
+    except Exception:
+        return {}
+
+
 async def _handle_gallery_list(self: GallerySkill, args: dict) -> str:
     if self._image_service is None:
         return _json({"ok": False, "error": "图库服务未配置"})
@@ -242,8 +264,19 @@ async def _handle_gallery_list(self: GallerySkill, args: dict) -> str:
     try:
         offset = (page - 1) * page_size
         images = await self._image_service.list_images(limit=page_size, offset=offset)
-        items = [_format_image_item(img, return_paths) for img in images]
-        return _json({"ok": True, "items": items, "total": len(items)})
+        # 序号与 reference_id 解析同源（同一次全量列表顺序），因此可以直接回填使用
+        numbers = await _gallery_numbers(self._image_service)
+        items = [
+            _format_image_item(img, return_paths, number=numbers.get(img.image_id))
+            for img in images
+        ]
+        return _json({
+            "ok": True,
+            "items": items,
+            "total": len(items),
+            "page": page,
+            "page_size": page_size,
+        })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -254,8 +287,13 @@ async def _handle_gallery_search(self: GallerySkill, args: dict) -> str:
     return_paths = bool(args.get("return_paths", False))
     try:
         images = await self._image_service.search_images(keyword)
-        items = [_format_image_item(img, return_paths) for img in images]
-        return _json({"ok": True, "items": items, "total": len(items)})
+        # 搜索结果顺序与全局列表顺序不同：序号必须查映射，不能按结果下标猜
+        numbers = await _gallery_numbers(self._image_service)
+        items = [
+            _format_image_item(img, return_paths, number=numbers.get(img.image_id))
+            for img in images
+        ]
+        return _json({"ok": True, "items": items, "total": len(items), "keyword": keyword})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
