@@ -89,6 +89,8 @@
   pointer-events: none;
   font-size: 13px;
   letter-spacing: 0.02em;
+  /* 抬头显示器始终压在主画面与全息面板之上：面板打开时仍要能看到舰况读数 */
+  z-index: 8;
 }
 
 .hud > * {

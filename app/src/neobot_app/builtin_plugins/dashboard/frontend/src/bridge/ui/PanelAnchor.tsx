@@ -135,16 +135,23 @@ export default function PanelAnchor({
       // 用默认值会让透视往元素中心收，与 WebGL 相机对不上。
       host.style.perspectiveOrigin = `${projected.principalX.toFixed(1)}px ${projected.principalY.toFixed(1)}px`;
 
+      // ---- 遮挡响应 ----
+      // 面板钻进舱壁/货箱时整体变淡并略微收缩透视，观感上像投影被挡住而衰减，
+      // 比让 DOM 直接浮在墙上自然。（逐像素裁剪需要每帧把遮罩读回 DOM，
+      // 同步 PNG 编码会吃掉整个帧预算，因此这里用 8×8 的可见度统计量代替。）
+      const visibility = compositor?.sampleVisibility(projected.quad, viewport.width, viewport.height) ?? 1;
+      const occlusionFade = 0.25 + 0.75 * visibility;
+
       // 距离越远越淡：投影在空气里衰减，同时暗示「凑近看」
       const falloff = Math.min(1, Math.max(0.3, 1 - (projected.distance - 1.2) / 6));
-      const opacity = eased * falloff;
+      const opacity = eased * falloff * occlusionFade;
       host.style.opacity = opacity.toFixed(3);
       dockRef.current = {
         transform: projected.transform,
         perspective,
         principalX: projected.principalX,
         principalY: projected.principalY,
-        opacity: falloff,
+        opacity: falloff * occlusionFade,
       };
 
       // ---- 字号补偿 ----
