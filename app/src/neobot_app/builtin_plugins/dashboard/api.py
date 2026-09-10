@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +26,7 @@ from .model_probe import list_provider_models
 from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
 from neobot_app.panel_auth import PasswordPolicyError
 
-from .security import client_ip, is_loopback
+from .security import is_loopback
 
 
 def _pydantic_errors(exc: Any) -> list[dict[str, str]]:
@@ -120,6 +119,13 @@ class DashboardApi:
                 status=403,
             )
         return None
+
+    def _can_manage(self, request: web.Request) -> bool:
+        """是否有管理权限（与 _require_manage 同判据，用于按权限裁剪响应）。"""
+        return self.console.manage_plugins and (
+            self.console.allow_remote_manage
+            or is_loopback(self.console.request_ip(request))
+        )
 
     async def _read_json(self, request: web.Request) -> dict[str, Any]:
         if not request.can_read_body:
@@ -481,6 +487,10 @@ class DashboardApi:
                 payload["scheduled"] = value if isinstance(value, list) else []
             except Exception as exc:
                 payload["scheduled_error"] = str(exc)
+        elif manager is not None:
+            # 显式报错而不是静默留空：接口改名/缺失时面板会直接显示原因，
+            # 不会让「定时任务列表恒为空」这种问题再次无声无息。
+            payload["scheduled_error"] = "scheduled_task_manager 未提供 list_tasks 接口"
         drawing = self._service("drawing_manager")
         status = getattr(drawing, "list_active", None) if drawing is not None else None
         if callable(status):
@@ -819,7 +829,7 @@ class DashboardApi:
             document = editor.read()
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
-        model = control.config_model(name) if control is not None else None
+        model = control.config_model(name)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
             # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）
@@ -849,7 +859,7 @@ class DashboardApi:
             values = payload.get("values")
         model = control.config_model(name)
         if model is not None and isinstance(values, dict):
-            defaults = {}
+            defaults: dict[str, Any] = {}
             getter = getattr(control, "plugin_config_defaults", None)
             if callable(getter):
                 try:
@@ -872,7 +882,6 @@ class DashboardApi:
             return _json_error(str(exc), status=409)
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
-        model = control.config_model(name)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
             document["schema"] = schema
@@ -912,6 +921,14 @@ class DashboardApi:
         except Exception as exc:
             return _json_error(f"读取配置失败: {exc}", status=500)
         document["can_manage"] = self.console.manage_plugins
+        if not self._can_manage(request):
+            # config.toml 里也有机密（adapter.local_auth_token /
+            # adapter.reverse_ws_access_token）。结构化 config/schema 已按字段掩码，
+            # 但原文与 raw 副本同样带明文，只读会话不得获取——与 .env 侧
+            # 「密钥只回是否已设置」的约定保持一致。
+            document["source"] = ""
+            document["raw"] = {}
+            document["secrets_hidden"] = True
         return _json_ok(document)
 
     async def config_save(self, request: web.Request) -> web.Response:
@@ -1411,6 +1428,7 @@ class DashboardApi:
             if item.name == name:
                 return item
         return None
+
 
 def _status_text(snapshot: Any) -> str:
     if not getattr(snapshot, "enabled", True):

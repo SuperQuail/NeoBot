@@ -87,11 +87,30 @@ def _allowed(value: str) -> bool:
     return any(pattern.search(value) for pattern in ALLOWLIST)
 
 
+#: 标识符字符：命中片段紧跟在它之后，说明只是更长单词的一部分
+_IDENTIFIER_CHAR_RE = re.compile(r"[0-9A-Za-z_]")
+
+
+def _is_word_fragment(text: str, start: int) -> bool:
+    """命中是否只是更长单词里的子串。
+
+    例如 Tailwind 产物里的 mask-image-radial-from-color 这类主题键，命中其实是
+    单词中段那截（ma 之后的部分），会被密钥规则误报。真实密钥不会紧跟在标识符字符
+    之后，因此前一个字符是标识符字符时直接跳过。
+
+    这里检查前一个字符而不是用正则后顾断言，是因为 --history 走 git grep -E
+    （POSIX ERE 不支持后顾断言），前后两种模式共用同一份 PATTERNS。
+    """
+    return start > 0 and bool(_IDENTIFIER_CHAR_RE.match(text[start - 1]))
+
+
 def _scan_text(path: str, text: str) -> list[tuple[str, int, str, str]]:
     findings: list[tuple[str, int, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         for label, pattern in PATTERNS:
             for match in pattern.finditer(line):
+                if _is_word_fragment(line, match.start()):
+                    continue
                 value = match.group(0)
                 if _allowed(value):
                     continue
@@ -140,6 +159,8 @@ def scan_history(*, limit: int = 4000) -> list[tuple[str, int, str, str]]:
                 continue
             _commit, path, lineno, content = parts
             for match in pattern.finditer(content):
+                if _is_word_fragment(content, match.start()):
+                    continue
                 value = match.group(0)
                 if _allowed(value):
                     continue

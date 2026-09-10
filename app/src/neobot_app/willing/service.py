@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import importlib.util
@@ -63,7 +63,8 @@ class WillingService:
         reply_mode: str | None = None,
     ) -> WillingDecision:
         if reply_mode is None:
-            reply_mode = getattr(self._config.chat, "reply_mode", "common") or "common"
+            # 与 Chat.reply_mode 的 schema 默认值保持一致（agent）
+            reply_mode = getattr(self._config.chat, "reply_mode", "agent") or "agent"
         context = self._build_context(
             message=message,
             queue=queue,

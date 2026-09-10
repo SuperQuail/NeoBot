@@ -14,6 +14,7 @@ from neobot_app.observability.debug import (
     DEFAULT_RETENTION_DAYS,
     DebugRecorder,
 )
+from neobot_app.time_context import now_utc
 
 
 def _packets_file(log_dir: Path) -> Path:
@@ -64,7 +65,9 @@ def test_packets_are_split_by_day(tmp_path) -> None:
 
     recorder.record_packet({"post_type": "message"})
 
-    expected = f"packets-{time.strftime('%Y%m%d')}.jsonl"
+    # 分片名用的是 UTC 日期（DebugRecorder._jsonl_path），本机时区为 UTC+8 时
+    # 本地时间 00:00-08:00 之间两者不是同一天，必须按同一个时钟取期望值。
+    expected = f"packets-{now_utc().strftime('%Y%m%d')}.jsonl"
     assert _packets_file(tmp_path).name == expected
     assert not (tmp_path / "packets.jsonl").exists()
 

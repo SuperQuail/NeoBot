@@ -7,9 +7,9 @@ import inspect
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict
 
-from neobot_adapter import OneBotAdapter, Subscription
+from neobot_adapter import OneBotAdapter
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
 from neobot_adapter.model.notice import (
     EmojiReaction,
@@ -109,9 +109,6 @@ class EventPipeline:
         self._command_service = command_service
         self._credential_manager = credential_manager
         self._sleep_service = sleep_service
-        self._freeze_service = freeze_service
-        self._subscriptions: List[Subscription] = []
-        self._started = False
         self._warmed_up_friends: set[str] = set()
         self._warmup_lock = asyncio.Lock()
         self._replying_queues: set[str] = set()
@@ -123,56 +120,20 @@ class EventPipeline:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
-    def start(self) -> None:
-        if self._started:
-            return
-
-        self._stopping = False
-        self._subscriptions = [
-            self.adapter.subscribe(
-                "message",
-                self._handle_private_message,
-                message_type="private",
-            ),
-            self.adapter.subscribe(
-                "message",
-                self._handle_group_message,
-                message_type="group",
-            ),
-            self.adapter.subscribe(
-                "notice",
-                self._handle_notice,
-            ),
-            self.adapter.subscribe(
-                "request",
-                self._handle_request,
-            ),
-        ]
-        self._started = True
-        self._logger.info("实时事件管线已启动")
-
-    def stop(self) -> None:
-        self._stopping = True
-        if self._started:
-            for subscription in self._subscriptions:
-                subscription.unsubscribe()
-            self._subscriptions.clear()
-            self._started = False
-            self._logger.info("实时事件管线已停止")
-        for task in list(self._background_tasks):
-            task.cancel()
-
     async def flush_pending_summaries(self) -> None:
-        """对所有未达到阈值但有待处理消息的计数器触发摘要。"""
-        restore_scheduling = self._started and not self._stopping
+        """关闭时的收尾：停止派生后台任务、取消在途任务、冲刷未达阈值的摘要。
+
+        事件订阅由 EventGateway 负责（它才是唯一入口），EventPipeline 不再自己
+        订阅：旧实现的 ``start()`` 会再注册一套 ``message``/``notice``/``request``
+        订阅，一旦被调用就是同一条事件被投递两次，而它实际上从来没有被调用过。
+
+        ``_stopping`` 在这里一次性置位（关闭流程只会调用一次），此后
+        ``_schedule_archive_summary`` 不再派生新的后台任务。
+        """
         self._stopping = True
-        try:
-            await self._cancel_background_tasks()
-            if self._archive_summary_service is not None:
-                await self._archive_summary_service.flush_all()
-        finally:
-            if restore_scheduling:
-                self._stopping = False
+        await self._cancel_background_tasks()
+        if self._archive_summary_service is not None:
+            await self._archive_summary_service.flush_all()
 
     def _track_background_task(
         self,
@@ -428,9 +389,6 @@ class EventPipeline:
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
 
-    async def _handle_private_message(self, event: Dict[str, Any]) -> None:
-        await self.handle_private_message_event(event)
-
     async def _maybe_warmup_friend_chat(self, user_id: str) -> None:
         if self._config is None:
             return
@@ -638,9 +596,6 @@ class EventPipeline:
         await self._handle_willing_decision(
             message=message, queue=self._group_queue, queue_key=queue_key
         )
-
-    async def _handle_group_message(self, event: Dict[str, Any]) -> None:
-        await self.handle_group_message_event(event)
 
     async def _record_archive_summary(
         self,
@@ -906,7 +861,6 @@ class EventPipeline:
             return False
 
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
-        self._replying_queues.add(queue_key)
 
         # 群聊寿命机制：寿命>0时，回复后队列由管线挂起循环处理，
         # 管线结束时直接丢弃_避免唤起新回复管线
@@ -933,8 +887,10 @@ class EventPipeline:
             background_content=background_content,
         )
         if event is None:
-            self._replying_queues.discard(queue_key)
+            # 标记归「真正启动成功的那条管线」所有：这里若 discard，会把同会话
+            # 正在运行的另一条管线的标记一并删掉（分流守卫被静默破坏）。
             return False
+        self._replying_queues.add(queue_key)
         return True
 
     @asynccontextmanager
@@ -958,10 +914,21 @@ class EventPipeline:
 
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
-        if self._image_parse_service is not None:
-            await self._image_parse_service.wait_for_queue(
-                queue_key,
-                timeout=self._get_group_agent_silent_timeout_seconds(),
+        try:
+            if self._image_parse_service is not None:
+                await self._image_parse_service.wait_for_queue(
+                    queue_key,
+                    timeout=self._get_group_agent_silent_timeout_seconds(),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 等待失败也必须继续往下走：旧实现直接抛出会让 pending 列表既不
+            # 被取出也不被处理，这些消息会永久滞留（不再触发回复）。
+            self._logger.warning(
+                "等待图片解析失败，继续处理待处理消息",
+                queue_key=queue_key,
+                error=str(exc),
             )
 
         async with self._image_willing_lock(queue_key):
@@ -1311,20 +1278,6 @@ class EventPipeline:
 
         return f"QQ:{user_id}"
 
-    async def _handle_request(self, event: Dict[str, Any]) -> None:
-        request_type = event.get("request_type", "未知")
-        sub_type = event.get("sub_type", "")
-        label = f"{request_type}" + (f".{sub_type}" if sub_type else "")
-
-        details: list[str] = []
-        for key in ("user_id", "group_id", "comment", "flag"):
-            val = event.get(key)
-            if val is not None:
-                details.append(f"{key}={val}")
-
-        info = " ".join(details)
-        self._logger.info(f"收到请求[{label}] {info}".rstrip())
-
     def _consume_ai_reply_block(self, message: PrivateMessage | GroupMessage) -> bool:
         if self._reply_block_registry is None:
             return False
@@ -1353,13 +1306,12 @@ class EventPipeline:
             reasons=("command_sync_reply",),
         )
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
-        self._replying_queues.add(queue_key)
 
         async def on_reply_done() -> None:
             self._replying_queues.discard(queue_key)
             await self._process_post_reply_queue(queue_key)
 
-        self._reply_orchestrator.start_reply(
+        started = self._reply_orchestrator.start_reply(
             message=message,
             queue=queue,
             queue_key=queue_key,
@@ -1368,6 +1320,16 @@ class EventPipeline:
             on_reply_done=on_reply_done,
             background_content=background,
         )
+        if started is None:
+            # 管线被拒（编排器已关闭／同会话管线在跑／冷却中）：此时不能 discard ——
+            # 标记可能属于另一条**正在运行**的管线（同会话管线在跑正是这里的常见
+            # 拒绝原因），删掉它会破坏那条管线的分流守卫，让后续消息走意愿路径并
+            # 在同样被拒时丢失。标记改为「启动成功后才打」，这里什么都不用做。
+            self._logger.debug(
+                "命令同步回复未能启动，未设置回复中标记", queue_key=queue_key
+            )
+            return
+        self._replying_queues.add(queue_key)
 
     async def _try_issue_credential(
         self,

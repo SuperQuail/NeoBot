@@ -5,12 +5,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from datetime import datetime
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
+
+
+def _convert_jpeg_file_to_png(jpg_path: str) -> bytes:
+    """读取 JPEG 并转成 PNG 字节（同步实现，由 asyncio.to_thread 调用）。"""
+    from PIL import Image
+
+    with Image.open(jpg_path) as image:
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+    return buf.getvalue()
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -454,11 +465,8 @@ async def _handle_shot(self: BrowserSkill, args: dict) -> str:
         return _json({"ok": False, "error": "截图失败"})
     # loader 已经保存了 JPEG 文件，直接读取然后转换为 PNG
     jpg_path = result["path"]
-    from PIL import Image
-    img = Image.open(jpg_path)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    png_bytes = buf.getvalue()
+    # JPEG→PNG 是纯 CPU 解码/编码，放进工作线程避免卡住事件循环
+    png_bytes = await asyncio.to_thread(_convert_jpeg_file_to_png, jpg_path)
     if self._sandbox:
         path = self._sandbox.ensure_temp_dir(chat_flow_id) / f"{name}.png"
         await self._sandbox.write_file(path, png_bytes)

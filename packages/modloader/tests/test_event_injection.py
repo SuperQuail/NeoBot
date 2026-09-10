@@ -12,12 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-import pytest
 
 from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.loader import FilesystemPluginLoader
-from neobot_modloader.message import Message
 from neobot_modloader.plugin import Plugin
 from neobot_modloader.plugins.injection import parameter_injection_kind
 from neobot_modloader.plugins.tools import build_tool_schema

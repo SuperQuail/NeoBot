@@ -34,6 +34,7 @@ class ReplyBlockRegistry:
             return True
         if key in self._keys:
             self._keys.remove(key)
+            self._forget_in_order(key)
             if not any(existing[2] == key[2] for existing in self._keys):
                 self._message_ids.discard(key[2])
             return True
@@ -42,10 +43,24 @@ class ReplyBlockRegistry:
             return True
         return False
 
+    def _forget_in_order(self, key: tuple[str, str, int]) -> None:
+        """把已消费的键从 FIFO 队列中摘掉。
+
+        否则 _order 会被已消费项占满：淘汰条件 ``len(_order) > max_size``
+        实际按「事件数（含已消费）」而非「活跃阻塞数」计算，活跃阻塞的保留
+        窗口短于设计值，可能出现应拦截的消息被提前放行。
+        """
+        try:
+            self._order.remove(key)
+        except ValueError:
+            pass
+
     def _remove_message_id(self, message_id: int) -> None:
         removed_keys = {key for key in self._keys if key[2] == message_id}
         self._keys.difference_update(removed_keys)
         self._message_ids.discard(message_id)
+        for key in removed_keys:
+            self._forget_in_order(key)
 
     @staticmethod
     def _message_id(event: Any) -> int | None:

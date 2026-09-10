@@ -76,7 +76,7 @@ async def test_list_images_does_not_hash_disk_files(tmp_path, monkeypatch):
             )
             await uow.commit()
 
-        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image", _explode)
+        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image_async", _explode)
         records = await service.list_images(source="gallery")
         assert [r.image_id for r in records] == ["g_abc"]
     finally:
@@ -105,7 +105,7 @@ async def test_list_images_excludes_dead_records(tmp_path, monkeypatch):
                 )
             await uow.commit()
 
-        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image", _explode)
+        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image_async", _explode)
         records = await service.list_images(source="gallery")
         assert {r.image_id for r in records} == {"g_live"}
     finally:
@@ -116,7 +116,7 @@ async def test_list_images_excludes_dead_records(tmp_path, monkeypatch):
 async def test_count_images_does_not_hash(tmp_path, monkeypatch):
     service, engine, _ = await _make_service(tmp_path, monkeypatch)
     try:
-        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image", _explode)
+        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image_async", _explode)
         assert await service.count_images() == 0
     finally:
         await service.close()
@@ -144,7 +144,7 @@ async def test_search_images_excludes_dead_records(tmp_path, monkeypatch):
                 )
             await uow.commit()
 
-        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image", _explode)
+        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image_async", _explode)
         records = await service.search_images("红色", source="gallery", limit=50)
         assert {r.image_id for r in records} == {"g_live"}
     finally:
@@ -266,7 +266,7 @@ async def test_query_paths_do_not_trigger_full_hash_with_disk_files(tmp_path, mo
             )
             await uow.commit()
 
-        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image", _explode)
+        monkeypatch.setattr("neobot_app.drawing.service.prepare_local_image_async", _explode)
         assert await service.count_images(source="gallery") == 1
         assert [r.image_id for r in await service.list_images(source="gallery")] == ["g_abc"]
         assert {r.image_id for r in await service.search_images("测试", source="gallery")} == {"g_abc"}

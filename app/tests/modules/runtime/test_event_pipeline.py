@@ -327,8 +327,6 @@ def _pipeline_with_queue(
     pipeline._warmed_up_friends = set()
     pipeline._background_tasks = set()
     pipeline._stopping = False
-    pipeline._started = False
-    pipeline._subscriptions = []
     return pipeline
 
 
@@ -620,14 +618,15 @@ async def test_willing_decision_sleep_gate_returns_false_without_at():
 
 
 @pytest.mark.asyncio
-async def test_stop_prevents_new_fire_and_forget_tasks() -> None:
+async def test_shutdown_flush_prevents_new_fire_and_forget_tasks() -> None:
+    """关闭收尾（flush_pending_summaries）之后不得再派生新的后台任务。"""
     pipeline = _pipeline_with_queue()
     pipeline._archive_summary_service = SimpleNamespace(
         record_message=AsyncMock(),
         flush_all=AsyncMock(),
     )
 
-    pipeline.stop()
+    await pipeline.flush_pending_summaries()
     pipeline._schedule_archive_summary(
         conversation_kind="group",
         conversation_id="42",

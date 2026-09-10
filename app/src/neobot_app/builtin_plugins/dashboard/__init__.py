@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from neobot_modloader import Plugin
@@ -48,7 +47,7 @@ class DashboardPlugin:
         self.config = ctx.config if isinstance(ctx.config, DashboardConfig) else DashboardConfig.model_validate(dict(ctx.config or {}))
         config = self.config
 
-        from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, DATA_DIR, ENV_FILE
+        from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, ENV_FILE
 
         services = getattr(getattr(ctx, "plugin_host", None), "services", None)
         host_commands = None

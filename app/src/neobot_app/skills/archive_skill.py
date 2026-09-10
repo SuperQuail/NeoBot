@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tarfile
@@ -141,6 +142,10 @@ class ArchiveSkill(SkillModule):
             })
 
     async def _compress_zip(self, sources: list[Path], output: Path) -> str:
+        # 压缩是 CPU+磁盘密集工作：放进工作线程，避免卡住事件循环
+        return await asyncio.to_thread(self._compress_zip_sync, sources, output)
+
+    def _compress_zip_sync(self, sources: list[Path], output: Path) -> str:
         count = 0
         total_size = 0
         with zipfile.ZipFile(str(output), "w", zipfile.ZIP_DEFLATED) as zf:
@@ -169,6 +174,9 @@ class ArchiveSkill(SkillModule):
         })
 
     async def _compress_tar(self, sources: list[Path], output: Path) -> str:
+        return await asyncio.to_thread(self._compress_tar_sync, sources, output)
+
+    def _compress_tar_sync(self, sources: list[Path], output: Path) -> str:
         mode_map = {
             ".tar": "w",
             ".tar.gz": "w:gz",
@@ -243,6 +251,9 @@ class ArchiveSkill(SkillModule):
             })
 
     async def _decompress_zip(self, archive: Path, dest: Path) -> str:
+        return await asyncio.to_thread(self._decompress_zip_sync, archive, dest)
+
+    def _decompress_zip_sync(self, archive: Path, dest: Path) -> str:
         count = 0
         total_size = 0
         with zipfile.ZipFile(str(archive), "r") as zf:
@@ -264,6 +275,9 @@ class ArchiveSkill(SkillModule):
         })
 
     async def _decompress_tar(self, archive: Path, dest: Path) -> str:
+        return await asyncio.to_thread(self._decompress_tar_sync, archive, dest)
+
+    def _decompress_tar_sync(self, archive: Path, dest: Path) -> str:
         mode_map = {
             ".tar": "r",
             ".tar.gz": "r:gz",

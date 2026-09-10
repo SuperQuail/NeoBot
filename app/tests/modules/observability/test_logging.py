@@ -37,6 +37,30 @@ def test_redact_key_value_pairs() -> None:
     assert redact_sensitive("token: abc.def.ghi") == "***REDACTED***"
 
 
+def test_redact_prefixed_key_names() -> None:
+    """键名常带前缀；下划线是词字符，旧实现的 \\b 让这类整类漏脱敏。"""
+    for text in (
+        "DEEPSEEK_APIKEY=abcdef123456",
+        "client_secret=abcdef123456",
+        "NEOBOT_LOCAL_ADAPTER_TOKEN=abcdef123456",
+        "csrf_token=abcdef123456",
+        "credential=abcdef123456",
+    ):
+        assert "abcdef123456" not in redact_sensitive(text), text
+
+
+def test_redact_bare_password_phrase() -> None:
+    """无分隔符的异常文本形态（密钥会随错误信息回给模型）。"""
+    assert "hunter2" not in redact_sensitive("invalid password hunter2")
+
+
+def test_redact_url_userinfo() -> None:
+    redacted = redact_sensitive("url=https://admin:hunter2@example.com/x")
+
+    assert "hunter2" not in redacted
+    assert "https://" in redacted
+
+
 def test_redact_authorization_and_bearer() -> None:
     assert (
         redact_sensitive("Authorization: Bearer sk-abcdefgh12345678")
@@ -76,6 +100,17 @@ def test_file_sink_output_is_redacted(tmp_path) -> None:
     assert "sk-zyxwvuts12345678" not in content
     assert "sk-qwertyui12345678" not in content
     assert content.count("***REDACTED***") >= 4
+
+
+def test_console_sink_output_is_redacted(capsys) -> None:
+    """控制台 sink 也必须脱敏：stderr 会被容器/重定向落到日志文件。"""
+    configure_loguru()
+    try:
+        loguru.logger.error("认证失败 client_secret=abcdef123456")
+    finally:
+        loguru.logger.remove()
+
+    assert "abcdef123456" not in capsys.readouterr().err
 
 
 def test_redacting_filter_redacts_traceback_in_exception_records() -> None:

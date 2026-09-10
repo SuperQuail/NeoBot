@@ -11,6 +11,10 @@ from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.core.file_server import FileServer, ExpirationConfig
 from neobot_app.core.paths import get_data_dir
+from neobot_app.runtime.connection_readiness import (
+    ConnectionReadinessProbe,
+    ConnectionState,
+)
 
 if TYPE_CHECKING:
     from neobot_app.audio import TTSService
@@ -21,7 +25,11 @@ T = TypeVar("T")
 
 
 class ConnectionTimeoutError(RuntimeError):
-    """OneBot 连接等待超时"""
+    """OneBot 连接等待超时。
+
+    保留此类型仅为兼容既有调用方的 except 分支；启动流程已不再抛它 ——
+    框架未连接是可恢复的运行状态，不是启动失败。
+    """
 
 
 class NeoBotApplication(Generic[T]):
@@ -59,6 +67,7 @@ class NeoBotApplication(Generic[T]):
         drawing_manager: Any = None,
         background_coros: list | None = None,
         self_heal_manager: Any = None,
+        connection_probe: ConnectionReadinessProbe | None = None,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -106,6 +115,15 @@ class NeoBotApplication(Generic[T]):
         self._background_coros = background_coros or []
         self._background_tasks: list[asyncio.Task] = []
         self._self_heal_manager = self_heal_manager
+        # 连接就绪与否属于运行状态，不属于启动成败：探针为 None 表示该适配器
+        # 不需要等待连接（如内嵌 local 适配器）。
+        self._connection_probe = connection_probe
+        self._connection_state: ConnectionState | None = None
+
+    @property
+    def connection_state(self) -> ConnectionState | None:
+        """最近一次连接观察结论；尚未启动时为 None。"""
+        return self._connection_state
 
     async def start(self) -> None:
         if self._started:
@@ -126,14 +144,12 @@ class NeoBotApplication(Generic[T]):
                 self._logger.info("插件加载完成")
             started.append("adapter")
             await self.adapter.start()
-            if getattr(self.adapter, "requires_connection_wait", True):
-                connected = await asyncio.to_thread(
-                    self.adapter.wait_for_connection, 30
-                )
-                if not connected:
-                    raise ConnectionTimeoutError(
-                        "连接超时，请确保 OneBot 框架已启动并配置了反向 WebSocket 连接"
-                    )
+            if self._connection_probe is not None:
+                # 连接状态只观察、不致命：反向 WebSocket 服务已在监听，框架随时
+                # 可以连入，事件管线会在连上的那一刻自然开始工作。启动流程（以及
+                # 面板等已启动组件）绝不因为「框架还没连上」而被回滚。
+                self._connection_state = await self._connection_probe.observe()
+                self._logger.info(self._connection_state.startup_log())
             else:
                 http_url = getattr(self.adapter, "http_url", "")
                 ws_url = getattr(self.adapter, "ws_url", "")
@@ -370,6 +386,7 @@ class NeoBotApplication(Generic[T]):
             deferred = await self._stop_components()
         finally:
             self._started = False
+            self._connection_state = None
             self._logger.info("NeoBot已停止")
         if deferred is not None:
             raise deferred

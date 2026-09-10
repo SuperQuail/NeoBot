@@ -127,8 +127,7 @@ node_modules/
 # 临时提交信息
 .commit-msg-*.tmp
 
-# uv lock file
-uv.lock
+# 说明：uv.lock 需要提交（7 包工作区没有锁文件会导致每次构建解析出不同依赖）。
 /test/reports/
 /Reference/
 /TODO/

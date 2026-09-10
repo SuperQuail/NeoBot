@@ -1269,7 +1269,7 @@ def test_parse_tool_args_normalizes_dict_null_and_non_dict(raw, expected):
     assert _parse_tool_args(raw) == expected
 
 
-async def test_shutdown_closes_tracked_reply_tool_executor_after_pipeline(
+async def test_reply_tool_executor_released_after_pipeline(
     monkeypatch,
 ):
     import neobot_app.reply.tools as tools_module
@@ -1305,7 +1305,16 @@ async def test_shutdown_closes_tracked_reply_tool_executor_after_pipeline(
     monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
     await _run_agent_turn(orch, queue, "123456")
 
-    assert executor.close_calls == 0
+    # 管线结束后执行器必须已释放：旧实现只在进程关停时才关闭，每个回复事件
+    # 都会永久留下一个持有完整对话历史的执行器
+    for _ in range(5):
+        if executor.close_calls:
+            break
+        await asyncio.sleep(0)
+    assert executor.close_calls == 1
+    assert orch._tool_executors == {}
+
+    # 关停时不得重复关闭
     await orch.shutdown()
     assert executor.close_calls == 1
 

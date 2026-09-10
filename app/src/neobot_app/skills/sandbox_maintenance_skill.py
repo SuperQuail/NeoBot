@@ -6,6 +6,7 @@ AI 自行决策何时清理、清理什么。
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -124,7 +125,8 @@ class SandboxMaintenanceSkill(SkillModule):
         if self._temp_cleaner is None:
             return _json({"ok": False, "error": "temp_cleaner 未配置"})
         try:
-            status = self._temp_cleaner.get_status()
+            # TempCleaner 是同步实现（整树扫描/删除），必须离开事件循环
+            status = await asyncio.to_thread(self._temp_cleaner.get_status)
             return _json(status)
         except Exception as e:
             return _json({"ok": False, "error": str(e)})
@@ -133,7 +135,7 @@ class SandboxMaintenanceSkill(SkillModule):
         if self._temp_cleaner is None:
             return _json({"ok": False, "error": "temp_cleaner 未配置"})
         try:
-            result = self._temp_cleaner.run_once()
+            result = await asyncio.to_thread(self._temp_cleaner.run_once)
             return _json(result)
         except Exception as e:
             return _json({"ok": False, "error": str(e)})

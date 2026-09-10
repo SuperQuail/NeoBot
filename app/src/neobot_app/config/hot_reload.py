@@ -34,6 +34,9 @@ class HotReloadRule:
 
 
 #: 规则表：按路径前缀匹配，最长前缀优先；同长度时以更靠后的规则为准（便于覆盖）。
+#:
+#: 这是一张**基线表**：未登记路径默认「需要重启」（保守），但已实现运行期生效
+#: 的子系统可以通过 ``register_rule`` 登记更准确的结论，无需修改本表结构。
 RULES: tuple[HotReloadRule, ...] = (
     # ── 需要重启（启动期快照）────────────────────────────────
     HotReloadRule("bot.account", False, "机器人账号在启动时用于登录与适配器初始化"),
@@ -82,6 +85,29 @@ def classify(path: Iterable[str]) -> tuple[bool, str]:
     if rule is None:
         return False, "未登记为热重载配置，按需要重启处理"
     return rule.hot_reload, rule.reason
+
+
+def register_rule(rule: HotReloadRule) -> None:
+    """登记一条分类规则（供有能力在运行期生效的子系统自行声明）。
+
+    同名路径以最后一次登记为准：把静态表里「按保守假设标为需重启」的条目，
+    升级为「已实现运行期生效」的事实。这样新增可热重载能力时不必修改分类
+    表的内部结构，只需要在装配处登记自己的规则。
+    """
+    global RULES
+    remaining = tuple(item for item in RULES if item.path != rule.path)
+    RULES = (*remaining, rule)
+
+
+def register_rules(rules: Iterable[HotReloadRule]) -> None:
+    for rule in rules:
+        register_rule(rule)
+
+
+def unregister_rule(path: str) -> None:
+    """撤销一条登记（测试用：避免注册污染后续用例）。"""
+    global RULES
+    RULES = tuple(item for item in RULES if item.path != path)
 
 
 def is_hot_reloadable(path: Iterable[str]) -> bool:

@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 from neobot_contracts.models.memory import EmojiRecord
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.message.image_pipeline import (
+    prepare_local_image_async,
+)
 
 if TYPE_CHECKING:
     from neobot_chat.providers.base import Provider
@@ -210,7 +212,7 @@ class EmojiService:
         if entry is None:
             return
         try:
-            file_hash = prepare_local_image(entry.file_path).file_hash
+            file_hash = (await prepare_local_image_async(entry.file_path)).file_hash
             async with self._uow_factory() as uow:
                 await uow.emojis.increment_usage(file_hash)
                 await uow.commit()
@@ -300,7 +302,7 @@ class EmojiService:
         text = (analysis_text or "").strip()
         if text:
             target_path.with_suffix(".txt").write_text(text, encoding="utf-8")
-            prepared = prepare_local_image(target_path)
+            prepared = await prepare_local_image_async(target_path)
             async with self._uow_factory() as uow:
                 await uow.emojis.set(
                     prepared.file_hash,
@@ -327,7 +329,7 @@ class EmojiService:
 
         file_hash: str | None = None
         try:
-            file_hash = prepare_local_image(entry.file_path).file_hash
+            file_hash = (await prepare_local_image_async(entry.file_path)).file_hash
         except Exception as exc:
             self._logger.warning(f"计算表情包哈希失败 {entry.file_name}: {exc}")
 
@@ -355,7 +357,7 @@ class EmojiService:
             raise FileNotFoundError(f"表情包文件不存在: {entry.file_path}")
 
         entry.file_path.with_suffix(".txt").write_text(text, encoding="utf-8")
-        prepared = prepare_local_image(entry.file_path)
+        prepared = await prepare_local_image_async(entry.file_path)
         async with self._uow_factory() as uow:
             await uow.emojis.set(
                 prepared.file_hash,
@@ -391,7 +393,7 @@ class EmojiService:
         if not entry.file_path.exists():
             raise LookupError(f"表情包文件不存在: {entry.file_path}")
 
-        prepared = prepare_local_image(entry.file_path)
+        prepared = await prepare_local_image_async(entry.file_path)
         async with self._uow_factory() as uow:
             result = await uow.emojis.set(
                 prepared.file_hash,
@@ -432,7 +434,7 @@ class EmojiService:
         if old_txt.exists():
             old_txt.rename(new_txt)
 
-        prepared = prepare_local_image(new_path)
+        prepared = await prepare_local_image_async(new_path)
         try:
             async with self._uow_factory() as uow:
                 renamed = await uow.emojis.rename(
@@ -481,7 +483,7 @@ class EmojiService:
         path_to_hash: dict[Path, str] = {}
         for file_path in image_files:
             try:
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 if prepared.file_hash in hash_to_path:
                     existing = hash_to_path[prepared.file_hash]
                     # 保留较旧的文件
@@ -520,7 +522,7 @@ class EmojiService:
                 if file_hash is None:
                     continue
 
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 txt_text = _read_sidecar_text(file_path)
                 try:
                     record = await uow.emojis.get_by_hash(file_hash)
@@ -570,7 +572,7 @@ class EmojiService:
             try:
                 async with self._uow_factory() as uow:
                     for file_hash, file_path, analysis_text in new_results:
-                        prepared = prepare_local_image(file_path)
+                        prepared = await prepare_local_image_async(file_path)
                         file_path.with_suffix(".txt").write_text(analysis_text, encoding="utf-8")
                         record = await uow.emojis.set(
                             file_hash,
@@ -646,7 +648,7 @@ class EmojiService:
         async def parse_one(file_hash: str, file_path: Path) -> tuple[str, Path, str]:
             async with semaphore:
                 try:
-                    prepared = prepare_local_image(file_path)
+                    prepared = await prepare_local_image_async(file_path)
                     import base64
                     b64 = base64.b64encode(prepared.image_bytes).decode("utf-8")
                     image_url = f"data:{prepared.mime_type};base64,{b64}"
@@ -856,8 +858,10 @@ class EmojiService:
                 continue
             text = _read_sidecar_text(path) or "[待解析]"
             try:
-                prepared = prepare_local_image(path)
-                file_hash = prepared.file_hash
+                # 这里只需要 file_hash（prepare_local_image 定义它就是原始字节的
+                # sha256），直接算哈希即可：避免在同步路径上做 PIL 解码+缩放。
+                # 本函数由 _notify_disk_changed 从同步访问器调用，不能 await。
+                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
             except Exception:
                 file_hash = ""
             number = self._next_number

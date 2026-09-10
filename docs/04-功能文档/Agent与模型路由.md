@@ -109,8 +109,9 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | [skills/agent_delegation.py](../../app/src/neobot_app/skills/agent_delegation.py) | 主 Agent 委托子 Agent 的 delegate 工具 | `AgentDelegationSkill` |
 | [providers/base.py](../../packages/chat/src/neobot_chat/providers/base.py) | LLM Provider 抽象与 HTTP 基础实现 | `Provider`、`BaseHTTPProvider` |
 | [providers/openai.py](../../packages/chat/src/neobot_chat/providers/openai.py) | OpenAI 兼容 Provider（含 DeepSeek 官方/OpenAI 样式思考模式转换） | `OpenAIProvider` |
-| [graph/graph.py](../../packages/chat/src/neobot_chat/graph/graph.py) | Agent 执行图（节点/边/入口） | `StateGraph` |
-| [graph/executor.py](../../packages/chat/src/neobot_chat/graph/executor.py) | 编译后的图执行器（工具循环） | `CompiledGraph` |
+| [runtime/agent.py](../../packages/chat/src/neobot_chat/runtime/agent.py) | Agent 主体：工具调用循环（`max_iterations`）、工具执行与流式回调 | `Agent` |
+| [graph/graph.py](../../packages/chat/src/neobot_chat/graph/graph.py) | 状态图定义（节点/边/入口），供插件用 `Workflow` 编排自定义流程 | `StateGraph` |
+| [graph/executor.py](../../packages/chat/src/neobot_chat/graph/executor.py) | 状态图执行器（按边推进节点，非主回复路径的工具循环） | `CompiledGraph` |
 | [graph/nodes.py](../../packages/chat/src/neobot_chat/graph/nodes.py) | 内置图节点（技能注入节点） | `skill_node` |
 | [tools/registry.py](../../packages/chat/src/neobot_chat/tools/registry.py) | Agent/工具注册表 | `AgentRegistry` |
 | [config/schemas/bot.py](../../app/src/neobot_app/config/schemas/bot.py) | 模型注册表与 Agent 路由的配置定义 | `Models`、`AgentModelRouting`、`ModelRegistration` |

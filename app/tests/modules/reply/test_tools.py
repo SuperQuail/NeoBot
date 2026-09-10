@@ -1023,19 +1023,23 @@ def test_skill_registration_is_atomic_and_session_tools_must_be_declared():
     assert manager.skill_names == []
 
 
-async def test_skill_rejects_empty_suffix_and_hides_execute_exception():
+async def test_skill_rejects_empty_suffix_and_reports_execute_failure():
     from neobot_app.skills.base import SkillManager
 
     class _Fail(_SnapshotSkill):
         async def execute(self, tool_name: str, args: dict) -> str:
-            raise RuntimeError("secret-token")
+            raise RuntimeError("secret-token=abc123")
 
     manager = SkillManager()
     manager.register(_Fail("fail", "x"))
     assert "未知工具" in await manager.execute("fail__", {})
     result = await manager.execute("fail__run", {})
-    assert result == "工具执行失败 [fail__run]"
-    assert "secret-token" not in result
+    # 失败原因必须保留（旧实现只回一句固定文案，故障不可诊断）……
+    assert "工具执行失败 [fail__run]" in result
+    assert "RuntimeError" in result
+    # ……但密钥形态的值要先脱敏再回给模型（工具输出会进入 LLM 上下文）
+    assert "abc123" not in result
+    assert "REDACTED" in result
 
 
 def test_skill_rejects_malformed_definition_without_keyerror() -> None:

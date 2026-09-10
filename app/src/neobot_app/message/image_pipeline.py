@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import hashlib
 from io import BytesIO
@@ -71,7 +72,11 @@ class ImagePromptPreparer:
         self._max_pixels = max_pixels
 
     async def resolve_local_image(self, image_path: str | Path) -> ImagePromptResolution:
-        prepared = prepare_local_image(image_path, max_pixels=self._max_pixels)
+        # prepare_local_image 会 read_bytes + PIL 解码 + LANCZOS 重采样重编码，
+        # 属于纯 CPU/磁盘工作：留在事件循环上会让每条带图消息都卡住整个 Bot。
+        prepared = await asyncio.to_thread(
+            prepare_local_image, image_path, max_pixels=self._max_pixels
+        )
         cached = await self._image_analysis_service.get(prepared.file_hash)
         return ImagePromptResolution(prepared=prepared, cached_analysis=cached)
 
@@ -88,11 +93,20 @@ class ImagePromptPreparer:
         )
 
 
+async def prepare_local_image_async(
+    image_path: str | Path, *, max_pixels: int = DEFAULT_MAX_IMAGE_PIXELS
+) -> PreparedImage:
+    """``prepare_local_image`` 的异步入口：解码/缩放属于 CPU+磁盘工作，
+    在事件循环里直接调用会卡住整个 Bot（含其它会话与心跳）。"""
+    return await asyncio.to_thread(
+        prepare_local_image, image_path, max_pixels=max_pixels
+    )
+
+
 def prepare_local_image(image_path: str | Path, *, max_pixels: int = DEFAULT_MAX_IMAGE_PIXELS) -> PreparedImage:
     """读取本地图片、计算哈希，并在需要时按比例缩小尺寸。"""
     if max_pixels <= 0:
         raise ValueError("max_pixels must be greater than 0")
-
     path = Path(image_path).expanduser().resolve()
     if not path.exists():
         raise ImagePreparationError(f"image does not exist: {path}")

@@ -157,6 +157,25 @@ class BrowserLifecycleManager:
                 idle.append((cid, set(state.tab_ids)))
         return idle
 
+    def _get_stale_flow_ids(self) -> list[str]:
+        """没有任何标签页、也不再 hold 的过期流。
+
+        ``touch`` / ``hold`` 会为每个聊天流建一条状态，标签页关掉后
+        ``track_tab_close`` 只清空 tab_ids，条目本身留着；``_get_idle_flows``
+        又跳过没有标签页的流，于是这些空壳永远不会被回收，长期运行的 Bot 会
+        按聊天流数量无限堆积。
+        """
+        now = time.time()
+        stale: list[str] = []
+        for cid, state in list(self._flows.items()):
+            if state.tab_ids:
+                continue
+            if state.held_until is not None and now < state.held_until:
+                continue
+            if now - state.last_access >= self._idle_timeout:
+                stale.append(cid)
+        return stale
+
     # ── 后台自动关闭 ──
 
     async def start(self) -> None:
@@ -190,6 +209,9 @@ class BrowserLifecycleManager:
                         except Exception:
                             pass
                     async with self._lock:
+                        self._flows.pop(chat_flow_id, None)
+                async with self._lock:
+                    for chat_flow_id in self._get_stale_flow_ids():
                         self._flows.pop(chat_flow_id, None)
             except asyncio.CancelledError:
                 return

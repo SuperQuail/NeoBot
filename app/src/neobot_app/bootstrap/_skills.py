@@ -9,7 +9,7 @@ from neobot_modloader import PluginInstaller, PluginRuntime, PluginStateStore
 from neobot_modloader.installer import ProxySettings
 
 from neobot_app.builtin_plugins import builtin_plugin_dirs
-from neobot_app.core import DATA_DIR, PLUGIN_STATE_FILE, PLUGINS_DATA_DIR
+from neobot_app.core import APP_VERSION, DATA_DIR, PLUGIN_STATE_FILE, PLUGINS_DATA_DIR
 from neobot_app.skills import build_all_skills
 
 if TYPE_CHECKING:
@@ -183,6 +183,7 @@ def build_plugin_runtime(
         state_store=state_store,
         installer=installer,
         user_plugins_enabled=bool(getattr(config.plugins, "enabled", True)),
+        host_version=APP_VERSION,
     )
     plugin_runtime.load_all()
     return plugin_runtime

@@ -1,4 +1,4 @@
-﻿/* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
+/* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
 
 .config-page { display: flex; flex-direction: column; gap: 16px; }
 
@@ -8,14 +8,19 @@
 .btn.primary:disabled,
 .btn.danger:disabled,
 .btn-sm:disabled {
-  opacity: 0.45;
+  opacity: 1;
   cursor: not-allowed;
-  filter: grayscale(0.4);
+  filter: none;
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--brand-nav);
 }
 .cfg-top-tabs { align-items: center; justify-content: space-between; }
 
 .config-card { display: flex; flex-direction: column; gap: 14px; }
 .config-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.config-toolbar .config-tabs { margin-bottom: 0; }
+.config-toolbar .btn { min-height: 34px; height: auto; padding-top: 7px; padding-bottom: 7px; }
 .cfg-search { max-width: 280px; }
 .config-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 12px; }
 .config-body { display: block; }
@@ -110,25 +115,23 @@
 .model-key-hint { margin: 0 0 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .model-key-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface-2, rgba(127,127,127,.1)); }
 
-/* ── 运维熔断（冻结 Bot） ── */
+/* ── 运维冻结（事故熔断）───────────────────────────── */
 .freeze-banner {
-  display: flex; align-items: center; gap: 12px;
-  margin: 0 24px 0; padding: 10px 14px;
-  border: 1px solid var(--err, #d9534f);
-  border-left-width: 4px;
-  border-radius: 10px;
-  background: rgba(231, 76, 60, 0.12);
-  color: var(--text, inherit);
-  position: sticky; top: 0; z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--danger, #d9534f);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
 }
-.freeze-banner .freeze-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--err, #d9534f); flex: none;
-  animation: freeze-pulse 1.4s ease-in-out infinite;
-}
-@keyframes freeze-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
-.freeze-banner .freeze-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.freeze-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.freeze-body .input { min-width: 180px; }
-.freeze-body .input[type='text'], .freeze-body input.input { flex: 1 1 220px; }
-.freeze-card { border-color: var(--err, #d9534f); }
+.freeze-banner-text { display: flex; flex-direction: column; gap: 2px; }
+.freeze-banner-text strong { color: var(--danger, #d9534f); }
+.freeze-banner .btn { margin-left: auto; }
+
+.freeze-card.frozen { border-color: var(--danger, #d9534f); }
+.freeze-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.freeze-controls .field { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.freeze-controls .field.grow { flex: 1 1 240px; }
+.freeze-controls .btn { min-height: 34px; height: auto; padding-top: 7px; padding-bottom: 7px; }

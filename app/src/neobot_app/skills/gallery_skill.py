@@ -288,8 +288,8 @@ async def _handle_gallery_add(self: GallerySkill, args: dict) -> str:
     if not path.exists():
         return _json({"ok": False, "error": f"文件不存在: {image_path}"})
     try:
-        from neobot_app.message.image_pipeline import prepare_local_image
-        prepared = prepare_local_image(path)
+        from neobot_app.message.image_pipeline import prepare_local_image_async
+        prepared = await prepare_local_image_async(path)
         if prepared is None:
             return _json({"ok": False, "error": "无法处理图片"})
         record = await self._image_service.gallery_add(

@@ -1,7 +1,7 @@
 """网页面板 HTTP 服务：路由、鉴权中间件与静态资源。
 
 与旧内置控制台不同，本面板是官方插件：配置来自插件数据目录的 config.toml
-（``plugins_data/dashboard/config.toml`，见 DashboardConfig），
+（``plugins_data/dashboard/config.toml``，见 DashboardConfig），
 默认监听 0.0.0.0:9981（对网络开放），可通过 host/port/base_path 调整。
 """
 
@@ -12,9 +12,11 @@ import time
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aiohttp import web
 
+from neobot_adapter.utils.net import is_loopback_host
 from neobot_app.panel_auth import get_panel_password_store
 
 from . import system as system_module
@@ -35,6 +37,49 @@ _STATIC_DIR = Path(__file__).resolve().parent / "web"
 _INDEX_FILE = _STATIC_DIR / "index.html"
 _API_PREFIX = "/api/"
 _PORT_SEARCH_LIMIT = 10
+
+#: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
+_PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
+
+
+def _cross_site_guard(request: web.Request, *, trust_proxy: bool = False) -> web.Response | None:
+    """登录/首次设置密码的跨站防护。
+
+    这两个端点在建立会话之前，没有 CSRF token 可用，因此改用两条与浏览器行为
+    绑定的约束：
+
+    1. 请求体必须是 ``application/json`` —— 跨站表单只能发
+       ``application/x-www-form-urlencoded`` / ``multipart/form-data`` /
+       ``text/plain``，而 aiohttp 的 ``request.json()`` 并不校验 Content-Type，
+       所以「text/plain 表单伪造 JSON 体」这类 CSRF 由这条拦住；
+    2. 若带 ``Origin``，其主机必须与请求 ``Host`` 同源。
+
+    反向代理部署下浏览器地址栏是公网域名，而到达这里的 ``Host`` 可能是
+    ``127.0.0.1:9981``（nginx 默认不改写 Host），只比 Host 会让「经 HTTPS 反向
+    代理访问」的用户永远登录不上。因此开启 ``trust_proxy_headers`` 时，
+    额外接受 ``X-Forwarded-Host``（由代理写入、客户端无法控制）。
+
+    返回非 None 表示应当直接以该响应拒绝请求。
+    """
+    content_type = (
+        (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold()
+    )
+    if content_type != "application/json":
+        return _json_error("该接口只接受 application/json 请求", status=415)
+
+    origin = request.headers.get("Origin")
+    if origin:
+        origin_host = (urlparse(origin).netloc or "").casefold()
+        accepted = {(request.headers.get("Host") or "").casefold()}
+        if trust_proxy:
+            for value in (request.headers.get("X-Forwarded-Host") or "").split(","):
+                candidate = value.strip().casefold()
+                if candidate:
+                    accepted.add(candidate)
+        accepted.discard("")
+        if origin_host and accepted and origin_host not in accepted:
+            return _json_error("跨站请求已被拒绝", status=403)
+    return None
 
 
 class DashboardServer:
@@ -175,8 +220,7 @@ class DashboardServer:
         self.public_url = f"http://{display_host}:{port}{prefix}/"
         if port != self.config.port:
             self.logger.warning(
-                f"面板端口 {self.config.port} 被占用，已改用 {port}；"
-                f"请在插件面板修改 dashboard 的 port 配置"
+                f"面板端口 {self.config.port} 被占用，已改用 {port}；请同步修改 dashboard.port"
             )
         self.logger.info(
             "网页面板已启动",
@@ -189,6 +233,14 @@ class DashboardServer:
             self.logger.warning(
                 "网页面板尚未设置登录密码：此时不允许外网访问。"
                 "请在本机打开面板按提示设置密码，或由超级管理员在 QQ 私聊发送 /set_password 设置"
+            )
+        elif not is_loopback_host(self.config.host) and not self.secure_cookies:
+            # 默认 host=0.0.0.0 是「对网络开放」：面板已有登录与 CSRF，但纯 HTTP 下
+            # 登录凭据与 Cookie 可被同网段嗅探，这里每次启动都提醒一次。
+            self.logger.warning(
+                f"网页面板监听 {self.config.host}（对网络开放）且未启用 Secure Cookie："
+                "HTTP 明文下登录凭据可能被同网段嗅探。仅本机使用请把 dashboard.host 改为 127.0.0.1；"
+                "跨机/公网访问请经 HTTPS 反向代理，并在确认 HTTPS 生效后把 dashboard.secure_cookies 设为 true"
             )
         return self.public_url
 
@@ -298,6 +350,17 @@ class DashboardServer:
         ip = self.request_ip(request)
         loopback = is_loopback(ip)
         configured = self.passwords.configured
+
+        if (
+            path in _PRE_SESSION_STATE_CHANGE_PATHS
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        ):
+            # 会话建立前无法校验 CSRF token，用 Content-Type / Origin 兜住跨站提交
+            guarded = _cross_site_guard(
+                request, trust_proxy=self.config.trust_proxy_headers
+            )
+            if guarded is not None:
+                return guarded
 
         if not configured:
             # 未设置密码：禁止外网访问；本机只允许进入设置流程。

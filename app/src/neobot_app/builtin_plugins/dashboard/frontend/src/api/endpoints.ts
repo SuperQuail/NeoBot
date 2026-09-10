@@ -1,0 +1,156 @@
+// endpoints.ts —— 后端 /api/* 端点集中封装（返回类型来自 ./types）
+import { getJSON, getResult, postJSON } from './client';
+import type {
+  ActiveUser,
+  BotSummary,
+  ConfigChanges,
+  ConfigDocument,
+  EnvPayload,
+  LogPayload,
+  ModelsPayload,
+  Overview,
+  PluginListPayload,
+  ProxyInfo,
+  RankPayload,
+  Result,
+  SeriesPayload,
+  SeriesPoint,
+  ServiceItem,
+  SystemInfo,
+  TasksPayload,
+  UsagePayload,
+} from './types';
+
+export interface SimpleMessage {
+  message?: string;
+  /** 保存/重载类接口会带回「已生效 / 需重启」明细 */
+  changes?: ConfigChanges;
+  ok?: boolean;
+  key?: string;
+  saved_key?: string;
+  provider?: string;
+  model_name?: string;
+  url?: string;
+  proxy?: string;
+  reachable?: boolean;
+  authorized?: boolean;
+  model_found?: boolean;
+  latency_ms?: number;
+  status?: number;
+  detail?: string;
+  models?: string[];
+  [key: string]: unknown;
+}
+
+/** 运维冻结状态（/api/admin/freeze*） */
+export interface FreezeState {
+  ok?: boolean;
+  available?: boolean;
+  frozen?: boolean;
+  reason?: string;
+  operator?: string;
+  frozen_at_text?: string;
+  frozen_for_seconds?: number;
+  /** 剩余自动解冻秒数；无限期冻结时为 null */
+  remaining_seconds?: number | null;
+  message?: string;
+}
+
+export interface PluginConfigSaveBody {
+  revision?: number;
+  mode: 'form' | 'toml';
+  reload?: boolean;
+  source?: string;
+  config?: Record<string, unknown>;
+}
+
+export type ConfigSaveBody = PluginConfigSaveBody;
+
+export const api = {
+  // 鉴权
+  login: (password: string) => postJSON<{ token?: string; csrf_token?: string }>('/api/auth/login', { password }),
+  setup: (password: string, confirm: string) =>
+    postJSON<{ token?: string; csrf_token?: string }>('/api/auth/setup', { password, confirm }),
+  logout: () => postJSON<SimpleMessage>('/api/auth/logout'),
+  me: () => getResult<{ authenticated?: boolean }>('/api/auth/me'),
+
+  // 概览 / 统计
+  overview: () => getJSON<Overview>('/api/overview'),
+  bots: () => getJSON<BotSummary[]>('/api/bots'),
+  system: () => getJSON<SystemInfo>('/api/system'),
+  services: () => getJSON<{ items?: ServiceItem[] }>('/api/services'),
+  tasks: () => getJSON<TasksPayload>('/api/tasks'),
+  botDetail: () => getJSON<BotSummary>('/api/bot/detail'),
+  logs: (limit = 80) => getJSON<LogPayload>('/api/logs?limit=' + limit),
+  logsSince: (since: number, limit = 500) => getJSON<LogPayload>('/api/logs?since=' + since + '&limit=' + limit),
+  seriesMessages: (days = 30) => getJSON<SeriesPayload>('/api/series/messages?days=' + days),
+  seriesLatency: () => getJSON<SeriesPayload>('/api/series/latency'),
+  statsApiCalls: (limit = 10) => getJSON<RankPayload>('/api/stats/api-calls?limit=' + limit),
+  statsActiveUsers: (limit = 10) =>
+    getJSON<RankPayload & { items?: ActiveUser[] }>('/api/stats/active-users?limit=' + limit),
+  statsUsage: (hours = 24) => getJSON<UsagePayload>('/api/stats/usage?hours=' + hours),
+  seriesUsage: (hours = 24, bucket = 'hour') =>
+    getResult<UsagePayload>('/api/series/usage?hours=' + hours + '&bucket=' + bucket),
+
+  // 插件
+  plugins: () => getJSON<PluginListPayload>('/api/plugins'),
+  pluginToggle: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/toggle'),
+  pluginReload: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/reload'),
+  pluginUpdate: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/update'),
+  pluginUninstall: (name: string) =>
+    postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/uninstall'),
+  pluginInstall: (repo: string, branch = 'main', replace = false) =>
+    postJSON<SimpleMessage>('/api/plugins/install', { repo, branch, replace }),
+  pluginsCheckUpdates: () => getResult<SimpleMessage>('/api/plugins/check-updates'),
+  pluginsProxySave: (body: ProxyInfo) => postJSON<{ proxy?: ProxyInfo }>('/api/plugins/proxy', body),
+  pluginConfig: (name: string) => getResult<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config'),
+  pluginConfigSave: (name: string, body: PluginConfigSaveBody) =>
+    postJSON<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config', body),
+
+  // 本体配置 / 环境变量 / 模型
+  config: () => getResult<ConfigDocument>('/api/config'),
+  configSave: (body: ConfigSaveBody) => postJSON<ConfigDocument>('/api/config', body),
+  configValidate: (body: ConfigSaveBody) =>
+    postJSON<{ errors?: Array<{ path?: string; message?: string }> }>('/api/config/validate', body),
+  configReload: () => postJSON<SimpleMessage>('/api/config/reload'),
+  configModels: () => getResult<ModelsPayload>('/api/config/models'),
+  modelsLibrarySave: (body: unknown) => postJSON<ModelsPayload>('/api/config/models/library', body),
+  modelsAssignmentsSave: (body: unknown) => postJSON<ModelsPayload>('/api/config/models/assignments', body),
+  modelsTest: (body: unknown) =>
+    postJSON<{
+      ok?: boolean;
+      key?: string;
+      provider?: string;
+      model_name?: string;
+      url?: string;
+      proxy?: string;
+      reachable?: boolean;
+      authorized?: boolean;
+      model_found?: boolean;
+      latency_ms?: number;
+      status?: number;
+      detail?: string;
+      message?: string;
+      [k: string]: unknown;
+    }>('/api/config/models/test', body),
+  modelsProviderModels: (body: unknown) =>
+    postJSON<{ ok?: boolean; models?: string[]; message?: string; provider?: string }>(
+      '/api/config/models/provider-models',
+      body,
+    ),
+  env: () => getResult<EnvPayload>('/api/config/env'),
+  envSave: (body: unknown) => postJSON<EnvPayload>('/api/config/env', body),
+  envAddPlatform: (body: unknown) => postJSON<EnvPayload>('/api/config/env/platform', body),
+
+  // 运维冻结（事故熔断）
+  freezeStatus: () => getJSON<FreezeState>('/api/admin/freeze'),
+  freeze: (seconds?: number | null, reason = '') =>
+    postJSON<FreezeState>('/api/admin/freeze', { seconds: seconds ?? null, reason }),
+  unfreeze: () => postJSON<FreezeState>('/api/admin/unfreeze'),
+
+  // 管理
+  restart: () => postJSON<SimpleMessage>('/api/admin/restart'),
+};
+
+export type Api = typeof api;
+export type { Result, SeriesPoint };

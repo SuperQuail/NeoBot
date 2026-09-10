@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import inspect
 import json
@@ -11,6 +12,10 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from neobot_app.observability.logging import redact_sensitive
+from neobot_app.utils.logger import get_module_logger
+
+logger = get_module_logger("app.skills")
 
 _SEPARATOR = "__"
 _RESERVED_FINAL_TOOL_NAMES = frozenset(
@@ -432,8 +437,23 @@ class SkillManager:
 
         try:
             return await token.module.execute(token.local_name, args)
-        except Exception:
-            return f"工具执行失败 [{prefixed_name}]"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 旧实现只返回一句固定文案（不记日志、不带异常信息），技能故障在
+            # 生产中完全不可诊断。这里保留原因，但**先脱敏再回给模型**：
+            # 工具输出会进入 LLM 上下文，异常信息里可能带密钥。
+            raw = f"{type(exc).__name__}: {exc}".strip()
+            safe_detail = redact_sensitive(raw)
+            logger.warning(
+                f"技能工具执行失败: {prefixed_name}",
+                skill=registration.prefix,
+                tool=token.local_name,
+                # 日志同样只能用脱敏后的文本：异常里可能带密钥，而日志会进
+                # 文件/控制台/自修复采集。
+                error=safe_detail[:500],
+            )
+            return f"工具执行失败 [{prefixed_name}]: {safe_detail[:300]}"
 
     def reset_all(self) -> None:
         """复位所有 Skill 的状态。"""

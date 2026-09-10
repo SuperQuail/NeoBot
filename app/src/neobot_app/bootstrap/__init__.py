@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_contracts.ports.clock import SystemClock
-from neobot_storage import run_migrations, sqlite_url
+from neobot_storage import backup_sqlite_database, run_migrations, sqlite_url
 
 from neobot_app.assembly.storage import build_storage
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
@@ -73,6 +73,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
+from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
+from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
+from neobot_app.runtime.provider_reload import ProviderReloadConsumer
 from neobot_app.skills.balance_guide import sync_balance_query_skill
 
 
@@ -157,6 +160,79 @@ def plan_maintenance_run(
     return MaintenancePlan(False, remaining, reason)
 # 这些状态说明上一次维护没有正常完成，启动后应立即补跑一次。
 _MAINTENANCE_RETRY_STATUSES = frozenset({"failed", "running"})
+
+
+def _build_provider_reload_consumer(
+    *,
+    logger_factory: Any,
+    reply_orchestrator: Any,
+    image_parse_service: Any,
+    archive_summary_service: Any,
+    initial_vision_provider: Any,
+) -> ProviderReloadConsumer:
+    """装配 provider 重建消费者：构建 + 各挂载点的换引用与清理。
+
+    这里集中表达「provider 被谁持有」这一事实，避免该知识散落在多个模块里。
+    """
+    from neobot_app.bootstrap._providers import (
+        build_main_provider,
+        build_vision_provider,
+        resolve_vision_model_name,
+    )
+    from neobot_app.runtime.provider_reload import (
+        ProviderBundle,
+        ProviderReloadConsumer,
+    )
+
+    provider_logger = logger_factory.get_logger("app.provider")
+
+    def _build(config: Any) -> ProviderBundle:
+        vision = build_vision_provider(
+            logger=provider_logger,
+            model_name=resolve_vision_model_name(config),
+        )
+        main, main_error = build_main_provider(
+            config=config, logger=provider_logger, vision_provider=vision
+        )
+        return ProviderBundle(main=main, main_error=main_error, vision=vision)
+
+    def _install_reply(bundle: ProviderBundle) -> Any:
+        return reply_orchestrator.install_provider(bundle.main, bundle.main_error)
+
+    def _install_images(bundle: ProviderBundle) -> Any:
+        return image_parse_service.install_providers(
+            vision_provider=bundle.vision,
+            native_vision_provider=bundle.main,
+        )
+
+    def _install_archive(bundle: ProviderBundle) -> Any:
+        return archive_summary_service.install_provider(bundle.main)
+
+    async def _dispose_provider(previous: Any) -> None:
+        closer = getattr(previous, "close", None)
+        if callable(closer):
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+
+    def _dispose_images(previous: Any) -> None:
+        """图片解析持有 (vision, native) 两个 provider：只关前者。
+
+        native 与回复 provider 是同一个对象，由回复挂载点负责关闭，重复关闭
+        会触发 provider 内部的重复释放。
+        """
+        vision = previous[0] if isinstance(previous, tuple) else previous
+        return _dispose_provider(vision)
+
+    return ProviderReloadConsumer(
+        builder=_build,
+        installers={
+            "reply": (_install_reply, _dispose_provider),
+            "image_parse": (_install_images, _dispose_images),
+            "archive_summary": (_install_archive, lambda _previous: None),
+        },
+        logger=logger_factory.get_logger("app.provider_reload"),
+    )
 
 
 def _make_maintenance_coro(
@@ -428,7 +504,16 @@ def create_application() -> NeoBotApplication:
         config=config, logger=logger_factory.get_logger("app.context")
     )
 
-    db_url = sqlite_url(DATA_DIR / "neobot.db")
+    # 迁移前先留一份可回滚快照：alembic 迁移里存在不可逆操作
+    # （如 0021 的去重 DELETE），失败时没有备份就只能人工恢复。
+    db_path = DATA_DIR / "neobot.db"
+    db_url = sqlite_url(db_path)
+    db_backup_logger = logger_factory.get_logger("app.db_backup")
+    backup_path = backup_sqlite_database(
+        db_path, DATA_DIR / "db_backup", logger=db_backup_logger
+    )
+    if backup_path is not None:
+        db_backup_logger.info(f"迁移前已备份数据库: {backup_path}")
     run_migrations(db_url)
     _engine, uow_factory = build_storage(db_url)
 
@@ -440,6 +525,13 @@ def create_application() -> NeoBotApplication:
         config=config,
         logger=logger_factory.get_logger("adapter"),
         debug_recorder=debug_recorder,
+    )
+
+    # ── 配置热重载编排：组件自己声明关心哪些配置项并负责生效 ──
+    # 装配顺序即生效顺序：适配器先恢复连接，其余组件再按新配置重建。
+    hot_reload_registry = HotReloadRegistry(
+        [AdapterSupervisor(adapter, logger=logger_factory.get_logger("app.adapter_reload"))],
+        logger=logger_factory.get_logger("app.hot_reload"),
     )
 
     # ── 插件主机基础设施 ──
@@ -529,10 +621,12 @@ def create_application() -> NeoBotApplication:
         data_dir=DATA_DIR,
     )
     if sandbox["temp_cleaner"] is not None:
-        sandbox["temp_cleaner"].logger = logger_factory.get_logger("app.temp_cleaner")
+        # 两个类的字段名是 _logger：写成 .logger 只是往实例上挂了个死属性，
+        # 生产里它们始终用构造时的 NullLogger，所有清理失败都不可见。
+        sandbox["temp_cleaner"]._logger = logger_factory.get_logger("app.temp_cleaner")
     if sandbox["sandbox_maintenance_manager"] is not None:
-        sandbox["sandbox_maintenance_manager"].logger = (
-            logger_factory.get_logger("app.sandbox_maintenance")
+        sandbox["sandbox_maintenance_manager"]._logger = logger_factory.get_logger(
+            "app.sandbox_maintenance"
         )
 
     # ── 解题 Agent 装配 ──
@@ -571,6 +665,7 @@ def create_application() -> NeoBotApplication:
             config=config,
             logger=logger_factory.get_logger("app.skills"),
         ),
+        hot_reload=hot_reload_registry,
     )
     balance_checker = build_balance_checker(
         config=config,
@@ -777,6 +872,18 @@ def create_application() -> NeoBotApplication:
         problem_solver_manager.set_orchestrator(reply_orchestrator)
     if self_heal_manager is not None:
         self_heal_manager.set_orchestrator(reply_orchestrator)
+
+    # ── provider 热重载：模型名/平台密钥变更后重建并原地替换 ──
+    # 挂载点在这里才全部就绪（编排器、图片解析、档案总结），所以消费者在此注册。
+    _provider_reload = _build_provider_reload_consumer(
+        logger_factory=logger_factory,
+        reply_orchestrator=reply_orchestrator,
+        image_parse_service=image_parse_service,
+        archive_summary_service=archive_summary_service,
+        initial_vision_provider=vision_provider,
+    )
+    # 配置对象在运行期会被 ConfigProxy 原地替换，因此 builder 每次现取。
+    hot_reload_registry.register(_provider_reload)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []

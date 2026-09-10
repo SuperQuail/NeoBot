@@ -142,7 +142,13 @@ class BackgroundNotificationHub:
         except asyncio.QueueEmpty:
             return None
 
-        await self._consume(notification)
+        try:
+            await self._consume(notification)
+        except asyncio.CancelledError:
+            # 取消发生在消费回调（例如「已通知」落盘标记）完成之前：直接丢弃会
+            # 让这条通知消失，管理器的状态没更新还可能稍后重复投递，所以放回队列。
+            self._requeue(pipeline_key, notification)
+            raise
 
         self._last_used[pipeline_key] = time.monotonic()
         self._logger.info(
@@ -242,6 +248,28 @@ class BackgroundNotificationHub:
             pipeline_key=notification.pipeline_key,
         )
         return True
+
+    def _requeue(
+        self, pipeline_key: str, notification: BackgroundNotification
+    ) -> None:
+        """把通知放回队列（消费被取消时使用），沿用 publish 的有界策略。"""
+        queue = self._queues.get(pipeline_key)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._queue_max_size)
+            self._queues[pipeline_key] = queue
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(notification)
+        except asyncio.QueueFull:
+            self._logger.warning(
+                "后台通知重新入队失败，通知已丢弃",
+                source=notification.source,
+                pipeline_key=pipeline_key,
+            )
 
     async def _consume(self, notification: BackgroundNotification) -> None:
         if notification.on_consumed is None:
