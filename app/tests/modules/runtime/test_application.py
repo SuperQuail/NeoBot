@@ -259,6 +259,59 @@ async def test_start_partial_failure_cleans_up_started_components() -> None:
     assert app.file_server.stop_calls == 1
 
 
+class _NeverConnectingAdapter:
+    """需要等待外部框架、但框架始终没连上的适配器。"""
+
+    requires_connection_wait = True
+    http_url = ""
+    ws_url = ""
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.wait_calls: list[float | None] = []
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+
+    def wait_for_connection(self, timeout: float | None = None) -> bool:
+        self.wait_calls.append(timeout)
+        return False
+
+
+@pytest.mark.asyncio
+async def test_start_succeeds_when_framework_never_connects() -> None:
+    """框架没连上时启动必须成功：已启动的组件（面板等）不得被回滚。
+
+    这正是生产故障的回归点 —— 曾经这里抛 ConnectionTimeoutError，导致文件服务
+    与网页面板被 _rollback_start 拆掉、进程退出，用户失去唯一的修复入口。
+    """
+    from neobot_app.runtime.connection_readiness import ConnectionReadinessProbe
+
+    adapter = _NeverConnectingAdapter()
+    probe = ConnectionReadinessProbe(adapter, logger=NullLogger(), wait_seconds=0.01)
+    app = _make_app(adapter=adapter)
+    app._connection_probe = probe
+
+    await app.start()
+
+    assert app._started is True
+    assert app.file_server.stop_calls == 0
+    assert app.adapter.stop_calls == 0
+    state = app.connection_state
+    assert state is not None
+    assert state.connected is False
+    assert state.wait_timed_out is True
+
+    await app.stop()
+    assert app.adapter.stop_calls == 1
+    assert app.connection_state is None
+
+
 @pytest.mark.asyncio
 async def test_stop_cancels_reply_pipeline_before_agent_registry_close() -> None:
     """停机顺序：回复管线先于 AgentRegistry 关闭被取消；在途 delegate() 必须
