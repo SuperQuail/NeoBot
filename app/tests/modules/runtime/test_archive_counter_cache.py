@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from tests.modules.runtime.test_archive_memory_summary import (
     _FakeArchive,
-    _FakeProvider,
     _make_service,
 )
 
