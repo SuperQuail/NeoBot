@@ -84,7 +84,10 @@ export interface EngineOptions {
 
 const INTERACT_RANGE = 3.4;
 const MINIGAME_RANGE = 3.2;
-const DOOR_TRIGGER = 4.2;
+/** 舱门感应距离：进入这个范围开门 */
+const DOOR_TRIGGER = 3.2;
+/** 离开这个范围才关门（比 DOOR_TRIGGER 大，形成迟滞，避免临界抖动） */
+const DOOR_RELEASE = 4.2;
 const SNAPSHOT_INTERVAL = 1 / 12;
 /** 视角朝向与目标方向的最小夹角余弦：正对终端才能接入 */
 const FACING_DOT = 0.35;
@@ -422,15 +425,27 @@ export class BridgeEngine {
     this.shake = Math.min(2, this.shake + strength);
   }
 
+  /**
+   * 舱门感应：按「到门洞线段的水平距离」判定，带开/关迟滞。
+   *
+   * 为什么不用 door.object.getWorldPosition()：门组挂在 root 下、原点就是世界原点
+   * （门叶只有相对偏移），取世界坐标永远得到 (0,0,0)，于是触发距离变成「到舰体
+   * 中心的距离」——表现就是玩家走到门口门反而关上、离得老远却全开。
+   * 现在用 ship.ts 在建门时登记的 trigger（门洞中心 + 半宽）做判定：
+   *   距离 = 点到门洞线段的水平最短距离，站在 4.4m 门洞的任何位置都算在门口。
+   * 另外开/关用两个不同阈值（DOOR_TRIGGER / DOOR_RELEASE），
+   * 避免站在临界距离上反复开关抖动。
+   */
   private updateDoors(dt: number): void {
     const ship = this.ship;
     if (!ship) return;
-    // 复用同一个临时向量：这个循环每帧都跑，逐帧 new Vector3 会持续制造垃圾
-    const world = this.doorProbe;
+    const playerX = this.player.position.x;
+    const playerZ = this.player.position.z;
+
     for (const door of ship.doors) {
-      door.object.getWorldPosition(world);
-      const distance = this.player.position.distanceTo(world);
-      const next = distance < DOOR_TRIGGER;
+      const distance = doorDistance(door.trigger, playerX, playerZ);
+      const threshold = door.open ? DOOR_RELEASE : DOOR_TRIGGER;
+      const next = distance < threshold;
       if (next !== door.open) {
         door.open = next;
         sfx.door();
@@ -441,6 +456,7 @@ export class BridgeEngine {
   }
 
   private readonly doorProbe = new THREE.Vector3();
+  /** 舱门触发区的判定是纯数学（点到线段距离），doorProbe 仅保留给调试可视化 */
 
   // ------------------------------------------------------------------
   // 交互目标
@@ -692,8 +708,30 @@ export class BridgeEngine {
   static readonly doorWidth = DOOR_WIDTH;
 }
 
-/** 场景里所有交互道具的数量（HUD 显示探索进度用） */
-export function countPickups(ship: ShipHandle | null): number {
+/**
+ * 玩家到门洞的感应距离（水平面内，点到线段的最短距离）。
+ *
+ * 单独抽成纯函数是为了能被测试直接覆盖——这里出过一个很难看出来的 bug：
+ * 原先用 door.object.getWorldPosition() 取门的位置，而门组的原点就是世界原点
+ * （门叶只有相对偏移），于是「感应距离」实际是玩家到船体中心的距离，
+ * 表现成「走到门口门反而关上、离得老远却全开」。
+ *
+ * 抽出来之后判据变成显式几何：门洞是一条长 2×halfSpan 的线段，
+ * 玩家在门洞正下方或贴着门框走都算在门口。
+ */
+export function doorDistance(
+  trigger: { alongX: boolean; x: number; z: number; halfSpan: number },
+  playerX: number,
+  playerZ: number,
+): number {
+  const along = trigger.alongX ? playerX - trigger.x : playerZ - trigger.z;
+  const clamped = Math.max(-trigger.halfSpan, Math.min(trigger.halfSpan, along));
+  const nearestX = trigger.alongX ? trigger.x + clamped : trigger.x;
+  const nearestZ = trigger.alongX ? trigger.z : trigger.z + clamped;
+  return Math.hypot(playerX - nearestX, playerZ - nearestZ);
+}
+
+/** 场景里所有交互道具的数量（HUD 显示探索进度用） */export function countPickups(ship: ShipHandle | null): number {
   if (!ship) return 0;
   return ship.interactables.filter((item: ShipInteractable) => item.kind === 'pickup').length;
 }

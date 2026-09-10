@@ -35,6 +35,7 @@ import {
   type CollisionBody,
 } from '../bridge/core/collision';import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
 import { Player } from '../bridge/core/player';
+import { doorDistance } from '../bridge/core/engine';
 import { STATIONS, ITEMS, ITEM_IDS, ACHIEVEMENTS, type ItemId } from '../bridge/core/types';
 import {
   __setLogForTest,
@@ -293,6 +294,88 @@ describe('相机手感', () => {
     // 下沉必须收敛回 0
     for (let i = 0; i < 300; i += 1) player.update(1 / 60, ground, floor);
     expect(player.viewOffsetY).toBeLessThan(0.001);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 舱门感应
+//
+// 这里守住一个真实 bug：门组的原点是世界原点（门叶只有相对偏移），
+// 早期用 object.getWorldPosition() 取门位置，感应距离实际变成「到船体中心的
+// 距离」，表现为「走到门口门反而关上、离得老远门全开」。
+// ---------------------------------------------------------------------------
+
+describe('舱门感应', () => {
+  const DOOR_TRIGGER = 3.2;
+  const DOOR_RELEASE = 4.2;
+
+  it('门都带有显式触发区，且触发区落在门洞所在的舱壁上', () => {
+    const handle = buildShip(new THREE.Scene(), { quality: 'low' });
+    try {
+      expect(handle.doors.length).toBeGreaterThan(0);
+      for (const door of handle.doors) {
+        expect(door.trigger).toBeDefined();
+        expect(door.trigger.halfSpan).toBeGreaterThan(1);
+        // 触发区必须在舰体范围内。门洞中心正好落在舱壁厚度中间（两个矩形的接缝上），
+        // 因此这里按一个壁厚放宽——曾经它退化成原点 (0,0,0)，这条断言才拦得住。
+        expect(
+          isInsideHull(door.trigger.x, door.trigger.z, WALL_THICKNESS),
+          `舱门 ${door.object.name} 的触发区跑到舰体外：${door.trigger.x},${door.trigger.z}`,
+        ).toBe(true);
+      }
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it('站在门洞任何位置都算在门口（含贴着门框一侧）', () => {
+    const trigger = { alongX: true, x: 0, z: -20, halfSpan: 2.2 };
+    // 正对门洞中心
+    expect(doorDistance(trigger, 0, -21)).toBeLessThan(DOOR_TRIGGER);
+    // 贴着门框一侧：到中心 2.2m 已经超过阈值，但人仍然在门口
+    expect(doorDistance(trigger, 2.1, -21)).toBeLessThan(DOOR_TRIGGER);
+    expect(doorDistance(trigger, -2.1, -21)).toBeLessThan(DOOR_TRIGGER);
+    // 沿门洞轴线横向移动不改变距离（线段投影）
+    expect(doorDistance(trigger, 2.0, -20)).toBeCloseTo(doorDistance(trigger, 0, -20), 5);
+  });
+
+  it('沿 z 方向的门洞同样按线段判定', () => {
+    const trigger = { alongX: false, x: -29, z: 0, halfSpan: 2.2 };
+    expect(doorDistance(trigger, -30, 2.0)).toBeLessThan(DOOR_TRIGGER);
+    expect(doorDistance(trigger, -35, 0)).toBeGreaterThan(DOOR_RELEASE);
+  });
+
+  it('开/关阈值形成迟滞：临界距离上不会反复开关', () => {
+    const trigger = { alongX: true, x: 0, z: 0, halfSpan: 2.2 };
+    /** 复刻 engine 的判定：用当前状态选择阈值 */
+    const shouldOpen = (distance: number, currentlyOpen: boolean) =>
+      distance < (currentlyOpen ? DOOR_RELEASE : DOOR_TRIGGER);
+
+    // 3.7m 落在两个阈值之间
+    const between = doorDistance(trigger, 0, 3.7);
+    expect(between).toBeGreaterThan(DOOR_TRIGGER);
+    expect(between).toBeLessThan(DOOR_RELEASE);
+    // 关着的门不会因为这点距离就打开……
+    expect(shouldOpen(between, false)).toBe(false);
+    // ……但已经打开的门会保持开启，于是不会在临界处抖动
+    expect(shouldOpen(between, true)).toBe(true);
+
+    // 真正远离后无论如何都会关
+    const far = doorDistance(trigger, 0, DOOR_RELEASE + 1);
+    expect(shouldOpen(far, true)).toBe(false);
+    expect(shouldOpen(far, false)).toBe(false);
+  });
+
+  it('四扇走廊门 + 气闸都有互不相同的触发区（不会挤在同一点）', () => {
+    const handle = buildShip(new THREE.Scene(), { quality: 'low' });
+    try {
+      const positions = handle.doors.map(
+        (door) => `${door.trigger.x.toFixed(1)},${door.trigger.z.toFixed(1)}`,
+      );
+      expect(new Set(positions).size).toBe(handle.doors.length);
+    } finally {
+      handle.dispose();
+    }
   });
 });
 

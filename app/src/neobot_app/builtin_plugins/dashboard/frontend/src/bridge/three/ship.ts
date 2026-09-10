@@ -84,6 +84,13 @@ export interface ShipInteractable {
 export interface ShipDoor {
   /** pivot group that rotates/slides when opened */
   object: THREE.Object3D;
+  /**
+   * 门洞触发区（世界坐标）。
+   *
+   * 必须由建门方显式提供：门组的原点是 (0,0,0)，从 object 的世界矩阵反推位置
+   * 只会拿到船体原点，导致感应距离完全错误（走到门口反而关门）。
+   */
+  trigger: DoorTrigger;
   /** closed -> open target, animated in update() */
   open: boolean;
   /** true while the player is within trigger distance (set by the game each frame) */
@@ -488,14 +495,38 @@ interface DoorLeaf {
 }
 
 /**
+ * 舱门触发区：门洞在世界坐标里的「一条线段 + 有效半径」。
+ *
+ * 用线段而不是单点，是因为门洞有 4.4m 宽——玩家贴着门框一侧走过时，
+ * 到门洞中心的距离可能已经超过阈值，但人明明还在门口。判据取「到线段的最短距离」，
+ * 于是站在门洞的任何位置都算在门口。
+ */
+export interface DoorTrigger {
+  /** true：门洞沿 x 方向（开在南北墙上）；false：沿 z 方向（开在东西墙上） */
+  alongX: boolean;
+  /** 门洞中心的世界坐标（y 取甲板面，只做水平判定） */
+  x: number;
+  z: number;
+  /** 门洞半宽（= DOOR_WIDTH / 2） */
+  halfSpan: number;
+}
+
+/**
  * 双扇滑动舰门：两片门叶沿墙面反向滑出，开启后完全缩进舱壁厚度内，
  * 门洞 4.4m 全宽净空（满足「开启状态必须让开 DOOR_WIDTH」）。
  *
  * 门叶不产生碰撞体 —— 门洞能不能过由游戏逻辑决定；这样即使游戏还没接上开门
  * 逻辑，玩家也不会被一扇虚掩的门卡死。
+ *
+ * 触发区（trigger）是**显式记录**的门洞范围，不是从 object 的世界矩阵反推的：
+ * 门组的原点在 (0,0,0)（门叶只有相对偏移），早期用 getWorldPosition() 取位置
+ * 会永远得到船体原点，于是「玩家走到门口时门反而关上、隔老远却全开」。
  */
 class SlidingDoor implements ShipDoor {
   readonly object: THREE.Group;
+
+  /** 门洞触发区：沿用 layout 的 +x/+z 命名 */
+  readonly trigger: DoorTrigger;
 
   open = false;
 
@@ -507,9 +538,10 @@ class SlidingDoor implements ShipDoor {
   /** 行程速度：约 0.75s 开合，配合 sfx.door() 的手感 */
   private static readonly SPEED = 1.35;
 
-  constructor(name: string) {
+  constructor(name: string, trigger: DoorTrigger) {
     this.object = new THREE.Group();
     this.object.name = name;
+    this.trigger = trigger;
   }
 
   addLeaf(mesh: THREE.Mesh, closedCenter: THREE.Vector3, axis: THREE.Vector3, travel: number): void {
@@ -2089,7 +2121,13 @@ export function buildShip(scene: THREE.Scene, options?: { quality?: 'low' | 'hig
             : rect.maxX + WALL_THICKNESS / 2;
     const inward = doorDef.side === 'w' || doorDef.side === 'n' ? 1 : -1;
 
-    const door = new SlidingDoor(`door:${room.id}`);
+    // 触发区取门洞中心：沿 x 的门洞在 (at, wallCenter)，沿 z 的在 (wallCenter, at)
+    const door = new SlidingDoor(`door:${room.id}`, {
+      alongX,
+      x: alongX ? doorDef.at : wallCenter,
+      z: alongX ? wallCenter : doorDef.at,
+      halfSpan: DOOR_WIDTH / 2,
+    });
     const leafWidth = DOOR_WIDTH / 2 - 0.03;
     const leafGeometry = doorLeafGeometry(leafWidth);
     const travel = leafWidth + 0.12;
@@ -2154,7 +2192,12 @@ export function buildShip(scene: THREE.Scene, options?: { quality?: 'low' | 'hig
 
   // ---- 机库气闸（舰艉外墙）：舱口凹龛 + 六瓣虹膜 + 力场 -------------------
 
-  const airlockDoor = new SlidingDoor('door:airlock');
+  const airlockDoor = new SlidingDoor('door:airlock', {
+    alongX: true,
+    x: 0,
+    z: (roomRects.get('hangar')?.maxZ ?? 33) + WALL_THICKNESS,
+    halfSpan: 1.8,
+  });
   {
     const hangarRect = roomRects.get('hangar');
     const airlockZ = hangarRect?.maxZ ?? 33;

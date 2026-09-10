@@ -134,15 +134,17 @@ export const ALL_ZONES: Array<RoomDef | CorridorDef> = [...ROOMS, HUB, ...CORRID
 export const SPAWN_POSITION: Vec3 = [0, 0, -27];
 export const SPAWN_YAW = Math.PI;
 
-/** 判断某点是否位于任意舱室/走廊地板矩形内（用于「走出舰体」判定） */
-export function isInsideHull(x: number, z: number): boolean {
+/**
+ * 判断某点是否位于任意舱室/走廊地板矩形内（用于「走出舰体」判定）。
+ *
+ * `slack` 用于放宽边界：门洞中心落在舱壁厚度中间，正好压在两个矩形的接缝上，
+ * 直接判定会被算成「舰外」。需要判定门/门框这类贴合结构时传 WALL_THICKNESS。
+ */
+export function isInsideHull(x: number, z: number, slack = 0.01): boolean {
   return ALL_ZONES.some((zone) => {
     const [cx, cz] = zone.center;
     const [sx, sz] = zone.size;
-    // 留 1cm 容差，避免浮点误差把贴墙站位判成舱外
-    return (
-      Math.abs(x - cx) <= sx / 2 + 0.01 && Math.abs(z - cz) <= sz / 2 + 0.01
-    );
+    return Math.abs(x - cx) <= sx / 2 + slack && Math.abs(z - cz) <= sz / 2 + slack;
   });
 }
 
