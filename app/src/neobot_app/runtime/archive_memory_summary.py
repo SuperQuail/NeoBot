@@ -43,6 +43,13 @@ RETRY_BACKOFF_MAX_DOUBLINGS = 4
 DEFAULT_SUMMARY_BUDGET_SECONDS = 180.0
 # 单次总结内层模型调用的超时(秒)，同时也是单轮上限。
 DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS = 60.0
+# 单条工具返回写入上下文的最大字符数。read_pending_messages 会返回 500 条消息全文，
+# list_archive 会返回整条档案 value，原样追加会让之后每一轮都把这几百 KB 重发一遍。
+MAX_TOOL_RESULT_CHARS = 4000
+# 整个总结过程中保留的工具返回总量上限；超出后丢弃最早的工具返回。
+MAX_TOOL_RESULT_TOTAL_CHARS = 60_000
+_TOOL_TRUNCATED_MARKER = "\n...[工具返回已截断，需要更多内容请缩小查询范围后重试]"
+_TOOL_DROPPED_MARKER = "[已省略：更早的工具返回，避免上下文膨胀]"
 
 
 class ArchiveMemoryAutoSummaryService:
@@ -262,8 +269,11 @@ class ArchiveMemoryAutoSummaryService:
                     chat_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": str(result),
+                        "content": _bounded_tool_result(result),
                     })
+                # 每轮都收紧一次：工具返回是上下文膨胀的唯一来源，
+                # 不收紧时后续每一轮都要重发全部历史工具返回。
+                _trim_tool_history(chat_messages)
 
                 if tool_failures >= MAX_TOOL_FAILURES:
                     self._logger.warning(
@@ -703,6 +713,37 @@ class ArchiveMemoryAutoSummaryService:
             f"{truncation_note}"
             f"\nRecent messages (each line is '[index] sender: text'):\n{recent}"
         )
+
+def _bounded_tool_result(result: Any) -> str:
+    """限制单条工具返回的字符数。
+
+    read_pending_messages / list_archive / read_archive 都会返回大块内容，
+    而这些内容会被追加进 chat_messages 并在之后每一轮重新发送；
+    不设上限时一次总结就能把上下文顶到几十万 token。
+    """
+    text = str(result or "")
+    if len(text) <= MAX_TOOL_RESULT_CHARS:
+        return text
+    return text[:MAX_TOOL_RESULT_CHARS] + _TOOL_TRUNCATED_MARKER
+
+
+def _trim_tool_history(chat_messages: list[dict]) -> None:
+    """从最新往旧保留工具返回，超出总量预算的早期工具返回替换为占位符。
+
+    直接改写在原地进行，system / user / assistant 消息不受影响。
+    """
+    budget = MAX_TOOL_RESULT_TOTAL_CHARS
+    for message in reversed(chat_messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = str(message.get("content") or "")
+        if content == _TOOL_DROPPED_MARKER:
+            continue
+        if budget - len(content) >= 0:
+            budget -= len(content)
+            continue
+        message["content"] = _TOOL_DROPPED_MARKER
+
 
 def _is_tool_failure(result: Any) -> bool:
     """判断工具结果是否属于失败（未知工具/执行异常），用于中止重试风暴。"""

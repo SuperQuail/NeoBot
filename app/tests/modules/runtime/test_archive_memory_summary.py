@@ -19,8 +19,12 @@ from neobot_contracts.ports.logging import NullLogger
 from neobot_app.runtime.archive_memory_summary import (
     MAX_STORED_MESSAGE_CHARS,
     MAX_TOOL_FAILURES,
+    MAX_TOOL_RESULT_CHARS,
+    MAX_TOOL_RESULT_TOTAL_CHARS,
     RETRY_BACKOFF_MAX_SECONDS,
     ArchiveMemoryAutoSummaryService,
+    _TOOL_DROPPED_MARKER,
+    _trim_tool_history,
 )
 from neobot_app.time_context import epoch_seconds
 
@@ -902,5 +906,84 @@ async def test_summary_stops_at_total_time_budget():
     state = json.loads(archive.raw("memory_counter", "group:992")["value"])
     assert state["count"] == 1
     assert state["retry_after"] > epoch_seconds()
+
+
+# ── 工具返回与上下文体积极限 ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tool_result_is_truncated_before_entering_context():
+    """单条工具返回必须先截断再进上下文，否则下一轮会把它整块重发。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    huge = "档" * (MAX_TOOL_RESULT_CHARS * 3)
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=AsyncMock(return_value=huge),
+        group_interval=1,
+        max_tool_rounds=2,
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="993", message_text="一"
+    )
+
+    assert len(provider.calls) == 2
+    # provider.calls 保存的是同一个可变列表，因此这里校验全部 tool 消息的规模
+    tool_messages = [
+        message for message in provider.calls[1] if message.get("role") == "tool"
+    ]
+    assert tool_messages
+    for message in tool_messages:
+        assert len(message["content"]) <= MAX_TOOL_RESULT_CHARS + 100
+        assert "已截断" in message["content"]
+
+
+def test_old_tool_results_are_dropped_when_over_total_budget():
+    """工具返回总量超预算时，从最早的一批开始替换为占位符。"""
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "prompt"},
+    ]
+    rounds = 5
+    per_round = MAX_TOOL_RESULT_TOTAL_CHARS // 2
+    for index in range(rounds):
+        messages.append({"role": "assistant", "content": None})
+        messages.append({"role": "tool", "content": "x" * per_round})
+
+    _trim_tool_history(messages)
+
+    kept = [
+        message
+        for message in messages
+        if message.get("role") == "tool" and message["content"] != _TOOL_DROPPED_MARKER
+    ]
+    dropped = [
+        message
+        for message in messages
+        if message.get("role") == "tool" and message["content"] == _TOOL_DROPPED_MARKER
+    ]
+    # 最近的保留、最早的被丢弃，且保留量在预算内
+    assert len(kept) <= 2
+    assert len(dropped) == rounds - len(kept)
+    assert sum(len(message["content"]) for message in kept) <= (
+        MAX_TOOL_RESULT_TOTAL_CHARS
+    )
+    # system / user 消息不受影响
+    assert messages[0]["content"] == "sys"
+    assert messages[1]["content"] == "prompt"
+
+
+def test_trim_tool_history_keeps_non_tool_messages_intact():
+    """裁剪只针对 tool 消息，assistant 的工具调用结构必须保持可用。"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 10},
+    ]
+    _trim_tool_history(messages)
+    assert messages[1]["tool_calls"] == [{"id": "c1"}]
+    assert messages[2]["content"] == "x" * 10
 
 
