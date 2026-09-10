@@ -13,9 +13,21 @@ from neobot_modloader.database import (
 )
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
-from neobot_modloader.host import PluginHostFacade
+from neobot_modloader.host import DefaultServiceRegistry, PluginHostFacade
+from neobot_modloader.installer import (
+    PROXY_MODES,
+    PluginInstallError,
+    PluginInstallResult,
+    PluginInstaller,
+    PluginUpdateCheck,
+    ProxySettings,
+    RepoSpec,
+    compare_versions,
+)
 from neobot_modloader.loader import DiscoveredPlugin, FilesystemPluginLoader
+from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.management import PluginControlFacade, PluginOperationResult, PluginSnapshot
+from neobot_modloader.state import PluginStateEntry, PluginStateStore
 from neobot_modloader.manager import DefaultPluginManager
 from neobot_modloader.message import AtSegment, ImageSegment, Message, MessageChain, MessageSegment, at, image, text
 from neobot_modloader.plugin import Plugin
@@ -45,8 +57,21 @@ __all__ = [
     "AtSegment",
     "Bot",
     "DefaultPluginManager",
+    "DefaultServiceRegistry",
     "DiscoveredPlugin",
     "FilesystemPluginLoader",
+    "OFFICIAL_SOURCE",
+    "PROXY_MODES",
+    "PluginInstallError",
+    "PluginInstallResult",
+    "PluginInstaller",
+    "PluginStateEntry",
+    "PluginStateStore",
+    "PluginUpdateCheck",
+    "ProxySettings",
+    "RepoSpec",
+    "THIRD_PARTY_SOURCE",
+    "compare_versions",
     "ImageSegment",
     "Message",
     "MessageChain",

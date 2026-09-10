@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from types import UnionType
 from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
@@ -33,6 +34,9 @@ _NAME_INJECTION_KINDS = {
     "plugin_control": "plugin_control",
     "bot": "bot",
 }
+# event 是唯一没有对应运行时类型的约定注入名（注入值为原始事件字典），
+# 因此允许用 dict 形态注解显式声明；其余约定名一律按类型注解匹配。
+_EVENT_PAYLOAD_ORIGINS = frozenset({dict, Mapping, MutableMapping})
 _AGENT_REQUEST_ALIASES = {
     "request": ("agent_request", AgentRequest),
     "agent_request": ("agent_request", AgentRequest),
@@ -179,6 +183,16 @@ def injected_parameter_kind(
     return None
 
 
+def _annotation_is_event_payload(annotation: Any) -> bool:
+    """判断注解是否为事件字典形态（dict / dict[...] / Mapping[...]）。"""
+    if _annotation_is_untyped(annotation):
+        return False
+    for candidate in _annotation_candidates(annotation):
+        if candidate is dict or get_origin(candidate) in _EVENT_PAYLOAD_ORIGINS:
+            return True
+    return False
+
+
 def _agent_request_parameter_kind(name: str, annotation: Any) -> str | None:
     alias = _AGENT_REQUEST_ALIASES.get(name)
     if alias is None:
@@ -223,6 +237,9 @@ def parameter_injection_kind(
         return agent_alias
     if _annotation_is_untyped(annotation):
         return _NAME_INJECTION_KINDS.get(name)
+    if name == "event" and _annotation_is_event_payload(annotation):
+        # event: dict[str, Any] 是最自然的写法，按约定注入原始事件
+        return "event"
     return None
 
 

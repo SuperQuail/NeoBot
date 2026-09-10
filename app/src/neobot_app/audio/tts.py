@@ -32,7 +32,7 @@ class TTSService:
         self,
         config: TTSConfig,
         *,
-        model_name: str = "tts_model",
+        model_name: str = "tts_model",  # TTS 模型 key（bootstrap 传 [models.assignments].tts_model）
         logger: Logger | None = None,
         file_server=None,
     ) -> None:
@@ -54,6 +54,7 @@ class TTSService:
                 self._model.settings.timeout_seconds,
                 connect=min(self._model.settings.timeout_seconds, 10.0),
             ),
+            trust_env=bool(getattr(self._model, "use_system_proxy", False)),
         )
 
     @property

@@ -267,6 +267,7 @@ def build_creator_image_service(
     from neobot_app.drawing import DrawServiceConfig, CreatorImageService
 
     creator_config = DrawServiceConfig.from_schema(config.agent.creator)
+    image_model_keys = list(getattr(config.models, "creator_image_model_names", []) or [])
     return CreatorImageService(
         uow_factory=uow_factory,
         adapter=adapter,
@@ -275,6 +276,7 @@ def build_creator_image_service(
         vision_provider=vision_provider,
         file_server=file_server,
         image_pool=image_pool,
+        model_names=image_model_keys or None,
         logger=logger_factory.get_logger("app.creator_image"),
     )
 
@@ -289,9 +291,14 @@ def build_balance_checker(
     if not getattr(chat_cfg, "enable_balance_check", False):
         return None
 
-    primary_provider = getattr(
-        getattr(config.models, "primary_chat_model", None), "provider", ""
+    assignments = getattr(getattr(config, "models", None), "assignments", None)
+    primary_key = str(getattr(assignments, "primary_chat_model", "") or "").strip() if assignments else ""
+    primary_definition = (
+        config.models.get(primary_key) if primary_key and hasattr(config.models, "get") else None
     )
+    if primary_definition is None:
+        primary_definition = getattr(config.models, "primary_chat_model", None)
+    primary_provider = getattr(primary_definition, "provider", "")
     if primary_provider.strip().casefold() not in {"deepseek", "deepseek_offical", "deepseek_official"}:
         logger_factory.get_logger("app.provider").info("主模型非 DeepSeek，余额检查自动禁用")
         return None

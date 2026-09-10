@@ -685,7 +685,6 @@ async def test_application_shutdown_closes_agent_registry_after_plugin_teardown(
     app._background_coros = []
     app._background_tasks = []
     app._self_heal_manager = None
-    app._console_service = None
 
     await app.stop()
 

@@ -44,6 +44,8 @@ class Plugin:
         priority: int = 0,
         min_neobot_version: str | None = None,
         python_dependencies: Sequence[str] = (),
+        hot_reload: bool = True,
+        config_hot_reload: bool = True,
     ) -> None:
         self.name = validate_plugin_name(name)
         self.version = str(version)
@@ -58,6 +60,10 @@ class Plugin:
         self.priority = int(priority)
         self.min_neobot_version = min_neobot_version
         self.python_dependencies = tuple(python_dependencies)
+        #: 插件本体是否支持不重启进程的重载（面板「重载」按钮）
+        self.hot_reload = bool(hot_reload)
+        #: 插件配置改动是否支持不重启进程生效（面板标记与保存后提示）
+        self.config_hot_reload = bool(config_hot_reload)
         self._registrations: list[HandlerRegistration] = []
         self._load_handlers: list[Handler] = []
         self._startup_handlers: list[Handler] = []

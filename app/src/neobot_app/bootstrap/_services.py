@@ -179,6 +179,16 @@ def build_emoji_service(
     )
 
 
+def resolve_tts_model_name(config: BotConfigSchema) -> str:
+    """TTS 引用的模型 key（找不到时回退到旧角色名）。"""
+    assignments = getattr(getattr(config, "models", None), "assignments", None)
+    key = str(getattr(assignments, "tts_model", "") or "").strip() if assignments else ""
+    models = getattr(config, "models", None)
+    if key and models is not None and hasattr(models, "get") and models.get(key) is not None:
+        return key
+    return "tts_model"
+
+
 def build_tts_service(*, config: BotConfigSchema, logger_factory: Any) -> Any:
     if not config.tts.enabled:
         return None
@@ -206,11 +216,14 @@ def build_tts_service(*, config: BotConfigSchema, logger_factory: Any) -> Any:
     if provider != "siliconflow":
         tts_logger.warning(f"未知的 tts_provider '{provider}'，回退到硅基流动 TTS")
     from neobot_chat import get_model_registry
-    if "tts_model" not in get_model_registry().names:
-        tts_logger.error("TTS 模型未注册（缺少 SiliconFlow_APIKey 环境变量），TTS 已禁用")
+    tts_model_name = resolve_tts_model_name(config)
+    if tts_model_name not in get_model_registry().names:
+        tts_logger.error(
+            f"TTS 模型未注册（{tts_model_name}：检查 [models.assignments].tts_model 与平台 APIKey），TTS 已禁用"
+        )
         return None
-    tts_logger.info("TTS 提供商: 硅基流动 (SiliconFlow)")
-    return TTSService(config=config.tts, logger=tts_logger)
+    tts_logger.info(f"TTS 提供商: 硅基流动 (SiliconFlow)，模型 {tts_model_name}")
+    return TTSService(config=config.tts, logger=tts_logger, model_name=tts_model_name)
 
 
 def build_image_parse_service(

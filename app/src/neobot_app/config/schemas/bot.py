@@ -1,5 +1,15 @@
+import re
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Dict, Iterator, List, Optional, TypedDict
+from typing import Any, ClassVar, Dict, Iterator, List, Optional, TypedDict
+
+_MODEL_KEY_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def normalize_model_key(value: Any) -> str:
+    """把模型 key 规范化为 [A-Za-z0-9_.-]{1,64}（非法字符替换为 -）。"""
+    text = str(value or "").strip()
+    text = _MODEL_KEY_RE.sub("-", text).strip("-.")
+    return text[:64]
 
 
 class KeyWordRule(TypedDict, total=False):
@@ -163,6 +173,23 @@ class ModelSettings:
         default=0.0,
         metadata={"description": "存在惩罚"},
     )
+    image_api: str = field(
+        default="auto",
+        metadata={
+            "description": "生图接口形态（仅生图模型使用）：auto 有参考图时走 /images/edits（失败回退 "
+            "/images/generations），edits 始终走 /images/edits（multipart），generations 始终走 "
+            "/images/generations（参考图作为 JSON 字段传递）",
+            "options": ["auto", "edits", "generations"],
+            "options_strict": True,
+        },
+    )
+    image_reference_param: str = field(
+        default="image",
+        metadata={
+            "description": "generations 模式下参考图的 JSON 字段名（不同中转站可能是 image / images / "
+            "image_url / image_urls / input_image）"
+        },
+    )
 
 
 @dataclass
@@ -174,13 +201,17 @@ class DeepSeekModelSettings(ModelSettings):
     deepseek_thinking_mode: str = field(
         default="enabled",
         metadata={
-            "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启"
+            "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启",
+            "options": ["enabled", "disabled", "random"],
+            "options_strict": True,
         },
     )
     deepseek_reasoning_effort: str = field(
         default="high",
         metadata={
-            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max"
+            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max",
+            "options": ["high", "max"],
+            "options_strict": True,
         },
     )
     deepseek_random_thinking_probability: float = field(
@@ -191,13 +222,47 @@ class DeepSeekModelSettings(ModelSettings):
     )
 
 
-@dataclass
-class ModelRegistration:
-    """单个模型注册配置。"""
+#: 模型类型：决定面板中的用途分组与默认描述（不限制调用方引用）
+MODEL_TYPE_LABELS: Dict[str, str] = {
+    "chat": "对话 / 推理模型",
+    "image": "生图模型",
+    "vision": "图像识别模型",
+    "tts": "语音（TTS）模型",
+    "other": "其它",
+}
 
+
+def normalize_model_type(value: Any) -> str:
+    """归一模型类型；未知值原样保留（便于配置里使用自定义类型）。"""
+    text = str(value or "").strip().lower()
+    return text or "chat"
+
+
+@dataclass
+class ModelDefinition:
+    """模型库中的一个模型；调用方通过 key 引用它。"""
+
+    key: str = field(
+        default="",
+        metadata={
+            "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线；"
+            "面板不展示，新建时按模型名自动生成",
+            "hidden": True,
+        },
+    )
+    model_type: str = field(
+        default="chat",
+        metadata={
+            "description": "模型类型：用于面板分组与筛选（对话 / 生图 / 图像识别 / 语音）",
+            "options": list(MODEL_TYPE_LABELS),
+            "options_strict": True,
+        },
+    )
     description: str = field(
-        default="主对话模型",
-        metadata={"description": "模型用途说明"},
+        default="",
+        metadata={
+            "description": "模型用途说明（留空时按类型自动生成；Agent 选择生图模型时也会参考）"
+        },
     )
     provider: str = field(
         default="DeepSeek",
@@ -208,7 +273,7 @@ class ModelRegistration:
         metadata={"description": "模型名"},
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)
-    settings: ModelSettings = field(default_factory=ModelSettings)
+    settings: DeepSeekModelSettings = field(default_factory=DeepSeekModelSettings)
     native_vision: bool = field(
         default=False,
         metadata={
@@ -216,10 +281,44 @@ class ModelRegistration:
             "自动回退到 vision_model（无需手选回退模型）"
         },
     )
+    use_system_proxy: bool = field(
+        default=False,
+        metadata={
+            "description": "该模型是否跟随系统/环境变量代理访问；默认关闭（直连），"
+            "仅在需要通过本地代理（如 Clash）访问供应商时开启"
+        },
+    )
+    balance_query_hint: str = field(
+        default="",
+        metadata={
+            "description": "该模型/供应商的余额查询方式（文本描述，可写请求地址、方法、鉴权与返回字段）。"
+            "留空表示没有查询提示，余额查询 skill 不会列出该模型"
+        },
+    )
+
+    def __post_init__(self) -> None:
+        self.key = normalize_model_key(self.key)
+        self.model_type = normalize_model_type(self.model_type)
+        if not str(self.description or "").strip():
+            self.description = MODEL_TYPE_LABELS.get(self.model_type, "模型")
+
+    @property
+    def type_label(self) -> str:
+        return MODEL_TYPE_LABELS.get(self.model_type, self.model_type)
+
+    @property
+    def display_name(self) -> str:
+        return self.description or self.model_name or self.key
 
 
-def _default_primary_chat_model() -> "ModelRegistration":
-    return ModelRegistration(
+#: 兼容旧名称（历史配置与外部脚本可能仍引用 ModelRegistration）
+ModelRegistration = ModelDefinition
+
+
+def _default_primary_chat_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-pro",
+        model_type="chat",
         description="主对话模型（Agent模型编号0）",
         provider="DeepSeek",
         model_name="deepseek-v4-pro",
@@ -241,8 +340,10 @@ def _default_primary_chat_model() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_1() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_1() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-max",
+        model_type="chat",
         description="Agent模型编号1：deepseek-v4-flash max 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -264,8 +365,10 @@ def _default_agent_model_1() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_2() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_2() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-high",
+        model_type="chat",
         description="Agent模型编号2：deepseek-v4-flash high 推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -287,8 +390,10 @@ def _default_agent_model_2() -> "ModelRegistration":
     )
 
 
-def _default_agent_model_3() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_agent_model_3() -> "ModelDefinition":
+    return ModelDefinition(
+        key="deepseek-v4-flash-off",
+        model_type="chat",
         description="Agent模型编号3：deepseek-v4-flash 非推理模式",
         provider="DeepSeek",
         model_name="deepseek-v4-flash",
@@ -310,8 +415,10 @@ def _default_agent_model_3() -> "ModelRegistration":
     )
 
 
-def _default_vision_model() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_vision_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="qwen3-vl-8b",
+        model_type="vision",
         description="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
@@ -328,8 +435,10 @@ def _default_vision_model() -> "ModelRegistration":
     )
 
 
-def _default_tts_model() -> "ModelRegistration":
-    return ModelRegistration(
+def _default_tts_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="cosyvoice2",
+        model_type="tts",
         description="语音模型",
         provider="硅基流动",
         model_name="FunAudioLLM/CosyVoice2-0.5B",
@@ -345,9 +454,11 @@ def _default_tts_model() -> "ModelRegistration":
     )
 
 
-def _default_creator_image_model() -> "ModelRegistration":
-    return ModelRegistration(
-        description="创作者Agent生图模型",
+def _default_creator_image_model() -> "ModelDefinition":
+    return ModelDefinition(
+        key="flux-schnell",
+        model_type="image",
+        description="创作者Agent生图模型（默认）",
         provider="SiliconFlow",
         model_name="black-forest-labs/FLUX.1-schnell",
         settings=ModelSettings(
@@ -361,44 +472,134 @@ def _default_creator_image_model() -> "ModelRegistration":
     )
 
 
+def _default_model_library() -> "List[ModelDefinition]":
+    """默认模型库：模型单独存储，调用方只引用 key。"""
+    return [
+        _default_primary_chat_model(),
+        _default_agent_model_1(),
+        _default_agent_model_2(),
+        _default_agent_model_3(),
+        _default_vision_model(),
+        _default_tts_model(),
+        _default_creator_image_model(),
+    ]
+
+
+@dataclass
+class ModelAssignments:
+    """各调用方引用的模型 key（在模型库 [models.registry] 中定义）。"""
+
+    primary_chat_model: str = field(
+        default="deepseek-v4-pro",
+        metadata={"description": "Agent模型编号0（主对话模型）引用的模型 key"},
+    )
+    agent_model_1: str = field(
+        default="deepseek-v4-flash-max",
+        metadata={"description": "Agent模型编号1引用的模型 key"},
+    )
+    agent_model_2: str = field(
+        default="deepseek-v4-flash-high",
+        metadata={"description": "Agent模型编号2引用的模型 key"},
+    )
+    agent_model_3: str = field(
+        default="deepseek-v4-flash-off",
+        metadata={"description": "Agent模型编号3引用的模型 key"},
+    )
+    vision_model: str = field(
+        default="qwen3-vl-8b",
+        metadata={"description": "图像识别模型引用的模型 key"},
+    )
+    tts_model: str = field(
+        default="cosyvoice2",
+        metadata={"description": "语音模型引用的模型 key"},
+    )
+    creator_image_models: List[str] = field(
+        default_factory=lambda: ["flux-schnell"],
+        metadata={
+            "description": "创作者Agent生图模型列表（引用 key）；配置多个时由 Agent 按描述自行选择"
+        },
+    )
+
+    #: 单值角色（顺序即面板展示顺序；ClassVar 表示不是配置字段）
+    SINGLE_ROLES: ClassVar[tuple[str, ...]] = (
+        "primary_chat_model",
+        "agent_model_1",
+        "agent_model_2",
+        "agent_model_3",
+        "vision_model",
+        "tts_model",
+    )
+
+    def role_key(self, role: str) -> str:
+        return str(getattr(self, role, "") or "").strip()
+
+    def items(self) -> Iterator[tuple[str, str]]:
+        """产出 (角色名, 模型 key)；生图列表逐项产出，角色名统一为 creator_image_models。"""
+        for role in self.SINGLE_ROLES:
+            key = self.role_key(role)
+            if key:
+                yield role, key
+        for item in self.creator_image_models:
+            key = str(item or "").strip()
+            if key:
+                yield "creator_image_models", key
+
+    def image_keys(self) -> List[str]:
+        return [str(item or "").strip() for item in self.creator_image_models if str(item or "").strip()]
+
+
 @dataclass
 class Models:
-    """模型注册配置集合。"""
+    """模型库 + 调用方分配。
 
-    primary_chat_model: ModelRegistration = field(
-        default_factory=_default_primary_chat_model,
-        metadata={"description": "Agent模型编号0（主对话模型）"},
+    模型单独存储在 registry 中，各调用方（主对话/Agent/视觉/TTS/生图）只引用 key，
+    这样同一个模型可以被多个调用方复用，改一处即可全局生效。
+    """
+
+    registry: List[ModelDefinition] = field(
+        default_factory=_default_model_library,
+        metadata={
+            "description": "模型库：每个模型单独存储（key/描述/供应商/模型名/参数/价格），"
+            "调用方通过 key 引用"
+        },
     )
-    agent_model_1: ModelRegistration = field(
-        default_factory=_default_agent_model_1,
-        metadata={"description": "Agent模型编号1"},
-    )
-    agent_model_2: ModelRegistration = field(
-        default_factory=_default_agent_model_2,
-        metadata={"description": "Agent模型编号2"},
-    )
-    agent_model_3: ModelRegistration = field(
-        default_factory=_default_agent_model_3,
-        metadata={"description": "Agent模型编号3"},
-    )
-    vision_model: ModelRegistration = field(
-        default_factory=_default_vision_model,
-        metadata={"description": "图像识别模型"},
-    )
-    tts_model: ModelRegistration = field(
-        default_factory=_default_tts_model,
-        metadata={"description": "语音模型"},
-    )
-    creator_image_model: ModelRegistration = field(
-        default_factory=_default_creator_image_model,
-        metadata={"description": "创作者Agent生图模型"},
+    assignments: ModelAssignments = field(
+        default_factory=ModelAssignments,
+        metadata={"description": "各调用方引用的模型 key"},
     )
 
-    def iter_registrations(self) -> Iterator[tuple[str, ModelRegistration]]:
-        for config_field in dataclass_fields(self):
-            model = getattr(self, config_field.name)
-            if isinstance(model, ModelRegistration):
-                yield config_field.name, model
+    def by_key(self) -> Dict[str, ModelDefinition]:
+        return {item.key: item for item in self.registry if item.key}
+
+    def get(self, key: str) -> Optional[ModelDefinition]:
+        return self.by_key().get(str(key or "").strip())
+
+    def iter_definitions(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """遍历模型库：(key, 模型定义)。"""
+        for item in self.registry:
+            if item.key:
+                yield item.key, item
+
+    def iter_role_models(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """遍历调用方实际引用的模型：(角色名, 模型定义)；key 缺失时跳过。"""
+        library = self.by_key()
+        for role, key in self.assignments.items():
+            definition = library.get(key)
+            if definition is not None:
+                yield role, definition
+
+    def iter_registrations(self) -> Iterator[tuple[str, ModelDefinition]]:
+        """兼容旧接口：等价于 iter_role_models()。"""
+        return self.iter_role_models()
+
+    def missing_assignment_keys(self) -> List[str]:
+        """返回引用了但模型库里不存在的 key。"""
+        library = self.by_key()
+        return sorted({key for _role, key in self.assignments.items() if key not in library})
+
+    @property
+    def creator_image_model_names(self) -> List[str]:
+        return self.assignments.image_keys()
 
 
 @dataclass
@@ -547,6 +748,20 @@ class Plugins:
 
     enabled: bool = field(default=True, metadata={"description": "是否启用插件"})
     dir: str = field(default="./plugins", metadata={"description": "插件目录"})
+    proxy_mode: str = field(
+        default="system",
+        metadata={
+            "description": "插件下载代理模式：system 跟随系统/环境变量代理，none 直连，custom 使用自定义 HTTP 代理"
+        },
+    )
+    proxy_host: str = field(
+        default="127.0.0.1",
+        metadata={"description": "自定义代理地址（proxy_mode=custom 时生效）"},
+    )
+    proxy_port: int = field(
+        default=7890,
+        metadata={"description": "自定义代理端口（proxy_mode=custom 时生效）"},
+    )
 
 
 @dataclass
@@ -633,36 +848,64 @@ class Debug:
 
 
 @dataclass
-class Console:
-    """内置网页控制台配置。"""
+class Dashboard:
+    """内置网页面板（官方 dashboard 插件）配置。"""
 
     enabled: bool = field(
-        default=False,
-        metadata={"description": "是否启用可从外网访问的调试控制台"},
+        default=True,
+        metadata={
+            "description": "是否启用网页面板（默认开启）。登录密码不在此配置："
+            "未设置密码时只能从本机进入设置页，或由超级管理员在 QQ 私聊执行 /set_password"
+        },
     )
     host: str = field(
         default="0.0.0.0",
-        metadata={"description": "调试控制台监听地址；外网访问通常使用 0.0.0.0"},
+        metadata={
+            "description": "网页面板监听地址；0.0.0.0 对网络开放（默认），127.0.0.1 仅本机"
+        },
     )
     port: int = field(
         default=9981,
-        metadata={"description": "调试控制台首选端口；占用时自动向后查找"},
+        metadata={"description": "网页面板监听端口，默认 9981"},
     )
-    admin_enabled: bool = field(
+    base_path: str = field(
+        default="",
+        metadata={"description": "访问路径前缀；留空表示直接以 根路径 访问"},
+    )
+    manage_plugins: bool = field(
         default=True,
-        metadata={"description": "是否启用仅本机可访问的管理员控制台"},
+        metadata={"description": "是否允许在面板内安装、更新、启停和卸载插件"},
     )
-    admin_port: int = field(
-        default=9891,
-        metadata={"description": "管理员控制台首选端口；占用时自动向后查找"},
-    )
-    port_search_limit: int = field(
-        default=100,
-        metadata={"description": "从首选端口开始查找的端口数量，最大 100"},
+    allow_remote_manage: bool = field(
+        default=True,
+        metadata={
+            "description": "是否允许非本机来源执行管理操作（改配置、改 .env、插件管理、重启）；"
+            "关闭后仅本机可管理，远程只能查看"
+        },
     )
     session_timeout_minutes: int = field(
-        default=60,
-        metadata={"description": "控制台无操作会话过期时间（分钟）"},
+        default=720,
+        metadata={"description": "面板无操作会话过期时间（分钟）"},
+    )
+    log_buffer_size: int = field(
+        default=500,
+        metadata={"description": "面板保留的日志缓冲条数"},
+    )
+    bot_info_cache_ttl: int = field(
+        default=300,
+        metadata={"description": "机器人信息缓存秒数"},
+    )
+    history_max_days: int = field(
+        default=30,
+        metadata={"description": "消息统计历史保留天数"},
+    )
+    login_max_failures: int = field(
+        default=5,
+        metadata={"description": "同一 IP 在限速窗口内允许的登录失败次数"},
+    )
+    login_rate_limit_window_seconds: int = field(
+        default=600,
+        metadata={"description": "登录限速窗口（秒）"},
     )
     secure_cookies: bool = field(
         default=False,
@@ -674,16 +917,23 @@ class Console:
     )
 
     def __post_init__(self) -> None:
-        for name in ("port", "admin_port"):
-            value = getattr(self, name)
-            if not 1 <= value <= 65535:
-                raise ValueError(f"console.{name} 必须在 1 到 65535 之间")
-        if not 1 <= self.port_search_limit <= 100:
-            raise ValueError("console.port_search_limit 必须在 1 到 100 之间")
-        if not 5 <= self.session_timeout_minutes <= 1440:
-            raise ValueError("console.session_timeout_minutes 必须在 5 到 1440 之间")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("dashboard.port 必须在 1 到 65535 之间")
+        if not 5 <= self.session_timeout_minutes <= 10080:
+            raise ValueError("dashboard.session_timeout_minutes 必须在 5 到 10080 之间")
+        if not 1 <= self.log_buffer_size <= 10000:
+            raise ValueError("dashboard.log_buffer_size 必须在 1 到 10000 之间")
+        if self.login_max_failures < 1:
+            raise ValueError("dashboard.login_max_failures 至少为 1")
+        if self.login_rate_limit_window_seconds < 1:
+            raise ValueError("dashboard.login_rate_limit_window_seconds 至少为 1")
         if not self.host.strip():
-            raise ValueError("console.host 不能为空")
+            raise ValueError("dashboard.host 不能为空")
+        normalized = self.base_path.strip()
+        if normalized and not normalized.startswith("/"):
+            raise ValueError("dashboard.base_path 必须以 / 开头")
+        if normalized.endswith("/"):
+            raise ValueError("dashboard.base_path 不能以 / 结尾")
 
 
 @dataclass
@@ -1219,7 +1469,10 @@ class WebSearchConfig:
 class BotConfig:
     """机器人主配置。"""
 
-    version: str = field(default="0.4.0", metadata={"description": "配置文件版本"})
+    version: str = field(
+        default="0.6.0",
+        metadata={"description": "配置文件版本（由程序维护，请勿手动修改）", "readonly": True},
+    )
     bot: Bot = field(default_factory=Bot)
     chat: Chat = field(default_factory=Chat)
     models: Models = field(default_factory=Models)
@@ -1231,7 +1484,7 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
-    console: Console = field(default_factory=Console)
+    dashboard: Dashboard = field(default_factory=Dashboard)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)

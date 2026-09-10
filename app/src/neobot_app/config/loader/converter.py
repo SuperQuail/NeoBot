@@ -293,6 +293,57 @@ def _get_config_value(data: dict[Any, Any], field: dataclasses.Field) -> Any:
     return None
 
 
+def _dataclass_list_item_type(field_type: Any) -> Any | None:
+    """返回 List[dataclass] 的元素类型；非该形态返回 None。"""
+    if get_origin(field_type) is not list:
+        return None
+    args = get_args(field_type)
+    if len(args) == 1 and is_dataclass(args[0]):
+        return args[0]
+    return None
+
+
+def _assign_table_item(table: Any, key: str, value: Any, metadata: Any) -> None:
+    description = str(metadata.get("description", "") or "") if metadata else ""
+    if is_dataclass(value):
+        table[key] = _object_to_table(value)
+        return
+    if isinstance(value, dict):
+        table[key] = _object_to_table(value)
+        return
+    if isinstance(value, list) and any(
+        is_dataclass(item) or isinstance(item, dict) for item in value
+    ):
+        nested = tomlkit.aot()
+        for item in value:
+            nested.append(_object_to_table(item))
+        table[key] = nested
+        return
+    item = tomlkit.item(value)
+    if description and hasattr(item, "comment"):
+        item.comment(description)
+    table[key] = item
+
+
+def _object_to_table(value: Any) -> Any:
+    """把 dataclass 实例或 dict 递归转换为 TOML 表（支持嵌套表与表数组）。"""
+    table = tomlkit.table()
+    if is_dataclass(value):
+        for nested_field in fields(value):
+            _assign_table_item(
+                table,
+                nested_field.name,
+                getattr(value, nested_field.name),
+                nested_field.metadata,
+            )
+        return table
+    if isinstance(value, dict):
+        for key, item_value in value.items():
+            _assign_table_item(table, str(key), item_value, {})
+        return table
+    return tomlkit.item(value)
+
+
 def dataclass_to_toml(
     schema: type[T],
     existing_data: dict[Any, Any] | None = None,
@@ -343,6 +394,35 @@ def dataclass_to_toml(
                         f"期望 {field_type}, 实际 {type(raw_value).__name__}, "
                         f"值: {repr(raw_value)}. 将视为缺失项"
                     )
+
+        if _dataclass_list_item_type(field_type) is not None:
+            default_value = _get_default_data_value(default_data, field_name)
+            if default_value is None:
+                if field.default_factory is not MISSING:
+                    try:
+                        default_value = field.default_factory()
+                    except Exception:
+                        default_value = []
+                elif field.default is not MISSING:
+                    default_value = field.default
+            value_to_use = existing_value if existing_value is not None else default_value
+            if existing_value is None:
+                if required:
+                    missing_required.append(field_name)
+                else:
+                    missing_optional.append(field_name)
+            array = tomlkit.aot()
+            if description:
+                try:
+                    array.comment(
+                        f"{description} {'[必须项]' if required else '[可选项]'}"
+                    )
+                except Exception:
+                    pass
+            for entry in value_to_use or []:
+                array.append(_object_to_table(entry))
+            doc[field_name] = array
+            continue
 
         if is_dataclass(field_type):
             # 如果默认值是声明类型的子类，使用子类以包含额外字段

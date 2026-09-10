@@ -121,6 +121,12 @@ cov.xml
 /OpenAPI/
 /.continue/
 
+# Node / 前端构建
+node_modules/
+
+# 临时提交信息
+.commit-msg-*.tmp
+
 # uv lock file
 uv.lock
 /test/reports/

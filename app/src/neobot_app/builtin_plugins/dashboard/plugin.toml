@@ -1,0 +1,14 @@
+name = "dashboard"
+version = "1.0.0"
+description = "NeoBot 网页面板：运行监测、日志、插件管理、本体配置在线编辑"
+author = "NeoBot"
+homepage = "https://github.com/SuperQuail/NeoBot"
+license = "MIT"
+tags = ["official", "web", "console"]
+
+# 官方插件的配置来自本体 config.toml 的 [dashboard] 分区，
+# 本文件的 [config] 仅作为读取失败时的兜底默认值。
+[config]
+enabled = true
+host = "0.0.0.0"
+port = 9981

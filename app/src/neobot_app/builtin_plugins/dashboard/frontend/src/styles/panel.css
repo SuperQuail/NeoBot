@@ -1,0 +1,111 @@
+/* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
+
+.config-page { display: flex; flex-direction: column; gap: 16px; }
+
+.login-hints { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+
+.btn:disabled,
+.btn.primary:disabled,
+.btn.danger:disabled,
+.btn-sm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
+.cfg-top-tabs { align-items: center; justify-content: space-between; }
+
+.config-card { display: flex; flex-direction: column; gap: 14px; }
+.config-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cfg-search { max-width: 280px; }
+.config-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 12px; }
+.config-body { display: block; }
+
+.cfg-root { display: flex; flex-direction: column; gap: 16px; }
+.cfg-group { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--surface-2, transparent); display: flex; flex-direction: column; gap: 10px; }
+.cfg-section-heading { display: flex; align-items: center; gap: 10px; }
+.cfg-section-heading h3 { margin: 0; font-size: 14px; }
+.cfg-section-heading span { color: var(--muted, #889); font-size: 12px; }
+.cfg-hint { margin: 0 0 4px; }
+.cfg-row { display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 12px; align-items: start; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.cfg-row:last-child { border-bottom: none; }
+.cfg-label { display: flex; flex-direction: column; gap: 4px; }
+.cfg-label label { font-weight: 600; font-size: 13px; }
+.cfg-label p { margin: 0; color: var(--muted, #889); font-size: 12px; line-height: 1.5; }
+.cfg-control { display: flex; flex-direction: column; gap: 6px; }
+.cfg-control .input { width: 100%; }
+.cfg-list { gap: 12px; }
+.cfg-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.cfg-item-head { display: flex; align-items: center; gap: 8px; }
+.cfg-item-head strong { font-size: 13px; }
+.cfg-errors { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
+.cfg-errors code { color: var(--err, #d9534f); }
+
+.env-table { display: flex; flex-direction: column; gap: 4px; }
+.env-row { display: grid; grid-template-columns: minmax(200px, 260px) minmax(200px, 1fr) minmax(160px, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.env-head { font-size: 12px; color: var(--muted, #889); font-weight: 600; border-bottom: 1px solid var(--border); }
+.env-row.removed { opacity: 0.45; text-decoration: line-through; }
+.env-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.env-desc { line-height: 1.5; }
+.env-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.env-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.env-add .input { min-width: 200px; flex: 1; }
+
+.assign-grid { display: flex; flex-direction: column; gap: 6px; }
+.assign-row { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.assign-label { display: flex; flex-direction: column; gap: 3px; }
+.assign-label strong { font-size: 13px; }
+.assign-control { display: flex; flex-direction: column; gap: 6px; }
+.assign-control .input { max-width: 420px; }
+.assign-choices { display: flex; flex-direction: column; gap: 4px; }
+.assign-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
+.model-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.model-table th { text-align: left; font-size: 12px; color: var(--muted, #889); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.model-table td { padding: 7px 8px; border-bottom: 1px dashed var(--border); vertical-align: top; }
+.model-table code { font-size: 12px; }
+
+.service-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.service-row { display: grid; grid-template-columns: minmax(160px, 220px) 1fr auto; gap: 10px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.service-row code { font-size: 12px; }
+
+.plugin-source-filter { display: inline-flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--surface-2, rgba(127, 127, 127, 0.08)); }
+.plugin-source-filter button { border: none; background: transparent; padding: 4px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; color: inherit; }
+.plugin-source-filter button.active { background: var(--accent, #4a90e2); color: #fff; }
+.source-badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); color: var(--muted, #889); }
+.source-badge.official { border-color: var(--ok, #2f9e44); color: var(--ok, #2f9e44); }
+
+@media (max-width: 900px) {
+  .cfg-row { grid-template-columns: 1fr; }
+  .env-row { grid-template-columns: 1fr; }
+  .assign-row { grid-template-columns: 1fr; }
+  .service-row { grid-template-columns: 1fr; }
+}
+/* ── 热重载标记 / 配置历史 / 用量页 ── */
+.cfg-badges { display: inline-flex; gap: 6px; align-items: center; }
+.hot-badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
+.hot-badge.hot { color: var(--ok, #2f9e44); border-color: var(--ok, #2f9e44); }
+.hot-badge.cold { color: var(--warn, #d9822b); border-color: var(--warn, #d9822b); }
+.hot-badge.partial { color: var(--accent, #4a90e2); border-color: var(--accent, #4a90e2); }
+.cfg-collapse { border: none; background: transparent; color: inherit; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; }
+.cfg-collapse svg { width: 14px; height: 14px; transition: transform 0.15s ease; }
+.cfg-collapse[aria-expanded='true'] svg { transform: rotate(90deg); }
+.cfg-field-actions { display: inline-flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.cfg-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+.cfg-history li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.cfg-history code { font-size: 12px; word-break: break-all; }
+.cfg-changes { border: 1px solid var(--border); border-left: 3px solid var(--accent, #4a90e2); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
+.cfg-changes summary { cursor: pointer; margin-top: 6px; }
+.cfg-changes ul { margin: 4px 0 0; }
+
+.usage-page .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.usage-page .chart-axis { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; color: var(--muted, #889); margin-top: 4px; overflow: hidden; }
+.usage-page .chart-axis span { white-space: nowrap; }
+.usage-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+/* ── 模型连通性测试结果 ── */
+.probe-result .probe-headline { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+.probe-result .probe-headline.ok { color: var(--ok, #2f9e44); }
+.probe-result .probe-headline.err { color: var(--err, #d9534f); }
+.probe-result .model-table th { width: 150px; white-space: nowrap; }
+/* 模型编辑弹窗里的引用名提示 */
+.model-key-hint { margin: 0 0 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-key-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface-2, rgba(127,127,127,.1)); }

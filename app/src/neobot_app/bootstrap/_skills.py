@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from neobot_modloader import PluginRuntime
+from neobot_modloader import PluginInstaller, PluginRuntime, PluginStateStore
+from neobot_modloader.installer import ProxySettings
 
+from neobot_app.builtin_plugins import builtin_plugin_dirs
 from neobot_app.core import DATA_DIR
 from neobot_app.skills import build_all_skills
 
@@ -86,6 +88,30 @@ def build_skill_manager(
     )
 
 
+#: 官方插件名 -> config.toml 分区名。官方插件配置直接来自本体配置。
+OFFICIAL_CONFIG_SECTIONS: dict[str, str] = {"dashboard": "dashboard"}
+
+
+def build_official_config_provider(config: Any) -> Any:
+    """官方插件配置提供者：把本体配置分区转成插件可用的字典。"""
+    from dataclasses import asdict, is_dataclass
+
+    def provide(plugin_name: str) -> dict[str, Any] | None:
+        section = OFFICIAL_CONFIG_SECTIONS.get(str(plugin_name))
+        if section is None:
+            return None
+        target = getattr(config, section, None)
+        if target is None:
+            return None
+        if is_dataclass(target) and not isinstance(target, type):
+            return asdict(target)
+        if isinstance(target, dict):
+            return dict(target)
+        return None
+
+    return provide
+
+
 def build_plugin_runtime(
     *,
     config: Any,
@@ -101,9 +127,6 @@ def build_plugin_runtime(
     screenshots: "ScreenshotPort | None" = None,
     command_registry: Any = None,
 ) -> Any:
-    if not config.plugins.enabled:
-        return None
-
     plugin_dir = Path(config.plugins.dir)
     if not plugin_dir.is_absolute():
         plugin_dir = DATA_DIR / plugin_dir
@@ -150,6 +173,20 @@ def build_plugin_runtime(
         ) -> dict:
             return _media_sender_module.prepare_audio_segment(file_server, file_path)
 
+    state_store = PluginStateStore(
+        DATA_DIR / "plugin_state.json",
+        logger=logger_factory.get_logger("modloader.state"),
+    )
+    plugins_config = getattr(config, "plugins", None)
+    installer = PluginInstaller(
+        plugin_dir=plugin_dir,
+        logger=logger_factory.get_logger("modloader.installer"),
+        proxy=ProxySettings(
+            mode=str(getattr(plugins_config, "proxy_mode", "system") or "system"),
+            host=str(getattr(plugins_config, "proxy_host", "127.0.0.1") or "127.0.0.1"),
+            port=int(getattr(plugins_config, "proxy_port", 7890) or 7890),
+        ),
+    )
     plugin_runtime = PluginRuntime(
         plugin_dir=plugin_dir,
         data_dir=DATA_DIR / "plugins_data",
@@ -166,6 +203,11 @@ def build_plugin_runtime(
         screenshots=screenshots,
         app_commands=command_registry,
         auto_install_dependencies=True,
+        builtin_plugin_dirs=builtin_plugin_dirs(),
+        state_store=state_store,
+        official_config_provider=build_official_config_provider(config),
+        installer=installer,
+        user_plugins_enabled=bool(getattr(config.plugins, "enabled", True)),
     )
     plugin_runtime.load_all()
     return plugin_runtime

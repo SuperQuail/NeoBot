@@ -69,27 +69,12 @@ class _FakeAdapter:
         self.stop_calls += 1
 
 
-class _FakeConsole:
-    """记录 start/stop 调用的假内置控制台。"""
-
-    def __init__(self) -> None:
-        self.start_calls = 0
-        self.stop_calls = 0
-
-    async def start(self) -> None:
-        self.start_calls += 1
-
-    async def stop(self) -> None:
-        self.stop_calls += 1
-
-
 def _make_app(
     adapter: _FakeAdapter | None = None,
     file_server: _FakeFileServer | None = None,
     chat_stream: _FakeChatStream | None = None,
     ingress: _FakeIngress | None = None,
     browser_instance=None,
-    console_service: _FakeConsole | None = None,
     plugin_runtime=None,
     reply_orchestrator=None,
 ) -> NeoBotApplication:
@@ -124,7 +109,6 @@ def _make_app(
     app._background_coros = []
     app._background_tasks = []
     app._self_heal_manager = None
-    app._console_service = console_service
     return app
 
 
@@ -274,45 +258,6 @@ async def test_start_partial_failure_cleans_up_started_components() -> None:
 
 
 @pytest.mark.asyncio
-async def test_console_starts_early_even_when_adapter_fails() -> None:
-    """内置控制台必须在启动早期就绪: 即使 adapter 连接失败, 控制台也应已启动 (用于排查)。"""
-    # Arrange
-    console = _FakeConsole()
-    adapter = _FakeAdapter()
-    adapter.start = AsyncMock(side_effect=RuntimeError("adapter start failed"))
-    app = _make_app(adapter=adapter, console_service=console)
-
-    # Act
-    with pytest.raises(RuntimeError, match="adapter start failed"):
-        await app.start()
-
-    # Assert: 控制台已在 adapter 失败前启动; 回滚时应被停止
-    assert console.start_calls == 1
-    assert console.stop_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_console_started_before_adapter_connection_wait() -> None:
-    """adapter 连接等待 (超时) 期间控制台应已可访问。"""
-    # Arrange
-    console = _FakeConsole()
-    adapter = _FakeAdapter()
-    adapter.requires_connection_wait = True
-    adapter.wait_for_connection = lambda _timeout: (
-        False
-    )  # 连接超时 (同步函数, to_thread 调用)
-    app = _make_app(adapter=adapter, console_service=console)
-
-    # Act
-    with pytest.raises(Exception):
-        await app.start()
-
-    # Assert: 控制台先于连接等待启动, 失败回滚后停止
-    assert console.start_calls == 1
-    assert console.stop_calls == 1
-
-
-@pytest.mark.asyncio
 async def test_stop_cancels_reply_pipeline_before_agent_registry_close() -> None:
     """停机顺序：回复管线先于 AgentRegistry 关闭被取消；在途 delegate() 必须
     收到 CancelledError 而不是被转成友好文本后继续回复。"""
@@ -423,9 +368,9 @@ async def test_restart_requested_survives_graceful_shutdown() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_continues_after_exception_and_manager_cancelled_error() -> None:
-    class _FailingConsole:
-        async def stop(self) -> None:
-            raise RuntimeError("console failed")
+    class _FailingManager:
+        async def shutdown(self) -> None:
+            raise RuntimeError("manager failed")
 
     class _CancelledManager:
         async def shutdown(self) -> None:
@@ -433,8 +378,9 @@ async def test_stop_continues_after_exception_and_manager_cancelled_error() -> N
 
     vision = SimpleNamespace(close=AsyncMock())
     engine = SimpleNamespace(dispose=AsyncMock())
-    app = _make_app(console_service=_FailingConsole())
-    app._self_heal_manager = _CancelledManager()
+    app = _make_app()
+    app._self_heal_manager = _FailingManager()
+    app._problem_solver_manager = _CancelledManager()
     app._vision_provider = vision
     app._engine = engine
     app._started = True

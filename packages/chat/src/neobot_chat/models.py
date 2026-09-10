@@ -33,6 +33,10 @@ class ModelSettings:
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
+    #: 生图接口形态：auto / edits / generations（仅生图模型使用）
+    image_api: str = "auto"
+    #: generations 模式下参考图的 JSON 字段名
+    image_reference_param: str = "image"
 
 
 def _normalize_provider_kind(provider_name: str) -> str:
@@ -60,6 +64,10 @@ class RegisteredModel:
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: ModelSettings = field(default_factory=ModelSettings)
     native_vision: bool = False
+    #: 模型类型（chat / image / vision / tts / other），仅用于展示与分组
+    model_type: str = "chat"
+    #: 是否跟随系统/环境变量代理；默认 False = 直连
+    use_system_proxy: bool = False
 
     @property
     def provider_kind(self) -> str:
@@ -83,6 +91,7 @@ class RegisteredModel:
                 temperature=self.settings.temperature,
                 top_p=self.settings.top_p,
                 extra_body=self.settings.extra_body,
+                use_system_proxy=self.use_system_proxy,
             )
 
         if self.provider_kind == "deepseek":
@@ -98,6 +107,7 @@ class RegisteredModel:
                 frequency_penalty=self.settings.frequency_penalty,
                 presence_penalty=self.settings.presence_penalty,
                 extra_body=self.settings.extra_body,
+                use_system_proxy=self.use_system_proxy,
             )
 
         return OpenAIProvider(
@@ -112,6 +122,7 @@ class RegisteredModel:
             frequency_penalty=self.settings.frequency_penalty,
             presence_penalty=self.settings.presence_penalty,
             extra_body=self.settings.extra_body,
+            use_system_proxy=self.use_system_proxy,
         )
 
 

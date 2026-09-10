@@ -17,11 +17,13 @@ def build_command_service(
     markdown_image_converter: Any = None,
     file_server: Any = None,
     sleep_service: Any = None,
+    config_reload_callback: Any = None,
 ) -> Any:
     """构建命令服务(内置命令注册 + 配置保存/热重载回调)。
 
     markdown_image_converter/file_server 用于 /help 渲染图片(缺失时降级文本)。
     sleep_service 供 /sleep /awake 命令使用。
+    config_reload_callback 供 /reload 命令触发不重启进程的配置热重载。
     """
     from neobot_app.commands.service import CommandService
 
@@ -33,6 +35,7 @@ def build_command_service(
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
         sleep_service=sleep_service,
+        config_reload_callback=config_reload_callback,
     )
     return service
 
