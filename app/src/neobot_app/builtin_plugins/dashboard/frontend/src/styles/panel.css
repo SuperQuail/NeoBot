@@ -8,14 +8,19 @@
 .btn.primary:disabled,
 .btn.danger:disabled,
 .btn-sm:disabled {
-  opacity: 0.45;
+  opacity: 1;
   cursor: not-allowed;
-  filter: grayscale(0.4);
+  filter: none;
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--brand-nav);
 }
 .cfg-top-tabs { align-items: center; justify-content: space-between; }
 
 .config-card { display: flex; flex-direction: column; gap: 14px; }
 .config-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.config-toolbar .config-tabs { margin-bottom: 0; }
+.config-toolbar .btn { min-height: 34px; height: auto; padding-top: 7px; padding-bottom: 7px; }
 .cfg-search { max-width: 280px; }
 .config-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 12px; }
 .config-body { display: block; }

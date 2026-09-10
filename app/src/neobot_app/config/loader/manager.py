@@ -6,6 +6,11 @@ from typing import Any, Dict, Tuple, Type, TypeVar
 
 import tomlkit
 
+from neobot_app.config.availability import (
+    DegradeEverythingPolicy,
+    ModelAvailabilityPolicy,
+    ModelFinding,
+)
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
 from neobot_app.utils.atomic import atomic_write_text
@@ -164,13 +169,26 @@ class Config:
         return migrated
 
     @classmethod
-    def register_models(cls, config_obj: Any):
+    def register_models(
+        cls,
+        config_obj: Any,
+        *,
+        availability_policy: ModelAvailabilityPolicy | None = None,
+    ):
         """根据「模型库 + 调用方引用」注册模型。
 
         每个模型库条目按 key 注册一次；调用方（主对话/Agent/视觉/TTS/生图）
         只引用 key。未启用功能的模型（creator_image_models、tts_model）跳过注册与
-        Key 校验；无启用开关的模型（vision_model）缺 Key 时降级跳过并警告；
-        必需对话模型缺 Key 时收集全部缺失项后抛出 ConfigLoadError。
+        Key 校验。
+
+        缺配置的模型如何处置**由策略决定**（``availability_policy``），本方法只负责
+        收集事实、按结论记录日志并注册可用模型：
+
+        - 默认 ``DegradeEverythingPolicy``：缺 Key 一律降级 —— 对应功能不可用，
+          但进程照常启动，用户可以进面板补齐配置。这是「先有界面再修配置」的
+          运行模式所需要的；缺 Key 把进程带走，等于把用来修配置的界面也带走。
+        - 传入 ``ModelAvailabilityPolicy()`` 可恢复「必需角色缺配置即致命」的
+          严格语义（缺 Key 抛 ``ConfigLoadError``）。
         """
         models_config = getattr(config_obj, "models", None)
         if models_config is None:
@@ -187,8 +205,7 @@ class Config:
             get_model_registry,
         )
 
-        # 无独立 enabled 开关、缺 Key 时可降级跳过的角色
-        degradable_roles = {"vision_model", "tts_model"}
+        policy = availability_policy or DegradeEverythingPolicy()
 
         def _feature_enabled(role: str) -> bool:
             if role == "tts_model":
@@ -205,9 +222,9 @@ class Config:
         registry = get_model_registry()
 
         pending: list[tuple] = []
-        missing_items: list[str] = []
+        findings: list[ModelFinding] = []
 
-        # 调用方引用了模型库里不存在的 key：必需角色报错，可降级角色仅告警
+        # 调用方引用了模型库里不存在的 key：致命或降级由策略判定
         library_keys = (
             set(models_config.by_key()) if hasattr(models_config, "by_key") else set()
         )
@@ -219,11 +236,15 @@ class Config:
                 if not _feature_enabled(ref_role):
                     logger.info(f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_key}")
                     continue
-                detail = f"调用方 {ref_role} 引用了模型库中不存在的 key: {ref_key}"
-                if ref_role in degradable_roles:
-                    logger.warning(f"{detail}，该功能将被降级禁用")
-                    continue
-                missing_items.append(detail)
+                findings.append(
+                    ModelFinding(
+                        role=ref_role,
+                        key=str(ref_key),
+                        missing=(
+                            f"调用方 {ref_role} 引用了模型库中不存在的 key: {ref_key}",
+                        ),
+                    )
+                )
 
         iter_role_models = getattr(models_config, "iter_role_models", None)
         if callable(iter_role_models):
@@ -245,7 +266,13 @@ class Config:
 
             key = str(getattr(model_config, "key", "") or "").strip()
             if not key:
-                missing_items.append(f"{role} 引用的模型缺少 key（模型库条目的 key 不能为空）")
+                findings.append(
+                    ModelFinding(
+                        role=role,
+                        key="",
+                        missing=("引用的模型缺少 key（模型库条目的 key 不能为空）",),
+                    )
+                )
                 continue
             if key in registered_keys:
                 continue
@@ -271,11 +298,9 @@ class Config:
                     missing.append(f"平台 {provider_name}_APIKey 配置")
 
             if missing:
-                detail = f"模型 {key}（{role}）缺少: " + "、".join(missing)
-                if role in degradable_roles:
-                    logger.warning(f"{detail}，该功能将被降级禁用")
-                    continue
-                missing_items.append(detail)
+                findings.append(
+                    ModelFinding(role=role, key=key, missing=tuple(missing))
+                )
                 continue
             registered_keys.add(key)
 
@@ -323,13 +348,20 @@ class Config:
                 )
             )
 
-        if missing_items:
-            message = (
-                "配置校验失败，以下必需配置缺失（请补充对应平台的环境变量）：\n"
-                + "\n".join(f"  - {item}" for item in missing_items)
-            )
+        report = policy.classify(findings)
+        # 降级项逐条告警：具体哪个角色、哪个 key、缺什么，必须能一眼看到，
+        # 否则「能启动但不会回复」会变成难以定位的静默故障。
+        for message in report.degraded_messages():
+            logger.warning(f"{message}，该功能将被降级禁用")
+        if report.has_fatal:
+            message = report.fatal_message()
             logger.error(message)
             raise ConfigLoadError(message)
+        if report.has_degraded:
+            logger.warning(
+                f"模型注册完成：{len(report.degraded)} 个模型因配置缺失被降级，"
+                "对应功能不可用（补齐配置后重启或热重载即可恢复）"
+            )
 
         registry.clear()
 
@@ -370,8 +402,18 @@ class Config:
         return registry
 
     @classmethod
-    def load(cls, file_path: Path, schema: Type[T]) -> T:
-        """加载配置文件，如果不存在则生成，如果存在则检查并补全缺失项"""
+    def load(
+        cls,
+        file_path: Path,
+        schema: Type[T],
+        *,
+        availability_policy: ModelAvailabilityPolicy | None = None,
+    ) -> T:
+        """加载配置文件，如果不存在则生成，如果存在则检查并补全缺失项。
+
+        ``availability_policy`` 透传给 ``register_models``：缺配置的模型是致命还是
+        降级，由调用方按运行模式选择（默认全部降级，见 ``register_models``）。
+        """
         # 注册配置迁移(migrate_* 装饰器在 import 时注册)。
         # 必须在首次 load 前完成;懒加载避免模块初始化阶段的循环依赖。
         from neobot_app.config import migrations as _migrations  # noqa: F401
@@ -466,7 +508,7 @@ class Config:
                     logger.warning(f"  - {field}")
 
             logger.info("配置文件加载成功")
-            cls.register_models(config_obj)
+            cls.register_models(config_obj, availability_policy=availability_policy)
             return config_obj
         except ConfigLoadError:
             raise

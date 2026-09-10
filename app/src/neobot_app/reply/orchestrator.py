@@ -863,6 +863,28 @@ class ReplyOrchestrator:
         if deferred is not None:
             raise deferred
 
+    def install_provider(self, provider: Any, error_message: str | None = None) -> Any:
+        """换用新的回复 provider，返回被替换下来的旧 provider。
+
+        供配置热重载使用：模型名 / API Key 变化后必须重建 provider，而 provider
+        是编排器在构造时固化的。这里只做「换引用」，**不负责关闭旧 provider**
+        —— 由调用方在确认替换成功后统一清理，避免替换失败时旧 provider 已被关闭
+        导致服务不可用。
+        """
+        previous = self._provider
+        self._provider = provider
+        self._provider_error_message = error_message
+        self._logger.info(
+            "回复 provider 已更新",
+            model=getattr(provider, "model", "") or "",
+        )
+        return previous
+
+    @property
+    def provider(self) -> Any:
+        """当前回复 provider（只读，便于状态展示与测试断言）。"""
+        return self._provider
+
     def _resolve_mode(self) -> str:
         # 回退值必须与 config.schemas.bot.Chat.reply_mode 的默认值一致（agent），
         # 否则「字段缺失」时会静默降级成 common（只有基础回复能力）。

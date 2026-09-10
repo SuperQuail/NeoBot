@@ -43,3 +43,49 @@ jobs:
       - name: mypy（暂不阻断）
         continue-on-error: true
         run: uv run mypy app/src packages
+
+  # 网页面板前端（app/src/neobot_app/builtin_plugins/dashboard/frontend）
+  # 产物 web/ 随包分发并入库，因此这里既跑质量门禁，也校验产物与源码一致。
+  frontend:
+    name: 前端（lint / 类型 / 测试 / 产物一致性）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/src/neobot_app/builtin_plugins/dashboard/frontend
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/src/neobot_app/builtin_plugins/dashboard/frontend/pnpm-lock.yaml
+
+      - name: 安装依赖（严格用锁文件）
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint（阻断）
+        run: pnpm run lint
+
+      - name: TypeScript 类型检查（阻断）
+        run: pnpm run typecheck
+
+      - name: 单元测试（阻断）
+        run: pnpm run test
+
+      - name: 构建（阻断）
+        run: pnpm run build
+
+      # web/ 是入库产物：构建后若与提交内容有差异，说明改了源码没重新构建。
+      - name: 校验构建产物已同步（阻断）
+        run: |
+          if ! git diff --quiet -- ../web; then
+            echo "::error::web/ 构建产物与源码不一致，请在 frontend 目录执行 pnpm run build 并提交产物。"
+            git --no-pager diff --stat -- ../web
+            exit 1
+          fi

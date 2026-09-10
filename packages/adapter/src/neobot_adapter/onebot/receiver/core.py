@@ -1,7 +1,6 @@
 import asyncio
 import hmac
 import json
-import os
 import queue
 import threading
 import time
@@ -13,25 +12,11 @@ import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
+from neobot_adapter.onebot.receiver.settings import ReverseWsSettings
 from neobot_adapter.utils.logger import get_module_logger
-from neobot_adapter.utils.net import is_loopback_host
 from neobot_adapter.utils.parse import safe_parse_model
 
 logger = get_module_logger("adapter_receiver")
-
-
-def _env_ci(name: str) -> str | None:
-    """大小写不敏感地读取环境变量。
-
-    .env 文件中的键名由 load_env 原样写入 os.environ(保留用户大小写),
-    而 os.getenv 大小写敏感,用户写成 NEOBOT_ADAPTER_PORT / 小写变体时
-    会静默回落到默认值 —— 这里统一按大小写不敏感匹配,杜绝该坑。
-    """
-    target = name.casefold()
-    for key, value in os.environ.items():
-        if key.casefold() == target:
-            return value
-    return None
 
 
 def _extract_access_token(headers: Any, path: str) -> Optional[str]:
@@ -121,6 +106,37 @@ class AdapterCore:
         self._heartbeat_timeout_multiplier: float = heartbeat_timeout_multiplier
         self._heartbeat_checker_task: Optional[asyncio.Task] = None
         self._packet_callback = packet_callback
+        # 生命周期的串行化闸门：start/stop 由控制面调用，必须与接收线程的
+        # 启停临界区互斥，否则「停止 → 改配置 → 重启」序列会与在途启停交错。
+        self._lifecycle_lock = threading.Lock()
+        # 最近一次实际生效的监听设置（服务未运行时为 None）。
+        self._active_settings: Optional[ReverseWsSettings] = None
+
+    def resolve_settings(self) -> ReverseWsSettings:
+        """把当前字段解析为实际监听设置（构造参数 > 环境变量 > 默认值）。
+
+        每次调用都重新解析，因此运行期修改 host/port/access_token 后，
+        下一次启动接收线程即生效。
+        """
+        return ReverseWsSettings.resolve(
+            host=self.host,
+            port=self.port,
+            access_token=self.access_token,
+        )
+
+    @property
+    def settings(self) -> ReverseWsSettings:
+        """当前解析后的监听设置（供状态展示与重配比较）。"""
+        return self.resolve_settings()
+
+    def apply_settings(self, settings: ReverseWsSettings) -> None:
+        """写入新的监听设置（仅改字段，不触碰运行中的接收线程）。
+
+        实际的「停下旧服务 → 用新设置重启」由控制面按需编排。
+        """
+        self.host = settings.host
+        self.port = settings.port
+        self.access_token = settings.access_token
 
     def wait_for_connection(self, timeout: Optional[float] = None) -> bool:
         """等待直到有框架连接建立
@@ -163,12 +179,13 @@ class AdapterCore:
         return self._api_instance
 
     def start(self):
-        if self.thread and self.thread.is_alive():
-            logger.error("接收器已在运行")
-            return
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._run_thread_target, daemon=True)
-        self.thread.start()
+        with self._lifecycle_lock:
+            if self.thread and self.thread.is_alive():
+                logger.error("接收器已在运行")
+                return
+            self._stop_event.clear()
+            self.thread = threading.Thread(target=self._run_thread_target, daemon=True)
+            self.thread.start()
         logger.info("接收器已启动")
 
     def stop(self, timeout: float = 8.0) -> bool:
@@ -178,27 +195,29 @@ class AdapterCore:
         则最终兜底取消其残留的事件循环任务，让守护线程保持隔离，
         避免阻塞应用永久无法退出。
         """
-        logger.info("正在停止接收器...")
-        self._stop_event.set()
-        loop = self.loop
-        async_stop_event = self._async_stop_event
-        if loop is not None and loop.is_running() and async_stop_event is not None:
-            loop.call_soon_threadsafe(async_stop_event.set)
+        with self._lifecycle_lock:
+            logger.info("正在停止接收器...")
+            self._stop_event.set()
+            loop = self.loop
+            async_stop_event = self._async_stop_event
+            if loop is not None and loop.is_running() and async_stop_event is not None:
+                loop.call_soon_threadsafe(async_stop_event.set)
 
-        thread = self.thread
-        if thread is None:
-            return True
-        thread.join(timeout=max(0.0, timeout))
-        if thread.is_alive() and loop is not None and loop.is_running():
-            logger.warning("接收器正常停止超时，正在取消残留任务")
-            loop.call_soon_threadsafe(self._cancel_loop_tasks)
-            thread.join(timeout=1.0)
-        stopped = not thread.is_alive()
-        if not stopped:
-            logger.error("接收器停止兜底超时，后台守护线程将由进程退出时回收")
-        else:
-            self.thread = None
-        return stopped
+            thread = self.thread
+            if thread is None:
+                return True
+            thread.join(timeout=max(0.0, timeout))
+            if thread.is_alive() and loop is not None and loop.is_running():
+                logger.warning("接收器正常停止超时，正在取消残留任务")
+                loop.call_soon_threadsafe(self._cancel_loop_tasks)
+                thread.join(timeout=1.0)
+            stopped = not thread.is_alive()
+            if not stopped:
+                logger.error("接收器停止兜底超时，后台守护线程将由进程退出时回收")
+            else:
+                self.thread = None
+                self._active_settings = None
+            return stopped
 
     def get_message(self, block: bool = True, timeout: Optional[float] = None):
         try:
@@ -226,52 +245,28 @@ class AdapterCore:
                 task.cancel()
 
     async def _run_server(self):
-        # 端口来源优先级:构造参数(配置系统) > 环境变量 > 默认。
-        # 环境变量兼容链(均大小写不敏感):
-        #   NEO_BOT_ADAPTER_*     反向 WS 规范键
-        #   NEOBOT_ADAPTER_*      老版本无 Local 字样的键(配置迁移期)
-        #   NEOBOT_LOCAL_ADAPTER_* local 专用键;生产环境长期用它配端口,
-        #                           onebot 模式下回退读取,避免"配了 8091 实际监听 8080"
-        host = (
-            self.host
-            or _env_ci("NEO_BOT_ADAPTER_HOST")
-            or _env_ci("NEOBOT_ADAPTER_HOST")
-            or _env_ci("NEOBOT_LOCAL_ADAPTER_HOST")
-            or "0.0.0.0"
-        )
-        port = self.port
-        if port is None:
-            env_port = (
-                _env_ci("NEO_BOT_ADAPTER_PORT")
-                or _env_ci("NEOBOT_ADAPTER_PORT")
-                or _env_ci("NEOBOT_LOCAL_ADAPTER_PORT")
-            )
-            port = int(env_port) if env_port else 8080
+        # 监听设置的解析规则（构造参数 > 环境变量 > 默认值）由 ReverseWsSettings
+        # 统一负责，本方法只使用解析结果。
+        settings = self.resolve_settings()
+        self._active_settings = settings
         self._async_stop_event = asyncio.Event()
-        if not self.access_token and not is_loopback_host(host):
-            logger.warning(
-                "反向 WebSocket 未配置 access token 且监听非回环地址 "
-                f"({host}:{port})：该网段内任何主机都能连入并注入伪造事件。"
-                "请在 [adapter].reverse_ws_access_token 与 OneBot 框架反向 WS 的 "
-                "token 中填入同一个值。"
-            )
+        warning = settings.security_warning()
+        if warning is not None:
+            logger.warning(warning)
         # 路径（文档约定 /onebot）由框架自己配置，服务端不限制；
         # 10MiB 帧上限以容纳 base64 大图等超 1MiB 默认上限的负载。
         serve_kwargs: dict[str, Any] = {"max_size": 10 * 2**20}
-        if self.access_token:
+        if settings.token_enabled:
             # OneBot 11 鉴权：反向 WebSocket 由框架（客户端）在握手请求头中
             # 携带 Authorization: Bearer <access_token>，服务端在此校验。
             serve_kwargs["process_request"] = self._authorize_handshake
         server = await websockets.serve(
             self._handle_client,
-            host,
-            port,
+            settings.host,
+            settings.port,
             **serve_kwargs,
         )
-        logger.info(
-            f"反向 WebSocket 服务运行于 ws://{host}:{port}"
-            f"（access token 校验：{'已启用' if self.access_token else '未启用'}）"
-        )
+        logger.info(f"反向 WebSocket 服务运行于 {settings.describe()}")
         try:
             if not self._stop_event.is_set():
                 await self._async_stop_event.wait()

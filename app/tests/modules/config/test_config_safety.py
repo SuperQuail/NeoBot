@@ -63,12 +63,11 @@ def test_broken_toml_does_not_write_backup(monkeypatch, tmp_path: Path) -> None:
 def test_missing_file_is_generated_as_parseable_toml(
     monkeypatch, tmp_path: Path
 ) -> None:
+    """缺平台密钥不影响配置文件生成：文件必须已生成且可解析。"""
     _clear_platform_env(monkeypatch)
     cfg_path = tmp_path / "bot.toml"
 
-    # 缺平台密钥时仍会抛 ConfigLoadError，但文件已经生成
-    with pytest.raises(ConfigLoadError):
-        Config.load(cfg_path, BotConfig)
+    Config.load(cfg_path, BotConfig)
 
     assert cfg_path.is_file()
     doc = tomlkit.parse(cfg_path.read_text(encoding="utf-8")).unwrap()
@@ -86,8 +85,7 @@ def test_write_back_is_atomic_and_leaves_no_temp_files(
         "neobot_app.config.loader.manager.backup_config", lambda *a, **k: None
     )
 
-    with pytest.raises(ConfigLoadError):
-        Config.load(cfg_path, BotConfig)
+    Config.load(cfg_path, BotConfig)
 
     doc = tomlkit.parse(cfg_path.read_text(encoding="utf-8")).unwrap()
     assert doc["bot"]["account"] == 10001  # 用户填的值必须保留
