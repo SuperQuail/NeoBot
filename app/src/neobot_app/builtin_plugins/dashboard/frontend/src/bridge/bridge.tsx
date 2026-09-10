@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import type { PerspectiveCamera } from 'three';
 import { clearToken } from '../api/client';
 import { BridgeEngine, type HudSnapshot, type InteractionTarget } from './core/engine';
 import { initSound, isMuted, sfx, toggleMuted } from './core/sound';
@@ -23,8 +24,10 @@ import {
 } from './core/store';
 import { ITEMS, STATIONS, STATION_BY_ID, type ItemId, type PanelId, type Station } from './core/types';
 import { hasCritical, useVitals } from './core/vitals';
+import { PanelCompositor } from './three/composite';
 import Boot from './ui/Boot';
 import Hud from './ui/Hud';
+import PanelAnchor from './ui/PanelAnchor';
 import { HelpOverlay, InventoryOverlay, NavOverlay, TerminalFrame, TerminalSwitcher } from './ui/Overlays';
 import { PANEL_META, PANEL_COMPONENTS, type PanelProps } from './ui/panels';
 import { META as MINIGAME_META, MINIGAME_COMPONENTS, type MiniGameKey } from './ui/minigames';
@@ -59,12 +62,16 @@ export default function Bridge() {
   const vitals = useVitals();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<BridgeEngine | null>(null);
+  const compositorRef = useRef<PanelCompositor | null>(null);
+  const [compositor, setCompositor] = useState<PanelCompositor | null>(null);
   const [phase, setPhase] = useState<Phase>('boot');
   const [snapshot, setSnapshot] = useState<HudSnapshot>(EMPTY_SNAPSHOT);
   const [target, setTarget] = useState<InteractionTarget | null>(null);
   const [locked, setLocked] = useState(false);
   const [panel, setPanel] = useState<PanelId | null>(null);
+  const [panelClosing, setPanelClosing] = useState(false);
   const [overlay, setOverlay] = useState<OverlayKind>(null);
   const [miniGame, setMiniGame] = useState<MiniGameKey | null>(null);
   const [notices, setNotices] = useState<BridgeNotice[]>([]);
@@ -77,13 +84,24 @@ export default function Bridge() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || engineRef.current) return;
+    // 合成器要先生成：引擎构造时需要用它的 render target 画深度
+    let panelCompositor: PanelCompositor | null = null;
+    if (overlayCanvasRef.current) {
+      panelCompositor = new PanelCompositor(overlayCanvasRef.current);
+      compositorRef.current = panelCompositor;
+      setCompositor(panelCompositor);
+    }
     let engine: BridgeEngine;
     try {
       engine = new BridgeEngine({
         canvas,
+        compositor: panelCompositor ?? undefined,
         callbacks: {
           onTargetChange: setTarget,
-          onOpenPanel: (id) => setPanel(id),
+          onOpenPanel: (id) => {
+            setPanelClosing(false);
+            setPanel(id);
+          },
           onLaunchMiniGame: (key) => {
             if (key === 'turret' || key === 'circuit' || key === 'cargo') setMiniGame(key);
           },
@@ -95,6 +113,8 @@ export default function Bridge() {
       setFatal(
         `无法初始化 WebGL 渲染：${(error as Error).message}。可改用经典控制台，或更换支持 WebGL2 的浏览器。`,
       );
+      panelCompositor?.dispose();
+      compositorRef.current = null;
       return;
     }
     engineRef.current = engine;
@@ -105,8 +125,33 @@ export default function Bridge() {
       document.removeEventListener('pointerlockchange', syncLock);
       engine.dispose();
       engineRef.current = null;
+      compositorRef.current?.dispose();
+      compositorRef.current = null;
+      setCompositor(null);
     };
   }, []);
+
+  // 面板开关时通知引擎：只有打开才做深度预处理
+  useEffect(() => {
+    engineRef.current?.setPanelActive(panel !== null);
+  }, [panel]);
+
+  // 收起动画播完 → 真正卸载面板
+  useEffect(() => {
+    if (!panelClosing) return;
+    const timer = window.setTimeout(() => {
+      setPanel(null);
+      setPanelClosing(false);
+      engineRef.current?.input.requestLock();
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [panelClosing]);
+
+  const getCamera = useCallback((): PerspectiveCamera | null => engineRef.current?.camera ?? null, []);
+  const getViewport = useCallback(
+    () => engineRef.current?.viewport ?? { width: 0, height: 0 },
+    [],
+  );
 
   // 面板 / 浮层 / 小游戏打开时冻结移动并释放指针
   useEffect(() => {
@@ -234,12 +279,13 @@ export default function Bridge() {
   );
 
   const handleClosePanel = useCallback(() => {
-    setPanel(null);
-    engineRef.current?.input.requestLock();
+    // 先播收起动画，动画结束（见 panelClosing 的 effect）再卸载并交回指针
+    setPanelClosing(true);
   }, []);
 
   const handleOpenStation = useCallback((id: PanelId) => {
     setOverlay(null);
+    setPanelClosing(false);
     setPanel(id);
     sfx.open();
   }, []);
@@ -247,6 +293,7 @@ export default function Bridge() {
   const handleWarp = useCallback((id: PanelId) => {
     engineRef.current?.warpTo(STATION_BY_ID[id]);
     setOverlay(null);
+    setPanelClosing(false);
     setPanel(id);
   }, []);
 
@@ -300,6 +347,13 @@ export default function Bridge() {
   return (
     <div className={`bridge${miniGame ? ' bridge-minigame' : ''}`}>
       <canvas ref={canvasRef} className="bridge-canvas" onClick={handleCanvasClick} aria-label="舰内第一人称视图" />
+      {/* 合成层：夹在主画面与 DOM 面板之间。
+          它负责「深度遮挡」——被舱壁挡住的像素 alpha 归零，于是 DOM 面板从那里
+          透出来的是场景本身，面板边缘会被门框、货箱正确地切开。
+          这一层必须始终存在（哪怕面板没开），否则面板永远浮在最上面。 */}
+      <canvas ref={overlayCanvasRef} className="bridge-overlay" aria-hidden="true" />
+      {/* 面板打开时压暗场景：注意力集中到终端上，同时掩盖面板穿透导致的观感问题 */}
+      <div className={`bridge-dimmer${panel ? ' is-on' : ''}`} aria-hidden="true" />
 
       {fatal && (
         <div className="bridge-fatal" role="alert">
@@ -384,7 +438,20 @@ export default function Bridge() {
       {overlay === 'help' && <HelpOverlay onOpenClassic={handleExitToClassic} onClose={() => setOverlay(null)} />}
 
       {activeStation && !miniGame && (
-        <PanelHost station={activeStation} vitals={vitals} onClose={handleClosePanel} onLaunchMiniGame={setMiniGame} />
+        <PanelAnchor
+          station={activeStation}
+          getCamera={getCamera}
+          getViewport={getViewport}
+          compositor={compositor}
+          closing={panelClosing}
+        >
+          <PanelHost
+            station={activeStation}
+            vitals={vitals}
+            onClose={handleClosePanel}
+            onLaunchMiniGame={setMiniGame}
+          />
+        </PanelAnchor>
       )}
 
       {miniGame && miniGameMeta && MiniGameComponent && (

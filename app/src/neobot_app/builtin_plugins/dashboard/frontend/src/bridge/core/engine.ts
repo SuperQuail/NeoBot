@@ -25,6 +25,7 @@ import { addDistance, collectItem, getLog, markVisited, notify } from './store';
 import { STATIONS, type PanelId, type Station, type VitalKey } from './types';
 import { vitalStatus } from './vitals';
 import { buildShip, type ShipHandle, type ShipInteractable } from '../three/ship';
+import type { PanelCompositor } from '../three/composite';
 
 /** 面向 React 的每帧（节流后）快照 */
 export interface HudSnapshot {
@@ -80,6 +81,8 @@ export interface EngineOptions {
   callbacks?: EngineCallbacks;
   /** 画质：low 用于小屏/低端设备，关闭阴影与环境反射 */
   quality?: 'low' | 'high';
+  /** 面板合成器：把 DOM 面板按深度遮挡地贴进场景（桥接层负责创建） */
+  compositor?: PanelCompositor;
 }
 
 const INTERACT_RANGE = 3.4;
@@ -122,11 +125,20 @@ export class BridgeEngine {
   private readonly resizeObserver: ResizeObserver | null = null;
   private readonly look = new THREE.Vector3();
   private paused = false;
+  private readonly compositor: PanelCompositor | null;
+  private viewportWidth = 1;
+  private viewportHeight = 1;
+  private frameCount = 0;
+  /** 面板是否打开：打开时才做深度预处理，关闭时省下一次全场景绘制 */
+  private panelActive = false;
+  /** 深度预处理用的临时容器场景（舰体临时挂进来画一次深度，随后挂回主场景） */
+  private readonly depthHolder = new THREE.Scene();
 
   constructor(options: EngineOptions) {
     this.canvas = options.canvas;
     this.callbacks = options.callbacks ?? {};
     this.quality = options.quality ?? 'high';
+    this.compositor = options.compositor ?? null;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: options.canvas,
@@ -335,7 +347,47 @@ export class BridgeEngine {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.compositor?.resize(width, height, window.devicePixelRatio || 1);
+    this.viewportWidth = width;
+    this.viewportHeight = height;
   };
+
+  /** 视口尺寸（CSS 像素）：桥接层投影 DOM 面板时要用同一套坐标 */
+  get viewport(): { width: number; height: number } {
+    return { width: this.viewportWidth, height: this.viewportHeight };
+  }
+
+  /** 帧序号：桥接层据此判断引擎是否又画了一帧，避免重复投影 */
+  get frameId(): number {
+    return this.frameCount;
+  }
+
+  /**
+   * 预处理舰体深度，供面板合成器判断遮挡。
+   *
+   * 必须在主渲染器上执行（render target 属于主上下文），因此由引擎来画。
+   * overrideMaterial 只有 Scene 才有，而舰体是 Scene 下的一个 Group，
+   * 所以这里用一个专用的临时场景把舰体装进去再画——只画舰体是刻意的：
+   * 尘埃与星空不该挡住面板。
+   */
+  private capturePanelDepth(): void {
+    const compositor = this.compositor;
+    const ship = this.ship;
+    if (!compositor || !ship || !compositor.isSupported) return;
+    compositor.captureDepth((target, material) => {
+      const holder = this.depthHolder;
+      holder.add(ship.root);
+      holder.overrideMaterial = material;
+      // 深度比较用的是相机空间米数，与色调映射/颜色空间无关，保持默认即可
+      this.renderer.setRenderTarget(target);
+      this.renderer.clear();
+      this.renderer.render(holder, this.camera);
+      this.renderer.setRenderTarget(null);
+      holder.overrideMaterial = null;
+      // 立刻把舰体还回主场景，避免主渲染少画一帧
+      this.scene.add(ship.root);
+    });
+  }
 
   // ------------------------------------------------------------------
   // 每帧
@@ -367,7 +419,13 @@ export class BridgeEngine {
     this.ensureNotStuck();
     this.handleActions();
 
+    // 深度预处理放在主渲染**之前**：它要用主渲染器把舰体画进离屏目标，
+    // 画完把 renderTarget 复位，接着画主画面即可。
+    // 面板没打开时完全跳过——省下一次全场景绘制。
+    if (this.panelActive) this.capturePanelDepth();
+
     this.renderer.render(this.scene, this.camera);
+    this.frameCount += 1;
 
     // 帧率统计 + 快照节流（HUD 不需要每帧重渲染）
     this.frames += 1;
@@ -678,9 +736,13 @@ export class BridgeEngine {
     return this.currentTarget;
   }
 
+  /** 面板开关状态：打开时才做深度预处理 */
+  setPanelActive(active: boolean): void {
+    this.panelActive = active;
+  }
+
   /** 舰内跃迁：瞬移到终端门前并朝内站立 */
-  warpTo(station: Station): void {
-    const [x, y, z] = station.anchor;
+  warpTo(station: Station): void {    const [x, y, z] = station.anchor;
     // 从终端法线方向后退 2.4m：终端面朝 facing，玩家应站在 facing 的反方向
     const offset = 2.4;
     const target: Vec3 = [x - Math.sin(station.facing) * offset, y, z - Math.cos(station.facing) * offset];

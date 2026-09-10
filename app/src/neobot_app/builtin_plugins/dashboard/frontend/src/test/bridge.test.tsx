@@ -36,6 +36,12 @@ import {
 } from '../bridge/core/collision';import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
 import { Player } from '../bridge/core/player';
 import { doorDistance } from '../bridge/core/engine';
+import {
+  PIXELS_PER_METER,
+  panelPlaneFromStation,
+  perspectiveDistance,
+  projectPanel,
+} from '../bridge/three/projector';
 import { STATIONS, ITEMS, ITEM_IDS, ACHIEVEMENTS, type ItemId } from '../bridge/core/types';
 import {
   __setLogForTest,
@@ -376,6 +382,191 @@ describe('舱门感应', () => {
     } finally {
       handle.dispose();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 面板投影（把 DOM 面板贴到终端屏幕上）
+//
+// 这组用例守住的是「面板与 WebGL 相机逐像素对齐」这件事：投影公式里
+// 透视距离、视角原点、Y 轴取负任何一处写错，面板都会飘到别的地方或上下颠倒，
+// 而这类错误在静态检查里完全看不出来。
+// ---------------------------------------------------------------------------
+
+describe('面板投影', () => {
+  /** 让相机站在终端正前方看着它，并同步相机世界矩阵 */
+  function cameraLookingAt(target: THREE.Vector3, from: THREE.Vector3, facing: number) {
+    const camera = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+    camera.position.copy(from);
+    // 用 lookAt 与 Player.applyToCamera 保持同一套姿态约定
+    const up = new THREE.Vector3(0, 1, 0);
+    camera.up.copy(up);
+    camera.lookAt(target);
+    camera.updateMatrixWorld(true);
+    void facing;
+    return camera;
+  }
+
+  const VIEWPORT = { width: 1600, height: 900 };
+
+  it('正对终端时，面板中心投在屏幕中心、四角顺序正确', () => {
+    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const camera = cameraLookingAt(
+      new THREE.Vector3(0, 1.5, -29.2),
+      new THREE.Vector3(0, 1.5, -26),
+      0,
+    );
+    const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+
+    expect(projected.behind).toBe(false);
+    // 站位在 z=-29.2，面板中心向玩家一侧浮出 0.55m ⇒ 平面在 z=-28.65；
+    // 相机站在 z=-26，因此距离是 2.65m（这一条同时验证了 forward 偏移生效）
+    expect(projected.distance).toBeCloseTo(2.65, 2);
+
+    // 四角：0=左下 1=右下 2=右上 3=左上（屏幕坐标 y 向下 ⇒ 下方的 y 更大）
+    const [bl, br, tr, tl] = projected.quad;
+    expect(bl.x).toBeLessThan(br.x);
+    expect(bl.y).toBeGreaterThan(tl.y);
+    expect(tr.x).toBeGreaterThan(tl.x);
+    expect(br.y).toBeGreaterThan(tr.y);
+    // 面板中心应落在屏幕中心附近（相机正对且水平居中）
+    const centerX = (bl.x + br.x + tr.x + tl.x) / 4;
+    const centerY = (bl.y + br.y + tr.y + tl.y) / 4;
+    expect(centerX).toBeCloseTo(VIEWPORT.width / 2, 0);
+    expect(centerY).toBeCloseTo(VIEWPORT.height / 2, 0);
+  });
+
+  it('面板基是右手系（right×up 与法线同向）：否则文字会被水平镜像', () => {
+    for (const facing of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      const plane = panelPlaneFromStation([0, 0, 0], facing, { height: 1.5 });
+      // 基必须右手：right × up == normal。取反会让面板矩阵行列式为 -1，
+      // CSS 渲染出来就是左右镜像的文字。
+      const cross = new THREE.Vector3().crossVectors(plane.right, plane.up);
+      expect(cross.dot(plane.normal)).toBeCloseTo(1, 6);
+
+      const camera = cameraLookingAt(
+        new THREE.Vector3(plane.center.x, plane.center.y, plane.center.z),
+        new THREE.Vector3(
+          plane.center.x + plane.normal.x * 3,
+          plane.center.y,
+          plane.center.z + plane.normal.z * 3,
+        ),
+        facing,
+      );
+      const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+      // 正对时：左下的 x 必须小于右下（屏幕坐标 x 向右），顺序反了就是镜像
+      expect(projected.quad[0].x).toBeLessThan(projected.quad[1].x);
+      expect(projected.quad[3].x).toBeLessThan(projected.quad[2].x);
+      // 元素左上角在本地下方 / 上方的关系也要正确
+      expect(projected.quad[0].y).toBeGreaterThan(projected.quad[3].y);
+    }
+  });
+
+  it('相机后退时面板变小、变远，但始终正对', () => {
+    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const near = projectPanel(
+      cameraLookingAt(new THREE.Vector3(0, 1.5, -29.2), new THREE.Vector3(0, 1.5, -27.5), 0),
+      plane,
+      VIEWPORT.width,
+      VIEWPORT.height,
+    );
+    const far = projectPanel(
+      cameraLookingAt(new THREE.Vector3(0, 1.5, -29.2), new THREE.Vector3(0, 1.5, -22), 0),
+      plane,
+      VIEWPORT.width,
+      VIEWPORT.height,
+    );
+
+    const width = (p: typeof near) => Math.hypot(p.quad[1].x - p.quad[0].x, p.quad[1].y - p.quad[0].y);
+    expect(width(far)).toBeLessThan(width(near));
+    expect(far.distance).toBeGreaterThan(near.distance);
+    expect(far.facing).toBeGreaterThan(0.9);
+  });
+
+  it('背对终端时 behind 为真（不应渲染那块假面板）', () => {
+    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    // 站在终端背后，朝远离它的方向看
+    const camera = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+    camera.position.set(0, 1.5, -30.5);
+    camera.lookAt(new THREE.Vector3(0, 1.5, -34));
+    camera.updateMatrixWorld(true);
+
+    const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+    expect(projected.facing).toBeLessThan(0);
+    expect(projected.behind).toBe(true);
+  });
+
+  it('视角原点落在面板元素内部（用于修正 CSS 的 perspective-origin）', () => {
+    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const camera = cameraLookingAt(
+      new THREE.Vector3(0, 1.5, -29.2),
+      new THREE.Vector3(0, 1.5, -26),
+      0,
+    );
+    const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+
+    // 正对时消失点应在元素中心的像素位置
+    expect(projected.principalX).toBeCloseTo((plane.width / 2) * 150, 0);
+    expect(projected.principalY).toBeCloseTo((plane.height / 2) * 150, 0);
+
+    // 测视（相机偏到一侧）时消失点应随之偏移，而不是固定在中心
+    const offAxis = cameraLookingAt(
+      new THREE.Vector3(0.6, 1.5, -29.2),
+      new THREE.Vector3(1.5, 1.5, -26),
+      0,
+    );
+    const off = projectPanel(offAxis, plane, VIEWPORT.width, VIEWPORT.height);
+    expect(Math.abs(off.principalX - projected.principalX)).toBeGreaterThan(1);
+  });
+
+  it('投影矩阵与手算的相机空间结果一致（防止整体错位）', () => {
+    const plane = panelPlaneFromStation([12, 0, -24], -Math.PI / 2, { height: 1.5, forward: 0.55 });
+    const camera = cameraLookingAt(
+      new THREE.Vector3(12, 1.5, -24),
+      new THREE.Vector3(9.4, 1.5, -22),
+      -Math.PI / 2,
+    );
+    const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+
+    // 用 projector 暴露的矩阵反推四角，必须与 quad 完全吻合
+    const numbers = projected.transform
+      .replace('matrix3d(', '')
+      .replace(')', '')
+      .split(',')
+      .map(Number);
+    expect(numbers).toHaveLength(16);
+    const matrix = new THREE.Matrix4().fromArray(numbers);
+    // CSS 矩阵的 Y 行取过负，还原回 three 的约定
+    matrix.elements[1] *= -1;
+    matrix.elements[5] *= -1;
+    matrix.elements[9] *= -1;
+    matrix.elements[13] *= -1;
+
+    const world = new THREE.Vector3();
+    const localCorners: Array<[number, number]> = [
+      [-plane.width / 2, -plane.height / 2],
+      [plane.width / 2, -plane.height / 2],
+    ];
+    localCorners.forEach(([lx, ly], index) => {
+      world
+        .copy(plane.center)
+        .addScaledVector(plane.right, lx)
+        .addScaledVector(plane.up, ly)
+        .applyMatrix4(new THREE.Matrix4().copy(camera.matrixWorld).invert());
+      const clip = new THREE.Vector4(world.x, world.y, world.z, 1).applyMatrix4(camera.projectionMatrix);
+      const invW = 1 / Math.max(1e-6, Math.abs(clip.w));
+      const expectedX = ((clip.x * invW + 1) / 2) * VIEWPORT.width;
+      const expectedY = ((1 - clip.y * invW) / 2) * VIEWPORT.height;
+      expect(projected.quad[index].x).toBeCloseTo(expectedX, 3);
+      expect(projected.quad[index].y).toBeCloseTo(expectedY, 3);
+    });
+  });
+
+  it('透视距离由竖直视场角决定（CSS 与 WebGL 用同一个焦距）', () => {
+    const camera = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+    // d = (h/2) / tan(fov/2)
+    const expected = 900 / 2 / Math.tan((74 * Math.PI) / 180 / 2);
+    expect(perspectiveDistance(camera, 900)).toBeCloseTo(expected, 4);
   });
 });
 

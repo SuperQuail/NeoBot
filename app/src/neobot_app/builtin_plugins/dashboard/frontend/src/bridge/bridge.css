@@ -45,6 +45,36 @@
   cursor: crosshair;
 }
 
+/* 全息合成层：夹在主画面与面板之间。
+   它只画「面板四边形范围内的辉光/噪点」，并按深度把被遮挡的像素 alpha 归零；
+   真正裁掉 DOM 面板靠的是下面 .panel-anchor-fullscreen 之外的 mix-blend 技巧，
+   见 composite.ts 的说明。 */
+.bridge-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* 面板打开时压暗场景：把注意力收到终端上，同时让全息面板的亮度显得更高 */
+.bridge-dimmer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity 0.34s ease;
+  background:
+    radial-gradient(60% 55% at 50% 52%, rgba(0, 0, 0, 0) 0%, rgba(1, 4, 9, 0.55) 62%, rgba(1, 4, 9, 0.86) 100%);
+}
+
+.bridge-dimmer.is-on {
+  opacity: 1;
+}
+
 .bridge-minigame .bridge-canvas {
   filter: saturate(0.55) brightness(0.6);
 }
@@ -1169,15 +1199,105 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* 全息终端机框（ui/panels 的宿主）                                     */
+/* 锚定到终端屏幕上的全息面板                                          */
+/*                                                                     */
+/* 这一层是「融入场景」的关键：元素不再是屏幕空间里的窗口，而是被       */
+/* matrix3d 投影到终端前的一块平面上。所有内容都放在 panel-anchor-body */
+/* 里，字号乘以 --panel-lift（由投影循环每帧写入）以补偿透视缩放。      */
 /* ------------------------------------------------------------------ */
+
+.panel-anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  /* 尺寸与 transform-origin 必须与 projector.ts 的换算一致 */
+  transform-origin: 0 0;
+  will-change: transform, opacity;
+  /* 面板是「投影在空气里」的，不该拦住场景的点击 */
+  pointer-events: none;
+}
+
+.panel-anchor-body {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  /* 字号补偿：内容按 --panel-lift 缩放，屏幕上的字号因此保持稳定 */
+  font-size: calc(13px * var(--panel-lift, 1));
+}
+
+/* 全息外发光：只做观感，不参与遮挡（遮挡由合成层与深度比较负责） */
+.panel-anchor-holo {
+  position: absolute;
+  inset: -3.5%;
+  pointer-events: none;
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 80% at 50% 50%, rgba(63, 224, 255, 0.14), transparent 72%),
+    linear-gradient(180deg, rgba(63, 224, 255, 0.07), rgba(255, 59, 208, 0.05));
+  box-shadow:
+    0 0 0 1px rgba(63, 224, 255, 0.35),
+    0 0 42px rgba(63, 224, 255, 0.22),
+    inset 0 0 60px rgba(63, 224, 255, 0.08);
+  filter: blur(0.3px);
+  animation: holo-flicker 4.6s ease-in-out infinite;
+}
+
+@keyframes holo-flicker {
+  0%,
+  100% {
+    opacity: 0.92;
+  }
+  47% {
+    opacity: 0.85;
+  }
+  48% {
+    opacity: 1;
+  }
+  52% {
+    opacity: 0.88;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-anchor-holo {
+    animation: none;
+  }
+}
+
+/* 凑到终端前：面板接管全屏。
+   此时放弃透视（transform 由 CSS 覆盖），字号回到 1:1，方便读日志与填表单。 */
+.panel-anchor-full {
+  left: 50% !important;
+  top: 50% !important;
+  width: min(1180px, 94vw) !important;
+  height: min(82vh, 780px) !important;
+  transform: translate(-50%, -50%) !important;
+  opacity: 1 !important;
+}
+
+.panel-anchor-full .panel-anchor-body {
+  font-size: 13.5px;
+}
+
+.panel-anchor-full .panel-anchor-holo {
+  inset: -1.2%;
+  box-shadow:
+    0 0 0 1px rgba(63, 224, 255, 0.45),
+    0 0 90px rgba(63, 224, 255, 0.28);
+}
+
+/* 全屏接管时终端机框不再需要自己的外框（面板自己撑满） */
+.panel-anchor-full .hologram {
+  height: 100%;
+}
 
 .bridge-panel-host {
   position: absolute;
-  inset: 42px 42px 74px;
+  inset: 0;
   display: grid;
   place-items: stretch;
-  z-index: 22;
+  z-index: 6;
 }
 
 .hologram {
