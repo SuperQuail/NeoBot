@@ -77,6 +77,16 @@ class ArchiveMemoryAutoSummaryService:
             str(item_archive_config.table_name).strip() or ITEM_ARCHIVE_TABLE
         ) if item_archive_config else ITEM_ARCHIVE_TABLE
 
+    def install_provider(self, provider: "Provider | None") -> "Provider | None":
+        """换用新的总结 provider，返回被替换下来的旧 provider。
+
+        只换引用、不关闭旧 provider：由调用方在替换成功后统一清理，避免替换
+        失败时旧 provider 已被关闭。
+        """
+        previous = self._provider
+        self._provider = provider
+        return previous
+
     async def record_message(
         self,
         *,
