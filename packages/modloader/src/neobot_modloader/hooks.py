@@ -328,10 +328,20 @@ class _ContextRoutedStream:
         sink = self._variable.get()
         if sink is not None:
             return sink.write(data)
+        if self._fallback is None:
+            # pythonw / PyInstaller --noconsole 等无控制台环境里 sys.stdout 是
+            # None，CPython 对它的 print() 本来是静默 no-op；代理若不判空，
+            # 就会把整个进程的 print 变成 AttributeError。
+            return len(data)
         return self._fallback.write(data)
 
+    def writelines(self, lines: Any) -> None:
+        # 不实现的话会经 __getattr__ 直通真实流，捕获窗口内也拿不到输出。
+        for line in lines:
+            self.write(line)
+
     def flush(self) -> None:
-        if self._variable.get() is None:
+        if self._variable.get() is None and self._fallback is not None:
             self._fallback.flush()
 
     def __getattr__(self, item: str) -> Any:
