@@ -36,6 +36,16 @@ function compassLabel(yaw: number): string {
   return names[Math.round(angle / 45) % 8];
 }
 
+/** 姿态读数：蹲伏有过渡状态，按比例显示更贴近实际视角高度 */
+function poseLabel(snapshot: HudSnapshot): string {
+  if (snapshot.crouching) {
+    const percent = Math.round(snapshot.crouchBlend * 100);
+    return percent >= 90 ? '蹲伏检修' : `下蹲中 ${percent}%`;
+  }
+  if (!snapshot.grounded) return '悬浮';
+  return snapshot.sprinting ? '推进冲刺' : '站立';
+}
+
 /** 读数条：颜色随警戒等级变化 */
 function VitalGauge({ vital }: { vital: Vital }) {
   const status = vitalStatus(vital.key, vital.value);
@@ -143,7 +153,7 @@ export default function Hud({
         </div>
         <div className="hud-explore-row hud-explore-sub">
           <span>姿态</span>
-          <span>{snapshot.crouching ? '蹲伏检修' : snapshot.sprinting ? '推进冲刺' : snapshot.grounded ? '站立' : '悬浮'}</span>
+          <span>{poseLabel(snapshot)}</span>
         </div>
       </aside>
 

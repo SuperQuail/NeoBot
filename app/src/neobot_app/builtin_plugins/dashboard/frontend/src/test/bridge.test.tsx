@@ -33,8 +33,7 @@ import {
   rayBoxes,
   resolveMovement,
   type CollisionBody,
-} from '../bridge/core/collision';
-import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
+} from '../bridge/core/collision';import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
 import { Player } from '../bridge/core/player';
 import { STATIONS, ITEMS, ITEM_IDS, ACHIEVEMENTS, type ItemId } from '../bridge/core/types';
 import {
@@ -174,6 +173,126 @@ describe('第一人称视角与移动', () => {
     // 具体方向由 rightAxis 定义，这里只断言它与相机右向一致，不写死世界轴。
     const screenRight = screenAxes(new Player([0, 0, 0], 0)).right.clone().setY(0).normalize();
     expect(walkFrom(0, { strafe: 1 }).move.dot(screenRight)).toBeGreaterThan(0.99);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 相机手感：头部起伏、蹲伏过渡、落地缓冲
+//
+// 这三项都是「体感」问题，很容易在后续改动里被无意放大（原实现把行走起伏
+// 设成 4.5cm、滚转 0.46°，实测偏晕），因此用数值上限 + 过渡时间窗锁住。
+// ---------------------------------------------------------------------------
+
+describe('相机手感', () => {
+  /** 让角色在地板上持续行走若干秒，返回视线高度的采样 */
+  function walkSamples(options: { sprint?: boolean; crouch?: boolean } = {}, seconds = 1.5) {
+    const floor = compileColliders([{ tag: 'floor', center: [0, -0.2, 0], size: [200, 0.4, 200] }]);
+    const player = new Player([0, 0, 0], 0);
+    const inputs = {
+      state: { lookDx: 0, lookDy: 0, actions: [] as string[], jumpPressed: false },
+      readMove: () => ({ forward: 1, strafe: 0 }),
+      isSprinting: () => options.sprint === true,
+      isCrouching: () => options.crouch === true,
+    } as unknown as Parameters<Player['update']>[1];
+
+    const samples: number[] = [];
+    const frames = Math.round(seconds * 120);
+    for (let i = 0; i < frames; i += 1) {
+      player.update(1 / 120, inputs, floor);
+      // 只取相机实际高度，避免把角色自身的上下浮动算进来
+      const camera = new THREE.PerspectiveCamera();
+      player.applyToCamera(camera);
+      samples.push(camera.position.y);
+    }
+    return { player, samples };
+  }
+
+  function amplitude(values: number[]): number {
+    return Math.max(...values) - Math.min(...values);
+  }
+
+  it('行走时的视线起伏幅度在 4cm 以内（原来 9cm，明显偏晕）', () => {
+    const { samples } = walkSamples({}, 2);
+    // 掐掉起步阶段，测稳定行走段的峰峰值
+    const steady = samples.slice(Math.floor(samples.length / 3));
+    expect(amplitude(steady)).toBeGreaterThan(0.0005); // 仍然有起伏，不能完全没反馈
+    expect(amplitude(steady)).toBeLessThan(0.04);
+  });
+
+  it('冲刺起伏略大于行走，但同样受限', () => {
+    const walk = walkSamples({}, 2).samples;
+    const sprint = walkSamples({ sprint: true }, 2).samples;
+    const steadyWalk = amplitude(walk.slice(Math.floor(walk.length / 3)));
+    const steadySprint = amplitude(sprint.slice(Math.floor(sprint.length / 3)));
+    expect(steadySprint).toBeGreaterThan(steadyWalk);
+    expect(steadySprint).toBeLessThan(0.05);
+  });
+
+  it('蹲伏是渐变而不是瞬移：视线在 0.4s 内不跳完，但 1.2s 内到位', () => {
+    const floor = compileColliders([{ tag: 'floor', center: [0, -0.2, 0], size: [200, 0.4, 200] }]);
+    const player = new Player([0, 0, 0], 0);
+    const standing = player.eyeHeight;
+    const inputs = {
+      state: { lookDx: 0, lookDy: 0, actions: [] as string[], jumpPressed: false },
+      readMove: () => ({ forward: 0, strafe: 0 }),
+      isSprinting: () => false,
+      isCrouching: () => true,
+    } as unknown as Parameters<Player['update']>[1];
+
+    player.update(1 / 60, inputs, floor);
+    const afterOneFrame = player.eyeHeight;
+    // 一帧之内不能掉到底（否则就是原来的瞬移观感）
+    expect(standing - afterOneFrame).toBeLessThan(0.15);
+
+    let elapsed = 1 / 60;
+    while (elapsed < 0.35) {
+      player.update(1 / 60, inputs, floor);
+      elapsed += 1 / 60;
+    }
+    const mid = player.eyeHeight;
+    expect(mid).toBeLessThan(standing);
+    expect(mid).toBeGreaterThan(1.0); // 还在下蹲过程中
+
+    while (elapsed < 1.2) {
+      player.update(1 / 60, inputs, floor);
+      elapsed += 1 / 60;
+    }
+    // 收敛到蹲伏视线高度（0.98），误差 2cm 以内
+    expect(player.eyeHeight).toBeCloseTo(0.98, 1);
+    expect(player.crouchBlend).toBeCloseTo(1, 2);
+  });
+
+  it('蹲伏时碰撞体立即变矮（能钻进 1.3m 检修口），起立受头顶净空限制', () => {
+    // 1.3m 高的检修管道：站立进不去，蹲下能进
+    const boxes = compileColliders([
+      { tag: 'floor', center: [0, -0.2, 0], size: [40, 0.4, 40] },
+      { tag: 'pipe', center: [0, 1.65, 0], size: [6, 0.5, 6] },
+    ]);
+    const standingProbe = playerBox({ x: 0, y: 0, z: 0 }, 0.35, 1.8);
+    expect(isBlocked(boxes, standingProbe)).toBe(true);
+    const crouchProbe = playerBox({ x: 0, y: 0, z: 0 }, 0.35, 1.25);
+    expect(isBlocked(boxes, crouchProbe)).toBe(false);
+  });
+
+  it('硬着陆有下沉且会自行恢复，普通小跳几乎不抖', () => {
+    const floor = compileColliders([{ tag: 'floor', center: [0, -0.2, 0], size: [200, 0.4, 200] }]);
+    const ground = {
+      state: { lookDx: 0, lookDy: 0, actions: [] as string[], jumpPressed: false },
+      readMove: () => ({ forward: 0, strafe: 0 }),
+      isSprinting: () => false,
+      isCrouching: () => false,
+    } as unknown as Parameters<Player['update']>[1];
+
+    const player = new Player([0, 8, 0], 0);
+    // 自由落体到落地
+    for (let i = 0; i < 240 && !player.grounded; i += 1) player.update(1 / 60, ground, floor);
+    const impact = player.viewOffsetY;
+    expect(impact).toBeGreaterThan(0.02);
+    expect(impact).toBeLessThan(0.25);
+
+    // 下沉必须收敛回 0
+    for (let i = 0; i < 300; i += 1) player.update(1 / 60, ground, floor);
+    expect(player.viewOffsetY).toBeLessThan(0.001);
   });
 });
 

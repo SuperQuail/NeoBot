@@ -1,8 +1,10 @@
 // player.ts —— 第一人称角色控制器（MC 手感）
 //
-// 手感参数刻意贴近 MC：走路 4.5 m/s、冲刺 5.8、蹲行 2.2、跳跃高度约 1.1 m，
-// 落地点带一点相机下沉（view kick），走动时有轻微头部起伏（head bob）。
+// 手感参数刻意贴近 MC：走路 4.5 m/s、冲刺 5.8、蹲行 2.2、跳跃高度约 1.1 m。
 // 舰内是人工重力，所以没有 mc 的游泳/爬梯，改成「喷射跳」二段跳。
+//
+// 相机反馈（头部起伏 / 蹲伏 / 落地缓冲）全部走「幅度小、过渡慢」的路线：
+// 第一人称视角下任何高频小幅抖动都比看起来更晕，宁可弱到几乎察觉不到。
 
 import * as THREE from 'three';
 import {
@@ -28,6 +30,24 @@ const FRICTION = 12;
 const MOUSE_PITCH_LIMIT = Math.PI / 2 - 0.02;
 /** 蹲伏时的碰撞体高度：要能钻进 1.3m 高的管线检修口 */
 const CROUCH_HEIGHT = 1.25;
+/** 蹲下后的视线高度（相机绝对高度，不含头部起伏） */
+const CROUCH_EYE = 0.98;
+
+// ---- 相机反馈振幅：数值都在反复试玩后调小过，改动请连同注释一起说明理由 ----
+/** 行走时视线上下起伏（米）——0.045 在原实现里明显偏大，容易晕 */
+const BOB_VERTICAL = 0.018;
+/** 行走时视线左右摆动（米） */
+const BOB_LATERAL = 0.012;
+/** 行走时头部滚转（弧度），仅作暗示，绝不能到能察觉的角度 */
+const BOB_ROLL = 0.0025;
+/** 起伏频率：行走约 1.2 步/秒，冲刺更快 */
+const BOB_RATE_WALK = 7.5;
+const BOB_RATE_SPRINT = 9.5;
+/** 蹲行时起伏还会再乘这个系数（蹲着走不该上下颠） */
+const BOB_CROUCH_SCALE = 0.35;
+/** 蹲下 / 起立的视线过渡速率（每秒收敛比例）：蹲下更柔，起立更跟手 */
+const CROUCH_DOWN_RATE = 7;
+const CROUCH_UP_RATE = 9;
 
 /**
  * 世界坐标下的「屏幕右手边」向量。
@@ -107,17 +127,41 @@ export class Player {
     this.pitch = 0;
   }
 
-  get eyeHeight(): number {
-    return this.crouching ? PLAYER_EYE - 0.55 : PLAYER_EYE;
+  /**
+   * 蹲伏姿态（0~1）：0 完全站立、1 完全蹲下。
+   *
+   * 单独用一个插值量而不是直接看 `crouching` 布尔值，是为了让「视线下降」有
+   * 短暂的过渡——瞬间把眼睛高度砍掉 55cm 会有很明显的顿挫感（这就是原先
+   * 「下蹲不自然」的来源）。碰撞体高度仍然是即时切换的，否则钻管线时身体
+   * 会有一瞬间露在墙里。
+   */
+  private crouchAmount = 0;
+  /** 落地缓冲：硬着陆时相机多下沉一点，随时间恢复 */
+  private landCompression = 0;
+
+  /** 蹲伏姿态 0~1（HUD 用来显示「蹲伏 60%」这类过渡状态） */
+  get crouchBlend(): number {
+    return this.crouchAmount;
   }
 
-  /** 相机世界坐标（含头部起伏） */
+  /** 当前相机相对站立视线的下沉量（米）：落地缓冲 + 视角 kick，供测试与调试观察 */
+  get viewOffsetY(): number {
+    return this.viewKick + this.landCompression;
+  }
+
+  get eyeHeight(): number {
+    return PLAYER_EYE + (CROUCH_EYE - PLAYER_EYE) * this.crouchAmount;
+  }
+
+  /** 相机世界坐标（含头部起伏与蹲伏姿态） */
   applyToCamera(camera: THREE.PerspectiveCamera): void {
-    const bobY = this.bobAmount * Math.sin(this.bobPhase * 2) * 0.045;
-    const bobX = this.bobAmount * Math.cos(this.bobPhase) * 0.03;
+    // 起伏幅度乘 crouchAmount 的反比：蹲着走几乎不上下颠
+    const bobScale = this.bobAmount * (1 - this.crouchAmount * (1 - BOB_CROUCH_SCALE));
+    const bobY = bobScale * Math.sin(this.bobPhase * 2) * BOB_VERTICAL;
+    const bobX = bobScale * Math.cos(this.bobPhase) * BOB_LATERAL;
     const right = rightAxis(this.yaw);
     const eyeX = this.position.x + right.x * bobX;
-    const eyeY = this.position.y + this.eyeHeight + bobY - this.viewKick;
+    const eyeY = this.position.y + this.eyeHeight + bobY - this.viewKick - this.landCompression;
     const eyeZ = this.position.z + right.z * bobX;
 
     // 用 lookAt 而不是手写欧拉角：相机姿态直接由「看向哪」和「哪边是上」决定，
@@ -128,9 +172,9 @@ export class Player {
     camera.up.copy(this.headBobUp);
     camera.position.set(eyeX, eyeY, eyeZ);
     camera.lookAt(eyeX + look.x, eyeY + look.y, eyeZ + look.z);
-    // 行走时的轻微侧倾：绕视线方向的 roll，幅度很小，不会影响方向判定
-    if (this.bobAmount > 0.001) {
-      camera.rotateZ(this.bobAmount * Math.sin(this.bobPhase) * 0.008);
+    // 行走时的极轻微侧倾：绕视线方向的 roll，幅度远低于可察觉阈值
+    if (bobScale > 0.001) {
+      camera.rotateZ(bobScale * Math.sin(this.bobPhase) * BOB_ROLL);
     }
   }
 
@@ -159,16 +203,25 @@ export class Player {
     }
 
     // ---- 蹲伏 ----
+    //
+    // 三个量各管一件事，别混在一起：
+    //   crouching     —— 逻辑与碰撞体（决定速度、能否钻过 1.3m 检修口）
+    //   crouchAmount  —— 相机姿态过渡（避免视线瞬移造成的顿挫）
+    //   body.height   —— 碰撞体，必须在位移求解**之前**就切好
     const wantCrouch = input.isCrouching();
     if (wantCrouch) {
       this.crouching = true;
     } else if (this.crouching) {
-      // 站起前先确认头顶净空，避免卡进管线
-      this.body.height = PLAYER_HEIGHT;
+      // 站起前先确认头顶净空，避免卡进管线里
       const probe = playerBox(this.position, PLAYER_RADIUS, PLAYER_HEIGHT);
       this.crouching = isBlocked(boxes, probe);
     }
     this.body.height = this.crouching ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+    // 指数收敛：蹲下比起立慢一点，观感更像「屈膝」而不是「掉下去」
+    const crouchTarget = this.crouching ? 1 : 0;
+    const crouchRate = this.crouching ? CROUCH_DOWN_RATE : CROUCH_UP_RATE;
+    this.crouchAmount += (crouchTarget - this.crouchAmount) * Math.min(1, dt * crouchRate);
+    if (Math.abs(crouchTarget - this.crouchAmount) < 0.002) this.crouchAmount = crouchTarget;
 
     // ---- 期望移动方向：以「前向 + 右向量」为基（两者都必须与相机一致） ----
     const { forward, strafe } = input.readMove();
@@ -258,8 +311,10 @@ export class Player {
     if (Math.abs(movedZ) < Math.abs(this.velocity.z * dt) * 0.5) this.velocity.z = 0;
     if (this.grounded && this.velocity.y < 0) {
       if (!wasGrounded && fallSpeed < -6) {
-        // 落地缓冲：速度越高下沉越明显，但不超过 0.18
-        this.viewKick = Math.min(0.18, -fallSpeed * 0.014);
+        // 落地缓冲：速度越高下沉越明显，但不超过 14cm（原实现 18cm 偏重）
+        this.viewKick = Math.min(0.1, -fallSpeed * 0.009);
+        // 真正的「压缩感」交给独立通道：缓慢恢复，避免落地瞬间弹回
+        this.landCompression = Math.min(0.14, -fallSpeed * 0.012);
         this.events.onLand?.(-fallSpeed);
       }
       this.velocity.y = 0;
@@ -272,11 +327,12 @@ export class Player {
 
     // ---- 相机反馈 ----
     this.viewKick = Math.max(0, this.viewKick - dt * 0.55);
+    this.landCompression = Math.max(0, this.landCompression - dt * 0.32);
     const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     if (this.grounded && planarSpeed > 0.6) {
       const target = Math.min(1, planarSpeed / WALK_SPEED);
       this.bobAmount += (target - this.bobAmount) * Math.min(1, dt * 6);
-      this.bobPhase += dt * (input.isSprinting() ? 12 : 9);
+      this.bobPhase += dt * (input.isSprinting() ? BOB_RATE_SPRINT : BOB_RATE_WALK);
       // 脚步节奏：按累计位移触发，与视觉起伏大致同步
       this.stepAccumulator += dt * planarSpeed;
       if (this.stepAccumulator > (input.isSprinting() ? 1.9 : 2.4)) {

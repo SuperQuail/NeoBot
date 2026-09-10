@@ -43,6 +43,7 @@ const EMPTY_SNAPSHOT: HudSnapshot = {
   grounded: true,
   sprinting: false,
   crouching: false,
+  crouchBlend: 0,
   fps: 0,
   target: null,
   collected: 0,

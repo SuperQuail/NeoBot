@@ -37,6 +37,8 @@ export interface HudSnapshot {
   grounded: boolean;
   sprinting: boolean;
   crouching: boolean;
+  /** 蹲伏姿态过渡量 0~1，用于 HUD 显示「下蹲中」 */
+  crouchBlend: number;
   fps: number;
   /** 当前可交互目标（面向玩家且在射程内） */
   target: InteractionTarget | null;
@@ -647,6 +649,7 @@ export class BridgeEngine {
       grounded: this.player.grounded,
       sprinting: this.input.isSprinting(),
       crouching: this.player.crouching,
+      crouchBlend: this.player.crouchBlend,
       fps: this.fps,
       target: this.currentTarget,
       collected: this.collectedIds.size,
