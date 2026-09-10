@@ -266,6 +266,15 @@ if TYPE_CHECKING:
     from neobot_app.core.file_server import FileServer
 
 
+def _hook_name(hook: object) -> str:
+    """钩子的可读标识（用于日志）。"""
+    return str(
+        getattr(hook, "__qualname__", None)
+        or getattr(hook, "__name__", None)
+        or type(hook).__name__
+    )
+
+
 class ReplyOrchestrator:
     def __init__(
         self,
@@ -389,8 +398,18 @@ class ReplyOrchestrator:
                 result = await hook(event)
                 if result is not None:
                     return result
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 钩子是插件扩展点：失败必须留痕，否则「钩子没生效」与
+                # 「钩子抛异常被吞」从外部完全无法区分。
+                self._logger.warning(
+                    "pre_reply hook 执行失败，已跳过",
+                    event_id=event.event_id,
+                    hook=_hook_name(hook),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
         return None
 
     async def _apply_post_reply_hooks(
@@ -401,8 +420,16 @@ class ReplyOrchestrator:
                 modified = await hook(event, text)
                 if modified is not None:
                     text = modified
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._logger.warning(
+                    "post_reply hook 执行失败，已跳过",
+                    event_id=event.event_id,
+                    hook=_hook_name(hook),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
         return text
 
     async def handle_agent_tool_input(self, message: Any, *, kind: str, queue_key: str) -> str | None:
