@@ -346,10 +346,12 @@ def create_application() -> NeoBotApplication:
         data_dir=DATA_DIR,
     )
     if sandbox["temp_cleaner"] is not None:
-        sandbox["temp_cleaner"].logger = logger_factory.get_logger("app.temp_cleaner")
+        # 两个类的字段名是 _logger：写成 .logger 只是往实例上挂了个死属性，
+        # 生产里它们始终用构造时的 NullLogger，所有清理失败都不可见。
+        sandbox["temp_cleaner"]._logger = logger_factory.get_logger("app.temp_cleaner")
     if sandbox["sandbox_maintenance_manager"] is not None:
-        sandbox["sandbox_maintenance_manager"].logger = (
-            logger_factory.get_logger("app.sandbox_maintenance")
+        sandbox["sandbox_maintenance_manager"]._logger = logger_factory.get_logger(
+            "app.sandbox_maintenance"
         )
 
     # ── 解题 Agent 装配 ──
