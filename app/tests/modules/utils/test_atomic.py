@@ -26,6 +26,30 @@ def test_atomic_write_replaces_content(tmp_path: Path) -> None:
     assert [item.name for item in tmp_path.iterdir()] == ["stats.json"]
 
 
+def test_atomic_write_retries_transient_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """目标被短时占用（WinError 5）时应重试成功，而不是把保存直接判失败。"""
+    target = tmp_path / "config.toml"
+    target.write_text("old", encoding="utf-8")
+    calls = {"count": 0}
+    real_replace = atomic.os.replace
+
+    def flaky(src: object, dst: object) -> None:
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise PermissionError(5, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", flaky)
+    monkeypatch.setattr(atomic.time, "sleep", lambda _seconds: None)
+
+    atomic_write_text(target, "new")
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert calls["count"] == 3
+
+
 def test_atomic_write_keeps_original_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -36,6 +60,7 @@ def test_atomic_write_keeps_original_on_failure(
         raise OSError("disk full")
 
     monkeypatch.setattr(atomic.os, "replace", boom)
+    monkeypatch.setattr(atomic.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(OSError):
         atomic_write_text(target, '{"total": 2}')

@@ -1,7 +1,5 @@
 """配置加载器"""
 
-import os
-import tempfile
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type, TypeVar
@@ -10,6 +8,7 @@ import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
+from neobot_app.utils.atomic import atomic_write_text
 from neobot_app.utils.logger import get_module_logger
 
 T = TypeVar("T")
@@ -25,27 +24,14 @@ class ConfigLoadError(RuntimeError):
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """原子写入文本文件（同目录临时文件 + fsync + os.replace）。
+    """原子写入文本文件（同目录临时文件 + fsync + os.replace + 占用重试）。
 
     config.toml 有三个写入者（本模块、面板、命令系统），直接 `open(w)`
     截断写在崩溃/并发下可能留下半截文件，下次启动即解析失败。
+    统一走 neobot_app.utils.atomic：Windows 上目标被编辑器/杀软短暂占用时
+    会重试，否则「补全缺失项」的写回会静默失败（只记 error 日志）。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    except BaseException:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, text)
 
 
 def _build_provider_extra_body(
