@@ -971,7 +971,7 @@ class ScheduledTask:
     )
     poll_interval_seconds: Optional[int] = field(
         default=10,
-        metadata={"description": "定时任务扫描间隔秒数，默认每分钟扫描一次"},
+        metadata={"description": "定时任务扫描间隔秒数，默认 10 秒"},
     )
     default_window_seconds: Optional[int] = field(
         default=3600,

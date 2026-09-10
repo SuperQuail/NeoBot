@@ -29,7 +29,9 @@ from neobot_app.time_context import now_utc, to_local, to_utc
 class ScheduledTaskConfig:
     enabled: bool = True
     reminder_cooldown_seconds: int = 300
-    poll_interval_seconds: int = 60
+    #: 与 config.schemas.bot.ScheduledTask.poll_interval_seconds 保持一致（10 秒），
+    #: 否则「未提供 config」与「提供了 config」两条路径的扫描频率不同。
+    poll_interval_seconds: int = 10
     default_window_seconds: int = 3600
     max_repeating_tasks: int = 15
     default_one_shot_notification: bool = True
@@ -45,7 +47,7 @@ class ScheduledTaskConfig:
                 1,
             ),
             poll_interval_seconds=max(
-                int(getattr(config, "poll_interval_seconds", 60) or 60),
+                int(getattr(config, "poll_interval_seconds", 10) or 10),
                 1,
             ),
             default_window_seconds=max(

@@ -836,11 +836,13 @@ class ReplyOrchestrator:
             raise deferred
 
     def _resolve_mode(self) -> str:
+        # 回退值必须与 config.schemas.bot.Chat.reply_mode 的默认值一致（agent），
+        # 否则「字段缺失」时会静默降级成 common（只有基础回复能力）。
         if self._config is not None:
-            mode = getattr(self._config.chat, "reply_mode", "common") or "common"
+            mode = getattr(self._config.chat, "reply_mode", "agent") or "agent"
             if mode in ("common", "agent"):
                 return mode
-        return "common"
+        return "agent"
 
     def _get_cooldown_seconds(self) -> int:
         if self._config is not None:
