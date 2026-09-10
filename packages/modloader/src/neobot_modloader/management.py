@@ -146,6 +146,31 @@ class PluginControlFacade:
             return getter(name)
         return None
 
+    def plugin_config_path(self, name: str) -> Path | None:
+        """插件配置文件的路径（插件数据目录下的 config.toml）。
+
+        插件配置与插件代码分离：面板编辑的是这个文件，
+        官方插件与第三方插件使用同一套位置。
+        """
+        getter = getattr(self._runtime, "plugin_config_path", None)
+        if callable(getter):
+            return getter(name)
+        return None
+
+    def plugin_config_defaults(self, name: str) -> dict[str, Any]:
+        """插件打包默认值（plugin.toml 的 [config]）。"""
+        getter = getattr(self._runtime, "plugin_config_defaults", None)
+        if callable(getter):
+            return dict(getter(name))
+        return {}
+
+    def plugin_config_values(self, name: str) -> dict[str, Any]:
+        """插件当前生效的配置（默认值 + 插件数据目录中保存的值）。"""
+        getter = getattr(self._runtime, "plugin_config_values", None)
+        if callable(getter):
+            return dict(getter(name))
+        return {}
+
     def installer_proxy(self) -> dict[str, Any]:
         """当前插件下载代理设置。"""
         getter = getattr(self._runtime, "installer_proxy", None)

@@ -218,17 +218,40 @@ def test_runtime_honours_persisted_disabled_state(tmp_path: Path) -> None:
     assert snapshot.enabled is False
 
 
-async def test_runtime_official_config_provider_overrides_manifest(tmp_path: Path) -> None:
+async def test_runtime_plugin_config_comes_from_plugin_data_dir(tmp_path: Path) -> None:
+    """插件配置存放在插件数据目录，并覆盖 plugin.toml 里的打包默认值。"""
     official_dir = tmp_path / "official"
     write_plugin(official_dir, "builtin_demo")
-    runtime = build_runtime(tmp_path, official=[official_dir])
-    runtime._official_config_provider = lambda name: {"value": "from-bot-config"} if name == "builtin_demo" else None
+    config_path = tmp_path / "plugins_data" / "builtin_demo" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('value = "from-plugin-data"\n', encoding="utf-8")
 
+    runtime = build_runtime(tmp_path, official=[official_dir])
     runtime.load_all()
+
     record = runtime.manager.get_record("builtin_demo")
     assert record is not None
-    assert record.context.config["value"] == "from-bot-config"
+    assert record.context.config["value"] == "from-plugin-data"
     assert record.context.source == OFFICIAL_SOURCE
+    # 停用（未加载）的插件同样能解析出配置位置
+    assert runtime.plugin_config_path("builtin_demo") == config_path
+    assert runtime.plugin_config_values("builtin_demo")["value"] == "from-plugin-data"
+
+
+def test_runtime_plugin_config_falls_back_to_manifest_defaults(tmp_path: Path) -> None:
+    """插件数据目录没有配置时，插件拿到 plugin.toml 的打包默认值。"""
+    official_dir = tmp_path / "official"
+    write_plugin(official_dir, "builtin_demo")
+
+    runtime = build_runtime(tmp_path, official=[official_dir])
+    runtime.load_all()
+
+    record = runtime.manager.get_record("builtin_demo")
+    assert record is not None
+    assert record.context.config["value"] == "ok"
+    assert runtime.plugin_config_path("builtin_demo") == (
+        tmp_path / "plugins_data" / "builtin_demo" / "config.toml"
+    )
 
 
 async def test_runtime_uninstall_refuses_official_plugin(tmp_path: Path) -> None:

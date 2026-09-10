@@ -6,9 +6,6 @@ homepage = "https://github.com/SuperQuail/NeoBot"
 license = "MIT"
 tags = ["official", "web", "console"]
 
-# 官方插件的配置来自本体 config.toml 的 [dashboard] 分区，
-# 本文件的 [config] 仅作为读取失败时的兜底默认值。
-[config]
-enabled = true
-host = "0.0.0.0"
-port = 9981
+# 配置保存在插件数据目录 plugins_data/dashboard/config.toml（面板「插件」页可编辑）；
+# 是否启用是 plugin_state.json 里的独立记录，不写在配置里。
+# 这里只放打包默认值，留空表示使用 DashboardConfig 的默认值。

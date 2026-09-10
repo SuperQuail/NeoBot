@@ -363,17 +363,28 @@ await reply.send(
 
 ## 配置
 
-包插件可以使用 `plugin.toml` 配置启用状态、优先级、依赖和默认配置：
+包插件可以使用 `plugin.toml` 声明默认配置、优先级与依赖：
 
 ```toml
-enabled = true
+enabled = true                # 打包默认的启用状态（真正的启停记录在 plugin_state.json）
 priority = 10
 dependencies = []
 python_dependencies = ["httpx"]
 
-[config]
+[config]                      # 打包默认配置（安装/更新会被覆盖）
 api_key = "secret"
 default_city = "Shanghai"
+```
+
+运行期配置不写在这里，而是插件数据目录的 `plugins_data/<插件名>/config.toml`：
+读取时以 `[config]` 的打包默认值打底、插件数据目录里已保存的值覆盖，
+插件收到的 `ctx.config` 就是合并后的结果，插件更新不会覆盖用户配置。
+
+**是否启用不是配置项**：启停状态保存在数据目录的 `plugin_state.json`
+（`PluginStateStore`），与 `plugin.toml` 的顶层 `enabled` 默认值解耦：
+
+```json
+{"version": 1, "plugins": {"weather": {"enabled": false}}}
 ```
 
 插件名、版本、描述、作者以 `Plugin(...)` 为准：
@@ -687,7 +698,7 @@ from neobot_modloader import (
 - `ctx.on.*`
 - `on_command()` / `Matcher`
 - `PluginMetadata`
-- `get_plugin_config()`
+- `get_plugin_config()`（配置改为 `ctx.config` + 插件数据目录 `config.toml`）
 - `CommandArg` 等旧 DI sentinel
 - 旧兼容层模块
 

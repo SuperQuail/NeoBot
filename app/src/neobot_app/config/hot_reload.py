@@ -52,25 +52,11 @@ RULES: tuple[HotReloadRule, ...] = (
     HotReloadRule("debug", False, "调试记录器在启动时构建"),
     HotReloadRule("agent", False, "Agent、工具与技能在启动时装配"),
     HotReloadRule("scheduled_task", False, "定时任务管理器在启动时构建"),
-    HotReloadRule("dashboard.host", False, "面板监听地址在启动时绑定"),
-    HotReloadRule("dashboard.port", False, "面板端口在启动时绑定"),
-    HotReloadRule("dashboard.base_path", False, "面板路径前缀在启动时注册路由"),
-    HotReloadRule("dashboard.enabled", False, "面板启停在启动时决定"),
-    HotReloadRule("dashboard.session_timeout_minutes", False, "会话表在启动时创建"),
-    HotReloadRule("dashboard.secure_cookies", False, "Cookie 属性在启动时确定"),
-    HotReloadRule("dashboard.trust_proxy_headers", False, "代理头信任在启动时确定"),
-    HotReloadRule("dashboard.log_buffer_size", False, "日志缓冲在启动时创建"),
-    HotReloadRule("dashboard.bot_info_cache_ttl", False, "机器人信息缓存在启动时创建"),
-    HotReloadRule("dashboard.history_max_days", False, "统计历史窗口在启动时创建"),
-    HotReloadRule("dashboard.login_max_failures", False, "登录限速器在启动时创建"),
-    HotReloadRule("dashboard.login_rate_limit_window_seconds", False, "登录限速器在启动时创建"),
     # ── 无需重启（运行时按需读取）────────────────────────────
     HotReloadRule("chat", True, "聊天管线按需读取配置，重载后立即生效"),
     HotReloadRule("bot", True, "人设与昵称在生成回复时读取"),
     HotReloadRule("willing", True, "回复意愿按需读取"),
     HotReloadRule("message", True, "消息处理按需读取"),
-    HotReloadRule("dashboard.manage_plugins", True, "面板权限实时读取"),
-    HotReloadRule("dashboard.allow_remote_manage", True, "面板权限实时读取"),
 )
 
 

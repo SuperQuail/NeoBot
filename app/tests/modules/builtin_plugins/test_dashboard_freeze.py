@@ -62,16 +62,14 @@ def _free_port() -> int:
 async def _start_panel(tmp_path: Path, *, services=None):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        'version = "0.5.0"\n[dashboard]\nenabled = true\nport = 9981\n', encoding="utf-8"
+        'version = "0.6.0"\n', encoding="utf-8"
     )
     data_dir = tmp_path / "data"
     PanelPasswordStore(data_dir / "auth.json").set_password(PASSWORD)
 
     server = DashboardServer(
         plugin_name="dashboard",
-        config=DashboardConfig(
-            enabled=True, host="127.0.0.1", port=_free_port()
-        ),
+        config=DashboardConfig(host="127.0.0.1", port=_free_port()),
         data_dir=data_dir,
         logger=_NullLogger(),
         adapter=_FakeAdapter(),

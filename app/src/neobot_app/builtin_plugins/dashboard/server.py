@@ -1,6 +1,7 @@
 """网页面板 HTTP 服务：路由、鉴权中间件与静态资源。
 
-与旧内置控制台不同，本面板是官方插件，配置直接读取 config.toml 的 [dashboard]，
+与旧内置控制台不同，本面板是官方插件：配置来自插件数据目录的 config.toml
+（``plugins_data/dashboard/config.toml`，见 DashboardConfig），
 默认监听 0.0.0.0:9981（对网络开放），可通过 host/port/base_path 调整。
 """
 
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +93,8 @@ class DashboardServer:
         )
         self.api = DashboardApi(console=self)
 
+        self._config_cache: dict[str, Any] = {}
+        self._config_cache_key: tuple[int, int] | None = None
         self._started_at = time.time()
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -108,32 +112,37 @@ class DashboardServer:
     def uptime_seconds(self) -> int:
         return int(max(0.0, time.time() - self._started_at))
 
-    def _live_section(self) -> Any:
-        """读取本体内存中的 [dashboard] 配置，使管理开关在重载后立即生效。"""
-        services = self.services
-        getter = getattr(services, "get", None) if services is not None else None
-        if not callable(getter):
-            return None
+    def _live_config(self) -> dict[str, Any]:
+        """插件配置文件的最新内容（按 mtime 缓存）。
+
+        manage_plugins / allow_remote_manage 这类开关改了不该把管理员锁在外面，
+        所以每次读取都看一眼配置文件；其余字段仍以插件加载时的快照为准。
+        """
+        path = self.data_dir / "config.toml"
         try:
-            proxy = getter("config")
-        except Exception:
-            return None
-        section = getattr(proxy, "dashboard", None) if proxy is not None else None
-        return section
+            stat = path.stat()
+        except OSError:
+            return {}
+        key = (stat.st_mtime_ns, stat.st_size)
+        if key != self._config_cache_key:
+            try:
+                with path.open("rb") as handle:
+                    data = tomllib.load(handle)
+            except Exception:
+                data = {}
+            self._config_cache = data if isinstance(data, dict) else {}
+            self._config_cache_key = key
+        return self._config_cache
 
     @property
     def manage_plugins(self) -> bool:
-        section = self._live_section()
-        if section is not None:
-            return bool(getattr(section, "manage_plugins", self._manage_plugins))
-        return self._manage_plugins
+        return bool(self._live_config().get("manage_plugins", self._manage_plugins))
 
     @property
     def allow_remote_manage(self) -> bool:
-        section = self._live_section()
-        if section is not None:
-            return bool(getattr(section, "allow_remote_manage", self._allow_remote_manage))
-        return self._allow_remote_manage
+        return bool(
+            self._live_config().get("allow_remote_manage", self._allow_remote_manage)
+        )
 
     async def start(self) -> str | None:
         app = self._make_app()
@@ -166,7 +175,8 @@ class DashboardServer:
         self.public_url = f"http://{display_host}:{port}{prefix}/"
         if port != self.config.port:
             self.logger.warning(
-                f"面板端口 {self.config.port} 被占用，已改用 {port}；请同步修改 dashboard.port"
+                f"面板端口 {self.config.port} 被占用，已改用 {port}；"
+                f"请在插件面板修改 dashboard 的 port 配置"
             )
         self.logger.info(
             "网页面板已启动",

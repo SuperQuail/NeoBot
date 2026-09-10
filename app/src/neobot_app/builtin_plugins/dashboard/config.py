@@ -1,7 +1,8 @@
 """面板配置模型。
 
-官方插件的配置直接来自本体 config.toml 的 [dashboard] 分区
-（由 PluginRuntime 的 official_config_provider 注入），因此这里只做校验与默认值。
+面板配置保存在插件数据目录 ``plugins_data/dashboard/config.toml``，
+由 PluginRuntime 注入；这里的默认值就是面板的出厂配置。
+「面板是否启用」不属于配置：它是 plugin_state.json 里的独立启动记录。
 """
 
 from __future__ import annotations
@@ -10,9 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class DashboardConfig(BaseModel):
-    """网页面板运行配置（对应 config.toml 的 [dashboard]）。"""
+    """网页面板运行配置（plugins_data/dashboard/config.toml）。"""
 
-    enabled: bool = True
     host: str = "0.0.0.0"
     port: int = Field(default=9981, ge=1, le=65535)
     base_path: str = ""

@@ -1,6 +1,7 @@
 """NeoBot 官方网页面板插件。
 
-- 配置直接读取本体 config.toml 的 [dashboard] 分区（官方插件配置由本体注入）。
+- 配置来自插件数据目录 plugins_data/dashboard/config.toml（与本体 config.toml 无关）。
+- 面板是否启用由 plugin_state.json 的独立记录决定，不写在配置里。
 - 默认监听 0.0.0.0:9981，对网络开放；host/port/base_path 均可配置。
 - 完全取代旧的内置调试控制台与管理员控制台：运行监测、日志、插件管理、
   本体配置与 .env 在线编辑、模型注册表查看、优雅重启。
@@ -46,9 +47,6 @@ class DashboardPlugin:
         self.ctx = ctx
         self.config = ctx.config if isinstance(ctx.config, DashboardConfig) else DashboardConfig.model_validate(dict(ctx.config or {}))
         config = self.config
-        if not config.enabled:
-            ctx.logger.info("网页面板已禁用（dashboard.enabled=false），跳过启动")
-            return
 
         from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, DATA_DIR, ENV_FILE
 

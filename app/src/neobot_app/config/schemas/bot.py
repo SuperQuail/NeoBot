@@ -855,95 +855,6 @@ class Debug:
 
 
 @dataclass
-class Dashboard:
-    """内置网页面板（官方 dashboard 插件）配置。"""
-
-    enabled: bool = field(
-        default=True,
-        metadata={
-            "description": "是否启用网页面板（默认开启）。登录密码不在此配置："
-            "未设置密码时只能从本机进入设置页，或由超级管理员在 QQ 私聊执行 /set_password"
-        },
-    )
-    host: str = field(
-        default="0.0.0.0",
-        metadata={
-            "description": "网页面板监听地址；0.0.0.0 对网络开放（默认），127.0.0.1 仅本机"
-        },
-    )
-    port: int = field(
-        default=9981,
-        metadata={"description": "网页面板监听端口，默认 9981"},
-    )
-    base_path: str = field(
-        default="",
-        metadata={"description": "访问路径前缀；留空表示直接以 根路径 访问"},
-    )
-    manage_plugins: bool = field(
-        default=True,
-        metadata={"description": "是否允许在面板内安装、更新、启停和卸载插件"},
-    )
-    allow_remote_manage: bool = field(
-        default=True,
-        metadata={
-            "description": "是否允许非本机来源执行管理操作（改配置、改 .env、插件管理、重启）；"
-            "关闭后仅本机可管理，远程只能查看"
-        },
-    )
-    session_timeout_minutes: int = field(
-        default=720,
-        metadata={"description": "面板无操作会话过期时间（分钟）"},
-    )
-    log_buffer_size: int = field(
-        default=500,
-        metadata={"description": "面板保留的日志缓冲条数"},
-    )
-    bot_info_cache_ttl: int = field(
-        default=300,
-        metadata={"description": "机器人信息缓存秒数"},
-    )
-    history_max_days: int = field(
-        default=30,
-        metadata={"description": "消息统计历史保留天数"},
-    )
-    login_max_failures: int = field(
-        default=5,
-        metadata={"description": "同一 IP 在限速窗口内允许的登录失败次数"},
-    )
-    login_rate_limit_window_seconds: int = field(
-        default=600,
-        metadata={"description": "登录限速窗口（秒）"},
-    )
-    secure_cookies: bool = field(
-        default=False,
-        metadata={"description": "仅通过 HTTPS 发送登录 Cookie；使用反向代理 HTTPS 时开启"},
-    )
-    trust_proxy_headers: bool = field(
-        default=False,
-        metadata={"description": "是否信任反向代理提供的客户端地址头"},
-    )
-
-    def __post_init__(self) -> None:
-        if not 1 <= self.port <= 65535:
-            raise ValueError("dashboard.port 必须在 1 到 65535 之间")
-        if not 5 <= self.session_timeout_minutes <= 10080:
-            raise ValueError("dashboard.session_timeout_minutes 必须在 5 到 10080 之间")
-        if not 1 <= self.log_buffer_size <= 10000:
-            raise ValueError("dashboard.log_buffer_size 必须在 1 到 10000 之间")
-        if self.login_max_failures < 1:
-            raise ValueError("dashboard.login_max_failures 至少为 1")
-        if self.login_rate_limit_window_seconds < 1:
-            raise ValueError("dashboard.login_rate_limit_window_seconds 至少为 1")
-        if not self.host.strip():
-            raise ValueError("dashboard.host 不能为空")
-        normalized = self.base_path.strip()
-        if normalized and not normalized.startswith("/"):
-            raise ValueError("dashboard.base_path 必须以 / 开头")
-        if normalized.endswith("/"):
-            raise ValueError("dashboard.base_path 不能以 / 结尾")
-
-
-@dataclass
 class ScheduledTask:
     """定时任务系统配置。"""
 
@@ -1498,7 +1409,6 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
-    dashboard: Dashboard = field(default_factory=Dashboard)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)

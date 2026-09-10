@@ -339,20 +339,19 @@ export default function Plugins() {
             </div>
           </div>
           {!permissions.manage_enabled ? <div className="workspace-empty"><Icon name="settings" /><h3>当前为只读模式</h3>
-            <p>请在「配置管理 → 本体配置 → dashboard」中开启 manage_plugins。</p></div> : <>
+            <p>请在「插件 → dashboard → 配置」中开启 manage_plugins。</p></div> : <>
             <>
-              {selected.official && (
-                <div className="config-notice" role="status">
-                  <Icon name="settings" />
-                  官方插件配置来自本体 <code>config.toml</code> 的 <code>[{configDocument?.section || selected.config_section || selected.name}]</code> 分区，保存后写回该分区。
-                </div>
-              )}
+              <div className="config-notice" role="status">
+                <Icon name="settings" />
+                插件配置保存在插件数据目录 <code>{configDocument?.path || 'plugins_data/' + selected.name + '/config.toml'}</code>
+                {configDocument && !configDocument.exists ? '（尚未保存过，当前显示插件默认值）' : ''}；启停状态是独立记录，不属于配置。
+              </div>
               <div className="config-tabs"><div role="tablist" aria-label="配置编辑方式">
                 <button role="tab" aria-selected={mode === 'form'} className={mode === 'form' ? 'active' : ''}
                   disabled={!configDocument?.form_supported || !!operation} onClick={() => changeMode('form')}><Icon name="settings" />配置表单</button>
                 <button role="tab" aria-selected={mode === 'toml'} className={mode === 'toml' ? 'active' : ''}
                   disabled={!configDocument?.source_available || !!operation} onClick={() => changeMode('toml')}><Icon name="code" />TOML</button>
-              </div><span className="muted small">{selected.official ? 'config.toml / ' + (configDocument?.section || selected.config_section || selected.name) : 'plugin.toml / config'}</span></div>
+              </div><span className="muted small">{configDocument?.path || 'plugins_data/' + selected.name + '/config.toml'}</span></div>
               {notice && <div className={`config-notice ${notice.warning ? 'warning' : ''}`} role="status"><Icon name="check" />{notice.text}</div>}
               {selected.error && <div className="workspace-error" role="alert">运行错误：{selected.error}</div>}
               {configError && <div className="workspace-error" role="alert">{configError}
@@ -364,7 +363,7 @@ export default function Plugins() {
                 {mode === 'form' ? <SchemaForm key={`${selectedId}-${editorVersion}`} fields={configDocument.schema || []} values={draft}
                   baseline={configDocument.config || {}}
                   disabled={!!operation} onChange={changeField} /> : <>
-                  <p className="muted small">编辑 [config] 及其子表。插件名称、版本等信息保持不变。</p>
+                  <p className="muted small">编辑插件配置文件（与插件代码、启停状态分离，插件升级不会覆盖）。</p>
                   <textarea className="toml-editor" aria-label="TOML 配置" spellCheck={false} disabled={!!operation}
                     value={source} onChange={(event) => setSource(event.target.value)} />
                 </>}
@@ -374,7 +373,7 @@ export default function Plugins() {
         </div>
         <footer className="plugin-editor-footer" role="status"><span className={dirty ? 'dirty-label' : 'muted'}>
           <i className={`plugin-status-dot ${dirty ? 'pending' : ''}`} />{dirty ? '有未保存的修改' : configDocument ? '配置与文件同步' : '等待配置'}</span>
-          <span className="muted">{operation ? '正在处理…' : selected.official ? '官方插件随本体更新' : '支持保存后热重载'}</span></footer>
+          <span className="muted">{operation ? '正在处理…' : (selected.config_hot_reload === false ? '配置改动需重启 NeoBot' : '保存后可立即重载插件')}</span></footer>
       </>}
     </section>
     <Modal open={installOpen} title="安装第三方插件" onClose={() => { if (!operation) setInstallOpen(false); }}>

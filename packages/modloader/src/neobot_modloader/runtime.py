@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -13,6 +13,7 @@ from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.plugin import PluginState
 from neobot_contracts.ports.screenshot import ScreenshotPort
 
+from neobot_modloader.config_store import PluginConfigStore
 from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
@@ -36,8 +37,6 @@ from neobot_modloader.management import PluginControlFacade, PluginOperationResu
 from neobot_modloader.manager import DefaultPluginManager, ReentrantLock
 from neobot_modloader.plugins.registration import validate_plugin_name
 from neobot_modloader.state import PluginStateStore
-
-OfficialConfigProvider = Callable[[str], "Mapping[str, Any] | None"]
 
 
 class OperationBusy(Exception):
@@ -81,7 +80,6 @@ class PluginRuntime:
         auto_install_dependencies: bool = False,
         builtin_plugin_dirs: Sequence[Path] | None = None,
         state_store: PluginStateStore | None = None,
-        official_config_provider: OfficialConfigProvider | None = None,
         installer: PluginInstaller | None = None,
         user_plugins_enabled: bool = True,
     ) -> None:
@@ -92,7 +90,6 @@ class PluginRuntime:
             Path(path).resolve() for path in (builtin_plugin_dirs or ())
         )
         self._state_store = state_store
-        self._official_config_provider = official_config_provider
         self.installer = installer
         self.adapter = adapter
         self.logger_factory = logger_factory
@@ -131,6 +128,8 @@ class PluginRuntime:
         self._loaded_sources: dict[str, str] = {}
         #: 已加载插件解析后的热重载能力（plugin.toml 优先，其次 Plugin() 声明）
         self._loaded_flags: dict[str, tuple[bool, bool]] = {}
+        #: 插件打包默认配置（plugin.toml 的 [config]），作为插件数据配置的兜底
+        self._manifest_configs: dict[str, dict[str, Any]] = {}
         self._operation_gate = asyncio.Lock()
         self._operation_locks: dict[str, ReentrantLock] = {}
         self._operation_paths: dict[Path, str] = {}
@@ -1541,23 +1540,64 @@ class PluginRuntime:
             config_hot_reload=bool(read_optional_bool(metadata, "config_hot_reload", True)),
         )
 
-    def _official_config(self, loaded: LoadedPlugin) -> Mapping[str, Any]:
-        """官方插件的配置来自本体配置（BotConfig 的对应分区）。"""
-        provider = self._official_config_provider
-        if loaded.source != OFFICIAL_SOURCE or provider is None:
-            return loaded.config
+    def plugin_config_store(self, name: str) -> PluginConfigStore | None:
+        """插件配置存储：配置存于插件数据目录，默认值来自 plugin.toml 的 [config]。
+
+        与启停状态无关，因此插件被停用（未加载）时依然能读出配置。
+        """
+        if not name:
+            return None
         try:
-            provided = provider(loaded.name)
-        except Exception as exc:
-            self.logger.warning(f"读取官方插件配置失败 ({loaded.name}): {exc}")
-            return loaded.config
-        if provided is None:
-            return loaded.config
-        try:
-            return dict(provided)
-        except Exception as exc:
-            self.logger.warning(f"官方插件配置格式非法 ({loaded.name}): {exc}")
-            return loaded.config
+            data_dir = self._plugin_data_dir(name)
+        except ValueError as exc:
+            self.logger.warning(f"插件数据目录不可用 ({name}): {exc}")
+            return None
+        return PluginConfigStore(
+            data_dir,
+            defaults=self._manifest_config(name),
+            logger=self._get_logger(f"plugin.{name}.config"),
+        )
+
+    def plugin_config_path(self, name: str) -> Path | None:
+        store = self.plugin_config_store(name)
+        return store.path if store is not None else None
+
+    def plugin_config_defaults(self, name: str) -> dict[str, Any]:
+        store = self.plugin_config_store(name)
+        return store.defaults if store is not None else {}
+
+    def plugin_config_values(self, name: str) -> dict[str, Any]:
+        """插件当前生效的配置（打包默认值 + 插件数据目录里保存的值）。"""
+        store = self.plugin_config_store(name)
+        return store.read() if store is not None else {}
+
+    def _manifest_config(self, name: str) -> dict[str, Any]:
+        """plugin.toml 的 [config]：插件打包默认值（插件未加载时回落到磁盘读取）。"""
+        cached = self._manifest_configs.get(name)
+        if cached is not None:
+            return cached
+        config: dict[str, Any] = {}
+        path = self._loaded_paths.get(name) or self._find_plugin_path(name)
+        manifest = self._manifest_path_for(path) if path is not None else None
+        if manifest is not None:
+            try:
+                metadata = read_manifest(manifest)
+            except Exception as exc:
+                self.logger.warning(f"读取插件默认配置失败 ({name}): {exc}")
+                metadata = {}
+            raw = metadata.get("config")
+            if isinstance(raw, Mapping):
+                config = {str(key): value for key, value in raw.items()}
+        self._manifest_configs[name] = config
+        return config
+
+    @staticmethod
+    def _manifest_path_for(path: Path) -> Path | None:
+        if path.is_dir():
+            candidate = path / "plugin.toml"
+            return candidate if candidate.is_file() else None
+        candidate = path.parent / "plugin.toml"
+        return candidate if candidate.is_file() else None
 
     def _register(self, loaded: LoadedPlugin) -> bool:
         try:
@@ -1572,11 +1612,15 @@ class PluginRuntime:
                 if self.host is not None
                 else None
             )
+            self._manifest_configs.setdefault(
+                loaded.name, {str(key): value for key, value in (loaded.config or {}).items()}
+            )
+            store = self.plugin_config_store(loaded.name)
             context = RuntimePluginContext(
                 plugin_name=loaded.name,
                 plugin_dir=loaded.plugin_dir,
                 data_dir=plugin_data_dir,
-                config=self._official_config(loaded),
+                config=store.read() if store is not None else dict(loaded.config or {}),
                 logger=logger,
                 adapter=self.adapter,
                 hook_bus=self.hook_bus,

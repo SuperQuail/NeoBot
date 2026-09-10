@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import socket
 from pathlib import Path
 
@@ -83,7 +82,7 @@ class _FakeSnapshot:
 
 
 class _FakeControl:
-    def __init__(self) -> None:
+    def __init__(self, plugins_data: Path | None = None) -> None:
         self.snapshots = [
             _FakeSnapshot(
                 "dashboard", source="official", hot_reload=False, config_hot_reload=False
@@ -93,6 +92,16 @@ class _FakeControl:
         self.installer_available = True
         self.enabled_calls: list[tuple[str, bool]] = []
         self.proxy_mode = "system"
+        self.plugins_data = Path(plugins_data or "/tmp/plugins_data")
+
+    def plugin_config_path(self, name: str) -> Path:
+        """插件配置一律在插件数据目录下。"""
+        return self.plugins_data / name / "config.toml"
+
+    def plugin_config_defaults(self, name: str) -> dict:
+        if name == "dashboard":
+            return {"host": "0.0.0.0", "port": 9981}
+        return {}
 
     def installer_proxy(self) -> dict:
         from neobot_modloader.installer import ProxySettings
@@ -149,9 +158,7 @@ async def _start_panel(
     services=None,
 ):
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        'version = "0.5.0"\n[dashboard]\nenabled = true\nport = 9981\n', encoding="utf-8"
-    )
+    config_path.write_text('version = "0.6.0"\n', encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text("DeepSeek_APIKey=sk-super-secret\n", encoding="utf-8")
 
@@ -159,11 +166,10 @@ async def _start_panel(
     if password is not None:
         PanelPasswordStore(data_dir / "auth.json").set_password(password)
 
-    control = _FakeControl()
+    control = _FakeControl(tmp_path / "plugins_data")
     server = DashboardServer(
         plugin_name="dashboard",
         config=DashboardConfig(
-            enabled=True,
             host="127.0.0.1",
             port=_free_port(),
             trust_proxy_headers=trust_proxy,
@@ -365,6 +371,7 @@ async def test_plugins_payload_marks_official(panel) -> None:
 
 
 async def test_config_read_and_save_roundtrip(panel) -> None:
+    """本体配置读写：面板插件自己的配置已不在 config.toml，这里用 [debug] 验证回环。"""
     _, _, base, config_path = panel
     token, csrf = await _login(base)
     async with httpx.AsyncClient() as client:
@@ -372,12 +379,15 @@ async def test_config_read_and_save_roundtrip(panel) -> None:
         assert read.status_code == 200
         document = read.json()
         assert document["revision"]
-        assert document["config"]["dashboard"]["port"] == 9981
+        assert document["config"]["debug"]["retention_days"] == 10
 
         payload = {
             "revision": document["revision"],
             "mode": "form",
-            "config": {**document["config"], "dashboard": {**document["config"]["dashboard"], "port": 9999}},
+            "config": {
+                **document["config"],
+                "debug": {**document["config"]["debug"], "retention_days": 20},
+            },
             "reload": False,
         }
         saved = await client.post(
@@ -386,9 +396,9 @@ async def test_config_read_and_save_roundtrip(panel) -> None:
             json=payload,
         )
 
-    assert saved.status_code == 200
-    assert saved.json()["config"]["dashboard"]["port"] == 9999
-    assert 'port = 9999' in config_path.read_text(encoding="utf-8")
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["config"]["debug"]["retention_days"] == 20
+    assert "retention_days = 20" in config_path.read_text(encoding="utf-8")
 
 
 async def test_config_save_detects_conflict(panel) -> None:
@@ -420,7 +430,7 @@ async def test_config_save_rejects_invalid_payload(panel) -> None:
         response = await client.post(
             base + "/api/config",
             headers={"X-Token": token, "X-CSRF-Token": csrf},
-            json={"revision": None, "mode": "form", "config": {"dashboard": {"port": "abc"}}},
+            json={"revision": None, "mode": "form", "config": {"dashboard": {"port": "abc"}}},  # 该分区已不存在
         )
 
     assert response.status_code == 400
@@ -696,8 +706,8 @@ async def test_env_save_updates_file(panel) -> None:
 
 
 async def test_plugins_payload_reports_hot_reload_and_proxy(panel) -> None:
-    """插件列表必须带热重载标注、官方插件配置分区与代理设置。"""
-    _, _, base, _ = panel
+    """插件列表必须带热重载标注、插件配置路径与代理设置。"""
+    _, control, base, _ = panel
     token, _ = await _login(base)
     async with httpx.AsyncClient() as client:
         response = await client.get(base + "/api/plugins", headers={"X-Token": token})
@@ -706,9 +716,12 @@ async def test_plugins_payload_reports_hot_reload_and_proxy(panel) -> None:
     items = {item["name"]: item for item in payload["items"]}
     assert items["demo"]["hot_reload"] is True
     assert items["demo"]["config_hot_reload"] is True
-    assert items["demo"]["config_section"] == ""
     assert items["dashboard"]["official"] is True
-    assert items["dashboard"]["config_section"] == "dashboard"
+    # 官方与第三方插件的配置都在插件数据目录，不再有本体 config.toml 分区
+    assert items["dashboard"]["config_path"] == str(
+        control.plugins_data / "dashboard" / "config.toml"
+    )
+    assert items["demo"]["config_path"] == str(control.plugins_data / "demo" / "config.toml")
     assert payload["proxy"]["mode"] == "system"
     assert payload["proxy_modes"] == ["system", "none", "custom"]
 
@@ -738,9 +751,28 @@ async def test_plugins_proxy_save_writes_config(panel) -> None:
     assert server.plugin_control.proxy_mode == "custom"
 
 
+async def test_manage_plugins_switch_follows_plugin_config_file(panel) -> None:
+    """manage_plugins 改为 false 后立即生效：管理员不会把自己锁在外面。"""
+    server, _, base, _ = panel
+    token, _ = await _login(base)
+
+    (server.data_dir / "config.toml").write_text(
+        "manage_plugins = false\n", encoding="utf-8"
+    )
+
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/plugins", headers={"X-Token": token})
+        denied = await client.post(base + "/api/plugins/demo/toggle", headers={"X-Token": token})
+
+    assert listed.json()["manage_enabled"] is False
+    assert denied.status_code == 403
+
+
 async def test_official_plugin_config_read_and_save(panel) -> None:
-    """官方插件配置可直接在面板编辑，写回 config.toml 的同名分区。"""
-    _, _, base, config_path = panel
+    """官方插件配置写在插件数据目录，不再碰本体 config.toml。"""
+    _, control, base, config_path = panel
+    before = config_path.read_text(encoding="utf-8")
+    target = control.plugins_data / "dashboard" / "config.toml"
     token, csrf = await _login(base)
     async with httpx.AsyncClient() as client:
         read = await client.get(
@@ -760,20 +792,30 @@ async def test_official_plugin_config_read_and_save(panel) -> None:
             headers={"X-Token": token, "X-CSRF-Token": csrf},
             json={"config": {"port": 70000}, "revision": payload["revision"]},
         )
+        conflict = await client.post(
+            base + "/api/plugins/dashboard/config",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"config": {"port": 9982}, "revision": payload["revision"]},
+        )
 
     assert read.status_code == 200, read.text
     assert payload["official"] is True
-    assert payload["section"] == "dashboard"
-    assert payload["values"]["port"] == 9981
+    assert payload["path"] == str(target)
+    assert payload["exists"] is False  # 还没保存过：按默认值渲染
+    assert payload["config"]["port"] == 9981
     assert any(field["name"] == "port" for field in payload["schema"])
     assert payload["config_hot_reload"] is False
 
     assert saved.status_code == 200, saved.text
-    raw = config_path.read_text(encoding="utf-8")
+    raw = target.read_text(encoding="utf-8")
     assert "log_buffer_size = 600" in raw
+    assert saved.json()["exists"] is True
+    # 本体 config.toml 保持不变
+    assert config_path.read_text(encoding="utf-8") == before
 
     assert invalid.status_code == 400
     assert invalid.json()["errors"]
+    assert conflict.status_code == 409
 
 
 async def test_logs_endpoint_shape(panel) -> None:

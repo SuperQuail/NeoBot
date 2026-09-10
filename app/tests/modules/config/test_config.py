@@ -420,7 +420,7 @@ def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
 
 
 def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path):
-    """0.4.0 -> 0.5.0: [console] 迁到 [dashboard]，生图模型迁移为列表。"""
+    """0.4.0 -> 0.5.0: 旧 [console] 分区不再留在本体配置，生图模型迁移为列表。"""
     # Arrange
     _clear_platform_env(monkeypatch)
     for key, value in _DEEPSEEK_KEYS.items():
@@ -451,10 +451,9 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
 
     # Assert
     assert config_obj.version == "0.6.0"
-    assert config_obj.dashboard.enabled is True
-    assert config_obj.dashboard.host == "127.0.0.1"
-    assert config_obj.dashboard.port == 9000
+    # 面板配置已移出本体配置（见 plugin_config_migration），旧分区直接丢弃
     assert not hasattr(config_obj, "console")
+    assert not hasattr(config_obj, "dashboard")
     image_keys = config_obj.models.assignments.creator_image_models
     assert image_keys == ["black-forest-labs-FLUX.1-schnell"]
     image_model = config_obj.models.get(image_keys[0])
@@ -463,7 +462,7 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
     assert image_model.model_name == "black-forest-labs/FLUX.1-schnell"
     raw = cfg_path.read_text(encoding="utf-8")
     assert "[console]" not in raw
-    assert "[dashboard]" in raw
+    assert "[dashboard]" not in raw
     assert "[[models.registry]]" in raw
     assert "[models.assignments]" in raw
     assert "[[models.creator_image_models]]" not in raw
