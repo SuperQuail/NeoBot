@@ -18,6 +18,7 @@ from neobot_contracts.ports.logging import NullLogger
 
 from neobot_app.runtime.archive_memory_summary import (
     MAX_STORED_MESSAGE_CHARS,
+    MAX_TOOL_FAILURES,
     ArchiveMemoryAutoSummaryService,
 )
 
@@ -316,7 +317,7 @@ async def test_real_provider_http_failure_preserves_counter(provider_cls):
         }
         logger.warning.assert_called_once()
         assert logger.warning.call_args.args == (
-            "archive auto summary failed, counter preserved for retry",
+            "档案自动总结失败，保留计数器待重试",
         )
         assert "401" in logger.warning.call_args.kwargs["error"]
         logger.info.assert_not_called()
@@ -492,3 +493,300 @@ async def test_record_message_ignores_unknown_conversation_kind():
 
     assert archive.raw("memory_counter", "channel:555") is None
     assert len(provider.calls) == 0
+
+# ── 工具调用保护:失败重试风暴与轮次上限 ──────────────────────────
+
+
+class _ToolCallProvider:
+    """每轮都返回同一个工具调用的假 Provider，用于测试工具循环保护。"""
+
+    def __init__(self, tool_name: str = "archive_crud__save_archive") -> None:
+        self.tool_name = tool_name
+        self.calls: list[list[dict]] = []
+
+    async def chat(self, messages, tools=None):
+        self.calls.append(messages)
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call-{len(self.calls)}",
+                    "type": "function",
+                    "function": {"name": self.tool_name, "arguments": "{}"},
+                }
+            ],
+        }
+
+    async def close(self) -> None:
+        pass
+
+
+def _make_service_with_loop_config(
+    *,
+    archive: _FakeArchive,
+    provider: Any,
+    executor: Any,
+    group_interval: int = 1,
+    max_tool_rounds: int = 20,
+    snippet_chars: int = 120,
+) -> ArchiveMemoryAutoSummaryService:
+    config = SimpleNamespace(
+        agent=SimpleNamespace(
+            memory=SimpleNamespace(
+                trigger=SimpleNamespace(
+                    group_interval=group_interval,
+                    private_interval=group_interval,
+                    prompt_snippet_chars=snippet_chars,
+                    max_tool_rounds=max_tool_rounds,
+                )
+            )
+        )
+    )
+    return ArchiveMemoryAutoSummaryService(
+        archive_memory_service=archive,
+        provider=provider,
+        config=config,
+        logger=NullLogger(),
+        tool_definitions=[],
+        tool_executor=executor,
+    )
+
+
+@pytest.mark.asyncio
+async def test_summary_aborts_after_repeated_tool_failures_and_keeps_counter():
+    """工具连续失败达到上限即中止，且一次都没写成功时保留计数器待重试。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    logger = Mock(spec=NullLogger)
+    executor = AsyncMock(return_value="未知工具: archive_crud__save_archive")
+    service = _make_service_with_loop_config(
+        archive=archive, provider=provider, executor=executor, group_interval=1
+    )
+    service._logger = logger
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="777", message_text="一"
+    )
+
+    assert len(provider.calls) == MAX_TOOL_FAILURES
+    assert json.loads(archive.raw("memory_counter", "group:777")["value"])["count"] == 1
+    logger.info.assert_not_called()
+    warnings = [call.args[0] for call in logger.warning.call_args_list]
+    assert "档案自动总结因工具连续失败而中止" in warnings
+    assert "档案自动总结未写入任何内容，保留计数器待重试" in warnings
+
+
+@pytest.mark.asyncio
+async def test_summary_resets_counter_when_a_tool_call_succeeds():
+    """只要有一次工具调用成功，就按完成处理并复位计数器。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    executor = AsyncMock(return_value='{"ok": true}')
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=executor,
+        group_interval=1,
+        max_tool_rounds=2,
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="888", message_text="一"
+    )
+
+    # 轮次上限为 2，模型每轮都要求调用工具，因此在第 2 轮后结束
+    assert len(provider.calls) == 2
+    assert json.loads(archive.raw("memory_counter", "group:888")["value"]) == {
+        "count": 0,
+        "messages": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_prompt_snippet_chars_zero_keeps_full_text():
+    """prompt_snippet_chars=0 时消息全文注入，不做截断。"""
+    archive = _FakeArchive()
+    provider = _FakeProvider()
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=AsyncMock(),
+        group_interval=1,
+        snippet_chars=0,
+    )
+    long_text = "很长的消息" * 50
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="999", message_text=long_text
+    )
+
+    prompt = provider.calls[0][1]["content"]
+    assert long_text in prompt
+    assert "read_pending_messages" not in prompt
+
+# ── 装配回归:工具定义必须带 skill 前缀且能真正写库 ────────────────
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_summary_tools_are_prefixed_and_write_archives(monkeypatch):
+    """回归:总结 agent 的工具定义必须带 {skill}__ 前缀，否则 skill_manager.execute
+    无法路由，模型每次调用都返回"未知工具"并反复重试烧 token。"""
+    from neobot_app.bootstrap import _providers as providers_module
+    from neobot_app.bootstrap._services import build_archive_summary_service
+    from neobot_app.skills.archive_crud import ArchiveCRUDSkill
+    from neobot_app.skills.base import SkillManager
+
+    # 强制回退到本测试的假 provider：其他测试可能已加载真实配置并注册真实模型
+    def _no_provider(_name):
+        raise RuntimeError("test: no real provider")
+
+    monkeypatch.setattr(providers_module, "create_provider", _no_provider)
+
+    archive = _FakeArchive()
+    skill_manager = SkillManager()
+    skill_manager.register(ArchiveCRUDSkill(archive_service=archive))
+
+    class _LoggerFactory:
+        def get_logger(self, name: str) -> NullLogger:
+            return NullLogger()
+
+    config = SimpleNamespace(
+        agent=SimpleNamespace(
+            memory=SimpleNamespace(
+                trigger=SimpleNamespace(group_interval=1, private_interval=1),
+                archive=SimpleNamespace(
+                    max_chars=500,
+                    group_profile_max_chars=1500,
+                    allow_delete=False,
+                    allowed_tables=[],
+                ),
+                favorability=SimpleNamespace(max_change_per_summary=5),
+                item_archive=SimpleNamespace(enabled=False, table_name="item_archive"),
+            )
+        )
+    )
+
+    calls: list[dict] = []
+
+    class _PatchProvider:
+        """第一轮要求 patch_archive 追加事实，第二轮结束。"""
+
+        async def chat(self, messages, tools=None):
+            calls.append({"messages": messages, "tools": tools})
+            if len(calls) == 1:
+                return {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "archive_crud__patch_archive",
+                                "arguments": json.dumps(
+                                    {
+                                        "table_name": "group_profile",
+                                        "key": "888",
+                                        "operations": [
+                                            {"op": "append", "text": "群友喜欢豆浆"}
+                                        ],
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                }
+            return {"role": "assistant", "content": "done", "tool_calls": None}
+
+        async def close(self) -> None:
+            pass
+
+    provider = _PatchProvider()
+    service = build_archive_summary_service(
+        config=config,
+        archive_memory_service=archive,
+        provider=provider,
+        fallback_provider=provider,
+        logger_factory=_LoggerFactory(),
+        skill_manager=skill_manager,
+    )
+
+    names = [tool["function"]["name"] for tool in service._tool_definitions]
+    assert names, "总结 agent 必须挂载档案工具"
+    assert all(name.startswith("archive_crud__") for name in names), names
+    assert "archive_crud__patch_archive" in names
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="888", message_text="我喜欢豆浆"
+    )
+
+    # 工具真的写进了档案（前缀修复前这里永远是空的）
+    assert archive.raw("group_profile", "888")["value"] == "群友喜欢豆浆"
+    assert json.loads(archive.raw("memory_counter", "group:888")["value"]) == {
+        "count": 0,
+        "messages": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_records_token_usage(monkeypatch):
+    """总结调用必须计入 agent:memory 用量，否则成本在统计里是黑盒。"""
+    from neobot_app.statistics import tracker as tracker_module
+
+    recorded: list[dict] = []
+
+    class _Tracker:
+        async def record(self, **kwargs):
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(tracker_module, "_tracker", _Tracker())
+
+    class _UsageProvider:
+        model = "deepseek-chat"
+
+        async def chat(self, messages, tools=None):
+            return {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": None,
+                "extensions": {
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 200,
+                        "cache_hit_tokens": 400,
+                        "cache_miss_tokens": 600,
+                    }
+                },
+            }
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=_UsageProvider(),
+        executor=AsyncMock(),
+        group_interval=1,
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="555", message_text="一"
+    )
+
+    assert recorded == [
+        {
+            "module": "agent:memory",
+            "model_name": "deepseek-chat",
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_hit_tokens": 400,
+            "cache_miss_tokens": 600,
+            "conversation_kind": "group",
+            "conversation_id": "555",
+        }
+    ]
+
+

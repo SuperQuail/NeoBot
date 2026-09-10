@@ -35,6 +35,7 @@ from neobot_app.drawing.config import (
     ImageGenerationError,
 )
 from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.utils.http import image_http_client, is_local_or_private_url
 from neobot_app.utils.media_sender import send_image as _media_send_image
 
 if TYPE_CHECKING:
@@ -1145,6 +1146,16 @@ class CreatorImageService:
         if ref.startswith("file://"):
             return Path(ref[7:]).read_bytes()
         if ref.startswith(("http://", "https://")):
+            if is_local_or_private_url(ref):
+                # 本机/内网地址（含 Bot 自己的文件服务器）不能走系统代理
+                async with image_http_client(
+                    timeout=self._get_io_timeout_seconds(),
+                    follow_redirects=True,
+                    url=ref,
+                ) as client:
+                    async with client.stream("GET", ref) as response:
+                        response.raise_for_status()
+                        return await self._read_limited(response)
             response = await self._public_client.get(ref)
             response.raise_for_status()
             return await self._read_limited(response)

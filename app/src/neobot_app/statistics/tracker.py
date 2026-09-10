@@ -55,14 +55,14 @@ class UsageTracker:
         conversation_id: str = "",
     ) -> None:
         if module not in _VALID_MODULES:
-            self._logger.debug("unknown usage module, skipping", module=module)
+            self._logger.debug("未知的用量统计模块，已跳过", module=module)
             return
 
         self._ensure_model_cache()
         info = self._model_info.get(model_name)
         if info is None:
             self._logger.debug(
-                "model info not found in registry, skipping usage record",
+                "模型信息未在注册表中找到，跳过用量记录",
                 model_name=model_name,
             )
             return
@@ -102,7 +102,7 @@ class UsageTracker:
             await retry_on_lock(_flush, on_retry=session.rollback)
 
         self._logger.debug(
-            "usage recorded",
+            "用量已记录",
             module=module,
             model=model_name,
             input_tokens=input_tokens,

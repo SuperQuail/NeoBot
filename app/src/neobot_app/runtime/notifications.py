@@ -255,14 +255,14 @@ class BackgroundNotificationHub:
                 )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "background notification consume callback timed out",
+                "后台通知消费回调超时",
                 source=notification.source,
                 pipeline_key=notification.pipeline_key,
                 timeout_seconds=self._get_callback_timeout_seconds(),
             )
         except Exception as exc:
             self._logger.warning(
-                "background notification consume callback failed",
+                "后台通知消费回调失败",
                 source=notification.source,
                 pipeline_key=notification.pipeline_key,
                 error=str(exc),

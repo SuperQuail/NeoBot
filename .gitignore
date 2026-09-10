@@ -46,6 +46,14 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.pytest-tmp/
+.pytest_tmp/
+.pytest_agent_tmp/
+
+# sqlite 运行期数据库产物（不要提交）
+*.db
+*.db-wal
+*.db-shm
 
 # Translations
 *.mo

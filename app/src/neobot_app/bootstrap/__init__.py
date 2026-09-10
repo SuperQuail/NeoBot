@@ -268,10 +268,11 @@ def create_application() -> NeoBotApplication:
     )
 
     provider_logger = logger_factory.get_logger("app.provider")
-    provider, provider_error_message = build_main_provider(
-        config=config, logger=provider_logger,
-    )
+    # 视觉模型先创建：既用于图片解析，也作为主模型不可用时的自动回退路由。
     vision_provider = build_vision_provider(logger=provider_logger)
+    provider, provider_error_message = build_main_provider(
+        config=config, logger=provider_logger, vision_provider=vision_provider,
+    )
 
     # ── 表情包 / 文件服务 / 图片暂存池 ──
     emoji_service = build_emoji_service(
@@ -559,7 +560,11 @@ def create_application() -> NeoBotApplication:
     maintenance_coros = []
     # 睡眠剩余时间播报：睡眠期间每分钟打印剩余时间（仅日志，不回复）
     maintenance_coros.append(sleep_service.ticker())
-    if sandbox["sandbox_service"] is not None and admin_accounts:
+    if (
+        sandbox["sandbox_service"] is not None
+        and admin_accounts
+        and provider is not None
+    ):
         maintenance_coros.append(
             _make_maintenance_coro(
                 provider=provider,

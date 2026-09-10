@@ -39,7 +39,7 @@ class MemoryService:
         ref = ConversationRef(kind="private", id=conversation_id)
         records = await self._repository.search(ref, query, limit)
         self._logger.debug(
-            "memory recalled",
+            "记忆已检索",
             conversation_id=conversation_id,
             count=len(records),
         )

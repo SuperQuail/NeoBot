@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from neobot_app.skills.archive_crud import (
+    PENDING_MESSAGES_TABLE,
     ArchiveCRUDSkill,
     _read_item_payload,
 )
@@ -228,7 +229,8 @@ async def test_group_memory_truncates_head_and_guides() -> None:
 
     assert rendered is not None
     assert "以下为开头部分" in rendered
-    assert "分页阅读" in rendered and "越后的内容越新" in rendered
+    assert "按需读取" in rendered and "越后的内容越新" in rendered
+    assert "mode='outline'" in rendered
     assert "总体概述" in rendered  # 头部(总体总结)保留
     assert rendered.startswith("[记忆较长")
 
@@ -258,7 +260,8 @@ async def test_user_archive_prefers_summary_and_truncates_at_4000() -> None:
     assert rendered is not None
     assert rendered.startswith("[记忆较长")
     assert "开头概述" in rendered
-    assert "分页阅读" in rendered
+    assert "按需读取" in rendered
+    assert "mode='outline'" in rendered
     body = rendered.split("\n", 1)[1]
     assert "y" * 3999 in body or len(body) < 4500
 
@@ -266,8 +269,7 @@ async def test_user_archive_prefers_summary_and_truncates_at_4000() -> None:
 # ── 总结 agent 行为规范 ──────────────────────────────────────────
 
 
-async def test_summary_prompt_requires_summary_and_full_records() -> None:
-    """总结提示词:要求维护受限 summary(总体在前+依次总结+硬限制)与全量记忆。"""
+def _summary_service(*, item_archive: bool = False, snippet_chars: int = 120):
     from neobot_app.config.schemas.bot import AgentMemoryArchive, BotConfig
     from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 
@@ -276,13 +278,27 @@ async def test_summary_prompt_requires_summary_and_full_records() -> None:
             memory=SimpleNamespace(
                 archive=AgentMemoryArchive(max_chars=4000, group_profile_max_chars=1500),
                 favorability=SimpleNamespace(max_change_per_summary=5),
+                trigger=SimpleNamespace(
+                    group_interval=500,
+                    private_interval=200,
+                    prompt_snippet_chars=snippet_chars,
+                ),
             )
         )
     )
     svc = object.__new__(ArchiveMemoryAutoSummaryService)
     svc._config = config
     svc._favorability_max_change = 5
-    svc._item_archive_enabled = False
+    svc._item_archive_enabled = item_archive
+    svc._item_archive_table = "item_archive"
+    svc._prompt_snippet_chars = snippet_chars
+    svc._max_tool_rounds = 20
+    return svc
+
+
+async def test_summary_prompt_requires_incremental_writes() -> None:
+    """总结提示词:全量档案只用 patch_archive 增量追加,定长 summary 才允许 save_archive 重写。"""
+    svc = _summary_service()
 
     prompt = svc._build_summary_prompt(
         conversation_kind="group", conversation_id="42", messages=[]
@@ -293,9 +309,17 @@ async def test_summary_prompt_requires_summary_and_full_records() -> None:
     assert "HARD LIMIT: 1500" in prompt
     assert "OVERALL summary" in prompt
     assert "chronological order" in prompt
-    assert "REWRITE and compress it with save_archive" in prompt
-    assert "NEVER append beyond the limit" in prompt
-    assert "negative offset reads from the tail" in prompt
+    assert "NEVER exceed the limit" in prompt
+    # 增量写入:append 不需要先读全文
+    assert "archive_crud__patch_archive" in prompt
+    assert "op='append'" in prompt
+    assert "do NOT read the record first" in prompt
+    assert "save_archive on this table is forbidden" in prompt
+    # 按需查看:先大纲再分页,而不是全量读取
+    assert "mode='outline'" in prompt
+    assert "read only the relevant page" in prompt
+    assert "Read both first" not in prompt
+    assert "conversation_key: group:42" in prompt
 
     private_prompt = svc._build_summary_prompt(
         conversation_kind="private", conversation_id="10001", messages=[]
@@ -305,17 +329,267 @@ async def test_summary_prompt_requires_summary_and_full_records() -> None:
     assert "HARD LIMIT: 4000" in private_prompt
 
 
+async def test_summary_prompt_truncates_messages_and_points_to_tool() -> None:
+    """消息超长时只注入截断片段,并给出 read_pending_messages 按需读取引导。"""
+    svc = _summary_service(snippet_chars=20)
+    messages = [
+        {"sender_id": "1", "sender_name": "甲", "text": "短消息"},
+        {"sender_id": "2", "sender_name": "乙", "text": "很长的消息" * 10},
+    ]
+
+    prompt = svc._build_summary_prompt(
+        conversation_kind="group", conversation_id="42", messages=messages
+    )
+
+    assert "[1] 甲 / QQ:1: 短消息" in prompt
+    assert "很长的消息" * 10 not in prompt
+    assert "…" in prompt
+    assert "read_pending_messages" in prompt
+    assert "conversation_key='group:42'" in prompt
+    assert "indices: 2" in prompt
+
+
 # ── 配置默认值 ────────────────────────────────────────────────────
 
 
 def test_memory_config_defaults() -> None:
-    """记忆总结触发条数默认:群聊 500、私聊 200;个人记忆展示上限 500。"""
+    """记忆总结触发条数默认:群聊 500、私聊 200;消息截断 120 字;个人记忆展示上限 500。"""
     from neobot_app.config.schemas.bot import AgentMemoryArchive, AgentMemoryTrigger
 
     trigger = AgentMemoryTrigger()
     assert trigger.group_interval == 500
     assert trigger.private_interval == 200
+    assert trigger.prompt_snippet_chars == 120
+    assert trigger.max_tool_rounds == 20
 
     archive = AgentMemoryArchive()
     assert archive.max_chars == 500
     assert archive.group_profile_max_chars == 1500
+
+
+# ── 增量编辑 patch_archive ────────────────────────────────────────
+
+
+class _PatchService:
+    """内存版档案服务：记录 set 调用，供 patch_archive 测试断言。"""
+
+    def __init__(self, value: str | None = None, tags: list[str] | None = None) -> None:
+        self.value = value
+        self.tags = list(tags or [])
+        self.sets: list[tuple] = []
+
+    async def get(self, table_name, key):
+        if self.value is None:
+            return None
+        return SimpleNamespace(
+            table_name=table_name, key=key, value=self.value, tags=list(self.tags), version=3
+        )
+
+    async def set(self, table_name, key, value, tags):
+        self.sets.append((table_name, key, value, tags))
+        self.value = value
+        self.tags = list(tags or [])
+        return SimpleNamespace(
+            table_name=table_name, key=key, value=value, tags=list(tags or []), version=4
+        )
+
+
+async def test_patch_archive_appends_only_delta() -> None:
+    """append 只写增量：写入内容等于旧值 + 新增片段，不需要读全文。"""
+    service = _PatchService(value="甲喜欢喝豆浆")
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "operations": [{"op": "append", "text": "最近迷上了羽毛球"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["total_chars"] == len("甲喜欢喝豆浆\n最近迷上了羽毛球")
+    assert service.sets == [("user_profile", "1", "甲喜欢喝豆浆\n最近迷上了羽毛球", [])]
+    assert result["version"] == 4
+
+
+async def test_patch_archive_replace_and_delete_require_unique_old() -> None:
+    """replace/delete 只能定位唯一片段；不唯一或不存在时整批失败且不写入。"""
+    service = _PatchService(value="旧结论A\n旧结论A\n其他")
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    ambiguous = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "operations": [{"op": "replace", "old": "旧结论A", "new": "新结论"}],
+            },
+        )
+    )
+    assert ambiguous["ok"] is False
+    assert "不唯一" in ambiguous["error"]
+    assert service.sets == []
+
+    missing = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "operations": [{"op": "delete", "old": "不存在的片段"}],
+            },
+        )
+    )
+    assert missing["ok"] is False
+    assert "未找到" in missing["error"]
+    assert service.sets == []
+
+
+async def test_patch_archive_atomic_on_partial_failure() -> None:
+    """批量操作中任一失败则整批不生效（原子语义）。"""
+    service = _PatchService(value="第一行")
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "operations": [
+                    {"op": "append", "text": "第二行"},
+                    {"op": "replace", "old": "不存在", "new": "x"},
+                ],
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert service.sets == []
+
+
+async def test_patch_archive_creates_missing_record_with_append() -> None:
+    """条目不存在时，append/prepend 允许新建档案。"""
+    service = _PatchService(value=None)
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "9",
+                "operations": [{"op": "append", "text": "新用户"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert service.sets[0][2] == "新用户"
+
+
+async def test_patch_archive_unchanged_skips_write() -> None:
+    """编辑结果与原文一致时不写库（省一次写入）。"""
+    service = _PatchService(value="内容")
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "patch_archive",
+            {
+                "table_name": "user_profile",
+                "key": "1",
+                "operations": [{"op": "replace", "old": "内容", "new": "内容"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["unchanged"] is True
+    assert service.sets == []
+
+
+# ── 大纲读取与待总结消息 ──────────────────────────────────────────
+
+
+async def test_read_archive_outline_mode_returns_headings() -> None:
+    """mode='outline' 只返回每行开头与统计信息，供模型决定读哪一页。"""
+    service = _PatchService(value="总体总结\n- 甲喜欢豆浆\n- 乙喜欢羽毛球")
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "read_archive",
+            {"table_name": "group_profile", "key": "42", "mode": "outline"},
+        )
+    )
+
+    assert result["ok"] is True
+    item = result["item"]
+    assert item["mode"] == "outline"
+    assert item["total_chars"] == len("总体总结\n- 甲喜欢豆浆\n- 乙喜欢羽毛球")
+    assert item["outline"][0].endswith("总体总结")
+    assert "value" not in item
+
+
+async def test_read_archive_rejects_unknown_mode() -> None:
+    skill = ArchiveCRUDSkill(archive_service=_PatchService(value="x"))
+
+    result = json.loads(
+        await skill.execute(
+            "read_archive", {"table_name": "group_profile", "key": "42", "mode": "raw"}
+        )
+    )
+
+    assert result["ok"] is False
+    assert "mode" in result["error"]
+
+
+async def test_read_pending_messages_returns_selected_indices() -> None:
+    """read_pending_messages 按序号读取待总结消息全文。"""
+    state = {
+        "count": 2,
+        "messages": [
+            {"sender_id": "1", "sender_name": "甲", "text": "第一条"},
+            {"sender_id": "2", "sender_name": "乙", "text": "第二条"},
+        ],
+    }
+    service = _PatchService(value=json.dumps(state, ensure_ascii=False))
+    skill = ArchiveCRUDSkill(archive_service=service)
+
+    result = json.loads(
+        await skill.execute(
+            "read_pending_messages",
+            {"conversation_key": "group:42", "indices": [2, 99]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["total"] == 2
+    assert result["count"] == 1
+    assert result["messages"] == [
+        {"index": 2, "sender_name": "乙", "sender_id": "2", "text": "第二条"}
+    ]
+
+
+async def test_read_pending_messages_missing_counter_is_empty() -> None:
+    skill = ArchiveCRUDSkill(archive_service=_PatchService(value=None))
+
+    result = json.loads(
+        await skill.execute("read_pending_messages", {"conversation_key": "group:42"})
+    )
+
+    assert result["ok"] is True
+    assert result["messages"] == []
+
+
+def test_pending_table_matches_summary_counter_table() -> None:
+    """待总结消息表名必须与总结服务的计数器表名一致。"""
+    from neobot_app.runtime.archive_memory_summary import COUNTER_TABLE
+
+    assert PENDING_MESSAGES_TABLE == COUNTER_TABLE

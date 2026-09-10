@@ -13,18 +13,11 @@ native_vision = true
 
 [agent_model]
 main_agent = 0
-main_agent_vision_fallback = 1
-
-[models.agent_model_1]
-provider = "DeepSeek"
-model_name = "deepseek-v4-flash"
-native_vision = false
 ```
 
-`main_agent_vision_fallback` is a model slot (0–3), must differ from `main_agent`,
-and must reference a non-vision model with valid credentials. It is only used
-when native vision is enabled on the routed main model. Existing configurations
-keep the text-only behavior (`ModelRegistration.native_vision = false`).
+The fallback route is always `models.vision_model`; no fallback model slot has
+to be selected by hand. Existing configurations keep the text-only behavior
+(`ModelRegistration.native_vision = false`).
 
 `RegisteredModel.native_vision` is propagated to DeepSeek/OpenAI/Anthropic
 providers. `build_main_provider` wraps the visual main provider in
@@ -48,14 +41,21 @@ URLs/data, size limits, generic validation failures, authentication errors,
 rate limits, transport failures, and server errors do not cause degradation.
 Streaming can retry only before any output has been emitted.
 
-Degradation is persistent for the provider instance and logs at **error** level.
-Every subsequent fallback request replaces image blocks with visible text
-placeholders and adds a system notice stating the model did not see the images.
-Image-mounting tools (`image_context__*`) are removed from fallback requests.
-Input messages are not mutated. The agent receives structured metadata:
+Degradation is persistent for the provider instance. Two modes:
+
+- **vision-capable fallback** (default when the fallback declares
+  `native_vision=True`, i.e. `models.vision_model`): messages and tools pass
+  through unchanged, so the fallback still sees the images; logs at **warning**
+  level and `provider.native_vision` stays `True`;
+- **text-only fallback** (`strip_images=True`): every fallback request replaces
+  image blocks with visible text placeholders, adds a system notice stating the
+  model did not see the images, removes `image_context__*` tools, and logs at
+  **error** level.
+
+Input messages are never mutated. The agent receives structured metadata:
 
 ```python
-provider.native_vision  # False after fallback
+provider.native_vision  # active route capability (True with a vision fallback)
 provider.vision_degradation  # reason/from_model/to_model/notice, or None
 response["extensions"]["native_vision_fallback"]  # same metadata on fallback responses
 ```

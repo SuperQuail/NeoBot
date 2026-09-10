@@ -312,3 +312,41 @@ async def test_render_group_member_list_formats_all_members() -> None:
     assert "昵称:成员一" in text
     assert "昵称:成员二" in text
     assert text.index("<群友_1>") < text.index("<群友_2>")
+    # 默认不注入群员档案
+    assert "你记得关于Ta的信息" not in text
+
+
+async def test_render_group_member_list_injects_archives_only_when_enabled() -> None:
+    """include_archives=True 时才注入群员档案（默认关闭，改由 agent 按需读取）。"""
+
+    class _Sender:
+        def __init__(self, nickname: str) -> None:
+            self.nickname = nickname
+            self.card = None
+            self.sex = None
+            self.role = None
+
+    class _Message:
+        def __init__(self, user_id: int, sender: _Sender) -> None:
+            self.user_id = user_id
+            self.sender = sender
+
+    class _Archive:
+        async def get(self, table_name, key):
+            return SimpleNamespace(value=f"{key} 的长期记忆")
+
+    class _FakeQueue(dict):
+        pass
+
+    queue = _FakeQueue()
+    queue["100"] = [_Message(1, _Sender("成员一"))]
+    service = _make_service(_FakeProfilesRepo(), _FakeAdapter())
+    service._archive_memory_service = _Archive()
+
+    without = await service.render_group_member_list("100", message_queue=queue)
+    with_archives = await service.render_group_member_list(
+        "100", message_queue=queue, include_archives=True
+    )
+
+    assert "你记得关于Ta的信息" not in without
+    assert "你记得关于Ta的信息:1 的长期记忆" in with_archives

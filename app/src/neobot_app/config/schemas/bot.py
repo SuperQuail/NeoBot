@@ -211,7 +211,10 @@ class ModelRegistration:
     settings: ModelSettings = field(default_factory=ModelSettings)
     native_vision: bool = field(
         default=False,
-        metadata={"description": "主推理模型可直接接收图片；DeepSeek 使用 deepseek-v4-flash-vision-exp，启用后需配置非视觉回退路由"},
+        metadata={
+            "description": "该模型可直接接收图片块；主推理模型开启后，不可用或无法处理图片时"
+            "自动回退到 vision_model（无需手选回退模型）"
+        },
     )
 
 
@@ -405,10 +408,6 @@ class AgentModelRouting:
     main_agent: int = field(
         default=0,
         metadata={"description": "主回复 Agent 使用的模型编号，0-3"},
-    )
-    main_agent_vision_fallback: int = field(
-        default=1,
-        metadata={"description": "主模型原生视觉不可用时的非视觉回退模型编号，0-3；必须不同于主模型且 native_vision=false"},
     )
     creator: int = field(
         default=1,
@@ -820,6 +819,17 @@ class AgentMemoryTrigger:
     private_interval: Optional[int] = field(
         default=200,
         metadata={"description": "私聊每N条消息触发一次记忆处理；0表示禁用"},
+    )
+    prompt_snippet_chars: Optional[int] = field(
+        default=120,
+        metadata={
+            "description": "总结提示词中每条消息的最大展示字符数；超出部分截断，"
+            "模型可用 archive_crud__read_pending_messages 按需读取全文；0表示不截断"
+        },
+    )
+    max_tool_rounds: Optional[int] = field(
+        default=20,
+        metadata={"description": "单次记忆总结最多允许的工具调用轮次，防止工具失败时反复重试烧token"},
     )
 
 
@@ -1352,7 +1362,14 @@ class EnhancedChat(Chat):
     )
     archive_fetch_window: Optional[int] = field(
         default=20,
-        metadata={"description": "档案获取窗口；只对消息队列中最新的此数量消息的发送者获取个人档案，戳一戳等同0.2条消息"},
+        metadata={"description": "群成员列表窗口；只列出消息队列中最新的此数量消息的发送者，戳一戳等同0.2条消息"},
+    )
+    inject_member_archives: Optional[bool] = field(
+        default=False,
+        metadata={
+            "description": "群聊提示词是否注入群成员的个人档案；默认 false（只注入群档案），"
+            "群员档案由 agent 用 archive_crud__read_archive 按需读取"
+        },
     )
     poke_weight: Optional[float] = field(
         default=0.2,

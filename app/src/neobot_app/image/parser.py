@@ -10,10 +10,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
 from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_app.utils.http import image_http_client
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -104,7 +104,7 @@ class ImageParseService:
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 self._logger.warning(
-                    "image parse wait timed out",
+                    "图片解析等待超时",
                     queue_key=queue_key,
                     timeout_seconds=timeout,
                     task_count=len(tasks),
@@ -181,7 +181,7 @@ class ImageParseService:
 
         if url:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with image_http_client(timeout=30.0, url=url) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
                     content = resp.content
@@ -245,7 +245,7 @@ class ImageParseService:
             return text if text else None
         except asyncio.TimeoutError:
             self._logger.warning(
-                "vision model call timed out",
+                "视觉模型调用超时",
                 timeout_seconds=60.0,
                 image_bytes_len=len(image_bytes),
             )
@@ -313,7 +313,9 @@ async def _read_image_ref(ref: str) -> bytes | None:
     path = Path(ref).expanduser()
     if path.exists() and path.is_file():
         return path.read_bytes()
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    if not ref.startswith(("http://", "https://")):
+        return None  # 非 URL 引用无需创建 HTTP 客户端
+    async with image_http_client(timeout=30.0, url=ref) as client:
         resp = await client.get(ref)
         resp.raise_for_status()
         return resp.content

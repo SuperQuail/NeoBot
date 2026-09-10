@@ -626,7 +626,7 @@ class ProcessTools:
                 if inspect.isawaitable(result):
                     await result
         except Exception:
-            _LOG.exception("Process completion callback failed for %s", record.id)
+            _LOG.exception("进程完成回调失败：%s", record.id)
 
     def _metadata(self, record: _Record) -> dict[str, Any]:
         return {f"{record.kind}_id": record.id, "status": record.status, "exit_code": record.process.returncode,

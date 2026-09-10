@@ -92,7 +92,8 @@ async def test_resolve_msg_number_maps_and_fetches() -> None:
                 message=[
                     {
                         "type": "image",
-                        "data": {"url": "http://example.invalid/x.png"},
+                        # 用本机保留端口制造"连接立即被拒绝"，避免真实 DNS/代理等待
+                        "data": {"url": "http://127.0.0.1:9/x.png"},
                     }
                 ],
             )
@@ -109,7 +110,7 @@ async def test_resolve_msg_number_maps_and_fetches() -> None:
     class _Adapter:
         async def get_msg(self, message_id: int):
             return SimpleNamespace(data=SimpleNamespace(message=[
-                {"type": "image", "data": {"url": "http://example.invalid/x.png"}},
+                {"type": "image", "data": {"url": "http://127.0.0.1:9/x.png"}},
             ]))
 
         async def call_api(self, name: str, params: dict):

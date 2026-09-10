@@ -391,7 +391,17 @@ def build_self_heal_agent_wiring(
     web_search_config: dict | None = None,
     prompt_store: Any = None,
 ) -> Any:
-    """构建 SelfHealAgent 并绑定到已创建的 Manager。"""
+    """构建 SelfHealAgent 并绑定到已创建的 Manager。
+
+    provider 不可用（如主模型配置错误导致创建失败）时跳过装配并返回 None，
+    自修复功能降级但不影响 Bot 启动。
+    """
+    if provider is None:
+        logger_factory.get_logger("app.self_heal").warning(
+            "self-heal agent 未启用：provider 不可用，跳过装配"
+        )
+        return None
+
     from neobot_app.agents.self_heal import (
         SelfHealAgentConfig,
         build_self_heal_agent,
