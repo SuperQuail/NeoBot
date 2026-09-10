@@ -70,6 +70,8 @@ from neobot_app.bootstrap._pipeline import (
     register_host_services,
 )
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
+from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
+from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
 from neobot_app.skills.balance_guide import sync_balance_query_skill
 
 
@@ -259,6 +261,13 @@ def create_application() -> NeoBotApplication:
         debug_recorder=debug_recorder,
     )
 
+    # ── 配置热重载编排：组件自己声明关心哪些配置项并负责生效 ──
+    # 装配顺序即生效顺序：适配器先恢复连接，其余组件再按新配置重建。
+    hot_reload_registry = HotReloadRegistry(
+        [AdapterSupervisor(adapter, logger=logger_factory.get_logger("app.adapter_reload"))],
+        logger=logger_factory.get_logger("app.hot_reload"),
+    )
+
     # ── 插件主机基础设施 ──
     plugin = build_plugin_host(logger_factory=logger_factory)
 
@@ -390,6 +399,7 @@ def create_application() -> NeoBotApplication:
             config=config,
             logger=logger_factory.get_logger("app.skills"),
         ),
+        hot_reload=hot_reload_registry,
     )
     balance_checker = build_balance_checker(
         config=config,

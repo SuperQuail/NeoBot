@@ -87,6 +87,7 @@ def register_config_reload_command(
     host_facade: Any,
     config: Any,
     on_reload: Any = None,
+    hot_reload: Any = None,
 ) -> None:
     from neobot_app.bootstrap._config import _load_config
     from neobot_app.config.hot_reload import diff_snapshot, snapshot, summarize_changes
@@ -116,6 +117,32 @@ def register_config_reload_command(
         await host_facade.lifecycle.fire("config.changed")
 
         changes = summarize_changes(diff_snapshot(before, config)) if before is not None else None
+
+        # 构建期组件不会自己发现配置变了：按注册表把改动分发给声明关心的组件，
+        # 让「在面板里改完就用」成立，而不是让用户自己判断该不该重启。
+        reload_report = None
+        if hot_reload is not None and changes is not None:
+            changed_paths = [
+                str(item["path"])
+                for group in ("hot_reload", "needs_restart")
+                for item in changes.get(group) or []
+            ]
+            try:
+                report = await hot_reload.apply(config, changed_paths)
+            except Exception as exc:
+                logger.error(
+                    "热重载分发失败",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            else:
+                reload_report = report.to_dict()
+                if report.failed_count:
+                    logger.warning(
+                        f"热重载部分组件失败: {report.failed_count} 个",
+                        failed=[item.name for item in report.failed],
+                    )
+
         if changes is None:
             message = "配置已重载（部分生效）：运行时读取的配置立即生效，构建期组件需重启。"
         elif not changes["hot_reload_count"] and not changes["needs_restart_count"]:
@@ -125,7 +152,14 @@ def register_config_reload_command(
                 f"配置已热重载：{changes['hot_reload_count']} 项立即生效，"
                 f"{changes['needs_restart_count']} 项需重启后生效。"
             )
-        return {"status": "ok", "message": message, "changes": changes}
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "message": message,
+            "changes": changes,
+        }
+        if reload_report is not None:
+            payload["hot_reload"] = reload_report
+        return payload
 
     host_facade.commands.register(
         "config.reload",
