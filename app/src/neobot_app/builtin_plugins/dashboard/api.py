@@ -108,6 +108,9 @@ class DashboardApi:
             control = getattr(control, "control", None)
         return control
 
+    def _freeze_service(self) -> Any:
+        return self._service("freeze_service")
+
     def _require_manage(self, request: web.Request, *, action: str = "管理操作") -> web.Response | None:
         if not self.console.manage_plugins:
             return _json_error("面板已禁用管理功能（dashboard.manage_plugins=false）", status=403)
@@ -281,8 +284,21 @@ class DashboardApi:
                 "latency_ms": self.metrics.latency_series()["current_ms"],
                 "python_version": system.get("python_version"),
                 "hostname": system.get("hostname"),
+                "frozen": self.frozen_state()["frozen"],
             }
         )
+
+    def frozen_state(self) -> dict[str, Any]:
+        """当前冻结状态；冻结服务未注册时返回 available=False。"""
+        service = self._freeze_service()
+        if service is None:
+            return {"available": False, "frozen": False}
+        try:
+            status = dict(service.status())
+        except Exception:
+            return {"available": False, "frozen": False}
+        status["available"] = True
+        return status
 
     async def system(self, request: web.Request) -> web.Response:
         payload = system_module.snapshot(data_dir=self.console.data_dir)
@@ -1334,6 +1350,61 @@ class DashboardApi:
             f"面板修改配置 ip={self.console.request_ip(request)} action={message}"
         )
         return _json_ok(document)
+
+    # ------------------------------------------------------------------
+    # 运维冻结（事故熔断）
+    # ------------------------------------------------------------------
+
+    async def freeze_status(self, request: web.Request) -> web.Response:
+        return _json_ok(self.frozen_state())
+
+    async def admin_freeze(self, request: web.Request) -> web.Response:
+        """冻结 Bot：停掉回复管线与档案自动总结，进程继续运行。
+
+        事故中最重要的能力是「立刻停火」——不需要重启进程、也不依赖命令通道。
+        """
+        denied = self._require_manage(request, action="冻结 Bot")
+        if denied is not None:
+            return denied
+        service = self._freeze_service()
+        if service is None:
+            return _json_error("冻结服务不可用，请重启 NeoBot", status=503)
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        raw_seconds = payload.get("seconds")
+        seconds: float | None = None
+        if raw_seconds not in (None, ""):
+            try:
+                seconds = float(raw_seconds)
+            except (TypeError, ValueError):
+                return _json_error("seconds 必须是数字（秒），留空表示一直冻结")
+        reason = str(payload.get("reason") or "").strip()
+        ok, message = service.freeze(
+            reason=reason or "panel",
+            operator=f"panel:{self.console.request_ip(request)}",
+            seconds=seconds,
+        )
+        if not ok:
+            return _json_error(message)
+        self.logger.warning(
+            f"面板请求冻结 Bot ip={self.console.request_ip(request)} reason={reason or 'panel'}"
+        )
+        return _json_ok({**self.frozen_state(), "message": message})
+
+    async def admin_unfreeze(self, request: web.Request) -> web.Response:
+        denied = self._require_manage(request, action="解冻 Bot")
+        if denied is not None:
+            return denied
+        service = self._freeze_service()
+        if service is None:
+            return _json_error("冻结服务不可用，请重启 NeoBot", status=503)
+        _was_frozen, message = service.unfreeze(
+            reason="panel", operator=f"panel:{self.console.request_ip(request)}"
+        )
+        self.logger.warning(f"面板请求解冻 Bot ip={self.console.request_ip(request)}")
+        return _json_ok({**self.frozen_state(), "message": message})
 
     async def admin_restart(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)

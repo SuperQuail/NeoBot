@@ -55,4 +55,7 @@ export const api = {
 
   // 管理
   restart: () => postJSON('/api/admin/restart'),
+  freezeStatus: () => getResult('/api/admin/freeze'),
+  freeze: (body) => postJSON('/api/admin/freeze', body || {}),
+  unfreeze: () => postJSON('/api/admin/unfreeze'),
 };

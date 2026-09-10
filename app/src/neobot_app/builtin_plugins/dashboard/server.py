@@ -248,6 +248,9 @@ class DashboardServer:
         self._route(app, "GET", "/api/config/env", self.api.env_get)
         self._route(app, "POST", "/api/config/env", self.api.env_save)
         self._route(app, "POST", "/api/config/env/platform", self.api.env_platform_add)
+        self._route(app, "GET", "/api/admin/freeze", self.api.freeze_status)
+        self._route(app, "POST", "/api/admin/freeze", self.api.admin_freeze)
+        self._route(app, "POST", "/api/admin/unfreeze", self.api.admin_unfreeze)
         self._route(app, "POST", "/api/admin/restart", self.api.admin_restart)
 
         self._route(app, "GET", "/favicon.ico", self._favicon)

@@ -1,4 +1,4 @@
-/* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
+﻿/* panel.css —— 网页面板新增页面的样式（沿用 theme.css 的配色变量与视觉风格） */
 
 .config-page { display: flex; flex-direction: column; gap: 16px; }
 
@@ -109,3 +109,26 @@
 /* 模型编辑弹窗里的引用名提示 */
 .model-key-hint { margin: 0 0 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .model-key-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface-2, rgba(127,127,127,.1)); }
+
+/* ── 运维熔断（冻结 Bot） ── */
+.freeze-banner {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 24px 0; padding: 10px 14px;
+  border: 1px solid var(--err, #d9534f);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: rgba(231, 76, 60, 0.12);
+  color: var(--text, inherit);
+  position: sticky; top: 0; z-index: 30;
+}
+.freeze-banner .freeze-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--err, #d9534f); flex: none;
+  animation: freeze-pulse 1.4s ease-in-out infinite;
+}
+@keyframes freeze-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.freeze-banner .freeze-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.freeze-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.freeze-body .input { min-width: 180px; }
+.freeze-body .input[type='text'], .freeze-body input.input { flex: 1 1 220px; }
+.freeze-card { border-color: var(--err, #d9534f); }

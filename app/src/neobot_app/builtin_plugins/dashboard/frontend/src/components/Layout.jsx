@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef } from 'react';
 import { ToastHost } from './Toast.jsx';
+import FreezeBanner from './FreezeBanner.jsx';
 import { clearToken } from '../api/client.js';
 
 const LOGO = './image/licon.webp';
@@ -142,6 +143,7 @@ export default function Layout() {
       </aside>
 
       <div className="main">
+        <FreezeBanner />
         {!isWorkspace && <header className="header">
           <div className="crumbs">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

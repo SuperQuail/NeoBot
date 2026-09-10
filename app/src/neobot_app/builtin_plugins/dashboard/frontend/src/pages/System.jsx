@@ -1,8 +1,9 @@
-// System.jsx —— 服务状态 / 后台任务 / 模型用量
-import { useState } from 'react';
+// System.jsx —— 运维熔断 / 服务状态 / 后台任务 / 模型用量
+import { useCallback, useState } from 'react';
 import { api } from '../api/endpoints.js';
 import { useApi } from '../hooks/useApi.js';
 import { fmtNum } from '../utils/format.js';
+import { toast } from '../components/Toast.jsx';
 import Icon from '../components/Icon.jsx';
 
 const HOUR_OPTIONS = [
@@ -12,12 +13,58 @@ const HOUR_OPTIONS = [
   [24 * 30, '最近 30 天'],
 ];
 
+const FREEZE_DURATIONS = [
+  ['', '一直冻结（手动解冻）'],
+  ['600', '10 分钟后自动解冻'],
+  ['1800', '30 分钟后自动解冻'],
+  ['3600', '1 小时后自动解冻'],
+];
+
 export default function System() {
   const [hours, setHours] = useState(24);
+  const [freezeSeconds, setFreezeSeconds] = useState('');
+  const [freezeReason, setFreezeReason] = useState('');
+  const [freezeBusy, setFreezeBusy] = useState(false);
   const services = useApi(() => api.services(), { interval: 30000 });
   const tasks = useApi(() => api.tasks(), { interval: 15000 });
   const usage = useApi(() => api.statsUsage(hours), { interval: 60000, deps: [hours] });
   const system = useApi(() => api.system(), { interval: 5000 });
+  const freeze = useApi(
+    async () => {
+      const result = await api.freezeStatus();
+      return result.ok ? result.data : null;
+    },
+    { interval: 5000 },
+  );
+
+  const frozen = !!freeze.data?.frozen;
+
+  const doFreeze = useCallback(async () => {
+    if (freezeBusy) return;
+    setFreezeBusy(true);
+    try {
+      const body = {};
+      if (freezeSeconds) body.seconds = Number(freezeSeconds);
+      if (freezeReason.trim()) body.reason = freezeReason.trim();
+      const result = await api.freeze(body);
+      toast(result.ok ? (result.data?.message || '已冻结') : '冻结失败：' + (result.error || ''), result.ok ? 'ok' : 'err');
+      freeze.reload();
+    } finally {
+      setFreezeBusy(false);
+    }
+  }, [freezeBusy, freezeSeconds, freezeReason, freeze]);
+
+  const doUnfreeze = useCallback(async () => {
+    if (freezeBusy) return;
+    setFreezeBusy(true);
+    try {
+      const result = await api.unfreeze();
+      toast(result.ok ? (result.data?.message || '已解冻') : '解冻失败：' + (result.error || ''), result.ok ? 'ok' : 'err');
+      freeze.reload();
+    } finally {
+      setFreezeBusy(false);
+    }
+  }, [freezeBusy, freeze]);
 
   const serviceItems = services.data?.items || [];
   const scheduled = tasks.data?.scheduled || [];
@@ -28,6 +75,48 @@ export default function System() {
 
   return (
     <div className="page">
+      <section className={'card' + (frozen ? ' freeze-card' : '')}>
+        <div className="card-head">
+          <h3>运维熔断</h3>
+          <span className={'tag ' + (frozen ? 'err' : 'ok')}>{frozen ? '冻结中' : '运行中'}</span>
+          <div className="spacer" />
+          <span className="muted small">
+            {frozen
+              ? '自 ' + (freeze.data?.frozen_at_text || '—') +
+                (freeze.data?.remaining_seconds == null
+                  ? ' · 需要手动解冻'
+                  : ' · 剩余约 ' + freeze.data.remaining_seconds + ' 秒自动解冻')
+              : '冻结后立即停止回复与档案自动总结，进程继续运行'}
+          </span>
+        </div>
+        <div className="freeze-body">
+          <select
+            className="input"
+            value={freezeSeconds}
+            onChange={(event) => setFreezeSeconds(event.target.value)}
+            disabled={frozen}
+          >
+            {FREEZE_DURATIONS.map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <input
+            className="input"
+            placeholder="冻结原因（可选，会写进日志）"
+            value={freezeReason}
+            onChange={(event) => setFreezeReason(event.target.value)}
+            disabled={frozen}
+          />
+          <button className="btn danger" disabled={freezeBusy || frozen} onClick={doFreeze}>
+            {frozen ? '已冻结' : '冻结 Bot'}
+          </button>
+          <button className="btn" disabled={freezeBusy || !frozen} onClick={doUnfreeze}>解冻 Bot</button>
+        </div>
+        {frozen && freeze.data?.reason && (
+          <div className="muted small">冻结原因：{freeze.data.reason} · 操作者：{freeze.data.operator || '—'}</div>
+        )}
+      </section>
+
       <section className="card">
         <div className="card-head">
           <h3>进程与资源</h3>
