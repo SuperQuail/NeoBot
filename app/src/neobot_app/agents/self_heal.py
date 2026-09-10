@@ -420,14 +420,12 @@ class SelfHealManager:
             return
         samples = self._build_sample_summary(heal.error_snapshot, max_count=3)
         content = (
-            "<这是新的必须要回答的内容>\n"
             "系统已检测到 Bot 出现持续异常，自修复 Agent 已开始工作。\n"
             f"触发原因：{heal.trigger_reason}\n"
             f"最近累积异常数：{len(heal.error_snapshot)}\n"
             f"样本异常：\n{samples}\n"
             f"样本异常时间范围：{heal.first_error_time} 至 {heal.last_error_time}\n"
-            "请稍候。诊断完成后再发送最终报告。如需立即介入，请回复相应指令。\n"
-            "</这是新的必须要回答的内容>"
+            "请稍候。诊断完成后再发送最终报告。如需立即介入，请回复相应指令。"
         )
         try:
             await self._notification_hub.publish(
@@ -566,7 +564,6 @@ class SelfHealManager:
         repaired = "已自行修复" if heal.repaired else "未能自行修复"
 
         lines = [
-            "<这是新的必须要回答的内容>",
             "系统自修复 Agent 已运行完毕。",
             f"触发原因：{heal.trigger_reason}",
             f"诊断摘要：{summary}",
@@ -577,10 +574,10 @@ class SelfHealManager:
         lines.append(f"调试报告：{debug_file or '未生成'}")
         if debug_file:
             lines.append(
-                "请使用 file_storage / sandbox_manager 工具读取该文件并向管理员发送，"
-                "使用 image_send__send 或 send_chat_file 发送。"
+                "调试报告可用 file_storage__read_storage_doc / sandbox_manager__read_file 读取，"
+                "再用 image_send__send_image(file_path=...) 或 "
+                "sandbox_manager__send_chat_file 发给管理员。"
             )
-        lines.append("</这是新的必须要回答的内容>")
         content = "\n".join(lines)
 
         try:

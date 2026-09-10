@@ -166,11 +166,7 @@ class CommandService:
 
         if command.sync_reply:
             # 同步触发回复管线:结果作为背景内容交给主 Agent 处理
-            background = (
-                "<这是新的必须要回答的内容>\n"
-                f"命令 /{command.name} 执行结果:\n{result_text}\n"
-                "</这是新的必须要回答的内容>"
-            )
+            background = f"命令 /{command.name} 执行结果:\n{result_text}"
             return CommandHandleResult(consumed=True, background=background)
 
         if result_text is not None:

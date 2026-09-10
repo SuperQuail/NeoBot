@@ -187,7 +187,12 @@ async def test_run_solve_exception_marks_failed_and_notifies() -> None:
     task = next(iter(manager._tasks.values()))
     assert task.status == "failed"
     assert "解题器爆炸" in task.error
-    assert any("解题任务失败" in p["content"] for p in hub.published)
+    # 失败通知为 JSON：ok=false + error 字段，模型不需要再从散文里提取信息
+    failures = [json.loads(p["content"]) for p in hub.published]
+    assert any(
+        item["ok"] is False and "解题器爆炸" in str(item.get("error"))
+        for item in failures
+    )
     await manager.shutdown()
 
 

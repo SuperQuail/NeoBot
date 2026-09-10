@@ -1418,10 +1418,8 @@ class EventPipeline:
                 f"凭据已确认(用途: {credential.action}),可以执行对应操作了。",
             )
             background = (
-                "<这是新的必须要回答的内容>\n"
                 f"凭据已签发: 用途 {credential.action},会话 {chat_flow}。\n"
-                "如正在等待此凭据执行风险操作(踢人/退群等),现在可以继续执行。\n"
-                "</这是新的必须要回答的内容>"
+                "如正在等待此凭据执行风险操作(踢人/退群等),现在可以继续执行。"
             )
             self._start_command_sync_reply(
                 message=message, queue=queue, queue_key=queue_key, background=background,
