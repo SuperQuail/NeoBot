@@ -578,7 +578,9 @@ class PluginRuntime:
                 if isinstance(item, DiscoveredPlugin) and item.name == name:
                     missing.extend(item.missing_python_dependencies)
             if missing:
-                self.dependency_installer.confirm_and_install(missing)
+                # 热重载发生在运行期：必须 await（内部走线程），否则等待用户
+                # 输入与 pip 子进程会阻塞事件循环
+                await self.dependency_installer.confirm_and_install(missing)
 
         result = self.loader.load_one(plugin_path)
         if result is None:
@@ -1215,7 +1217,8 @@ class PluginRuntime:
             if isinstance(result, DiscoveredPlugin) and result.enabled:
                 missing.extend(result.missing_python_dependencies)
         if missing:
-            self.dependency_installer.confirm_and_install(missing)
+            # 启动装配期的同步入口：无交互终端时内部直接跳过，不再抛 EOFError
+            self.dependency_installer.confirm_and_install_sync(missing)
 
     async def _activate_loaded_plugin(
         self,
@@ -1226,7 +1229,8 @@ class PluginRuntime:
     ) -> PluginOperationResult:
         missing = list(missing_python_dependencies(loaded.python_dependencies))
         if missing and auto_install_dependencies:
-            self.dependency_installer.confirm_and_install(missing)
+            # 面板「安装/重载插件」会走到这里，必须 await 线程化的安装流程
+            await self.dependency_installer.confirm_and_install(missing)
             missing = list(missing_python_dependencies(loaded.python_dependencies))
         if missing:
             self.logger.error(f"插件加载失败 ({loaded.name}): 缺少 PyPI 依赖: {', '.join(missing)}")

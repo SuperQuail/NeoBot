@@ -770,7 +770,13 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.requirements: list[str] = []
 
-            def confirm_and_install(self, requirements: list[str]) -> object:
+            def confirm_and_install_sync(self, requirements: list[str]) -> object:
+                """启动装配期走同步入口。"""
+                self.requirements.extend(requirements)
+                return object()
+
+            async def confirm_and_install(self, requirements: list[str]) -> object:
+                """运行期（安装/热重载）走异步入口。"""
                 self.requirements.extend(requirements)
                 return object()
 
