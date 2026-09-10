@@ -91,6 +91,11 @@ class QueueEntry:
     reaction: Optional[ReactionEntry] = None
     poke: Optional[PokeEntry] = None
     replied_messages: List[QueueMessage] = field(default_factory=list)
+    #: 该条目占用的容量权重（入队时固化）。
+    #: 驱逐与「按权重取最近消息」必须读同一个值：此前驱逐按 kind 重算
+    #: （MESSAGE 恒为 1.0），而入队按内容计算（合并转发为 forward_weight），
+    #: 导致权重账本单调虚高、队列提前丢弃真实消息。
+    weight: float = 1.0
 
 
 class MessageQueue:
@@ -209,21 +214,22 @@ class MessageQueue:
         if self._get_message_count(key) == 0:
             if include_on_empty:
                 queue.append(
-                    QueueEntry(kind=QueueEntryType.TIMESTAMP, occurred_at=occurred_at)
+                    QueueEntry(
+                        kind=QueueEntryType.TIMESTAMP,
+                        occurred_at=occurred_at,
+                        weight=0.0,
+                    )
                 )
             return
         if last_message_time is None:
             return
         if occurred_at - last_message_time <= self.timestamp_interval_seconds:
             return
-        queue.append(QueueEntry(kind=QueueEntryType.TIMESTAMP, occurred_at=occurred_at))
-
-    def _get_entry_weight(self, kind: QueueEntryType) -> float:
-        if kind == QueueEntryType.POKE:
-            return self.poke_weight
-        if kind == QueueEntryType.REACTION:
-            return self.reaction_weight
-        return 1.0
+        queue.append(
+            QueueEntry(
+                kind=QueueEntryType.TIMESTAMP, occurred_at=occurred_at, weight=0.0
+            )
+        )
 
     def _compute_message_weight(self, message: QueueMessage) -> float:
         if message.message:
@@ -252,7 +258,7 @@ class MessageQueue:
             if dropped_entry.kind == QueueEntryType.TIMESTAMP:
                 continue
 
-            weighted_count -= self._get_entry_weight(dropped_entry.kind)
+            weighted_count -= dropped_entry.weight
             self._message_counts[key] -= 1
             stats.dropped_messages += 1
 
@@ -307,6 +313,7 @@ class MessageQueue:
                 occurred_at=resolved_time,
                 message=converted_message,
                 replied_messages=converted_replies,
+                weight=entry_weight,
             )
         )
         self._message_counts[key] += 1
@@ -368,6 +375,7 @@ class MessageQueue:
                 occurred_at=resolved_time,
                 notice=copy.deepcopy(notice),
                 recalled_message=recalled_message,
+                weight=1.0,
             )
         )
         self._message_counts[key] += 1
@@ -388,6 +396,7 @@ class MessageQueue:
                 kind=QueueEntryType.REACTION,
                 occurred_at=reaction.target_message_id,
                 reaction=reaction,
+                weight=entry_weight,
             )
         )
         self._message_counts[key] += 1
@@ -404,6 +413,7 @@ class MessageQueue:
                 kind=QueueEntryType.POKE,
                 occurred_at=resolved_time,
                 poke=poke,
+                weight=entry_weight,
             )
         )
         self._message_counts[key] += 1
@@ -496,14 +506,7 @@ class MessageQueue:
         for entry in reversed(queue):
             if entry.kind == QueueEntryType.TIMESTAMP:
                 continue
-            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                weight = self._compute_message_weight(entry.message)
-            elif entry.kind == QueueEntryType.POKE:
-                weight = self.poke_weight
-            elif entry.kind == QueueEntryType.REACTION:
-                weight = self.reaction_weight
-            else:
-                weight = 1.0
+            weight = entry.weight
 
             if not first and accumulated + weight > max_weight:
                 return

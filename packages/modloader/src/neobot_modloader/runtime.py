@@ -36,6 +36,7 @@ from neobot_modloader.management import PluginControlFacade, PluginOperationResu
 from neobot_modloader.manager import DefaultPluginManager, ReentrantLock
 from neobot_modloader.plugins.registration import validate_plugin_name
 from neobot_modloader.state import PluginStateStore
+from neobot_modloader.version import version_at_least
 
 OfficialConfigProvider = Callable[[str], "Mapping[str, Any] | None"]
 
@@ -84,10 +85,13 @@ class PluginRuntime:
         official_config_provider: OfficialConfigProvider | None = None,
         installer: PluginInstaller | None = None,
         user_plugins_enabled: bool = True,
+        host_version: str | None = None,
     ) -> None:
         self.plugin_dir = plugin_dir.resolve()
         self.data_dir = data_dir.resolve()
         self.user_plugins_enabled = bool(user_plugins_enabled)
+        #: 当前 NeoBot 版本，用于校验插件声明的 min_neobot_version（None 跳过检查）
+        self.host_version = host_version
         self._official_dirs = tuple(
             Path(path).resolve() for path in (builtin_plugin_dirs or ())
         )
@@ -162,6 +166,26 @@ class PluginRuntime:
             directories.append((self.plugin_dir, self.loader))
         return directories
 
+    def _host_version_error(self, name: str, minimum: str | None) -> str | None:
+        """插件声明的 min_neobot_version 高于当前版本时返回错误文本。
+
+        这个字段以前只被解析、随插件元数据一路传递，从来没有被比较过：
+        插件写着 ``min_neobot_version = "9.0"`` 也会照常加载，然后在调用
+        运行时不存在的 API 时炸掉。
+        """
+        if not minimum:
+            return None
+        satisfied = version_at_least(self.host_version, minimum)
+        if satisfied is None:
+            self.logger.warning(
+                f"无法比较 NeoBot 版本，已跳过最低版本检查 ({name}): "
+                f"要求 {minimum}, 当前 {self.host_version or '未知'}"
+            )
+            return None
+        if satisfied:
+            return None
+        return f"插件要求 NeoBot >= {minimum}，当前为 {self.host_version or '未知'}"
+
     def discover_all(self) -> list[DiscoveredPlugin | PluginLoadError]:
         results: list[DiscoveredPlugin | PluginLoadError] = []
         official_names: set[str] = set()
@@ -170,6 +194,18 @@ class PluginRuntime:
                 if isinstance(result, PluginLoadError):
                     results.append(result)
                     continue
+                incompatible = (
+                    self._host_version_error(result.name, result.min_neobot_version)
+                    if result.enabled
+                    else None
+                )
+                if incompatible is not None:
+                    # 不做成 PluginLoadError：面板的「停用 / 重载 / 卸载」与
+                    # plugin_source 都依赖 discover 结果，把它替换成错误条目会让
+                    # 这些操作报「插件未找到」，来源也被误判成第三方。这里保留
+                    # 条目（面板仍能看到、能停用/卸载），真实原因记日志；加载路径
+                    # （load_all / 面板安装）依旧会拒绝。
+                    self.logger.error(f"插件不兼容当前 NeoBot 版本: {incompatible}")
                 if result.source == OFFICIAL_SOURCE:
                     official_names.add(result.name)
                 elif result.name in official_names:
@@ -234,6 +270,14 @@ class PluginRuntime:
                 if missing:
                     error_count += 1
                     self.logger.error(f"插件加载跳过 ({result.name}): 缺少 PyPI 依赖: {', '.join(missing)}")
+                    self.loader.clear_module_cache(result.module_names)
+                    continue
+                incompatible = self._host_version_error(
+                    result.name, result.min_neobot_version
+                )
+                if incompatible is not None:
+                    error_count += 1
+                    self.logger.error(f"插件加载跳过 ({result.name}): {incompatible}")
                     self.loader.clear_module_cache(result.module_names)
                     continue
                 if self._register(result):
@@ -578,7 +622,9 @@ class PluginRuntime:
                 if isinstance(item, DiscoveredPlugin) and item.name == name:
                     missing.extend(item.missing_python_dependencies)
             if missing:
-                self.dependency_installer.confirm_and_install(missing)
+                # 热重载发生在运行期：必须 await（内部走线程），否则等待用户
+                # 输入与 pip 子进程会阻塞事件循环
+                await self.dependency_installer.confirm_and_install(missing)
 
         result = self.loader.load_one(plugin_path)
         if result is None:
@@ -1215,7 +1261,8 @@ class PluginRuntime:
             if isinstance(result, DiscoveredPlugin) and result.enabled:
                 missing.extend(result.missing_python_dependencies)
         if missing:
-            self.dependency_installer.confirm_and_install(missing)
+            # 启动装配期的同步入口：无交互终端时内部直接跳过，不再抛 EOFError
+            self.dependency_installer.confirm_and_install_sync(missing)
 
     async def _activate_loaded_plugin(
         self,
@@ -1226,7 +1273,8 @@ class PluginRuntime:
     ) -> PluginOperationResult:
         missing = list(missing_python_dependencies(loaded.python_dependencies))
         if missing and auto_install_dependencies:
-            self.dependency_installer.confirm_and_install(missing)
+            # 面板「安装/重载插件」会走到这里，必须 await 线程化的安装流程
+            await self.dependency_installer.confirm_and_install(missing)
             missing = list(missing_python_dependencies(loaded.python_dependencies))
         if missing:
             self.logger.error(f"插件加载失败 ({loaded.name}): 缺少 PyPI 依赖: {', '.join(missing)}")
@@ -1236,6 +1284,18 @@ class PluginRuntime:
                 name=loaded.name,
                 state=PluginState.ERROR.value,
                 error=f"缺少 PyPI 依赖: {', '.join(missing)}",
+                path=self._path_for_loaded(loaded),
+            )
+
+        incompatible = self._host_version_error(loaded.name, loaded.min_neobot_version)
+        if incompatible is not None:
+            self.logger.error(f"插件加载失败 ({loaded.name}): {incompatible}")
+            self.loader.clear_module_cache(loaded.module_names)
+            return PluginOperationResult(
+                ok=False,
+                name=loaded.name,
+                state=PluginState.ERROR.value,
+                error=incompatible,
                 path=self._path_for_loaded(loaded),
             )
 

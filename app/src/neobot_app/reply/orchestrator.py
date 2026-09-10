@@ -182,18 +182,27 @@ def _redact_tool_value(
 
 _SECRET_VALUE_RE = re.compile(
     r"(?i)(bearer\s+|"
-    r"[\"']?(?:authorization|api[_-]?key|access[_-]?key|private[_-]?key|"
-    r"client[_-]?secret|secret|token|passwd|password|credential|pwd)"
+    r"[\"']?(?:authorization|api[_-]?key|apikey|access[_-]?token|access[_-]?key|"
+    r"auth[_-]?token|client[_-]?secret|private[_-]?key|"
+    r"secret|token|passwd|password|credential|pwd)"
     r"[\"']?\s*[:=]\s*[\"']?)"
     r"(?:bearer\s+)?[^\s,;\"']+"
 )
+
+#: 没有键名的裸密钥形态（``sk-proj-...``）：上面那条正则要求 ``key=value``
+#: 或 ``Bearer``，异常文本里直接出现的 key 会整条漏给模型。
+_BARE_SECRET_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+#: URL 内嵌凭据：``https://user:password@host``。
+_URL_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
 
 
 def _scrub_secret_values(text: str) -> str:
     """把字符串值内嵌的常见密钥形态（Bearer <token>、token=xxx 等）替换为占位符。"""
     if not isinstance(text, str):
         return text
-    return _SECRET_VALUE_RE.sub(lambda match: match.group(1) + "<redacted>", text)
+    scrubbed = _SECRET_VALUE_RE.sub(lambda match: match.group(1) + "<redacted>", text)
+    scrubbed = _BARE_SECRET_KEY_RE.sub("<redacted>", scrubbed)
+    return _URL_USERINFO_RE.sub(r"\1<redacted>@", scrubbed)
 
 
 def _redacted_tool_text(value: object, limit: int = _MAX_TOOL_LOG_CHARS) -> str:
@@ -266,6 +275,15 @@ if TYPE_CHECKING:
     from neobot_app.core.file_server import FileServer
 
 
+def _hook_name(hook: object) -> str:
+    """钩子的可读标识（用于日志）。"""
+    return str(
+        getattr(hook, "__qualname__", None)
+        or getattr(hook, "__name__", None)
+        or type(hook).__name__
+    )
+
+
 class ReplyOrchestrator:
     def __init__(
         self,
@@ -334,7 +352,10 @@ class ReplyOrchestrator:
         self._config_update_callback = config_update_callback
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
-        self._tool_executors: set[Any] = set()
+        #: 事件 ID -> 该次回复创建的工具执行器。
+        #: 必须按事件索引并在回复结束时释放：旧实现只 add 不 remove，
+        #: 每个 agent 模式回复都会永久留下一个持有完整对话历史的执行器。
+        self._tool_executors: dict[str, Any] = {}
         self._agent_tool_turns: dict[str, tuple[Any, Any, list[dict]]] = {}
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -389,8 +410,18 @@ class ReplyOrchestrator:
                 result = await hook(event)
                 if result is not None:
                     return result
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 钩子是插件扩展点：失败必须留痕，否则「钩子没生效」与
+                # 「钩子抛异常被吞」从外部完全无法区分。
+                self._logger.warning(
+                    "pre_reply hook 执行失败，已跳过",
+                    event_id=event.event_id,
+                    hook=_hook_name(hook),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
         return None
 
     async def _apply_post_reply_hooks(
@@ -401,8 +432,16 @@ class ReplyOrchestrator:
                 modified = await hook(event, text)
                 if modified is not None:
                     text = modified
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._logger.warning(
+                    "post_reply hook 执行失败，已跳过",
+                    event_id=event.event_id,
+                    hook=_hook_name(hook),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
         return text
 
     async def handle_agent_tool_input(self, message: Any, *, kind: str, queue_key: str) -> str | None:
@@ -526,6 +565,7 @@ class ReplyOrchestrator:
                     runtime.finish_turn(context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED})
                 except Exception as exc:
                     self._logger.warning("agent 目标续跑未能调度", error=str(exc))
+            self._release_executor(event.event_id)
             if on_reply_done is not None:
                 callback_task = asyncio.ensure_future(on_reply_done())
                 self._callback_tasks.add(callback_task)
@@ -551,6 +591,52 @@ class ReplyOrchestrator:
         self._active_pipelines[pipeline_key] = task
         task.add_done_callback(_cleanup)
         return event
+
+    def _release_executor(self, event_id: str) -> None:
+        """释放某次回复创建的工具执行器。
+
+        执行器持有该轮完整对话历史与技能 token，必须随管线结束释放；但不能直接
+        ``close()``：close() 会取消在途的会话工具（download__url / parse_image
+        等），而它们的契约是活过本轮回复、完成后由通知中心唤醒下一次回复。
+        所以先等在途会话任务自然结束，再关闭执行器——内存依然会被释放，只是
+        释放时机推迟到后台工作完成。关闭失败只记日志，不能影响管线收尾。
+        """
+        executor = self._tool_executors.pop(event_id, None)
+        if executor is None:
+            return
+
+        async def _drain_and_close() -> None:
+            drain = getattr(executor, "drain_sessions", None)
+            if callable(drain):
+                await drain()
+            await executor.close()
+
+        close_task: asyncio.Future[None]
+        try:
+            close_task = asyncio.ensure_future(_drain_and_close())
+        except Exception as exc:
+            # 同步异常绝不能冒泡到 done 回调：那会连带跳过 on_reply_done，
+            # 让「回复中」标记永久残留。
+            self._logger.warning(
+                "回复工具执行器释放失败", event_id=event_id, error=str(exc)
+            )
+            return
+        self._callback_tasks.add(close_task)
+
+        def _done(done_task: asyncio.Future[None]) -> None:
+            self._callback_tasks.discard(close_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self._logger.warning(
+                    "回复工具执行器释放失败",
+                    event_id=event_id,
+                    error=str(exc),
+                )
+
+        close_task.add_done_callback(_done)
 
     def is_pipeline_active(self, kind: str, conversation_id: str) -> bool:
         pipeline_key = f"{kind}:{conversation_id}"
@@ -727,7 +813,7 @@ class ReplyOrchestrator:
                 await asyncio.gather(*pending, return_exceptions=True)
 
         async def _close_executors() -> None:
-            executors = list(self._tool_executors)
+            executors = list(self._tool_executors.values())
             if not executors:
                 return
             fatal: BaseException | None = None
@@ -778,11 +864,13 @@ class ReplyOrchestrator:
             raise deferred
 
     def _resolve_mode(self) -> str:
+        # 回退值必须与 config.schemas.bot.Chat.reply_mode 的默认值一致（agent），
+        # 否则「字段缺失」时会静默降级成 common（只有基础回复能力）。
         if self._config is not None:
-            mode = getattr(self._config.chat, "reply_mode", "common") or "common"
+            mode = getattr(self._config.chat, "reply_mode", "agent") or "agent"
             if mode in ("common", "agent"):
                 return mode
-        return "common"
+        return "agent"
 
     def _get_cooldown_seconds(self) -> int:
         if self._config is not None:
@@ -2008,7 +2096,7 @@ class ReplyOrchestrator:
             config_update_callback=self._config_update_callback,
             native_vision_provider=self._provider,
         )
-        self._tool_executors.add(reply_toolset.executor)
+        self._tool_executors[event.event_id] = reply_toolset.executor
         if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext
@@ -2434,12 +2522,17 @@ class ReplyOrchestrator:
                             cancel_for_silence(f"tool:{name}")
                             return
                     except Exception as tool_exc:
-                        tool_error = f"工具 {name} 执行失败"
+                        # 保留失败原因：只记 error_type 的话，日志与模型都拿不到
+                        # 真实原因（旧实现连 str(exc) 都没保留）。回给模型的文案
+                        # 先脱敏，避免异常信息里的密钥进入 LLM 上下文。
+                        raw_detail = f"{type(tool_exc).__name__}: {tool_exc}".strip()
+                        detail = _scrub_secret_values(raw_detail)[:300]
+                        tool_error = f"工具 {name} 执行失败：{detail}"
                         self._logger.warning(
                             f"工具调用失败: {name}",
                             event_id=event.event_id,
                             tool=name,
-                            error_type=type(tool_exc).__name__,
+                            error=detail,
                         )
                         await self._emit_runtime_event(
                             "tool.call.after",

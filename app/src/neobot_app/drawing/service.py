@@ -35,7 +35,9 @@ from neobot_app.drawing.config import (
     DrawServiceConfig,
     ImageGenerationError,
 )
-from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.message.image_pipeline import (
+    prepare_local_image_async,
+)
 from neobot_app.utils.http import image_http_client, is_local_or_private_url
 from neobot_app.utils.media_sender import send_image as _media_send_image
 
@@ -274,7 +276,7 @@ class CreatorImageService:
                 resolved = str(child.resolve())
                 disk_files.add(resolved)
                 try:
-                    prepared = prepare_local_image(child)
+                    prepared = await prepare_local_image_async(child)
                     hash_to_files.setdefault(prepared.file_hash, []).append(child)
                 except Exception:
                     continue
@@ -1256,9 +1258,9 @@ class CreatorImageService:
         if ref.startswith("base64://"):
             return base64.b64decode(ref[9:])
         if ref.startswith("file:///"):
-            return Path(ref[8:]).read_bytes()
+            return await self._read_local_image(Path(ref[8:]))
         if ref.startswith("file://"):
-            return Path(ref[7:]).read_bytes()
+            return await self._read_local_image(Path(ref[7:]))
         if ref.startswith(("http://", "https://")):
             if is_local_or_private_url(ref):
                 # 本机/内网地址（含 Bot 自己的文件服务器）不能走系统代理
@@ -1275,8 +1277,35 @@ class CreatorImageService:
             return await self._read_limited(response)
         path = Path(ref)
         if path.exists() and path.is_file():
-            return path.read_bytes()
+            return await self._read_local_image(path)
         raise LookupError("无法下载图片内容")
+
+    async def _read_local_image(self, path: Path) -> bytes:
+        """读取本地图片引用（file:// 或裸路径）。
+
+        本地引用可能来自 OneBot 框架自身的图片缓存，也可能来自被注入的事件，
+        而原实现对任何路径都直接 read_bytes，等于把「任意本地文件读取」暴露给
+        上游：内容形态校验 + 体积上限把它收敛为「只读图片」，同时不改变
+        框架正常传图的行为（真实图片无论放在哪个目录都仍可读）。
+        """
+        return await asyncio.to_thread(self._read_local_image_sync, path)
+
+    @staticmethod
+    def _read_local_image_sync(path: Path) -> bytes:
+        from neobot_app.utils.image_bytes import looks_like_image
+
+        if not path.is_file():
+            raise LookupError(f"本地图片不存在: {path}")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise LookupError(f"无法读取本地图片: {exc}") from exc
+        if size > _MAX_REMOTE_FETCH_BYTES:
+            raise LookupError(f"本地图片过大（{size} 字节），已拒绝读取")
+        data = path.read_bytes()
+        if not looks_like_image(data):
+            raise LookupError(f"本地引用不是图片内容，已拒绝读取: {path.name}")
+        return data
 
     async def _upsert_record(
         self,
@@ -1364,7 +1393,7 @@ class CreatorImageService:
                 if not file_path.exists() or not file_path.is_file():
                     continue
 
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 txt_text = _read_sidecar_description(file_path)
                 if txt_text:
                     description = txt_text
@@ -1396,7 +1425,7 @@ class CreatorImageService:
                 if resolved_path in known_paths:
                     continue
 
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 txt_text = _read_sidecar_description(file_path)
                 same_hash_description = descriptions_by_hash.get(prepared.file_hash)
                 if txt_text:
@@ -1446,7 +1475,7 @@ class CreatorImageService:
         if self._vision_provider is None:
             return "[未配置视觉模型]"
         try:
-            prepared = prepare_local_image(file_path)
+            prepared = await prepare_local_image_async(file_path)
             image_url = f"data:{prepared.mime_type};base64,{base64.b64encode(prepared.image_bytes).decode('utf-8')}"
             messages: list[dict[str, Any]] = [
                 {

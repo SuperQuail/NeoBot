@@ -292,3 +292,46 @@ async def test_metadata_path_outside_data_dir_rejected(tmp_path: Path) -> None:
                 assert "TOP-SECRET-CONTENT" not in body
     finally:
         await fs.stop()
+
+
+def test_metadata_roundtrip_with_non_ascii_filename(tmp_path: Path) -> None:
+    """中文名文件的元数据必须能原样读回。
+
+    旧实现用 ``open(..., "w")`` 按系统默认编码写、按默认编码读，非 UTF-8
+    环境下写中文路径直接抛异常并被静默吞掉，重启后整份元数据丢失。
+    """
+    data_dir = tmp_path / "data"
+    fs = FileServer(data_dir=data_dir, enabled=True)
+    path = fs._tmp_dir / "中文 图片.png"
+    path.write_bytes(_png_bytes())
+    fs.register_file(path)
+    fs._save_metadata()
+
+    reloaded = FileServer(data_dir=data_dir, enabled=True)
+
+    assert set(reloaded._files) == set(fs._files)
+    assert reloaded._files[next(iter(fs._files))].path.endswith("中文 图片.png")
+
+
+def test_metadata_write_is_atomic_and_tolerates_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """元数据写失败不能损坏已有文件，也不能把异常抛给调用方。"""
+    data_dir = tmp_path / "data"
+    fs = FileServer(data_dir=data_dir, enabled=True)
+    path = fs._tmp_dir / "a.txt"
+    path.write_text("hello", encoding="utf-8")
+    fs.register_file(path)
+    fs._save_metadata()
+    before = fs._metadata_file.read_text(encoding="utf-8")
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_server_module, "atomic_write_text", boom)
+
+    fs._files["b.txt"] = fs._files[next(iter(fs._files))]
+    fs._save_metadata()  # 不抛异常
+
+    assert fs._metadata_file.read_text(encoding="utf-8") == before
+    assert [p.name for p in fs._tmp_dir.glob("*.tmp")] == []

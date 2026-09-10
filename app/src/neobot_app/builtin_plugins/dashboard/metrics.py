@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from neobot_app.utils.atomic import atomic_write_text
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 _API_ACTION_RE = re.compile(r"action['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_]+)")
@@ -249,11 +250,11 @@ class Metrics:
     def _save(self) -> None:
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
-            self._stats_path.write_text(
+            atomic_write_text(
+                self._stats_path,
                 json.dumps(self._stats, ensure_ascii=False, indent=2),
-                encoding="utf-8",
             )
-        except OSError as exc:
+        except Exception as exc:
             self._logger.warning(f"面板统计文件写入失败: {exc}")
 
     def flush(self) -> None:

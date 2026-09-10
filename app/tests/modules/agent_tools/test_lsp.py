@@ -3,11 +3,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
+
 import pytest
 
 from neobot_app.agent_tools.contracts import ToolContext
 from neobot_app.agent_tools.lsp import LspTools
+
+
+def _make_directory_link(target: Path, link: Path) -> bool:
+    """尽力创建目录链接：POSIX 用 symlink，Windows 退化为免管理员的目录联接。"""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except OSError:
+        pass
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        return result.returncode == 0
+    return False
 
 
 _SERVER = r'''
@@ -100,11 +124,40 @@ def setup_lsp(tmp_path):
     return root, build
 
 
-def test_deployment_executable_is_resolved_before_owner_cwd(setup_lsp):
+def test_deployment_executable_is_absolute_but_keeps_symlinks(setup_lsp):
+    """可执行路径要绝对化，但不能穿透符号链接。
+
+    ⚠️ 这是防回归用例，不要为了让实现"看起来更干净"而放宽它：穿透会让 venv 的
+    符号链接解释器（Linux/macOS 上的常态）退化成基础解释器，子进程带 -I 启动时
+    看不到 venv 的 site-packages，pylsp 直接起不来（只在 Linux/macOS 复现）。
+    """
     _, build = setup_lsp
     tools = build()
     configured = tools._servers[".py"][0]
-    assert configured[0] == str(__import__("pathlib").Path(sys.executable).resolve())
+    assert configured[0] == os.path.abspath(sys.executable)
+
+
+def test_deployment_executable_through_link_keeps_link_path(tmp_path):
+    """经链接指向解释器时，配置里必须保留链接路径（不解析到真身）。
+
+    ⚠️ 若有人把实现改回 Path(...).resolve() / os.path.realpath()，本用例会失败：
+    那正是 Linux 上 LSP 全挂（lsp_protocol_error）的根因。链接在 Windows 上用
+    目录联接实现（免管理员），无法创建时跳过。
+    """
+    linked_dir = tmp_path / "linked"
+    target_dir = Path(sys.executable).parent
+    if not _make_directory_link(target_dir, linked_dir):
+        pytest.skip("当前环境无法创建目录链接（Windows 需开发者模式或联接权限）")
+    linked_exe = linked_dir / Path(sys.executable).name
+
+    tools = LspTools(
+        lambda _context: tmp_path,
+        {".py": {"command": [str(linked_exe), "-I", "-m", "pylsp"], "language_id": "python"}},
+    )
+
+    configured = tools._servers[".py"][0][0]
+    assert configured == os.path.abspath(str(linked_exe))
+    assert configured != str(Path(linked_exe).resolve())
 
 
 def context(owner="owner-a"):

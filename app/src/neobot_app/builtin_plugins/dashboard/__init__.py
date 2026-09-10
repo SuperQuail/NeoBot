@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from neobot_modloader import Plugin
@@ -50,7 +49,7 @@ class DashboardPlugin:
             ctx.logger.info("网页面板已禁用（dashboard.enabled=false），跳过启动")
             return
 
-        from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, DATA_DIR, ENV_FILE
+        from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE, ENV_FILE
 
         services = getattr(getattr(ctx, "plugin_host", None), "services", None)
         host_commands = None

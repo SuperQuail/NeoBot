@@ -2284,6 +2284,18 @@ class ReplyToolExecutor(ToolExecutor):
             )
         return "\n".join(lines)
 
+    async def drain_sessions(self) -> None:
+        """等待在途会话工具任务自然结束，不取消它们。
+
+        回复管线结束时调用。会话工具的契约是活过本轮回复（工具返回值明确要求模型
+        「立即结束本轮回复」，完成后由通知中心唤醒下一次回复），所以这里只等它们
+        跑完，好让执行器连同完整对话历史一起释放；只有进程关停才用 close() 取消。
+        """
+        while self._session_tasks:
+            tasks = tuple(self._session_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._session_tasks.difference_update(tasks)
+
     async def close(self) -> None:
         """Idempotently reject new session work, cancel active work, and wait for it."""
         if self._close_task is None:

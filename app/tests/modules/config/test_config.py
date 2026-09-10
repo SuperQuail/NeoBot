@@ -341,26 +341,31 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
     assert exited == []
 
 
-def test_load_damaged_toml_is_regenerated_as_valid_config(monkeypatch, tmp_path):
-    """损坏的 TOML 必须被覆盖重建为合法配置，缺 Key 时仍抛 ConfigLoadError 且文件可重新解析。"""
+def test_load_damaged_toml_is_rejected_without_touching_the_file(monkeypatch, tmp_path):
+    """损坏的 TOML 必须报错并保持原文件：既不能用默认值覆盖，也不能先备份再覆盖。
+
+    旧行为是「备份 + 用 schema 默认值重写整份文件」，等于把用户配置静默重置，
+    只有 config_backup/ 能人工救回；现在改为 fail-fast，由用户修复或移走该文件。
+    """
     # Arrange
     _clear_platform_env(monkeypatch)
     cfg_path = tmp_path / "bot.toml"
-    cfg_path.write_text("this is {{{ not valid toml", encoding="utf-8")
+    broken = "this is {{{ not valid toml"
+    cfg_path.write_text(broken, encoding="utf-8")
+    backup_calls: list[tuple] = []
     monkeypatch.setattr(
-        "neobot_app.config.loader.manager.backup_config", lambda *a, **k: None
+        "neobot_app.config.loader.manager.backup_config",
+        lambda *a, **k: backup_calls.append(a),
     )
 
     # Act
-    with pytest.raises(ConfigLoadError):
+    with pytest.raises(ConfigLoadError) as excinfo:
         Config.load(cfg_path, BotConfig)
 
     # Assert
-    doc = tomlkit.parse(cfg_path.read_text(encoding="utf-8")).unwrap()
-    assert "bot" in doc
-    assert "chat" in doc
-    assert "models" in doc
-    assert doc["bot"]["account"] == 0
+    assert "解析失败" in str(excinfo.value)
+    assert cfg_path.read_text(encoding="utf-8") == broken
+    assert backup_calls == []
 
 
 def test_load_invalid_type_value_falls_back_to_default_and_rewrites(monkeypatch, tmp_path):

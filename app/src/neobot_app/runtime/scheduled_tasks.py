@@ -22,14 +22,19 @@ from neobot_contracts.models.scheduled_task import (
 )
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
-from neobot_app.time_context import now_utc, to_utc
+from neobot_app.time_context import now_utc, to_local, to_utc
+
+#: 单页拉取活跃任务的数量（仓库 list_active 的默认上限，避免一次载入过多行）。
+_ACTIVE_TASK_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
 class ScheduledTaskConfig:
     enabled: bool = True
     reminder_cooldown_seconds: int = 300
-    poll_interval_seconds: int = 60
+    #: 与 config.schemas.bot.ScheduledTask.poll_interval_seconds 保持一致（10 秒），
+    #: 否则「未提供 config」与「提供了 config」两条路径的扫描频率不同。
+    poll_interval_seconds: int = 10
     default_window_seconds: int = 3600
     max_repeating_tasks: int = 15
     default_one_shot_notification: bool = True
@@ -45,7 +50,7 @@ class ScheduledTaskConfig:
                 1,
             ),
             poll_interval_seconds=max(
-                int(getattr(config, "poll_interval_seconds", 60) or 60),
+                int(getattr(config, "poll_interval_seconds", 10) or 10),
                 1,
             ),
             default_window_seconds=max(
@@ -118,6 +123,37 @@ class ScheduledTaskManager:
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
+
+    async def list_tasks(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """列出当前活跃的定时任务（供网页面板「后台任务」展示）。
+
+        面板 /api/tasks 用 ``getattr(manager, "list_tasks", None)`` 探测本方法，
+        而 ScheduledTaskManager 此前没有它 —— 面板里的定时任务列表恒为空。
+        """
+        if self._uow_factory is None:
+            return []
+        try:
+            tasks = await self._list_active_tasks()
+        except Exception as exc:
+            self._logger.warning("读取定时任务列表失败", error=str(exc))
+            return []
+        items: list[dict[str, Any]] = []
+        for task in tasks[: max(0, int(limit))]:
+            items.append(
+                {
+                    "task_id": task.task_uuid,
+                    "name": task.title,
+                    "description": task.detail or task.title,
+                    "next_run": _format_task_time(task.start_at),
+                    "trigger_time": _format_task_time(task.start_at),
+                    "status": str(getattr(task.state, "value", task.state)),
+                    "recurrence": str(
+                        getattr(task.recurrence, "value", task.recurrence)
+                    ),
+                    "bindings": len(task.bindings or ()),
+                }
+            )
+        return items
 
     async def create_task(
         self,
@@ -335,8 +371,24 @@ class ScheduledTaskManager:
                 )
 
     async def _list_active_tasks(self) -> list[ScheduledTaskRecord]:
+        """分页取回全部活跃任务。
+
+        ``list_active`` 单次上限 500 条，而一次性任务没有数量上限（只有循环
+        任务受 max_repeating_tasks 限制）：只取第一页会让排在第 501 位之后的
+        任务永远不会被扫描，提醒静默不触发。按 offset 翻页直到取完。
+        """
+        tasks: list[ScheduledTaskRecord] = []
         async with self._uow_factory() as uow:
-            return await uow.scheduled_tasks.list_active(limit=500)
+            offset = 0
+            while True:
+                page = await uow.scheduled_tasks.list_active(
+                    limit=_ACTIVE_TASK_PAGE_SIZE, offset=offset
+                )
+                tasks.extend(page)
+                if len(page) < _ACTIVE_TASK_PAGE_SIZE:
+                    break
+                offset += len(page)
+        return tasks
 
     def _plan_task_scan(
         self,
@@ -633,3 +685,13 @@ def _combine_date_time(day: date, source: datetime) -> datetime:
 
 def _normalize_datetime(value: datetime) -> datetime:
     return to_utc(value)
+
+
+def _format_task_time(value: datetime | None) -> str:
+    """任务时间格式化为本地时区的可读字符串（面板展示用）。"""
+    if value is None:
+        return ""
+    try:
+        return to_local(value).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(value)

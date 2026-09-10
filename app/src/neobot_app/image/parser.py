@@ -14,6 +14,7 @@ from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.utils.http import image_http_client
+from neobot_app.utils.image_bytes import IMAGE_MAGIC_PREFIXES, looks_like_image
 
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
@@ -457,26 +458,12 @@ def _normalize_for_vision(
     return buf.getvalue(), Image.MIME.get(out_format, "image/png")
 
 
-_VALID_IMAGE_MAGIC = (
-    b"\xff\xd8\xff",       # JPEG
-    b"\x89PNG\r\n\x1a\n",  # PNG
-    b"RIFF",               # WebP (need further check)
-    b"GIF87a",             # GIF
-    b"GIF89a",             # GIF
-    b"BM",                 # BMP
-)
+_VALID_IMAGE_MAGIC = IMAGE_MAGIC_PREFIXES
 
 
 def _is_valid_image(content: bytes) -> bool:
     """检查字节内容是否是有效的图片格式"""
-    if len(content) < 16:
-        return False
-    for magic in _VALID_IMAGE_MAGIC:
-        if content.startswith(magic):
-            if magic == b"RIFF":
-                return len(content) >= 12 and content[8:12] == b"WEBP"
-            return True
-    return False
+    return looks_like_image(content)
 
 
 def _detect_image_mime(image_bytes: bytes) -> str:

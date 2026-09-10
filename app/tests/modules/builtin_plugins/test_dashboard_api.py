@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import socket
 from pathlib import Path
 
@@ -258,6 +257,75 @@ async def test_unconfigured_panel_blocks_external_access(tmp_path: Path) -> None
         assert login.status_code == 403
         assert setup.status_code == 403
         assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
+async def test_forwarded_for_cannot_forge_loopback(tmp_path: Path) -> None:
+    """客户端伪造 X-Forwarded-For 不能把自己变成「本机」，从而抢设面板密码。
+
+    可信代理会把真实客户端地址追加到 XFF **末尾**；客户端自己带的那些项在最左边，
+    因此只有最右一项可用于判定来源。旧实现取 split(",")[0]，任何人加一个
+    ``X-Forwarded-For: 127.0.0.1`` 就能通过「仅本机可设置密码」。
+    """
+    server, _, base, _ = await _start_panel(tmp_path, password=None, trust_proxy=True)
+    try:
+        spoofed = {"X-Forwarded-For": "127.0.0.1, 203.0.113.9"}
+        async with httpx.AsyncClient() as client:
+            status = await client.get(base + "/api/auth/status", headers=spoofed)
+            setup = await client.post(
+                base + "/api/auth/setup",
+                json={"password": PASSWORD, "confirm": PASSWORD},
+                headers=spoofed,
+            )
+
+        assert status.json()["loopback"] is False
+        assert setup.status_code == 403
+        assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
+async def test_login_works_behind_reverse_proxy_with_forwarded_host(
+    tmp_path: Path,
+) -> None:
+    """经反向代理访问（Host 被改写）时登录必须可用。
+
+    文档推荐「公网经 HTTPS 反向代理访问」：浏览器地址栏是域名，而到达 NeoBot 的
+    Host 可能是 127.0.0.1:9981。只比 Host 会让登录/首设密码永久 403，面板彻底
+    不可用；开启 trust_proxy_headers 时应接受代理写入的 X-Forwarded-Host。
+    """
+    server, _, base, _ = await _start_panel(tmp_path, trust_proxy=True)
+    try:
+        headers = {
+            "Origin": "https://bot.example.com",
+            "X-Forwarded-Host": "bot.example.com",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/login", json={"password": PASSWORD}, headers=headers
+            )
+
+        assert response.status_code == 200, response.text
+    finally:
+        await server.stop()
+
+
+async def test_login_rejects_origin_not_matching_forwarded_host(
+    tmp_path: Path,
+) -> None:
+    server, _, base, _ = await _start_panel(tmp_path, trust_proxy=True)
+    try:
+        headers = {
+            "Origin": "https://evil.example",
+            "X-Forwarded-Host": "bot.example.com",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/login", json={"password": PASSWORD}, headers=headers
+            )
+
+        assert response.status_code == 403
     finally:
         await server.stop()
 
@@ -786,3 +854,131 @@ async def test_logs_endpoint_shape(panel) -> None:
     assert payload["ok"] is True
     assert isinstance(payload["items"], list)
     assert "last_id" in payload
+
+
+# ── 会话建立前端点的跨站防护（登录 / 首次设置密码没有 CSRF token 可用） ──
+
+
+async def test_auth_login_rejects_non_json_content_type(panel) -> None:
+    """跨站表单只能发 urlencoded/multipart/text-plain，这条把表单类提交挡在门外。"""
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            content=b'{"password": "x"}',
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert response.status_code == 415
+
+
+async def test_auth_login_rejects_cross_origin(panel) -> None:
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            json={"password": PASSWORD},
+            headers={"Origin": "http://evil.example"},
+        )
+
+    assert response.status_code == 403
+
+
+async def test_auth_login_allows_same_origin_json(panel) -> None:
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            json={"password": PASSWORD},
+            headers={"Origin": base},
+        )
+
+    assert response.status_code == 200
+
+
+async def test_auth_setup_rejects_form_post(tmp_path: Path) -> None:
+    """未设置密码时不能被第三方页面「抢先设置」面板密码。"""
+    server, _, base, _ = await _start_panel(tmp_path, password=None)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/setup",
+                content=(
+                    b'{"password": "attacker-password-1", '
+                    b'"confirm": "attacker-password-1"}'
+                ),
+                headers={"Content-Type": "text/plain"},
+            )
+
+        assert response.status_code == 415
+        assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
+async def test_auth_setup_still_works_with_json_from_loopback(tmp_path: Path) -> None:
+    """回归：前端用的是 JSON，正常初始化流程不受影响。"""
+    server, _, base, _ = await _start_panel(tmp_path, password=None)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/setup",
+                json={"password": "loopback-password-1", "confirm": "loopback-password-1"},
+            )
+
+        assert response.status_code == 200, response.text
+        assert server.passwords.configured is True
+    finally:
+        await server.stop()
+
+
+class _RecordingLogger(_NullLogger):
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str = "", *args, **kwargs) -> None:
+        self.warnings.append(str(message))
+
+
+async def _start_panel_with_host(tmp_path: Path, *, host: str) -> tuple[DashboardServer, _RecordingLogger]:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "0.5.0"\n', encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("DeepSeek_APIKey=sk-super-secret\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    PanelPasswordStore(data_dir / "auth.json").set_password(PASSWORD)
+    logger = _RecordingLogger()
+    server = DashboardServer(
+        plugin_name="dashboard",
+        config=DashboardConfig(
+            enabled=True, host=host, port=_free_port(), secure_cookies=False
+        ),
+        data_dir=data_dir,
+        logger=logger,
+        adapter=_FakeAdapter(),
+        plugin_control=_FakeControl(),
+        config_path=config_path,
+        env_path=env_path,
+        backup_dir=tmp_path / "backup",
+    )
+    await server.start()
+    return server, logger
+
+
+async def test_non_loopback_panel_warns_about_plaintext_credentials(
+    tmp_path: Path,
+) -> None:
+    """面板对网络开放且未启用 Secure Cookie 时必须给出启动告警。"""
+    server, logger = await _start_panel_with_host(tmp_path, host="0.0.0.0")
+    try:
+        assert any("Secure Cookie" in message for message in logger.warnings)
+    finally:
+        await server.stop()
+
+
+async def test_loopback_panel_does_not_warn(tmp_path: Path) -> None:
+    server, logger = await _start_panel_with_host(tmp_path, host="127.0.0.1")
+    try:
+        assert logger.warnings == []
+    finally:
+        await server.stop()

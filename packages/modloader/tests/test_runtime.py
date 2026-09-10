@@ -770,7 +770,13 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.requirements: list[str] = []
 
-            def confirm_and_install(self, requirements: list[str]) -> object:
+            def confirm_and_install_sync(self, requirements: list[str]) -> object:
+                """启动装配期走同步入口。"""
+                self.requirements.extend(requirements)
+                return object()
+
+            async def confirm_and_install(self, requirements: list[str]) -> object:
+                """运行期（安装/热重载）走异步入口。"""
                 self.requirements.extend(requirements)
                 return object()
 
@@ -1335,6 +1341,65 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.ok)
             self.assertEqual(result.state, PluginState.UNLOADED.value)
             self.assertIsNone(result.error)
+
+    async def test_plugin_requiring_newer_neobot_is_not_loaded(self) -> None:
+        """min_neobot_version 高于当前版本时必须拒绝加载，而不是照常注册。"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "future"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                'name = "future"\nmin_neobot_version = "9.0.0"\n',
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('future')\n",
+                encoding="utf-8",
+            )
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                host_version="0.6.0",
+            )
+
+            runtime.load_all()
+
+            self.assertEqual(runtime.manager.names(), [])
+            # 发现阶段仍要给出条目：面板的停用/重载/卸载与来源判定都依赖它，
+            # 替换成错误条目会让这些操作报「插件未找到」
+            discovered = runtime.discover_all()
+            self.assertEqual([item.name for item in discovered], ["future"])
+
+    async def test_plugin_with_satisfied_min_version_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "compatible"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                'name = "compatible"\nmin_neobot_version = "0.6.0"\n',
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('compatible')\n",
+                encoding="utf-8",
+            )
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                host_version="0.6.1",
+            )
+
+            runtime.load_all()
+
+            self.assertEqual(runtime.manager.names(), ["compatible"])
 
 
 if __name__ == "__main__":

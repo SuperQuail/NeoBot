@@ -339,16 +339,34 @@ class Plugin:
                 except Exception as exc:
                     errors.append(exc)
         finally:
-            for database in self._databases.values():
-                try:
-                    await database.close()
-                except Exception as exc:
-                    errors.append(exc)
-            self._bound = False
+            try:
+                await self.close_databases()
+            except Exception as exc:
+                errors.append(exc)
         if len(errors) == 1:
             raise errors[0]
         if errors:
             raise ExceptionGroup("插件关闭处理器执行失败", errors)
+
+    async def close_databases(self) -> None:
+        """关闭本插件声明的全部数据库引擎（可重复调用，幂等）。
+
+        独立成方法是为了覆盖 **ERROR 路径**：插件在 on_load/on_start 阶段失败时
+        manager 会跳过 on_stop，若关闭只写在 on_stop 里，引擎就会一直挂着
+        （Windows 上锁住数据库文件，导致重装/升级失败）。同时复位 ``_bound``，
+        保证后续重载会重新绑定数据库与处理器。
+        """
+        errors: list[Exception] = []
+        for database in self._databases.values():
+            try:
+                await database.close()
+            except Exception as exc:
+                errors.append(exc)
+        self._bound = False
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("插件数据库关闭失败", errors)
 
     async def _load(self, context: Any) -> None:
         self._context = context

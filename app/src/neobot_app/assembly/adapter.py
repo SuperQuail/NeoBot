@@ -49,6 +49,9 @@ def _settings_from_config(config: Any = None) -> AdapterSettings:
         bot_name=str(getattr(bot_cfg, "nick_name", "Neo Bot") or "Neo Bot"),
         reverse_ws_host=str(getattr(adapter_cfg, "reverse_ws_host", "") or ""),
         reverse_ws_port=int(getattr(adapter_cfg, "reverse_ws_port", 0) or 0),
+        reverse_ws_access_token=str(
+            getattr(adapter_cfg, "reverse_ws_access_token", "") or ""
+        ),
     )
     return _apply_env_overrides(settings)
 
@@ -79,6 +82,11 @@ def _apply_env_overrides(settings: AdapterSettings) -> AdapterSettings:
         values["reverse_ws_host"] = reverse_host
     if reverse_port:
         values["reverse_ws_port"] = int(reverse_port)
+    # 反向 WS 的 token 只认专用变量：不复用 NEOBOT_LOCAL_ADAPTER_TOKEN，
+    # 否则 local 模式的老配置会突然让反向 WS 开始强制校验、连不上框架。
+    reverse_token = _env_ci("NEO_BOT_ADAPTER_TOKEN") or _env_ci("NEOBOT_ADAPTER_TOKEN")
+    if reverse_token:
+        values["reverse_ws_access_token"] = reverse_token
     if not values:
         return settings
     return replace(settings, **values)

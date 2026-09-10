@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json
 
 
 class EscapeTextApp:
@@ -143,7 +142,7 @@ class EscapeTextApp:
 
 def main():
     root = tk.Tk()
-    app = EscapeTextApp(root)
+    EscapeTextApp(root)
     root.mainloop()
 
 
