@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+
+#: 清理任务的进程内互斥（可能被 AI 技能 / CLI / 后台循环并发触发）。
+_CLEANUP_LOCK = threading.Lock()
 
 
 class TempCleaner:
@@ -90,9 +94,17 @@ class TempCleaner:
         return result
 
     def run_once(self) -> dict:
-        """执行一次清理并返回结果统计。"""
-        result = self._cleanup_once()
-        return result
+        """执行一次清理并返回结果统计。
+
+        清理会被搬进线程池（AI 技能 / CLI / 后台循环都可能触发），因此需要
+        进程内互斥：两次清理并行会对同一批文件重复 unlink/rmdir 并互相报错。
+        """
+        if not _CLEANUP_LOCK.acquire(blocking=False):
+            return {"files_removed": 0, "dirs_removed": 0, "nests_fixed": 0, "skipped": "busy"}
+        try:
+            return self._cleanup_once()
+        finally:
+            _CLEANUP_LOCK.release()
 
     def _cleanup_once(self) -> dict:
         """执行一次清理并返回统计信息。"""

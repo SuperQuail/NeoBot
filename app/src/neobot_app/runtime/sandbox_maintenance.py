@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ _MAINTENANCE_MARKER = ".last_maintenance"
 _WRITE_TEMP_PREFIX = ".neobot-write-"
 #: 超过这个年龄的临时文件才算孤儿：正在进行的写入只有毫秒级寿命。
 _ORPHAN_TEMP_MAX_AGE_SECONDS = 3600
+#: 维护周期的进程内互斥（搬进线程池后不再有事件循环的隐式串行）。
+_MAINTENANCE_LOCK = threading.Lock()
 
 
 class SandboxMaintenanceManager:
@@ -65,6 +68,18 @@ class SandboxMaintenanceManager:
         return await asyncio.to_thread(self._maintenance_cycle_sync, force=force)
 
     def _maintenance_cycle_sync(self, *, force: bool = False) -> dict[str, Any]:
+        # 移进线程池后不再有「事件循环单线程」的隐式互斥：AI 的
+        # trigger_maintenance、CLI 与 3 小时后台循环可以真正并行，两个周期同时
+        # rglob/move/rmtree 同一棵树会互相踩。拿不到锁就直接跳过本次。
+        if not _MAINTENANCE_LOCK.acquire(blocking=False):
+            self._logger.info("已有维护周期在运行，跳过本次触发")
+            return {"ok": True, "skipped": True, "reason": "已有维护在运行"}
+        try:
+            return self._maintenance_cycle_locked(force=force)
+        finally:
+            _MAINTENANCE_LOCK.release()
+
+    def _maintenance_cycle_locked(self, *, force: bool = False) -> dict[str, Any]:
         if not force and not self._has_changes_since_last():
             self._logger.debug("无文件变更，跳过维护")
             return {"ok": True, "skipped": True, "reason": "无文件变更"}

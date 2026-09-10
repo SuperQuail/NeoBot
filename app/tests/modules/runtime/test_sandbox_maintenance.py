@@ -1,6 +1,7 @@
 """沙箱维护命名回归：保留 Unicode、拒绝空主名且不覆盖已有目标。"""
 
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -184,3 +185,32 @@ async def test_maintenance_cleans_orphan_write_temps_only_when_stale(tmp_path):
     assert not stale.exists()
     assert fresh.read_bytes() == b"in-flight"
     assert "垃圾文件 x1" in result["removed"]
+
+
+async def test_concurrent_maintenance_cycles_do_not_overlap(tmp_path) -> None:
+    """两个维护周期不能并行操作同一棵树（搬进线程后失去事件循环的隐式串行）。"""
+    from neobot_app.runtime import sandbox_maintenance as module
+
+    (tmp_path / "tools").mkdir()
+    manager = SandboxMaintenanceManager(tmp_path)
+    results: list[dict] = []
+    gate = threading.Event()
+
+    def _slow_cycle(*, force: bool = False) -> dict:
+        gate.set()
+        time.sleep(0.2)  # 占住锁，模拟真实周期耗时
+        return {"ok": True, "skipped": False}
+
+    manager._maintenance_cycle_locked = _slow_cycle  # type: ignore[method-assign]
+
+    thread = threading.Thread(target=lambda: results.append(manager._maintenance_cycle_sync(force=True)))
+    thread.start()
+    assert gate.wait(2.0)
+
+    overlapped = await manager.run_once(force=True)
+    thread.join(5.0)
+
+    assert overlapped["skipped"] is True
+    assert overlapped["reason"] == "已有维护在运行"
+    assert results and results[0]["skipped"] is False
+    assert module._MAINTENANCE_LOCK.locked() is False
