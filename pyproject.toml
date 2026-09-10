@@ -71,3 +71,13 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# 起步配置：存量类型错误较多，先不启用严格模式，仅用于暴露问题（CI 中暂不阻断）。
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = false
+exclude = [
+    "app/src/neobot_app/builtin_plugins/dashboard/web/",
+    "app/src/neobot_app/builtin_plugins/dashboard/frontend/",
+]

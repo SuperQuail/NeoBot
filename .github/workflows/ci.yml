@@ -1,0 +1,41 @@
+name: CI
+
+# 每次推送到 main / 每个 PR：先跑静态检查，再跑测试。
+# 浏览器 / 网络 / 真实 LLM 用例依赖外部环境，默认排除（本地可用 -m 单独运行）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试与静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: 安装依赖（全部工作区包 + dev 组）
+        run: uv sync --all-packages
+
+      - name: ruff（阻断）
+        run: uv run ruff check .
+
+      - name: 测试（阻断；排除 browser / network / slow / llm）
+        run: uv run pytest -m "not browser and not network and not slow and not llm"
+
+      # 存量类型错误约 500+，先只暴露不阻断；清理到可接受规模后再摘掉
+      # continue-on-error。
+      - name: mypy（暂不阻断）
+        continue-on-error: true
+        run: uv run mypy app/src packages
