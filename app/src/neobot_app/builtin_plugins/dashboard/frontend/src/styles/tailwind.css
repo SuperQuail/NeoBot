@@ -1,0 +1,59 @@
+/*
+ * Tailwind v4 基座 —— CSS-first 配置。
+ * 目的：把现有 theme.css 的设计令牌桥接成 Tailwind 工具类，
+ * 使 bg-brand / text-muted / border-border 与旧类名共存，
+ * 便于逐文件把旧 CSS 迁移到工具类，而不是一次性推倒重来。
+ * 注意：本文件必须使用 CSS 注释，Tailwind 的解析器不接受 // 行注释。
+ */
+@import 'tailwindcss';
+
+/* 扫描范围：Vite 根目录下的 HTML 与全部 TS/TSX 源码（路径相对项目根解析） */
+@source '../../index.html';
+@source '../../src/**/*.{ts,tsx}';
+
+/* 暗色模式沿用项目的 html[data-theme='dark'] 约定，而不是 prefers-color-scheme */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/*
+ * 令牌桥接：值直接引用 theme.css 里的 CSS 变量，
+ * 因此明/暗主题切换仍然只改一处（theme.css 的 :root / [data-theme='dark']）。
+ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-surface-2: var(--panel-2);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--brand-hover);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
+
+  --radius-card: var(--radius);
+  --radius-control: 9px;
+
+  --shadow-panel: var(--shadow);
+
+  /*
+   * 字体必须写字面量，不能写成 var(--font-sans)：@theme 生成的是同名的 `--font-sans`，
+   * 若值仍指向 `--font-sans` 就成了自引用，浏览器会判定为无效值把字体族置空。
+   * 这里的清单必须与 theme.css 的 --font-sans / --font-mono 保持一致。
+   */
+  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Preflight 会重置部分元素样式，这里补回面板依赖的细节 */
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}

@@ -1,5 +1,7 @@
 #!/bin/sh
-# 提交前扫描暂存区，阻止密钥进入仓库。
+# 提交前检查：
+#   1) 扫描暂存区，阻止密钥进入仓库；
+#   2) 改了前端源码却没重新构建 web/ 时给出警告（web/ 是入库产物，CI 会阻断）。
 # 启用方式（每个克隆一次）：git config core.hooksPath .githooks
 python_bin=""
 for candidate in python python3 py; do
@@ -8,15 +10,28 @@ for candidate in python python3 py; do
     break
   fi
 done
+
 if [ -z "$python_bin" ]; then
   echo "[pre-commit] 未找到 python，跳过密钥扫描" >&2
-  exit 0
+else
+  output=$("$python_bin" scripts/check_secrets.py --staged 2>&1)
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    echo "[pre-commit] 检测到疑似密钥（解释器: $python_bin），提交已阻止；确认为占位符时可写入 .secretsignore" >&2
+    exit 1
+  fi
 fi
-output=$("$python_bin" scripts/check_secrets.py --staged 2>&1)
-status=$?
-if [ "$status" -ne 0 ]; then
-  echo "$output" >&2
-  echo "[pre-commit] 检测到疑似密钥（解释器: $python_bin），提交已阻止；确认为占位符时可写入 .secretsignore" >&2
-  exit 1
+
+# 前端产物一致性提醒（只警告不阻断：CI 的 frontend job 会真正拦截）
+frontend_dir="app/src/neobot_app/builtin_plugins/dashboard/frontend"
+web_dir="app/src/neobot_app/builtin_plugins/dashboard/web"
+staged=$(git diff --cached --name-only)
+if echo "$staged" | grep -q "^${frontend_dir}/src/"; then
+  if ! echo "$staged" | grep -q "^${web_dir}/"; then
+    echo "[pre-commit] 提示：改了前端源码但未提交重新构建的 web/ 产物。" >&2
+    echo "             请在 ${frontend_dir} 执行 pnpm run build，或确认本次不需要更新产物。" >&2
+  fi
 fi
+
 exit 0
