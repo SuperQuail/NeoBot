@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import loguru
 import pytest
 import tomlkit
 
@@ -15,6 +16,23 @@ _DEEPSEEK_KEYS = {
     "DeepSeek_URL": "https://api.deepseek.com",
     "DeepSeek_APIKey": "sk-deepseek-test-1234567890",
 }
+
+
+@pytest.fixture()
+def loguru_messages():
+    """收集 loguru 输出（pytest 的 caplog 抓不到 loguru）。
+
+    配置降级告警、启动状态等日志都走 loguru，断言它们的文案只能靠这个 sink；
+    用独立的 sink_id 增删，不打断其它 handler。
+    """
+    records: list[str] = []
+    sink_id = loguru.logger.add(
+        lambda message: records.append(message), format="{message}"
+    )
+    try:
+        yield records
+    finally:
+        loguru.logger.remove(sink_id)
 
 
 def _clear_platform_env(monkeypatch) -> None:
@@ -34,23 +52,53 @@ def _write_minimal_config(tmp_path) -> Path:
     return cfg_path
 
 
-def test_load_missing_required_keys_raises_with_full_list(monkeypatch, tmp_path):
+def test_load_missing_required_keys_degrades_and_reports_full_list(
+    monkeypatch, tmp_path, loguru_messages
+):
+    """必需对话模型缺 Key 时：**进程照常启动**，但每一条缺失都要有告警。
+
+    这里断言的是新的运行契约：缺 Key 只降级对应功能，不抛 ConfigLoadError、
+    不退出进程 —— 否则用来补配置的网页面板会跟着进程一起消失。
+    """
     _clear_platform_env(monkeypatch)
     cfg_path = _write_minimal_config(tmp_path)
     exited: list[int] = []
     monkeypatch.setattr("sys.exit", lambda code: exited.append(code))
 
+    config = Config.load(cfg_path, BotConfig)
+
+    assert config is not None
+    warnings = "\n".join(loguru_messages)
+    assert "primary_chat_model" in warnings
+    assert "agent_model_1" in warnings
+    assert "agent_model_3" in warnings
+    assert "DeepSeek_APIKey" in warnings
+    # 某个角色缺 Key 不该牵连同一次加载里的其它角色。
+    assert "vision_model" in warnings
+    assert "tts_model" in warnings
+    assert exited == []
+
+
+def test_load_strict_policy_still_raises_for_required_roles(monkeypatch, tmp_path):
+    """严格策略仍然可用：传入 ModelAvailabilityPolicy() 即恢复「缺必需 Key 即失败」。
+
+    降级是默认运行模式，不是唯一语义；需要 fail-fast 的部署（CI、受控启动）
+    可以通过策略选择拿回旧行为。
+    """
+    from neobot_app.config.availability import ModelAvailabilityPolicy
+
+    _clear_platform_env(monkeypatch)
+    cfg_path = _write_minimal_config(tmp_path)
+
     with pytest.raises(ConfigLoadError) as exc_info:
-        Config.load(cfg_path, BotConfig)
+        Config.load(cfg_path, BotConfig, availability_policy=ModelAvailabilityPolicy())
 
     message = str(exc_info.value)
     assert "primary_chat_model" in message
-    assert "agent_model_1" in message
-    assert "agent_model_3" in message
     assert "DeepSeek_APIKey" in message
+    # 可降级角色仍不进致命清单。
     assert "vision_model" not in message
     assert "tts_model" not in message
-    assert exited == []
 
 
 def test_load_missing_only_optional_platform_keys_succeeds(monkeypatch, tmp_path):
@@ -281,9 +329,9 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
 
 
 def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, loguru_messages
 ):
-    """chat 模型 provider/model_name 同时为空时，错误消息必须完整列出全部 4 个缺失项且不误报平台 Key。"""
+    """provider/model_name 同时为空时，告警必须完整列出全部 4 个缺失项且不误报平台 Key。"""
     # Arrange
     _clear_platform_env(monkeypatch)
     cfg_path = tmp_path / "bot.toml"
@@ -319,11 +367,10 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
     monkeypatch.setattr("sys.exit", lambda code: exited.append(code))
 
     # Act
-    with pytest.raises(ConfigLoadError) as exc_info:
-        Config.load(cfg_path, BotConfig)
+    Config.load(cfg_path, BotConfig)
 
     # Assert
-    message = str(exc_info.value)
+    message = "\n".join(loguru_messages)
     expected = {
         "deepseek-v4-pro": "primary_chat_model",
         "deepseek-v4-flash-max": "agent_model_1",
