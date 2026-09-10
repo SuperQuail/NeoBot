@@ -16,7 +16,7 @@ import re
 import tempfile
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Iterator, Union, get_args, get_origin
+from typing import Any, Iterator, NamedTuple, Union, get_args, get_origin
 
 import tomlkit
 
@@ -800,6 +800,15 @@ _MISSING = object()
 #: 表单里删掉某个键就是真的要删，不做「未知键保护」。
 _FREE_MAPPING = object()
 
+
+class _ListOfTables(NamedTuple):
+    """表数组字段（``List[dataclass]``，如 models.registry / chat.key_word）。
+
+    逐元素 diff：元素里面板不认识的键同样要保留。
+    """
+
+    element: Any
+
 _MANAGED_TREES: dict[type, dict[str, Any]] = {}
 
 
@@ -820,6 +829,12 @@ def _managed_tree(schema: type) -> dict[str, Any]:
             target = inner[0] if inner else field_obj.type
             if is_dataclass(target):
                 tree[field_obj.name] = target
+            elif get_origin(target) is list:
+                args = get_args(target)
+                element = args[0] if args else None
+                tree[field_obj.name] = (
+                    _ListOfTables(element) if is_dataclass(element) else None
+                )
             elif get_origin(target) is dict:
                 tree[field_obj.name] = _FREE_MAPPING
             else:
@@ -1009,6 +1024,33 @@ def _filter_managed(
     return filtered
 
 
+def _diff_sequence(
+    current: Any, new: Any, element_schema: Any
+) -> Any:
+    """表数组（``[[models.registry]]`` 这类）逐元素 diff。
+
+    数组是「整值替换」的话，元素里面板不认识的键会随一次表单保存被抹掉
+    （与分区字段同一类数据丢失）。这里按序号逐元素 diff：下标对得上的元素走
+    dict diff（未知键保留），新增的元素整体写入，变短的数组由合并阶段截断。
+    返回 None 表示无需改动。
+    """
+    if not isinstance(current, list) or not isinstance(new, list):
+        return new
+    diff: list[Any] = []
+    for index, item in enumerate(new):
+        if (
+            index < len(current)
+            and isinstance(current[index], dict)
+            and isinstance(item, dict)
+        ):
+            diff.append(_diff_document(current[index], item, element_schema))
+        else:
+            diff.append(item)
+    if diff == current:
+        return None
+    return diff
+
+
 def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
     """只保留相对当前文件真正变化的键，避免整份重写丢掉注释与顺序。
 
@@ -1023,7 +1065,11 @@ def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
     changes: dict[str, Any] = {}
     for key, value in new.items():
         child = tree.get(key) if tree is not None else None
-        if isinstance(value, dict) and isinstance(current.get(key), dict):
+        if isinstance(child, _ListOfTables):
+            nested_list = _diff_sequence(current.get(key), value, child.element)
+            if nested_list is not None:
+                changes[key] = nested_list
+        elif isinstance(value, dict) and isinstance(current.get(key), dict):
             nested = _diff_document(current[key], value, child)
             if nested:
                 changes[key] = nested
@@ -1036,6 +1082,21 @@ def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
             continue
         changes[key] = _DELETE
     return changes
+
+
+def _merge_sequence(document: Any, values: list[Any]) -> None:
+    """把元素级 diff 合并回 TOML 表数组（保留未变元素的注释与顺序）。"""
+    while len(document) > len(values):
+        del document[-1]
+    for index, item in enumerate(values):
+        if index >= len(document):
+            document.append(tomlkit.item(item))
+            continue
+        target = document[index]
+        if isinstance(item, dict) and hasattr(target, "get"):
+            _merge_into_document(target, item)
+        else:
+            document[index] = tomlkit.item(item)
 
 
 def _merge_into_document(document: Any, data: dict[str, Any], prefix: tuple[str, ...] = ()) -> None:
@@ -1056,8 +1117,14 @@ def _merge_into_document(document: Any, data: dict[str, Any], prefix: tuple[str,
                 document[key] = tomlkit.table()
                 existing = document[key]
             _merge_into_document(existing, value, (*prefix, str(key)))
+        elif isinstance(value, list) and _is_table_array(document.get(key)):
+            _merge_sequence(document.get(key), value)
         else:
             document[key] = tomlkit.item(value)
+
+
+def _is_table_array(node: Any) -> bool:
+    return isinstance(node, tomlkit.items.AoT)
 
 
 class EnvFileManager:

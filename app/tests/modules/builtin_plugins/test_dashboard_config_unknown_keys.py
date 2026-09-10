@@ -143,6 +143,62 @@ def test_plugins_proxy_save_survives_extra_keys(tmp_path: Path) -> None:
     assert "[my_plugin]" in saved
 
 
+def test_form_save_keeps_unknown_keys_inside_table_arrays(tmp_path: Path) -> None:
+    """表数组（[[models.registry]] 等）元素里的未知键同样要保留。
+
+    79035cc 的未知键保护只覆盖 table；数组是整值替换，元素里的额外键会被
+    一次表单保存静默抹掉。
+    """
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        "\n[[models.registry]]\n"
+        'key = "m1"\n'
+        'model_type = "chat"\n'
+        'provider = "DeepSeek"\n'
+        'model_name = "deepseek-chat"\n'
+        'brand_new_field = "keep-me"\n'
+        "\n[[chat.key_word]]\n"
+        'enabled = true\n'
+        'keywords = ["hi"]\n'
+        'prompt_list = ["greet"]\n'
+        'custom_key = "keep-me-too"\n',
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    manager.save(config=document["config"])
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert "brand_new_field" in saved
+    assert "custom_key" in saved
+
+
+def test_form_save_can_still_remove_table_array_entries(tmp_path: Path) -> None:
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        "\n[[chat.key_word]]\n"
+        'enabled = true\n'
+        'keywords = ["a"]\n'
+        'prompt_list = ["x"]\n'
+        "\n[[chat.key_word]]\n"
+        'enabled = true\n'
+        'keywords = ["b"]\n'
+        'prompt_list = ["y"]\n',
+        encoding="utf-8",
+    )
+
+    document = manager.read()
+    chat = dict(document["config"]["chat"])
+    chat["key_word"] = chat["key_word"][:1]
+    manager.save(config={**document["config"], "chat": chat})
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert saved.count("[[chat.key_word]]") == 1
+    assert "keywords = [\"a\"]" in saved
+
+
 def test_adapter_tokens_are_not_returned_by_read(tmp_path: Path) -> None:
     """config.toml 里的 token 不能出现在面板响应里（只回「是否已设置」）。"""
     manager, config_path = _manager(tmp_path)
