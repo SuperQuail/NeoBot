@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neobot_app.builtin_plugins.dashboard.config_manager import BotConfigManager
+import pytest
+
+from neobot_app.builtin_plugins.dashboard.config_manager import (
+    BotConfigManager,
+    ConfigValidationError,
+)
 
 
 def _manager(tmp_path: Path) -> tuple[BotConfigManager, Path]:
@@ -82,3 +87,56 @@ def test_form_save_still_deletes_free_mapping_keys(tmp_path: Path) -> None:
     saved = config_path.read_text(encoding="utf-8")
     assert "999002" not in saved
     assert "999001 = 0.5" in saved
+
+
+def test_section_save_survives_extra_keys(tmp_path: Path) -> None:
+    """配置文件里已有面板不认识的键时，分区保存不能被「未知配置项」拦死。"""
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        'my_top_level = "keep-me"\n'
+        "\n[my_plugin]\n"
+        "enabled = true\n"
+        "\n[dashboard]\n"
+        "port = 9981\n",
+        encoding="utf-8",
+    )
+
+    manager.update_section("dashboard", {"port": 9999})
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert "port = 9999" in saved
+    assert "my_top_level" in saved
+    assert "[my_plugin]" in saved
+
+
+def test_section_save_rejects_unknown_key_in_edited_section(tmp_path: Path) -> None:
+    """正在编辑的分区里出现未知键，依然要报错（不能静默写进去）。"""
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n\n[dashboard]\nport = 9981\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigValidationError):
+        manager.update_section("dashboard", {"nope": 1})
+
+    assert "nope" not in config_path.read_text(encoding="utf-8")
+
+
+def test_plugins_proxy_save_survives_extra_keys(tmp_path: Path) -> None:
+    manager, config_path = _manager(tmp_path)
+    config_path.write_text(
+        'version = "0.6.0"\n'
+        "\n[my_plugin]\n"
+        "enabled = true\n"
+        "\n[plugins]\n"
+        'proxy_mode = "system"\n',
+        encoding="utf-8",
+    )
+
+    manager.update_plugins_proxy(mode="system", host="127.0.0.1", port=7890)
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert "proxy_port = 7890" in saved
+    assert "[my_plugin]" in saved

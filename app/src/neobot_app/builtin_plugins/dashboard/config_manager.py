@@ -452,7 +452,7 @@ class BotConfigManager:
                 else tomlkit.document()
             )
             current = document.unwrap() if self.config_path.is_file() else {}
-            _merge_into_document(document, _diff_document(current, config or {}, _managed_tree(BotConfig)))
+            _merge_into_document(document, _diff_document(current, config or {}, BotConfig))
             source = tomlkit.dumps(document)
         if expected_revision is not None and expected_revision != self.revision():
             raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
@@ -510,12 +510,14 @@ class BotConfigManager:
 
         new_config = dict(current)
         new_config[name] = merged
-        errors = self.validate(config=new_config)
+        errors = self.validate(
+            config=_filter_managed(BotConfig, new_config, strict=frozenset({(name,)}))
+        )
         if errors:
             raise ConfigValidationError(errors)
 
         _merge_into_document(
-            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+            document, _diff_document(current, new_config, BotConfig)
         )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
@@ -561,12 +563,14 @@ class BotConfigManager:
 
         new_config = dict(current)
         new_config["plugins"] = plugins_raw
-        errors = self.validate(config=new_config)
+        errors = self.validate(
+            config=_filter_managed(BotConfig, new_config, strict=frozenset({("plugins",)}))
+        )
         if errors:
             raise ConfigValidationError(errors)
 
         _merge_into_document(
-            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+            document, _diff_document(current, new_config, BotConfig)
         )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=15)
@@ -723,12 +727,14 @@ class BotConfigManager:
             "registry": library,
             "assignments": current_assignments,
         }
-        config_errors = self.validate(config=new_config)
+        config_errors = self.validate(
+            config=_filter_managed(BotConfig, new_config, strict=frozenset({("models",)}))
+        )
         if config_errors:
             raise ConfigValidationError(config_errors)
 
         _merge_into_document(
-            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+            document, _diff_document(current, new_config, BotConfig)
         )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
@@ -783,7 +789,7 @@ _MANAGED_TREES: dict[type, dict[str, Any]] = {}
 def _managed_tree(schema: type) -> dict[str, Any]:
     """按 dataclass 声明生成托管字段树，用于判断哪些键允许被表单删除。
 
-    - dataclass 字段 -> 递归子字典（分区：只有声明过的键才允许删）
+    - dataclass 字段 -> 子 dataclass（分区：只有声明过的键才允许删）
     - dict 字段 -> ``_FREE_MAPPING``（键由用户决定，允许删）
     - 其它字段 -> ``None``（标量/数组，整值替换，不涉及删键）
     """
@@ -796,7 +802,7 @@ def _managed_tree(schema: type) -> dict[str, Any]:
             inner = _inner_types(field_obj.type)
             target = inner[0] if inner else field_obj.type
             if is_dataclass(target):
-                tree[field_obj.name] = _managed_tree(target)
+                tree[field_obj.name] = target
             elif get_origin(target) is dict:
                 tree[field_obj.name] = _FREE_MAPPING
             else:
@@ -805,19 +811,49 @@ def _managed_tree(schema: type) -> dict[str, Any]:
     return tree
 
 
+def _filter_managed(
+    schema: type,
+    data: Any,
+    *,
+    strict: frozenset[tuple[str, ...]] = frozenset(),
+    path: tuple[str, ...] = (),
+) -> Any:
+    """复制一份配置并丢掉声明之外的键（校验用）。
+
+    配置文件里可能本来就有面板不认识的键（自定义分区、插件字段、更新版本
+    留下的新字段）。它们既不该让整次保存因「未知配置项」失败，也不该参与
+    本次校验。``strict`` 里的路径保持原样：正在编辑的那个分区若出现未知键，
+    依然会被校验拦下。
+    """
+    if not isinstance(data, dict) or not is_dataclass(schema) or path in strict:
+        return data
+    tree = _managed_tree(schema)
+    filtered: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in tree:
+            continue
+        child = tree[key]
+        if is_dataclass(child) and isinstance(value, dict):
+            filtered[key] = _filter_managed(child, value, strict=strict, path=(*path, key))
+        else:
+            filtered[key] = value
+    return filtered
+
+
 def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
     """只保留相对当前文件真正变化的键，避免整份重写丢掉注释与顺序。
 
-    ``managed`` 是 :func:`_managed_tree` 给出的托管字段树。表单只认识托管字段，
-    因此文件里那些面板不认识的键（用户自定义分区、插件写入的字段、更新版本
-    留下的新字段）一律保留：之前它们会被当成「表单里删掉的键」直接删掉，
-    一次面板保存就能把它们从 config.toml 里抹掉。
+    ``managed`` 是 :func:`_managed_tree` 对应的 dataclass（或 ``_FREE_MAPPING``）。
+    表单只认识托管字段，因此文件里那些面板不认识的键（用户自定义分区、插件
+    写入的字段、更新版本留下的新字段）一律保留：之前它们会被当成「表单里
+    删掉的键」直接删掉，一次面板保存就能把它们从 config.toml 里抹掉。
     """
     if not isinstance(current, dict) or not isinstance(new, dict):
         return new
+    tree = _managed_tree(managed) if is_dataclass(managed) else None
     changes: dict[str, Any] = {}
     for key, value in new.items():
-        child = managed.get(key) if isinstance(managed, dict) else None
+        child = tree.get(key) if tree is not None else None
         if isinstance(value, dict) and isinstance(current.get(key), dict):
             nested = _diff_document(current[key], value, child)
             if nested:
@@ -827,7 +863,7 @@ def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
     for key in current:
         if key in new:
             continue
-        if isinstance(managed, dict) and key not in managed:
+        if tree is not None and key not in tree:
             continue
         changes[key] = _DELETE
     return changes
