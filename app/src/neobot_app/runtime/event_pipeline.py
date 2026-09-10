@@ -1336,7 +1336,7 @@ class EventPipeline:
             self._replying_queues.discard(queue_key)
             await self._process_post_reply_queue(queue_key)
 
-        self._reply_orchestrator.start_reply(
+        started = self._reply_orchestrator.start_reply(
             message=message,
             queue=queue,
             queue_key=queue_key,
@@ -1345,6 +1345,15 @@ class EventPipeline:
             on_reply_done=on_reply_done,
             background_content=background,
         )
+        if started is None:
+            # 管线被拒（编排器已关闭／同会话管线在跑／冷却中）：on_reply_done 永远
+            # 不会被调用，必须自己回滚刚打上的标记，否则该会话会永久留在
+            # _replying_queues 里——命令的 sync_reply 结果再也不会投递，
+            # 后续新消息也一律被当「回复中」处理。
+            self._replying_queues.discard(queue_key)
+            self._logger.debug(
+                "命令同步回复未能启动，已回滚回复中标记", queue_key=queue_key
+            )
 
     async def _try_issue_credential(
         self,
