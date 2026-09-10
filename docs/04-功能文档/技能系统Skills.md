@@ -19,7 +19,7 @@ schema 在两万 token 以上，且与对话内容无关——属于纯固定开
 ```python
 # app/src/neobot_app/skills/__init__.py
 DEFAULT_EAGER_TOOL_SKILLS = {
-    "agent_tools", "chat_history", "drawing", "gallery",
+    "chat_history", "drawing", "gallery",
     "image_context", "image_pool", "image_send",
 }
 ```
@@ -33,6 +33,25 @@ skills__load_tools(skills=["archive_crud", "browser"])
 → 已加载技能工具（本轮即可直接调用）：
     - archive_crud: archive_crud__read_archive, archive_crud__patch_archive, ...
 ```
+
+### 工具包（把一个大技能拆成多个按需包）
+
+`agent_tools` 的 20 个叶子工具（read/write/edit/run_python/web_search/…）曾经常驻提示词，
+实测 8.9K 字符 / 每次模型调用，而生产 18 小时内只被调用过 2 次。现在它拆成 5 个按需包，
+**共享同一个工具名前缀 `agent_tools`**，因此加载前后工具名完全一致（`agent_tools__read` 等）：
+
+| 包名 | 覆盖的叶子工具 |
+|---|---|
+| `agent_tools_files` | read / write / edit / glob / grep |
+| `agent_tools_exec` | run_python / pwsh / bash / job_list / job_output / job_kill |
+| `agent_tools_web` | web_search / web_fetch |
+| `agent_tools_plan` | todo_write / ask_user_question / question_status / enter_plan_mode / exit_plan_mode |
+| `agent_tools_misc` | lsp / read_image / skill |
+
+实现要点：`SkillModule.tool_prefix` 允许一个技能群共用前缀，`SkillManager` 改为按**最终工具名**
+精确路由（前缀不再与技能名一一对应）；`SkillModule.exposed_to_main_agent=False` 的技能
+（如 `agent_tools` 本体）既非常驻也不出现在 `skills__load_tools` 候选里，只作为共享运行时
+与执行入口，供解题/子 Agent 与按需包复用。
 
 要点：
 

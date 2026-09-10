@@ -30,7 +30,7 @@ max_output_bytes = 262144
 
 ## 工具清单
 
-主 agent 的以下名称均带 `agent_tools__` 前缀；解题／子 agent 内部使用无前缀名称，直接取完整工具集。实际注册受沙箱、模型、视觉、网络及 LSP 配置控制。
+主 agent 的以下名称均带 `agent_tools__` 前缀，且**默认不注入**：它们拆成 5 个按需工具包（`agent_tools_files` / `agent_tools_exec` / `agent_tools_web` / `agent_tools_plan` / `agent_tools_misc`），由 `skills__load_tools` 按需加载，加载后工具名不变（见 [技能系统](技能系统Skills.md#工具包把一个大技能拆成多个按需包)）。解题／子 agent 内部使用无前缀名称，直接取完整工具集。实际注册受沙箱、模型、视觉、网络及 LSP 配置控制。
 
 | 类别 | 工具 | 调用方式 |
 |---|---|---|

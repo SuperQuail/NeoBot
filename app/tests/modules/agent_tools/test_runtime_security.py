@@ -132,9 +132,14 @@ class _FakeSkill(SkillModule):
 
 def reply_executor(runtime, skill, **kwargs):
     from neobot_app.reply.tools import ReplyToolExecutor
+    from neobot_app.skills.agent_tools_packages import build_agent_tool_packages
 
     manager = SkillManager()
-    manager.register(AgentToolsSkill(runtime))
+    owner = AgentToolsSkill(runtime)
+    manager.register(owner)
+    # 主 Agent 的 agent_tools 呈现来自按需工具包（umbrella 技能不再对主 Agent 暴露）
+    for package in build_agent_tool_packages(owner):
+        manager.register(package)
     manager.register(skill)
     runtime.skill_manager = manager
     return ReplyToolExecutor(skill_manager=manager, conv_kind="group", conv_id="123",

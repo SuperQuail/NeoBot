@@ -45,10 +45,10 @@ from neobot_app.skills.sleep_skill import SleepSkill
 # 常驻工具定义的技能：主回复管线几乎每轮都可能直接用到这些能力。
 # 其余技能的工具 schema 不再随每一次模型调用发送（全部常驻时实测 2 万 token 以上），
 # 改为提示词保留一行摘要 + skills__load_tools 按需加载。
-# agent_tools 必须常驻：PTC 模式下 run_code 是在它已存在的前提下被投影替换的。
+# agent_tools 不常驻：它拆成 agent_tools_files/exec/web/plan/misc 五个按需包，
+# 生产实测其 20 个常驻工具 18 小时内只被调用 2 次，却每次调用都占约 8.9K 字符。
 DEFAULT_EAGER_TOOL_SKILLS = frozenset(
     {
-        "agent_tools",
         "chat_history",
         "drawing",
         "gallery",
@@ -416,7 +416,13 @@ def build_all_skills(
             vision_provider=vision_provider, skill_manager=mgr, notification_hub=notification_hub,
             config=tools_config,
         )
-        mgr.register(AgentToolsSkill(runtime))
+        owner = AgentToolsSkill(runtime)
+        mgr.register(owner)
+        # 主 Agent 的按需工具包：共享同一 runtime 与执行入口，工具名保持 agent_tools__<leaf>。
+        from neobot_app.skills.agent_tools_packages import build_agent_tool_packages
+
+        for package in build_agent_tool_packages(owner):
+            mgr.register(package)
         if problem_solver_manager is not None:
             problem_solver_manager.set_tool_runtime(runtime)
 
