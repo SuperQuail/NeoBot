@@ -200,14 +200,12 @@ class PluginRuntime:
                     else None
                 )
                 if incompatible is not None:
-                    results.append(
-                        PluginLoadError(
-                            name=result.name,
-                            plugin_dir=result.plugin_dir,
-                            error=ValueError(incompatible),
-                        )
-                    )
-                    continue
+                    # 不做成 PluginLoadError：面板的「停用 / 重载 / 卸载」与
+                    # plugin_source 都依赖 discover 结果，把它替换成错误条目会让
+                    # 这些操作报「插件未找到」，来源也被误判成第三方。这里保留
+                    # 条目（面板仍能看到、能停用/卸载），真实原因记日志；加载路径
+                    # （load_all / 面板安装）依旧会拒绝。
+                    self.logger.error(f"插件不兼容当前 NeoBot 版本: {incompatible}")
                 if result.source == OFFICIAL_SOURCE:
                     official_names.add(result.name)
                 elif result.name in official_names:

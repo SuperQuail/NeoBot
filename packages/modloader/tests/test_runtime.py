@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from neobot_modloader.host import PluginHostFacade
-from neobot_modloader.loader import DiscoveredPlugin, LoadedPlugin, PluginLoadError
+from neobot_modloader.loader import DiscoveredPlugin, LoadedPlugin
 from neobot_modloader.runtime import PluginRuntime
 from neobot_contracts.ports.plugin import PluginState
 
@@ -1369,13 +1369,10 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime.load_all()
 
             self.assertEqual(runtime.manager.names(), [])
-            errors = [
-                result
-                for result in runtime.discover_all()
-                if isinstance(result, PluginLoadError)
-            ]
-            self.assertEqual([error.name for error in errors], ["future"])
-            self.assertIn("9.0.0", str(errors[0].error))
+            # 发现阶段仍要给出条目：面板的停用/重载/卸载与来源判定都依赖它，
+            # 替换成错误条目会让这些操作报「插件未找到」
+            discovered = runtime.discover_all()
+            self.assertEqual([item.name for item in discovered], ["future"])
 
     async def test_plugin_with_satisfied_min_version_loads(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
