@@ -7,9 +7,9 @@ import inspect
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict
 
-from neobot_adapter import OneBotAdapter, Subscription
+from neobot_adapter import OneBotAdapter
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
 from neobot_adapter.model.notice import (
     EmojiReaction,
@@ -108,8 +108,6 @@ class EventPipeline:
         self._command_service = command_service
         self._credential_manager = credential_manager
         self._sleep_service = sleep_service
-        self._subscriptions: List[Subscription] = []
-        self._started = False
         self._warmed_up_friends: set[str] = set()
         self._warmup_lock = asyncio.Lock()
         self._replying_queues: set[str] = set()
@@ -121,56 +119,20 @@ class EventPipeline:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
-    def start(self) -> None:
-        if self._started:
-            return
-
-        self._stopping = False
-        self._subscriptions = [
-            self.adapter.subscribe(
-                "message",
-                self._handle_private_message,
-                message_type="private",
-            ),
-            self.adapter.subscribe(
-                "message",
-                self._handle_group_message,
-                message_type="group",
-            ),
-            self.adapter.subscribe(
-                "notice",
-                self._handle_notice,
-            ),
-            self.adapter.subscribe(
-                "request",
-                self._handle_request,
-            ),
-        ]
-        self._started = True
-        self._logger.info("实时事件管线已启动")
-
-    def stop(self) -> None:
-        self._stopping = True
-        if self._started:
-            for subscription in self._subscriptions:
-                subscription.unsubscribe()
-            self._subscriptions.clear()
-            self._started = False
-            self._logger.info("实时事件管线已停止")
-        for task in list(self._background_tasks):
-            task.cancel()
-
     async def flush_pending_summaries(self) -> None:
-        """对所有未达到阈值但有待处理消息的计数器触发摘要。"""
-        restore_scheduling = self._started and not self._stopping
+        """关闭时的收尾：停止派生后台任务、取消在途任务、冲刷未达阈值的摘要。
+
+        事件订阅由 EventGateway 负责（它才是唯一入口），EventPipeline 不再自己
+        订阅：旧实现的 ``start()`` 会再注册一套 ``message``/``notice``/``request``
+        订阅，一旦被调用就是同一条事件被投递两次，而它实际上从来没有被调用过。
+
+        ``_stopping`` 在这里一次性置位（关闭流程只会调用一次），此后
+        ``_schedule_archive_summary`` 不再派生新的后台任务。
+        """
         self._stopping = True
-        try:
-            await self._cancel_background_tasks()
-            if self._archive_summary_service is not None:
-                await self._archive_summary_service.flush_all()
-        finally:
-            if restore_scheduling:
-                self._stopping = False
+        await self._cancel_background_tasks()
+        if self._archive_summary_service is not None:
+            await self._archive_summary_service.flush_all()
 
     def _track_background_task(
         self,
@@ -399,9 +361,6 @@ class EventPipeline:
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
 
-    async def _handle_private_message(self, event: Dict[str, Any]) -> None:
-        await self.handle_private_message_event(event)
-
     async def _maybe_warmup_friend_chat(self, user_id: str) -> None:
         if self._config is None:
             return
@@ -604,9 +563,6 @@ class EventPipeline:
         await self._handle_willing_decision(
             message=message, queue=self._group_queue, queue_key=queue_key
         )
-
-    async def _handle_group_message(self, event: Dict[str, Any]) -> None:
-        await self.handle_group_message_event(event)
 
     async def _record_archive_summary(
         self,
@@ -1287,20 +1243,6 @@ class EventPipeline:
                 pass
 
         return f"QQ:{user_id}"
-
-    async def _handle_request(self, event: Dict[str, Any]) -> None:
-        request_type = event.get("request_type", "未知")
-        sub_type = event.get("sub_type", "")
-        label = f"{request_type}" + (f".{sub_type}" if sub_type else "")
-
-        details: list[str] = []
-        for key in ("user_id", "group_id", "comment", "flag"):
-            val = event.get(key)
-            if val is not None:
-                details.append(f"{key}={val}")
-
-        info = " ".join(details)
-        self._logger.info(f"收到请求[{label}] {info}".rstrip())
 
     def _consume_ai_reply_block(self, message: PrivateMessage | GroupMessage) -> bool:
         if self._reply_block_registry is None:
