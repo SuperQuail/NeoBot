@@ -342,14 +342,16 @@ class SkillManager:
             # 生产中完全不可诊断。这里保留原因，但**先脱敏再回给模型**：
             # 工具输出会进入 LLM 上下文，异常信息里可能带密钥。
             raw = f"{type(exc).__name__}: {exc}".strip()
+            safe_detail = redact_sensitive(raw)
             logger.warning(
                 f"技能工具执行失败: {prefixed_name}",
                 skill=skill_name,
                 tool=token.local_name,
-                error=raw[:500],
+                # 日志同样只能用脱敏后的文本：异常里可能带密钥，而日志会进
+                # 文件/控制台/自修复采集。
+                error=safe_detail[:500],
             )
-            safe_detail = redact_sensitive(raw)[:300]
-            return f"工具执行失败 [{prefixed_name}]: {safe_detail}"
+            return f"工具执行失败 [{prefixed_name}]: {safe_detail[:300]}"
 
     def reset_all(self) -> None:
         """复位所有 Skill 的状态。"""

@@ -182,18 +182,27 @@ def _redact_tool_value(
 
 _SECRET_VALUE_RE = re.compile(
     r"(?i)(bearer\s+|"
-    r"[\"']?(?:authorization|api[_-]?key|access[_-]?key|private[_-]?key|"
-    r"client[_-]?secret|secret|token|passwd|password|credential|pwd)"
+    r"[\"']?(?:authorization|api[_-]?key|apikey|access[_-]?token|access[_-]?key|"
+    r"auth[_-]?token|client[_-]?secret|private[_-]?key|"
+    r"secret|token|passwd|password|credential|pwd)"
     r"[\"']?\s*[:=]\s*[\"']?)"
     r"(?:bearer\s+)?[^\s,;\"']+"
 )
+
+#: 没有键名的裸密钥形态（``sk-proj-...``）：上面那条正则要求 ``key=value``
+#: 或 ``Bearer``，异常文本里直接出现的 key 会整条漏给模型。
+_BARE_SECRET_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+#: URL 内嵌凭据：``https://user:password@host``。
+_URL_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
 
 
 def _scrub_secret_values(text: str) -> str:
     """把字符串值内嵌的常见密钥形态（Bearer <token>、token=xxx 等）替换为占位符。"""
     if not isinstance(text, str):
         return text
-    return _SECRET_VALUE_RE.sub(lambda match: match.group(1) + "<redacted>", text)
+    scrubbed = _SECRET_VALUE_RE.sub(lambda match: match.group(1) + "<redacted>", text)
+    scrubbed = _BARE_SECRET_KEY_RE.sub("<redacted>", scrubbed)
+    return _URL_USERINFO_RE.sub(r"\1<redacted>@", scrubbed)
 
 
 def _redacted_tool_text(value: object, limit: int = _MAX_TOOL_LOG_CHARS) -> str:
