@@ -35,7 +35,10 @@ from neobot_app.drawing.config import (
     DrawServiceConfig,
     ImageGenerationError,
 )
-from neobot_app.message.image_pipeline import prepare_local_image
+from neobot_app.message.image_pipeline import (
+    prepare_local_image,
+    prepare_local_image_async,
+)
 from neobot_app.utils.http import image_http_client, is_local_or_private_url
 from neobot_app.utils.media_sender import send_image as _media_send_image
 
@@ -274,7 +277,7 @@ class CreatorImageService:
                 resolved = str(child.resolve())
                 disk_files.add(resolved)
                 try:
-                    prepared = prepare_local_image(child)
+                    prepared = await prepare_local_image_async(child)
                     hash_to_files.setdefault(prepared.file_hash, []).append(child)
                 except Exception:
                     continue
@@ -1391,7 +1394,7 @@ class CreatorImageService:
                 if not file_path.exists() or not file_path.is_file():
                     continue
 
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 txt_text = _read_sidecar_description(file_path)
                 if txt_text:
                     description = txt_text
@@ -1423,7 +1426,7 @@ class CreatorImageService:
                 if resolved_path in known_paths:
                     continue
 
-                prepared = prepare_local_image(file_path)
+                prepared = await prepare_local_image_async(file_path)
                 txt_text = _read_sidecar_description(file_path)
                 same_hash_description = descriptions_by_hash.get(prepared.file_hash)
                 if txt_text:
@@ -1473,7 +1476,7 @@ class CreatorImageService:
         if self._vision_provider is None:
             return "[未配置视觉模型]"
         try:
-            prepared = prepare_local_image(file_path)
+            prepared = await prepare_local_image_async(file_path)
             image_url = f"data:{prepared.mime_type};base64,{base64.b64encode(prepared.image_bytes).decode('utf-8')}"
             messages: list[dict[str, Any]] = [
                 {
