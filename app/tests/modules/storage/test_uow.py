@@ -170,26 +170,23 @@ async def test_uow_commit_flush_lock_conflict_raises_without_silent_loss(tmp_pat
         await engine.dispose()
 
 
-async def test_uow_commit_pure_commit_phase_lock_conflict_retries():
-    """无未刷写变更时（纯 commit 阶段）的锁冲突必须重试成功，不丢数据。"""
+async def test_uow_commit_phase_lock_conflict_also_fails_loudly():
+    """commit 阶段的锁冲突同样必须显式失败，不得 rollback 后重试 commit。
 
-    class _FakeProxied:
-        @staticmethod
-        def _is_clean() -> bool:
-            return True
+    旧实现对「ORM 状态干净」的会话先 rollback 再重试 commit：仓库层大量使用
+    Core DML（``session.execute(insert(...).on_conflict_do_update())``），这类
+    写入不体现在 ORM 状态里，会被判成「干净」，于是重试 commit 会提交一个
+    空事务并成功返回——写入静默丢失。
+    """
 
     class _FlakySession:
         def __init__(self) -> None:
-            self._proxied = _FakeProxied()
             self.attempts = 0
             self.rollbacks = 0
 
         async def commit(self) -> None:
             self.attempts += 1
-            if self.attempts == 1:
-                raise OperationalError(
-                    "COMMIT", (), Exception("database is locked")
-                )
+            raise OperationalError("COMMIT", (), Exception("database is locked"))
 
         async def rollback(self) -> None:
             self.rollbacks += 1
@@ -197,14 +194,13 @@ async def test_uow_commit_pure_commit_phase_lock_conflict_retries():
         async def close(self) -> None:
             pass
 
-    # Act
     uow = SqlAlchemyUnitOfWork(lambda: _FlakySession())
     await uow.__aenter__()
     try:
-        await uow.commit()
+        with pytest.raises(RuntimeError, match="未持久化"):
+            await uow.commit()
     finally:
         await uow.__aexit__(None, None, None)
 
-    # Assert
-    assert uow._session.attempts == 2
+    assert uow._session.attempts == 1
     assert uow._session.rollbacks == 1
