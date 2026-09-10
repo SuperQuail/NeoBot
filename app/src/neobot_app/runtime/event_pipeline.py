@@ -828,7 +828,6 @@ class EventPipeline:
             return False
 
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
-        self._replying_queues.add(queue_key)
 
         # 群聊寿命机制：寿命>0时，回复后队列由管线挂起循环处理，
         # 管线结束时直接丢弃_避免唤起新回复管线
@@ -855,8 +854,10 @@ class EventPipeline:
             background_content=background_content,
         )
         if event is None:
-            self._replying_queues.discard(queue_key)
+            # 标记归「真正启动成功的那条管线」所有：这里若 discard，会把同会话
+            # 正在运行的另一条管线的标记一并删掉（分流守卫被静默破坏）。
             return False
+        self._replying_queues.add(queue_key)
         return True
 
     @asynccontextmanager
@@ -1272,7 +1273,6 @@ class EventPipeline:
             reasons=("command_sync_reply",),
         )
         pre_reply_msg_id = queue.get_last_message_id(queue_key)
-        self._replying_queues.add(queue_key)
 
         async def on_reply_done() -> None:
             self._replying_queues.discard(queue_key)
@@ -1288,14 +1288,15 @@ class EventPipeline:
             background_content=background,
         )
         if started is None:
-            # 管线被拒（编排器已关闭／同会话管线在跑／冷却中）：on_reply_done 永远
-            # 不会被调用，必须自己回滚刚打上的标记，否则该会话会永久留在
-            # _replying_queues 里——命令的 sync_reply 结果再也不会投递，
-            # 后续新消息也一律被当「回复中」处理。
-            self._replying_queues.discard(queue_key)
+            # 管线被拒（编排器已关闭／同会话管线在跑／冷却中）：此时不能 discard ——
+            # 标记可能属于另一条**正在运行**的管线（同会话管线在跑正是这里的常见
+            # 拒绝原因），删掉它会破坏那条管线的分流守卫，让后续消息走意愿路径并
+            # 在同样被拒时丢失。标记改为「启动成功后才打」，这里什么都不用做。
             self._logger.debug(
-                "命令同步回复未能启动，已回滚回复中标记", queue_key=queue_key
+                "命令同步回复未能启动，未设置回复中标记", queue_key=queue_key
             )
+            return
+        self._replying_queues.add(queue_key)
 
     async def _try_issue_credential(
         self,
