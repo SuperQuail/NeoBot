@@ -107,6 +107,7 @@ async def test_run_migrations_applies_full_schema(tmp_path):
         "completed_scheduled_tasks",
         "model_usage_records",
         "bilibili_links",
+        "maintenance_runs",
     }
 
     # Act

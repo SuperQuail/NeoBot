@@ -230,3 +230,25 @@ class ModelUsageRecord(Base):
         Index("ix_usage_records_created_at", "created_at"),
         Index("ix_usage_records_module", "module_name"),
     )
+
+
+class MaintenanceRunRecord(Base):
+    __tablename__ = "maintenance_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # "running" | "success" | "failed" | "skipped"
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    # "startup" | "interval" | "manual"
+    trigger: Mapped[str] = mapped_column(String, nullable=False)
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skipped_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_maintenance_runs_started_at", "started_at"),
+        Index("ix_maintenance_runs_status", "status"),
+    )
+
