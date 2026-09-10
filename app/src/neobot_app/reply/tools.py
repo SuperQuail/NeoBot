@@ -784,19 +784,6 @@ class ReplyToolExecutor(ToolExecutor):
             allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
             tools = [t for t in tools if t["function"]["name"] in allowed]
         tools = [t for t in tools if self.is_tool_authorized(t["function"]["name"])]
-        shared = self._shared_agent_tools()
-        if shared is not None and shared.runtime.mode == "ptc":
-            # SDK bindings must describe the current policy, not the global
-            # registration snapshot. Business tools retain their native schemas.
-            projected = shared.runtime.definitions(allowed_tools=self.agent_tool_capabilities())
-            if projected:
-                transport = projected[0]
-                transport["function"]["name"] = "agent_tools__run_code"
-                transport["function"]["description"] += (
-                    "\nNative business tools listed alongside this tool may also be called through tools.NAME(args), "
-                    "using their published argument schemas; the original executor rechecks authorization."
-                )
-                tools = [transport if d["function"]["name"] == "agent_tools__run_code" else d for d in tools]
         names: set[str] = set()
         for tool in tools:
             name = tool["function"]["name"]
@@ -822,14 +809,18 @@ class ReplyToolExecutor(ToolExecutor):
         return frozenset(name for name in names if self._policy_authorized(f"agent_tools__{name}"))
 
     def is_tool_authorized(self, name: str) -> bool:
-        """Enforce mode/dedup at execution as well as in the displayed catalog."""
+        """主 Agent 的授权判定:能力存在 + 去重,与任务工具模式(native/PTC)无关。
+
+        任务工具模式只决定「任务型 Agent(解题/子 Agent)如何编排」;
+        主回复管线始终直接调用业务工具,不因切到 PTC 而把工具换成单个 run_code。
+        """
         if not self._policy_authorized(name):
             return False
         shared = self._shared_agent_tools()
         if shared is not None:
             from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
             if name.startswith("agent_tools__"):
-                return shared.runtime.is_wire_tool(name.removeprefix("agent_tools__"))
+                return name.removeprefix("agent_tools__") in shared.runtime.capability_names()
             if name in LEGACY_FILE_ALIASES and LEGACY_FILE_ALIASES[name] in shared.runtime.capability_names():
                 return False
         return True
@@ -857,8 +848,8 @@ class ReplyToolExecutor(ToolExecutor):
             from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
             if name in LEGACY_FILE_ALIASES:
                 return f"Error: 工具 {name} 已去重，请使用 agent_tools__{LEGACY_FILE_ALIASES[name]}（PTC时在run_code内调用）"
-            if name.startswith("agent_tools__") and not shared.runtime.is_wire_tool(name.removeprefix("agent_tools__")):
-                return f"Error: 工具 {name} 不在当前 {shared.runtime.mode} 模式的直接调用列表内"
+            if name.startswith("agent_tools__") and name.removeprefix("agent_tools__") not in shared.runtime.capability_names():
+                return f"Error: 工具 {name} 不存在或当前部署未启用"
         return f"Error: 工具 {name} 与当前模型视觉能力不匹配，请使用当前提供的图片工具"
 
     async def execute(self, name: str, args: dict) -> str:

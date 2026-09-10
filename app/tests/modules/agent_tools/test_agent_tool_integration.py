@@ -67,19 +67,25 @@ async def test_build_all_skills_attaches_solver_and_declares_real_tools(tmp_path
     await shared.close()
 
 
-async def test_main_ptc_file_sequence_uses_real_registry(tmp_path):
+async def test_main_direct_leaf_call_uses_real_conversation_owner(tmp_path):
+    """主 Agent 直调叶子工具时，归属与工作目录来自真实会话，模型伪造的内部键被剥离。
+
+    即使全局配置是 PTC，主回复管线仍走直接调用（PTC 只服务任务型 Agent），
+    因此这条链路必须在 PTC 模式下也能工作。
+    """
     sandbox = SandboxService(tmp_path / "sandbox")
     runtime = AgentToolRuntime(sandbox, state_dir=tmp_path / "state", config=AgentToolsConfig(mode="ptc"))
     skills = SkillManager()
     skills.register(AgentToolsSkill(runtime))
     executor = ReplyToolExecutor(skill_manager=skills, conv_kind="group", conv_id="123", current_user_id=7, human_request=True)
     try:
-        result = json.loads(await executor.execute("agent_tools__run_code", {
-            "description": "Create and inspect a file",
-            "code": 'await tools.write({"file_path": "hello.txt", "content": "你好"})\nr = await tools.read({"file_path": "hello.txt"})\nreturn r["content"]',
+        written = json.loads(await executor.execute("agent_tools__write", {
+            "file_path": "hello.txt", "content": "你好",
             "_owner": "foreign", "pipeline_key": "group:999",
         }))
-        assert result["result"] == "你好"
+        assert written.get("ok") is not False, written
+        read = await executor.execute("agent_tools__read", {"file_path": "hello.txt"})
+        assert "你好" in read
         assert (sandbox.get_temp_dir("group:123") / "hello.txt").read_text(encoding="utf-8") == "你好"
         assert not sandbox.get_temp_dir("group:999").exists()
     finally:

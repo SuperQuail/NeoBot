@@ -22,13 +22,15 @@ max_child_agents = 8
 max_output_bytes = 262144
 ```
 
-`mode` 同时控制主回复的 `agent_tools` 技能、解题和新子 agent 的任务工具。默认 `native` 仅提供精简基础工具，不提供 `run_code` 或复杂编排；`ptc` 的任务工具线上仅提供 `run_code`，所有基础／高级叶子必须在程序内调用，直接调用叶子会被拒绝。不再提供混合工具模式；旧配置 `both` 会给出迁移警告并按精简 `native` 加载，建议改为明确的 `native` 或 `ptc`，不会因升级默认值而无法启动。`ptc_enabled=true` 只表示能力可用，不表示默认选用 PTC；`ptc_enabled=false` 与 `mode="ptc"` 组合属于无效配置。模式通过配置并重启切换，不由模型自行改写。
+`mode` **只作用于任务型 Agent**：解题 Agent、任务子 Agent（`subagent`/`subagent_fork`/`workflow`/`ralph`）与 Goal 续跑。默认 `native` 提供精简基础工具；`ptc` 的任务工具线上仅提供 `run_code`，所有叶子必须在程序内调用，直接调用叶子会被拒绝。不再提供混合工具模式；旧配置 `both` 会给出迁移警告并按精简 `native` 加载，建议改为明确的 `native` 或 `ptc`，不会因升级默认值而无法启动。`ptc_enabled=true` 只表示能力可用，不表示默认选用 PTC；`ptc_enabled=false` 与 `mode="ptc"` 组合属于无效配置。模式通过配置并重启切换，不由模型自行改写。
+
+**主回复管线与任务工具模式解耦**：不论 `mode` 取何值，主 Agent 都直接拿到 token 友好的叶子工具（`agent_tools__read` 等），永远不会被换成单个 `run_code`——后者的 schema 会把全部叶子定义内联（实测 1.8 万字符），对每次回复都是纯增开销。PTC 因此只在困难任务里提供程序化编排能力，不影响主对话的 token 消耗。
 
 主聊天的聊天、图片、凭据、文件收发等业务工具仍原生可见，不因 PTC 而隐藏。仅重复的 `sandbox_manager__read_file/write_file/edit_file/glob_files/grep_files` 从主 Agent 隐藏且拒绝执行，改用 canonical 文件工具；`list_files`、二进制文件和收发入口保留。新子 agent 使用装配时提供的主模型，不接受模型自行选择可执行程序或任意模型凭证。
 
 ## 工具清单
 
-主 agent 的以下名称均带 `agent_tools__` 前缀；解题／子 agent 内部使用无前缀名称。实际注册受沙箱、模型、视觉、网络及 LSP 配置控制。
+主 agent 的以下名称均带 `agent_tools__` 前缀；解题／子 agent 内部使用无前缀名称，直接取完整工具集。实际注册受沙箱、模型、视觉、网络及 LSP 配置控制。
 
 | 类别 | 工具 | 调用方式 |
 |---|---|---|
