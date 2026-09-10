@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 import time
@@ -49,7 +50,15 @@ class SandboxMaintenanceManager:
         return await self._maintenance_cycle(force=force)
 
     async def _maintenance_cycle(self, *, force: bool = False) -> dict[str, Any]:
-        """执行一次完整的维护周期。force=True 时跳过变更检查强制执行。"""
+        """执行一次完整的维护周期。force=True 时跳过变更检查强制执行。
+
+        整个周期都是同步文件系统操作（整树 rglob、rmtree、move），必须放进工作
+        线程：它由后台协程每 3 小时自动触发一次，直接跑在事件循环上会让整个 Bot
+        （所有会话、通知、心跳）停顿数秒。
+        """
+        return await asyncio.to_thread(self._maintenance_cycle_sync, force=force)
+
+    def _maintenance_cycle_sync(self, *, force: bool = False) -> dict[str, Any]:
         if not force and not self._has_changes_since_last():
             self._logger.debug("无文件变更，跳过维护")
             return {"ok": True, "skipped": True, "reason": "无文件变更"}
