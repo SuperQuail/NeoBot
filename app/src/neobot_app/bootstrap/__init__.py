@@ -129,7 +129,8 @@ def _make_maintenance_coro(
         _mgr: Any = skill_manager
 
         def definitions(self):
-            return self._mgr.get_tools()
+            # 维护 Agent 自建工具集，不经过主回复管线的按需加载，需拿到全部工具
+            return self._mgr.get_all_tools()
 
         async def execute(self, name: str, args: dict) -> str:
             return await self._mgr.execute(name, args)
@@ -140,7 +141,7 @@ def _make_maintenance_coro(
     def _always_allow(_args: dict, _ctx: Any, _policy: Any) -> ToolAccessRule:
         return ToolAccessRule(action="allow")
 
-    tool_defs = skill_manager.get_tools()
+    tool_defs = skill_manager.get_all_tools()
     specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
     toolset = Toolset(executor=_SkillToolExecutor(), specs=specs)
 

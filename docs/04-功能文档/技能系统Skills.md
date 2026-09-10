@@ -9,6 +9,40 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 - **注入**：Skill 工具定义随提示词注入主 Agent（[`packages/chat/skills/inject.py`](../../packages/chat/src/neobot_chat/skills/inject.py)），模型调用时经 SkillManager 分发到对应 Skill 的 `execute()`。
 - **会话模式**：耗时工具（绘图等）以 Session 模式运行，模型提交后立即返回，完成后通过通知系统告知。
 
+## 工具定义按需加载
+
+Skill 的工具定义（JSON Schema）会随每一次模型调用一起发送。全部常驻时，实测单次调用的工具
+schema 在两万 token 以上，且与对话内容无关——属于纯固定开销。
+
+因此默认只常驻「主回复管线几乎每轮都会用到」的技能工具：
+
+```python
+# app/src/neobot_app/skills/__init__.py
+DEFAULT_EAGER_TOOL_SKILLS = {
+    "agent_tools", "chat_history", "drawing", "gallery",
+    "image_context", "image_pool", "image_send",
+}
+```
+
+其余技能的工具定义**不注入提示词**，只保留 `get_instructions()` 生成的一行摘要索引。
+模型需要某个技能时先调用 `skills__load_tools`（一次可加载多个），加载后该技能的工具
+立即出现在下一轮模型调用里，本轮回合内即可直接使用：
+
+```text
+skills__load_tools(skills=["archive_crud", "browser"])
+→ 已加载技能工具（本轮即可直接调用）：
+    - archive_crud: archive_crud__read_archive, archive_crud__patch_archive, ...
+```
+
+要点：
+
+- 加载状态属于**当前回复管线**（`ReplyToolExecutor` 实例），管线结束时自然失效，
+  不会跨会话泄漏；
+- `allowed-tools` 白名单技能限制仍然生效：白名单外的技能即使被加载也不可用；
+- 独立 Agent（沙箱维护等）不经过按需加载，用 `SkillManager.get_all_tools()` 一次取全量；
+- 可用 `SkillManager(eager_tool_skills=...)` / `build_all_skills(eager_tool_skills=...)`
+  覆盖常驻名单；传 `None` 表示保持「全部常驻」的历史行为。
+
 ## 内置技能清单（30+）
 
 ### 记忆与画像

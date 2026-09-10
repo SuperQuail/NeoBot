@@ -1285,6 +1285,9 @@ async def test_shutdown_closes_tracked_reply_tool_executor_after_pipeline(
         def definitions(self) -> list:
             return []
 
+        def consume_tools_dirty(self) -> bool:
+            return False
+
     executor = _Executor()
 
     def _build_toolset(**kwargs):
@@ -1660,6 +1663,9 @@ async def test_tool_timeout_emits_after_event_with_safe_diagnostics(
 
         def authorization_error(self, name):
             return "unauthorized"
+
+        def consume_tools_dirty(self):
+            return False
 
     class _Toolset:
         def __init__(self) -> None:

@@ -1645,6 +1645,9 @@ class ReplyOrchestrator:
                     f"{skill_instructions}\n"
                     "需要某个技能的具体操作说明、参数细节或注意事项时,"
                     "调用 skills__view_instructions 查看完整内容。"
+                    "\n未直接列出调用工具的技能,其工具定义尚未加载以节省每次调用的开销;"
+                    "需要使用时先调用 skills__load_tools 加载(一次可加载多个),"
+                    "加载后本轮即可直接调用。"
                     "\n</Skill 操作说明>"
                 )
 
@@ -2498,6 +2501,17 @@ class ReplyOrchestrator:
                                 "content": str(result),
                             }
                         )
+
+                # 技能按需加载：模型调用 skills__load_tools 后，新工具立即补进下一轮的
+                # tools 列表，不必等到下一次回复管线。
+                if reply_toolset.executor.consume_tools_dirty():
+                    tools = reply_toolset.executor.definitions()
+                    self._logger.info(
+                        "技能工具已按需加载",
+                        event_id=event.event_id,
+                        skills=reply_toolset.executor.activated_skill_names(),
+                        tools_count=len(tools),
+                    )
 
                 # Keep history textual; all automatic/manual images are assembled
                 # into a labelled user appendix at the END of every model request.

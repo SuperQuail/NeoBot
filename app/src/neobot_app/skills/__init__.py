@@ -42,9 +42,27 @@ from neobot_app.skills.vision_detect_skill import VisionDetectSkill
 from neobot_app.skills.sleep_skill import SleepSkill
 
 
+# 常驻工具定义的技能：主回复管线几乎每轮都可能直接用到这些能力。
+# 其余技能的工具 schema 不再随每一次模型调用发送（全部常驻时实测 2 万 token 以上），
+# 改为提示词保留一行摘要 + skills__load_tools 按需加载。
+# agent_tools 必须常驻：PTC 模式下 run_code 是在它已存在的前提下被投影替换的。
+DEFAULT_EAGER_TOOL_SKILLS = frozenset(
+    {
+        "agent_tools",
+        "chat_history",
+        "drawing",
+        "gallery",
+        "image_context",
+        "image_pool",
+        "image_send",
+    }
+)
+
+
 def build_all_skills(
     *,
     disabled_skills: list[str] | None = None,
+    eager_tool_skills: list[str] | None = None,
     config: Any = None,
     adapter: Any = None,
     archive_memory_service: Any = None,
@@ -85,7 +103,13 @@ def build_all_skills(
                         空列表或 None 表示全部注册。
         其他参数: 各 skill 所需的依赖注入。
     """
-    mgr = SkillManager()
+    mgr = SkillManager(
+        eager_tool_skills=(
+            DEFAULT_EAGER_TOOL_SKILLS
+            if eager_tool_skills is None
+            else set(eager_tool_skills)
+        )
+    )
     disabled = set(disabled_skills or [])
 
     skills_to_register: list[Any] = []

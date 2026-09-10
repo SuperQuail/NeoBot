@@ -7,6 +7,7 @@ import inspect
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -127,9 +128,16 @@ class SkillManager:
         result = await mgr.execute("browser__navigate", {"url": "..."})
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, eager_tool_skills: Collection[str] | None = None) -> None:
         self._skills: dict[str, _RegisteredSkill] = {}
         self._session_tools: set[str] = set()
+        # None = 所有技能的工具定义常驻提示词（保持历史行为）。
+        # 给定时，只有列表内的技能常驻，其余技能的工具定义改为
+        # skills__load_tools 按需加载：工具 schema 会随每次模型调用一起发送，
+        # 全部常驻时实测在 2 万 token 以上。
+        self._eager_tool_skills: set[str] | None = (
+            set(eager_tool_skills) if eager_tool_skills is not None else None
+        )
 
     def register(self, skill: SkillModule) -> None:
         """注册一个 Skill 模块。"""
@@ -225,8 +233,46 @@ class SkillManager:
     def skill_names(self) -> list[str]:
         return list(self._skills.keys())
 
-    def get_tools(self) -> list[dict]:
-        """聚合所有 Skill 的工具定义，自动加 ``{name}__`` 前缀。"""
+    def is_tool_deferred(self, name: str) -> bool:
+        """该技能的工具定义是否默认不注入提示词(需 skills__load_tools 加载)。"""
+        if self._eager_tool_skills is None:
+            return False
+        return name not in self._eager_tool_skills
+
+    @property
+    def deferred_skill_names(self) -> list[str]:
+        """全部被延后加载的技能名(仍会以一行摘要出现在提示词索引里)。"""
+        return [
+            name for name in self._skills if self.is_tool_deferred(name)
+        ]
+
+    def skill_tool_names(self, name: str) -> list[str]:
+        """指定技能的最终工具名列表(已加前缀)。"""
+        registration = self._skills.get(name)
+        if registration is None:
+            return []
+        return [tool["function"]["name"] for tool in registration.tools]
+
+    def get_tools(self, activated: Iterable[str] | None = None) -> list[dict]:
+        """聚合 Skill 的工具定义，自动加 ``{name}__`` 前缀。
+
+        activated 中列出的技能会连同常驻技能一起返回；被延后加载的技能
+        只有被显式激活后才会出现在提示词里(见 skills__load_tools)。
+        """
+        active = set(activated or ())
+        tools: list[dict] = []
+        for name, registration in self._skills.items():
+            if self.is_tool_deferred(name) and name not in active:
+                continue
+            tools.extend(_deep_copy(tool) for tool in registration.tools)
+        return tools
+
+    def get_all_tools(self) -> list[dict]:
+        """返回全部技能的工具定义（忽略按需加载策略）。
+
+        仅用于自建工具集的独立 Agent（沙箱维护等）：它们不经过主回复管线的
+        按需加载流程，必须一次拿到全部工具。
+        """
         tools: list[dict] = []
         for registration in self._skills.values():
             tools.extend(_deep_copy(tool) for tool in registration.tools)
