@@ -46,6 +46,9 @@ class ArchiveMemoryAutoSummaryService:
         self._config = config
         self._logger = logger or NullLogger()
         self._locks: dict[str, asyncio.Lock] = {}
+        #: 计数器状态的解析缓存（键 = conversation_kind:conversation_id）。
+        #: 见 _cached_counter：避免每条消息都重新读库并 json.loads 整个 blob。
+        self._counter_cache: dict[str, dict[str, Any]] = {}
         self._tool_definitions = tool_definitions or []
         self._tool_executor = tool_executor
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
@@ -97,7 +100,7 @@ class ArchiveMemoryAutoSummaryService:
 
         counter_key = self._counter_key(conversation_kind, conversation_id)
         async with self._counter_lock(counter_key):
-            state = await self._load_counter(counter_key)
+            state = await self._cached_counter(counter_key)
             messages = list(state.get("messages", []))
             messages.append(
                 {
@@ -288,6 +291,20 @@ class ArchiveMemoryAutoSummaryService:
                 del self._locks[counter_key]
             lock.release()
 
+    async def _cached_counter(self, key: str) -> dict[str, Any]:
+        """读取计数器状态（带进程内解析缓存）。
+
+        record_message 每条消息都要读一次计数器，而它是一整个 JSON blob
+        （间隔 500 条 × 800 字符 ≈ 400KB）：在事件循环上每条消息做一次 DB 读 +
+        json.loads 是实实在在的开销。缓存解析结果后，读路径只在首次落到 DB；
+        写路径仍然每条都落库，因此崩溃丢失窗口与原来一致。
+        """
+        cached = self._counter_cache.get(key)
+        if cached is None:
+            cached = await self._load_counter(key)
+            self._counter_cache[key] = cached
+        return cached
+
     async def _load_counter(self, key: str) -> dict[str, Any]:
         item = await self._archive.get(COUNTER_TABLE, key)
         if item is None or not item.value:
@@ -316,6 +333,8 @@ class ArchiveMemoryAutoSummaryService:
             json.dumps(state, ensure_ascii=False),
             ["auto_summary_counter"],
         )
+        # 同步缓存，避免下次读到过期内容（尤其是总结成功后的清零）
+        self._counter_cache[key] = state
 
     async def flush_all(self) -> None:
         """关闭时并发刷新所有待处理的计数器。
