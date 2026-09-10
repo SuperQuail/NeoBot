@@ -313,13 +313,11 @@ def build_archive_summary_service(
 ) -> ArchiveMemoryAutoSummaryService:
     from neobot_app.bootstrap._providers import build_optional_agent_provider
 
-    archive_crud_skill = skill_manager.get("archive_crud")
-    favorability_skill = skill_manager.get("favorability")
+    # 必须用 get_skill_tools 取"带 skill 前缀"的定义(archive_crud__save_archive 等),
+    # 否则工具名缺少前缀,skill_manager.execute 无法路由,模型每次调用都失败。
     summary_tool_defs: list[dict] = []
-    if archive_crud_skill:
-        summary_tool_defs.extend(archive_crud_skill.get_tools())
-    if favorability_skill:
-        summary_tool_defs.extend(favorability_skill.get_tools())
+    summary_tool_defs.extend(skill_manager.get_skill_tools("archive_crud"))
+    summary_tool_defs.extend(skill_manager.get_skill_tools("favorability"))
 
     async def _summary_tool_executor(tool_name: str, args: dict) -> str:
         return await skill_manager.execute(tool_name, args)

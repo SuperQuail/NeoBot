@@ -76,6 +76,19 @@ async def test_registered_skill_with_unknown_local_tool_returns_unknown_tool() -
     assert skill.calls == []
 
 
+def test_get_skill_tools_returns_prefixed_deep_copies() -> None:
+    """get_skill_tools 返回带 {name}__ 前缀的副本，供子 agent 挂载工具时使用。"""
+    manager = SkillManager()
+    manager.register(_Skill("demo", [_tool()]))
+
+    tools = manager.get_skill_tools("demo")
+
+    assert [tool["function"]["name"] for tool in tools] == ["demo__run"]
+    tools[0]["function"]["name"] = "mutated"
+    assert manager.get_skill_tools("demo")[0]["function"]["name"] == "demo__run"
+    assert manager.get_skill_tools("missing") == []
+
+
 def test_pattern_properties_regex_keys_are_validated() -> None:
     valid = {
         "type": "object",

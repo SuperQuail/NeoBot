@@ -192,9 +192,9 @@ class GoalDriver:
                 self._settle(run, "cancelled")
             elif task.exception() is not None:
                 self._settle(run, "error")
-                _LOG.error("Goal driver task failed (%s)", type(task.exception()).__name__)
+                _LOG.error("目标驱动器任务失败（%s）", type(task.exception()).__name__)
         except Exception as exc:
-            _LOG.error("Goal driver cleanup failed (%s)", type(exc).__name__)
+            _LOG.error("目标驱动器清理失败（%s）", type(exc).__name__)
         finally:
             self._remove(run)
 
@@ -286,7 +286,7 @@ class GoalDriver:
         except Exception as exc:
             outcome = "error"
             # Never log exception text, provider payloads, source or credentials.
-            _LOG.warning("Goal continuation stopped (%s)", type(exc).__name__)
+            _LOG.warning("目标续跑已停止（%s）", type(exc).__name__)
             if not notification_attempted:
                 try:
                     snapshot = await self.state.execute("get_goal", {}, run.context)
@@ -298,7 +298,7 @@ class GoalDriver:
                     outcome = "cancelled"
                     raise
                 except Exception as notify_exc:
-                    _LOG.warning("Goal stop notification failed (%s)", type(notify_exc).__name__)
+                    _LOG.warning("目标停止通知失败（%s）", type(notify_exc).__name__)
         finally:
             run.invoking = False
             self._settle(run, "cancelled" if run.stopping else outcome)

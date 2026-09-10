@@ -276,7 +276,7 @@ class SelfHealManager:
             await self._maybe_trigger()
         except Exception as exc:
             # Never let the sink's coroutine fail loudly
-            self._logger.debug("self_heal trigger evaluation failed", error=str(exc))
+            self._logger.debug("自修复触发条件评估失败", error=str(exc))
 
     def _has_traceback(self) -> bool:
         return any(bool(e.get("traceback")) for e in self._buffer)
@@ -445,7 +445,7 @@ class SelfHealManager:
             )
         except Exception as exc:
             self._logger.warning(
-                "self_heal start notification publish failed",
+                "自修复开始通知发布失败",
                 task_id=heal.task_id,
                 error=str(exc),
             )
@@ -600,7 +600,7 @@ class SelfHealManager:
             )
         except Exception as exc:
             self._logger.warning(
-                "self_heal result notification publish failed",
+                "自修复结果通知发布失败",
                 task_id=heal.task_id,
                 error=str(exc),
             )
@@ -1745,7 +1745,7 @@ class SelfHealAgent:
 
 
 def build_self_heal_agent(
-    provider: Provider,
+    provider: Provider | None,
     *,
     config: SelfHealAgentConfig | Any = None,
     logger: Logger | None = None,
@@ -1759,12 +1759,18 @@ def build_self_heal_agent(
     vision_provider: Any = None,
     peer_descriptions: str = "",
     prompt_store: Any = None,
-) -> SelfHealAgent:
+) -> SelfHealAgent | None:
+    """构建 SelfHealAgent；provider 不可用时返回 None（自修复功能降级，不影响主流程）。"""
     cfg = (
         config
         if isinstance(config, SelfHealAgentConfig)
         else SelfHealAgentConfig.from_schema(config)
     )
+    if provider is None:
+        (logger or NullLogger()).warning(
+            "self-heal agent 未启用：provider 不可用，请检查模型配置"
+        )
+        return None
     provider.max_tokens = cfg.max_tokens
     agent = SelfHealAgent(
         provider=provider,

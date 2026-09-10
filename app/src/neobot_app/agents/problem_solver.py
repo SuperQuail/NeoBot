@@ -1421,7 +1421,7 @@ class ProblemSolverAgent:
 
 
 def build_problem_solver_agent(
-    provider: Provider,
+    provider: Provider | None,
     *,
     config: ProblemSolverAgentConfig | Any = None,
     logger: Logger | None = None,
@@ -1431,7 +1431,7 @@ def build_problem_solver_agent(
     sandbox_service: Any = None,
     vision_provider: Any = None,
     prompt_store: Any = None,
-) -> ProblemSolverAgent:
+) -> ProblemSolverAgent | None:
     """构建解题 Agent 并关联到 Manager。
 
     Args:
@@ -1450,6 +1450,11 @@ def build_problem_solver_agent(
         if isinstance(config, ProblemSolverAgentConfig)
         else ProblemSolverAgentConfig.from_schema(config)
     )
+    if provider is None:
+        (logger or NullLogger()).warning(
+            "problem solver agent 未启用：provider 不可用，请检查模型配置"
+        )
+        return None
     # 解题 agent 的 max_tokens 覆盖 agent 模型的默认值，
     # 否则 agent 模型的 max_output_tokens 会限制解题输出长度。
     provider.max_tokens = cfg.max_tokens

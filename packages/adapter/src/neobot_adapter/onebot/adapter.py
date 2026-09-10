@@ -126,12 +126,12 @@ class OneBotAdapter:
             try:
                 await asyncio.wait_for(self._dispatch_task, timeout=2.0)
             except asyncio.TimeoutError:
-                self._logger.warning("adapter dispatch loop stop timed out; cancelling")
+                self._logger.warning("适配器分发循环停止超时，正在取消")
                 self._dispatch_task.cancel()
                 await asyncio.gather(self._dispatch_task, return_exceptions=True)
             except Exception as exc:
                 self._logger.warning(
-                    "adapter dispatch loop failed during shutdown",
+                    "适配器分发循环关闭失败",
                     error=str(exc),
                 )
             self._dispatch_task = None
@@ -139,7 +139,7 @@ class OneBotAdapter:
             stopped = await asyncio.to_thread(self._core.stop, 8.0)
             if not stopped:
                 self._logger.error(
-                    "adapter receiver used shutdown fallback; daemon thread remains"
+                    "适配器接收器退化为强制关闭，守护线程仍存活"
                 )
         finally:
             unbind_core()

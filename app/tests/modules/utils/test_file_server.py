@@ -125,6 +125,44 @@ async def test_uploaded_image_segment_can_be_read_by_image_parser(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_uploaded_image_download_bypasses_proxy_for_local_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本机文件服务器 URL 的下载必须绕过代理。
+
+    开启系统代理的机器上，httpx 默认 trust_env=True 会把 127.0.0.1 请求也
+    转发给代理并失败（502），导致"自己上传的图片解析不了"。这里用一个不可用
+    的代理环境变量复现该场景，要求本机地址仍然直连成功。
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    fs = FileServer(data_dir=tmp_path, port=0, enabled=True)
+    await fs.start()
+    try:
+        form = aiohttp.FormData()
+        form.add_field(
+            "file",
+            _png_bytes(),
+            filename="photo.png",
+            content_type="image/png",
+        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"http://127.0.0.1:{fs._port}/files", data=form) as resp:
+                payload = await resp.json()
+
+        parser = ImageParseService()
+        content = await parser._download_image(payload["data"]["segment"])
+
+        assert content == _png_bytes()
+    finally:
+        await fs.stop()
+
+
+@pytest.mark.asyncio
 async def test_upload_image_rejects_non_image(tmp_path: Path) -> None:
     """POST /files 仅接受真正的图片内容。"""
     fs = FileServer(data_dir=tmp_path, port=0, enabled=True)

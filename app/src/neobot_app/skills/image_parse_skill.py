@@ -10,6 +10,7 @@ from typing import Any
 
 from neobot_app.message.numbering import MessageNumbering
 from neobot_app.skills.base import SkillModule
+from neobot_app.utils.http import image_http_client
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -55,9 +56,12 @@ async def _read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
             return path.read_bytes()
         except OSError:
             return None
+    if not ref.startswith(("http://", "https://")):
+        return None  # 非 URL 引用无需创建 HTTP 客户端
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with image_http_client(
+            timeout=timeout, follow_redirects=True, url=ref
+        ) as client:
             resp = await client.get(ref)
             resp.raise_for_status()
             return resp.content
@@ -539,7 +543,9 @@ class ImageParseSkill(SkillModule):
         url = seg_data.get("url")
         if url:
             try:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with image_http_client(
+                    timeout=timeout, follow_redirects=True, url=url
+                ) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
                     return resp.content, None

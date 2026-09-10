@@ -17,9 +17,15 @@ async with uow_factory() as uow:
 
 ## Migrations
 
+Migrations are run automatically on app startup via `run_migrations(db_url)` (absolute path
+is injected, so no database file is created inside the source tree).
+
+To run the Alembic CLI manually, always pass an **absolute** database path:
+
 ```bash
 cd packages/storage/src/neobot_storage
-alembic upgrade head
+alembic -x db_url=sqlite+aiosqlite:////absolute/path/to/neobot.db upgrade head
 ```
 
-Migrations are run automatically on app startup via `run_migrations()`.
+`alembic.ini` intentionally leaves `sqlalchemy.url` empty; a relative URL there would create a
+stray empty `neobot.db` in the working directory (which must never be committed).
