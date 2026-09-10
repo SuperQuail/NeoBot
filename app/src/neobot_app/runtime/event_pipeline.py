@@ -924,10 +924,21 @@ class EventPipeline:
 
     async def _process_pending_image_willing(self, queue_key: str) -> None:
         """等待图片解析完成，然后按序处理待处理队列。若触发回复则清空剩余。"""
-        if self._image_parse_service is not None:
-            await self._image_parse_service.wait_for_queue(
-                queue_key,
-                timeout=self._get_group_agent_silent_timeout_seconds(),
+        try:
+            if self._image_parse_service is not None:
+                await self._image_parse_service.wait_for_queue(
+                    queue_key,
+                    timeout=self._get_group_agent_silent_timeout_seconds(),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 等待失败也必须继续往下走：旧实现直接抛出会让 pending 列表既不
+            # 被取出也不被处理，这些消息会永久滞留（不再触发回复）。
+            self._logger.warning(
+                "等待图片解析失败，继续处理待处理消息",
+                queue_key=queue_key,
+                error=str(exc),
             )
 
         async with self._image_willing_lock(queue_key):
