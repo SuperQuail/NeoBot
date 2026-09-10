@@ -15,8 +15,8 @@ import websockets
 from neobot_adapter.onebot.receiver.core import (
     AdapterCore,
     _extract_access_token,
-    _is_loopback_host,
 )
+from neobot_adapter.utils.net import is_loopback_host
 
 
 class _FakeConnection:
@@ -155,7 +155,7 @@ async def test_handshake_legacy_signature_allows() -> None:
     ],
 )
 def test_is_loopback_host(host: str, expected: bool) -> None:
-    assert _is_loopback_host(host) is expected
+    assert is_loopback_host(host) is expected
 
 
 # ── 端到端：真实 websockets 握手 ─────────────────────────────────────

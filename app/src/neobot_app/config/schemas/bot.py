@@ -814,6 +814,16 @@ class Adapter:
         default=8090,
         metadata={"description": "本地适配器 HTTP/WebSocket 监听端口"},
     )
+    local_auth_token: str = field(
+        default="",
+        metadata={
+            "description": (
+                "本地适配器（local 模式）的 Bearer token：留空表示不校验，"
+                "此时若监听非回环地址会在启动日志告警。也可用环境变量 "
+                "NEOBOT_LOCAL_ADAPTER_TOKEN 配置"
+            )
+        },
+    )
     reverse_ws_host: str = field(
         default="",
         metadata={

@@ -4,6 +4,11 @@ from typing import Any
 
 from aiohttp import web
 
+from neobot_adapter.utils.logger import get_module_logger
+from neobot_adapter.utils.net import is_loopback_host
+
+logger = get_module_logger("adapter_local")
+
 
 class LocalAdapterServer:
     def __init__(
@@ -69,6 +74,14 @@ class LocalAdapterServer:
         self._app.router.add_post("/v1/test/group-requests", self._handle_test_group_request)
         self._app.router.add_post("/v1/test/notices", self._handle_test_notice)
         self._app.router.add_get("/ws", self._core.websocket_handler)
+        if not self._auth_token and not is_loopback_host(self._host):
+            logger.warning(
+                "本地适配器未配置 auth_token 且监听非回环地址 "
+                f"({self._host}:{self._port})：该网段内任何主机都能调用 /v1/send、"
+                "/v1/actions/* 与 /v1/test/* 接口驱动机器人。"
+                "请配置 [adapter].local_auth_token（或 NEOBOT_LOCAL_ADAPTER_TOKEN），"
+                "或把 local_host 改回 127.0.0.1。"
+            )
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)

@@ -14,6 +14,7 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
 from neobot_adapter.utils.logger import get_module_logger
+from neobot_adapter.utils.net import is_loopback_host
 from neobot_adapter.utils.parse import safe_parse_model
 
 logger = get_module_logger("adapter_receiver")
@@ -31,14 +32,6 @@ def _env_ci(name: str) -> str | None:
         if key.casefold() == target:
             return value
     return None
-
-
-def _is_loopback_host(host: str) -> bool:
-    """监听地址是否仅限本机（用于「未配置 token 且对外监听」的告警）。"""
-    normalized = str(host or "").strip().casefold()
-    if normalized in {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}:
-        return True
-    return normalized.startswith("127.")
 
 
 def _extract_access_token(headers: Any, path: str) -> Optional[str]:
@@ -255,7 +248,7 @@ class AdapterCore:
             )
             port = int(env_port) if env_port else 8080
         self._async_stop_event = asyncio.Event()
-        if not self.access_token and not _is_loopback_host(host):
+        if not self.access_token and not is_loopback_host(host):
             logger.warning(
                 "反向 WebSocket 未配置 access token 且监听非回环地址 "
                 f"({host}:{port})：该网段内任何主机都能连入并注入伪造事件。"
