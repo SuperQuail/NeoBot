@@ -1,4 +1,4 @@
-"""NeoBot 测试共享 fixtures — 全局约定见 bug_tracker/docs/TESTING_GUIDE.md。
+"""NeoBot 测试共享 fixtures — 全局约定见 docs/06-开发指南.md 的「测试」章节。
 
 新增 fixture 时请遵循:
 - 命名小写下划线, 尽量 scoped 到最窄 (function > module > session)
@@ -82,7 +82,9 @@ async def storage_engine(sqlite_db_path: Path):
     """neobot_storage 引擎 (WAL + busy_timeout, 与生产一致), 自动 dispose。"""
     from neobot_storage.engine import create_engine
 
-    engine = await create_engine(f"sqlite+aiosqlite:///{sqlite_db_path}")
+    # create_engine 是同步函数（返回 AsyncEngine），此前这里误写成 await，
+    # 一旦真有测试用到该 fixture 就会 TypeError。
+    engine = create_engine(f"sqlite+aiosqlite:///{sqlite_db_path}")
     yield engine
     await engine.dispose()
 
@@ -149,14 +151,3 @@ def _cache_httpx_ssl_context() -> Iterator[None]:
         for module, original in originals.items():
             module.create_ssl_context = original
 
-# ── BugStore (bug_tracker 数据层, 供 test_runner GUI 相关的测试) ──
-
-@pytest.fixture()
-def make_bug_store(tmp_path: Path):
-    """工厂 fixture: 在临时目录创建 BugStore。"""
-    from bugstore import BugStore
-
-    def _make() -> BugStore:
-        return BugStore(tmp_path)
-
-    return _make
