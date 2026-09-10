@@ -22,7 +22,12 @@ import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dict_to_dataclass
-from neobot_app.config.schemas.bot import BotConfig
+from neobot_app.config.schemas.bot import (
+    MODEL_TYPE_LABELS,
+    BotConfig,
+    ModelAssignments,
+    ModelDefinition,
+)
 from neobot_app.config.schemas.env import EnvConfig
 
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1187,12 +1192,6 @@ def models_view(config: Any = None) -> dict[str, Any]:
                 "key_configured": bool(platform.get("has_key")),
             }
         )
-
-    from neobot_app.config.schemas.bot import (
-        MODEL_TYPE_LABELS,
-        ModelAssignments,
-        ModelDefinition,
-    )
 
     provider_names: set[str] = set(EnvConfig.PLATFORM_NAME_ALIASES.values())
     for field_obj in fields(EnvConfig):
