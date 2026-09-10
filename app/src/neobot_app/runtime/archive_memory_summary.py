@@ -234,10 +234,25 @@ class ArchiveMemoryAutoSummaryService:
                     )
                     await self._defer_after_failure(counter_key)
                     return False
-                response = await asyncio.wait_for(
-                    self._provider.chat(chat_messages, tools=tools),
-                    timeout=min(DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS, remaining),
-                )
+                call_timeout = min(DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS, remaining)
+                try:
+                    response = await asyncio.wait_for(
+                        self._provider.chat(chat_messages, tools=tools),
+                        timeout=call_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    # 超时请求不会返回 usage：这次调用在本地用量统计里完全不存在，
+                    # 但服务端已经按实际生成计费。必须留下可排查的痕迹，
+                    # 否则账单与「费用统计」的差额永远找不到来源。
+                    self._logger.warning(
+                        "档案自动总结模型调用超时，本次调用不会计入用量统计",
+                        conversation_kind=conversation_kind,
+                        conversation_id=conversation_id,
+                        timeout_seconds=int(call_timeout),
+                        request_chars=_request_chars(chat_messages),
+                        messages_count=len(chat_messages),
+                    )
+                    raise
                 await self._record_usage(
                     response,
                     conversation_kind=conversation_kind,
@@ -713,6 +728,29 @@ class ArchiveMemoryAutoSummaryService:
             f"{truncation_note}"
             f"\nRecent messages (each line is '[index] sender: text'):\n{recent}"
         )
+
+def _request_chars(messages: list[Any]) -> int:
+    """估算一次请求的可见字符数(图片按固定额度计，不把 base64 当文本)。"""
+    total = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"image_url", "image", "file"}:
+                    total += 3072
+                else:
+                    total += len(str(part.get("text", "")))
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            total += sum(len(str(item)) for item in tool_calls)
+    return total
+
 
 def _bounded_tool_result(result: Any) -> str:
     """限制单条工具返回的字符数。

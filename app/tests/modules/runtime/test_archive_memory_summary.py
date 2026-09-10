@@ -987,3 +987,44 @@ def test_trim_tool_history_keeps_non_tool_messages_intact():
     assert messages[2]["content"] == "x" * 10
 
 
+# ── 超时调用的可观测性 ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_timed_out_model_call_is_logged_with_request_size():
+    """超时调用不会返回 usage，本地统计彻底看不到，必须留下带请求规模的告警。"""
+
+    class _HangingProvider:
+        async def chat(self, messages, tools=None):
+            await asyncio.sleep(30)
+            raise AssertionError("wait_for 应当先超时")
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    logger = Mock(spec=NullLogger)
+    service = _make_service(archive=archive, provider=_HangingProvider(), group_interval=1)
+    service._logger = logger
+    service._summary_budget_seconds = 2.0
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="994", message_text="一"
+    )
+
+    warnings = [call for call in logger.warning.call_args_list]
+    timeout_warnings = [
+        call
+        for call in warnings
+        if call.args and call.args[0] == "档案自动总结模型调用超时，本次调用不会计入用量统计"
+    ]
+    assert len(timeout_warnings) == 1
+    kwargs = timeout_warnings[0].kwargs
+    assert kwargs["conversation_id"] == "994"
+    assert kwargs["request_chars"] > 0
+    assert kwargs["messages_count"] >= 2
+    # 超时同样要进入冷却，避免连续重跑
+    state = json.loads(archive.raw("memory_counter", "group:994")["value"])
+    assert state["retry_after"] > epoch_seconds()
+
+
