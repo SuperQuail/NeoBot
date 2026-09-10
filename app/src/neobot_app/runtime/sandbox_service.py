@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import glob as glob_module
 import hashlib
 import os
@@ -276,7 +277,13 @@ class SandboxService:
 
         文本文件超过 MAX_TEXT_READ_BYTES 时仅返回前 MAX_TEXT_READ_BYTES 字节；
         二进制/未知类型文件保持完整读取（不对二进制做截断）。
+
+        文件 IO 交给工作线程：这些方法原先声明为 async 但内部零 await，
+        同步磁盘操作实际是跑在事件循环上的（大文件/慢盘会卡住整个 Bot）。
         """
+        return await asyncio.to_thread(self._read_file_sync, path)
+
+    def _read_file_sync(self, path: Path) -> bytes:
         resolved = path.resolve()
         if not self.is_path_allowed(resolved):
             raise PermissionError(f"路径不允许: {path}")
@@ -352,11 +359,17 @@ class SandboxService:
 
         Agent callers must use AgentFileTools (or the legacy skill adapter).
         """
+        await asyncio.to_thread(self._write_file_sync, path, data)
+
+    def _write_file_sync(self, path: Path, data: bytes) -> None:
         with self.file_lock(path):
             self.atomic_write(path, data)
 
     async def delete_file(self, path: Path) -> None:
         """删除文件或空目录。"""
+        await asyncio.to_thread(self._delete_file_sync, path)
+
+    def _delete_file_sync(self, path: Path) -> None:
         resolved = path.resolve()
         if not self._is_within_sandbox(resolved):
             raise PermissionError(f"删除路径越界: {path}")
@@ -374,6 +387,9 @@ class SandboxService:
         pattern: str | None = None,
     ) -> list[dict]:
         """列出目录下的文件。"""
+        return await asyncio.to_thread(self._list_files_sync, path, pattern)
+
+    def _list_files_sync(self, path: Path, pattern: str | None = None) -> list[dict]:
         resolved = path.resolve()
         if not self.is_path_allowed(resolved):
             raise PermissionError(f"路径不允许: {path}")
@@ -422,6 +438,9 @@ class SandboxService:
 
     async def move_file(self, src: Path, dst: Path) -> None:
         """移动文件或目录。"""
+        await asyncio.to_thread(self._move_file_sync, src, dst)
+
+    def _move_file_sync(self, src: Path, dst: Path) -> None:
         src_r = src.resolve()
         dst_r = dst.resolve()
         if not self._is_within_sandbox(src_r):
@@ -436,6 +455,9 @@ class SandboxService:
 
     async def copy_file(self, src: Path, dst: Path) -> None:
         """复制文件。"""
+        await asyncio.to_thread(self._copy_file_sync, src, dst)
+
+    def _copy_file_sync(self, src: Path, dst: Path) -> None:
         src_r = src.resolve()
         dst_r = dst.resolve()
         if not self.is_path_allowed(src_r):
