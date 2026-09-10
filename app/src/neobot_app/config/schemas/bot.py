@@ -1081,6 +1081,13 @@ class AgentMemoryTrigger:
         default=20,
         metadata={"description": "单次记忆总结最多允许的工具调用轮次，防止工具失败时反复重试烧token"},
     )
+    max_summary_seconds: Optional[float] = field(
+        default=180.0,
+        metadata={
+            "description": "单次记忆总结的总时长预算(秒)；超过即中止本轮并进入失败冷却，"
+            "避免多轮工具调用把一次总结拖成数十分钟"
+        },
+    )
 
 
 @dataclass

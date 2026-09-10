@@ -19,8 +19,10 @@ from neobot_contracts.ports.logging import NullLogger
 from neobot_app.runtime.archive_memory_summary import (
     MAX_STORED_MESSAGE_CHARS,
     MAX_TOOL_FAILURES,
+    RETRY_BACKOFF_MAX_SECONDS,
     ArchiveMemoryAutoSummaryService,
 )
+from neobot_app.time_context import epoch_seconds
 
 
 class _FakeArchive:
@@ -308,17 +310,17 @@ async def test_real_provider_http_failure_preserves_counter(provider_cls):
             )
 
         assert len(requests) == 1  # Non-retryable HTTP error, not a tool loop.
-        assert json.loads(archive.raw("memory_counter", "group:222")["value"]) == {
-            "count": 2,
-            "messages": [
-                {"sender_id": "", "sender_name": "", "text": "first"},
-                {"sender_id": "", "sender_name": "", "text": "second"},
-            ],
-        }
+        state = json.loads(archive.raw("memory_counter", "group:222")["value"])
+        assert state["count"] == 2
+        assert state["messages"] == [
+            {"sender_id": "", "sender_name": "", "text": "first"},
+            {"sender_id": "", "sender_name": "", "text": "second"},
+        ]
+        # 失败必须写入冷却窗口：否则计数器越过阈值后，每条新消息都会重跑一次总结。
+        assert state["failures"] == 1
+        assert state["retry_after"] > epoch_seconds()
         logger.warning.assert_called_once()
-        assert logger.warning.call_args.args == (
-            "档案自动总结失败，保留计数器待重试",
-        )
+        assert logger.warning.call_args.args == ("档案自动总结失败，进入冷却后重试",)
         assert "401" in logger.warning.call_args.kwargs["error"]
         logger.info.assert_not_called()
     finally:
@@ -574,7 +576,7 @@ async def test_summary_aborts_after_repeated_tool_failures_and_keeps_counter():
     logger.info.assert_not_called()
     warnings = [call.args[0] for call in logger.warning.call_args_list]
     assert "档案自动总结因工具连续失败而中止" in warnings
-    assert "档案自动总结未写入任何内容，保留计数器待重试" in warnings
+    assert "档案自动总结未写入任何内容，进入冷却后重试" in warnings
 
 
 @pytest.mark.asyncio
@@ -788,5 +790,117 @@ async def test_summary_records_token_usage(monkeypatch):
             "conversation_id": "555",
         }
     ]
+
+
+# ── 失败冷却:防止「每条消息重跑一次总结」的 token 风暴 ──────────────
+
+
+@pytest.mark.asyncio
+async def test_failed_summary_enters_cooldown_and_does_not_rerun_per_message():
+    """间隔 1 + 必然失败的 provider：连续 5 条消息只允许触发 1 次总结。
+
+    这是 token 风暴的回归测试——修复前计数器越过阈值后每条消息都会重跑
+    一整轮工具循环(现实中表现为每 60 秒一次超时，连续烧数小时)。
+    """
+    archive = _FakeArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    for i in range(5):
+        await service.record_message(
+            conversation_kind="group",
+            conversation_id="990",
+            message_text=f"消息 {i}",
+        )
+
+    assert len(provider.calls) == 1
+    state = json.loads(archive.raw("memory_counter", "group:990")["value"])
+    # 计数继续累计(冷却期内消息不丢)，但模型调用只发生了一次
+    assert state["count"] == 5
+    assert state["failures"] == 1
+    assert state["retry_after"] > epoch_seconds()
+    assert len(state["messages"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expiry_allows_one_retry():
+    """冷却到期后只补一次重试，失败则再次进入更长的冷却。"""
+    archive = _FakeArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="991", message_text="一"
+    )
+    assert len(provider.calls) == 1
+
+    # 手动把冷却时间拨到过去，模拟冷却到期
+    state = json.loads(archive.raw("memory_counter", "group:991")["value"])
+    first_retry_after = state["retry_after"]
+    state["retry_after"] = epoch_seconds() - 1
+    await archive.set(
+        "memory_counter", "group:991", json.dumps(state), ["auto_summary_counter"]
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="991", message_text="二"
+    )
+
+    assert len(provider.calls) == 2
+    state = json.loads(archive.raw("memory_counter", "group:991")["value"])
+    assert state["failures"] == 2
+    # 退避翻倍：第二次失败的冷却窗口必须晚于第一次
+    assert state["retry_after"] > first_retry_after
+
+
+def test_backoff_is_capped():
+    """退避必须封顶，避免长时间完全不总结。"""
+    delays = [ArchiveMemoryAutoSummaryService._backoff_seconds(n) for n in range(1, 12)]
+    assert delays[0] < delays[1] < delays[2]
+    assert max(delays) <= RETRY_BACKOFF_MAX_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_summary_concurrency_guard_skips_overlapping_runs():
+    """同一会话的总结不得并发：消息在总结期间到达只累计，不叠加新任务。"""
+    archive = _FakeArchive()
+    provider = _FakeProvider()
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    assert service._begin_summary("group:1") is True
+    try:
+        await service.record_message(
+            conversation_kind="group", conversation_id="1", message_text="一"
+        )
+    finally:
+        service._end_summary("group:1")
+
+    assert provider.calls == []
+    state = json.loads(archive.raw("memory_counter", "group:1")["value"])
+    assert state["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_summary_stops_at_total_time_budget():
+    """工具循环必须在总时长预算内收口，不能无限轮次耗尽 token。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=AsyncMock(return_value='{"ok": true}'),
+        group_interval=1,
+        max_tool_rounds=20,
+    )
+    service._summary_budget_seconds = 0.05
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="992", message_text="一"
+    )
+
+    assert len(provider.calls) < 20
+    state = json.loads(archive.raw("memory_counter", "group:992")["value"])
+    assert state["count"] == 1
+    assert state["retry_after"] > epoch_seconds()
 
 
