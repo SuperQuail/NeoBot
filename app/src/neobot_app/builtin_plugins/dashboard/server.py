@@ -10,6 +10,7 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aiohttp import web
 
@@ -33,6 +34,38 @@ _STATIC_DIR = Path(__file__).resolve().parent / "web"
 _INDEX_FILE = _STATIC_DIR / "index.html"
 _API_PREFIX = "/api/"
 _PORT_SEARCH_LIMIT = 10
+
+#: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
+_PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
+
+
+def _cross_site_guard(request: web.Request) -> web.Response | None:
+    """登录/首次设置密码的跨站防护。
+
+    这两个端点在建立会话之前，没有 CSRF token 可用，因此改用两条与浏览器行为
+    绑定的约束：
+
+    1. 请求体必须是 ``application/json`` —— 跨站表单只能发
+       ``application/x-www-form-urlencoded`` / ``multipart/form-data`` /
+       ``text/plain``，而 aiohttp 的 ``request.json()`` 并不校验 Content-Type，
+       所以「text/plain 表单伪造 JSON 体」这类 CSRF 由这条拦住；
+    2. 若带 ``Origin``，其主机必须与请求 ``Host`` 同源。
+
+    返回非 None 表示应当直接以该响应拒绝请求。
+    """
+    content_type = (
+        (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold()
+    )
+    if content_type != "application/json":
+        return _json_error("该接口只接受 application/json 请求", status=415)
+
+    origin = request.headers.get("Origin")
+    if origin:
+        origin_host = (urlparse(origin).netloc or "").casefold()
+        request_host = (request.headers.get("Host") or "").casefold()
+        if origin_host and request_host and origin_host != request_host:
+            return _json_error("跨站请求已被拒绝", status=403)
+    return None
 
 
 class DashboardServer:
@@ -285,6 +318,15 @@ class DashboardServer:
         ip = self.request_ip(request)
         loopback = is_loopback(ip)
         configured = self.passwords.configured
+
+        if (
+            path in _PRE_SESSION_STATE_CHANGE_PATHS
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        ):
+            # 会话建立前无法校验 CSRF token，用 Content-Type / Origin 兜住跨站提交
+            guarded = _cross_site_guard(request)
+            if guarded is not None:
+                return guarded
 
         if not configured:
             # 未设置密码：禁止外网访问；本机只允许进入设置流程。

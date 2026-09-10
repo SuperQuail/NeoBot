@@ -786,3 +786,79 @@ async def test_logs_endpoint_shape(panel) -> None:
     assert payload["ok"] is True
     assert isinstance(payload["items"], list)
     assert "last_id" in payload
+
+
+# ── 会话建立前端点的跨站防护（登录 / 首次设置密码没有 CSRF token 可用） ──
+
+
+async def test_auth_login_rejects_non_json_content_type(panel) -> None:
+    """跨站表单只能发 urlencoded/multipart/text-plain，这条把表单类提交挡在门外。"""
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            content=b'{"password": "x"}',
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert response.status_code == 415
+
+
+async def test_auth_login_rejects_cross_origin(panel) -> None:
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            json={"password": PASSWORD},
+            headers={"Origin": "http://evil.example"},
+        )
+
+    assert response.status_code == 403
+
+
+async def test_auth_login_allows_same_origin_json(panel) -> None:
+    _, _, base, _ = panel
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/login",
+            json={"password": PASSWORD},
+            headers={"Origin": base},
+        )
+
+    assert response.status_code == 200
+
+
+async def test_auth_setup_rejects_form_post(tmp_path: Path) -> None:
+    """未设置密码时不能被第三方页面「抢先设置」面板密码。"""
+    server, _, base, _ = await _start_panel(tmp_path, password=None)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/setup",
+                content=(
+                    b'{"password": "attacker-password-1", '
+                    b'"confirm": "attacker-password-1"}'
+                ),
+                headers={"Content-Type": "text/plain"},
+            )
+
+        assert response.status_code == 415
+        assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
+async def test_auth_setup_still_works_with_json_from_loopback(tmp_path: Path) -> None:
+    """回归：前端用的是 JSON，正常初始化流程不受影响。"""
+    server, _, base, _ = await _start_panel(tmp_path, password=None)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/setup",
+                json={"password": "loopback-password-1", "confirm": "loopback-password-1"},
+            )
+
+        assert response.status_code == 200, response.text
+        assert server.passwords.configured is True
+    finally:
+        await server.stop()
