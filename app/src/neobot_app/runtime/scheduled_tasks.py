@@ -24,6 +24,9 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
 from neobot_app.time_context import now_utc, to_local, to_utc
 
+#: 单页拉取活跃任务的数量（仓库 list_active 的默认上限，避免一次载入过多行）。
+_ACTIVE_TASK_PAGE_SIZE = 500
+
 
 @dataclass(frozen=True)
 class ScheduledTaskConfig:
@@ -368,8 +371,24 @@ class ScheduledTaskManager:
                 )
 
     async def _list_active_tasks(self) -> list[ScheduledTaskRecord]:
+        """分页取回全部活跃任务。
+
+        ``list_active`` 单次上限 500 条，而一次性任务没有数量上限（只有循环
+        任务受 max_repeating_tasks 限制）：只取第一页会让排在第 501 位之后的
+        任务永远不会被扫描，提醒静默不触发。按 offset 翻页直到取完。
+        """
+        tasks: list[ScheduledTaskRecord] = []
         async with self._uow_factory() as uow:
-            return await uow.scheduled_tasks.list_active(limit=500)
+            offset = 0
+            while True:
+                page = await uow.scheduled_tasks.list_active(
+                    limit=_ACTIVE_TASK_PAGE_SIZE, offset=offset
+                )
+                tasks.extend(page)
+                if len(page) < _ACTIVE_TASK_PAGE_SIZE:
+                    break
+                offset += len(page)
+        return tasks
 
     def _plan_task_scan(
         self,
