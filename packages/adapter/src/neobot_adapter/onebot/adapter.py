@@ -18,6 +18,7 @@ from neobot_adapter.eventing import (
 )
 from neobot_adapter.model import response
 from neobot_adapter.onebot.receiver.core import AdapterCore
+from neobot_adapter.onebot.receiver.settings import ReverseWsSettings
 from neobot_adapter.request._proxy import bind_core, unbind_core
 from neobot_adapter.request.websocket import WebSocketAPI
 from neobot_adapter.utils.parse import safe_parse_model
@@ -58,8 +59,30 @@ class OneBotAdapter:
         return bool(self._core.active_connections)
 
     @property
+    def http_url(self) -> str:
+        """反向 WS 模式没有本地 HTTP 服务；显式声明以统一 RuntimeAdapter 契约。"""
+        return ""
+
+    @property
+    def ws_url(self) -> str:
+        """反向 WS 模式由外部框架主动连入，本端无客户端地址。"""
+        return ""
+
+    @property
     def core(self) -> AdapterCore:
         return self._core
+
+    @property
+    def settings(self) -> ReverseWsSettings:
+        """当前解析后的反向 WS 监听设置（供状态展示与重配比较）。"""
+        return self._core.settings
+
+    def reconfigure(self, settings: ReverseWsSettings) -> None:
+        """写入新的监听设置；不触碰运行中的接收线程。
+
+        「停下旧服务 → 用新设置重启」由控制面（AdapterSupervisor）编排。
+        """
+        self._core.apply_settings(settings)
 
     @property
     def api(self) -> WebSocketAPI:

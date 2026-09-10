@@ -2,6 +2,17 @@
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
+  /* ---- 调色板原语：只在这里出现字面量，其余位置一律引用语义令牌 ---- */
+  --brand-light: #7dd3fc;
+  --brand-mid: #38bdf8;
+  --brand-strong: #0ea5e9;
+  --green: #22c55e;
+  --amber: #f59e0b;
+  --red: #ef4444;
+  --brand-nav: #5c7f96;
+  --brand-nav-dark: #8fb8d0;
+
+  /* ---- 语义令牌 ---- */
   --bg: #f6fcff;
   --panel: #ffffff;
   --panel-2: #eef9ff;
@@ -9,17 +20,28 @@
   --border-soft: #e8f8ff;
   --text: #1f3a4d;
   --muted: #91aebe;
-  --brand: #38bdf8;
-  --brand-hover: #0ea5e9;
+  --brand: var(--brand-mid);
+  --brand-hover: var(--brand-strong);
   --brand-soft: #e0f7ff;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --err: #ef4444;
-  --info: #38bdf8;
+  --ok: var(--green);
+  --warn: var(--amber);
+  --err: var(--red);
+  --info: var(--brand);
   --radius: 14px;
   --shadow: 0 8px 24px -12px rgba(56, 189, 248, 0.25);
   --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* 层级阶梯：所有 z-index 必须取自这里，避免散落的魔法数字互相踩踏 */
+  --z-sidebar: 40; /* 侧栏及其 tooltip 高于主内容层（30），避免被横幅覆盖 */
+  --z-header: 20;
+  --z-panel: 30;
+  --z-dropdown: 60;
+  --z-tooltip: 70;
+  --z-modal: 900;
+  --z-toast: 1000;
+  /* 应用侧栏宽度：布局与浮层定位共用同一个来源 */
+  --sidebar-width: 64px;
 }
 html[data-theme='dark'] {
   color-scheme: dark;
@@ -30,8 +52,8 @@ html[data-theme='dark'] {
   --border-soft: #233650;
   --text: #e7f6ff;
   --muted: #7f9eb5;
-  --brand: #38bdf8;
-  --brand-hover: #7dd3fc;
+  --brand: var(--brand-mid);
+  --brand-hover: var(--brand-light);
   --brand-soft: rgba(56, 189, 248, 0.14);
   --shadow: 0 10px 30px -18px rgba(56, 189, 248, 0.3);
 }
@@ -152,6 +174,11 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
 }
 .input:focus { outline: none; border-color: var(--brand); }
+.btn, .btn-sm {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.btn svg, .btn-sm svg { flex-shrink: 0; }
 .btn {
   height: 34px; padding: 0 14px; border-radius: 9px; cursor: pointer;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font-weight: 500;
@@ -166,7 +193,7 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 .spacer { flex: 1; }
 
 /* ---- toast ---- */
-.toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+.toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: var(--z-toast); }
 .toast {
   background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--brand);
   border-radius: 10px; box-shadow: var(--shadow); padding: 10px 30px 10px 14px;
@@ -180,7 +207,7 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 /* ---- modal ---- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,.45);
-  display: grid; place-items: center; z-index: 900;
+  display: grid; place-items: center; z-index: var(--z-modal);
 }
 .modal { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow); width: 420px; max-width: 92vw; }
@@ -334,7 +361,7 @@ html[data-theme='dark'] .sidebar {
   border-right: 1px solid rgba(125,211,252,.16);
 }
 .nav-item.active {
-  background: linear-gradient(135deg, #7dd3fc, #38bdf8);
+  background: linear-gradient(135deg, var(--brand-light), var(--brand));
   color: #fff;
   box-shadow: 0 8px 20px -8px rgba(56,189,248,.65);
 }
@@ -344,7 +371,7 @@ html[data-theme='dark'] .sidebar {
   background:
     radial-gradient(circle at 0% 0%, rgba(255,255,255,.7), transparent 52%),
     radial-gradient(circle at 100% 100%, rgba(125,211,252,.35), transparent 58%),
-    linear-gradient(135deg, #bdefff 0%, #8edfff 45%, #38bdf8 100%);
+    linear-gradient(135deg, #bdefff 0%, #8edfff 45%, var(--brand) 100%);
   border: none;
   color: #fff;
   box-shadow: 0 22px 56px -28px rgba(14,165,233,.55);
@@ -352,7 +379,7 @@ html[data-theme='dark'] .sidebar {
 html[data-theme='dark'] .hero {
   background:
     radial-gradient(circle at 0% 0%, rgba(125,211,252,.35), transparent 42%),
-    linear-gradient(135deg, #183e63 0%, #145078 52%, #0ea5e9 100%);
+    linear-gradient(135deg, #183e63 0%, #145078 52%, var(--brand-hover) 100%);
 }
 .hero .hm-value { color: #fff; }
 .hero .hm-label { color: rgba(255,255,255,.85); }
@@ -362,21 +389,32 @@ html[data-theme='dark'] .hero {
 .stat-card:hover { transform: translateY(-2px); border-color: #baeaff; box-shadow: var(--shadow); }
 
 /* 进度条蓝色渐变 */
-.bar-fill.ok { background: linear-gradient(90deg, #7dd3fc, #0ea5e9); }
-.bar-fill.warn { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
-.bar-fill.err { background: linear-gradient(90deg, #fb7185, #ef4444); }
+.bar-fill.ok { background: linear-gradient(90deg, var(--brand-light), var(--brand-hover)); }
+.bar-fill.warn { background: linear-gradient(90deg, #fbbf24, var(--warn)); }
+.bar-fill.err { background: linear-gradient(90deg, #fb7185, var(--err)); }
 
 /* 主按钮 hover */
-.btn.primary:hover, .btn-sm.primary:hover, .login-btn:hover:not(:disabled) { background: var(--brand-hover); }
+.btn.primary:hover:not(:disabled), .btn-sm.primary:hover:not(:disabled), .login-btn:hover:not(:disabled) { background: var(--brand-hover); }
 
 /* 排行条渐变 */
 .rank-fill { background: linear-gradient(90deg, var(--brand-soft), rgba(56,189,248,.4)); }
 
-/* ===== 原版布局:窄图标侧栏 + 头部 + Hero 立绘 ===== */
-.app { display: grid; grid-template-columns: 64px 1fr; height: 100vh; }
+/* ===== 原版布局:窄图标侧栏 + 头部 + Hero 立绘 =====
+ * 层级约定（每次改布局都以此为准）：
+ *   .app 只负责两列网格；.sidebar 自成一列并建立独立层叠上下文（isolation:isolate），
+ *   .main 的滚动只发生在 .content 内部 —— 任何一页都不得让 body 产生滚动。
+ *
+ * 注意 .app 上【不要】加 overflow:hidden：
+ *   它会把侧栏 tooltip 这种「故意越过列边界」的浮层裁掉（曾经导致只露半个字）。
+ *   布局不会被撑破 —— 两个子项各自是 height:100vh + overflow:hidden，
+ *   网格行高就是 100vh，溢出由子项自己消化。
+ */
+.app { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); height: 100vh; }
 .sidebar {
   width: auto; height: 100vh; position: sticky; top: 0;
   display: flex; flex-direction: column; align-items: center; padding: 12px 0;
+  /* 自成层叠上下文：内部浮层（tooltip）不会渗到底下列里 */
+  isolation: isolate; z-index: var(--z-sidebar);
 }
 .brand { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; margin: 0 0 16px; padding: 0; }
 .brand img { width: 38px; height: 38px; object-fit: contain; }
@@ -386,32 +424,71 @@ html[data-theme='dark'] .hero {
   text-decoration: none; font-weight: 500;
   width: 44px; height: 44px; border-radius: 12px; padding: 0; gap: 0;
   display: flex; align-items: center; justify-content: center;
-  color: #5c7f96; background: none; border: none; cursor: pointer; position: relative;
+  color: var(--brand-nav); background: none; border: none; cursor: pointer; position: relative;
 }
 .nav-item svg { width: 20px; height: 20px; }
 .nav-item:hover { color: var(--brand-hover); background: rgba(224,247,255,.9); }
-html[data-theme='dark'] .nav-item { color: #8fb8d0; }
+html[data-theme='dark'] .nav-item { color: var(--brand-nav-dark); }
 html[data-theme='dark'] .nav-item:hover { color: #e0f7ff; background: rgba(56,189,248,.12); }
 html[data-theme='dark'] .nav-item.active { color: #fff; }
 .nav-item.active svg { filter: none; }
-/* 悬浮 tooltip */
+/* 侧栏悬浮提示（纯 CSS，无 JS）
+ *
+ * 位置：摆在图标【右侧】—— 侧栏只有 64px，浮层必然越过列边界，
+ * 因此 .app 不能有 overflow:hidden（见上面 .app 的注释），否则越界部分会被裁成半个字。
+ *
+ * 为什么不用 JS 算坐标 + position:fixed：
+ *   一旦 CSS 与 JS 的缓存版本错位（新 JS 配旧 CSS），浮层会丢掉 fixed 规则，
+ *   作为 static 的 flex 子元素被排到侧栏最底部 —— 表现为「tooltip 跑到下面」。
+ *   纯 CSS 版没有这个故障面。
+ */
+.nav-item[data-tooltip] { position: relative; }
+
 .nav-item[data-tooltip]:hover::after {
   content: attr(data-tooltip);
-  position: absolute; left: calc(100% + 14px); top: 50%; transform: translateY(-50%);
-  background: #0c4a6e; color: #fff; padding: 6px 10px; border-radius: 6px;
-  font-size: 12px; white-space: nowrap; pointer-events: none; box-shadow: var(--shadow); z-index: 100;
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 12px);          /* 图标右边缘再往右 12px：尖角 6px + 间隙 6px */
+  transform: translateY(-50%);
+  background: #0c4a6e; color: #fff;
+  padding: 6px 10px; border-radius: 6px;
+  font-size: 12px; line-height: 1.2; white-space: nowrap;
+  pointer-events: none; box-shadow: var(--shadow);
+  z-index: var(--z-tooltip);
 }
+/* 指向左侧的尖角 */
 .nav-item[data-tooltip]:hover::before {
-  content: ''; position: absolute; left: calc(100% + 8px); top: 50%; transform: translateY(-50%);
-  border: 6px solid transparent; border-right-color: #0c4a6e; z-index: 99;
+  content: '';
+  position: absolute; top: 50%; left: calc(100% + 6px); transform: translateY(-50%);
+  border: 6px solid transparent; border-right-color: #0c4a6e;
+  z-index: var(--z-tooltip);
+}
+/* 窄屏不显示提示（鼠标场景本就不适用，也避免挤压列表） */
+@media (max-width: 740px) {
+  .nav-item[data-tooltip]:hover::after,
+  .nav-item[data-tooltip]:hover::before { display: none; }
 }
 
-.main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; height: 100vh; }
-.header { height: 56px; display: flex; align-items: center; gap: 16px; padding: 0 24px; }
+.main {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  overflow: hidden; height: 100vh;
+  position: relative; z-index: var(--z-panel);
+}
+.header {
+  height: 56px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 16px; padding: 0 24px;
+  position: relative; z-index: var(--z-header);
+}
 .header .crumbs { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .header .crumbs svg { width: 14px; height: 14px; }
 .header .crumbs .current { color: var(--text); font-weight: 600; font-size: 15px; }
-.content { flex: 1; overflow-y: auto; padding: 24px 28px 40px; }
+
+/* 滚动契约：内容超出时只滚 .content；body 永不滚动（min-height:0 是关键，
+ * 少了它 flex 子项不会收缩，页面就会多出一大段空白可滚）。 */
+.content {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-gutter: stable; padding: 24px 28px 40px;
+}
 
 /* Hero 立绘 / 网格 / 红星光晕(原版效果) */
 .hero { position: relative; overflow: hidden; min-height: 168px; display: block; }
@@ -445,7 +522,7 @@ html[data-theme='dark'] .nav-item.active { color: #fff; }
 .stat-card { position: relative; overflow: hidden; }
 .stat-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand); margin-bottom: 12px; }
 .stat-icon svg { width: 18px; height: 18px; }
-.stat-icon.accent { background: rgba(56,189,248,.14); color: #0ea5e9; }
+.stat-icon.accent { background: rgba(56,189,248,.14); color: var(--brand-hover); }
 .stat-card .stat-label { text-transform: uppercase; letter-spacing: .4px; font-weight: 500; }
 .stat-spark { position: absolute; bottom: 6px; right: 8px; width: 110px; height: 40px; opacity: .85; pointer-events: none; }
 .stat-spark .spark { height: 40px; }

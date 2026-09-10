@@ -1,4 +1,4 @@
-﻿"""VisionDetectService 单元测试(monkeypatch OnnxDetector,不依赖真实模型)。"""
+"""VisionDetectService 单元测试(monkeypatch OnnxDetector,不依赖真实模型)。"""
 
 from __future__ import annotations
 
@@ -60,7 +60,41 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> VisionDetectServ
     from neobot_app.vision_detect import service as service_module
 
     monkeypatch.setattr(service_module, "OnnxDetector", _FakeDetector)
+    _pin_onnx_engine(monkeypatch)
     return _build_service(tmp_path)
+
+
+def _pin_onnx_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把推理引擎可用性固定为「onnx 可用、torch 不可用」。
+
+    `onnx_available` / `torch_available` 是**惰性探测真实环境**的属性（首次访问
+    真的去 import）。不固定的话，本组用例的行为取决于跑测试的机器：装了
+    onnxruntime 就走到「没有可用的检测模型」，没装就提前在引擎检查处抛
+    「本地推理引擎不可用」，断言随之失败——这会掩盖真正的回归。
+
+    本文件测的是模型选择与检测逻辑，引擎可用性由引擎相关用例单独覆盖。
+    """
+    monkeypatch.setattr(
+        "neobot_app.vision_detect.service.VisionDetectService.onnx_available",
+        property(lambda _self: True),
+    )
+    monkeypatch.setattr(
+        "neobot_app.vision_detect.service.VisionDetectService.torch_available",
+        property(lambda _self: False),
+    )
+
+
+def _stub_onnxruntime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 `import onnxruntime` 在本机成功（用一个空壳模块顶替）。
+
+    用于需要**真实走一遍探测逻辑**的用例：`onnx_available` 靠 import 判定，
+    所以这里替换的是 import 目标本身，而不是把探测结果写死。
+    """
+    import sys
+    import types
+
+    module = types.ModuleType("onnxruntime")
+    monkeypatch.setitem(sys.modules, "onnxruntime", module)
 
 
 def test_list_models_descriptions(service: VisionDetectService) -> None:
@@ -137,6 +171,7 @@ def test_available_false_when_no_models(tmp_path: Path, monkeypatch: pytest.Monk
     from neobot_app.vision_detect import service as service_module
 
     monkeypatch.setattr(service_module, "OnnxDetector", _FakeDetector)
+    _pin_onnx_engine(monkeypatch)
     service = VisionDetectService(tmp_path / "empty", tmp_path / "empty.toml", auto_refresh=False)
     service.refresh()
     assert service.available is False
@@ -201,6 +236,7 @@ def test_detect_partial_failure_keeps_successes(tmp_path: Path, monkeypatch: pyt
             return super().detect(_pil, conf)
 
     monkeypatch.setattr(service_module, "OnnxDetector", _FlakyDetector)
+    _pin_onnx_engine(monkeypatch)
     models_dir = tmp_path / "models"
     models_dir.mkdir(parents=True)
     (models_dir / "miyin_yolo_320.onnx").write_bytes(b"ONNX\x00\x00\x00\x08fake")
@@ -224,6 +260,7 @@ def test_detect_all_models_fail_raises(tmp_path: Path, monkeypatch: pytest.Monke
             raise RuntimeError("全部失败")
 
     monkeypatch.setattr(service_module, "OnnxDetector", _AllFlaky)
+    _pin_onnx_engine(monkeypatch)
     service = _build_service(tmp_path)
     with pytest.raises(DetectionError, match="所有模型推理失败"):
         service.detect_pil(Image.new("RGB", (10, 10)))
@@ -275,6 +312,7 @@ def test_detect_bytes_applies_exif_orientation(tmp_path: Path, monkeypatch: pyte
             return super().detect(pil, conf)
 
     monkeypatch.setattr(service_module, "OnnxDetector", _RecordingDetector)
+    _pin_onnx_engine(monkeypatch)
     service = _build_service(tmp_path)
     # 构造带 Orientation=6(旋转90°)的 JPEG
     buf = io.BytesIO()
@@ -296,13 +334,26 @@ def test_detect_bytes_min_conf_zero_outputs_all(service: VisionDetectService) ->
     assert len(result["results"][0]["detections"]) == 2
 
 
-def test_reset_availability(service: VisionDetectService) -> None:
-    monkeypatch = pytest.MonkeyPatch()
+def test_reset_availability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """环境修复后 reset_availability 必须能重新探测出「已可用」。
+
+    探测逻辑本身要真实跑一遍，因此这里替换 import 目标、而不是把探测结果写死。
+    起始状态显式构造成「探测已失败并缓存」(`_usable=False`)，这样结论不依赖
+    跑测试的机器上 onnxruntime 是否可用 —— 否则就在断言里换了个地方继续依赖环境。
+    """
+    from neobot_app.vision_detect import service as service_module
+
+    monkeypatch.setattr(service_module, "OnnxDetector", _FakeDetector)
+    service = VisionDetectService(
+        tmp_path / "models", tmp_path / "models.toml", auto_refresh=False
+    )
     monkeypatch.setattr(service, "_usable", False)
     assert service.onnx_available is False
+    _stub_onnxruntime(monkeypatch)
+
     service.reset_availability()
+
     assert service.onnx_available is True
-    monkeypatch.undo()
 
 
 def test_library_defaults_consumed_by_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

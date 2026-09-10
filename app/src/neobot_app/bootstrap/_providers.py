@@ -34,6 +34,10 @@ def build_main_provider(
     主模型不可用（创建失败）时自动回退到视觉模型（vision_model）：视觉模型本身
     具备完整对话能力，保证 Bot 仍能正常回复，不需要用户再手选回退模型。
     主模型声明原生视觉但无法处理图片时，同样自动切换到视觉模型并保留图片。
+
+    **返回契约**：``provider is None`` 时 ``error_message`` 必须非空。
+    否则调用方（回复编排器、面板状态）拿到 None 却没有任何可展示的原因，
+    「能启动但不会回复」就变成了无法定位的静默故障。
     """
     main_model_name = resolve_agent_model_name(config, "main_agent", default_index=0)
     vision_model_name = resolve_vision_model_name(config)
@@ -79,12 +83,15 @@ def build_main_provider(
             logger.warning(f"主对话模型不可用，已自动回退到视觉模型({vision_model_name})")
             return fallback, None
 
-    error_message = None
     if provider is None:
-        error_message = "当前主回复模型不可用，请检查模型配置与 API Key"
+        # 主模型与视觉回退都不可用：必须给出可展示的原因（不能返回 (None, None)）。
+        error_message = (
+            f"当前主回复模型不可用（{main_model_name}），请检查 [models] 配置与对应平台的 API Key"
+        )
         logger.error(error_message)
+        return None, error_message
 
-    return provider, error_message
+    return provider, None
 
 
 def build_vision_provider(*, logger: Any, model_name: str = VISION_MODEL_NAME) -> Any:

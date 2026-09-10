@@ -1,0 +1,75 @@
+/*
+ * workspace.css —— 工作区（两栏：列表面板 + 编辑区）共享骨架。
+ * 由 WorkspaceLayout 组件使用，插件管理与配置管理共用同一套滚动/层级契约，
+ * 避免每个页面各写一份 grid（此前插件页靠 .content.content-workspace 打补丁）。
+ *
+ * 滚动契约：
+ *   .workspace 自身不滚动（min-height:0 + overflow:hidden）；
+ *   左右两栏各自内部滚动（.workspace-panel / .workspace-editor > 内容区）。
+ */
+.workspace {
+  display: grid;
+  grid-template-columns: var(--workspace-panel-width, 264px) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  /* 独立层叠上下文：面板内的下拉/浮层不会越过侧栏或压住编辑器 */
+  isolation: isolate;
+  z-index: var(--z-panel);
+  border-right: 1px solid var(--border);
+  /* 不透明底色：避免与侧栏渐变相互穿透产生鬼影 */
+  background: var(--panel);
+}
+
+.workspace-panel > .workspace-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.workspace-editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.workspace-editor > .workspace-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* 工作区页面自带完整头部，因此 .content 不再提供内边距 */
+.content.content-workspace {
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (max-width: 1050px) {
+  .workspace { --workspace-panel-width: 220px; }
+}
+
+@media (max-width: 740px) {
+  .workspace { display: flex; }
+  .workspace-panel { width: 100%; border-right: none; }
+  .workspace-editor { display: none; width: 100%; }
+  .workspace.show-detail .workspace-panel { display: none; }
+  .workspace.show-detail .workspace-editor { display: flex; }
+}

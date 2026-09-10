@@ -51,6 +51,22 @@ class ImageParseService:
         self._logger = logger or NullLogger()
         self._pending: dict[str, set[asyncio.Task[None]]] = {}
 
+    def install_providers(
+        self,
+        *,
+        vision_provider: Any = None,
+        native_vision_provider: Any = None,
+    ) -> tuple[Any, Any]:
+        """换用新的视觉/原生视觉 provider，返回被替换下来的旧 (vision, native)。
+
+        只换引用、不关闭旧 provider：由调用方在替换成功后统一清理，避免替换
+        失败时旧 provider 已被关闭。
+        """
+        previous = (self._vision_provider, self._native_vision_provider)
+        self._vision_provider = vision_provider
+        self._native_vision_provider = native_vision_provider
+        return previous
+
     async def parse_message_images(
         self,
         message: ChatMessage,
