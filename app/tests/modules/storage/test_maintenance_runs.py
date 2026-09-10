@@ -296,3 +296,50 @@ async def test_migration_downgrade_drops_maintenance_runs(tmp_path):
     assert "ix_maintenance_runs_status" not in index_names
     # 其它表不受影响
     assert "model_usage_records" in names
+
+
+async def test_finish_settles_a_running_record(session_factory):
+    """运行中的记录必须能被结算为 success，并补齐耗时字段。"""
+
+    # Arrange
+    started = now_utc().replace(tzinfo=None)
+    async with session_factory() as session:
+        repo = SqlAlchemyMaintenanceRunRepository(session)
+        record = _record(started_at=started, status="running", trigger="startup")
+        await repo.add(record)
+        await session.commit()
+        run_id = record.id
+
+    # Act
+    finished = started + timedelta(seconds=42)
+    async with session_factory() as session:
+        repo = SqlAlchemyMaintenanceRunRepository(session)
+        ok = await repo.finish(
+            run_id,
+            status="success",
+            finished_at=finished,
+            tool_calls=17,
+            summary="维护完成",
+        )
+        await session.commit()
+
+    # Assert
+    assert ok is True
+    async with session_factory() as session:
+        row = await session.get(MaintenanceRunRecord, run_id)
+    assert row is not None
+    assert row.status == "success"
+    assert row.trigger == "startup"
+    assert row.tool_calls == 17
+    assert row.summary == "维护完成"
+    assert row.finished_at is not None
+
+
+async def test_finish_returns_false_for_unknown_record(session_factory):
+    """未知 id 不能被误当成成功结算。"""
+    async with session_factory() as session:
+        repo = SqlAlchemyMaintenanceRunRepository(session)
+        ok = await repo.finish(
+            999999, status="success", finished_at=now_utc(), tool_calls=0
+        )
+    assert ok is False

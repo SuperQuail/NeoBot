@@ -69,6 +69,9 @@ from neobot_app.bootstrap._pipeline import (
     register_config_reload_command,
     register_host_services,
 )
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.skills.balance_guide import sync_balance_query_skill
 
@@ -100,6 +103,52 @@ _MAINTENANCE_SYSTEM_PROMPT = (
     "- 输出简洁明了，完成每步后汇报结果"
 )
 
+# 沙箱维护调度默认间隔（可被 agent.sandbox.maintenance.interval_seconds 覆盖）。
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 10800
+
+
+@dataclass(frozen=True)
+class MaintenancePlan:
+    """本轮沙箱维护的调度决定。"""
+
+    due: bool
+    wait_seconds: float
+    reason: str
+
+
+def plan_maintenance_run(
+    *,
+    last_success: datetime | None,
+    last_status: str | None,
+    interval_seconds: int,
+    now: datetime,
+) -> MaintenancePlan:
+    """按数据库里的历史决定本轮是否需要跑沙箱维护。
+
+    - 上一次没能正常结束（failed / running，后者多为进程中断）→ 立即补跑；
+    - 从未成功过 → 跑；
+    - 距上次成功已超过间隔 → 跑；
+    - 否则跳过，并给出需等待的秒数。
+
+    时间列按无时区 UTC 解读（与写入时的归一化保持一致）。
+    """
+    if last_status in _MAINTENANCE_RETRY_STATUSES:
+        return MaintenancePlan(True, 0.0, "")
+    if last_success is None:
+        return MaintenancePlan(True, 0.0, "")
+    stamp = last_success if last_success.tzinfo else last_success.replace(tzinfo=timezone.utc)
+    elapsed = (now - stamp).total_seconds()
+    if elapsed >= interval_seconds:
+        return MaintenancePlan(True, 0.0, "")
+    remaining = interval_seconds - elapsed
+    reason = (
+        f"距上次成功维护仅 {int(elapsed)} 秒（配置间隔 {interval_seconds} 秒），"
+        f"约 {int(remaining)} 秒后到期"
+    )
+    return MaintenancePlan(False, remaining, reason)
+# 这些状态说明上一次维护没有正常完成，启动后应立即补跑一次。
+_MAINTENANCE_RETRY_STATUSES = frozenset({"failed", "running"})
+
 
 def _make_maintenance_coro(
     *,
@@ -110,8 +159,14 @@ def _make_maintenance_coro(
     admin_id: str,
     logger: Any,
     prompt_store: Any = None,
+    engine: Any = None,
+    interval_seconds: int = DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
 ):
-    """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。"""
+    """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。
+
+    调度以数据库里的运行记录为准：进程重启不再无条件重跑一次，
+    而是看「距上次成功维护是否已到 interval_seconds」；上次失败/中断则立即补跑。
+    """
     from dataclasses import dataclass
 
     from neobot_chat.runtime.agent import Agent
@@ -145,12 +200,141 @@ def _make_maintenance_coro(
     specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
     toolset = Toolset(executor=_SkillToolExecutor(), specs=specs)
 
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from neobot_storage.models import MaintenanceRunRecord
+    from neobot_storage.repositories.maintenance import (
+        SqlAlchemyMaintenanceRunRepository,
+    )
+
+    from neobot_app.time_context import now_utc
+
+    session_factory = (
+        async_sessionmaker(engine, expire_on_commit=False) if engine is not None else None
+    )
+    interval = max(60, int(interval_seconds))
+
+    def _stored(value: datetime | None) -> datetime | None:
+        """时间列一律存无时区 UTC。"""
+        return None if value is None else value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def _as_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        # 列里是无时区 UTC，不能按本地时区解读
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    async def _history() -> tuple[datetime | None, str | None]:
+        """(最近一次成功维护时间, 最近一次尝试的状态)；读不到时返回 (None, None)。"""
+        if session_factory is None:
+            return None, None
+        try:
+            async with session_factory() as session:
+                repo = SqlAlchemyMaintenanceRunRepository(session)
+                success = await repo.last_finished_success()
+                attempt = await repo.last_attempt()
+                return (
+                    success.started_at if success is not None else None,
+                    attempt.status if attempt is not None else None,
+                )
+        except Exception as exc:  # 数据库不可用不应让维护永久停摆
+            logger.warning(f"沙箱维护：读取运行记录失败，按到期处理: {exc}")
+            return None, None
+
+    async def _begin(trigger: str) -> int | None:
+        if session_factory is None:
+            return None
+        try:
+            async with session_factory() as session:
+                record = MaintenanceRunRecord(
+                    started_at=_stored(now_utc()),
+                    status="running",
+                    trigger=trigger,
+                    tool_calls=0,
+                )
+                await SqlAlchemyMaintenanceRunRepository(session).add(record)
+                await session.commit()
+                return record.id
+        except Exception as exc:
+            logger.warning(f"沙箱维护：写入运行记录失败: {exc}")
+            return None
+
+    async def _finish(
+        run_id: int | None,
+        *,
+        status: str,
+        tool_calls: int = 0,
+        summary: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if session_factory is None or run_id is None:
+            return
+        try:
+            async with session_factory() as session:
+                await SqlAlchemyMaintenanceRunRepository(session).finish(
+                    run_id,
+                    status=status,
+                    finished_at=_stored(now_utc()),
+                    tool_calls=tool_calls,
+                    summary=summary,
+                    error=error,
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(f"沙箱维护：结算运行记录失败: {exc}")
+
+    async def _record_skip(trigger: str, reason: str) -> None:
+        if session_factory is None:
+            return
+        try:
+            async with session_factory() as session:
+                stamp = _stored(now_utc())
+                await SqlAlchemyMaintenanceRunRepository(session).add(
+                    MaintenanceRunRecord(
+                        started_at=stamp,
+                        finished_at=stamp,
+                        status="skipped",
+                        trigger=trigger,
+                        tool_calls=0,
+                        skipped_reason=reason[:500],
+                    )
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(f"沙箱维护：写入跳过记录失败: {exc}")
+
     async def _loop() -> None:
         await asyncio.sleep(60)
+        first_pass = True
         while True:
+            trigger = "startup" if first_pass else "interval"
+            first_pass = False
+
+            last_success, last_status = await _history()
+            if last_status in _MAINTENANCE_RETRY_STATUSES:
+                logger.info(f"沙箱维护：上次记录状态为 {last_status}，立即补跑一次")
+            plan = plan_maintenance_run(
+                last_success=last_success,
+                last_status=last_status,
+                interval_seconds=interval,
+                now=now_utc(),
+            )
+            if not plan.due:
+                logger.info(f"沙箱维护未到期，跳过本轮：{plan.reason}")
+                await _record_skip(trigger, plan.reason)
+                try:
+                    # 分片上界避免长时间休眠拖延配置变更/关闭
+                    await asyncio.sleep(min(max(plan.wait_seconds, 60.0), 1800.0))
+                except asyncio.CancelledError:
+                    raise
+                continue
+
             agent: Agent | None = None
+            run_id: int | None = None
+            tool_count = 0
             try:
                 logger.info("沙箱维护 Agent 开始执行")
+                run_id = await _begin(trigger)
                 agent = Agent(
                     provider=provider,
                     toolset=toolset,
@@ -178,10 +362,14 @@ def _make_maintenance_coro(
                     f"沙箱维护完成: {tool_count} 次工具调用, "
                     f"最后输出: {last_content}"
                 )
+                await _finish(
+                    run_id, status="success", tool_calls=tool_count, summary=last_content
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning(f"沙箱维护 Agent 异常: {exc}")
+                await _finish(run_id, status="failed", tool_calls=tool_count, error=str(exc))
             finally:
                 if agent is not None:
                     try:
@@ -191,7 +379,7 @@ def _make_maintenance_coro(
                     except Exception as exc:
                         logger.warning(f"沙箱维护 Agent 关闭异常: {exc}")
             try:
-                await asyncio.sleep(10800)  # 3 小时
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
 
@@ -607,6 +795,12 @@ def create_application() -> NeoBotApplication:
         and admin_accounts
         and provider is not None
     ):
+        _sandbox_cfg = getattr(config.agent, "sandbox", None)
+        _maintenance_cfg = getattr(_sandbox_cfg, "maintenance", None)
+        maintenance_interval = int(
+            getattr(_maintenance_cfg, "interval_seconds", None)
+            or DEFAULT_MAINTENANCE_INTERVAL_SECONDS
+        )
         maintenance_coros.append(
             _make_maintenance_coro(
                 provider=provider,
@@ -616,6 +810,8 @@ def create_application() -> NeoBotApplication:
                 admin_id=admin_accounts[0],
                 logger=logger_factory.get_logger("app.sandbox_maintenance_agent"),
                 prompt_store=prompt_store,
+                engine=_engine,
+                interval_seconds=maintenance_interval,
             )
         )
 
