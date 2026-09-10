@@ -23,7 +23,10 @@ class ArchiveCRUDSkill(SkillModule):
 
     @property
     def description(self) -> str:
-        return "长期记忆档案管理：增量编辑/读取/列出/删除档案条目"
+        # 与工具表保持一致：allow_delete=false 时 delete_archive 不注入给模型，
+        # 摘要里再宣称「删除」会让模型调用一个不存在的工具。
+        suffix = "增量编辑/读取/列出/删除档案条目" if self._allow_delete else "增量编辑/读取/列出档案条目"
+        return f"长期记忆档案管理：{suffix}"
 
     @property
     def instructions(self) -> str:
@@ -36,6 +39,22 @@ class ArchiveCRUDSkill(SkillModule):
             if limits
             else ""
         )
+        # 工具表会按开关裁剪，提示词必须同步：否则模型按 instructions 去调用
+        # 一个被隐藏的工具（错误回灌、白费轮次），或向用户声称已删除记忆。
+        delete_line = (
+            "  delete_archive — 删除档案记忆\n" if self._allow_delete else ""
+        )
+        delete_note = (
+            ""
+            if self._allow_delete
+            else "删除档案未启用（agent.memory.archive.allow_delete=false），不要尝试删除。\n"
+        )
+        allowed = self._allowed_tables
+        allowed_note = (
+            f"可访问的档案表：{', '.join(allowed)}（其余表一律拒绝）。\n"
+            if allowed
+            else ""
+        )
         return (
             "档案管理 Skill 提供以下能力：\n\n"
             "  patch_archive — 增量编辑档案（推荐）：append/prepend 追加片段，replace/delete 定点改删，"
@@ -44,7 +63,9 @@ class ArchiveCRUDSkill(SkillModule):
             "  read_archive — 读取档案记忆；mode='outline' 只看目录/大纲，offset 分页读正文\n"
             "  read_pending_messages — 读取待总结的实时消息全文（总结提示词里被截断时用）\n"
             "  list_archive — 列出档案条目，支持按内容/标签筛选\n"
-            "  delete_archive — 删除档案记忆\n\n"
+            f"{delete_line}\n"
+            f"{allowed_note}"
+            f"{delete_note}"
             "写入原则：新增内容用 patch_archive(append) 只写增量；修改已有内容先 outline 定位、"
             "再分页读该片段、然后 patch_archive(replace) 定点修改；不要为了写入而先读全文。"
             "原始档案不会截断，可长期积累。\n"

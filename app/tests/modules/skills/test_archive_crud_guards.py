@@ -217,6 +217,24 @@ def test_delete_tool_hidden_when_disabled() -> None:
     assert "save_archive" in _tool_names(skill)
 
 
+def test_instructions_do_not_advertise_hidden_delete_tool() -> None:
+    """提示词与工具表必须一致：隐藏了删除工具就不能再教模型去调用它。"""
+    disabled, _ = _skill()
+    enabled, _ = _skill(allow_delete=True)
+
+    assert "delete_archive" not in disabled.instructions
+    assert "删除档案未启用" in disabled.instructions
+    assert "删除" not in disabled.description
+    assert "delete_archive" in enabled.instructions
+    assert "删除" in enabled.description
+
+
+def test_instructions_declare_allowed_tables_limit() -> None:
+    skill, _ = _skill(allowed_tables=("user_profile",))
+
+    assert "user_profile" in skill.instructions
+
+
 def test_delete_tool_exposed_when_enabled() -> None:
     skill, _ = _skill(allow_delete=True)
 
