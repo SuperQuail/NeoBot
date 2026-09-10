@@ -100,7 +100,16 @@ _MAINTENANCE_SYSTEM_PROMPT = (
     "7. 完成后调用 file_storage__update_storage_doc 更新索引\n\n"
     "## 注意\n"
     "- 只做文件清理和整理，不实现新工具，不处理 TODO\n"
-    "- 输出简洁明了，完成每步后汇报结果"
+    "- 输出简洁明了，完成每步后汇报结果\n\n"
+    "## 按需加载工具\n"
+    "- 常驻工具只覆盖维护常用能力；需要其它技能时先调用 skills__load_tools 加载"
+    "（如 [\"gallery\"]、[\"agent_tools_files\"]），加载后本轮即可直接调用"
+)
+
+# 沙箱维护 Agent 的常驻技能：它每次运行要发 16~23 次模型调用，
+# 常驻全部技能（173 个工具 / 71K 字符）是纯固定开销；其余能力用 skills__load_tools 按需加载。
+MAINTENANCE_RESIDENT_SKILLS = frozenset(
+    {"archive", "file_storage", "sandbox_maintenance", "sandbox_manager"}
 )
 
 # 沙箱维护调度默认间隔（可被 agent.sandbox.maintenance.interval_seconds 覆盖）。
@@ -167,11 +176,7 @@ def _make_maintenance_coro(
     调度以数据库里的运行记录为准：进程重启不再无条件重跑一次，
     而是看「距上次成功维护是否已到 interval_seconds」；上次失败/中断则立即补跑。
     """
-    from dataclasses import dataclass
-
     from neobot_chat.runtime.agent import Agent
-    from neobot_chat.tools.toolset import ToolSpec, Toolset
-    from neobot_chat.schema.types import ToolAccessRule
 
     maintenance_prompt = _MAINTENANCE_SYSTEM_PROMPT
     if prompt_store is not None:
@@ -179,26 +184,14 @@ def _make_maintenance_coro(
             "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
         )
 
-    @dataclass(frozen=True)
-    class _SkillToolExecutor:
-        _mgr: Any = skill_manager
+    from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
 
-        def definitions(self):
-            # 维护 Agent 自建工具集，不经过主回复管线的按需加载，需拿到全部工具
-            return self._mgr.get_all_tools()
-
-        async def execute(self, name: str, args: dict) -> str:
-            return await self._mgr.execute(name, args)
-
-        async def close(self) -> None:
-            pass
-
-    def _always_allow(_args: dict, _ctx: Any, _policy: Any) -> ToolAccessRule:
-        return ToolAccessRule(action="allow")
-
-    tool_defs = skill_manager.get_all_tools()
-    specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
-    toolset = Toolset(executor=_SkillToolExecutor(), specs=specs)
+    # 常驻精简集 + skills__load_tools 按需加载：维护 Agent 每轮都重算工具集。
+    toolset = LiveToolset(
+        executor=SkillToolsetExecutor(
+            skill_manager, resident=MAINTENANCE_RESIDENT_SKILLS
+        )
+    )
 
     from sqlalchemy.ext.asyncio import async_sessionmaker
 

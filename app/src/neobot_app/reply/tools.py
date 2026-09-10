@@ -23,6 +23,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
+from neobot_app.skills.activation import SkillToolActivation
 from neobot_app.time_context import monotonic_seconds
 
 
@@ -269,13 +270,27 @@ class ReplyToolExecutor(ToolExecutor):
         self._logger = logger or NullLogger()
         self._skill_tokens: dict[str, Any] = {}
         # 本管线已按需加载的技能工具；管线结束时随执行器一起销毁。
-        self._activated_skills: set[str] = set()
-        self._tools_dirty = False
+        # 惰性构建：允许测试/插件在构造之后替换 skill_manager。
+        self._activation_cache: SkillToolActivation | None = None
+        self._activation_manager: Any = None
 
     @property
     def closed(self) -> bool:
         """Whether close has begun and new session work is rejected."""
         return self._closed
+
+    @property
+    def _activation(self) -> SkillToolActivation | None:
+        """当前 skill_manager 对应的按需加载状态；管理器被替换时自动重建。"""
+        manager = self._skill_manager
+        if manager is None:
+            return None
+        if self._activation_cache is None or self._activation_manager is not manager:
+            self._activation_cache = SkillToolActivation(
+                manager, authorize=self.is_tool_authorized
+            )
+            self._activation_manager = manager
+        return self._activation_cache
 
     async def __aenter__(self) -> ReplyToolExecutor:
         if self._closed:
@@ -348,29 +363,13 @@ class ReplyToolExecutor(ToolExecutor):
                         },
                     )
                 )
-            deferred = self._deferred_skill_names()
-            if deferred:
-                tools.append(
-                    _tool_def(
-                        "skills__load_tools",
-                        "按需加载技能的调用工具（工具定义默认不随提示词下发，以节省每次调用的 token）。"
-                        "需要用到某个技能时，先用本工具加载它，加载后该技能的工具即可在本轮直接调用。"
-                        "一次可加载多个技能；已经加载过的技能无需重复加载。",
-                        {
-                            "properties": {
-                                "skills": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "enum": deferred,
-                                    },
-                                    "description": "要加载的技能名列表，取自提示词的 <Skill 操作说明> 索引。",
-                                },
-                            },
-                            "required": ["skills"],
-                        },
-                    )
-                )
+            loader = (
+                self._activation.loader_definition()
+                if self._activation is not None
+                else None
+            )
+            if loader:
+                tools.append(loader)
         if self._cancel is not None:
             tools.append(
                 _tool_def(
@@ -769,7 +768,9 @@ class ReplyToolExecutor(ToolExecutor):
             )
         # 合并 Skill 系统的工具定义：常驻技能 + 本管线已按需加载的技能。
         if self._skill_manager is not None:
-            skill_tools = self._skill_manager.get_tools(self._activated_skills)
+            skill_tools = (
+                self._activation.tools() if self._activation is not None else []
+            )
             tools.extend(skill_tools)
             capture = getattr(self._skill_manager, "capture_execution_token", None)
             if callable(capture):
@@ -2082,12 +2083,9 @@ class ReplyToolExecutor(ToolExecutor):
 
     def _deferred_skill_names(self) -> list[str]:
         """仍处于「未加载」状态的技能名；已加载的技能不再出现在下拉里。"""
-        if self._skill_manager is None:
+        if self._activation is None:
             return []
-        names = getattr(self._skill_manager, "deferred_skill_names", None)
-        if not names:
-            return []
-        return sorted(name for name in names if name not in self._activated_skills)
+        return self._activation.candidates()
 
     def _load_skill_tools(self, args: dict) -> str:
         """把一个或多个技能的工具定义加入本管线后续的模型调用。
@@ -2095,70 +2093,17 @@ class ReplyToolExecutor(ToolExecutor):
         工具 schema 会随每次模型调用一起发送，全部常驻时开销极大；
         因此在模型明确需要某个技能时再加载，加载后本轮即可直接调用。
         """
-        if self._skill_manager is None:
+        if self._activation is None:
             return "Error: SkillManager 不可用"
-        raw = args.get("skills")
-        if isinstance(raw, str):
-            requested = [raw]
-        elif isinstance(raw, (list, tuple)):
-            requested = [str(item) for item in raw]
-        else:
-            return "Error: 缺少 skills 参数（字符串数组）"
-        requested = [item.strip() for item in requested if str(item).strip()]
-        if not requested:
-            return "Error: skills 参数为空"
-
-        known = set(getattr(self._skill_manager, "skill_names", None) or [])
-        added: list[str] = []
-        already: list[str] = []
-        unknown: list[str] = []
-        hidden: list[str] = []
-        for name in requested:
-            if name not in known:
-                unknown.append(name)
-                continue
-            if name in self._activated_skills or not self._skill_manager.is_tool_deferred(name):
-                already.append(name)
-                continue
-            self._activated_skills.add(name)
-            tool_names = self._skill_manager.skill_tool_names(name)
-            visible = [item for item in tool_names if self.is_tool_authorized(item)]
-            if not visible:
-                self._activated_skills.discard(name)
-                hidden.append(name)
-                continue
-            added.append(f"{name}: {', '.join(visible)}")
-
-        if added:
-            self._tools_dirty = True
-        lines: list[str] = []
-        if added:
-            lines.append("已加载技能工具（本轮即可直接调用）：")
-            lines.extend(f"  - {item}" for item in added)
-        if already:
-            lines.append(f"已经可用，无需重复加载：{', '.join(sorted(set(already)))}")
-        if unknown:
-            lines.append(f"未知技能名：{', '.join(sorted(set(unknown)))}")
-        if hidden:
-            lines.append(
-                f"当前会话无法使用（能力或白名单限制）：{', '.join(sorted(set(hidden)))}"
-            )
-        if not lines:
-            return "没有可加载的技能"
-        remaining = self._deferred_skill_names()
-        if remaining:
-            lines.append(f"尚未加载的技能：{', '.join(remaining)}")
-        return "\n".join(lines)
+        return self._activation.load(args)
 
     def activated_skill_names(self) -> list[str]:
         """本管线已按需加载的技能名（用于日志/调试）。"""
-        return sorted(self._activated_skills)
+        return self._activation.activated_names() if self._activation else []
 
     def consume_tools_dirty(self) -> bool:
         """取出并清除「工具列表已变化」标记，供调用方重建 tools。"""
-        dirty = self._tools_dirty
-        self._tools_dirty = False
-        return dirty
+        return self._activation.consume_dirty() if self._activation else False
 
     @staticmethod
     def _inspect_skill_resource_path(

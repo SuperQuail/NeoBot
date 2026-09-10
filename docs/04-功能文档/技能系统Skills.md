@@ -53,6 +53,13 @@ skills__load_tools(skills=["archive_crud", "browser"])
 （如 `agent_tools` 本体）既非常驻也不出现在 `skills__load_tools` 候选里，只作为共享运行时
 与执行入口，供解题/子 Agent 与按需包复用。
 
+按需加载状态由 [`skills/activation.py`](../../app/src/neobot_app/skills/activation.py) 的
+`SkillToolActivation` 承载，主回复管线（`ReplyToolExecutor`）与独立 Agent 共用同一实现：
+
+- `SkillManager.get_tools(activated, resident=...)` 的 `resident` 可为单个 Agent 覆盖常驻名单
+  （沙箱维护 Agent 只常驻维护相关技能，见 `skills/agent_toolset.py` 的
+  `SkillToolsetExecutor` + `LiveToolset`：后者每轮从执行器重算工具集，加载后立即生效）；
+
 要点：
 
 - 加载状态属于**当前回复管线**（`ReplyToolExecutor` 实例），管线结束时自然失效，

@@ -301,18 +301,27 @@ class SkillManager:
             return []
         return [tool["function"]["name"] for tool in registration.tools]
 
-    def get_tools(self, activated: Iterable[str] | None = None) -> list[dict]:
-        """聚合 Skill 的工具定义，自动加 ``{name}__`` 前缀。
+    def get_tools(
+        self,
+        activated: Iterable[str] | None = None,
+        *,
+        resident: Collection[str] | None = None,
+    ) -> list[dict]:
+        """聚合 Skill 的工具定义，自动加 ``{prefix}__`` 前缀。
 
         activated 中列出的技能会连同常驻技能一起返回；被延后加载的技能
         只有被显式激活后才会出现在提示词里(见 skills__load_tools)。
+
+        resident=None 使用管理器自身的常驻策略；传入集合则按该集合常驻
+        （不同 Agent 需要不同的常驻技能，例如沙箱维护 Agent 只需要维护相关技能）。
         """
         active = set(activated or ())
+        eager = self._eager_tool_skills if resident is None else set(resident)
         tools: list[dict] = []
         for name, registration in self._skills.items():
             if not registration.exposed:
                 continue
-            if self.is_tool_deferred(name) and name not in active:
+            if eager is not None and name not in eager and name not in active:
                 continue
             tools.extend(_deep_copy(tool) for tool in registration.tools)
         return tools
