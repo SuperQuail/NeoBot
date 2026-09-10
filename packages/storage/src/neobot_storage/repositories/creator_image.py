@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import delete as sql_delete, func, or_, select
+from sqlalchemy import case, delete as sql_delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,10 +78,15 @@ class SqlAlchemyCreatorImageAccess:
                 updated_at=now,
                 version=1,
             )
-            # set_ 里不含 gallery_no：编号只在首次入库时分配，后续更新保持不变
+            # 更新只在当前编号为空时补号（迁移前遗留/外部导入的图），
+            # 已分配的编号不会被覆盖——编号一旦确定就固定。
             stmt = stmt.on_conflict_do_update(
                 index_elements=["image_id"],
                 set_={
+                    "gallery_no": case(
+                        (CreatorImageData.gallery_no.is_(None), gallery_no),
+                        else_=CreatorImageData.gallery_no,
+                    ),
                     "source": source,
                     "file_hash": file_hash,
                     "file_path": file_path,

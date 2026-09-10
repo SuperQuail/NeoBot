@@ -151,6 +151,24 @@ async def test_gallery_number_is_assigned_once_and_never_floats(tmp_path, monkey
         await engine.dispose()
 
 
+async def test_externally_added_gallery_file_gets_a_number(tmp_path, monkeypatch):
+    """手动放进图库目录（无数据库记录）的图片，磁盘同步后也要拿到固定编号。"""
+    service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
+    try:
+        await _add_gallery_image(service, "g_one", "一")
+        (service._gallery_dir / "g_manual.png").write_bytes(_png_bytes())
+
+        await service._sync_image_sidecars(source="gallery")
+
+        records = await service.list_images(source="gallery", limit=99, offset=0)
+        numbers = {record.image_id: record.gallery_no for record in records}
+        assert numbers == {"g_one": 1, "g_manual": 2}
+        assert (await service._get_reference_by_gallery_no(2)).image_id == "g_manual"
+    finally:
+        await service.close()
+        await engine.dispose()
+
+
 async def test_missing_gallery_reference_reports_clear_error(tmp_path, monkeypatch):
     service, engine, uow_factory = await _make_service(tmp_path, monkeypatch)
     try:

@@ -77,6 +77,19 @@ async def test_gallery_no_is_written_once_and_survives_updates(session_factory):
         await session.commit()
 
 
+async def test_gallery_no_is_filled_when_missing(session_factory):
+    """迁移前遗留（编号为空）的记录，下次写入时补上编号。"""
+
+    async with session_factory() as session:
+        repo = SqlAlchemyCreatorImageAccess(session)
+        await _set(repo, "g_a")
+        assert (await repo.get("g_a")).gallery_no is None
+
+        filled = await _set(repo, "g_a", gallery_no=5, description="补号")
+        assert filled.gallery_no == 5
+        await session.commit()
+
+
 async def test_get_by_gallery_no_returns_matching_record(session_factory):
     """按编号查询必须命中唯一记录，未分配编号的记录查不到。"""
 

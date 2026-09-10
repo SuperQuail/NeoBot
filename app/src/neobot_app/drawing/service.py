@@ -1300,12 +1300,8 @@ class CreatorImageService:
             explicit_description=description,
         )
         async with self._uow_factory() as uow:
-            # 图库编号只在这里分配一次（最大值 +1），仓库层不会在更新时改写它
-            gallery_no = (
-                await uow.creator_images.next_gallery_no()
-                if source == GALLERY_SOURCE
-                else None
-            )
+            # 图库编号只在这里分配一次（现有最大值 +1），仓库层不会覆盖已有编号
+            gallery_no = await self._allocate_gallery_no(uow, source)
             record = await uow.creator_images.set(
                 image_id,
                 source=source,
@@ -1428,6 +1424,8 @@ class CreatorImageService:
                     original_width=prepared.original_width,
                     original_height=prepared.original_height,
                     image_source="部署者提供",
+                    # 手动放进图库目录的图片同样要有固定编号
+                    gallery_no=await self._allocate_gallery_no(uow, disk_source),
                 )
             await uow.commit()
 
@@ -1484,6 +1482,13 @@ class CreatorImageService:
             normalized = normalized.split(":", 1)[1]
         async with self._uow_factory() as uow:
             return await uow.creator_images.get(normalized)
+
+    @staticmethod
+    async def _allocate_gallery_no(uow: Any, source: str) -> int | None:
+        """图库记录入库时分配固定编号；暂存区等其它来源不参与编号。"""
+        if source != GALLERY_SOURCE:
+            return None
+        return await uow.creator_images.next_gallery_no()
 
     async def _ensure_gallery_capacity(self) -> None:
         async with self._uow_factory() as uow:
