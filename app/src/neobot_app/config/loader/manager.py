@@ -1,5 +1,7 @@
 """配置加载器"""
 
+import os
+import tempfile
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type, TypeVar
@@ -20,6 +22,30 @@ class ConfigLoadError(RuntimeError):
     由调用方决定处理方式：启动路径可以打印清单后退出，
     reload 路径应记录错误并保持旧配置生效。
     """
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """原子写入文本文件（同目录临时文件 + fsync + os.replace）。
+
+    config.toml 有三个写入者（本模块、面板、命令系统），直接 `open(w)`
+    截断写在崩溃/并发下可能留下半截文件，下次启动即解析失败。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _build_provider_extra_body(
@@ -368,6 +394,7 @@ class Config:
 
         existing_data: dict[Any, Any] = {}
         file_exists = file_path.exists()
+        load_error: Exception | None = None
 
         if file_exists:
             try:
@@ -392,7 +419,18 @@ class Config:
                     )
             except Exception as e:
                 logger.error(f"读取配置文件失败: {e}")
+                load_error = e
                 existing_data = {}
+
+        if load_error is not None:
+            # 解析失败时绝不能继续走「补全缺失项 → 写回」：dataclass_to_toml 会把
+            # schema 的所有字段都当成缺失项，等于用默认值整份覆盖用户配置
+            # （只有 config_backup/ 能人工救回）。宁可启动失败并报出原因。
+            raise ConfigLoadError(
+                f"配置文件解析失败，已保持原文件不变：{file_path}\n"
+                f"原因: {load_error}\n"
+                "请修复该文件（或先移走它重新生成）后重试。"
+            )
 
         toml_doc, missing_required, missing_optional = dataclass_to_toml(
             schema, existing_data if file_exists else None, is_root=True
@@ -417,8 +455,7 @@ class Config:
 
             assert toml_doc is not None, "toml_doc should not be None for valid dataclass"
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(tomlkit.dumps(toml_doc))
+                _atomic_write_text(file_path, tomlkit.dumps(toml_doc))
                 logger.info(
                     f"配置文件已{'更新并补全缺失项' if file_exists else '生成'}: {file_path}"
                 )
