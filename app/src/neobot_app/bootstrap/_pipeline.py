@@ -11,6 +11,7 @@ from neobot_app.observability.logging import set_runtime_event_dispatcher
 from neobot_app.observability.output import RuntimeOutput
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.runtime.application import NeoBotApplication
+from neobot_app.runtime.connection_readiness import ConnectionReadinessProbe
 
 if TYPE_CHECKING:
     from neobot_contracts.ports.screenshot import ScreenshotPort
@@ -30,6 +31,9 @@ from neobot_app.utils.logger import get_module_logger
 from neobot_app.bootstrap._providers import build_optional_agent_provider
 
 logger = get_module_logger("bootstrap.pipeline")
+
+#: 首次观察连接时愿意等待的秒数；超时只是状态，不影响启动成败。
+_CONNECTION_WAIT_SECONDS = 30.0
 
 
 def build_plugin_host(
@@ -324,6 +328,18 @@ def build_pipelines_and_app(
         logger=logger_factory.get_logger("app.event_gateway"),
     )
 
+    # 只有「需要等待外部框架连入」的适配器才装配连接探针：内嵌 local 适配器
+    # 自带服务，没有连接等待这回事。
+    connection_probe = (
+        ConnectionReadinessProbe(
+            adapter,
+            logger=logger_factory.get_logger("app.adapter_readiness"),
+            wait_seconds=_CONNECTION_WAIT_SECONDS,
+        )
+        if getattr(adapter, "requires_connection_wait", False)
+        else None
+    )
+
     return NeoBotApplication(
         adapter=adapter,
         chat_stream=chat_stream,
@@ -350,4 +366,5 @@ def build_pipelines_and_app(
         drawing_manager=drawing_manager,
         background_coros=background_coros,
         self_heal_manager=self_heal_manager,
+        connection_probe=connection_probe,
     )

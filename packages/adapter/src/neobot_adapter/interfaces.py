@@ -35,6 +35,16 @@ class RuntimeAdapter(Protocol):
     @property
     def connected(self) -> bool: ...
 
+    @property
+    def http_url(self) -> str:
+        """本地适配器（local 模式）的 HTTP 地址；不适用时为空串。"""
+        ...
+
+    @property
+    def ws_url(self) -> str:
+        """本地适配器（local 模式）的 WebSocket 地址；不适用时为空串。"""
+        ...
+
     async def start(self) -> None: ...
 
     async def stop(self) -> None: ...

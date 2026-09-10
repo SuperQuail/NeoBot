@@ -59,6 +59,16 @@ class OneBotAdapter:
         return bool(self._core.active_connections)
 
     @property
+    def http_url(self) -> str:
+        """反向 WS 模式没有本地 HTTP 服务；显式声明以统一 RuntimeAdapter 契约。"""
+        return ""
+
+    @property
+    def ws_url(self) -> str:
+        """反向 WS 模式由外部框架主动连入，本端无客户端地址。"""
+        return ""
+
+    @property
     def core(self) -> AdapterCore:
         return self._core
 

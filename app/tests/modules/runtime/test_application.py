@@ -109,6 +109,8 @@ def _make_app(
     app._background_coros = []
     app._background_tasks = []
     app._self_heal_manager = None
+    app._connection_probe = None
+    app._connection_state = None
     return app
 
 
