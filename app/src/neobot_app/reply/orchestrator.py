@@ -2492,12 +2492,17 @@ class ReplyOrchestrator:
                             cancel_for_silence(f"tool:{name}")
                             return
                     except Exception as tool_exc:
-                        tool_error = f"工具 {name} 执行失败"
+                        # 保留失败原因：只记 error_type 的话，日志与模型都拿不到
+                        # 真实原因（旧实现连 str(exc) 都没保留）。回给模型的文案
+                        # 先脱敏，避免异常信息里的密钥进入 LLM 上下文。
+                        raw_detail = f"{type(tool_exc).__name__}: {tool_exc}".strip()
+                        detail = _scrub_secret_values(raw_detail)[:300]
+                        tool_error = f"工具 {name} 执行失败：{detail}"
                         self._logger.warning(
                             f"工具调用失败: {name}",
                             event_id=event.event_id,
                             tool=name,
-                            error_type=type(tool_exc).__name__,
+                            error=detail,
                         )
                         await self._emit_runtime_event(
                             "tool.call.after",
