@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from neobot_app.utils.ssrf import validate_public_url_async
 from neobot_app.web_search.manager import SearchManager
 from neobot_app.web_search.models import SearchResponse, SearchResult
 
@@ -327,6 +328,13 @@ class SearchSession:
         import asyncio
 
         async def _fetch_one(r: SearchResult) -> SearchResult:
+            # 搜索结果里的 URL 来自第三方页面（可被 SEO/恶意内容影响），
+            # 必须按 SSRF 处理：否则可被引导去探测内网、本机面板(9981)
+            # 或文件服务器(8765)。校验同时覆盖 IP 字面量与 DNS 解析结果。
+            if not await validate_public_url_async(r.url):
+                r.content = "[已阻止] 该地址不是公网地址，未抓取"
+                r.content_fetched = False
+                return r
             try:
                 resp = await client.get(r.url, headers={
                     "User-Agent": "Mozilla/5.0 (compatible; NeoBot/1.0)",
