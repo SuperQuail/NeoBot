@@ -343,7 +343,10 @@ class ReplyOrchestrator:
         self._config_update_callback = config_update_callback
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
-        self._tool_executors: set[Any] = set()
+        #: 事件 ID -> 该次回复创建的工具执行器。
+        #: 必须按事件索引并在回复结束时释放：旧实现只 add 不 remove，
+        #: 每个 agent 模式回复都会永久留下一个持有完整对话历史的执行器。
+        self._tool_executors: dict[str, Any] = {}
         self._agent_tool_turns: dict[str, tuple[Any, Any, list[dict]]] = {}
         self._active_pipelines: dict[str, asyncio.Task[None]] = {}
         self._last_reply_time: dict[str, float] = {}
@@ -553,6 +556,7 @@ class ReplyOrchestrator:
                     runtime.finish_turn(context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED})
                 except Exception as exc:
                     self._logger.warning("agent 目标续跑未能调度", error=str(exc))
+            self._release_executor(event.event_id)
             if on_reply_done is not None:
                 callback_task = asyncio.ensure_future(on_reply_done())
                 self._callback_tasks.add(callback_task)
@@ -578,6 +582,33 @@ class ReplyOrchestrator:
         self._active_pipelines[pipeline_key] = task
         task.add_done_callback(_cleanup)
         return event
+
+    def _release_executor(self, event_id: str) -> None:
+        """释放某次回复创建的工具执行器。
+
+        执行器持有该轮完整对话历史与技能 token，必须随管线结束释放；
+        关闭失败只记日志，不能影响管线收尾。
+        """
+        executor = self._tool_executors.pop(event_id, None)
+        if executor is None:
+            return
+        close_task = asyncio.ensure_future(executor.close())
+        self._callback_tasks.add(close_task)
+
+        def _done(done_task: asyncio.Future[None]) -> None:
+            self._callback_tasks.discard(close_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self._logger.warning(
+                    "回复工具执行器释放失败",
+                    event_id=event_id,
+                    error=str(exc),
+                )
+
+        close_task.add_done_callback(_done)
 
     def is_pipeline_active(self, kind: str, conversation_id: str) -> bool:
         pipeline_key = f"{kind}:{conversation_id}"
@@ -754,7 +785,7 @@ class ReplyOrchestrator:
                 await asyncio.gather(*pending, return_exceptions=True)
 
         async def _close_executors() -> None:
-            executors = list(self._tool_executors)
+            executors = list(self._tool_executors.values())
             if not executors:
                 return
             fatal: BaseException | None = None
@@ -2035,7 +2066,7 @@ class ReplyOrchestrator:
             config_update_callback=self._config_update_callback,
             native_vision_provider=self._provider,
         )
-        self._tool_executors.add(reply_toolset.executor)
+        self._tool_executors[event.event_id] = reply_toolset.executor
         if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext
