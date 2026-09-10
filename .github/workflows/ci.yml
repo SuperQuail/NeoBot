@@ -56,8 +56,12 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v7
 
+      # 版本取自前端的 package.json#packageManager：仓库根目录没有 package.json，
+      # 不显式指定文件时 action 会直接报 "No pnpm version is specified"。
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
+        with:
+          package-json-file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
 
       - name: 安装 Node
         uses: actions/setup-node@v4
