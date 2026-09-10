@@ -452,7 +452,7 @@ class BotConfigManager:
                 else tomlkit.document()
             )
             current = document.unwrap() if self.config_path.is_file() else {}
-            _merge_into_document(document, _diff_document(current, config or {}))
+            _merge_into_document(document, _diff_document(current, config or {}, _managed_tree(BotConfig)))
             source = tomlkit.dumps(document)
         if expected_revision is not None and expected_revision != self.revision():
             raise ConfigConflictError("配置文件已被其它会话修改，请重新读取后再保存")
@@ -514,7 +514,9 @@ class BotConfigManager:
         if errors:
             raise ConfigValidationError(errors)
 
-        _merge_into_document(document, _diff_document(current, new_config))
+        _merge_into_document(
+            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+        )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
         source = tomlkit.dumps(document)
@@ -563,7 +565,9 @@ class BotConfigManager:
         if errors:
             raise ConfigValidationError(errors)
 
-        _merge_into_document(document, _diff_document(current, new_config))
+        _merge_into_document(
+            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+        )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=15)
         source = tomlkit.dumps(document)
@@ -723,7 +727,9 @@ class BotConfigManager:
         if config_errors:
             raise ConfigValidationError(config_errors)
 
-        _merge_into_document(document, _diff_document(current, new_config))
+        _merge_into_document(
+            document, _diff_document(current, new_config, _managed_tree(BotConfig))
+        )
         if self.config_path.is_file():
             backup_config(self.config_path, self.backup_dir, max_backups=max_backups)
         source = tomlkit.dumps(document)
@@ -767,22 +773,63 @@ def _assignment_items(assignments: dict[str, Any]) -> list[tuple[str, str]]:
 _DELETE = object()
 _MISSING = object()
 
+#: 自由映射字段（dict 类型）：键由用户/账号决定，例如分群回复系数，
+#: 表单里删掉某个键就是真的要删，不做「未知键保护」。
+_FREE_MAPPING = object()
 
-def _diff_document(current: Any, new: Any) -> Any:
-    """只保留相对当前文件真正变化的键，避免整份重写丢掉注释与顺序。"""
+_MANAGED_TREES: dict[type, dict[str, Any]] = {}
+
+
+def _managed_tree(schema: type) -> dict[str, Any]:
+    """按 dataclass 声明生成托管字段树，用于判断哪些键允许被表单删除。
+
+    - dataclass 字段 -> 递归子字典（分区：只有声明过的键才允许删）
+    - dict 字段 -> ``_FREE_MAPPING``（键由用户决定，允许删）
+    - 其它字段 -> ``None``（标量/数组，整值替换，不涉及删键）
+    """
+    cached = _MANAGED_TREES.get(schema)
+    if cached is not None:
+        return cached
+    tree: dict[str, Any] = {}
+    if is_dataclass(schema):
+        for field_obj in fields(schema):
+            inner = _inner_types(field_obj.type)
+            target = inner[0] if inner else field_obj.type
+            if is_dataclass(target):
+                tree[field_obj.name] = _managed_tree(target)
+            elif get_origin(target) is dict:
+                tree[field_obj.name] = _FREE_MAPPING
+            else:
+                tree[field_obj.name] = None
+    _MANAGED_TREES[schema] = tree
+    return tree
+
+
+def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
+    """只保留相对当前文件真正变化的键，避免整份重写丢掉注释与顺序。
+
+    ``managed`` 是 :func:`_managed_tree` 给出的托管字段树。表单只认识托管字段，
+    因此文件里那些面板不认识的键（用户自定义分区、插件写入的字段、更新版本
+    留下的新字段）一律保留：之前它们会被当成「表单里删掉的键」直接删掉，
+    一次面板保存就能把它们从 config.toml 里抹掉。
+    """
     if not isinstance(current, dict) or not isinstance(new, dict):
         return new
     changes: dict[str, Any] = {}
     for key, value in new.items():
+        child = managed.get(key) if isinstance(managed, dict) else None
         if isinstance(value, dict) and isinstance(current.get(key), dict):
-            nested = _diff_document(current[key], value)
+            nested = _diff_document(current[key], value, child)
             if nested:
                 changes[key] = nested
         elif current.get(key, _MISSING) != value:
             changes[key] = value
     for key in current:
-        if key not in new:
-            changes[key] = _DELETE
+        if key in new:
+            continue
+        if isinstance(managed, dict) and key not in managed:
+            continue
+        changes[key] = _DELETE
     return changes
 
 
