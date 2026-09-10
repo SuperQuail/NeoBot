@@ -261,6 +261,31 @@ async def test_unconfigured_panel_blocks_external_access(tmp_path: Path) -> None
         await server.stop()
 
 
+async def test_forwarded_for_cannot_forge_loopback(tmp_path: Path) -> None:
+    """客户端伪造 X-Forwarded-For 不能把自己变成「本机」，从而抢设面板密码。
+
+    可信代理会把真实客户端地址追加到 XFF **末尾**；客户端自己带的那些项在最左边，
+    因此只有最右一项可用于判定来源。旧实现取 split(",")[0]，任何人加一个
+    ``X-Forwarded-For: 127.0.0.1`` 就能通过「仅本机可设置密码」。
+    """
+    server, _, base, _ = await _start_panel(tmp_path, password=None, trust_proxy=True)
+    try:
+        spoofed = {"X-Forwarded-For": "127.0.0.1, 203.0.113.9"}
+        async with httpx.AsyncClient() as client:
+            status = await client.get(base + "/api/auth/status", headers=spoofed)
+            setup = await client.post(
+                base + "/api/auth/setup",
+                json={"password": PASSWORD, "confirm": PASSWORD},
+                headers=spoofed,
+            )
+
+        assert status.json()["loopback"] is False
+        assert setup.status_code == 403
+        assert server.passwords.configured is False
+    finally:
+        await server.stop()
+
+
 async def test_unconfigured_panel_allows_loopback_setup(tmp_path: Path) -> None:
     """本机访问未配置密码的面板时，只允许进入设置流程。"""
     server, _, base, _ = await _start_panel(tmp_path, password=None)

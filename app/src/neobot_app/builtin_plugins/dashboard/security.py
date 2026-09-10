@@ -120,12 +120,18 @@ def secrets_equal(left: str, right: str) -> bool:
 
 
 def client_ip(request: Any, *, trust_proxy: bool = False) -> str:
-    """解析客户端地址；仅在显式信任代理时使用转发头。"""
+    """解析客户端地址；仅在显式信任代理时使用转发头。
+
+    XFF 取**最右**一项而不是最左：最左是客户端自己可以随意伪造的（浏览器/脚本
+    发一个 ``X-Forwarded-For: 127.0.0.1`` 就变成了「本机访问」，从而绕过
+    auth_setup 的「仅本机可设置密码」与 allow_remote_manage=false 的远程限制）。
+    最右一项由我们信任的那一跳代理追加，客户端无法控制。
+    """
     if trust_proxy:
         for header in ("X-Forwarded-For", "X-Real-IP"):
             raw = request.headers.get(header)
             if raw:
-                candidate = raw.split(",")[0].strip()
+                candidate = raw.split(",")[-1].strip()
                 if candidate:
                     return candidate
     peer = request.transport.get_extra_info("peername") if request.transport else None
