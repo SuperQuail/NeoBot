@@ -196,6 +196,27 @@ async def test_run_solve_exception_marks_failed_and_notifies() -> None:
     await manager.shutdown()
 
 
+async def test_completed_solution_is_pushed_as_bare_markdown() -> None:
+    """完成通知的解答必须是裸 Markdown 原文，不能被 JSON 转义成一行。"""
+    hub = _FakeHub(started=True)
+    solution = "# 结论\n\n1. 第一步\n2. 第二步\n\n```python\nprint(1)\n```"
+    manager = _make_manager(agent=_FakeSolverAgent(solution=solution), hub=hub)
+
+    await manager.submit(**_submit_kwargs())
+
+    contents = [publish["content"] for publish in hub.published]
+    completed = next(content for content in contents if "解题结果" in content)
+    # 头部元信息仍是可解析的 JSON
+    header = json.loads(completed.split("\n", 1)[0])
+    assert header["ok"] is True
+    assert header["kind"] == "solve_result"
+    assert header["task_id"]
+    # 解答原文逐字出现，换行与代码块没有被转义
+    assert solution in completed
+    assert "\\n" not in completed
+    await manager.shutdown()
+
+
 async def test_run_solve_without_solution_falls_back_to_failed() -> None:
     """Agent 未提交解答时须重新唤起一次，仍无解答则任务失败。"""
     agent = _FakeSolverAgent(solution="")

@@ -444,16 +444,15 @@ class ProblemSolverManager:
     async def _on_completed(self, task: SolveTask) -> None:
         question_preview = task.question[:200]
         solution = task.markdown_solution or ""
-        notification = json.dumps(
+        header = json.dumps(
             {
                 "ok": True,
                 "kind": "solve_result",
                 "status": "completed",
                 "task_id": task.task_id,
                 "question": question_preview,
-                "solution": solution,
                 "next": [
-                    {"action": "reply_to_user", "text": "根据 solution 回复用户"},
+                    {"action": "reply_to_user", "text": "按下方解题结果原文回复用户"},
                     {
                         "action": "note",
                         "text": "需要发文件时用 sandbox_manager__send_chat_file；"
@@ -462,6 +461,14 @@ class ProblemSolverManager:
                 ],
             },
             ensure_ascii=False,
+        )
+        # 解答保持裸 Markdown：写进 JSON 会把换行转义成 \n，
+        # 标题/列表/代码块在通知里变成一行字，模型抄给用户时更容易走样。
+        notification = (
+            f"{header}\n\n"
+            "--- 解题结果（Markdown 原文，直接据此回复用户）---\n\n"
+            f"{solution}\n\n"
+            "--- 解题结果结束 ---"
         )
         self._logger.info(
             "推送解题完成通知",
