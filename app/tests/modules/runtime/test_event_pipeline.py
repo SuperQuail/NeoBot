@@ -116,6 +116,105 @@ async def test_group_message_event_duplicate_not_pushed_twice():
 
 
 @pytest.mark.asyncio
+async def test_frozen_pipeline_drops_message_before_queue_and_summary():
+    """运维冻结期间:消息不入队、不触发档案总结,命令系统之外的一切都不执行。"""
+    from neobot_app.runtime.freeze_service import FreezeService
+
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue)
+    freeze_service = FreezeService()
+    freeze_service.freeze(reason="token 风暴", operator="panel")
+    pipeline._freeze_service = freeze_service
+
+    recorded: list[dict] = []
+
+    class _Summary:
+        async def record_message(self, **kwargs):
+            recorded.append(kwargs)
+
+    pipeline._archive_summary_service = _Summary()
+
+    event = {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": 9101,
+        "user_id": 7,
+        "group_id": 42,
+        "message": [{"type": "text", "data": {"text": "hello"}}],
+        "raw_message": "hello",
+    }
+    await pipeline.handle_group_message_event(event)
+
+    assert queue.size("42") == 0
+    assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_frozen_pipeline_resumes_after_unfreeze():
+    """解冻后同一条链路必须恢复正常入队。"""
+    from neobot_app.runtime.freeze_service import FreezeService
+
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue)
+    freeze_service = FreezeService()
+    pipeline._freeze_service = freeze_service
+
+    freeze_service.freeze(reason="storm")
+    pipeline._freeze_service = freeze_service
+    await pipeline.handle_group_message_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 9102,
+            "user_id": 7,
+            "group_id": 42,
+            "message": [{"type": "text", "data": {"text": "hello"}}],
+            "raw_message": "hello",
+        }
+    )
+    assert queue.size("42") == 0
+
+    freeze_service.unfreeze()
+    await pipeline.handle_group_message_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 9103,
+            "user_id": 7,
+            "group_id": 42,
+            "message": [{"type": "text", "data": {"text": "hello"}}],
+            "raw_message": "hello",
+        }
+    )
+    assert queue.size("42") == 1
+
+
+@pytest.mark.asyncio
+async def test_private_frozen_pipeline_drops_message():
+    """私聊同样受冻结熔断约束。"""
+    from neobot_app.runtime.freeze_service import FreezeService
+
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(friend_queue=queue)
+    freeze_service = FreezeService()
+    freeze_service.freeze(reason="storm")
+    pipeline._freeze_service = freeze_service
+
+    await pipeline.handle_private_message_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "message_id": 9104,
+            "user_id": 7,
+            "message": [{"type": "text", "data": {"text": "hello"}}],
+            "raw_message": "hello",
+        }
+    )
+
+    assert queue.size("7") == 0
+
+
+@pytest.mark.asyncio
 async def test_image_parse_empty_message_returns_structured_failure():
     skill = object.__new__(ImageParseSkill)
 

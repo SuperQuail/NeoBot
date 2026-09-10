@@ -215,6 +215,16 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.sleep"),
     )
 
+    # ── 冻结服务(/freeze /unfreeze、网页面板熔断按钮共用) ──
+    # 事故中必须能一键停火:冻结后事件管线、档案自动总结与已启动的回复管线都会让位。
+    from neobot_app.runtime.freeze_service import (
+        FreezeService,
+        initialize_freeze_service,
+    )
+
+    freeze_service = FreezeService(logger=logger_factory.get_logger("app.freeze"))
+    initialize_freeze_service(freeze_service)
+
     # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
     from neobot_app.cache import CacheCalculator
 
@@ -418,6 +428,7 @@ def create_application() -> NeoBotApplication:
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
         sleep_service=sleep_service,
+        freeze_service=freeze_service,
         config_reload_callback=_reload_config_from_command,
     )
 
@@ -505,6 +516,7 @@ def create_application() -> NeoBotApplication:
         fallback_provider=provider,
         logger_factory=logger_factory,
         skill_manager=skill_manager,
+        freeze_service=freeze_service,
     )
     tts_service = build_tts_service(config=config, logger_factory=logger_factory)
 
@@ -574,6 +586,7 @@ def create_application() -> NeoBotApplication:
         credential_manager=credential_manager,
         config_update_callback=_make_chat_config_update_callback(config),
         sleep_service=sleep_service,
+        freeze_service=freeze_service,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
@@ -634,6 +647,7 @@ def create_application() -> NeoBotApplication:
             "command_service": (command_service, "命令服务"),
             "credential_manager": (credential_manager, "凭据管理器"),
             "sleep_service": (sleep_service, "睡眠服务"),
+            "freeze_service": (freeze_service, "冻结服务（事故熔断）"),
             "cache_calculator": (cache_calculator, "缓存命中计算器"),
             "skill_manager": (skill_manager, "Skill 管理器"),
             "markdown_skill_registry": (markdown_skill_registry, "Markdown Skill 注册表"),
@@ -692,6 +706,7 @@ def create_application() -> NeoBotApplication:
         command_service=command_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
+        freeze_service=freeze_service,
     )
 
     # 面板等服务需要读取 application（重启入口）

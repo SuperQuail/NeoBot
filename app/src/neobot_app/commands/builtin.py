@@ -88,6 +88,40 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_awake,
         ),
         Command(
+            name="freeze",
+            description=(
+                "冻结 Bot:立即停止一切自动回复与档案自动总结(进程继续运行),"
+                "用于 token 风暴等失控场景;命令系统仍可用"
+            ),
+            permission=PERM_SUPER_ADMIN,
+            usage="[时长] [原因]",
+            params=(
+                (
+                    "时长",
+                    "可选。如 30m / 2h;留空表示一直冻结到手动 /unfreeze",
+                ),
+                (
+                    "原因",
+                    "可选。记录到日志与面板状态的冻结原因",
+                ),
+            ),
+            handler=_handle_freeze,
+        ),
+        Command(
+            name="unfreeze",
+            description="解除 Bot 冻结,恢复正常回复与记忆处理",
+            permission=PERM_SUPER_ADMIN,
+            params=(),
+            handler=_handle_unfreeze,
+        ),
+        Command(
+            name="freeze_status",
+            description="查看 Bot 当前是否处于冻结状态",
+            permission=PERM_SUB_ADMIN,
+            params=(),
+            handler=_handle_freeze_status,
+        ),
+        Command(
             name="reload",
             description="热重载配置(不重启进程),并报告哪些配置项需重启才生效",
             permission=PERM_SUPER_ADMIN,
@@ -240,6 +274,64 @@ async def _handle_reboot(ctx: CommandContext) -> str:
     if not ctx.service.request_restart():
         return "重启功能不可用(当前启动方式不支持)"
     return "正在重启…请稍候"
+
+
+async def _handle_freeze(ctx: CommandContext) -> str:
+    """冻结 Bot:一切自动行为立即停止,命令系统仍可用于解冻。"""
+    service = getattr(ctx.service, "freeze_service", None)
+    if service is None:
+        return "冻结功能不可用(未注入冻结服务)"
+
+    seconds: float | None = None
+    reason_parts = list(ctx.args)
+    if reason_parts:
+        parsed, error = parse_sleep_duration(reason_parts[0])
+        if error is None:
+            seconds = parsed
+            reason_parts = reason_parts[1:]
+        elif _looks_like_duration(reason_parts[0]):
+            return error
+
+    reason = " ".join(part for part in reason_parts if part).strip()
+    _ok, message = service.freeze(
+        reason=reason or "freeze_command",
+        operator=f"{ctx.kind}:{ctx.user_id}",
+        seconds=seconds,
+    )
+    return message
+
+
+async def _handle_unfreeze(ctx: CommandContext) -> str:
+    """解除冻结。"""
+    service = getattr(ctx.service, "freeze_service", None)
+    if service is None:
+        return "冻结功能不可用(未注入冻结服务)"
+    _was_frozen, message = service.unfreeze(
+        reason="unfreeze_command", operator=f"{ctx.kind}:{ctx.user_id}"
+    )
+    return message
+
+
+async def _handle_freeze_status(ctx: CommandContext) -> str:
+    """查看冻结状态。"""
+    service = getattr(ctx.service, "freeze_service", None)
+    if service is None:
+        return "冻结功能不可用(未注入冻结服务)"
+    status = service.status()
+    if not status.get("frozen"):
+        return "Bot 当前未冻结。"
+    remaining = status.get("remaining_seconds")
+    tail = "需要手动 /unfreeze 解冻。" if remaining is None else f"剩余约 {remaining} 秒自动解冻。"
+    return (
+        f"Bot 已冻结(自 {status.get('frozen_at_text') or '未知时间'},"
+        f"已持续 {status.get('frozen_for_seconds')} 秒)。"
+        f"原因:{status.get('reason') or '未说明'};操作者:{status.get('operator') or '未知'}。{tail}"
+    )
+
+
+def _looks_like_duration(token: str) -> bool:
+    """判断一个参数是不是「想写时长但写错了」(如 2x),用于给出明确报错。"""
+    return bool(re.fullmatch(r"\s*\d+(?:\.\d+)?\s*[A-Za-z]{0,2}\s*", token or ""))
 
 
 async def _handle_sleep(ctx: CommandContext) -> str:

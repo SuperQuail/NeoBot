@@ -92,6 +92,7 @@ class EventPipeline:
         command_service: Any | None = None,
         credential_manager: Any | None = None,
         sleep_service: Any | None = None,
+        freeze_service: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -108,6 +109,7 @@ class EventPipeline:
         self._command_service = command_service
         self._credential_manager = credential_manager
         self._sleep_service = sleep_service
+        self._freeze_service = freeze_service
         self._subscriptions: List[Subscription] = []
         self._started = False
         self._warmed_up_friends: set[str] = set()
@@ -311,6 +313,28 @@ class EventPipeline:
         self._start_command_sync_reply(message=message, queue=queue, queue_key=queue_key, background=reply)
         return True
 
+    def is_frozen(self) -> bool:
+        """Bot 是否处于运维冻结状态(冻结期间不回复、不触发记忆总结)。"""
+        service = getattr(self, "_freeze_service", None)
+        return bool(service is not None and service.is_frozen())
+
+    def _skip_while_frozen(
+        self, *, kind: str, queue_key: str, message: Any
+    ) -> bool:
+        """冻结熔断:命令已在前面处理完,这里丢掉后续的回复与记忆管线。
+
+        必须在 push/档案总结之前返回,否则冻结期间仍会积压记忆总结任务。
+        """
+        if not self.is_frozen():
+            return False
+        self._logger.info(
+            "Bot 已冻结，消息不进入回复与记忆管线",
+            conversation_kind=kind,
+            conversation_id=queue_key,
+            message_id=getattr(message, "message_id", None),
+        )
+        return True
+
     @human_message_entry
     async def handle_private_message_event(
         self,
@@ -345,6 +369,11 @@ class EventPipeline:
             if result is not None and result.consumed:
                 command_consumed = True
                 command_background = result.background
+
+        if self._skip_while_frozen(
+            kind="private", queue_key=queue_key, message=message
+        ):
+            return
 
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
@@ -528,6 +557,11 @@ class EventPipeline:
             if result is not None and result.consumed:
                 command_consumed = True
                 command_background = result.background
+
+        if self._skip_while_frozen(
+            kind="group", queue_key=queue_key, message=message
+        ):
+            return
 
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复

@@ -105,6 +105,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | [agents/self_heal.py](../../app/src/neobot_app/agents/self_heal.py) | 自修复 Agent：异常累积触发、诊断修复、通知管理员 | `SelfHealAgent`、`SelfHealManager`、`build_self_heal_agent` |
 | [runtime/notifications.py](../../app/src/neobot_app/runtime/notifications.py) | 后台任务完成通知（绘图/解题等） | `BackgroundNotificationHub` |
 | [runtime/archive_memory_summary.py](../../app/src/neobot_app/runtime/archive_memory_summary.py) | 档案自动总结 Agent 的运行时服务 | `ArchiveMemoryAutoSummaryService` |
+| [runtime/freeze_service.py](../../app/src/neobot_app/runtime/freeze_service.py) | 运维冻结熔断：一键停掉回复管线、档案自动总结与管线内排队调用（`/freeze`、网页面板） | `FreezeService` |
 | [skills/agent_delegation.py](../../app/src/neobot_app/skills/agent_delegation.py) | 主 Agent 委托子 Agent 的 delegate 工具 | `AgentDelegationSkill` |
 | [providers/base.py](../../packages/chat/src/neobot_chat/providers/base.py) | LLM Provider 抽象与 HTTP 基础实现 | `Provider`、`BaseHTTPProvider` |
 | [providers/openai.py](../../packages/chat/src/neobot_chat/providers/openai.py) | OpenAI 兼容 Provider（含 DeepSeek 官方/OpenAI 样式思考模式转换） | `OpenAIProvider` |
