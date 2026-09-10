@@ -90,3 +90,40 @@ async def test_cache_is_per_conversation() -> None:
 def test_service_has_counter_cache_attribute() -> None:
     service = _make_service()
     assert service._counter_cache == {}
+
+
+async def test_cache_ttl_revalidates_external_changes(monkeypatch) -> None:
+    """外部删除/清零计数器后，本进程不能把陈旧 blob 整块写回。
+
+    缓存永不失效时：外部删掉 memory_counter 行，下一条消息会把旧 messages
+    全量写回（删除被撤销）。缓存带 TTL 后，过期即重新读库、尊重外部状态。
+    """
+    archive = _FakeArchive()
+    service = _make_service(archive=archive, group_interval=100)
+    await _record_many(service, 2)
+
+    # 缓存有效期内不重读（这正是省开销的来源）
+    loads = 0
+    original_load = service._load_counter
+
+    async def _counting_load(key):
+        nonlocal loads
+        loads += 1
+        return await original_load(key)
+
+    monkeypatch.setattr(service, "_load_counter", _counting_load)
+    await _record_many(service, 1)
+    assert loads == 0
+
+    # 外部删除该计数器行；缓存过期后的下一条消息必须重新读库
+    archive._items.pop(("memory_counter", "group:1"))
+    monkeypatch.setattr(
+        "neobot_app.runtime.archive_memory_summary._COUNTER_CACHE_TTL_SECONDS", 0.0
+    )
+    await _record_many(service, 1)
+
+    assert loads == 1
+    payload = json.loads(archive._items[("memory_counter", "group:1")]["value"])
+    assert payload["count"] == 1
+    # 关键：之前那条 blob 里的消息（外部删除的对象）没有被整块写回
+    assert len(payload["messages"]) == 1
