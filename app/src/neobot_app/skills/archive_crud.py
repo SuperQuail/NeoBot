@@ -96,7 +96,7 @@ class ArchiveCRUDSkill(SkillModule):
             },
             "required": ["table_name", "key"],
         }
-        return [
+        tools = [
             self._tool_def(
                 "save_archive",
                 "创建或更新一条档案记忆。修改已有档案时，必须写回整合后的完整内容，不要只写增量。",
@@ -206,6 +206,15 @@ class ArchiveCRUDSkill(SkillModule):
                 },
             ),
         ]
+        if not self._allow_delete:
+            # 未启用删除时干脆不把工具暴露给模型（与 allow_delete=false 语义一致），
+            # 避免模型反复调用一个必然被拒的工具。
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") != "delete_archive"
+            ]
+        return tools
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> str:
         handler = _HANDLERS.get(tool_name)
@@ -219,6 +228,35 @@ _ARCHIVE_PAGE_SIZE = 500
 _OUTLINE_MAX_LINES = 80
 _OUTLINE_LINE_CHARS = 80
 _MAX_PATCH_OPERATIONS = 20
+
+
+def _table_guard(self: ArchiveCRUDSkill, table_name: str) -> str | None:
+    """校验表名是否在 ``agent.memory.archive.allowed_tables`` 白名单内。
+
+    返回 None 表示放行，否则返回给模型的错误文案。留空表示不限制。
+    """
+    allowed = tuple(self._allowed_tables or ())
+    if not allowed or table_name in allowed:
+        return None
+    return _json(
+        {
+            "ok": False,
+            "error": f"该档案表不允许访问: {table_name}",
+            "allowed_tables": list(allowed),
+        }
+    )
+
+
+def _delete_guard(self: ArchiveCRUDSkill) -> str | None:
+    """``agent.memory.archive.allow_delete`` 开关（默认 false）。"""
+    if self._allow_delete:
+        return None
+    return _json(
+        {
+            "ok": False,
+            "error": "档案删除未启用（agent.memory.archive.allow_delete=false）",
+        }
+    )
 
 
 def _apply_patch_operations(value: str, operations: list[Any]) -> tuple[str, list[str]]:
@@ -365,6 +403,9 @@ async def _handle_save_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     value = str(args.get("value", "")).strip()
     if not table_name or not key or not value:
         return _json({"ok": False, "error": "缺少必要参数"})
+    blocked = _table_guard(self, table_name)
+    if blocked is not None:
+        return blocked
     try:
         # 原始档案完整保存,不做长度截断;超长档案在渲染时自动生成摘要,
         # 完整内容通过 read_archive 的 offset 分页阅读
@@ -391,6 +432,9 @@ async def _handle_patch_archive(self: ArchiveCRUDSkill, args: dict) -> str:
         return _json({"ok": False, "error": "缺少必要参数"})
     if not isinstance(operations, list) or not operations:
         return _json({"ok": False, "error": "operations 不能为空"})
+    blocked = _table_guard(self, table_name)
+    if blocked is not None:
+        return blocked
     if len(operations) > _MAX_PATCH_OPERATIONS:
         return _json(
             {"ok": False, "error": f"单次最多 {_MAX_PATCH_OPERATIONS} 个操作"}
@@ -442,6 +486,9 @@ async def _handle_patch_archive(self: ArchiveCRUDSkill, args: dict) -> str:
 async def _handle_read_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
+    blocked = _table_guard(self, str(args.get("table_name", "")).strip())
+    if blocked is not None:
+        return blocked
     try:
         mode = str(args.get("mode") or "full").strip().lower()
         if mode not in ("full", "outline"):
@@ -481,6 +528,8 @@ async def _handle_read_archive(self: ArchiveCRUDSkill, args: dict) -> str:
 
 
 async def _handle_read_pending_messages(self: ArchiveCRUDSkill, args: dict) -> str:
+    # 有意不套 allowed_tables 白名单：这里读的是自动总结用的内部计数表
+    # （memory_counter），不是用户档案；限制它会让档案自动总结功能整体失效。
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
     conversation_key = str(args.get("conversation_key", "")).strip()
@@ -548,6 +597,9 @@ async def _handle_list_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
     table_name = str(args.get("table_name", "")).strip()
+    blocked = _table_guard(self, table_name)
+    if blocked is not None:
+        return blocked
     try:
         items = await self._archive_service.list(table_name, limit=args.get("limit", 10), offset=args.get("offset", 0))
         return _json({"ok": True, "items": [{"table_name": i.table_name, "key": i.key, "value": i.value} for i in items]})
@@ -557,6 +609,13 @@ async def _handle_list_archive(self: ArchiveCRUDSkill, args: dict) -> str:
 async def _handle_delete_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
+    table_name = str(args.get("table_name", "")).strip()
+    blocked = _delete_guard(self)
+    if blocked is not None:
+        return blocked
+    blocked = _table_guard(self, table_name)
+    if blocked is not None:
+        return blocked
     try:
         await self._archive_service.delete(args["table_name"], args["key"])
         return _json({"ok": True})
