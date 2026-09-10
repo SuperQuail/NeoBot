@@ -1,5 +1,7 @@
 """沙箱维护命名回归：保留 Unicode、拒绝空主名且不覆盖已有目标。"""
 
+import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -165,3 +167,20 @@ def test_naming_preserves_source_symlink(tmp_path):
 
     source.rename.assert_not_called()
     assert result["renamed"] == []
+
+
+async def test_maintenance_cleans_orphan_write_temps_only_when_stale(tmp_path):
+    """原子写残留的 .neobot-write-* 临时文件要清掉，但不能误删正在写的。"""
+    directory = tmp_path / "tools"
+    directory.mkdir()
+    stale = directory / ".neobot-write-abc123"
+    stale.write_bytes(b"leftover")
+    os.utime(stale, (time.time() - 7200, time.time() - 7200))
+    fresh = directory / ".neobot-write-def456"
+    fresh.write_bytes(b"in-flight")
+
+    result = await SandboxMaintenanceManager(tmp_path).run_once(force=True)
+
+    assert not stale.exists()
+    assert fresh.read_bytes() == b"in-flight"
+    assert "垃圾文件 x1" in result["removed"]

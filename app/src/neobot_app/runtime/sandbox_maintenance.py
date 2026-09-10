@@ -16,6 +16,12 @@ _STORAGE_DOC = "文件存储.md"
 _TODO_DOC = "TODO.md"
 _MAINTENANCE_MARKER = ".last_maintenance"
 
+#: 原子写的临时文件前缀（sandbox_service.atomic_write / 复制时的 mkstemp）。
+#: 正常路径在 finally 里清理，进程被强杀时才会留在原地。
+_WRITE_TEMP_PREFIX = ".neobot-write-"
+#: 超过这个年龄的临时文件才算孤儿：正在进行的写入只有毫秒级寿命。
+_ORPHAN_TEMP_MAX_AGE_SECONDS = 3600
+
 
 class SandboxMaintenanceManager:
     """沙箱持久化文件维护管理器。
@@ -338,10 +344,34 @@ class SandboxMaintenanceManager:
                 except OSError:
                     pass
 
+        cleaned_files += self._clean_orphan_write_temps()
+
         if cleaned_dirs > 0:
             result["removed"].append(f"垃圾目录 x{cleaned_dirs}")
         if cleaned_files > 0:
             result["removed"].append(f"垃圾文件 x{cleaned_files}")
+
+    def _clean_orphan_write_temps(self) -> int:
+        """清理原子写残留的 ``.neobot-write-*`` 临时文件。
+
+        sandbox_service 写文件时先写同目录临时文件再 os.replace，正常路径会在
+        finally 里删除；进程被强杀（崩溃 / 任务管理器结束）才会留下孤儿。这些
+        文件以 "." 开头、没有扩展名，既不会被垃圾后缀规则命中，也不会出现在
+        目录索引里，只能靠年龄判断。仍在进行中的写入寿命只有毫秒级，
+        因此只清理超过一小时的。
+        """
+        cutoff = time.time() - _ORPHAN_TEMP_MAX_AGE_SECONDS
+        cleaned = 0
+        for entry in sorted(self._root.rglob(f"{_WRITE_TEMP_PREFIX}*"), reverse=True):
+            try:
+                if not entry.is_file() or entry.stat().st_mtime > cutoff:
+                    continue
+                entry.unlink()
+                cleaned += 1
+                self._logger.debug(f"清理原子写残留: {entry.relative_to(self._root)}")
+            except OSError:
+                continue
+        return cleaned
 
     def _get_capacity_info(self) -> dict[str, Any]:
         """获取当前沙箱容量信息。"""
