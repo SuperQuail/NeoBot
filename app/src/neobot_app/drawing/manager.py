@@ -58,6 +58,18 @@ class BackgroundDrawingManager:
     def background_enabled(self) -> bool:
         return self._config.draw_background_enabled and self._service is not None
 
+    def resolve_model_name(self, selector: str | None) -> str:
+        """把模型选择（注册名/序号/描述/供应商/模型名）解析为注册名。
+
+        未知取值会抛 ValueError：调用方应在提交前校验，避免白跑一次任务并吃掉冷却。
+        """
+        if self._service is None:
+            return ""
+        resolver = getattr(self._service, "resolve_model_name", None)
+        if not callable(resolver):
+            return str(selector or "")
+        return resolver(selector)
+
     def _spawn_bg_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
@@ -257,6 +269,9 @@ class BackgroundDrawingManager:
             "ok": True,
             "status": "drawing",
             "task_id": task.task_id,
+            "model": task.model
+            or (getattr(self._service, "default_model_name", "") if self._service else ""),
+            "references": list(task.references or ([task.reference_id] if task.reference_id else [])),
             "message": "正在绘图，已加入后台绘图任务",
         })
 
@@ -314,8 +329,94 @@ class BackgroundDrawingManager:
             error_info["request_url"] = str(exc.request.url)
         return json.dumps(error_info, ensure_ascii=False)
 
+    def _notification_payload(
+        self,
+        task: DrawTask,
+        *,
+        kind: str,
+        status: str,
+        message: str,
+        attempt: int = 0,
+    ) -> str:
+        """构造 JSON 形式的绘图通知（工具结果统一 JSON 化，避免模型读错字段）。"""
+        payload = self._record_payload(task)
+        payload.update(
+            {
+                "ok": status == "completed",
+                "kind": kind,
+                "status": status,
+                "task_id": task.task_id,
+                "message": message,
+            }
+        )
+        if attempt:
+            payload["attempt"] = attempt
+        if task.error:
+            payload["error"] = task.error
+        if task.model:
+            payload["model"] = task.model
+        if task.requester or task.requirements:
+            payload["request"] = {
+                "requester": task.requester,
+                "requirements": task.requirements,
+                "prompt": task.prompt,
+            }
+        payload["next"] = self._next_actions(task, status)
+        return _json(payload)
+
+    @staticmethod
+    def _next_actions(task: DrawTask, status: str) -> list[dict[str, Any]]:
+        """给模型可照抄的后续工具调用；工具名与参数必须与当前实现一致。"""
+        if status != "completed":
+            return [
+                {
+                    "action": "reply_to_user",
+                    "text": "绘图失败，说明失败原因并询问是否重试",
+                },
+                {
+                    "action": "note",
+                    "text": "不要在未询问用户的情况下自动重新提交绘图",
+                },
+            ]
+        actions: list[dict[str, Any]] = [
+            {"action": "reply_to_user", "text": "告知用户绘图已完成"}
+        ]
+        file_path = str((task.record_payload or {}).get("file_path") or "")
+        if file_path:
+            send_args: dict[str, Any] = {"file_path": file_path}
+            if task.conversation_kind == "group" and task.conversation_id:
+                send_args["group_id"] = task.conversation_id
+            elif task.conversation_id:
+                send_args["user_id"] = task.conversation_id
+            actions.append(
+                {
+                    "action": "send_image",
+                    "tool": "image_send__send_image",
+                    "args": send_args,
+                }
+            )
+            actions.append(
+                {
+                    "action": "save_to_gallery",
+                    "tool": "gallery__gallery_add",
+                    "args": {"image_path": file_path},
+                    "optional": True,
+                }
+            )
+        actions.append(
+            {"action": "note", "text": "不要再重新提交绘图，图片已经生成好了"}
+        )
+        return actions
+
+    @staticmethod
+    def _record_payload(task: DrawTask) -> dict[str, Any]:
+        payload = dict(task.record_payload or {})
+        if task.image_id and "image_id" not in payload:
+            payload["image_id"] = task.image_id
+        return payload
+
     async def _on_completed(self, task: DrawTask) -> None:
-        """绘图完成后的通知流程——向主 Agent 提交必须处理的绘图结果。"""
+        """绘图完成后的通知流程——向主 Agent 提交绘图结果。"""
         if not task.image_id:
             self._logger.error(
                 "后台绘图完成但 image_id 为空，转为失败处理",
@@ -325,28 +426,11 @@ class BackgroundDrawingManager:
             task.error = "绘图完成但未获取到图片ID"
             await self._on_failed(task)
             return
-        record_json = _json(task.record_payload) if task.record_payload else "{}"
-        requester_info = (
-            f"{task.requester} - {task.requirements}"
-            if task.requester
-            else ""
-        )
-        notification = (
-            f"<这是新的必须要回答的内容>\n"
-            f"绘图结果通知（图片已生成完毕，不是绘图请求！）\n"
-            f"\n"
-            f"图片ID: {task.image_id}\n"
-            f"来源: tmp（临时图片，可直接发送）\n"
-            f"图片数据: {record_json}\n"
-            f"原始委托: {requester_info}\n"
-            f"\n"
-            f"你必须立即处理此绘图结果：\n"
-            f"1. 告知用户绘图已完成\n"
-            f'2. 如需发送图片，使用 image_send__send 工具（image_id="{task.image_id}"，source="tmp"）\n'
-            f'3. 如需加入图库，使用 gallery__add 工具（image_id="{task.image_id}"）\n'
-            f"\n"
-            f"注意：不要再重新绘图！图片已经生成好了。\n"
-            f"</这是新的必须要回答的内容>"
+        notification = self._notification_payload(
+            task,
+            kind="draw_result",
+            status="completed",
+            message="绘图完成，图片已生成（这是结果通知，不是新的绘图请求）",
         )
         self._logger.info(
             "推送绘图完成通知",
@@ -357,24 +441,14 @@ class BackgroundDrawingManager:
         await self._push_notification(task, notification)
 
     async def _on_failed(self, task: DrawTask) -> None:
-        """绘图失败后的通知流程——向主 Agent 提交必须处理的失败结果。"""
-        requester_info = (
-            f"{task.requester} - {task.requirements}"
-            if task.requester
-            else ""
-        )
-        error_text = task.error or "未知错误（可能是 API 超时或网络异常）"
-        notification = (
-            f"<这是新的必须要回答的内容>\n"
-            f"绘图任务失败通知\n"
-            f"\n"
-            f"任务ID: {task.task_id}\n"
-            f"错误原因: {error_text}\n"
-            f"原始委托: {requester_info}\n"
-            f"\n"
-            f"你必须立即先发送消息告知用户绘图失败和失败原因，然后询问用户是否要重试。\n"
-            f"不要在未询问用户的情况下自动重新提交绘图。\n"
-            f"</这是新的必须要回答的内容>"
+        """绘图失败后的通知流程——向主 Agent 提交失败结果。"""
+        if not task.error:
+            task.error = "未知错误（可能是 API 超时或网络异常）"
+        notification = self._notification_payload(
+            task,
+            kind="draw_result",
+            status="failed",
+            message="绘图失败，请告知用户失败原因并询问是否重试",
         )
         self._logger.info(
             "推送绘图失败通知",
@@ -465,36 +539,22 @@ class BackgroundDrawingManager:
                 status=task.status,
             )
             if task.status == "failed":
-                error_text = task.error or "未知错误（可能是 API 超时或网络异常）"
-                retry_msg = (
-                    f"<这是新的必须要回答的内容>\n"
-                    f"绘图任务失败通知（第{task.notification_count}次提醒）\n"
-                    f"\n"
-                    f"任务ID: {task.task_id}\n"
-                    f"错误原因: {error_text}\n"
-                    f"\n"
-                    f"你必须立即先发送消息告知用户绘图失败和失败原因，然后询问用户是否要重试。\n"
-                    f"不要在未询问用户的情况下自动重新提交绘图。\n"
-                    f"</这是新的必须要回答的内容>"
+                if not task.error:
+                    task.error = "未知错误（可能是 API 超时或网络异常）"
+                retry_msg = self._notification_payload(
+                    task,
+                    kind="draw_result_retry",
+                    status="failed",
+                    message="绘图失败（重复提醒），请告知用户失败原因并询问是否重试",
+                    attempt=task.notification_count,
                 )
             else:
-                record_json = _json(task.record_payload) if task.record_payload else "{}"
-                image_id_text = task.image_id or "未知"
-                retry_msg = (
-                    f"<这是新的必须要回答的内容>\n"
-                    f"绘图结果通知（第{task.notification_count}次提醒，图片已生成完毕！）\n"
-                    f"\n"
-                    f"图片ID: {image_id_text}\n"
-                    f"来源: tmp（临时图片，可直接发送）\n"
-                    f"图片数据: {record_json}\n"
-                    f"\n"
-                    f"你必须立即处理此绘图结果：\n"
-                    f"1. 告知用户绘图已完成\n"
-                    f"2. 如需发送图片，使用 image_send__send 工具\n"
-                    f"3. 如需加入图库，使用 gallery__add 工具\n"
-                    f"\n"
-                    f"注意：不要再重新绘图！\n"
-                    f"</这是新的必须要回答的内容>"
+                retry_msg = self._notification_payload(
+                    task,
+                    kind="draw_result_retry",
+                    status="completed",
+                    message="绘图完成（重复提醒），图片已生成",
+                    attempt=task.notification_count,
                 )
             if self._notification_hub is not None:
                 status = self._notification_hub.get_pipeline_status(task.pipeline_key)
@@ -515,36 +575,16 @@ class BackgroundDrawingManager:
                 task_id=task.task_id,
                 attempts=task.notification_count,
             )
+            timeout_msg = self._notification_payload(
+                task,
+                kind="draw_result_timeout",
+                status="completed",
+                message="图片已生成但未及时通知，请告知用户并可按 next 发送",
+            )
             if self._notification_hub is not None:
-                image_id_text = task.image_id or "未知"
-                timeout_msg = (
-                    f"<这是新的必须要回答的内容>\n"
-                    f"绘图任务超时通知\n"
-                    f"\n"
-                    f"任务ID: {task.task_id}\n"
-                    f"图片ID: {image_id_text}（来源：tmp）\n"
-                    f"图片已保存在临时目录。\n"
-                    f"\n"
-                    f"请告知用户绘图任务已完成但未及时通知，"
-                    f"可使用 image_send__send 工具发送图片或 gallery__add 加入图库。\n"
-                    f"</这是新的必须要回答的内容>"
-                )
                 await self._publish_hub_notification(task, timeout_msg)
             elif self._orchestrator is not None:
                 if self._orchestrator.is_pipeline_key_active(task.pipeline_key):
-                    image_id_text = task.image_id or "未知"
-                    timeout_msg = (
-                        f"<这是新的必须要回答的内容>\n"
-                        f"绘图任务超时通知\n"
-                        f"\n"
-                        f"任务ID: {task.task_id}\n"
-                        f"图片ID: {image_id_text}（来源：tmp）\n"
-                        f"图片已保存在临时目录。\n"
-                        f"\n"
-                        f"请告知用户绘图任务已完成但未及时通知，"
-                        f"可使用 image_send__send 工具发送图片或 gallery__add 加入图库。\n"
-                        f"</这是新的必须要回答的内容>"
-                    )
                     queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
                     await queue.put(timeout_msg)
 

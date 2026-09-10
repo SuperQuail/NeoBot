@@ -130,22 +130,28 @@ class DrawingSkill(SkillModule):
         return [item for item in models if isinstance(item, dict)]
 
     def _provider_property(self) -> dict[str, Any] | None:
+        """生图模型选择：取值收敛为枚举，避免模型把序号/供应商/描述混着传。"""
         models = self._image_model_options()
         if len(models) <= 1:
             return None
-        lines = [
-            "可选，生图服务供应商/模型；当前配置了多个生图模型，未指定时使用第一个。可用："
-        ]
-        for item in models:
-            description = str(item.get("description") or item.get("name") or "")
-            provider = str(item.get("provider") or "")
-            model_name = str(item.get("model_name") or "")
-            default_mark = "（默认）" if item.get("default") else ""
-            lines.append(
-                f"[{item.get('index')}] {description}{default_mark}"
-                f"（供应商 {provider} / 模型 {model_name}）"
-            )
-        return {"type": "string", "description": "；".join(lines)}
+        names = [str(item.get("name") or "") for item in models]
+        names = [name for name in names if name]
+        if not names:
+            return None
+        detail = "；".join(
+            f"{item.get('name')} = {str(item.get('description') or item.get('name') or '')}"
+            f"{'（默认）' if item.get('default') else ''}"
+            f"[供应商 {item.get('provider') or ''} / 模型 {item.get('model_name') or ''}]"
+            for item in models
+            if item.get("name")
+        )
+        return {
+            "type": "string",
+            "enum": names,
+            "description": (
+                "可选，生图模型注册名；不指定时使用默认模型。可用取值：" + detail
+            ),
+        }
 
     def get_tools(self) -> list[dict]:
         draw_properties: dict[str, Any] = {
@@ -360,6 +366,19 @@ async def _handle_draw(self: DrawingSkill, args: dict) -> str:
         except (TypeError, ValueError):
             reference_id = None
 
+    # 模型选择先校验再提交：未知取值若留到后台执行，会白跑一次任务并吃掉冷却
+    model_selector = str(args.get("provider", "") or "").strip() or None
+    resolved_model: str | None = None
+    if model_selector:
+        try:
+            resolved_model = self._drawing_manager.resolve_model_name(model_selector)
+        except ValueError as exc:
+            return _json({
+                "ok": False,
+                "error": str(exc),
+                "available_models": self._image_model_options(),
+            })
+
     seed = args.get("seed")
     if seed is not None:
         try:
@@ -379,7 +398,7 @@ async def _handle_draw(self: DrawingSkill, args: dict) -> str:
         negative_prompt=str(args.get("negative_prompt", "") or "") or None,
         image_size=str(args.get("image_size", "") or "") or None,
         seed=seed,
-        model=str(args.get("provider", "") or "") or None,
+        model=resolved_model or model_selector,
     )
 
 async def _handle_check_draw_status(self: DrawingSkill, args: dict) -> str:
