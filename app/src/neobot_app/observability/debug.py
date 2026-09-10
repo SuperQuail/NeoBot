@@ -1,7 +1,15 @@
+"""Debug 模式记录器：数据包、回复事件与逐事件 Markdown 调试包。
+
+落盘文件按天分片（packets-YYYYMMDD.jsonl / reply_events-YYYYMMDD.jsonl，
+回复事件明细在 reply_events/ 目录），超过 retention_days 天的分片会被自动删除，
+避免 Debug 模式长期运行把 debug/log 目录撑爆。
+"""
+
 from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from enum import Enum
@@ -11,6 +19,12 @@ from typing import Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.event import ReplyEvent
 from neobot_app.time_context import now_utc, to_utc
+
+
+#: 调试数据默认保留天数：更早的分片会被自动清理
+DEFAULT_RETENTION_DAYS = 10
+#: 清理的最小间隔：数据包写入频繁，不必每条都扫目录
+_PRUNE_INTERVAL_SECONDS = 3600.0
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -41,17 +55,29 @@ def _markdown_escape(value: str) -> str:
 
 
 class DebugRecorder:
-    def __init__(self, log_dir: Path, logger: Logger | None = None) -> None:
+    def __init__(
+        self,
+        log_dir: Path,
+        logger: Logger | None = None,
+        *,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+    ) -> None:
+        if retention_days <= 0:
+            raise ValueError("retention_days must be greater than 0")
         self._log_dir = log_dir
         self._reply_md_dir = self._log_dir / "reply_events"
         self._lock = threading.Lock()
         self._logger = logger or NullLogger()
+        self._retention_days = retention_days
+        self._last_prune = 0.0
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._reply_md_dir.mkdir(parents=True, exist_ok=True)
+        self.prune_expired(force=True)
         self._logger.info(
             "DebugRecorder 已初始化",
             log_dir=str(log_dir),
             reply_md_dir=str(self._reply_md_dir),
+            retention_days=retention_days,
         )
 
     @property
@@ -67,7 +93,7 @@ class DebugRecorder:
             return
         self._logger.debug("记录数据包", post_type=post_type)
         self._write_jsonl(
-            "packets.jsonl",
+            "packets",
             {
                 "recorded_at": now_utc().isoformat(),
                 "packet": _to_jsonable(packet),
@@ -88,7 +114,7 @@ class DebugRecorder:
         }
         if extra:
             payload["extra"] = _to_jsonable(extra)
-        self._write_jsonl("reply_events.jsonl", payload)
+        self._write_jsonl("reply_events", payload)
         self._write_reply_markdown(payload)
 
     def _serialize_reply_event(self, event: ReplyEvent) -> dict[str, Any]:
@@ -114,12 +140,53 @@ class DebugRecorder:
             },
         }
 
-    def _write_jsonl(self, file_name: str, payload: dict[str, Any]) -> None:
-        target = self._log_dir / file_name
+    def _jsonl_path(self, stem: str) -> Path:
+        """按天分片，便于整文件清理过期数据（不必重写超大文件）。"""
+        stamp = now_utc().strftime("%Y%m%d")
+        return self._log_dir / f"{stem}-{stamp}.jsonl"
+
+    def _write_jsonl(self, stem: str, payload: dict[str, Any]) -> None:
+        target = self._jsonl_path(stem)
         line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
         with self._lock:
             with target.open("a", encoding="utf-8") as f:
                 f.write(line)
+        self.prune_expired()
+
+    def prune_expired(self, *, force: bool = False) -> int:
+        """删除超过保留期的调试文件，返回删除数量。
+
+        文件只追加、按天分片，因此直接用修改时间判定：早于 cutoff 的文件整体删除。
+        默认最多每小时检查一次（写入路径调用），force=True 用于启动时立即清理。
+        """
+        now = time.time()
+        with self._lock:
+            if not force and now - self._last_prune < _PRUNE_INTERVAL_SECONDS:
+                return 0
+            self._last_prune = now
+
+        cutoff = now - self._retention_days * 86400
+        removed = 0
+        for directory in (self._log_dir, self._reply_md_dir):
+            try:
+                entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for target in entries:
+                try:
+                    if not target.is_file() or target.stat().st_mtime >= cutoff:
+                        continue
+                    target.unlink()
+                except OSError:
+                    continue
+                removed += 1
+        if removed:
+            self._logger.info(
+                "DebugRecorder 已清理过期调试数据",
+                removed=removed,
+                retention_days=self._retention_days,
+            )
+        return removed
 
     def _write_reply_markdown(self, payload: dict[str, Any]) -> None:
         event = payload["event"]

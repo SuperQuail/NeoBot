@@ -845,6 +845,13 @@ class Debug:
         default=False,
         metadata={"description": "是否启用 Debug 模式"},
     )
+    retention_days: int = field(
+        default=10,
+        metadata={
+            "description": "调试数据保留天数（默认 10）：data/debug/log 下更早的分片"
+            "与回复事件明细会被自动清理"
+        },
+    )
 
 
 @dataclass
