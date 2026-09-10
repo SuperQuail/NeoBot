@@ -586,13 +586,32 @@ class ReplyOrchestrator:
     def _release_executor(self, event_id: str) -> None:
         """释放某次回复创建的工具执行器。
 
-        执行器持有该轮完整对话历史与技能 token，必须随管线结束释放；
-        关闭失败只记日志，不能影响管线收尾。
+        执行器持有该轮完整对话历史与技能 token，必须随管线结束释放；但不能直接
+        ``close()``：close() 会取消在途的会话工具（download__url / parse_image
+        等），而它们的契约是活过本轮回复、完成后由通知中心唤醒下一次回复。
+        所以先等在途会话任务自然结束，再关闭执行器——内存依然会被释放，只是
+        释放时机推迟到后台工作完成。关闭失败只记日志，不能影响管线收尾。
         """
         executor = self._tool_executors.pop(event_id, None)
         if executor is None:
             return
-        close_task = asyncio.ensure_future(executor.close())
+
+        async def _drain_and_close() -> None:
+            drain = getattr(executor, "drain_sessions", None)
+            if callable(drain):
+                await drain()
+            await executor.close()
+
+        close_task: asyncio.Future[None]
+        try:
+            close_task = asyncio.ensure_future(_drain_and_close())
+        except Exception as exc:
+            # 同步异常绝不能冒泡到 done 回调：那会连带跳过 on_reply_done，
+            # 让「回复中」标记永久残留。
+            self._logger.warning(
+                "回复工具执行器释放失败", event_id=event_id, error=str(exc)
+            )
+            return
         self._callback_tasks.add(close_task)
 
         def _done(done_task: asyncio.Future[None]) -> None:
