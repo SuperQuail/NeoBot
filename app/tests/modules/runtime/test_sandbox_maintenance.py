@@ -174,17 +174,17 @@ async def test_maintenance_cleans_orphan_write_temps_only_when_stale(tmp_path):
     """原子写残留的 .neobot-write-* 临时文件要清掉，但不能误删正在写的。"""
     directory = tmp_path / "tools"
     directory.mkdir()
-    stale = directory / ".neobot-write-abc123"
+    stale = directory / ".neobot-write-abc12345"
     stale.write_bytes(b"leftover")
     os.utime(stale, (time.time() - 7200, time.time() - 7200))
-    fresh = directory / ".neobot-write-def456"
+    fresh = directory / ".neobot-write-def45678"
     fresh.write_bytes(b"in-flight")
 
     result = await SandboxMaintenanceManager(tmp_path).run_once(force=True)
 
     assert not stale.exists()
     assert fresh.read_bytes() == b"in-flight"
-    assert "垃圾文件 x1" in result["removed"]
+    assert result["orphan_temps_cleaned"] == 1
 
 
 async def test_concurrent_maintenance_cycles_do_not_overlap(tmp_path) -> None:
@@ -214,3 +214,35 @@ async def test_concurrent_maintenance_cycles_do_not_overlap(tmp_path) -> None:
     assert overlapped["reason"] == "已有维护在运行"
     assert results and results[0]["skipped"] is False
     assert module._MAINTENANCE_LOCK.locked() is False
+
+
+async def test_orphan_cleanup_runs_even_when_change_gate_skips(tmp_path) -> None:
+    """安静运行的 Bot 上（无文件变更 → 周期直接 skipped）孤儿仍要被清掉。"""
+    directory = tmp_path / "tools"
+    directory.mkdir()
+    orphan = directory / ".neobot-write-abcd1234"
+    orphan.write_bytes(b"leftover")
+    os.utime(orphan, (time.time() - 7200, time.time() - 7200))
+    manager = SandboxMaintenanceManager(tmp_path)
+    await manager.run_once(force=True)  # 先建立维护标记
+
+    orphan.write_bytes(b"leftover-again")
+    os.utime(orphan, (time.time() - 7200, time.time() - 7200))
+    result = await manager.run_once()  # 不带 force：走变更门
+
+    assert result["skipped"] is True
+    assert not orphan.exists()
+    assert result["orphan_temps_cleaned"] == 1
+
+
+async def test_orphan_cleanup_ignores_user_files_with_similar_names(tmp_path) -> None:
+    """前缀相近的用户文件不能被当成孤儿删掉。"""
+    directory = tmp_path / "tools"
+    directory.mkdir()
+    user_file = directory / ".neobot-write-notes.md"
+    user_file.write_bytes(b"my notes")
+    os.utime(user_file, (time.time() - 7200, time.time() - 7200))
+
+    await SandboxMaintenanceManager(tmp_path).run_once(force=True)
+
+    assert user_file.read_bytes() == b"my notes"

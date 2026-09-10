@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 import threading
@@ -20,6 +21,8 @@ _MAINTENANCE_MARKER = ".last_maintenance"
 #: 原子写的临时文件前缀（sandbox_service.atomic_write / 复制时的 mkstemp）。
 #: 正常路径在 finally 里清理，进程被强杀时才会留在原地。
 _WRITE_TEMP_PREFIX = ".neobot-write-"
+#: mkstemp 的真实形态：前缀 + 8 位 [A-Za-z0-9_]；精确匹配避免误删用户文件。
+_WRITE_TEMP_NAME_RE = re.compile(r"\.neobot-write-[A-Za-z0-9_]{8}")
 #: 超过这个年龄的临时文件才算孤儿：正在进行的写入只有毫秒级寿命。
 _ORPHAN_TEMP_MAX_AGE_SECONDS = 3600
 #: 维护周期的进程内互斥（搬进线程池后不再有事件循环的隐式串行）。
@@ -80,9 +83,17 @@ class SandboxMaintenanceManager:
             _MAINTENANCE_LOCK.release()
 
     def _maintenance_cycle_locked(self, *, force: bool = False) -> dict[str, Any]:
+        # 孤儿清理与「有没有文件变更」无关：安静运行的 Bot 上变更门会一直跳过，
+        # 孤儿临时文件就永远清不掉（它的 mtime 反而会被 marker 越过）。
+        orphans = self._clean_orphan_write_temps()
         if not force and not self._has_changes_since_last():
             self._logger.debug("无文件变更，跳过维护")
-            return {"ok": True, "skipped": True, "reason": "无文件变更"}
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "无文件变更",
+                "orphan_temps_cleaned": orphans,
+            }
 
         result: dict[str, Any] = {
             "ok": True,
@@ -118,6 +129,9 @@ class SandboxMaintenanceManager:
         # 5. 更新维护标记
         self._touch_maintenance_marker()
 
+        result["orphan_temps_cleaned"] = orphans
+        if orphans:
+            result["removed"].append(f"原子写残留 x{orphans}")
         return result
 
     def _has_changes_since_last(self) -> bool:
@@ -359,33 +373,46 @@ class SandboxMaintenanceManager:
                 except OSError:
                     pass
 
-        cleaned_files += self._clean_orphan_write_temps()
-
         if cleaned_dirs > 0:
             result["removed"].append(f"垃圾目录 x{cleaned_dirs}")
         if cleaned_files > 0:
             result["removed"].append(f"垃圾文件 x{cleaned_files}")
 
     def _clean_orphan_write_temps(self) -> int:
-        """清理原子写残留的 ``.neobot-write-*`` 临时文件。
+        """清理原子写残留的 ``.neobot-write-XXXXXXXX`` 临时文件。
 
         sandbox_service 写文件时先写同目录临时文件再 os.replace，正常路径会在
         finally 里删除；进程被强杀（崩溃 / 任务管理器结束）才会留下孤儿。这些
         文件以 "." 开头、没有扩展名，既不会被垃圾后缀规则命中，也不会出现在
-        目录索引里，只能靠年龄判断。仍在进行中的写入寿命只有毫秒级，
-        因此只清理超过一小时的。
+        目录索引里，只能靠名字前缀 + 年龄判断（仍在进行中的写入只有毫秒级寿命）。
+
+        名字按 mkstemp 的真实形态精确匹配，避免误删用户自己建的
+        ``.neobot-write-notes.md``；遍历用 ``os.walk(followlinks=False)`` 并显式
+        跳过目录联接（junction 的 ``is_symlink()`` 为 False，rglob 会穿过去删到
+        沙箱外的文件）。
         """
         cutoff = time.time() - _ORPHAN_TEMP_MAX_AGE_SECONDS
         cleaned = 0
-        for entry in sorted(self._root.rglob(f"{_WRITE_TEMP_PREFIX}*"), reverse=True):
-            try:
-                if not entry.is_file() or entry.stat().st_mtime > cutoff:
+        for current_dir, dirnames, filenames in os.walk(self._root, followlinks=False):
+            current = Path(current_dir)
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not (current / name).is_symlink()
+                and not (current / name).is_junction()
+            ]
+            for name in filenames:
+                if _WRITE_TEMP_NAME_RE.fullmatch(name) is None:
                     continue
-                entry.unlink()
-                cleaned += 1
-                self._logger.debug(f"清理原子写残留: {entry.relative_to(self._root)}")
-            except OSError:
-                continue
+                entry = current / name
+                try:
+                    if entry.stat().st_mtime > cutoff:
+                        continue
+                    entry.unlink()
+                    cleaned += 1
+                    self._logger.debug(f"清理原子写残留: {entry.relative_to(self._root)}")
+                except OSError as exc:
+                    self._logger.debug(f"清理原子写残留失败: {entry.name} ({exc})")
         return cleaned
 
     def _get_capacity_info(self) -> dict[str, Any]:
