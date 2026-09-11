@@ -1165,6 +1165,119 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         note="委派工具的使用指令；可用子 Agent 列表由 agents__list 在运行时给出",
     )
 
+    # 解题/自修复 Agent 的工具定义：优先取运行时 agent 实例上真正会发出去的清单，
+    # 取不到再回退模块级构造器（避免分析页只显示提示词、漏掉工具这一大块）。
+    def _problem_solver_parts() -> list:
+        from neobot_app.agents.problem_solver import (
+            ProblemSolverAgentConfig,
+            _build_system_prompt,
+            build_problem_solver_toolset,
+        )
+
+        schema_cfg = getattr(getattr(config, "agent", None), "problem_solver", None)
+        parts = [
+            ("系统提示词", "system", _build_system_prompt(schema_cfg, prompt_store=prompt_store))
+        ]
+        definitions: list = []
+        agent = getattr(problem_solver_manager, "_agent", None)
+        if agent is not None:
+            definitions = list(getattr(agent, "tool_definitions", []) or [])
+        if not definitions:
+            try:
+                definitions = list(
+                    build_problem_solver_toolset(
+                        config=ProblemSolverAgentConfig.from_schema(schema_cfg),
+                        logger=logger_factory.get_logger("app.problem_solver"),
+                        sandbox_service=sandbox["sandbox_service"],
+                        vision_provider=vision_provider,
+                    ).definitions()
+                )
+            except Exception:
+                definitions = []
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+    def _self_heal_parts() -> list:
+        from neobot_app.agents.self_heal import SelfHealAgentConfig, _build_system_prompt
+
+        schema_cfg = getattr(getattr(config, "agent", None), "self_heal", None)
+        # 该构造器需要真实配置对象（读 timeout_seconds）：缺失时用 schema 默认值兜底
+        agent_cfg = (
+            SelfHealAgentConfig.from_schema(schema_cfg)
+            if schema_cfg is not None
+            else SelfHealAgentConfig()
+        )
+        parts = [
+            ("系统提示词", "system", _build_system_prompt(agent_cfg, prompt_store=prompt_store))
+        ]
+        agent = getattr(self_heal_manager, "_agent", None)
+        definitions = (
+            list(getattr(agent, "tool_definitions", []) or []) if agent is not None else []
+        )
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+    prompt_analyzer.add_source(
+        "解题 Agent",
+        _problem_solver_parts,
+        note="系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配",
+    )
+    prompt_analyzer.add_source(
+        "自修复 Agent",
+        _self_heal_parts,
+        note="系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配",
+    )
+
+    # 已注册的子 Agent（AgentRegistry）：每个 specialist 一条，便于对照 agents__list
+    try:
+        for item in agent_registry.snapshot():
+            sub_name = str(item.get("name") or "")
+            sub_description = str(item.get("description") or "")
+            if not sub_name:
+                continue
+            prompt_analyzer.add_source(
+                f"子 Agent · {sub_name}",
+                (lambda text_value=sub_description: [
+                    ("描述（模型看到的 specialist 说明）", "instructions", text_value)
+                ]),
+                kind="subagent",
+                note="由 agents__delegate 调用；提示词在委派时按任务拼装",
+            )
+    except Exception:
+        pass
+
+    # 编号 Agent（agent_model_N）：只做模型路由，提示词复用委派指令 + 任务文本
+    def _numbered_agent_parts() -> list:
+        import dataclasses
+
+        routing = getattr(config, "agent_model", None)
+        if routing is None or not dataclasses.is_dataclass(routing):
+            return []
+        lines: list = []
+        for field_info in dataclasses.fields(routing):
+            value = getattr(routing, field_info.name, None)
+            if value in (None, "", 0):
+                continue
+            description = str((field_info.metadata or {}).get("description") or "")
+            suffix = f"  # {description}" if description else ""
+            lines.append(f"{field_info.name} = {value}{suffix}")
+        if not lines:
+            return []
+        return [("模型路由", "instructions", chr(10).join(lines))]
+
+    prompt_analyzer.add_source(
+        "编号 Agent（agent_model_1-3）",
+        _numbered_agent_parts,
+        kind="routing",
+        note="编号只决定用哪个模型；提示词 = 委派指令 + 具体任务文本",
+    )
+
     # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
     register_host_services(
         plugin["host_facade"],
