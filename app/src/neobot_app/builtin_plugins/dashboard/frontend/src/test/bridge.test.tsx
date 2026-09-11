@@ -466,6 +466,71 @@ describe('面板投影', () => {
     }
   });
 
+  it('跃迁到终端前面向它时，面板必须落在视野里且足够大', () => {
+    // 复刻「从终端总览点一座终端后跃迁过去」的现场：warpTo 把玩家沿终端朝向
+    // 推进 2.4m（走进舱室、站到终端面前）并转身面向它，然后逐座终端验证
+    // 面板真的看得见。这条用例抓到过两个真实缺陷：
+    //   1. 落点方向写反 → 玩家被丢到舱壁外侧，只看到终端背面，页面上「什么都没有」；
+    //   2. yaw 算反 → 玩家背对终端。
+    for (const station of STATIONS) {
+      const [ax, ay, az] = station.anchor;
+      const forward = new THREE.Vector3(Math.sin(station.facing), 0, Math.cos(station.facing));
+      // 与 engine.warpTo 相同的自适应距离逻辑：向前探路，不越出可通行区域
+      const step = 0.2;
+      let distance = 0;
+      for (let d = step; d <= 2.4 + 1e-6; d += step) {
+        if (!isInsideHull(ax + forward.x * d, az + forward.z * d, 0.1)) break;
+        distance = d;
+      }
+      expect(distance, `${station.code} 的跃迁距离为 0（玩家会站在机身里）`).toBeGreaterThanOrEqual(0.4);
+
+      const target: [number, number, number] = [
+        ax + forward.x * distance,
+        ay,
+        az + forward.z * distance,
+      ];
+      expect(
+        isInsideHull(target[0], target[2]),
+        `${station.code} 的跃迁落点落在舰体外：${target[0].toFixed(1)},${target[2].toFixed(1)}`,
+      ).toBe(true);
+
+      const yaw = Math.atan2(ax - target[0], az - target[2]);
+      const player = new Player(target, yaw);
+
+      const camera = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+      player.applyToCamera(camera);
+      camera.updateMatrixWorld(true);
+
+      const plane = panelPlaneFromScreen(station.screen, station.screenYaw, station.screenSize);
+      const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+
+      expect(projected.behind, `${station.code} 的面板跑到了相机背后`).toBe(false);
+      // 视线必须真的朝向面板（正对时余弦接近 1）
+      expect(projected.facing, `${station.code} 的视线没有朝向面板`).toBeGreaterThan(0.5);
+
+      const xs = projected.quad.map((corner) => corner.x);
+      const ys = projected.quad.map((corner) => corner.y);
+      const width = Math.max(...xs) - Math.min(...xs);
+      const height = Math.max(...ys) - Math.min(...ys);
+
+      // 面板要足够大：至少占屏幕宽度的 25%
+      expect(width, `${station.code} 的面板太小：${width.toFixed(0)}px`).toBeGreaterThan(
+        VIEWPORT.width * 0.25,
+      );
+      expect(height, `${station.code} 的面板太扁：${height.toFixed(0)}px`).toBeGreaterThan(120);
+
+      // 并且必须有可见部分落在视口内
+      const overlapsX = Math.min(...xs) < VIEWPORT.width && Math.max(...xs) > 0;
+      const overlapsY = Math.min(...ys) < VIEWPORT.height && Math.max(...ys) > 0;
+      expect(overlapsX && overlapsY, `${station.code} 的面板完全在视口外`).toBe(true);
+
+      // 面板位于相机前方（深度为正）
+      for (const corner of projected.quad) {
+        expect(corner.depth).toBeGreaterThan(0.2);
+      }
+    }
+  });
+
   it('相机后退时面板变小、变远，但始终正对', () => {
     const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const near = projectPanel(

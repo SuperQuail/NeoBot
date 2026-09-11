@@ -741,15 +741,37 @@ export class BridgeEngine {
     this.panelActive = active;
   }
 
-  /** 舰内跃迁：瞬移到终端门前并朝内站立 */
-  warpTo(station: Station): void {    const [x, y, z] = station.anchor;
-    // 从终端法线方向后退 2.4m：终端面朝 facing，玩家应站在 facing 的反方向
-    const offset = 2.4;
-    const target: Vec3 = [x - Math.sin(station.facing) * offset, y, z - Math.cos(station.facing) * offset];
-    if (!isInsideHull(target[0], target[2])) {
-      target[0] = x;
-      target[2] = z;
+  /**
+   * 舰内跃迁：瞬移到终端**正面**的前方并转身面向它。
+   *
+   * 方向取 `+facing`：站位贴在舱壁内表面上，沿 facing 前进才是「走进舱室、
+   * 站到终端面前」；沿反方向会穿到舱壁外面（实测 CMD-01 会把玩家丢到 z=-31.6，
+   * 那是舰体外侧，看到的只有终端背面）。
+   *
+   * 距离是**自适应**的，不是固定 2.4m：贴南墙的终端（机库那两座）身后只有
+   * 1.6m 净深，固定距离会把玩家送到舱壁外。这里向前探路，取
+   * 「够看清面板」与「不越出可通行区域」两者中较小的那个。
+   */
+  warpTo(station: Station): void {
+    const [x, y, z] = station.anchor;
+    const forwardX = Math.sin(station.facing);
+    const forwardZ = Math.cos(station.facing);
+
+    const PREFERRED = 2.4;
+    const step = 0.2;
+    let distance = 0;
+    for (let d = step; d <= PREFERRED + 1e-6; d += step) {
+      const px = x + forwardX * d;
+      const pz = z + forwardZ * d;
+      // 越出可通行区域或撞上障碍就停在上一步。容差取 0.1 而不是更大的值：
+      // 探路是 0.2m 一跳，容差过大会让落点冲出舱壁半个身位。
+      if (!isInsideHull(px, pz, 0.1) || isLineBlocked(this.boxes, { x, y: y + 0.9, z }, { x: px, y: y + 0.9, z: pz })) {
+        break;
+      }
+      distance = d;
     }
+
+    const target: Vec3 = [x + forwardX * distance, y, z + forwardZ * distance];
     const yaw = Math.atan2(x - target[0], z - target[2]);
     this.player.teleport(target, yaw);
     this.triggerShake(0.6);

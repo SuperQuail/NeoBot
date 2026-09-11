@@ -283,18 +283,25 @@ export default function Bridge() {
     setPanelClosing(true);
   }, []);
 
-  const handleOpenStation = useCallback((id: PanelId) => {
+  /**
+   * 从舰桥浮层（终端总览 / 舰内导航）打开某座终端。
+   *
+   * 关键：**必须先跃迁过去**。面板挂在该终端自己的屏幕上，如果玩家还站在
+   * 舰桥另一端，面板会出现在二十米外——加上距离淡出，看起来就是「点了没反应」。
+   * 早期这里只 setPanel 不跃迁，实测就是这个现象。
+   */
+  const openStationFromOverlay = useCallback((id: PanelId) => {
+    const engine = engineRef.current;
+    const station = STATION_BY_ID[id];
+    if (engine) {
+      engine.warpTo(station);
+      // 落地后再开面板，避免跃迁的瞬移与面板展开动画叠在一起看不清
+      engine.triggerShake(0.35);
+    }
     setOverlay(null);
     setPanelClosing(false);
     setPanel(id);
     sfx.open();
-  }, []);
-
-  const handleWarp = useCallback((id: PanelId) => {
-    engineRef.current?.warpTo(STATION_BY_ID[id]);
-    setOverlay(null);
-    setPanelClosing(false);
-    setPanel(id);
   }, []);
 
   const handleUseItem = useCallback((id: ItemId) => {
@@ -427,10 +434,15 @@ export default function Bridge() {
       )}
 
       {overlay === 'terminal' && (
-        <TerminalSwitcher vitals={vitals} activeId={panel} onSelect={handleOpenStation} onClose={() => setOverlay(null)} />
+        <TerminalSwitcher
+          vitals={vitals}
+          activeId={panel}
+          onSelect={openStationFromOverlay}
+          onClose={() => setOverlay(null)}
+        />
       )}
       {overlay === 'nav' && (
-        <NavOverlay currentZone={snapshot.zone} onWarp={handleWarp} onClose={() => setOverlay(null)} />
+        <NavOverlay currentZone={snapshot.zone} onWarp={openStationFromOverlay} onClose={() => setOverlay(null)} />
       )}
       {overlay === 'inventory' && (
         <InventoryOverlay vitals={vitals} onUse={handleUseItem} onClose={() => setOverlay(null)} />

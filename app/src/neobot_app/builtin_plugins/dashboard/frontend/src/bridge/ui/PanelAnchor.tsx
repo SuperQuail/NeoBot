@@ -58,6 +58,20 @@ const MIN_LIFT = 0.6;
 const MAX_LIFT = 2.4;
 /** 展开/收起动画时长（秒）；与 bridge.tsx 里延时卸载的时间保持一致 */
 const REVEAL_SECONDS = 0.26;
+/**
+ * 可见度采样的间隔（帧）。
+ *
+ * 采样内部是 readRenderTargetPixels —— **GPU 同步回读**，每帧做会让 CPU 一直
+ * 等 GPU 完成，实测直接把页面卡死。遮挡变化本来就慢，每 6 帧一次完全够用。
+ */
+const VISIBILITY_INTERVAL = 6;
+/**
+ * 距离淡出的下限。
+ *
+ * 早期把最远处压到 0.3，结果「在舰桥一端打开另一端的终端」时面板淡到看不见，
+ * 玩家以为功能坏了。最远处保留 0.55：仍然明显是远景，但一眼能看到那里有块投影。
+ */
+const MIN_DISTANCE_FALLOFF = 0.55;
 
 export default function PanelAnchor({
   station,
@@ -92,9 +106,14 @@ export default function PanelAnchor({
 
   useEffect(() => {
     let raf = 0;
+    /** 帧计数：可见度采样要降频（见下），用一个自增计数控制 */
+    let frame = 0;
+    /** 上一次算出的遮挡淡出系数，采样帧之间复用 */
+    let occlusionFade = 1;
 
     const tick = () => {
       raf = requestAnimationFrame(tick);
+      frame += 1;
       const host = hostRef.current;
       const camera = getCamera();
       if (!host || !camera) return;
@@ -135,15 +154,21 @@ export default function PanelAnchor({
       // 用默认值会让透视往元素中心收，与 WebGL 相机对不上。
       host.style.perspectiveOrigin = `${projected.principalX.toFixed(1)}px ${projected.principalY.toFixed(1)}px`;
 
-      // ---- 遮挡响应 ----
-      // 面板钻进舱壁/货箱时整体变淡，观感上像投影被挡住而衰减，
-      // 比让 DOM 直接浮在墙上自然。（逐像素裁剪需要每帧把遮罩读回 DOM，
-      // 同步 PNG 编码会吃掉整个帧预算，因此这里用 8×8 的可见度统计量代替。）
-      const visibility = compositor?.sampleVisibility(projected.quad, viewport.width, viewport.height) ?? 1;
-      const occlusionFade = 0.25 + 0.75 * visibility;
+      // ---- 遮挡响应（降频采样）----
+      // sampleVisibility 内部是 readRenderTargetPixels，属于 **GPU 同步回读**：
+      // 每帧调用会让 CPU 一直等 GPU，实测直接把页面卡死。遮挡变化本来就慢，
+      // 每 VISIBILITY_INTERVAL 帧采一次完全够用，其余帧复用上次结果。
+      if (frame % VISIBILITY_INTERVAL === 0) {
+        const visibility =
+          compositor?.sampleVisibility(projected.quad, viewport.width, viewport.height) ?? 1;
+        occlusionFade = 0.25 + 0.75 * visibility;
+      }
 
-      // 距离越远越淡：投影在空气里衰减，同时暗示「凑近看」
-      const falloff = Math.min(1, Math.max(0.3, 1 - (projected.distance - 1.2) / 6));
+      // 距离越远越淡：投影在空气里衰减，但保留下限，别让远处的面板直接消失
+      const falloff = Math.min(
+        1,
+        Math.max(MIN_DISTANCE_FALLOFF, 1 - (projected.distance - 1.2) / 6),
+      );
       const opacity = eased * falloff * occlusionFade;
       host.style.opacity = opacity.toFixed(3);
       dockRef.current = {

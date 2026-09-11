@@ -135,11 +135,13 @@ export const STATIONS: Station[] = [
     code: 'FLT-06',
     label: '飞行甲板终端',
     title: '舰载单位',
-    // 机库南墙内表面 z=+33
-    anchor: [-10, 0, 31.9],
+    // 机库南墙内表面 z=+33；与北墙终端保持同一条规则：机身中心离内表面约 1.4m，
+    // 屏幕落在机身与舱室之间。改装前屏幕被放在 z=32.12（越过舱壁），
+    // 全息面板会挂到舰体外面去。
+    anchor: [-10, 0, 31.4],
     facing: 0,
     subsystem: '舰载机与僚机编队',
-    screen: [-10, 1.18, 32.12],
+    screen: [-10, 1.18, 31.26],
     screenYaw: 0,
     screenSize: { width: 1.1, height: 0.56 },
   },
@@ -149,10 +151,10 @@ export const STATIONS: Station[] = [
     code: 'DCK-07',
     label: '船坞调配台',
     title: '补给与装载',
-    anchor: [10, 0, 31.9],
+    anchor: [10, 0, 31.4],
     facing: 0,
     subsystem: '船坞与补给调度',
-    screen: [10, 1.3, 32.02],
+    screen: [10, 1.3, 31.26],
     screenYaw: 0,
     screenSize: { width: 1.2, height: 0.6 },
   },
