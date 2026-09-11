@@ -87,11 +87,27 @@ def _allowed(value: str) -> bool:
     return any(pattern.search(value) for pattern in ALLOWLIST)
 
 
+#: 命中片段前紧邻的字符不能是词字符或连字符，否则它只是更长 token 的一部分。
+#:
+#: 压缩产物里 Tailwind 的类名（例如 `mask-image-linear-from-pos`）会命中
+#: `sk-[A-Za-z0-9_-]{20,}`：命中的其实是 `ma` 之后的 `sk-image-...`。
+#: 真实密钥总是作为独立 token 出现（前面是引号、空格、`=` 或行首），
+#: 因此按 token 边界过滤既能去掉这类误报，又不会漏掉真正的密钥。
+_TOKEN_CHAR = re.compile(r"[A-Za-z0-9_-]")
+
+
+def _is_token_start(line: str, index: int) -> bool:
+    """命中是否落在 token 边界上（行首或前一个字符不是词字符/连字符）。"""
+    return index == 0 or not _TOKEN_CHAR.match(line[index - 1])
+
+
 def _scan_text(path: str, text: str) -> list[tuple[str, int, str, str]]:
     findings: list[tuple[str, int, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         for label, pattern in PATTERNS:
             for match in pattern.finditer(line):
+                if not _is_token_start(line, match.start()):
+                    continue
                 value = match.group(0)
                 if _allowed(value):
                     continue
@@ -140,6 +156,8 @@ def scan_history(*, limit: int = 4000) -> list[tuple[str, int, str, str]]:
                 continue
             _commit, path, lineno, content = parts
             for match in pattern.finditer(content):
+                if not _is_token_start(content, match.start()):
+                    continue
                 value = match.group(0)
                 if _allowed(value):
                     continue

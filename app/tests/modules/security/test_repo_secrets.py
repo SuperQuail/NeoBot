@@ -30,6 +30,18 @@ def test_tracked_files_contain_no_secrets(monkeypatch) -> None:
     )
 
 
+def test_scanner_ignores_key_shaped_suffix_of_longer_token(tmp_path) -> None:
+    """压缩产物里的长标识符（如 Tailwind 的 mask-image-*）不应被当成密钥。"""
+    scanner = _load_scanner()
+    sample = tmp_path / "bundle.js"
+    sample.write_text(
+        'mask-image-linear-from-pos:[1],mask-image-radial-to-color:[2]',
+        encoding="utf-8",
+    )
+
+    assert scanner.scan_files([str(sample)]) == []
+
+
 def test_scanner_detects_realistic_key(tmp_path) -> None:
     """扫描器本身必须能识别真实形态的密钥（防止规则被误改成永远通过）。"""
     scanner = _load_scanner()
