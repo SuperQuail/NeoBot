@@ -59,16 +59,6 @@ def migrate_v3_to_v4(old: dict) -> dict:
     return new
 
 
-_DASHBOARD_CARRY_KEYS = (
-    "enabled",
-    "host",
-    "port",
-    "session_timeout_minutes",
-    "secure_cookies",
-    "trust_proxy_headers",
-)
-
-
 _LEGACY_ROLE_FIELDS = (
     "primary_chat_model",
     "agent_model_1",
@@ -192,8 +182,8 @@ def migrate_v5_to_v6(old: dict) -> dict:
 def migrate_v4_to_v5(old: dict) -> dict:
     """迁移 0.4.0 -> 0.5.0。
 
-    - [console] -> [dashboard]：双控制台合并为官方 dashboard 插件，admin_* 与
-      port_search_limit 不再需要，其余可直接沿用的字段保留。
+    - [console] 双控制台合并为官方 dashboard 插件：面板设置不再写在本体配置里，
+      由 plugin_config_migration 在加载配置前搬进插件数据目录，这里只丢弃旧分区。
     - [models.creator_image_model] -> [[models.creator_image_models]]：
       生图模型改为列表，允许配置多个模型/供应商。
     """
@@ -203,16 +193,6 @@ def migrate_v4_to_v5(old: dict) -> dict:
         if key in ("version", "console", "models"):
             continue
         new[key] = value
-
-    console = old.get("console")
-    if isinstance(console, dict):
-        dashboard = {
-            key: console[key]
-            for key in _DASHBOARD_CARRY_KEYS
-            if key in console
-        }
-        if dashboard:
-            new["dashboard"] = dashboard
 
     models = old.get("models")
     if isinstance(models, dict):

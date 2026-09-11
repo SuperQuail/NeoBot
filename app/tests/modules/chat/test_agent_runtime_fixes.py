@@ -228,6 +228,10 @@ async def test_maintenance_agent_closes_when_cycle_is_cancelled(monkeypatch) -> 
         def get_tools(self) -> list[dict]:
             return []
 
+        def get_all_tools(self) -> list[dict]:
+            # 独立 Agent(沙箱维护)自建工具集走 get_all_tools
+            return []
+
         async def execute(self, name: str, args: dict) -> str:
             return "unused"
 

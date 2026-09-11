@@ -26,6 +26,12 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
 MAX_IMAGE_DIMENSION = 4096
+# 单张内联图片的字节上限。内联图片会以 base64 出现在每一次模型调用的请求里，
+# 原样保留 10 MiB 的原图意味着每轮都要重发十几 MB；超出即重编码。
+MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+# 重编码为 JPEG 时的起始质量，体积仍超标时按步长下调。
+_INLINE_JPEG_QUALITY = 85
+_INLINE_JPEG_MIN_QUALITY = 40
 DEFAULT_AUTO_MAX_IMAGES = 4
 _SOURCE_FIELDS = (
     "image_base64", "image_path", "image_url", "msg_number", "message_id",
@@ -60,6 +66,29 @@ def _integer(value: Any, name: str, *, minimum: int = 0) -> int:
     return number
 
 
+def _encode_inline(image: "Image.Image", *, has_alpha: bool) -> tuple[bytes, str]:
+    """把需要重编码的图片压进内联体积上限，返回 (原始字节, 格式)。
+
+    照片按 PNG 重编码会产生数 MB 的 base64，无透明通道时优先用 JPEG；
+    有透明通道时先尝试 PNG，仍超标才退回 JPEG（透明区域被压平）。
+    """
+    if has_alpha:
+        buffer = io.BytesIO()
+        image.convert("RGBA").save(buffer, format="PNG", optimize=True)
+        raw = buffer.getvalue()
+        if len(raw) <= MAX_INLINE_IMAGE_BYTES:
+            return raw, "PNG"
+    target = image.convert("RGB")
+    quality = _INLINE_JPEG_QUALITY
+    while True:
+        buffer = io.BytesIO()
+        target.save(buffer, format="JPEG", quality=quality, optimize=True)
+        raw = buffer.getvalue()
+        if len(raw) <= MAX_INLINE_IMAGE_BYTES or quality <= _INLINE_JPEG_MIN_QUALITY:
+            return raw, "JPEG"
+        quality -= 15
+
+
 def _normalize_image(raw: bytes, detail: str) -> tuple[dict, dict, int]:
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         raise ValueError("图片为空或超过单图 10 MiB 限制")
@@ -81,10 +110,17 @@ def _normalize_image(raw: bytes, detail: str) -> tuple[dict, dict, int]:
                 if resized:
                     image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
                 width, height = image.size
-                if fmt not in ("PNG", "JPEG", "WEBP") or animated or resized:
-                    output = io.BytesIO()
-                    image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB").save(output, format="PNG")
-                    raw, fmt = output.getvalue(), "PNG"
+                has_alpha = "A" in image.getbands() or "transparency" in image.info
+                # Keep validated native formats; normalize other formats/animations
+                # to a single frame. 体积超过内联上限的原图同样要重编码：
+                # 否则十几 MB 的 base64 会在管线内每一次调用里重复发送。
+                if (
+                    fmt not in ("PNG", "JPEG", "WEBP")
+                    or animated
+                    or resized
+                    or len(raw) > MAX_INLINE_IMAGE_BYTES
+                ):
+                    raw, fmt = _encode_inline(image, has_alpha=has_alpha)
                 mime = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[fmt]
     except ValueError:
         raise
@@ -163,7 +199,7 @@ class ImageContextSkill(SkillModule):
             "msg_number": "聊天显示编号；回复引用图片时选被回复消息编号",
             "message_id": "真实 OneBot 消息ID，不是显示编号",
             "image_index": "图片索引，从0开始，默认0",
-            "gallery_id": "图库列表中的编号，从1开始",
+            "gallery_id": "图库固定编号（gallery_list/gallery_search 的 gallery_no）",
             "emoji_id": "表情包编号，从1开始",
         }.items():
             properties[name] = {"type": "integer", "description": desc}

@@ -7,6 +7,7 @@ import Plugins from './pages/Plugins';
 import ConfigManager from './pages/ConfigManager';
 import System from './pages/System';
 import Usage from './pages/Usage';
+import Analysis from './pages/Analysis';
 import Bots from './pages/Bots';
 import Logs from './pages/Logs';
 import Login from './pages/Login';
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="config" element={<ConfigManager />} />
           <Route path="system" element={<System />} />
           <Route path="usage" element={<Usage />} />
+          <Route path="analysis" element={<Analysis />} />
           <Route path="bots" element={<Bots />} />
           <Route path="logs" element={<Logs />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

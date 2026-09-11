@@ -9,6 +9,8 @@ from neobot_app.core.constants import (
     DATA_DIR,
     ENV_FILE,
     MAX_CONFIG_BACKUPS,
+    PLUGIN_STATE_FILE,
+    PLUGINS_DATA_DIR,
     SRC_DATA_DIR,
 )
 
@@ -17,6 +19,8 @@ __all__ = [
     "ENV_FILE",
     "CONFIG_FILE",
     "CONFIG_BACKUP_DIR",
+    "PLUGIN_STATE_FILE",
+    "PLUGINS_DATA_DIR",
     "SRC_DATA_DIR",
     "APP_NAME",
     "APP_VERSION",

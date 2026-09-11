@@ -187,7 +187,33 @@ async def test_run_solve_exception_marks_failed_and_notifies() -> None:
     task = next(iter(manager._tasks.values()))
     assert task.status == "failed"
     assert "解题器爆炸" in task.error
-    assert any("解题任务失败" in p["content"] for p in hub.published)
+    # 失败通知为 JSON：ok=false + error 字段，模型不需要再从散文里提取信息
+    failures = [json.loads(p["content"]) for p in hub.published]
+    assert any(
+        item["ok"] is False and "解题器爆炸" in str(item.get("error"))
+        for item in failures
+    )
+    await manager.shutdown()
+
+
+async def test_completed_solution_is_pushed_as_bare_markdown() -> None:
+    """完成通知的解答必须是裸 Markdown 原文，不能被 JSON 转义成一行。"""
+    hub = _FakeHub(started=True)
+    solution = "# 结论\n\n1. 第一步\n2. 第二步\n\n```python\nprint(1)\n```"
+    manager = _make_manager(agent=_FakeSolverAgent(solution=solution), hub=hub)
+
+    await manager.submit(**_submit_kwargs())
+
+    contents = [publish["content"] for publish in hub.published]
+    completed = next(content for content in contents if "解题结果" in content)
+    # 头部元信息仍是可解析的 JSON
+    header = json.loads(completed.split("\n", 1)[0])
+    assert header["ok"] is True
+    assert header["kind"] == "solve_result"
+    assert header["task_id"]
+    # 解答原文逐字出现，换行与代码块没有被转义
+    assert solution in completed
+    assert "\\n" not in completed
     await manager.shutdown()
 
 

@@ -51,13 +51,26 @@ async def test_build_all_skills_attaches_solver_and_declares_real_tools(tmp_path
                               agent_provider=provider, data_dir=tmp_path)
     shared = skills.get("agent_tools")
     assert isinstance(shared, AgentToolsSkill)
-    names = {d["function"]["name"] for d in skills.get_tools()}
     assert shared.runtime.config.mode == "native"
+
+    # agent_tools 不再常驻主 Agent，而是拆成按需工具包
+    resident = {d["function"]["name"] for d in skills.get_tools()}
+    assert not any(name.startswith("agent_tools__") for name in resident)
+
+    packages = [name for name in skills.deferred_skill_names
+                if name.startswith("agent_tools_")]
+    assert set(packages) == {"agent_tools_files", "agent_tools_exec", "agent_tools_web",
+                             "agent_tools_plan", "agent_tools_misc"}
+    loaded = {d["function"]["name"] for d in skills.get_tools(packages)}
     assert {"agent_tools__read", "agent_tools__job_output", "agent_tools__todo_write",
-            "agent_tools__lsp", "agent_tools__web_search", "agent_tools__web_fetch"} <= names
+            "agent_tools__lsp", "agent_tools__web_search", "agent_tools__web_fetch"} <= loaded
     assert not {"agent_tools__run_code", "agent_tools__subagent_fork", "agent_tools__ralph",
                 "agent_tools__session_event_search", "agent_tools__terminal_open",
-                "agent_tools__create_goal", "agent_tools__execute_command"} & names
+                "agent_tools__create_goal", "agent_tools__execute_command"} & loaded
+    # 只加载其中一个包时，其它包的叶子不得出现
+    files_only = {d["function"]["name"] for d in skills.get_tools(["agent_tools_files"])}
+    assert {"agent_tools__read", "agent_tools__edit"} <= files_only
+    assert "agent_tools__run_python" not in files_only
     solver_names = {d["function"]["name"] for d in solver.tool_definitions}
     assert {"read", "edit", "grep", "lsp", "web_search", "web_fetch",
             "get_chat_context", "submit_solution"} <= solver_names
@@ -67,19 +80,30 @@ async def test_build_all_skills_attaches_solver_and_declares_real_tools(tmp_path
     await shared.close()
 
 
-async def test_main_ptc_file_sequence_uses_real_registry(tmp_path):
+async def test_main_direct_leaf_call_uses_real_conversation_owner(tmp_path):
+    """主 Agent 直调叶子工具时，归属与工作目录来自真实会话，模型伪造的内部键被剥离。
+
+    即使全局配置是 PTC，主回复管线仍走直接调用（PTC 只服务任务型 Agent），
+    因此这条链路必须在 PTC 模式下也能工作。
+    """
     sandbox = SandboxService(tmp_path / "sandbox")
     runtime = AgentToolRuntime(sandbox, state_dir=tmp_path / "state", config=AgentToolsConfig(mode="ptc"))
+    from neobot_app.skills.agent_tools_packages import build_agent_tool_packages
+
     skills = SkillManager()
-    skills.register(AgentToolsSkill(runtime))
+    owner = AgentToolsSkill(runtime)
+    skills.register(owner)
+    for package in build_agent_tool_packages(owner):
+        skills.register(package)
     executor = ReplyToolExecutor(skill_manager=skills, conv_kind="group", conv_id="123", current_user_id=7, human_request=True)
     try:
-        result = json.loads(await executor.execute("agent_tools__run_code", {
-            "description": "Create and inspect a file",
-            "code": 'await tools.write({"file_path": "hello.txt", "content": "你好"})\nr = await tools.read({"file_path": "hello.txt"})\nreturn r["content"]',
+        written = json.loads(await executor.execute("agent_tools__write", {
+            "file_path": "hello.txt", "content": "你好",
             "_owner": "foreign", "pipeline_key": "group:999",
         }))
-        assert result["result"] == "你好"
+        assert written.get("ok") is not False, written
+        read = await executor.execute("agent_tools__read", {"file_path": "hello.txt"})
+        assert "你好" in read
         assert (sandbox.get_temp_dir("group:123") / "hello.txt").read_text(encoding="utf-8") == "你好"
         assert not sandbox.get_temp_dir("group:999").exists()
     finally:

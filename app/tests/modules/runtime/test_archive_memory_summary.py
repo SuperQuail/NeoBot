@@ -19,8 +19,14 @@ from neobot_contracts.ports.logging import NullLogger
 from neobot_app.runtime.archive_memory_summary import (
     MAX_STORED_MESSAGE_CHARS,
     MAX_TOOL_FAILURES,
+    MAX_TOOL_RESULT_CHARS,
+    MAX_TOOL_RESULT_TOTAL_CHARS,
+    RETRY_BACKOFF_MAX_SECONDS,
     ArchiveMemoryAutoSummaryService,
+    _TOOL_DROPPED_MARKER,
+    _trim_tool_history,
 )
+from neobot_app.time_context import epoch_seconds
 
 
 class _FakeArchive:
@@ -308,17 +314,17 @@ async def test_real_provider_http_failure_preserves_counter(provider_cls):
             )
 
         assert len(requests) == 1  # Non-retryable HTTP error, not a tool loop.
-        assert json.loads(archive.raw("memory_counter", "group:222")["value"]) == {
-            "count": 2,
-            "messages": [
-                {"sender_id": "", "sender_name": "", "text": "first"},
-                {"sender_id": "", "sender_name": "", "text": "second"},
-            ],
-        }
+        state = json.loads(archive.raw("memory_counter", "group:222")["value"])
+        assert state["count"] == 2
+        assert state["messages"] == [
+            {"sender_id": "", "sender_name": "", "text": "first"},
+            {"sender_id": "", "sender_name": "", "text": "second"},
+        ]
+        # 失败必须写入冷却窗口：否则计数器越过阈值后，每条新消息都会重跑一次总结。
+        assert state["failures"] == 1
+        assert state["retry_after"] > epoch_seconds()
         logger.warning.assert_called_once()
-        assert logger.warning.call_args.args == (
-            "档案自动总结失败，保留计数器待重试",
-        )
+        assert logger.warning.call_args.args == ("档案自动总结失败，进入冷却后重试",)
         assert "401" in logger.warning.call_args.kwargs["error"]
         logger.info.assert_not_called()
     finally:
@@ -574,7 +580,7 @@ async def test_summary_aborts_after_repeated_tool_failures_and_keeps_counter():
     logger.info.assert_not_called()
     warnings = [call.args[0] for call in logger.warning.call_args_list]
     assert "档案自动总结因工具连续失败而中止" in warnings
-    assert "档案自动总结未写入任何内容，保留计数器待重试" in warnings
+    assert "档案自动总结未写入任何内容，进入冷却后重试" in warnings
 
 
 @pytest.mark.asyncio
@@ -788,5 +794,345 @@ async def test_summary_records_token_usage(monkeypatch):
             "conversation_id": "555",
         }
     ]
+
+
+# ── 失败冷却:防止「每条消息重跑一次总结」的 token 风暴 ──────────────
+
+
+@pytest.mark.asyncio
+async def test_failed_summary_enters_cooldown_and_does_not_rerun_per_message():
+    """间隔 1 + 必然失败的 provider：连续 5 条消息只允许触发 1 次总结。
+
+    这是 token 风暴的回归测试——修复前计数器越过阈值后每条消息都会重跑
+    一整轮工具循环(现实中表现为每 60 秒一次超时，连续烧数小时)。
+    """
+    archive = _FakeArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    for i in range(5):
+        await service.record_message(
+            conversation_kind="group",
+            conversation_id="990",
+            message_text=f"消息 {i}",
+        )
+
+    assert len(provider.calls) == 1
+    state = json.loads(archive.raw("memory_counter", "group:990")["value"])
+    # 计数继续累计(冷却期内消息不丢)，但模型调用只发生了一次
+    assert state["count"] == 5
+    assert state["failures"] == 1
+    assert state["retry_after"] > epoch_seconds()
+    assert len(state["messages"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expiry_allows_one_retry():
+    """冷却到期后只补一次重试，失败则再次进入更长的冷却。"""
+    archive = _FakeArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="991", message_text="一"
+    )
+    assert len(provider.calls) == 1
+
+    # 手动把冷却时间拨到过去，模拟冷却到期
+    state = json.loads(archive.raw("memory_counter", "group:991")["value"])
+    first_retry_after = state["retry_after"]
+    state["retry_after"] = epoch_seconds() - 1
+    await archive.set(
+        "memory_counter", "group:991", json.dumps(state), ["auto_summary_counter"]
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="991", message_text="二"
+    )
+
+    assert len(provider.calls) == 2
+    state = json.loads(archive.raw("memory_counter", "group:991")["value"])
+    assert state["failures"] == 2
+    # 退避翻倍：第二次失败的冷却窗口必须晚于第一次
+    assert state["retry_after"] > first_retry_after
+
+
+def test_backoff_is_capped():
+    """退避必须封顶，避免长时间完全不总结。"""
+    delays = [ArchiveMemoryAutoSummaryService._backoff_seconds(n) for n in range(1, 12)]
+    assert delays[0] < delays[1] < delays[2]
+    assert max(delays) <= RETRY_BACKOFF_MAX_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_summary_concurrency_guard_skips_overlapping_runs():
+    """同一会话的总结不得并发：消息在总结期间到达只累计，不叠加新任务。"""
+    archive = _FakeArchive()
+    provider = _FakeProvider()
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    assert service._begin_summary("group:1") is True
+    try:
+        await service.record_message(
+            conversation_kind="group", conversation_id="1", message_text="一"
+        )
+    finally:
+        service._end_summary("group:1")
+
+    assert provider.calls == []
+    state = json.loads(archive.raw("memory_counter", "group:1")["value"])
+    assert state["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_summary_stops_at_total_time_budget():
+    """工具循环必须在总时长预算内收口，不能无限轮次耗尽 token。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=AsyncMock(return_value='{"ok": true}'),
+        group_interval=1,
+        max_tool_rounds=20,
+    )
+    service._summary_budget_seconds = 0.05
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="992", message_text="一"
+    )
+
+    assert len(provider.calls) < 20
+    state = json.loads(archive.raw("memory_counter", "group:992")["value"])
+    assert state["count"] == 1
+    assert state["retry_after"] > epoch_seconds()
+
+
+# ── 工具返回与上下文体积极限 ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tool_result_is_truncated_before_entering_context():
+    """单条工具返回必须先截断再进上下文，否则下一轮会把它整块重发。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    huge = "档" * (MAX_TOOL_RESULT_CHARS * 3)
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=AsyncMock(return_value=huge),
+        group_interval=1,
+        max_tool_rounds=2,
+    )
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="993", message_text="一"
+    )
+
+    assert len(provider.calls) == 2
+    # provider.calls 保存的是同一个可变列表，因此这里校验全部 tool 消息的规模
+    tool_messages = [
+        message for message in provider.calls[1] if message.get("role") == "tool"
+    ]
+    assert tool_messages
+    for message in tool_messages:
+        assert len(message["content"]) <= MAX_TOOL_RESULT_CHARS + 100
+        assert "已截断" in message["content"]
+
+
+def test_old_tool_results_are_dropped_when_over_total_budget():
+    """工具返回总量超预算时，从最早的一批开始替换为占位符。"""
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "prompt"},
+    ]
+    rounds = 5
+    per_round = MAX_TOOL_RESULT_TOTAL_CHARS // 2
+    for index in range(rounds):
+        messages.append({"role": "assistant", "content": None})
+        messages.append({"role": "tool", "content": "x" * per_round})
+
+    _trim_tool_history(messages)
+
+    kept = [
+        message
+        for message in messages
+        if message.get("role") == "tool" and message["content"] != _TOOL_DROPPED_MARKER
+    ]
+    dropped = [
+        message
+        for message in messages
+        if message.get("role") == "tool" and message["content"] == _TOOL_DROPPED_MARKER
+    ]
+    # 最近的保留、最早的被丢弃，且保留量在预算内
+    assert len(kept) <= 2
+    assert len(dropped) == rounds - len(kept)
+    assert sum(len(message["content"]) for message in kept) <= (
+        MAX_TOOL_RESULT_TOTAL_CHARS
+    )
+    # system / user 消息不受影响
+    assert messages[0]["content"] == "sys"
+    assert messages[1]["content"] == "prompt"
+
+
+def test_trim_tool_history_keeps_non_tool_messages_intact():
+    """裁剪只针对 tool 消息，assistant 的工具调用结构必须保持可用。"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 10},
+    ]
+    _trim_tool_history(messages)
+    assert messages[1]["tool_calls"] == [{"id": "c1"}]
+    assert messages[2]["content"] == "x" * 10
+
+
+# ── 超时调用的可观测性 ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_timed_out_model_call_is_logged_with_request_size():
+    """超时调用不会返回 usage，本地统计彻底看不到，必须留下带请求规模的告警。"""
+
+    class _HangingProvider:
+        async def chat(self, messages, tools=None):
+            await asyncio.sleep(30)
+            raise AssertionError("wait_for 应当先超时")
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    logger = Mock(spec=NullLogger)
+    service = _make_service(archive=archive, provider=_HangingProvider(), group_interval=1)
+    service._logger = logger
+    service._summary_budget_seconds = 2.0
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="994", message_text="一"
+    )
+
+    warnings = [call for call in logger.warning.call_args_list]
+    timeout_warnings = [
+        call
+        for call in warnings
+        if call.args and call.args[0] == "档案自动总结模型调用超时，本次调用不会计入用量统计"
+    ]
+    assert len(timeout_warnings) == 1
+    kwargs = timeout_warnings[0].kwargs
+    assert kwargs["conversation_id"] == "994"
+    assert kwargs["request_chars"] > 0
+    assert kwargs["messages_count"] >= 2
+    # 超时同样要进入冷却，避免连续重跑
+    state = json.loads(archive.raw("memory_counter", "group:994")["value"])
+    assert state["retry_after"] > epoch_seconds()
+
+
+# ── 成功清账不得丢掉总结期间新到的消息 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_messages_arriving_during_summary_survive_success():
+    """总结成功只销账已总结的消息：总结期间新到的消息必须留到下一轮。"""
+
+    class _ReentrantProvider:
+        async def chat(self, messages, tools=None):
+            # 模拟总结进行中用户继续发言：走同一条 record_message 路径
+            await service.record_message(
+                conversation_kind="group",
+                conversation_id="1200",
+                message_text="并发消息",
+            )
+            return {"role": "assistant", "content": "ok", "tool_calls": None}
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    service = _make_service(archive=archive, provider=_ReentrantProvider(), group_interval=3)
+
+    for index in range(3):
+        await service.record_message(
+            conversation_kind="group", conversation_id="1200", message_text=f"消息{index}"
+        )
+
+    state = json.loads(archive.raw("memory_counter", "group:1200")["value"])
+    assert state["count"] == 1, "count 应等于缓冲中未总结的消息条数"
+    assert [message["text"] for message in state["messages"]] == ["并发消息"]
+
+
+@pytest.mark.asyncio
+async def test_failure_merge_holds_lock_and_keeps_concurrent_appends():
+    """失败写回必须持锁：总结期间到达的消息不能被旧快照覆盖。"""
+
+    class _PausingArchive(_FakeArchive):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_started = asyncio.Event()
+            self.resume_write = asyncio.Event()
+
+        async def set(self, table_name, key, value, tags):
+            data = json.loads(value)
+            if data.get("failures"):
+                self.write_started.set()
+                await self.resume_write.wait()
+            return await super().set(table_name, key, value, tags)
+
+    archive = _PausingArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    first = asyncio.create_task(
+        service.record_message(
+            conversation_kind="group", conversation_id="1300", message_text="一"
+        )
+    )
+    await asyncio.wait_for(archive.write_started.wait(), timeout=2.0)
+
+    second = asyncio.create_task(
+        service.record_message(
+            conversation_kind="group", conversation_id="1300", message_text="二"
+        )
+    )
+    await asyncio.sleep(0)
+    assert not second.done(), "追加必须等失败写回释放计数器锁"
+
+    archive.resume_write.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
+
+    state = json.loads(archive.raw("memory_counter", "group:1300")["value"])
+    assert state["count"] == 2
+    assert [message["text"] for message in state["messages"]] == ["二"]
+
+
+@pytest.mark.asyncio
+async def test_partial_tool_failure_clear_is_logged():
+    """部分工具失败仍按成功清账时必须告警，不能静默丢内容。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    logger = Mock(spec=NullLogger)
+    calls = {"n": 0}
+
+    async def executor(name, args):
+        calls["n"] += 1
+        return '{"ok": true}' if calls["n"] > 1 else "未知工具: archive_crud__save"
+
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=executor,
+        group_interval=1,
+        max_tool_rounds=2,
+    )
+    service._logger = logger
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="1400", message_text="一"
+    )
+
+    state = json.loads(archive.raw("memory_counter", "group:1400")["value"])
+    assert state == {"count": 0, "messages": []}
+    warnings = [call.args[0] for call in logger.warning.call_args_list]
+    assert "档案自动总结存在工具失败，已按部分成功清账" in warnings
 
 

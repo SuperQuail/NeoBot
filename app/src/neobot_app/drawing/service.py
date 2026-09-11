@@ -449,9 +449,9 @@ class CreatorImageService:
 
         resolved_data_urls: list[str] = []
         if reference_id is not None:
-            ref = await self._get_reference_by_number(reference_id)
+            ref = await self._get_reference_by_gallery_no(reference_id)
             if ref is None:
-                raise LookupError(f"参考图编号 {reference_id} 不存在")
+                raise LookupError(f"图库编号 {reference_id} 不存在")
             resolved_data_urls.append(self._image_data_url(Path(ref.file_path), ref.mime_type))
         if references:
             for ref_str in references:
@@ -548,7 +548,7 @@ class CreatorImageService:
         """本地图片后处理:缩放 / 裁切 / 格式转换 / 去底透明。
 
         image 支持图片 ID(image_id,如 tmp_xxx / g_xxx)或来源描述符
-        (gallery:<编号> / emoji:<编号> / file:<路径> / url:<URL> / chat:<msg>:<idx>)。
+        (gallery:<图库编号> / emoji:<编号> / file:<路径> / url:<URL> / chat:<msg>:<idx>)。
         operation:
           - resize: 等比缩放;只给 width 或 height 时按单边等比,
             两者都给时精确拉伸
@@ -1329,6 +1329,8 @@ class CreatorImageService:
             explicit_description=description,
         )
         async with self._uow_factory() as uow:
+            # 图库编号只在这里分配一次（持久化高水位 +1），仓库层不会覆盖已有编号
+            gallery_no = await self._allocate_gallery_no(uow, source, image_id)
             record = await uow.creator_images.set(
                 image_id,
                 source=source,
@@ -1340,6 +1342,7 @@ class CreatorImageService:
                 original_width=width,
                 original_height=height,
                 image_source=image_source,
+                gallery_no=gallery_no,
             )
             await uow.commit()
             return record
@@ -1450,6 +1453,8 @@ class CreatorImageService:
                     original_width=prepared.original_width,
                     original_height=prepared.original_height,
                     image_source="部署者提供",
+                    # 手动放进图库目录的图片同样要有固定编号
+                    gallery_no=await self._allocate_gallery_no(uow, disk_source, image_id),
                 )
             await uow.commit()
 
@@ -1507,20 +1512,41 @@ class CreatorImageService:
         async with self._uow_factory() as uow:
             return await uow.creator_images.get(normalized)
 
+    @staticmethod
+    async def _allocate_gallery_no(uow: Any, source: str, image_id: str) -> int | None:
+        """图库记录入库时分配固定编号；暂存区等其它来源不参与编号。
+
+        高水位编号是消耗品：只为新记录或历史缺号记录分配，更新已有编号的记录
+        直接复用旧号，否则每次改描述都会打出空洞（编号只增不复用，空洞不可回填）。
+        """
+        if source != GALLERY_SOURCE:
+            return None
+        existing = await uow.creator_images.get(image_id)
+        if existing is not None and existing.gallery_no is not None:
+            return None
+        return await uow.creator_images.allocate_gallery_no()
+
     async def _ensure_gallery_capacity(self) -> None:
         async with self._uow_factory() as uow:
             count = await uow.creator_images.count(source=GALLERY_SOURCE)
         if count >= self._config.gallery_capacity:
             raise ValueError(f"图库容量已满（{self._config.gallery_capacity}）")
 
-    async def _get_reference_by_number(self, reference_id: int) -> CreatorImageRecord | None:
+    async def _get_reference_by_gallery_no(
+        self, reference_id: int
+    ) -> CreatorImageRecord | None:
+        """按图库固定编号取图片。
+
+        编号在入库时分配一次并写入 creator_images.gallery_no，
+        不再依赖列表顺序，因此 gallery_update/删除/排序变化都不会让编号指错图。
+        """
         if reference_id <= 0:
             return None
-        # list_images with a large limit to ensure we get the reference
-        references = await self.list_images(source=GALLERY_SOURCE, limit=9999, offset=0)
-        if reference_id > len(references):
+        async with self._uow_factory() as uow:
+            record = await uow.creator_images.get_by_gallery_no(reference_id)
+        if record is None or not Path(record.file_path).is_file():
             return None
-        return references[reference_id - 1]
+        return record
 
     async def _resolve_reference(self, ref_str: str, *, conv_id: str = "") -> str | None:
         """解析参考图字符串，返回 base64 data URL。"""
@@ -1529,15 +1555,30 @@ class CreatorImageService:
             return None
 
         if ref.lstrip("-").isdigit() and int(ref) > 0:
-            record = await self._get_reference_by_number(int(ref))
+            record = await self._get_reference_by_gallery_no(int(ref))
             if record is None:
-                raise LookupError(f"参考图编号 {ref} 不存在")
+                raise LookupError(f"图库编号 {ref} 不存在（用 gallery_list 查看现有编号）")
             return self._image_data_url(Path(record.file_path), record.mime_type)
 
         if ":" in ref:
             prefix, _, value = ref.partition(":")
             prefix = prefix.lower().strip()
             value = value.strip()
+
+            if prefix in ("gallery", "g", "image", "img"):
+                # 模型经常把图库引用写成 gallery:<编号> 或 gallery:<image_id>，
+                # 两种都要接受：纯数字按图库固定编号解析，其余按 image_id 解析。
+                if value.lstrip("-").isdigit() and int(value) > 0:
+                    record = await self._get_reference_by_gallery_no(int(value))
+                    if record is None:
+                        raise LookupError(
+                            f"图库编号 {value} 不存在（用 gallery_list 查看现有编号）"
+                        )
+                    return self._image_data_url(Path(record.file_path), record.mime_type)
+                record = await self._get_existing(value)
+                if record is None:
+                    raise LookupError(f"图库中不存在 image_id={value}")
+                return self._image_data_url(Path(record.file_path), record.mime_type)
 
             if prefix == "pool":
                 if self._image_pool is None:
@@ -1587,7 +1628,11 @@ class CreatorImageService:
         if record is not None:
             return self._image_data_url(Path(record.file_path), record.mime_type)
 
-        raise LookupError(f"无法解析参考图: {ref}")
+        raise LookupError(
+            f"无法解析参考图: {ref}；支持格式："
+            "gallery:<image_id 或 图库编号>、<image_id>、<图库编号>、pool:<key>、"
+            "emoji:<编号>、url:<URL>、file:<路径>、chat:<消息编号>:<图片序号>"
+        )
 
     async def resolve_source_to_path(self, source: str) -> Path:
         """将 source 描述符解析为本地文件路径。
@@ -1596,7 +1641,7 @@ class CreatorImageService:
 
         支持的格式:
           - chat:<msg_id>:<img_index>
-          - gallery:<编号>
+          - gallery:<image_id> 或 gallery:<图库编号>
           - emoji:<编号> 或 e:<编号>
           - url:<URL>
           - file:<路径>
@@ -1620,11 +1665,15 @@ class CreatorImageService:
             return path
 
         if prefix == "gallery":
-            if not value.lstrip("-").isdigit() or int(value) <= 0:
-                raise ValueError(f"图库编号无效: {value}")
-            record = await self._get_reference_by_number(int(value))
-            if record is None:
-                raise LookupError(f"图库编号 {value} 不存在")
+            # 与 _resolve_reference 一致：数字按图库编号，其余按 image_id
+            if value.lstrip("-").isdigit() and int(value) > 0:
+                record = await self._get_reference_by_gallery_no(int(value))
+                if record is None:
+                    raise LookupError(f"图库编号 {value} 不存在")
+            else:
+                record = await self._get_existing(value)
+                if record is None:
+                    raise LookupError(f"图库中不存在 image_id={value}")
             return Path(record.file_path)
 
         if prefix in ("e", "emoji"):

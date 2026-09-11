@@ -12,9 +12,16 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 def _format_image_item(record: Any, return_paths: bool) -> dict[str, Any]:
-    """将 CreatorImageRecord 格式化为 dict。"""
+    """将 CreatorImageRecord 格式化为 dict。
+
+    gallery_no 是入库时分配一次的图库固定编号，等价于 drawing__draw 的
+    reference_id（也可写 references=["gallery:<gallery_no>"]）；编号固定不变，
+    图库增删、改描述、重命名都不会让它指向别的图片。
+    image_id 是稳定主键，适合长期记录，两者都可用。
+    """
     item = {
         "image_id": record.image_id,
+        "gallery_no": getattr(record, "gallery_no", None),
         "description": record.description,
         "prompt": record.prompt,
         "source": record.source,
@@ -53,16 +60,21 @@ class GallerySkill(SkillModule):
             "全部命中的结果排在最前，用于精确查找角色立绘\n"
             "  3. 如果 gallery_search 返回空，尝试换关键词或更宽泛的搜索词\n"
             "  4. 如果用户只是想浏览图库内容，用 gallery_list 分页查看\n"
-            "  5. gallery_list 和 gallery_search 返回的每个结果都有一个编号\n"
-            "     - 此编号可直接用于 drawing__draw 的 reference_id 参数\n"
-            "     - 也可用于 image_pool__put(source=\"gallery:<编号>\") 存入缓存池\n"
+            "  5. gallery_list 和 gallery_search 的每个结果都带两个标识\n"
+            "     - image_id：稳定主键，引用图片优先用它\n"
+            "       drawing__draw 用 references=[\"gallery:<image_id>\"]；"
+            "image_pool__put 用 source=\"gallery:<image_id>\"\n"
+            "     - gallery_no：图库固定编号（入库时分配，不会变化）\n"
+            "       等价于 drawing__draw 的 reference_id，"
+            "也可写 references=[\"gallery:<gallery_no>\"]\n"
+            "       或 image_context__add_image 的 gallery_id\n"
             "  6. 如果找不到用户描述的图片，如实告知，不要编造编号\n\n"
 
             "【角色立绘参考（配合绘图）】\n"
             "  绘图请求涉及角色时，务必先搜索图库是否有该角色立绘：\n"
             "    - 用角色名 + 特征词搜索（如「弥音 立绘」「sakura standing」）\n"
             "    - 搜索 bot 自己的形象时用角色名或特征（粉色头发/猫娘等）\n"
-            "    - 找到立绘后把编号交给 drawing__draw 作为 reference_id 参考生图\n\n"
+            "    - 找到立绘后把 gallery_no（或 image_id）交给 drawing__draw 作为参考生图\n\n"
 
             "【图片命名规范】\n"
             "  将图片加入图库（gallery_add）时：\n"
@@ -243,7 +255,13 @@ async def _handle_gallery_list(self: GallerySkill, args: dict) -> str:
         offset = (page - 1) * page_size
         images = await self._image_service.list_images(limit=page_size, offset=offset)
         items = [_format_image_item(img, return_paths) for img in images]
-        return _json({"ok": True, "items": items, "total": len(items)})
+        return _json({
+            "ok": True,
+            "items": items,
+            "total": len(items),
+            "page": page,
+            "page_size": page_size,
+        })
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -255,7 +273,7 @@ async def _handle_gallery_search(self: GallerySkill, args: dict) -> str:
     try:
         images = await self._image_service.search_images(keyword)
         items = [_format_image_item(img, return_paths) for img in images]
-        return _json({"ok": True, "items": items, "total": len(items)})
+        return _json({"ok": True, "items": items, "total": len(items), "keyword": keyword})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 

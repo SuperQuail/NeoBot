@@ -92,6 +92,7 @@ class EventPipeline:
         command_service: Any | None = None,
         credential_manager: Any | None = None,
         sleep_service: Any | None = None,
+        standby_service: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -106,6 +107,9 @@ class EventPipeline:
         self._logger = logger or NullLogger()
         self._reply_block_registry = reply_block_registry
         self._command_service = command_service
+        # 待机状态：命令已在上游处理完，这里丢弃后续回复与记忆管线。
+        # 旧实现漏了这行赋值，导致丢弃门在生产装配下恒不生效（只有测试手工赋值才通过）。
+        self._standby_service = standby_service
         self._credential_manager = credential_manager
         self._sleep_service = sleep_service
         self._warmed_up_friends: set[str] = set()
@@ -273,6 +277,28 @@ class EventPipeline:
         self._start_command_sync_reply(message=message, queue=queue, queue_key=queue_key, background=reply)
         return True
 
+    def is_standby(self) -> bool:
+        """Bot 是否处于待机状态(待机期间不回复、不触发记忆总结)。"""
+        service = getattr(self, "_standby_service", None)
+        return bool(service is not None and service.is_standby())
+
+    def _skip_while_standby(
+        self, *, kind: str, queue_key: str, message: Any
+    ) -> bool:
+        """待机熔断:命令已在前面处理完,这里丢掉后续的回复与记忆管线。
+
+        必须在 push/档案总结之前返回,否则待机期间仍会积压记忆总结任务。
+        """
+        if not self.is_standby():
+            return False
+        self._logger.info(
+            "Bot 已进入待机，消息不进入回复与记忆管线",
+            conversation_kind=kind,
+            conversation_id=queue_key,
+            message_id=getattr(message, "message_id", None),
+        )
+        return True
+
     @human_message_entry
     async def handle_private_message_event(
         self,
@@ -307,6 +333,11 @@ class EventPipeline:
             if result is not None and result.consumed:
                 command_consumed = True
                 command_background = result.background
+
+        if self._skip_while_standby(
+            kind="private", queue_key=queue_key, message=message
+        ):
+            return
 
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
@@ -487,6 +518,11 @@ class EventPipeline:
             if result is not None and result.consumed:
                 command_consumed = True
                 command_background = result.background
+
+        if self._skip_while_standby(
+            kind="group", queue_key=queue_key, message=message
+        ):
+            return
 
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
@@ -1347,10 +1383,8 @@ class EventPipeline:
                 f"凭据已确认(用途: {credential.action}),可以执行对应操作了。",
             )
             background = (
-                "<这是新的必须要回答的内容>\n"
                 f"凭据已签发: 用途 {credential.action},会话 {chat_flow}。\n"
-                "如正在等待此凭据执行风险操作(踢人/退群等),现在可以继续执行。\n"
-                "</这是新的必须要回答的内容>"
+                "如正在等待此凭据执行风险操作(踢人/退群等),现在可以继续执行。"
             )
             self._start_command_sync_reply(
                 message=message, queue=queue, queue_key=queue_key, background=background,

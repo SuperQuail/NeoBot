@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_memory import ArchiveMemoryService
 
-from neobot_app.time_context import get_current_time_and_lunar_date
+from neobot_app.time_context import (
+    epoch_seconds,
+    get_current_time_and_lunar_date,
+    monotonic_seconds,
+)
 
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import AgentMemoryItemArchive, BotConfig
@@ -31,6 +35,27 @@ _TOOL_FAILURE_MARKERS = ("未知工具", "工具执行失败", "Tool error")
 #: memory_counter、另一进程、人工改库）在有限时间内重新可见。
 _COUNTER_CACHE_TTL_SECONDS = 30.0
 
+# 总结失败后的冷却窗口：失败一次至少要等这么久才会再次尝试。
+# 没有它时，计数器一旦越过间隔且总结持续失败，每条新消息都会重跑一整轮工具循环，
+# 形成「每条消息 = 一次模型超时」的 token 风暴。
+RETRY_BACKOFF_BASE_SECONDS = 60.0
+# 连续失败时的退避上限，避免长时间完全不总结。
+RETRY_BACKOFF_MAX_SECONDS = 900.0
+# 退避翻倍的最大次数(1→2→4→8→16 倍)。
+RETRY_BACKOFF_MAX_DOUBLINGS = 4
+# 单次总结的总时长预算(秒)：超过即中止本轮并进入冷却，
+# 避免多轮工具调用把一次总结拖成数十分钟。
+DEFAULT_SUMMARY_BUDGET_SECONDS = 180.0
+# 单次总结内层模型调用的超时(秒)，同时也是单轮上限。
+DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS = 60.0
+# 单条工具返回写入上下文的最大字符数。read_pending_messages 会返回 500 条消息全文，
+# list_archive 会返回整条档案 value，原样追加会让之后每一轮都把这几百 KB 重发一遍。
+MAX_TOOL_RESULT_CHARS = 4000
+# 整个总结过程中保留的工具返回总量上限；超出后丢弃最早的工具返回。
+MAX_TOOL_RESULT_TOTAL_CHARS = 60_000
+_TOOL_TRUNCATED_MARKER = "\n...[工具返回已截断，需要更多内容请缩小查询范围后重试]"
+_TOOL_DROPPED_MARKER = "[已省略：更早的工具返回，避免上下文膨胀]"
+
 
 class ArchiveMemoryAutoSummaryService:
     """统计实时消息数量，并按配置间隔通过工具定期更新档案画像。"""
@@ -45,18 +70,24 @@ class ArchiveMemoryAutoSummaryService:
         logger: Logger | None = None,
         tool_definitions: list[dict] | None = None,
         tool_executor: Any = None,
+        standby_service: Any = None,
     ) -> None:
         self._archive = archive_memory_service
         self._provider = provider
         self._config = config
         self._logger = logger or NullLogger()
         self._locks: dict[str, asyncio.Lock] = {}
+        # 正在执行总结的会话键集合。同一会话同时只允许一次总结，
+        # 否则消息持续到来时任务会排成长队，每个都跑满一次模型超时。
+        self._active_summaries: set[str] = set()
         #: 计数器状态的解析缓存（键 = conversation_kind:conversation_id，值 =
         #: (计数器, 载入时刻)）。见 _cached_counter：避免每条消息都重新读库并
         #: json.loads 整个 blob，同时靠 TTL 让外部修改在有限时间内可见。
         self._counter_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self._tool_definitions = tool_definitions or []
         self._tool_executor = tool_executor
+        # 待机熔断:即使消息管线漏掉了拦截,总结本身也必须停。
+        self._standby_service = standby_service
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
         self._favorability_max_change: int = int(getattr(fav_cfg, "max_change_per_summary", 5) or 5)
         self._favorability_min: int = int(getattr(fav_cfg, "min_value", -1000) or -1000)
@@ -72,6 +103,13 @@ class ArchiveMemoryAutoSummaryService:
             self._max_tool_rounds: int = max(1, int(rounds))
         except (TypeError, ValueError):
             self._max_tool_rounds = DEFAULT_MAX_TOOL_ROUNDS
+        budget = getattr(
+            trigger_cfg, "max_summary_seconds", DEFAULT_SUMMARY_BUDGET_SECONDS
+        )
+        try:
+            self._summary_budget_seconds: float = max(1.0, float(budget))
+        except (TypeError, ValueError):
+            self._summary_budget_seconds = DEFAULT_SUMMARY_BUDGET_SECONDS
         self._item_archive_enabled: bool = bool(item_archive_config.enabled) if item_archive_config else True
         self._item_archive_table: str = (
             str(item_archive_config.table_name).strip() or ITEM_ARCHIVE_TABLE
@@ -99,6 +137,13 @@ class ArchiveMemoryAutoSummaryService:
         """记录一条实时消息，并在达到配置间隔时触发摘要。"""
         if conversation_kind not in {"group", "private"}:
             return
+        if self.is_standby():
+            self._logger.debug(
+                "Bot 已进入待机，跳过档案自动总结记录",
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+            )
+            return
         interval = self._interval_for(conversation_kind)
         if interval <= 0:
             return
@@ -115,30 +160,64 @@ class ArchiveMemoryAutoSummaryService:
             return
 
         counter_key = self._counter_key(conversation_kind, conversation_id)
+        entry = {
+            "sender_id": str(sender_id or ""),
+            "sender_name": str(sender_name or ""),
+            "text": clean_text[:MAX_STORED_MESSAGE_CHARS],
+        }
         async with self._counter_lock(counter_key):
             state = await self._cached_counter(counter_key)
+            if int(state.get("count", 0)) + 1 >= interval:
+                # 将要触发总结：以库里的最新状态为准。计数器读路径带 30 秒缓存，
+                # 若直接写回缓存内容，会把外部对计数器（清零、改冷却）的修改覆盖掉。
+                state = await self._load_counter(counter_key)
             messages = list(state.get("messages", []))
-            messages.append(
-                {
-                    "sender_id": str(sender_id or ""),
-                    "sender_name": str(sender_name or ""),
-                    "text": clean_text[:MAX_STORED_MESSAGE_CHARS],
-                }
-            )
+            messages.append(entry)
             count = int(state.get("count", 0)) + 1
 
-            state = {"count": count, "messages": messages[-max(interval, 1) :]}
+            state = self._counter_state(
+                count=count,
+                messages=messages[-max(interval, 1) :],
+                failures=state.get("failures"),
+                retry_after=state.get("retry_after"),
+            )
             await self._save_counter(counter_key, state)
 
-            if count < interval:
-                return
+        if count < interval:
+            return
 
-            await self._summarize_and_reset(
+        # 同一会话只允许一次总结在跑：消息在总结期间继续累计，
+        # 但不会为每条消息都排一个「必然超时」的任务。占位由
+        # _summarize_and_reset 内部统一持有（flush_all 路径共用），这里只预检。
+        if counter_key in self._active_summaries:
+            self._logger.debug(
+                "档案自动总结已在执行，跳过本次调度",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
-                counter_key=counter_key,
-                messages=state["messages"],
             )
+            return
+
+        if not self._retry_ready(state):
+            self._logger.debug(
+                "档案自动总结处于失败冷却中，保留待总结消息",
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                retry_after=state.get("retry_after"),
+                failures=state.get("failures"),
+            )
+            return
+        await self._summarize_and_reset(
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
+            counter_key=counter_key,
+            messages=list(state.get("messages", [])),
+            snapshot_count=count,
+        )
+
+    def is_standby(self) -> bool:
+        """Bot 是否处于待机状态。"""
+        service = getattr(self, "_standby_service", None)
+        return bool(service is not None and service.is_standby())
 
     async def _summarize_and_reset(
         self,
@@ -147,10 +226,39 @@ class ArchiveMemoryAutoSummaryService:
         conversation_id: str,
         counter_key: str,
         messages: list[Any],
+        snapshot_count: int,
     ) -> bool:
-        """执行一次总结。返回 True 表示计数器已复位（含空消息），False 表示保留待重试。"""
+        """执行一次总结。返回 True 表示计数器已复位（含空消息），False 表示保留待重试。
+
+        并发协议：总结占位在方法内统一持有（record_message 与 flush_all 共用），
+        模型调用期间不持计数器锁；成功/失败都在短锁内基于库内最新状态合并，
+        绝不回写快照。snapshot_count 是快照对应的 count，用来算出总结期间新到的
+        消息条数——这些消息必须保留到下一轮，不能被成功路径清零。
+        """
+        if not self._begin_summary(counter_key):
+            return False
+        try:
+            return await self._run_summary(
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                counter_key=counter_key,
+                messages=messages,
+                snapshot_count=snapshot_count,
+            )
+        finally:
+            self._end_summary(counter_key)
+
+    async def _run_summary(
+        self,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        counter_key: str,
+        messages: list[Any],
+        snapshot_count: int,
+    ) -> bool:
         if not messages:
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+            await self._commit_success(counter_key, snapshot_count=snapshot_count)
             return True
 
         prompt = self._build_summary_prompt(
@@ -175,12 +283,39 @@ class ArchiveMemoryAutoSummaryService:
             tools = self._tool_definitions if self._tool_definitions else None
             tool_failures = 0
             tool_successes = 0
+            # 单次总结的总时长预算：工具轮次再多也不能把一次总结拖成数十分钟。
+            deadline = monotonic_seconds() + self._summary_budget_seconds
 
             for _iteration in range(self._max_tool_rounds):
-                response = await asyncio.wait_for(
-                    self._provider.chat(chat_messages, tools=tools),
-                    timeout=60.0,
-                )
+                remaining = deadline - monotonic_seconds()
+                if remaining <= 1.0:
+                    self._logger.warning(
+                        "档案自动总结超出单次时长预算，已中止并进入冷却",
+                        conversation_kind=conversation_kind,
+                        conversation_id=conversation_id,
+                        budget_seconds=int(self._summary_budget_seconds),
+                    )
+                    await self._defer_after_failure(counter_key)
+                    return False
+                call_timeout = min(DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS, remaining)
+                try:
+                    response = await asyncio.wait_for(
+                        self._provider.chat(chat_messages, tools=tools),
+                        timeout=call_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    # 超时请求不会返回 usage：这次调用在本地用量统计里完全不存在，
+                    # 但服务端已经按实际生成计费。必须留下可排查的痕迹，
+                    # 否则账单与「费用统计」的差额永远找不到来源。
+                    self._logger.warning(
+                        "档案自动总结模型调用超时，本次调用不会计入用量统计",
+                        conversation_kind=conversation_kind,
+                        conversation_id=conversation_id,
+                        timeout_seconds=int(call_timeout),
+                        request_chars=_request_chars(chat_messages),
+                        messages_count=len(chat_messages),
+                    )
+                    raise
                 await self._record_usage(
                     response,
                     conversation_kind=conversation_kind,
@@ -212,8 +347,11 @@ class ArchiveMemoryAutoSummaryService:
                     chat_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": str(result),
+                        "content": _bounded_tool_result(result),
                     })
+                # 每轮都收紧一次：工具返回是上下文膨胀的唯一来源，
+                # 不收紧时后续每一轮都要重发全部历史工具返回。
+                _trim_tool_history(chat_messages)
 
                 if tool_failures >= MAX_TOOL_FAILURES:
                     self._logger.warning(
@@ -225,16 +363,30 @@ class ArchiveMemoryAutoSummaryService:
                     break
 
             if tool_failures and not tool_successes:
-                # 全程没有任何工具成功 = 什么都没写进去，保留计数器待下次重试。
+                # 全程没有任何工具成功 = 什么都没写进去，保留计数器并进入冷却。
+                failures = await self._defer_after_failure(counter_key)
                 self._logger.warning(
-                    "档案自动总结未写入任何内容，保留计数器待重试",
+                    "档案自动总结未写入任何内容，进入冷却后重试",
                     conversation_kind=conversation_kind,
                     conversation_id=conversation_id,
                     tool_failures=tool_failures,
+                    consecutive_failures=failures,
                 )
                 return False
 
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+            await self._commit_success(counter_key, snapshot_count=snapshot_count)
+            if tool_failures:
+                # 部分工具失败仍按"至少写入过内容"清账：档案是增量 append 语义，
+                # 重跑同一批消息可能重复写入事实。但必须留下可排查的告警，
+                # 否则"模型没处理完就被销账"是完全静默的。
+                self._logger.warning(
+                    "档案自动总结存在工具失败，已按部分成功清账",
+                    conversation_kind=conversation_kind,
+                    conversation_id=conversation_id,
+                    message_count=len(messages),
+                    tool_failures=tool_failures,
+                    tool_calls_succeeded=tool_successes,
+                )
             self._logger.info(
                 "档案已更新",
                 conversation_kind=conversation_kind,
@@ -244,11 +396,13 @@ class ArchiveMemoryAutoSummaryService:
             )
             return True
         except Exception as exc:
+            failures = await self._defer_after_failure(counter_key)
             self._logger.warning(
-                "档案自动总结失败，保留计数器待重试",
+                "档案自动总结失败，进入冷却后重试",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
-                error=str(exc),
+                error=str(exc) or type(exc).__name__,
+                consecutive_failures=failures,
             )
 
     async def _record_usage(
@@ -343,10 +497,18 @@ class ArchiveMemoryAutoSummaryService:
             count = int(raw_count)
         except (TypeError, ValueError):
             count = 0
-        return {
+        state: dict[str, Any] = {
             "count": count,
             "messages": [_normalize_counter_message(message) for message in messages],
         }
+        # 失败冷却信息随计数器一起保存，缺省不写（保持存量数据的原有形态）。
+        failures = data.get("failures")
+        retry_after = data.get("retry_after")
+        if failures:
+            state["failures"] = failures
+        if retry_after:
+            state["retry_after"] = retry_after
+        return state
 
     async def _save_counter(self, key: str, state: dict[str, Any]) -> None:
         await self._archive.set(
@@ -357,6 +519,101 @@ class ArchiveMemoryAutoSummaryService:
         )
         # 同步缓存，避免下次读到过期内容（尤其是总结成功后的清零）
         self._counter_cache[key] = (state, time.monotonic())
+
+    @staticmethod
+    def _counter_state(
+        *,
+        count: int,
+        messages: list[Any],
+        failures: Any = None,
+        retry_after: Any = None,
+    ) -> dict[str, Any]:
+        """构造计数器状态；默认值不落盘，保持存量数据的原有形态。"""
+        state: dict[str, Any] = {"count": int(count), "messages": list(messages)}
+        try:
+            failure_count = int(failures)
+        except (TypeError, ValueError):
+            failure_count = 0
+        if failure_count > 0:
+            state["failures"] = failure_count
+        try:
+            retry_at = float(retry_after)
+        except (TypeError, ValueError):
+            retry_at = 0.0
+        if retry_at > 0:
+            state["retry_after"] = retry_at
+        return state
+
+    @staticmethod
+    def _retry_ready(state: dict[str, Any]) -> bool:
+        """冷却窗口是否已过；无冷却信息时随时可重试。"""
+        try:
+            retry_after = float(state.get("retry_after") or 0.0)
+        except (TypeError, ValueError):
+            return True
+        return retry_after <= 0 or epoch_seconds() >= retry_after
+
+    def _begin_summary(self, counter_key: str) -> bool:
+        """占位：同一会话同时只允许一次总结(无 await，检查与占位是原子的)。"""
+        if counter_key in self._active_summaries:
+            return False
+        self._active_summaries.add(counter_key)
+        return True
+
+    def _end_summary(self, counter_key: str) -> None:
+        self._active_summaries.discard(counter_key)
+
+    @staticmethod
+    def _backoff_seconds(failures: int) -> float:
+        """连续失败次数 → 冷却秒数(指数退避,带上限)。"""
+        doublings = min(max(int(failures) - 1, 0), RETRY_BACKOFF_MAX_DOUBLINGS)
+        return min(
+            RETRY_BACKOFF_BASE_SECONDS * (2**doublings), RETRY_BACKOFF_MAX_SECONDS
+        )
+
+    async def _commit_success(self, counter_key: str, *, snapshot_count: int) -> None:
+        """总结成功后清账：只移除已总结的消息，保留总结期间新到的消息。
+
+        计数器读路径带 30 秒缓存，这里必须回库读最新状态。用 count 差值而不是
+        消息下标计算新到条数：总结期间消息会因 interval 截断把最早的挤掉，
+        下标会错位；count 每条消息恰好 +1，差值就是新到条数（截断只影响队列）。
+        """
+        async with self._counter_lock(counter_key):
+            state = await self._load_counter(counter_key)
+            messages = list(state.get("messages", []))
+            count = int(state.get("count", 0) or 0)
+            arrivals = max(0, count - int(snapshot_count))
+            kept = messages[-arrivals:] if arrivals else []
+            # count 语义 = 缓冲中尚未总结的消息条数：下一次攒满 interval 才总结，
+            # 总量与旧行为一致，但不再丢掉总结期间到的那几条。
+            await self._save_counter(
+                counter_key, {"count": len(kept), "messages": kept}
+            )
+
+    async def _defer_after_failure(self, counter_key: str) -> int:
+        """总结失败后保留待总结消息,并写入指数退避冷却。
+
+        没有冷却时，计数器一旦越过阈值且总结持续失败，每条新消息都会重跑
+        一整轮工具调用循环，把「失败重试」放大成按消息计费的 token 风暴。
+        整个读-改-写必须在计数器锁内完成：否则会把总结期间新到消息的追加
+        用旧快照覆盖掉（失败路径只允许合并冷却字段，不得改写 count/messages）。
+        """
+        try:
+            async with self._counter_lock(counter_key):
+                state = await self._load_counter(counter_key)
+                failures = int(state.get("failures", 0) or 0) + 1
+                await self._save_counter(
+                    counter_key,
+                    self._counter_state(
+                        count=int(state.get("count", 0) or 0),
+                        messages=list(state.get("messages", [])),
+                        failures=failures,
+                        retry_after=epoch_seconds() + self._backoff_seconds(failures),
+                    ),
+                )
+                return failures
+        except Exception:
+            return 0
 
     async def flush_all(self) -> None:
         """关闭时并发刷新所有待处理的计数器。
@@ -400,20 +657,23 @@ class ArchiveMemoryAutoSummaryService:
 
                 counter_key = item.key
                 async with semaphore:
+                    # 只在锁内读最新状态并判断条件；总结本身不持锁——
+                    # 持锁跑模型会让总结期间每条消息都卡在这把锁上。
                     async with self._counter_lock(counter_key):
                         current = await self._load_counter(counter_key)
                         current_count = int(current.get("count", 0))
                         if current_count <= 0 or current_count >= interval:
                             return False
-                        current_messages = current.get("messages", [])
+                        current_messages = list(current.get("messages", []))
                         if not current_messages:
                             return False
-                        return await self._summarize_and_reset(
-                            conversation_kind=conversation_kind,
-                            conversation_id=conversation_id,
-                            counter_key=counter_key,
-                            messages=current_messages,
-                        )
+                    return await self._summarize_and_reset(
+                        conversation_kind=conversation_kind,
+                        conversation_id=conversation_id,
+                        counter_key=counter_key,
+                        messages=current_messages,
+                        snapshot_count=current_count,
+                    )
             except Exception as exc:
                 self._logger.warning(
                     "档案自动总结刷新：处理计数器失败",
@@ -490,6 +750,28 @@ class ArchiveMemoryAutoSummaryService:
                 truncated.append(index)
             lines.append(f"[{index}] {_format_sender(item)}: {text}")
         return "\n".join(lines), truncated
+
+    # ── 提示词规范化：实现 agent_prompt_parts() 即被分析页自动收集 ──
+
+    agent_name = "档案自动总结 Agent"
+    agent_note = "空会话 + 群聊模板；运行时还会按会话追加用户画像/好感度/条目归档等指令"
+
+    def agent_prompt_parts(self) -> list[tuple[str, str, str]]:
+        from neobot_app.analysis.prompt_analysis import tools_to_text
+
+        try:
+            prompt = self._build_summary_prompt(
+                conversation_kind="group", conversation_id="0", messages=[]
+            )
+        except Exception as exc:
+            prompt = f"（装配失败: {type(exc).__name__}: {exc}）"
+        parts = [("总结指令（群聊 · 空会话）", "system", prompt)]
+        definitions = list(getattr(self, "_tool_definitions", []) or [])
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
 
     def _build_summary_prompt(
         self,
@@ -591,6 +873,60 @@ class ArchiveMemoryAutoSummaryService:
             f"{truncation_note}"
             f"\nRecent messages (each line is '[index] sender: text'):\n{recent}"
         )
+
+def _request_chars(messages: list[Any]) -> int:
+    """估算一次请求的可见字符数(图片按固定额度计，不把 base64 当文本)。"""
+    total = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"image_url", "image", "file"}:
+                    total += 3072
+                else:
+                    total += len(str(part.get("text", "")))
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            total += sum(len(str(item)) for item in tool_calls)
+    return total
+
+
+def _bounded_tool_result(result: Any) -> str:
+    """限制单条工具返回的字符数。
+
+    read_pending_messages / list_archive / read_archive 都会返回大块内容，
+    而这些内容会被追加进 chat_messages 并在之后每一轮重新发送；
+    不设上限时一次总结就能把上下文顶到几十万 token。
+    """
+    text = str(result or "")
+    if len(text) <= MAX_TOOL_RESULT_CHARS:
+        return text
+    return text[:MAX_TOOL_RESULT_CHARS] + _TOOL_TRUNCATED_MARKER
+
+
+def _trim_tool_history(chat_messages: list[dict]) -> None:
+    """从最新往旧保留工具返回，超出总量预算的早期工具返回替换为占位符。
+
+    直接改写在原地进行，system / user / assistant 消息不受影响。
+    """
+    budget = MAX_TOOL_RESULT_TOTAL_CHARS
+    for message in reversed(chat_messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = str(message.get("content") or "")
+        if content == _TOOL_DROPPED_MARKER:
+            continue
+        if budget - len(content) >= 0:
+            budget -= len(content)
+            continue
+        message["content"] = _TOOL_DROPPED_MARKER
+
 
 def _is_tool_failure(result: Any) -> bool:
     """判断工具结果是否属于失败（未知工具/执行异常），用于中止重试风暴。"""

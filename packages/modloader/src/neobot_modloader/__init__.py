@@ -11,7 +11,13 @@ from neobot_modloader.database import (
     PluginMigrationConflictError,
     PluginMigrationError,
 )
+from neobot_modloader.config_store import (
+    CONFIG_FILENAME as PLUGIN_CONFIG_FILENAME,
+    PluginConfigStore,
+    merge_plugin_config,
+)
 from neobot_modloader.dependencies import PythonDependencyInstaller
+from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import DefaultServiceRegistry, PluginHostFacade
 from neobot_modloader.installer import (
@@ -61,6 +67,7 @@ __all__ = [
     "DiscoveredPlugin",
     "FilesystemPluginLoader",
     "OFFICIAL_SOURCE",
+    "PLUGIN_CONFIG_FILENAME",
     "PROXY_MODES",
     "PluginInstallError",
     "PluginInstallResult",
@@ -78,6 +85,7 @@ __all__ = [
     "MessageSegment",
     "Migration",
     "Plugin",
+    "PluginConfigStore",
     "PluginControlFacade",
     "PluginDatabase",
     "PluginDatabaseClosedError",
@@ -92,11 +100,13 @@ __all__ = [
     "PluginSnapshot",
     "PythonDependencyInstaller",
     "Reply",
+    "RuntimeGeneration",
     "RuntimePluginContext",
     "UserDirectory",
     "UserProfile",
     "at",
     "image",
+    "merge_plugin_config",
     "text",
     "FontFace",
     "FontFormat",

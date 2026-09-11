@@ -98,15 +98,15 @@ def test_section_save_survives_extra_keys(tmp_path: Path) -> None:
         'my_top_level = "keep-me"\n'
         "\n[my_plugin]\n"
         "enabled = true\n"
-        "\n[dashboard]\n"
-        "port = 9981\n",
+        "\n[debug]\n"
+        "retention_days = 10\n",
         encoding="utf-8",
     )
 
-    manager.update_section("dashboard", {"port": 9999})
+    manager.update_section("debug", {"retention_days": 20})
 
     saved = config_path.read_text(encoding="utf-8")
-    assert "port = 9999" in saved
+    assert "retention_days = 20" in saved
     assert "my_top_level" in saved
     assert "[my_plugin]" in saved
 
@@ -115,12 +115,12 @@ def test_section_save_rejects_unknown_key_in_edited_section(tmp_path: Path) -> N
     """正在编辑的分区里出现未知键，依然要报错（不能静默写进去）。"""
     manager, config_path = _manager(tmp_path)
     config_path.write_text(
-        'version = "0.6.0"\n\n[dashboard]\nport = 9981\n',
+        'version = "0.6.0"\n\n[debug]\nretention_days = 10\n',
         encoding="utf-8",
     )
 
     with pytest.raises(ConfigValidationError):
-        manager.update_section("dashboard", {"nope": 1})
+        manager.update_section("debug", {"nope": 1})
 
     assert "nope" not in config_path.read_text(encoding="utf-8")
 
@@ -227,20 +227,20 @@ def test_masked_tokens_survive_form_save(tmp_path: Path) -> None:
         'version = "0.6.0"\n'
         "\n[adapter]\n"
         'local_auth_token = "LTOK-SECRET"\n'
-        "\n[dashboard]\n"
-        "port = 9981\n",
+        "\n[debug]\n"
+        "retention_days = 10\n",
         encoding="utf-8",
     )
 
     document = manager.read()
     payload = {
         **document["config"],
-        "dashboard": {**document["config"]["dashboard"], "port": 9999},
+        "debug": {**document["config"]["debug"], "retention_days": 20},
     }
     manager.save(config=payload)
 
     saved = config_path.read_text(encoding="utf-8")
-    assert "port = 9999" in saved
+    assert "retention_days = 20" in saved
     assert "LTOK-SECRET" in saved
 
 

@@ -318,9 +318,11 @@ class ReplyOrchestrator:
         credential_manager: Any = None,
         config_update_callback: Any = None,
         sleep_service: Any = None,
+        standby_service: Any = None,
     ) -> None:
         self._adapter = adapter
         self._sleep_service = sleep_service
+        self._standby_service = standby_service
         self._prompt_builder = prompt_builder
         self._prompt_store = prompt_store
         self._cache_calculator = cache_calculator
@@ -1755,6 +1757,9 @@ class ReplyOrchestrator:
                     f"{skill_instructions}\n"
                     "需要某个技能的具体操作说明、参数细节或注意事项时,"
                     "调用 skills__view_instructions 查看完整内容。"
+                    "\n未直接列出调用工具的技能,其工具定义尚未加载以节省每次调用的开销;"
+                    "需要使用时先调用 skills__load_tools 加载(一次可加载多个),"
+                    "加载后本轮即可直接调用。"
                     "\n</Skill 操作说明>"
                 )
 
@@ -2194,6 +2199,20 @@ class ReplyOrchestrator:
             for iteration in range(max_iterations + 1):
                 if iteration >= max_iterations and not vision_fallback_bonus:
                     break
+                # 待机熔断：进入待机后已启动的管线必须立刻停火，
+                # 否则一次风暴期间仍然会把排队中的模型调用全部跑完。
+                if self.is_standby():
+                    self._logger.warning(
+                        "Bot 已进入待机，回复管线提前结束",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                    )
+                    try:
+                        event.transition(ReplyState.CANCELLED)
+                    except RuntimeError:
+                        pass
+                    return
                 if self._provider is None:
                     raise RuntimeError("未配置 chat provider，无法生成回复")
 
@@ -2614,6 +2633,17 @@ class ReplyOrchestrator:
                             }
                         )
 
+                # 技能按需加载：模型调用 skills__load_tools 后，新工具立即补进下一轮的
+                # tools 列表，不必等到下一次回复管线。
+                if reply_toolset.executor.consume_tools_dirty():
+                    tools = reply_toolset.executor.definitions()
+                    self._logger.info(
+                        "技能工具已按需加载",
+                        event_id=event.event_id,
+                        skills=reply_toolset.executor.activated_skill_names(),
+                        tools_count=len(tools),
+                    )
+
                 # Keep history textual; all automatic/manual images are assembled
                 # into a labelled user appendix at the END of every model request.
                 vision_context.manual_parts.extend(image_parts)
@@ -2879,6 +2909,13 @@ class ReplyOrchestrator:
                 event.transition(ReplyState.COMPLETED)
             except RuntimeError:
                 pass
+
+    # ── 待机熔断(只保留核心服务,已启动管线立即停火) ──
+
+    def is_standby(self) -> bool:
+        """Bot 是否处于待机状态。"""
+        service = getattr(self, "_standby_service", None)
+        return bool(service is not None and service.is_standby())
 
     # ── 睡眠拦截(挂起循环 / wait 工具共用) ──
 

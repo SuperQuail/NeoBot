@@ -174,6 +174,27 @@ class ProblemSolverManager:
         self._tool_runtime: Any = None
         self._closed = False
 
+    # ── 提示词规范化：实现 agent_prompt_parts() 即被分析页自动收集 ──
+
+    agent_name = "解题 Agent"
+    agent_note = "系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配"
+
+    def agent_prompt_parts(self) -> list[tuple[str, str, str]]:
+        from neobot_app.agents.problem_solver import _build_system_prompt
+        from neobot_app.analysis.prompt_analysis import tools_to_text
+
+        prompt = _build_system_prompt(
+            self._config, prompt_store=getattr(self, "_prompt_store", None)
+        )
+        parts = [("系统提示词", "system", prompt)]
+        agent = getattr(self, "_agent", None)
+        definitions = list(getattr(agent, "tool_definitions", []) or []) if agent else []
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
     def set_agent(self, agent: Any) -> None:
         self._agent = agent
 
@@ -444,16 +465,31 @@ class ProblemSolverManager:
     async def _on_completed(self, task: SolveTask) -> None:
         question_preview = task.question[:200]
         solution = task.markdown_solution or ""
+        header = json.dumps(
+            {
+                "ok": True,
+                "kind": "solve_result",
+                "status": "completed",
+                "task_id": task.task_id,
+                "question": question_preview,
+                "next": [
+                    {"action": "reply_to_user", "text": "按下方解题结果原文回复用户"},
+                    {
+                        "action": "note",
+                        "text": "需要发文件时用 sandbox_manager__send_chat_file；"
+                        "长文可用 send_long_reply 转图片",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+        # 解答保持裸 Markdown：写进 JSON 会把换行转义成 \n，
+        # 标题/列表/代码块在通知里变成一行字，模型抄给用户时更容易走样。
         notification = (
-            "<这是新的必须要回答的内容>\n"
-            f"你之前提交的解题任务已完成\n\n"
-            f"任务ID: {task.task_id}\n"
-            f"原始问题: {question_preview}\n\n"
-            f"--- 解题结果 ---\n"
-            f"{solution}\n"
-            f"--- 以上为解题结果 ---\n\n"
-            "请根据以上结果回复用户。如需发送文件，可以使用沙箱或直接告知用户结果。\n"
-            "</这是新的必须要回答的内容>"
+            f"{header}\n\n"
+            "--- 解题结果（Markdown 原文，直接据此回复用户）---\n\n"
+            f"{solution}\n\n"
+            "--- 解题结果结束 ---"
         )
         self._logger.info(
             "推送解题完成通知",
@@ -465,15 +501,22 @@ class ProblemSolverManager:
     async def _on_failed(self, task: SolveTask) -> None:
         error_text = task.error or "未知错误"
         question_preview = task.question[:200]
-        notification = (
-            "<这是新的必须要回答的内容>\n"
-            f"解题任务失败通知\n\n"
-            f"任务ID: {task.task_id}\n"
-            f"状态: {task.status}\n"
-            f"错误原因: {error_text}\n"
-            f"原始问题: {question_preview}\n\n"
-            "你必须立即告知用户解题失败及其原因，询问是否重试或提供更多信息。\n"
-            "</这是新的必须要回答的内容>"
+        notification = json.dumps(
+            {
+                "ok": False,
+                "kind": "solve_result",
+                "status": task.status,
+                "task_id": task.task_id,
+                "question": question_preview,
+                "error": error_text,
+                "next": [
+                    {
+                        "action": "reply_to_user",
+                        "text": "告知解题失败与原因，并询问是否重试或补充信息",
+                    }
+                ],
+            },
+            ensure_ascii=False,
         )
         self._logger.info(
             "推送解题失败通知",
@@ -579,17 +622,34 @@ class ProblemSolverManager:
 
     def _build_retry_content(self, task: SolveTask) -> str:
         if task.status == "completed":
-            return (
-                "<这是新的必须要回答的内容>\n"
-                f"解题任务（{task.task_id}）已完成但未被消费，请检查并发送结果。\n"
-                f"原始问题: {task.question[:200]}\n"
-                "</这是新的必须要回答的内容>"
+            return json.dumps(
+                {
+                    "ok": True,
+                    "kind": "solve_result_retry",
+                    "status": "completed",
+                    "task_id": task.task_id,
+                    "question": task.question[:200],
+                    "next": [
+                        {"action": "reply_to_user", "text": "检查并发送解题结果"}
+                    ],
+                },
+                ensure_ascii=False,
             )
-        return (
-            "<这是新的必须要回答的内容>\n"
-            f"解题任务（{task.task_id}）已{task.status}但未被处理。\n"
-            f"错误: {task.error}\n"
-            "</这是新的必须要回答的内容>"
+        return json.dumps(
+            {
+                "ok": False,
+                "kind": "solve_result_retry",
+                "status": task.status,
+                "task_id": task.task_id,
+                "error": task.error,
+                "next": [
+                    {
+                        "action": "reply_to_user",
+                        "text": "告知用户任务未完成及原因",
+                    }
+                ],
+            },
+            ensure_ascii=False,
         )
 
     async def shutdown(self) -> None:

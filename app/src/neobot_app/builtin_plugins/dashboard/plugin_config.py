@@ -1,7 +1,14 @@
-"""第三方插件 plugin.toml 的 [config] 在线编辑。
+"""插件配置文件的在线编辑。
 
-只改动 [config] 表，插件名/版本等元数据保持原样；保存前备份同目录
-.plugin.toml.dashboard.bak，并使用 revision 检测并发修改。
+插件配置保存在插件数据目录 ``plugins_data/<插件名>/config.toml``：
+
+- 与插件代码分离——插件目录（plugins/）在安装/更新时会被整体替换，配置放那里会丢；
+- 与启停状态分离——插件是否启用是 ``plugin_state.json`` 里的独立记录，不是配置项；
+- 官方插件与第三方插件使用同一套位置与同一套编辑逻辑。
+
+文件本身就是配置表（没有 ``[config]`` 外层）；文件不存在时按插件声明的默认值渲染，
+首次保存时创建。保存前备份同目录 `.config.toml.dashboard.bak`，并用 revision 检测并发修改；
+含密钥的配置禁用源码编辑，密钥只能更新、不能读取。
 """
 
 from __future__ import annotations
@@ -9,10 +16,13 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import tomlkit
+
+from neobot_modloader import merge_plugin_config
 
 
 class PluginConfigError(RuntimeError):
@@ -31,7 +41,8 @@ def _revision(path: Path) -> str:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    descriptor, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".plugin-", suffix=".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".config-", suffix=".tmp")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
@@ -118,10 +129,16 @@ def _decorate_schema(descriptors: list[dict[str, Any]], original: Any) -> list[d
 
 
 class PluginConfigEditor:
-    """单个插件的 plugin.toml 配置读写（密钥只写不读）。"""
+    """插件数据目录下 config.toml 的读写（密钥只写不读）。"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> None:
         self.path = Path(path)
+        self._defaults = _jsonable({str(key): value for key, value in (defaults or {}).items()})
 
     @property
     def exists(self) -> bool:
@@ -131,37 +148,46 @@ class PluginConfigEditor:
         return _revision(self.path)
 
     def _document(self) -> Any:
+        """当前文档；文件不存在时用插件默认值渲染出一份可编辑的骨架。"""
         if not self.path.is_file():
-            raise PluginConfigError(f"plugin.toml 不存在: {self.path}")
+            document = tomlkit.document()
+            for key, value in self._defaults.items():
+                document[key] = tomlkit.item(value)
+            return document
         try:
             return tomlkit.parse(self.path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
-            raise PluginConfigError(f"plugin.toml 解析失败: {exc}") from exc
+            raise PluginConfigError(f"插件配置解析失败: {exc}") from exc
+
+    def _stored(self) -> dict[str, Any]:
+        if not self.path.is_file():
+            return {}
+        return _jsonable(dict(self._document().unwrap()))
 
     def read(self) -> dict[str, Any]:
-        document = self._document()
-        config = document.get("config") or {}
-        if not isinstance(config, dict):
-            raise PluginConfigError("plugin.toml 的 [config] 必须是 table")
         from .security import has_secret_value, mask_mapping
 
-        original = _jsonable(dict(config.unwrap() if hasattr(config, "unwrap") else config))
-        secret_present = has_secret_value(original)
-        masked = mask_mapping(original)
+        document = self._document()
+        # 插件实际生效的配置 = 打包默认值 + 插件数据目录里保存的值
+        effective = merge_plugin_config(self._defaults, self._stored())
+        secret_present = has_secret_value(effective)
+        masked = mask_mapping(effective)
         # schema 从打码后的数据构建，避免分组 value 里残留明文
-        schema = _decorate_schema(describe_mapping(masked), original)
+        schema = _decorate_schema(describe_mapping(masked), effective)
         return {
             "path": str(self.path),
+            "exists": self.path.is_file(),
             "revision": self.revision(),
             # 含密钥时不返回源码，避免绕过脱敏拿到明文
-            "source": "" if secret_present else (tomlkit.dumps(config) if hasattr(config, "unwrap") else ""),
+            "source": "" if secret_present else tomlkit.dumps(document),
             "source_available": not secret_present,
             "secret_policy": "write_only",
             "config": masked,
             "schema": schema,
-            "form_supported": True,
-            "name": str(document.get("name") or self.path.parent.name),
-            "version": str(document.get("version") or ""),
+            "form_supported": bool(schema),
+            # 默认值同样可能来自 plugin.toml 且含密钥形态的键：与 config/source 一起打码，
+            # 不能因为 secret_policy=write_only 却把 defaults 明文发出去。
+            "defaults": mask_mapping(self._defaults),
         }
 
     def save(
@@ -173,34 +199,26 @@ class PluginConfigEditor:
     ) -> dict[str, Any]:
         from .security import has_secret_value, restore_mapping
 
-        document = self._document()
+        original = self._stored()
         if expected_revision is not None and expected_revision != self.revision():
             raise PluginConfigConflictError("插件配置已被其它会话修改，请重新读取后再保存")
-        table = document.get("config")
-        original = _jsonable(
-            dict(table.unwrap() if hasattr(table, "unwrap") else table)
-        ) if table is not None and hasattr(table, "get") else {}
         if source is not None:
             if has_secret_value(original):
                 raise PluginConfigError(
                     "该插件配置含密钥，已禁用源码编辑；请使用表单模式（密钥只能更新，不能读取）"
                 )
             try:
-                table = tomlkit.parse(source)
+                document = tomlkit.parse(source)
             except Exception as exc:
                 raise PluginConfigError(f"TOML 解析失败: {exc}") from exc
-            document["config"] = table
         else:
-            if table is None or not hasattr(table, "get"):
-                table = tomlkit.table()
-                document["config"] = table
             # 占位符/空值 -> 沿用原密钥；新值 -> 覆盖（密钥只能更新，不能读取）
-            submitted = restore_mapping(dict(config or {}), original)
-            for key in list(table.keys()):
-                if key not in submitted:
-                    del table[key]
+            submitted = restore_mapping(_jsonable(dict(config or {})), original)
+            if not isinstance(submitted, dict) or not submitted:
+                raise PluginConfigError("配置内容为空")
+            document = tomlkit.document()
             for key, value in submitted.items():
-                table[key] = tomlkit.item(value)
+                document[key] = tomlkit.item(value)
         if self.path.is_file():
             try:
                 self.path.with_name(self.path.name + ".dashboard.bak").write_text(

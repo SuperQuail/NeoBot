@@ -23,6 +23,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
+from neobot_app.skills.activation import SkillToolActivation
 from neobot_app.time_context import monotonic_seconds
 
 
@@ -50,6 +51,7 @@ _SKILL_GUARD_BASE_TOOLS = frozenset(
         "skills__read_manifest",
         "skills__read_resource",
         "skills__view_instructions",
+        "skills__load_tools",
         "agents__list",
         "agents__delegate",
         "check_background_tasks",
@@ -267,11 +269,28 @@ class ReplyToolExecutor(ToolExecutor):
         self._close_task: asyncio.Task[None] | None = None
         self._logger = logger or NullLogger()
         self._skill_tokens: dict[str, Any] = {}
+        # 本管线已按需加载的技能工具；管线结束时随执行器一起销毁。
+        # 惰性构建：允许测试/插件在构造之后替换 skill_manager。
+        self._activation_cache: SkillToolActivation | None = None
+        self._activation_manager: Any = None
 
     @property
     def closed(self) -> bool:
         """Whether close has begun and new session work is rejected."""
         return self._closed
+
+    @property
+    def _activation(self) -> SkillToolActivation | None:
+        """当前 skill_manager 对应的按需加载状态；管理器被替换时自动重建。"""
+        manager = self._skill_manager
+        if manager is None:
+            return None
+        if self._activation_cache is None or self._activation_manager is not manager:
+            self._activation_cache = SkillToolActivation(
+                manager, authorize=self.is_tool_authorized
+            )
+            self._activation_manager = manager
+        return self._activation_cache
 
     async def __aenter__(self) -> ReplyToolExecutor:
         if self._closed:
@@ -344,6 +363,13 @@ class ReplyToolExecutor(ToolExecutor):
                         },
                     )
                 )
+            loader = (
+                self._activation.loader_definition()
+                if self._activation is not None
+                else None
+            )
+            if loader:
+                tools.append(loader)
         if self._cancel is not None:
             tools.append(
                 _tool_def(
@@ -740,35 +766,25 @@ class ReplyToolExecutor(ToolExecutor):
                     },
                 )
             )
-        # 合并 Skill 系统的工具定义
+        # 合并 Skill 系统的工具定义：常驻技能 + 本管线已按需加载的技能。
         if self._skill_manager is not None:
-            skill_tools = self._skill_manager.get_tools()
+            skill_tools = (
+                self._activation.tools() if self._activation is not None else []
+            )
             tools.extend(skill_tools)
             capture = getattr(self._skill_manager, "capture_execution_token", None)
             if callable(capture):
-                self._skill_tokens = {
-                    definition["function"]["name"]: token
-                    for definition in skill_tools
-                    if (token := capture(definition["function"]["name"])) is not None
-                }
+                tokens = dict(self._skill_tokens)
+                for definition in skill_tools:
+                    token = capture(definition["function"]["name"])
+                    if token is not None:
+                        tokens[definition["function"]["name"]] = token
+                self._skill_tokens = tokens
         # allowed-tools 白名单：非空时过滤掉「不在白名单且不在 allowed_tools 中」的工具
         if self._allowed_tools:
             allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
             tools = [t for t in tools if t["function"]["name"] in allowed]
         tools = [t for t in tools if self.is_tool_authorized(t["function"]["name"])]
-        shared = self._shared_agent_tools()
-        if shared is not None and shared.runtime.mode == "ptc":
-            # SDK bindings must describe the current policy, not the global
-            # registration snapshot. Business tools retain their native schemas.
-            projected = shared.runtime.definitions(allowed_tools=self.agent_tool_capabilities())
-            if projected:
-                transport = projected[0]
-                transport["function"]["name"] = "agent_tools__run_code"
-                transport["function"]["description"] += (
-                    "\nNative business tools listed alongside this tool may also be called through tools.NAME(args), "
-                    "using their published argument schemas; the original executor rechecks authorization."
-                )
-                tools = [transport if d["function"]["name"] == "agent_tools__run_code" else d for d in tools]
         names: set[str] = set()
         for tool in tools:
             name = tool["function"]["name"]
@@ -794,14 +810,18 @@ class ReplyToolExecutor(ToolExecutor):
         return frozenset(name for name in names if self._policy_authorized(f"agent_tools__{name}"))
 
     def is_tool_authorized(self, name: str) -> bool:
-        """Enforce mode/dedup at execution as well as in the displayed catalog."""
+        """主 Agent 的授权判定:能力存在 + 去重,与任务工具模式(native/PTC)无关。
+
+        任务工具模式只决定「任务型 Agent(解题/子 Agent)如何编排」;
+        主回复管线始终直接调用业务工具,不因切到 PTC 而把工具换成单个 run_code。
+        """
         if not self._policy_authorized(name):
             return False
         shared = self._shared_agent_tools()
         if shared is not None:
             from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
             if name.startswith("agent_tools__"):
-                return shared.runtime.is_wire_tool(name.removeprefix("agent_tools__"))
+                return name.removeprefix("agent_tools__") in shared.runtime.capability_names()
             if name in LEGACY_FILE_ALIASES and LEGACY_FILE_ALIASES[name] in shared.runtime.capability_names():
                 return False
         return True
@@ -829,8 +849,8 @@ class ReplyToolExecutor(ToolExecutor):
             from neobot_app.agent_tools.modes import LEGACY_FILE_ALIASES
             if name in LEGACY_FILE_ALIASES:
                 return f"Error: 工具 {name} 已去重，请使用 agent_tools__{LEGACY_FILE_ALIASES[name]}（PTC时在run_code内调用）"
-            if name.startswith("agent_tools__") and not shared.runtime.is_wire_tool(name.removeprefix("agent_tools__")):
-                return f"Error: 工具 {name} 不在当前 {shared.runtime.mode} 模式的直接调用列表内"
+            if name.startswith("agent_tools__") and name.removeprefix("agent_tools__") not in shared.runtime.capability_names():
+                return f"Error: 工具 {name} 不存在或当前部署未启用"
         return f"Error: 工具 {name} 与当前模型视觉能力不匹配，请使用当前提供的图片工具"
 
     async def execute(self, name: str, args: dict) -> str:
@@ -897,6 +917,8 @@ class ReplyToolExecutor(ToolExecutor):
         # 内置技能操作说明查看（按需读取,默认只注入一行摘要）
         if name == "skills__view_instructions":
             return self._view_skill_instructions(args)
+        if name == "skills__load_tools":
+            return self._load_skill_tools(args)
         # Skill 系统路由（优先于 ToolError）
         if self._skill_manager is not None and "__" in name:
             token = self._skill_tokens.get(name)
@@ -2056,6 +2078,32 @@ class ReplyToolExecutor(ToolExecutor):
         if not skill_name:
             return "Error: 缺少 skill 参数"
         return self._skill_manager.get_skill_instructions(skill_name)
+
+    # ── 技能工具按需加载 ──
+
+    def _deferred_skill_names(self) -> list[str]:
+        """仍处于「未加载」状态的技能名；已加载的技能不再出现在下拉里。"""
+        if self._activation is None:
+            return []
+        return self._activation.candidates()
+
+    def _load_skill_tools(self, args: dict) -> str:
+        """把一个或多个技能的工具定义加入本管线后续的模型调用。
+
+        工具 schema 会随每次模型调用一起发送，全部常驻时开销极大；
+        因此在模型明确需要某个技能时再加载，加载后本轮即可直接调用。
+        """
+        if self._activation is None:
+            return "Error: SkillManager 不可用"
+        return self._activation.load(args)
+
+    def activated_skill_names(self) -> list[str]:
+        """本管线已按需加载的技能名（用于日志/调试）。"""
+        return self._activation.activated_names() if self._activation else []
+
+    def consume_tools_dirty(self) -> bool:
+        """取出并清除「工具列表已变化」标记，供调用方重建 tools。"""
+        return self._activation.consume_dirty() if self._activation else False
 
     @staticmethod
     def _inspect_skill_resource_path(

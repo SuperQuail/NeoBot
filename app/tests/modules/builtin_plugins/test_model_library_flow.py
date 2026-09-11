@@ -93,7 +93,7 @@ class _Services:
 async def _start_panel(tmp_path: Path, env_path: Path, config_path: Path):
     server = DashboardServer(
         plugin_name="dashboard",
-        config=DashboardConfig(enabled=True, host="127.0.0.1", port=_free_port()),
+        config=DashboardConfig(host="127.0.0.1", port=_free_port()),
         data_dir=tmp_path / "data",
         logger=_NullLogger(),
         adapter=_FakeAdapter(),
@@ -114,9 +114,7 @@ async def simulated_panel(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DeepSeek_URL", "https://api.deepseek.com")
     monkeypatch.setenv("DeepSeek_APIKey", "sk-stub-deepseek")
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        'version = "0.6.0"\n[dashboard]\nenabled = true\nport = 9981\n', encoding="utf-8"
-    )
+    config_path.write_text('version = "0.6.0"\n', encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text("DeepSeek_URL=https://api.deepseek.com\n", encoding="utf-8")
     data_dir = tmp_path / "data"

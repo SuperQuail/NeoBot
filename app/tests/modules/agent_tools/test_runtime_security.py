@@ -132,9 +132,14 @@ class _FakeSkill(SkillModule):
 
 def reply_executor(runtime, skill, **kwargs):
     from neobot_app.reply.tools import ReplyToolExecutor
+    from neobot_app.skills.agent_tools_packages import build_agent_tool_packages
 
     manager = SkillManager()
-    manager.register(AgentToolsSkill(runtime))
+    owner = AgentToolsSkill(runtime)
+    manager.register(owner)
+    # 主 Agent 的 agent_tools 呈现来自按需工具包（umbrella 技能不再对主 Agent 暴露）
+    for package in build_agent_tool_packages(owner):
+        manager.register(package)
     manager.register(skill)
     runtime.skill_manager = manager
     return ReplyToolExecutor(skill_manager=manager, conv_kind="group", conv_id="123",
@@ -157,22 +162,37 @@ async def test_native_legacy_mutation_and_delegation_cannot_bypass_plan(runtime,
 
 
 @pytest.mark.parametrize("runtime", ["ptc"], indirect=True)
-async def test_ptc_namespaced_external_image_survives_out_of_band_bridge(runtime):
+async def test_ptc_external_dispatch_preserves_out_of_band_image_parts(runtime):
+    """任务型 Agent 的 PTC 程序经宿主 dispatch 调外部技能工具时，带外图片必须穿过桥接层。
+
+    主回复管线不再提供 run_code（PTC 只服务任务型 Agent），因此这里直接验证
+    宿主桥接层本身：dispatch 收到的 ImageContextResult.image_parts 不能丢。
+    """
     from neobot_app.skills.image_context_skill import ImageContextResult
 
     parts = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,TEST"}}]
     skill = _FakeSkill("image_context", "add_image", ImageContextResult(
         json.dumps({"ok": True, "count": 1}), parts))
-    executor = reply_executor(runtime, skill, native_vision_provider=SimpleNamespace(native_vision=True))
-    try:
-        result = await executor.execute("agent_tools__run_code", ptc(
-            "return await tools.image_context__add_image({})"))
-        payload = json.loads(result)
-        assert payload.get("result", {}).get("ok") is True, payload
-        assert getattr(result, "image_parts", []) == parts
-        assert len(skill.calls) == 1
-    finally:
-        await executor.close()
+    collected: list[dict] = []
+
+    async def dispatch(name, args):
+        result = await skill.execute("add_image", args)
+        collected.extend(getattr(result, "image_parts", []))
+        return result
+
+    definition = tool_definition(
+        "image_context__add_image", "external image tool",
+        {"type": "object", "properties": {}, "required": []}, [])
+    result = await runtime.execute(
+        "run_code",
+        ptc("return await tools.image_context__add_image({})"),
+        context(),
+        external_dispatch=dispatch,
+        external_definitions=[definition],
+    )
+    assert result["result"]["ok"] is True, result
+    assert collected == parts
+    assert len(skill.calls) == 1
 
 
 @pytest.mark.parametrize("runtime", ["native", "ptc"], indirect=True)
@@ -201,31 +221,38 @@ async def test_reply_keeps_native_chat_image_and_file_delivery_business(runtime,
         names = {d["function"]["name"] for d in executor.definitions()}
         assert {"send_reply", f"{name}__{local}"} <= names
         assert executor.is_tool_authorized(f"{name}__{local}")
+        # 主回复管线的任务工具呈现与 native/PTC 无关：始终是可直接调用的叶子工具，
+        # 永远不暴露 PTC 的 run_code 入口（那是任务型 Agent 的编排能力）。
         task_names = {n for n in names if n.startswith("agent_tools__")}
-        if runtime.config.mode == "ptc":
-            assert task_names == {"agent_tools__run_code"}
-        else:
-            assert {"agent_tools__read", "agent_tools__todo_write"} <= task_names
-            assert "agent_tools__run_code" not in task_names
+        assert {"agent_tools__read", "agent_tools__todo_write"} <= task_names
+        assert "agent_tools__run_code" not in task_names
     finally:
         await executor.close()
 
 
-@pytest.mark.parametrize("runtime", ["ptc"], indirect=True)
-async def test_reply_ptc_sdk_and_dispatch_preserve_leaf_allowlist(runtime):
+@pytest.mark.parametrize("runtime", ["native", "ptc"], indirect=True)
+async def test_reply_never_exposes_run_code_and_keeps_leaf_allowlist(runtime):
+    """PTC 不再改变主 Agent 的呈现；技能白名单对叶子工具仍然生效。"""
     executor = reply_executor(runtime, _FakeSkill("example", "read"),
-        allowed_tools={"agent_tools__run_code", "agent_tools__read"})
+        allowed_tools={"agent_tools__read"})
     try:
-        definition = next(d for d in executor.definitions()
-                          if d["function"]["name"] == "agent_tools__run_code")
-        schema_text = json.dumps(definition)
-        assert "tools.read" in schema_text
-        assert "tools.write" not in schema_text
-        assert executor.agent_tool_capabilities() == frozenset({"run_code", "read"})
-        result = json.loads(await executor.execute("agent_tools__run_code", ptc(
-            'return await tools.write({"file_path": "forbidden.txt", "content": "no"})')))
-        assert result["ok"] is False
-        assert result["code"] == "PTC_TOOL_DENIED"
+        names = {d["function"]["name"] for d in executor.definitions()}
+        assert "agent_tools__run_code" not in names
+        assert "agent_tools__read" in names
+        assert "agent_tools__write" not in names
+        assert executor.is_tool_authorized("agent_tools__read")
+        assert not executor.is_tool_authorized("agent_tools__write")
+        assert not executor.is_tool_authorized("agent_tools__run_code")
+
+        # 白名单内的叶子工具仍可正常直接调用（宿主自决呈现，不受模式限制）
+        await runtime.execute("write", {"file_path": "ok.txt", "content": "hi"},
+                              context(), direct=True)
+        result = await executor.execute("agent_tools__read", {"file_path": "ok.txt"})
+        assert "hi" in result
+
+        denied = await executor.execute(
+            "agent_tools__write", {"file_path": "forbidden.txt", "content": "no"})
+        assert "Error" in denied
         assert not (runtime.workspace(context()) / "forbidden.txt").exists()
     finally:
         await executor.close()

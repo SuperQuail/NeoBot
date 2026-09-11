@@ -9,7 +9,7 @@ from neobot_modloader import PluginInstaller, PluginRuntime, PluginStateStore
 from neobot_modloader.installer import ProxySettings
 
 from neobot_app.builtin_plugins import builtin_plugin_dirs
-from neobot_app.core import APP_VERSION, DATA_DIR
+from neobot_app.core import APP_VERSION, DATA_DIR, PLUGIN_STATE_FILE, PLUGINS_DATA_DIR
 from neobot_app.skills import build_all_skills
 
 if TYPE_CHECKING:
@@ -88,30 +88,6 @@ def build_skill_manager(
     )
 
 
-#: 官方插件名 -> config.toml 分区名。官方插件配置直接来自本体配置。
-OFFICIAL_CONFIG_SECTIONS: dict[str, str] = {"dashboard": "dashboard"}
-
-
-def build_official_config_provider(config: Any) -> Any:
-    """官方插件配置提供者：把本体配置分区转成插件可用的字典。"""
-    from dataclasses import asdict, is_dataclass
-
-    def provide(plugin_name: str) -> dict[str, Any] | None:
-        section = OFFICIAL_CONFIG_SECTIONS.get(str(plugin_name))
-        if section is None:
-            return None
-        target = getattr(config, section, None)
-        if target is None:
-            return None
-        if is_dataclass(target) and not isinstance(target, type):
-            return asdict(target)
-        if isinstance(target, dict):
-            return dict(target)
-        return None
-
-    return provide
-
-
 def build_plugin_runtime(
     *,
     config: Any,
@@ -174,7 +150,7 @@ def build_plugin_runtime(
             return _media_sender_module.prepare_audio_segment(file_server, file_path)
 
     state_store = PluginStateStore(
-        DATA_DIR / "plugin_state.json",
+        PLUGIN_STATE_FILE,
         logger=logger_factory.get_logger("modloader.state"),
     )
     plugins_config = getattr(config, "plugins", None)
@@ -189,7 +165,7 @@ def build_plugin_runtime(
     )
     plugin_runtime = PluginRuntime(
         plugin_dir=plugin_dir,
-        data_dir=DATA_DIR / "plugins_data",
+        data_dir=PLUGINS_DATA_DIR,
         adapter=adapter,
         logger_factory=logger_factory,
         hook_bus=hook_bus,
@@ -205,7 +181,6 @@ def build_plugin_runtime(
         auto_install_dependencies=True,
         builtin_plugin_dirs=builtin_plugin_dirs(),
         state_store=state_store,
-        official_config_provider=build_official_config_provider(config),
         installer=installer,
         user_plugins_enabled=bool(getattr(config.plugins, "enabled", True)),
         host_version=APP_VERSION,

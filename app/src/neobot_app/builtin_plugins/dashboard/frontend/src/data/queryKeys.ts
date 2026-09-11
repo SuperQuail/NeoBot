@@ -15,7 +15,9 @@ export const QK = {
   activeUsers: 'stats:active-users',
   usage: 'stats:usage',
   usageSeries: 'series:usage',
+  analysis: 'analysis:prompts',
   plugins: 'plugins',
+  power: 'admin:power',
   pluginConfig: (id: string) => `plugin-config:${id}`,
   config: 'config',
   env: 'env',
@@ -44,8 +46,12 @@ export const POLL = {
   activeUsers: 60_000,
   /** 用量统计：60s */
   usage: 60_000,
+  /** 提示词分析：30s */
+  analysis: 30_000,
   /** 插件列表：20s */
   plugins: 20_000,
+  /** 运行状态：5s（待机状态变化要能马上看到） */
+  power: 5_000,
   /** 配置类：不轮询（由用户主动刷新） */
   none: 0,
 } as const;

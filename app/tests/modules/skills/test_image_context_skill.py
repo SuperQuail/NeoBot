@@ -82,7 +82,17 @@ async def test_paths_and_file_urls(image_path, png, source):
     assert_image(await ImageContextSkill().execute("add_image", args), png)
 
 
-@pytest.mark.parametrize("fmt,mime", [("JPEG", "image/jpeg"), ("WEBP", "image/webp"), ("BMP", "image/png"), ("GIF", "image/png")])
+@pytest.mark.parametrize(
+    "fmt,mime",
+    [
+        ("JPEG", "image/jpeg"),
+        ("WEBP", "image/webp"),
+        # 无透明通道的重编码统一走 JPEG：PNG 会让内联 base64 膨胀到数 MB，
+        # 而这段 base64 会在管线内每一次模型调用里重复发送。
+        ("BMP", "image/jpeg"),
+        ("GIF", "image/jpeg"),
+    ],
+)
 async def test_sniffs_actual_format_and_normalizes(fmt, mime):
     raw = image_bytes(fmt)
     # Deliberately wrong MIME: normalization trusts decoded content, not hints.
@@ -90,10 +100,37 @@ async def test_sniffs_actual_format_and_normalizes(fmt, mime):
     assert_image(result, mime=mime)
 
 
+async def test_transparent_image_keeps_png_when_small_enough():
+    """有透明通道且体积可控时保留 PNG，不能为了压体积丢掉透明度。"""
+    output = io.BytesIO()
+    Image.new("RGBA", (9000, 9), (255, 0, 0, 128)).save(output, format="PNG")
+    result = await ImageContextSkill().execute(
+        "add_image", {"image_base64": base64.b64encode(output.getvalue()).decode()}
+    )
+    metadata = assert_image(result, mime="image/png")["images"][0]
+    assert metadata["mime_type"] == "image/png"
+    assert metadata["resized"] is True
+
+
+async def test_oversized_inline_image_is_recompressed():
+    """原图体积超过内联上限时必须重编码，否则每轮调用都要重发十几 MB base64。"""
+    output = io.BytesIO()
+    noise = Image.effect_noise((1600, 1200), 100).convert("RGB")
+    noise.save(output, format="PNG")
+    raw = output.getvalue()
+    assert len(raw) > context_module.MAX_INLINE_IMAGE_BYTES
+
+    result = await ImageContextSkill().execute(
+        "add_image", {"image_base64": base64.b64encode(raw).decode()}
+    )
+    metadata = assert_image(result, mime="image/jpeg")["images"][0]
+    assert metadata["size_bytes"] <= context_module.MAX_INLINE_IMAGE_BYTES
+
+
 async def test_long_narrow_image_resizes_for_native_provider():
     raw = image_bytes(size=(9000, 9))
     result = await ImageContextSkill().execute("add_image", {"image_base64": base64.b64encode(raw).decode()})
-    metadata = assert_image(result)["images"][0]
+    metadata = assert_image(result, mime="image/jpeg")["images"][0]
     assert metadata["original_width"] == 9000
     assert metadata["original_height"] == 9
     assert metadata["width"] == 4096
@@ -108,7 +145,7 @@ async def test_animated_gif_first_frame_metadata():
     output = io.BytesIO()
     Image.new("RGB", (8, 6), "red").save(output, format="GIF", save_all=True, append_images=[Image.new("RGB", (8, 6), "blue")])
     result = await ImageContextSkill().execute("add_image", {"image_base64": base64.b64encode(output.getvalue()).decode()})
-    metadata = assert_image(result)
+    metadata = assert_image(result, mime="image/jpeg")
     assert metadata["images"][0]["first_frame_only"] is True
 
 
@@ -213,14 +250,14 @@ async def test_gallery_numbers_and_persistent_ids(image_path, png, args):
     from neobot_app.drawing.service import CreatorImageService
     service = object.__new__(CreatorImageService)
     record = SimpleNamespace(file_path=str(image_path))
-    service._get_reference_by_number = AsyncMock(return_value=record)
+    service._get_reference_by_gallery_no = AsyncMock(return_value=record)
     service._get_existing = AsyncMock(return_value=record)
     skill = ImageContextSkill(creator_image_service=service)
     assert_image(await skill.execute("add_image", args), png)
     if "g_test" in args.values() or "tmp_test" in args.values():
         service._get_existing.assert_awaited_once()
     else:
-        service._get_reference_by_number.assert_awaited_once_with(2)
+        service._get_reference_by_gallery_no.assert_awaited_once_with(2)
 
 
 @pytest.mark.parametrize("args", [{"emoji_id": 3}, {"source": "emoji:3"}, {"source": "e:3"}])

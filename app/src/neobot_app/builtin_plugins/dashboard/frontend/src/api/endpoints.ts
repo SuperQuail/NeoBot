@@ -10,6 +10,7 @@ import type {
   ModelsPayload,
   Overview,
   PluginListPayload,
+  PromptAnalysisPayload,
   ProxyInfo,
   RankPayload,
   Result,
@@ -40,6 +41,25 @@ export interface SimpleMessage {
   detail?: string;
   models?: string[];
   [key: string]: unknown;
+}
+
+/** 运行状态（/api/admin/power，待机 / 软重启） */
+export interface PowerState {
+  ok?: boolean;
+  /** 待机服务不可用时为 false，其余字段可能缺省 */
+  available?: boolean;
+  state?: 'running' | 'standby';
+  standby?: boolean;
+  reason?: string;
+  operator?: string;
+  /** 进入待机的时间戳与可读文本 */
+  since?: number;
+  since_text?: string;
+  standby_seconds?: number;
+  /** 待机期间是否保持 OneBot 连接 */
+  connect_onebot?: boolean;
+  /** 写操作（待机 / 恢复 / 软重启 / OneBot）返回的提示文案 */
+  message?: string;
 }
 
 export interface PluginConfigSaveBody {
@@ -77,6 +97,9 @@ export const api = {
   statsUsage: (hours = 24) => getJSON<UsagePayload>('/api/stats/usage?hours=' + hours),
   seriesUsage: (hours = 24, bucket = 'hour') =>
     getResult<UsagePayload>('/api/series/usage?hours=' + hours + '&bucket=' + bucket),
+
+  // 提示词分析
+  analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),
 
   // 插件
   plugins: () => getJSON<PluginListPayload>('/api/plugins'),
@@ -128,7 +151,14 @@ export const api = {
   envSave: (body: unknown) => postJSON<EnvPayload>('/api/config/env', body),
   envAddPlatform: (body: unknown) => postJSON<EnvPayload>('/api/config/env/platform', body),
 
-  // 管理
+  // 运行状态（待机 / 软重启运行）
+  powerStatus: () => getJSON<PowerState>('/api/admin/power'),
+  standbyEnter: (reason = '') => postJSON<PowerState>('/api/admin/standby', { reason }),
+  resume: (reason = '') => postJSON<PowerState>('/api/admin/resume', { reason }),
+  reboot: (reason = '') => postJSON<PowerState>('/api/admin/reboot', { reason }),
+  setStandbyOnebot: (enabled: boolean) => postJSON<PowerState>('/api/admin/standby/onebot', { enabled }),
+
+  // 管理（重启进程以加载代码改动）
   restart: () => postJSON<SimpleMessage>('/api/admin/restart'),
 };
 

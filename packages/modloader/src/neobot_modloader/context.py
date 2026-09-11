@@ -11,6 +11,7 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.screenshot import ScreenshotPort
+from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.management import PluginControlFacade
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
@@ -20,40 +21,76 @@ MessagePayload = str | list[dict[str, Any]]
 
 
 class MarkdownSkillRegistrar:
-    """插件 Markdown Skill 注册器（owner 为插件名，卸载时自动清理）。"""
+    """插件 Markdown Skill 注册器（owner 为插件名，卸载时自动清理）。
+
+    注册表由组合根在软重启时整体替换，因此这里保存"注册批次"而不只保存注册表
+    引用：代际切换时把同一批 Skill 重放到新注册表，插件无需重新加载。
+    """
 
     def __init__(
         self,
         *,
         plugin_name: str,
-        registry: Any | None,
-        record_cleanup: Any | None,
+        registry: Any | None = None,
+        registry_provider: Any | None = None,
+        record_cleanup: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
-        self._registry = registry
+        self._static_registry = registry
+        self._registry_provider = registry_provider
+        self._registrations: list[tuple[Any, list[Any]]] = []
         self._record_cleanup = record_cleanup
-        self._registered = False
+
+    def _current_registry(self) -> Any | None:
+        if self._registry_provider is not None:
+            return self._registry_provider()
+        return self._static_registry
 
     @property
     def available(self) -> bool:
         """共享 Skill 注册表是否已注入。"""
-        return self._registry is not None
+        return self._current_registry() is not None
+
+    @property
+    def _registered(self) -> bool:
+        """是否仍有已注册批次（注册失败不置位；清理失败保留以便重试）。"""
+        return bool(self._registrations)
 
     def register(self, skills: list[Any]) -> None:
-        if self._registry is None:
+        registry = self._current_registry()
+        if registry is None:
             raise RuntimeError("Markdown skill registry is not available")
         if not skills:
             return
-        self._registry.register_many(self._plugin_name, skills)
-        self._registered = True
+        batch = list(skills)
+        registry.register_many(self._plugin_name, batch)
+        self._registrations.append((registry, batch))
         if self._record_cleanup is not None:
             self._record_cleanup(self.unregister_all)
 
-    def unregister_all(self) -> None:
-        if self._registry is None or not self._registered:
+    def rebind(self, previous: Any, current: Any) -> None:
+        """代际切换：把旧注册表上的注册批次迁到新注册表。"""
+        if current is None or current is previous:
             return
-        self._registry.unregister_owner(self._plugin_name)
-        self._registered = False
+        moved: list[list[Any]] = []
+        updated: list[tuple[Any, list[Any]]] = []
+        for registry, batch in self._registrations:
+            if registry is previous:
+                registry.unregister_owner(self._plugin_name)
+                moved.append(batch)
+                updated.append((current, batch))
+            else:
+                updated.append((registry, batch))
+        self._registrations = updated
+        for batch in moved:
+            current.register_many(self._plugin_name, list(batch))
+
+    def unregister_all(self) -> None:
+        for registry, _batch in self._registrations:
+            unregister = getattr(registry, "unregister_owner", None)
+            if callable(unregister):
+                unregister(self._plugin_name)
+        self._registrations.clear()
 
 
 class PluginCommandRegistrar:
@@ -156,6 +193,7 @@ class RuntimePluginContext:
         screenshots: ScreenshotPort | None = None,
         app_commands: Any | None = None,
         source: str = THIRD_PARTY_SOURCE,
+        generation_provider: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._source = str(source or THIRD_PARTY_SOURCE)
@@ -173,17 +211,28 @@ class RuntimePluginContext:
         self._file_server = file_server
         self._media_sender = media_sender
         self._plugin_control = plugin_control
-        self.screenshots = screenshots
+        if generation_provider is None:
+            # 兼容直接构造上下文的测试/旧调用：静态代际，不参与重绑。
+            static_generation = RuntimeGeneration(
+                agent_registry=agent_registry,
+                skills_registry=markdown_skill_registry,
+                screenshots=screenshots,
+            )
+            self._generation_provider = lambda: static_generation
+        else:
+            self._generation_provider = generation_provider
         self._app_commands = app_commands
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self.agents = PluginAgentRegistrar(
             plugin_name=plugin_name,
             registry=agent_registry,
+            registry_provider=lambda: self._generation_provider().agent_registry,
             record_registration=record_agent_registration,
         )
         self.markdown_skills = MarkdownSkillRegistrar(
             plugin_name=plugin_name,
             registry=markdown_skill_registry,
+            registry_provider=lambda: self._generation_provider().skills_registry,
             record_cleanup=record_skill_cleanup,
         )
         self.app_commands = PluginCommandRegistrar(
@@ -216,6 +265,25 @@ class RuntimePluginContext:
     @property
     def config(self) -> Mapping[str, Any]:
         return self._config
+
+    @property
+    def screenshots(self) -> ScreenshotPort | None:
+        """当前代际的截图端口；软重启后自动指向新对象。"""
+        return self._generation_provider().screenshots
+
+    def on_generation_change(
+        self, previous: RuntimeGeneration, current: RuntimeGeneration
+    ) -> None:
+        """代际切换：把插件注册的 Agent / Markdown Skill 迁到新对象上。
+
+        截图端口等"读时解析"的依赖无需迁移；命令注册表属核心对象也不迁移。
+        """
+        if current.agent_registry is not previous.agent_registry:
+            self.agents.rebind(previous.agent_registry, current.agent_registry)
+        if current.skills_registry is not previous.skills_registry:
+            self.markdown_skills.rebind(
+                previous.skills_registry, current.skills_registry
+            )
 
     @property
     def logger(self) -> Logger:
