@@ -1095,6 +1095,76 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         note="独立 AI 循环：常驻精简工具集 + 按需加载",
     )
 
+    def _archive_summary_parts() -> list:
+        service = archive_summary_service
+        prompt = service._build_summary_prompt(
+            conversation_kind="group", conversation_id="0", messages=[]
+        )
+        definitions = list(getattr(service, "_tool_definitions", []) or [])
+        parts = [("总结指令（群聊 · 空会话）", "system", prompt)]
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+    def _problem_solver_parts() -> list:
+        from neobot_app.agents.problem_solver import _build_system_prompt
+
+        cfg = getattr(getattr(config, "agent", None), "problem_solver", None)
+        return [("系统提示词", "system", _build_system_prompt(cfg, prompt_store=prompt_store))]
+
+    def _self_heal_parts() -> list:
+        from neobot_app.agents.self_heal import SelfHealAgentConfig, _build_system_prompt
+
+        cfg = getattr(getattr(config, "agent", None), "self_heal", None) or SelfHealAgentConfig()
+        return [("系统提示词", "system", _build_system_prompt(cfg, prompt_store=prompt_store))]
+
+    def _delegation_parts() -> list:
+        instructions = ""
+        description = ""
+        if skill_manager is not None:
+            for key in ("agents", "agent_delegation"):
+                skill = skill_manager.get(key)
+                if skill is None:
+                    continue
+                value = getattr(skill, "instructions", "") or ""
+                if isinstance(value, str) and value.strip():
+                    instructions = value
+                description = str(getattr(skill, "description", "") or "")
+                if instructions:
+                    break
+        parts = []
+        if instructions:
+            parts.append(("工具使用指令", "instructions", instructions))
+        if description:
+            parts.append(("技能描述（注入给模型的工具说明）", "instructions", description))
+        if not parts:
+            parts.append(("工具使用指令", "instructions", ""))
+        return parts
+
+    prompt_analyzer.add_source(
+        "档案自动总结 Agent",
+        _archive_summary_parts,
+        note="空会话 + 群聊模板；运行时还会按会话追加用户画像/好感度/条目归档等指令",
+    )
+    prompt_analyzer.add_source(
+        "解题 Agent",
+        _problem_solver_parts,
+        note="仅系统提示词；peer 描述与工具定义在运行时按需装配",
+    )
+    prompt_analyzer.add_source(
+        "自修复 Agent",
+        _self_heal_parts,
+        note="仅系统提示词；peer 描述与工具定义在运行时按需装配",
+    )
+    prompt_analyzer.add_source(
+        "子 Agent 委派（agents__*）",
+        _delegation_parts,
+        kind="instructions",
+        note="委派工具的使用指令；可用子 Agent 列表由 agents__list 在运行时给出",
+    )
+
     # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
     register_host_services(
         plugin["host_facade"],
