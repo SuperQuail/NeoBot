@@ -142,6 +142,27 @@ def test_catalog_discover_scans_host_services() -> None:
     assert [spec.name for spec in catalog.specs] == ["假 Agent"]
 
 
+@pytest.mark.asyncio
+async def test_prompt_parts_provider_is_a_normalized_agent() -> None:
+    """装配出来的提示词（非对象来源）也走同一规范：包一层 provider 即被目录收集。"""
+    from neobot_app.analysis.agent_spec import PromptPartsProvider
+
+    analyzer = PromptAnalyzer()
+    analyzer.catalog.register(
+        PromptPartsProvider(
+            "主 Agent（对话）",
+            lambda: [("系统提示词", "system", "hi")],
+            agent_note="空聊天",
+        )
+    )
+
+    report = await analyzer.collect()
+
+    agent = report["agents"][0]
+    assert agent["name"] == "主 Agent（对话）" and agent["note"] == "空聊天"
+    assert agent["parts"][0]["text"] == "hi"
+
+
 def test_tools_to_text_is_json() -> None:
     text = tools_to_text([{"type": "function", "function": {"name": "demo"}}])
 

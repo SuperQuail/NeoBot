@@ -125,3 +125,21 @@ class AgentCatalog:
             if self.register(obj, name=getattr(obj, _NAME_ATTR, "") or name):
                 found += 1
         return found
+
+@dataclass(slots=True)
+class PromptPartsProvider:
+    """把「装配出来的提示词来源」也纳入同一规范。
+
+    主对话提示词、沙箱维护工具集、委派指令、编号路由这类来源不是 Agent 对象，
+    而是装配阶段拼出来的；用本类包一层后，它们与真正的 Agent 走**同一条**收集路径
+    （AgentCatalog），分析器不再需要区分「对象」与「散落来源」。
+    """
+
+    agent_name: str
+    loader: Callable[[], Any]
+    agent_kind: str = "agent"
+    agent_note: str = ""
+    agent_model: str = ""
+
+    def agent_prompt_parts(self) -> Any:
+        return self.loader()

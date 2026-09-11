@@ -1048,6 +1048,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         )
 
     # ── 提示词分析（面板「分析」页）：只做本地装配统计，不调用模型 ──
+    from neobot_app.analysis.agent_spec import PromptPartsProvider
     from neobot_app.analysis.prompt_analysis import PromptAnalyzer, tools_to_text
 
     prompt_analyzer = PromptAnalyzer(logger=logger_factory.get_logger("app.analysis"))
@@ -1084,15 +1085,21 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             (f"工具定义（{len(definitions)} 个 · 常驻精简集）", "tools", tools_to_text(definitions)),
         ]
 
-    prompt_analyzer.add_source(
-        "主 Agent（对话）",
-        _main_agent_parts,
-        note="空聊天（不含历史与记忆）；工具按全部 skill 包统计，实际请求还会按 agent 模式裁剪",
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "主 Agent（对话）",
+            _main_agent_parts,
+            agent_kind="agent",
+            agent_note="空聊天（不含历史与记忆）；工具按全部 skill 包统计，实际请求还会按 agent 模式裁剪",
+        )
     )
-    prompt_analyzer.add_source(
-        "沙箱维护 Agent",
-        _maintenance_agent_parts,
-        note="独立 AI 循环：常驻精简工具集 + 按需加载",
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "沙箱维护 Agent",
+            _maintenance_agent_parts,
+            agent_kind="agent",
+            agent_note="独立 AI 循环：常驻精简工具集 + 按需加载",
+        )
     )
 
     def _archive_summary_parts() -> list:
@@ -1143,11 +1150,13 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             parts.append(("工具使用指令", "instructions", ""))
         return parts
 
-    prompt_analyzer.add_source(
-        "子 Agent 委派（agents__*）",
-        _delegation_parts,
-        kind="instructions",
-        note="委派工具的使用指令；可用子 Agent 列表由 agents__list 在运行时给出",
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "子 Agent 委派（agents__*）",
+            _delegation_parts,
+            agent_kind="instructions",
+            agent_note="委派工具的使用指令；可用子 Agent 列表由 agents__list 在运行时给出",
+        )
     )
 
     # 解题/自修复 Agent 的工具定义：优先取运行时 agent 实例上真正会发出去的清单，
@@ -1246,11 +1255,13 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             return []
         return [("模型路由", "instructions", chr(10).join(lines))]
 
-    prompt_analyzer.add_source(
-        "编号 Agent（agent_model_1-3）",
-        _numbered_agent_parts,
-        kind="routing",
-        note="编号只决定用哪个模型；提示词 = 委派指令 + 具体任务文本",
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "编号 Agent（agent_model_1-3）",
+            _numbered_agent_parts,
+            agent_kind="routing",
+            agent_note="编号只决定用哪个模型；提示词 = 委派指令 + 具体任务文本",
+        )
     )
 
     # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
