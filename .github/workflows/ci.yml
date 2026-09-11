@@ -1,16 +1,15 @@
 name: CI
 
-# 每次推送到 main / 每个 PR：先跑静态检查，再跑测试。
+# PR 代码审查；也供合并后的发布工作流复用，确保发布代码通过检查。
 # browser / network / slow / llm 四个标记用于隔离依赖外部环境的用例；当前仓库里
 # 只有 browser 有实际用例，新增真实网络/真实 LLM 用例时请务必打上对应标记，
 # 否则它们会进入 CI 默认集合（--strict-markers 会拦下拼错的标记名）。
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -29,6 +28,9 @@ jobs:
 
       - name: 安装依赖（全部工作区包 + dev 组，严格用锁文件）
         run: uv sync --all-packages --locked
+
+      - name: 发布版本逻辑回归测试（阻断）
+        run: uv run --no-project --python 3.13 --with packaging python -m unittest discover -s scripts -p 'test_prepare_release.py' -v
 
       - name: ruff（阻断）
         run: uv run ruff check .
@@ -58,9 +60,11 @@ jobs:
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -84,7 +88,7 @@ jobs:
       # web/ 是入库产物：构建后若与提交内容有差异，说明改了源码没重新构建。
       - name: 校验构建产物已同步（阻断）
         run: |
-          if ! git diff --quiet -- ../web; then
+          if [ -n "$(git status --porcelain --untracked-files=all -- ../web)" ]; then
             echo "::error::web/ 构建产物与源码不一致，请在 frontend 目录执行 pnpm run build 并提交产物。"
             git --no-pager diff --stat -- ../web
             exit 1
