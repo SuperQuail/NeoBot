@@ -89,6 +89,40 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                   disabled={!configDocument?.source_available || !!operation} onClick={() => onModeChange('toml')}><Icon name="code" />TOML</button>
               </div><span className="muted small">{selected.official ? 'config.toml / ' + (configDocument?.section || selected.config_section || selected.name) : 'plugin.toml / config'}</span></div>
               {notice && <InlineAlert tone={notice.warning ? 'warning' : 'success'}>{notice.text}</InlineAlert>}
+              {(selected.dependencies?.length ?? 0) > 0 || (selected.dependents?.length ?? 0) > 0 ? (
+                <div className="config-notice" role="status">
+                  <Icon name="package" />
+                  <div>
+                    {(selected.dependencies?.length ?? 0) > 0 && (
+                      <div>
+                        前置插件：
+                        {(selected.dependencies || []).map((item) => (
+                          <code key={item}>{item}</code>
+                        ))}
+                      </div>
+                    )}
+                    {(selected.dependents?.length ?? 0) > 0 && (
+                      <div>
+                        被依赖：{(selected.dependents || []).map((item) => (
+                          <code key={item}>{item}</code>
+                        ))}
+                        <span className="muted small">（停用或卸载本插件会联动停用它们）</span>
+                      </div>
+                    )}
+                    {(selected.dependency_issues?.length ?? 0) > 0 && (
+                      <div className="muted small">未满足：{(selected.dependency_issues || []).join('；')}</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              {selected.disabled_reason && (
+                <InlineAlert tone="warning">
+                  已因前置插件未满足自动禁用：{selected.disabled_reason}
+                  <span className="muted small">
+                    （启用对应前置插件后会自动恢复，无需手动重新启用）
+                  </span>
+                </InlineAlert>
+              )}
               {selected.error && <InlineAlert tone="error">运行错误：{selected.error}</InlineAlert>}
               {configError && (
                 <InlineAlert

@@ -31,6 +31,7 @@ from .security import (
     is_loopback,
     secrets_equal,
 )
+from .web_extension import extension_metadata
 
 COOKIE_NAME = "neobot_dashboard_session"
 _STATIC_DIR = Path(__file__).resolve().parent / "web"
@@ -146,8 +147,57 @@ class DashboardServer:
         self._bot_cache: dict[str, Any] = {}
         self._bot_cache_at = 0.0
         self._bot_lock = asyncio.Lock()
+        #: 依赖面板的插件注册进来的 HTTP 扩展（星舰游戏等）
+        self._extensions: dict[str, Any] = {}
         self.public_url: str | None = None
         self.bound_port: int | None = None
+
+    # ------------------------------------------------------------------
+    # HTTP 扩展点（供依赖面板的插件挂载页面与接口）
+    # ------------------------------------------------------------------
+
+    def register_extension(self, name: str, extension: Any) -> str:
+        """注册一个 HTTP 扩展，返回它挂载的路径前缀。"""
+        key = str(name or "").strip()
+        if not key:
+            raise ValueError("扩展名不能为空")
+        prefixes = tuple(str(item) for item in (getattr(extension, "prefixes", ()) or ()))
+        if not prefixes:
+            raise ValueError(f"扩展 {key} 没有声明任何路径前缀")
+        for prefix in prefixes:
+            if not prefix.startswith("/"):
+                raise ValueError(f"扩展 {key} 的路径前缀必须以 / 开头: {prefix!r}")
+        self._extensions[key] = extension
+        self.logger.info(f"面板 HTTP 扩展已注册: {key} -> {', '.join(prefixes)}")
+        return prefixes[0]
+
+    def unregister_extension(self, name: str) -> bool:
+        removed = self._extensions.pop(str(name or ""), None)
+        if removed is not None:
+            self.logger.info(f"面板 HTTP 扩展已注销: {name}")
+        return removed is not None
+
+    def web_extensions(self) -> list[Any]:
+        return list(self._extensions.values())
+
+    def describe_extensions(self) -> list[dict[str, Any]]:
+        return [extension_metadata(item) for item in self._extensions.values()]
+
+    def _extension_for(self, path: str) -> Any | None:
+        for extension in self._extensions.values():
+            for prefix in getattr(extension, "prefixes", ()) or ():
+                prefix = str(prefix)
+                if path == prefix or path.startswith(prefix + "/"):
+                    return extension
+        return None
+
+    def _extension_requires_auth(self, path: str) -> bool:
+        for extension in self._extensions.values():
+            for prefix in getattr(extension, "auth_prefixes", ()) or ():
+                prefix = str(prefix)
+                if path == prefix or path.startswith(prefix + "/"):
+                    return True
+        return False
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -321,8 +371,11 @@ class DashboardServer:
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)
         self._route(app, "GET", "/assets/{name}", self._asset)
+        self._route(app, "GET", "/api/extensions", self.api.extensions)
         self._route(app, "GET", "/", self._index)
-        self._route(app, "GET", "/{tail:.*}", self._spa_fallback)
+        # 兜底路由承接所有方法：先问 HTTP 扩展（子插件挂载的页面与接口），
+        # 都不认领时再回落到面板自己的 SPA。
+        self._route(app, "*", "/{tail:.*}", self._catch_all)
         return app
 
     def _route(self, app: web.Application, method: str, path: str, handler: Any) -> None:
@@ -396,10 +449,20 @@ class DashboardServer:
             # 已配置密码时由处理器直接返回「请直接登录」，避免暴露为需登录接口
             "/api/auth/setup",
         }
-        if not path.startswith(_API_PREFIX) and path not in public and not path.startswith("/assets/") and not path.startswith("/image/"):
-            # 静态资源与 SPA 页面本身不需要鉴权（数据全部来自 /api）
+        # 子插件挂载的接口（auth_prefixes）与面板 /api 一样必须先有会话；
+        # 其余静态资源与 SPA 页面本身不需要鉴权（数据全部来自受保护的接口）
+        extension_protected = self._extension_requires_auth(path)
+        if (
+            not extension_protected
+            and not path.startswith(_API_PREFIX)
+            and path not in public
+            and not path.startswith("/assets/")
+            and not path.startswith("/image/")
+        ):
             return await handler(request)
-        if path in public or path.startswith("/assets/") or path.startswith("/image/"):
+        if not extension_protected and (
+            path in public or path.startswith("/assets/") or path.startswith("/image/")
+        ):
             return await handler(request)
 
         token = request.headers.get("X-Token") or request.cookies.get(COOKIE_NAME) or ""
@@ -420,8 +483,9 @@ class DashboardServer:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+            "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; connect-src 'self'; media-src 'self' blob:; "
+            "worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
         )
         if self._strip_base(request.path).startswith(_API_PREFIX):
             response.headers["Cache-Control"] = "no-store"
@@ -453,6 +517,20 @@ class DashboardServer:
         if path.startswith(_API_PREFIX):
             return _json_error("接口不存在", status=404)
         return await self._index(request)
+
+    async def _catch_all(self, request: web.Request) -> web.StreamResponse:
+        """扩展优先、面板兜底的统一入口。"""
+        path = self._strip_base(request.path)
+        extension = self._extension_for(path)
+        if extension is not None:
+            handler = getattr(extension, "handle_request", None)
+            if callable(handler):
+                response = await handler(request, path)
+                if response is not None:
+                    return response
+        if request.method not in {"GET", "HEAD"}:
+            return _json_error("接口不存在", status=404)
+        return await self._spa_fallback(request)
 
     async def _asset(self, request: web.Request) -> web.StreamResponse:
         return self._static_file("assets", request.match_info.get("name", ""))
@@ -603,6 +681,7 @@ class DashboardServer:
             "loopback_only": is_loopback(self.config.host),
             "sessions": self.sessions.describe(),
             "system": system_module.snapshot(data_dir=self.data_dir),
+            "extensions": self.describe_extensions(),
         }
 
 

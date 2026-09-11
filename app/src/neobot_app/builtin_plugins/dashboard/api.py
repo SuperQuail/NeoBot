@@ -557,7 +557,23 @@ class DashboardApi:
             "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
             "hot_reloadable": bool(getattr(snapshot, "hot_reloadable", True)),
             "config_path": str(self._plugin_config_path(snapshot.name) or ""),
+            # 依赖体系：前置插件、反向依赖与自动禁用原因
+            "dependency_issues": list(getattr(snapshot, "dependency_issues", ()) or ()),
+            "dependents": list(getattr(snapshot, "dependents", ()) or ()),
+            "disabled_reason": getattr(snapshot, "disabled_reason", None),
+            "auto_disabled": bool(getattr(snapshot, "auto_disabled", False)),
         }
+
+    async def extensions(self, request: web.Request) -> web.Response:
+        """面板 HTTP 扩展：依赖面板的插件挂到同一端口上的页面入口。"""
+        describe = getattr(self.console, "describe_extensions", None)
+        items: list[dict[str, Any]] = []
+        if callable(describe):
+            try:
+                items = list(describe())
+            except Exception:
+                items = []
+        return _json_ok({"items": items})
 
     async def plugins(self, request: web.Request) -> web.Response:
         control = self._plugin_control()

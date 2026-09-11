@@ -1,8 +1,8 @@
-"""插件声明的最低 NeoBot 版本比较。
+"""版本号解析与比较。
 
-``plugin.toml`` / ``Plugin(min_neobot_version=...)`` 声明的是「需要 NeoBot
-不低于某版本」。这里只做数字段比较，不引入额外依赖：``1.2.3``、``v1.2``、
-``1.2.3-beta.1`` 都能解析（预发布后缀忽略，按 ``1.2.3`` 处理）。
+min_neobot_version 与插件依赖声明都只需要「数字段比较」：1.2.3、v1.2、
+1.2.3-beta.1 都能解析（预发布后缀忽略，按 1.2.3 处理），不引入
+packaging 之类的额外依赖。
 """
 
 from __future__ import annotations
@@ -21,8 +21,38 @@ def parse_version(value: str | None) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+def _trimmed(parts: tuple[int, ...] | None) -> tuple[int, ...] | None:
+    """去掉末尾的 0，让 1.0 与 1.0.0 相等。"""
+    if parts is None:
+        return None
+    trimmed = list(parts)
+    while len(trimmed) > 1 and trimmed[-1] == 0:
+        trimmed.pop()
+    return tuple(trimmed)
+
+
+def compare_plugin_versions(left: str | None, right: str | None) -> int | None:
+    """比较两个插件版本号，返回 -1 / 0 / 1。
+
+    任一版本无法解析、或形如 0.0.0（源码方式运行时拿不到发行版本）时返回
+    None，表示「无法比较」——调用方应跳过检查而不是判定为不满足。
+    """
+    left_parts = _trimmed(parse_version(left))
+    right_parts = _trimmed(parse_version(right))
+    if left_parts is None or right_parts is None:
+        return None
+    if not any(left_parts) or not any(right_parts):
+        return None
+    size = max(len(left_parts), len(right_parts))
+    padded_left = left_parts + (0,) * (size - len(left_parts))
+    padded_right = right_parts + (0,) * (size - len(right_parts))
+    if padded_left == padded_right:
+        return 0
+    return 1 if padded_left > padded_right else -1
+
+
 def version_at_least(host: str | None, minimum: str | None) -> bool | None:
-    """判断 ``host`` 是否不低于 ``minimum``。
+    """判断 host 是否不低于 minimum。
 
     Returns:
         True/False 表示可比较的结果；任一版本无法解析时返回 None（调用方

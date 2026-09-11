@@ -1,0 +1,477 @@
+/* styles.css —— 星舰 HUD、对话框与菜单（3D 场景之外的所有 DOM 表现）。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #03060b;
+  color: #dceaf5;
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+#starship-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  outline: none;
+}
+
+#starship-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.text-capture {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 1px;
+  height: 1px;
+  opacity: 0.01;
+  border: none;
+  background: transparent;
+  color: transparent;
+  z-index: 1;
+}
+
+/* 准星 */
+.hud-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.2s ease;
+}
+
+.hud-crosshair span {
+  position: absolute;
+  background: rgba(150, 230, 255, 0.9);
+  box-shadow: 0 0 6px rgba(90, 210, 255, 0.9);
+}
+
+.hud-crosshair span:nth-child(1) {
+  left: 12px;
+  top: 2px;
+  width: 2px;
+  height: 22px;
+}
+
+.hud-crosshair span:nth-child(2) {
+  top: 12px;
+  left: 2px;
+  height: 2px;
+  width: 22px;
+}
+
+.hud-crosshair.pointer span {
+  background: rgba(255, 214, 120, 0.95);
+  box-shadow: 0 0 8px rgba(255, 200, 90, 0.9);
+}
+
+.hud-crosshair.hidden,
+.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 交互提示 */
+.hud-prompt {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border: 1px solid rgba(90, 200, 255, 0.55);
+  background: linear-gradient(180deg, rgba(8, 24, 36, 0.88), rgba(6, 16, 26, 0.92));
+  border-radius: 6px;
+  font-size: 16px;
+  letter-spacing: 0.4px;
+  box-shadow: 0 0 24px rgba(40, 160, 220, 0.25);
+  transition: opacity 0.15s ease;
+}
+
+.hud-prompt kbd {
+  display: inline-block;
+  min-width: 26px;
+  padding: 2px 8px;
+  border: 1px solid rgba(140, 230, 255, 0.7);
+  border-radius: 4px;
+  background: rgba(20, 60, 86, 0.9);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* 状态栏 */
+.hud-status {
+  position: absolute;
+  left: 18px;
+  top: 16px;
+  padding: 10px 14px;
+  border-left: 3px solid rgba(90, 200, 255, 0.75);
+  background: rgba(6, 16, 26, 0.55);
+  font-size: 13px;
+  line-height: 1.7;
+  color: #a9c8dd;
+  letter-spacing: 0.3px;
+  max-width: 62vw;
+}
+
+/* 顶部横幅（待机 / 跃迁） */
+.hud-banner {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  border: 1px solid rgba(255, 190, 90, 0.6);
+  background: rgba(40, 24, 8, 0.78);
+  color: #ffd79a;
+  font-size: 15px;
+  border-radius: 4px;
+  transition: opacity 0.25s ease;
+}
+
+.hud-banner.warn {
+  animation: banner-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes banner-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 180, 80, 0); }
+  50% { box-shadow: 0 0 22px rgba(255, 180, 80, 0.45); }
+}
+
+/* 小游戏 HUD */
+.hud-minigame {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  min-width: 220px;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 140, 90, 0.6);
+  background: rgba(28, 12, 8, 0.72);
+  border-radius: 6px;
+  text-align: right;
+}
+
+.hud-minigame .mg-title {
+  font-size: 15px;
+  color: #ffb98c;
+  letter-spacing: 0.5px;
+}
+
+.hud-minigame .mg-score {
+  font-size: 24px;
+  font-weight: 700;
+  color: #fff0e0;
+  margin: 4px 0;
+}
+
+.hud-minigame .mg-extra {
+  font-size: 14px;
+  color: #ffd7a8;
+}
+
+.hud-minigame .mg-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #c8a68a;
+}
+
+/* 提示气泡 */
+.hud-toasts {
+  position: absolute;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.hud-toast {
+  padding: 8px 18px;
+  border-radius: 4px;
+  background: rgba(8, 20, 32, 0.86);
+  border: 1px solid rgba(90, 180, 230, 0.5);
+  font-size: 14px;
+  color: #d7ecfa;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  max-width: 70vw;
+}
+
+.hud-toast.ok { border-color: rgba(90, 226, 160, 0.6); color: #b8ffe0; }
+.hud-toast.warn { border-color: rgba(255, 190, 90, 0.65); color: #ffe0ac; }
+.hud-toast.error { border-color: rgba(255, 120, 120, 0.65); color: #ffc0c0; }
+.hud-toast.leaving { opacity: 0; transform: translateY(10px); }
+
+/* 对话框 */
+.hud-dialog-overlay,
+.game-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.62);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+
+.hud-dialog {
+  min-width: 380px;
+  max-width: 620px;
+  padding: 22px 24px;
+  border: 1px solid rgba(90, 200, 255, 0.5);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(9, 22, 34, 0.97), rgba(5, 14, 22, 0.98));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.hud-dialog.danger {
+  border-color: rgba(255, 120, 120, 0.65);
+}
+
+.hud-dialog h3 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  color: #e8f6ff;
+}
+
+.hud-dialog p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #a8c4d8;
+  white-space: pre-line;
+}
+
+.hud-dialog input {
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(90, 200, 255, 0.45);
+  border-radius: 4px;
+  background: rgba(4, 12, 20, 0.9);
+  color: #e8f6ff;
+  font-size: 15px;
+  outline: none;
+}
+
+.hud-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.hud-dialog button,
+.game-menu button {
+  padding: 9px 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(90, 200, 255, 0.45);
+  background: rgba(14, 34, 50, 0.9);
+  color: #d8ecfa;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.hud-dialog button:hover,
+.game-menu button:hover {
+  background: rgba(24, 60, 86, 0.95);
+}
+
+.hud-dialog button.primary,
+.game-menu button.primary {
+  border-color: rgba(90, 226, 200, 0.6);
+  background: rgba(12, 60, 56, 0.9);
+  color: #b8ffe8;
+}
+
+.hud-dialog button.danger {
+  border-color: rgba(255, 120, 120, 0.7);
+  background: rgba(60, 14, 14, 0.9);
+  color: #ffc8c8;
+}
+
+.hud-dialog button.ghost {
+  background: transparent;
+}
+
+/* 暂停菜单 */
+.game-menu {
+  min-width: 460px;
+  padding: 26px 28px;
+  border: 1px solid rgba(90, 200, 255, 0.45);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(8, 20, 32, 0.97), rgba(4, 12, 20, 0.98));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.game-menu h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 3px;
+  color: #9fe4ff;
+}
+
+.menu-sub {
+  margin: 6px 0 18px;
+  font-size: 14px;
+  color: #8fb0c8;
+}
+
+.menu-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+  color: #b9d4e6;
+}
+
+.menu-row div {
+  display: flex;
+  gap: 6px;
+}
+
+.menu-row button.active {
+  border-color: rgba(90, 226, 200, 0.75);
+  background: rgba(12, 60, 56, 0.9);
+  color: #b8ffe8;
+}
+
+.menu-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.menu-hint {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: #7d98ab;
+}
+
+/* 引导页 */
+#starship-boot {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(30, 90, 140, 0.35), transparent 55%),
+    radial-gradient(circle at 70% 80%, rgba(90, 40, 140, 0.3), transparent 60%),
+    #03060b;
+  transition: opacity 0.4s ease;
+}
+
+#starship-boot.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.boot-panel {
+  text-align: center;
+  padding: 30px 36px;
+  border: 1px solid rgba(90, 200, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(6, 16, 26, 0.7);
+  max-width: 720px;
+}
+
+.boot-panel h1 {
+  margin: 0;
+  font-size: 34px;
+  letter-spacing: 6px;
+  color: #a8e8ff;
+}
+
+.boot-sub {
+  margin: 8px 0 20px;
+  font-size: 13px;
+  letter-spacing: 4px;
+  color: #6f93a8;
+}
+
+.boot-list {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  font-size: 14px;
+  line-height: 2;
+  color: #a9c8dd;
+}
+
+.boot-list kbd {
+  padding: 1px 6px;
+  border: 1px solid rgba(140, 230, 255, 0.6);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.boot-enter {
+  padding: 12px 46px;
+  border: 1px solid rgba(90, 226, 200, 0.6);
+  border-radius: 6px;
+  background: rgba(10, 54, 50, 0.9);
+  color: #b8ffe8;
+  font-size: 17px;
+  letter-spacing: 3px;
+  cursor: pointer;
+}
+
+.boot-enter:hover {
+  background: rgba(16, 78, 72, 0.95);
+}
+
+.boot-hint {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: #6f93a8;
+}
+
+#starship-boot.error .boot-panel {
+  border-color: rgba(255, 120, 120, 0.6);
+}
+
+#starship-boot.error a {
+  color: #9fe4ff;
+}
+
+#starship-boot-text a {
+  color: #9fe4ff;
+}

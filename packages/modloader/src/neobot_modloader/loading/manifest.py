@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from neobot_modloader.dependency import parse_dependency
 from neobot_modloader.plugins.registration import validate_plugin_name
 
 MAX_TAG_COUNT = 16
@@ -18,15 +19,18 @@ def read_manifest(path: Path) -> dict[str, Any]:
 
 
 def read_dependencies(value: Any) -> tuple[str, ...]:
+    """读取 plugin.toml 的 dependencies。
+
+    每项是「插件名 + 可选版本约束」的字符串（例如 dashboard>=1.0.0）；
+    这里只做格式校验并保留原始声明文本，拓扑排序时再解析成 PluginDependency。
+    """
     if not isinstance(value, list):
         raise TypeError("plugin.toml 的 dependencies 必须是 string list")
     dependencies: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise TypeError("plugin.toml 的 dependencies 必须是 string list")
-        dependency = str(item)
-        validate_plugin_name(dependency)
-        dependencies.append(dependency)
+        dependencies.append(parse_dependency(item).describe())
     return tuple(dependencies)
 
 

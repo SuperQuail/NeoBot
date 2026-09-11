@@ -17,6 +17,8 @@ export const QK = {
   usageSeries: 'series:usage',
   analysis: 'analysis:prompts',
   plugins: 'plugins',
+  /** 面板 HTTP 扩展（子插件页面入口） */
+  extensions: 'extensions',
   power: 'admin:power',
   pluginConfig: (id: string) => `plugin-config:${id}`,
   config: 'config',

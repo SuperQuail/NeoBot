@@ -117,6 +117,29 @@ export interface Plugin {
   homepage?: string;
   tags?: string[];
   config_section?: string;
+  /** 依赖声明（可能带版本约束，如 dashboard>=1.0.0） */
+  dependencies?: string[];
+  /** 当前未满足的依赖说明（缺失 / 未就绪 / 版本不符） */
+  dependency_issues?: string[];
+  /** 依赖本插件的其他插件（停用 / 卸载时会联动处理） */
+  dependents?: string[];
+  /** 因前置插件未满足而自动禁用的原因 */
+  disabled_reason?: string | null;
+  /** 是否属于依赖自动禁用（区别于用户手动停用） */
+  auto_disabled?: boolean;
+}
+
+/** 面板 HTTP 扩展 /api/extensions：依赖面板的插件挂在同一端口上的页面 */
+export interface ExtensionEntry {
+  name?: string;
+  prefixes?: string[];
+  auth_prefixes?: string[];
+  panel?: {
+    title?: string;
+    path?: string;
+    icon?: string;
+    description?: string;
+  } | null;
 }
 
 export interface ProxyInfo {

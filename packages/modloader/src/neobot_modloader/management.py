@@ -41,6 +41,14 @@ class PluginSnapshot:
     hot_reload: bool = True
     #: 插件配置改动是否支持不重启进程生效
     config_hot_reload: bool = True
+    #: 依赖未满足时自动禁用的原因（None 表示依赖正常）
+    disabled_reason: str | None = None
+    #: 是否因前置插件未满足而被自动禁用（区别于用户在面板里手动停用）
+    auto_disabled: bool = False
+    #: 当前未满足的依赖说明（缺失 / 未就绪 / 版本不符）
+    dependency_issues: tuple[str, ...] = ()
+    #: 依赖本插件的其他插件（停用 / 卸载时会被联动处理）
+    dependents: tuple[str, ...] = ()
 
     @property
     def official(self) -> bool:
@@ -138,6 +146,13 @@ class PluginControlFacade:
     @property
     def installer_available(self) -> bool:
         return getattr(self._runtime, "installer", None) is not None
+
+    def dependencies(self, name: str) -> dict[str, Any]:
+        """插件依赖现状：声明、未满足项、反向依赖、自动禁用原因。"""
+        reporter = getattr(self._runtime, "dependency_report", None)
+        if not callable(reporter):
+            return {}
+        return dict(reporter(name))
 
     def config_model(self, name: str) -> Any | None:
         """插件声明的配置模型（pydantic BaseModel），未声明时返回 None。"""

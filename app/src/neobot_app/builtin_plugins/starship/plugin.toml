@@ -1,0 +1,27 @@
+name = "starship"
+version = "1.0.0"
+description = "NeoBot 星舰：把控制台搬进一艘可自由探索的 3D 科幻战舰（three.js 第一人称）"
+author = "NeoBot"
+homepage = "https://github.com/SuperQuail/NeoBot"
+license = "MIT"
+tags = ["official", "web", "game"]
+
+# 依赖体系：前置插件 dashboard（网页面板）先加载，星舰把自己的页面与接口
+# 挂到面板的同一个端口上；面板不可用时本插件会被自动禁用，但不影响启动。
+dependencies = ["dashboard>=1.0.0"]
+priority = -1
+
+# 插件本体可热重载（重新注册 HTTP 扩展）；配置改动需要重载插件生效。
+hot_reload = true
+config_hot_reload = false
+
+# 配置默认值保存在插件数据目录 plugins_data/starship/config.toml，面板可在线编辑。
+[config]
+route = "game"
+title = "NeoBot 星舰"
+show_in_sidebar = true
+default_quality = "medium"
+allow_minigames = true
+leaderboard_size = 20
+jump_interval_minutes = 6
+enable_audio = true

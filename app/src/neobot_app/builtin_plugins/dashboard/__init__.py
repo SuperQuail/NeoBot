@@ -133,6 +133,47 @@ class DashboardPlugin:
 _instance = DashboardPlugin()
 
 
+# ── 对外能力：依赖面板的插件通过 ctx.require_plugin("dashboard") 调用 ──
+
+
+@plugin.capability("web.register_extension")
+async def _register_web_extension(payload: Any) -> str:
+    """把插件自己的页面 / 接口挂到面板的端口上。
+
+    调用方::
+
+        handle = ctx.require_plugin("dashboard", ">=1.0.0")
+        prefix = await handle.call(
+            "web.register_extension",
+            {"name": "starship", "extension": extension},
+        )
+    """
+    server = _instance.server
+    if server is None:
+        raise RuntimeError("网页面板服务未启动，无法挂载扩展")
+    data = payload if isinstance(payload, dict) else {}
+    return server.register_extension(str(data.get("name") or ""), data.get("extension"))
+
+
+@plugin.capability("web.unregister_extension")
+async def _unregister_web_extension(payload: Any) -> bool:
+    """注销先前注册的扩展（插件卸载 / 停用时调用）。"""
+    server = _instance.server
+    if server is None:
+        return False
+    data = payload if isinstance(payload, dict) else {}
+    return server.unregister_extension(str(data.get("name") or ""))
+
+
+@plugin.capability("server.describe")
+async def _describe_server(payload: Any) -> dict[str, Any]:
+    """面板自身的运行信息（地址、端口、扩展列表）。"""
+    server = _instance.server
+    if server is None:
+        return {"available": False}
+    return {"available": True, **server.describe()}
+
+
 @plugin.on_load
 async def _dashboard_load(ctx: Any) -> None:
     await _instance.load(ctx)

@@ -6,6 +6,7 @@ import type {
   ConfigChanges,
   ConfigDocument,
   EnvPayload,
+  ExtensionEntry,
   LogPayload,
   ModelsPayload,
   Overview,
@@ -100,6 +101,9 @@ export const api = {
 
   // 提示词分析
   analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),
+
+  // 面板 HTTP 扩展（依赖面板的插件挂载的页面入口）
+  extensions: () => getJSON<{ items?: ExtensionEntry[] }>('/api/extensions'),
 
   // 插件
   plugins: () => getJSON<PluginListPayload>('/api/plugins'),

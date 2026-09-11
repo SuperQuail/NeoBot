@@ -233,6 +233,20 @@ class RuntimePluginContext:
     def plugins(self) -> Any:
         return self._plugins
 
+    def require_plugin(self, name: str, specifier: str = "") -> Any:
+        """取得前置插件句柄（依赖它的功能时使用）。
+
+        ::
+
+            handle = ctx.require_plugin("dashboard", ">=1.0.0")
+            await handle.call("web.register_extension", {"extension": extension})
+
+        前置插件不存在 / 未就绪 / 版本不满足时抛 PluginDependencyError。
+        """
+        if self._plugins is None:
+            raise RuntimeError("插件注册表不可用")
+        return self._plugins.require(name, specifier)
+
     @property
     def plugin_host(self) -> Any:
         return self._host
