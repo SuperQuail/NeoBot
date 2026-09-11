@@ -80,6 +80,15 @@ html[data-theme='dark'] .workspace .btn.primary { background: #0284c7; border-co
 .meta-chip svg { width: 12px; height: 12px; }
 a.meta-chip:hover { color: var(--brand-hover); border-color: var(--brand); }
 .update-available { color: var(--brand-hover); }
+/* 运行状态：启停开关与配置文件解耦，单独一行展示 */
+.plugin-runtime-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+  padding: 14px 16px; margin-bottom: 14px; border: 1px solid var(--border); border-left: 3px solid var(--ok);
+  border-radius: 9px; background: color-mix(in srgb, var(--panel) 70%, transparent); }
+.plugin-runtime-row.off { border-left-color: var(--warn); }
+.plugin-runtime-copy { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.plugin-runtime-copy strong { font-size: 13px; }
+.plugin-runtime-copy .muted { flex-basis: 100%; }
+.plugin-runtime-warn { flex-basis: 100%; font-size: 11px; color: var(--warn); }
 .config-tabs { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 26px; gap: 10px; }
 .config-tabs > div { display: flex; gap: 24px; }
 .config-tabs button { display: inline-flex; align-items: center; gap: 7px; border: none; border-bottom: 2px solid transparent; background: none; color: var(--muted); padding: 12px 0; cursor: pointer; font-size: 12px; }
