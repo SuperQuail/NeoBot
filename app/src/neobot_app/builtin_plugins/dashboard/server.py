@@ -310,6 +310,7 @@ class DashboardServer:
         self._route(app, "GET", "/api/config/env", self.api.env_get)
         self._route(app, "POST", "/api/config/env", self.api.env_save)
         self._route(app, "POST", "/api/config/env/platform", self.api.env_platform_add)
+        self._route(app, "GET", "/api/analysis/prompts", self.api.analysis_prompts)
         self._route(app, "GET", "/api/admin/power", self.api.power_status)
         self._route(app, "POST", "/api/admin/standby", self.api.admin_standby)
         self._route(app, "POST", "/api/admin/resume", self.api.admin_resume)

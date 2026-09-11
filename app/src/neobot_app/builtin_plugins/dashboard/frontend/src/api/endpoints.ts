@@ -10,6 +10,7 @@ import type {
   ModelsPayload,
   Overview,
   PluginListPayload,
+  PromptAnalysisPayload,
   ProxyInfo,
   RankPayload,
   Result,
@@ -96,6 +97,9 @@ export const api = {
   statsUsage: (hours = 24) => getJSON<UsagePayload>('/api/stats/usage?hours=' + hours),
   seriesUsage: (hours = 24, bucket = 'hour') =>
     getResult<UsagePayload>('/api/series/usage?hours=' + hours + '&bucket=' + bucket),
+
+  // 提示词分析
+  analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),
 
   // 插件
   plugins: () => getJSON<PluginListPayload>('/api/plugins'),

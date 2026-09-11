@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useLayoutEffect, useRef } from 'react';
-import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu } from 'lucide-react';
+import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code } from 'lucide-react';
 import { ToastHost } from './Toast';
 import SidebarTooltip from './SidebarTooltip';
 import StandbyBanner from './StandbyBanner';
@@ -23,6 +23,7 @@ const NAV: NavEntry[] = [
   { to: '/config', label: '配置', name: '配置管理', icon: 'settings' },
   { to: '/system', label: '系统', name: '系统状态', icon: 'cpu' },
   { to: '/usage', label: '用量', name: '用量统计', icon: 'chart' },
+  { to: '/analysis', label: '分析', name: '提示词分析', icon: 'code' },
   { to: '/bots', label: '机器人', name: '机器人', icon: 'bot' },
   { to: '/logs', label: '日志', name: '日志', icon: 'log' },
 ];
@@ -34,6 +35,7 @@ const SIDEBAR_GLYPHS: Record<string, typeof Home> = {
   settings: Settings,
   cpu: Cpu,
   chart: BarChart3,
+  code: Code,
   bot: Bot,
   log: ScrollText,
 };

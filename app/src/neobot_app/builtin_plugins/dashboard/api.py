@@ -1332,6 +1332,24 @@ class DashboardApi:
         )
         return _json_ok(document)
 
+    def _prompt_analyzer(self) -> Any:
+        return self._service("prompt_analyzer")
+
+    async def analysis_prompts(self, request: web.Request) -> web.Response:
+        """提示词分析：各 agent 装配出的提示词字符数与估算 token（不调用模型）。
+
+        统计口径来自分析器自身（中文 ×0.6 + 其他 ×0.3）；单个来源装配失败只影响
+        该条目，接口仍返回可用数据。
+        """
+        analyzer = self._prompt_analyzer()
+        if analyzer is None:
+            return _json_error("提示词分析不可用（未注入分析器）", status=503)
+        try:
+            report = await analyzer.collect()
+        except Exception as exc:
+            return _json_error(f"提示词分析失败: {exc}", status=500)
+        return _json_ok(report)
+
     # ------------------------------------------------------------------
     # 运行状态（待机 / 软重启运行）
     # ------------------------------------------------------------------

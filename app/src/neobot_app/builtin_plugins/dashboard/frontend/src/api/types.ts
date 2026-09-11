@@ -364,3 +364,38 @@ export interface ActiveUser {
   count?: number;
   last_seen?: number;
 }
+
+/** 提示词分析 /api/analysis/prompts —— 单个来源（系统提示词 / 工具定义 / 历史 …）的统计 */
+export interface PromptPartReport {
+  label: string;
+  kind: string;
+  chars?: number;
+  tokens?: number;
+  /** 文本过长被后端截断展示（统计仍按全文计算） */
+  truncated?: boolean;
+  /** 具体提示词文本，可能缺省 */
+  text?: string;
+}
+
+/** 一个 Agent 装配出的完整提示词报告；装配失败时带 error、parts 为空、合计为 0 */
+export interface AgentPromptReport {
+  name: string;
+  kind?: string;
+  note?: string;
+  model?: string;
+  total_chars?: number;
+  total_tokens?: number;
+  parts?: PromptPartReport[];
+  error?: string;
+}
+
+export interface PromptAnalysisPayload {
+  ok?: boolean;
+  /** 分析器未注入时为 false */
+  available?: boolean;
+  /** 估算口径说明（页面直接展示，不在前端硬编码） */
+  rule?: string;
+  generated_at?: number;
+  agents?: AgentPromptReport[];
+  error?: string;
+}

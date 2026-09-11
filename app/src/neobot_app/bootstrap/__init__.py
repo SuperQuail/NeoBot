@@ -1047,6 +1047,54 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             )
         )
 
+    # ── 提示词分析（面板「分析」页）：只做本地装配统计，不调用模型 ──
+    from neobot_app.analysis.prompt_analysis import PromptAnalyzer, tools_to_text
+
+    prompt_analyzer = PromptAnalyzer(logger=logger_factory.get_logger("app.analysis"))
+
+    async def _main_agent_parts() -> list:
+        try:
+            empty_queue = type(group_queue)()
+        except Exception:
+            empty_queue = group_queue
+        system_prompt = await memory_svcs["prompt_builder"].build_group_chat_prompt(
+            0, empty_queue
+        )
+        from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
+
+        definitions = LiveToolset(executor=SkillToolsetExecutor(skill_manager)).definitions()
+        return [
+            ("系统提示词（群聊 · 空聊天）", "system", system_prompt),
+            (f"工具定义（{len(definitions)} 个 · 全部 skill 包）", "tools", tools_to_text(definitions)),
+        ]
+
+    async def _maintenance_agent_parts() -> list:
+        prompt = _MAINTENANCE_SYSTEM_PROMPT
+        if prompt_store is not None:
+            prompt = prompt_store.get(
+                "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
+            )
+        from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
+
+        definitions = LiveToolset(
+            executor=SkillToolsetExecutor(skill_manager, resident=MAINTENANCE_RESIDENT_SKILLS)
+        ).definitions()
+        return [
+            ("系统提示词", "system", prompt),
+            (f"工具定义（{len(definitions)} 个 · 常驻精简集）", "tools", tools_to_text(definitions)),
+        ]
+
+    prompt_analyzer.add_source(
+        "主 Agent（对话）",
+        _main_agent_parts,
+        note="空聊天（不含历史与记忆）；工具按全部 skill 包统计，实际请求还会按 agent 模式裁剪",
+    )
+    prompt_analyzer.add_source(
+        "沙箱维护 Agent",
+        _maintenance_agent_parts,
+        note="独立 AI 循环：常驻精简工具集 + 按需加载",
+    )
+
     # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
     register_host_services(
         plugin["host_facade"],
@@ -1076,6 +1124,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "credential_manager": (credential_manager, "凭据管理器"),
             "sleep_service": (sleep_service, "睡眠服务"),
             "standby_service": (standby_service, "待机服务（只保留核心服务 / 软重启运行）"),
+            "prompt_analyzer": (prompt_analyzer, "提示词分析（面板分析页）"),
             "cache_calculator": (cache_calculator, "缓存命中计算器"),
             "skill_manager": (skill_manager, "Skill 管理器"),
             "markdown_skill_registry": (markdown_skill_registry, "Markdown Skill 注册表"),
