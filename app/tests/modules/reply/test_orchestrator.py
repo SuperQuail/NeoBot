@@ -855,18 +855,23 @@ async def test_agent_mode_no_allowed_tools_passes_none(monkeypatch):
     await orch.shutdown()
 
 
-# ── allowed-tools 下表情包搜索提示一致性 ──────────────────────────
+# ── 表情包不再注入提示词（改为按需工具） ──────────────────────────
 
 
 class _FakeEmojiService:
-    """假表情包服务：图库数量超过分页上限（50）时触发搜索提示。"""
+    """假表情包服务：只提供 list_emojis 工具需要的清单接口。
+
+    提示词注入已移除，因此这里生成的清单不会出现在 system 提示词里；
+    保留它用于验证「即使服务可用，提示词也不会被污染」。
+    """
 
     def __init__(self, count: int = 200) -> None:
         self.emoji_count = count
 
-    def build_prompt_text(self, limit: int = 50) -> str:
-        limit = limit or 50  # _FakeChat.__getattr__ 缺失配置属性返回 None
-        return "\n".join(f"#{i}" for i in range(1, min(self.emoji_count, limit) + 1))
+    def build_list_text(self, offset: int = 0, limit: int | None = None) -> str:
+        limit = limit or 50
+        end = min(self.emoji_count, offset + limit)
+        return "\n".join(f"#{i}" for i in range(offset + 1, end + 1))
 
     def get_entry(self, number: int):
         return None
@@ -891,9 +896,8 @@ def _capture_toolset_build(monkeypatch) -> dict:
     return captured
 
 
-async def test_agent_mode_allowed_tools_omits_search_custom_emoji_hint(monkeypatch):
-    """限制激活时提示词省略 search_custom_emoji 搜索提示（该工具已被 definitions
-    过滤），表情包段其余内容与限制说明保留。"""
+async def test_agent_mode_allowed_tools_keeps_emoji_out_of_prompt(monkeypatch):
+    """限制激活时：工具集受限、提示词带限制说明，且表情包清单不进入提示词。"""
     captured = _capture_toolset_build(monkeypatch)
     orch = _make_orchestrator(
         provider=_ScriptedProvider([{"content": "收到", "tool_calls": []}])
@@ -912,15 +916,16 @@ async def test_agent_mode_allowed_tools_omits_search_custom_emoji_hint(monkeypat
 
     chat_context = captured["chat_context"]
     assert captured.get("allowed_tools") is not None
-    assert "<可用的表情包>" in chat_context
-    assert "可用 search_custom_emoji 按关键词搜索" not in chat_context
     assert "限制了可用工具" in chat_context
+    # 表情包清单已改为按需工具，任何情况下都不再注入 system 提示词
+    assert "<可用的表情包>" not in chat_context
+    assert "#1" not in chat_context
     assert event.state.name == "COMPLETED"
     await orch.shutdown()
 
 
-async def test_agent_mode_no_restriction_keeps_search_custom_emoji_hint(monkeypatch):
-    """无限制时提示词保留 search_custom_emoji 搜索提示。"""
+async def test_agent_mode_no_restriction_also_keeps_emoji_out_of_prompt(monkeypatch):
+    """不限制工具时同样不注入表情包清单。"""
     captured = _capture_toolset_build(monkeypatch)
     orch = _make_orchestrator(
         provider=_ScriptedProvider([{"content": "收到", "tool_calls": []}])
@@ -939,7 +944,8 @@ async def test_agent_mode_no_restriction_keeps_search_custom_emoji_hint(monkeypa
 
     chat_context = captured["chat_context"]
     assert captured.get("allowed_tools") is None
-    assert "可用 search_custom_emoji 按关键词搜索" in chat_context
+    assert "<可用的表情包>" not in chat_context
+    assert "#1" not in chat_context
     assert event.state.name == "COMPLETED"
     await orch.shutdown()
 

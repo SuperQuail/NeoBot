@@ -23,7 +23,6 @@ from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.reply.sender import ReplySender
 from neobot_app.reply.vision_context import (
-    VISION_INSTRUCTIONS,
     ReplyVisionContext,
     append_image_context,
     labelled_tool_images,
@@ -1308,6 +1307,17 @@ class ReplyOrchestrator:
             return default
         return self._prompt_store.enabled(key, default=default)
 
+    def _native_vision_note(self) -> str:
+        """原生视觉说明([native_vision] 模板);分区关闭或模板为空时返回空串。
+
+        这段说明是**稳定内容**,因此追加在 system 提示词里而不是对话末尾:
+        系统提示词在各条管线之间逐字节相同,能持续命中上下文缓存;
+        追加在历史之后的位置随历史长度变化,永远无法进入可复用前缀。
+        """
+        if not self._prompt_section_enabled("native_vision"):
+            return ""
+        return render_template(self._prompt_template("native_vision"), {})
+
     def _build_current_time_message(self) -> dict[str, str] | None:
         """渲染"回复前"追加的 <当前时间> user 块;关闭或为空时返回 None。"""
         builder = self._prompt_builder
@@ -1956,34 +1966,8 @@ class ReplyOrchestrator:
                     union.update(tools)
                 allowed_tools = union
 
-        # 注入表情包列表(只注入一页的五分之一,避免占用过多上下文)
-        if self._emoji_service is not None:
-            emoji_page_size = (
-                getattr(getattr(self._config, "chat", None), "emoji_page_size", 50)
-                if self._config
-                else 50
-            )
-            inject_limit = max(1, emoji_page_size // 5)
-            emoji_text = self._emoji_service.build_prompt_text(limit=inject_limit)
-            if emoji_text:
-                emoji_total = self._emoji_service.emoji_count
-                search_hint = (
-                    f"\n当前共{emoji_total}个表情包，列表仅显示前{inject_limit}个；"
-                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索，"
-                    "或用 emoji_list 翻页查看全部。"
-                    if emoji_total > inject_limit and allowed_tools is None
-                    else ""
-                )
-                prompt += (
-                    "\n\n<可用的表情包>\n"
-                    f"{emoji_text}\n"
-                    "发送表情包时：\n"
-                    "- 同时发送文字回复和表情包：使用 send_reply 工具，通过 images 参数指定表情包编号列表（先逐一发送图片，再发送切分后的文字）\n"
-                    "- 仅发送表情包（无独立文字回复）：使用 send_emoji 工具，参数 number 为表情包编号\n"
-                    "表情包按使用次数从少到多排列（使用次数均衡器），优先使用不常用的表情包。\n"
-                    f"{search_hint}\n"
-                    "</可用的表情包>"
-                )
+        # 表情包列表不再注入提示词:它按使用次数排序且带"已用N次",每次发出表情包都会
+        # 改变 system 前缀,让整段缓存失效。改为按需工具 list_emojis / search_custom_emoji。
 
         # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
@@ -2023,6 +2007,14 @@ class ReplyOrchestrator:
                 f"{', '.join(sorted(allowed_tools))}"
                 "（以及始终可用的基础回复工具与技能读取工具）。"
             )
+
+        # 原生视觉说明属于稳定内容:放进 system 提示词(跨管线逐字节相同、可缓存),
+        # 不再作为对话末尾的 user 消息(那个位置随历史长度变化,永远命中不了缓存)
+        native_vision_active = getattr(self._provider, "native_vision", False) is True
+        if native_vision_active:
+            vision_note = self._native_vision_note()
+            if vision_note:
+                prompt += f"\n\n{vision_note}"
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
@@ -2389,7 +2381,6 @@ class ReplyOrchestrator:
                 self._agent_tool_turns[event.event_id] = (shared_tools.runtime, context, messages)
 
         tools = reply_toolset.definitions()
-        native_vision_active = getattr(self._provider, "native_vision", False) is True
         vision_context = ReplyVisionContext()
         from neobot_app.skills.image_context_skill import ImageContextSkill
 
@@ -2398,8 +2389,6 @@ class ReplyOrchestrator:
             group_message_queue=queue_copy if conv_kind == "group" else None,
             friend_message_queue=queue_copy if conv_kind != "group" else None,
         )
-        if native_vision_active:
-            messages.append({"role": "user", "content": VISION_INSTRUCTIONS})
 
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = self._get_agent_max_iterations()

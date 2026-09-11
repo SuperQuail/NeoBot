@@ -171,7 +171,7 @@ async def test_external_file_appears_immediately_in_list(tmp_path):
         number, entry = entries[0]
         assert entry.file_name == "external.png"
         assert entry.analysis_text == "外部放入"
-        assert f"[{number}]" in service.build_prompt_text()
+        assert f"[{number}]" in service.build_list_text()
 
         # 等待后台全量刷新完成,确认编号稳定、数据被修正
         if service._disk_refresh_task is not None:

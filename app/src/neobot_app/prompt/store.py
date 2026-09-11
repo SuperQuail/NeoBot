@@ -48,6 +48,7 @@ KNOWN_SECTIONS = (
     "friend_chat_hint",
     "group_chat_resume",
     "new_member_profiles",
+    "native_vision",
     "tool_result_compressed",
     "tool_result_compressed_detail",
     "long_reply_fallback",
@@ -116,6 +117,15 @@ _FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
     },
     "new_member_profiles": {
         "template": "[新出现的群友档案]\n{member_profiles}"
+    },
+    "native_vision": {
+        "template": (
+            "<原生视觉>\n"
+            "聊天记录里的图片只有正文文本描述;默认加载的图片与其来源标注追加在提示词末尾。\n"
+            "需要看其他图片时调用 image_context__add_image;不要调用外部视觉模型解析工具。\n"
+            "只能描述实际加载并看到的图片,加载失败时不要根据占位描述猜测。\n"
+            "</原生视觉>"
+        )
     },
     "tool_result_compressed": {
         "template": "[已压缩] 工具 {tool_name} 调用成功。"

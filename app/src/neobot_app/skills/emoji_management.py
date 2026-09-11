@@ -27,7 +27,7 @@ class EmojiManagementSkill(SkillModule):
     def instructions(self) -> str:
         return (
             "表情包管理 Skill 提供以下能力：\n\n"
-            "  emoji_list — 列出表情包（编号与提示词列表一致）\n"
+            "  emoji_list — 列出表情包（编号与主 Agent 的 list_emojis / send_emoji 一致）\n"
             "  emoji_search — 按关键词搜索表情包\n"
             "  emoji_add — 添加表情包，图片来源与图片解析工具一致"
             "（支持消息编号 msg_number、聊天流 chat_flow_id、消息 ID message_id、"
@@ -58,7 +58,7 @@ class EmojiManagementSkill(SkillModule):
         return [
             self._tool_def(
                 "emoji_list",
-                "列出表情包库中的表情包。",
+                "列出表情包库中的表情包（主 Agent 日常查看用 list_emojis，本工具用于管理场景）。",
                 {
                     "properties": {
                         "page": {"type": "integer", "description": "页码，从1开始", "default": 1},

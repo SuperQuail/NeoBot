@@ -76,6 +76,7 @@ BASIC_REPLY_TOOLS = frozenset(
         "react_emoji",
         "search_qq_emoji",
         "search_custom_emoji",
+        "list_emojis",
         "adjust_reply_willingness",
         "get_willingness_config",
         "manage_willing_config",
@@ -86,6 +87,8 @@ BASIC_REPLY_TOOLS = frozenset(
 )
 _MAX_TOOL_TEXT_CHARS = 16 * 1024
 _MAX_SKILL_RESOURCE_BYTES = 1024 * 1024
+#: list_emojis 单次最多返回的条数(防止一次把整库灌进上下文)
+_MAX_EMOJI_PAGE_SIZE = 200
 _SKILL_INTERNAL_KEYS = frozenset(
     {"pipeline_key", "_numbering_mapping", "_delegate_context", "_requester_id",
      "_agent_tool_context", "_human_request", "_owner", "_source"}
@@ -610,12 +613,12 @@ class ReplyToolExecutor(ToolExecutor):
                     "向当前会话发送一个表情包图片（可附带可选文字）。"
                     "仅用于只发送表情包而不发送独立文字回复的场景。"
                     "若需要同时发送文字回复和表情包，请使用 send_reply 工具并通过 images 参数指定表情包编号。"
-                    "提示词中的表情包按使用次数从少到多排列（使用次数均衡器），优先展示不常用的。",
+                    "编号用 list_emojis 或 search_custom_emoji 查看（按使用次数从少到多排列，优先用不常用的）。",
                     {
                         "properties": {
                             "number": {
                                 "type": "integer",
-                                "description": "提示词列表中的表情包编号。",
+                                "description": "表情包编号，用 list_emojis / search_custom_emoji 获取。",
                             },
                             "text": {
                                 "type": "string",
@@ -629,10 +632,32 @@ class ReplyToolExecutor(ToolExecutor):
         if self._emoji is not None:
             tools.append(
                 _tool_def(
+                    "list_emojis",
+                    "分页查看自定义表情包库（非QQ表情）。返回的编号可直接用于 send_emoji 的 number "
+                    "或 send_reply 的 images。列表按使用次数从少到多排列（使用次数均衡器），"
+                    "因此优先选前面的编号。不确定用哪个表情包时先调用本工具；"
+                    "已经有关键词时用 search_custom_emoji 更省 token。",
+                    {
+                        "properties": {
+                            "offset": {
+                                "type": "integer",
+                                "description": "从第几个开始（0 起）。翻页时用上一次结果里的提示值。",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "本次返回条数，默认取配置的表情包每页数量。",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+            )
+            tools.append(
+                _tool_def(
                     "search_custom_emoji",
                     "按关键词搜索自定义表情包（非QQ表情）。在表情包描述和文件名中匹配关键词，"
-                    "结果按使用次数从少到多排列。当表情包数量超过提示词列表一页（如50个）时建议使用搜索，"
-                    "正常情况下直接看提示词中的列表即可。",
+                    "结果按使用次数从少到多排列。已有关键词时优先用本工具；"
+                    "没有明确关键词、想看有哪些表情包时用 list_emojis。",
                     {
                         "properties": {
                             "keyword": {
@@ -913,6 +938,8 @@ class ReplyToolExecutor(ToolExecutor):
             return await self._execute_manage_willing_config(args)
         if name == "send_emoji":
             return await self._execute_send_emoji(args)
+        if name == "list_emojis":
+            return self._execute_list_emojis(args)
         if name == "search_custom_emoji":
             return self._execute_search_custom_emoji(args)
         if name == "react_emoji":
@@ -1817,6 +1844,29 @@ class ReplyToolExecutor(ToolExecutor):
         await handler(number=number, text=text)
         entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
         return f"已发送表情包 {entry_name}"
+
+    def _execute_list_emojis(self, args: dict) -> str:
+        """分页列出自定义表情包（文本形式，编号可直接用于发送工具）。"""
+        if self._emoji is None:
+            return "错误：表情包服务未配置"
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+        except (ValueError, TypeError):
+            return "错误：offset 必须为整数"
+        raw_limit = args.get("limit")
+        limit: int | None = None
+        if raw_limit is not None:
+            try:
+                limit = int(raw_limit)
+            except (ValueError, TypeError):
+                return "错误：limit 必须为整数"
+            if limit <= 0:
+                return "错误：limit 必须为正整数"
+            limit = min(limit, _MAX_EMOJI_PAGE_SIZE)
+        text = self._emoji.build_list_text(offset=offset, limit=limit)
+        if not text:
+            return "当前没有可用的自定义表情包"
+        return text
 
     def _execute_search_custom_emoji(self, args: dict) -> str:
         if self._emoji is None:

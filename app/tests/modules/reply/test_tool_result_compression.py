@@ -1,11 +1,12 @@
-"""工具输出压缩与回复前 <当前时间> user 块测试。
+"""回复管线的消息装配测试(工具输出压缩 / 时间块 / 原生视觉说明)。
 
 覆盖:
 - 重新构建/续用提示词的新一轮开始前,较早的工具返回被压缩,只保留最近 N 条完整;
 - 基础回复类工具压缩后只表示"调用成功";
 - 其它工具压缩后保留一段结果摘要;
 - 压缩幂等,且不会让 assistant.tool_calls 与结果消息失配;
-- <当前时间> user 块每轮只有一条,并且始终位于请求末尾。
+- <当前时间> user 块每次调用前追加一条,保留历史并位于请求末尾;
+- 原生视觉说明进 system 提示词(可缓存),不占用对话末尾的位置。
 """
 
 from __future__ import annotations
@@ -473,6 +474,103 @@ async def test_flow_recording_is_optional(monkeypatch):
     await _wait_until_idle(orch)
 
     assert event.error is None
+    await orch.shutdown()
+
+
+class _VisionProvider(_ScriptedProvider):
+    """声明支持原生视觉的 provider(说明文字只在此时才会注入)。"""
+
+    native_vision = True
+
+
+async def _run_once(orch, monkeypatch, *, queue_key: str = "123456"):
+    """跑完一轮私聊回复(挂起直接返回空,管线随即结束)。"""
+
+    async def _no_suspend(source, snapshot, key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=MessageQueue(),
+        queue_key=queue_key,
+        decision=_make_decision(),
+    )
+    await _wait_until_idle(orch)
+    return event
+
+
+async def test_native_vision_note_is_part_of_system_prompt(monkeypatch):
+    """原生视觉说明必须追加在 system 提示词里,而不是对话末尾的 user 消息。"""
+    provider = _VisionProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider)
+
+    event = await _run_once(orch, monkeypatch)
+
+    assert event.error is None
+    request = provider.calls[0][0]
+    assert request[0]["role"] == "system"
+    assert "<原生视觉>" in request[0]["content"]
+    # 说明只出现在 system 里:后面的消息不再重复携带
+    assert all("<原生视觉>" not in str(m.get("content", "")) for m in request[1:])
+    await orch.shutdown()
+
+
+async def test_native_vision_note_absent_without_native_vision(monkeypatch):
+    """不支持原生视觉的 provider 不应该多出这段 token。"""
+    provider = _ScriptedProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider)
+
+    event = await _run_once(orch, monkeypatch)
+
+    assert event.error is None
+    request = provider.calls[0][0]
+    assert all("<原生视觉>" not in str(m.get("content", "")) for m in request)
+    await orch.shutdown()
+
+
+async def test_native_vision_note_can_be_disabled(tmp_path, monkeypatch):
+    """[native_vision] 写 enabled = false 后不再注入该说明。"""
+    from neobot_app.prompt.store import PromptStore, sync_default_prompts
+
+    sync_default_prompts(tmp_path)
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.write_text("[native_vision]\nenabled = false\n", encoding="utf-8")
+
+    provider = _VisionProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(
+        provider=provider, prompt_store=PromptStore(tmp_path)
+    )
+
+    event = await _run_once(orch, monkeypatch)
+
+    assert event.error is None
+    request = provider.calls[0][0]
+    assert all("<原生视觉>" not in str(m.get("content", "")) for m in request)
+    await orch.shutdown()
+
+
+async def test_native_vision_note_can_be_customized(tmp_path, monkeypatch):
+    """自定义 [native_vision] 模板必须生效,且只注入一次。"""
+    from neobot_app.prompt.store import PromptStore, sync_default_prompts
+
+    sync_default_prompts(tmp_path)
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.write_text(
+        '[native_vision]\ntemplate = "自定义视觉说明"\n', encoding="utf-8"
+    )
+
+    provider = _VisionProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(
+        provider=provider, prompt_store=PromptStore(tmp_path)
+    )
+
+    event = await _run_once(orch, monkeypatch)
+
+    assert event.error is None
+    request = provider.calls[0][0]
+    assert request[0]["content"].endswith("自定义视觉说明")
+    assert "<原生视觉>" not in request[0]["content"]
     await orch.shutdown()
 
 

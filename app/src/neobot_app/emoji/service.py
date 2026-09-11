@@ -1,4 +1,4 @@
-"""EmojiService — 表情包扫描、解析、编号与提示词生成"""
+"""EmojiService — 表情包扫描、解析、编号与清单生成（清单按需由 list_emojis 返回）"""
 
 from __future__ import annotations
 
@@ -133,14 +133,16 @@ class EmojiService:
         matches.sort(key=lambda item: item[1].use_count)
         return matches[:limit]
 
-    def build_prompt_text(
+    def build_list_text(
         self,
         offset: int = 0,
         limit: int | None = None,
     ) -> str:
-        """构建表情包提示词文本，按使用次数从少到多排列（使用次数均衡器）。
+        """构建表情包清单文本（list_emojis 工具的返回值），按使用次数从少到多排列。
 
-        格式为 [编号]: [表情包：描述 | 已用N次]
+        格式为 [编号]: [表情包：描述 | 已用N次]；超出本页时附带翻页提示。
+        只作为工具结果按需返回，不再注入系统提示词——用量后缀与排序会随使用次数变化，
+        放进 system 前缀会让整段缓存失效。
         """
         self._notify_disk_changed()
         if not self._entries:
@@ -159,9 +161,9 @@ class EmojiService:
         if total > limit:
             header += f"，当前显示第{offset + 1}-{min(offset + limit, total)}个"
             if offset > 0:
-                header += f"，往前翻页: emoji_list(offset={max(0, offset - limit)})"
+                header += f"，往前翻页: list_emojis(offset={max(0, offset - limit)})"
             if offset + limit < total:
-                header += f"，往后翻页: emoji_list(offset={offset + limit})"
+                header += f"，往后翻页: list_emojis(offset={offset + limit})"
         return header + "\n" + "\n".join(lines)
 
     async def send_sticker(

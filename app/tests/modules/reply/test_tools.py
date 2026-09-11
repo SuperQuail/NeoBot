@@ -262,12 +262,61 @@ def test_search_custom_emoji_requires_emoji_service():
     handler_names = {d["function"]["name"] for d in handler_only.definitions()}
     assert "send_emoji" in handler_names
     assert "search_custom_emoji" not in handler_names
+    assert "list_emojis" not in handler_names
 
     service_names = {
         d["function"]["name"]
         for d in _make_executor(emoji_service=object()).definitions()
     }
     assert "search_custom_emoji" in service_names
+    assert "list_emojis" in service_names
+
+
+class _FakeEmojiListService:
+    """只实现 list_emojis 需要的接口，记录调用参数。"""
+
+    def __init__(self, text: str = "共2个表情包\n[1]: [表情包：猫]\n[2]: [表情包：狗]") -> None:
+        self.text = text
+        self.calls: list[dict] = []
+
+    def build_list_text(self, offset: int = 0, limit: int | None = None) -> str:
+        self.calls.append({"offset": offset, "limit": limit})
+        return self.text
+
+
+async def test_list_emojis_returns_paged_text():
+    """list_emojis 按 offset/limit 取表情包清单，编号可直接用于发送工具。"""
+    service = _FakeEmojiListService()
+    executor = _make_executor(emoji_service=service)
+
+    result = await executor.execute("list_emojis", {"offset": 10, "limit": 5})
+
+    assert "[1]: [表情包：猫]" in result
+    assert service.calls == [{"offset": 10, "limit": 5}]
+
+
+async def test_list_emojis_defaults_and_validation():
+    """缺省参数交给服务默认值；非法 offset/limit 直接报错且不读服务。"""
+    service = _FakeEmojiListService()
+    executor = _make_executor(emoji_service=service)
+
+    await executor.execute("list_emojis", {})
+    assert service.calls[-1] == {"offset": 0, "limit": None}
+
+    assert "offset 必须为整数" in await executor.execute("list_emojis", {"offset": "x"})
+    assert "limit 必须为整数" in await executor.execute("list_emojis", {"limit": "x"})
+    assert "limit 必须为正整数" in await executor.execute("list_emojis", {"limit": 0})
+    # 单次上限封顶，避免一次把整库灌进上下文
+    await executor.execute("list_emojis", {"limit": 10_000})
+    assert service.calls[-1]["limit"] == 200
+
+
+async def test_list_emojis_reports_empty_and_missing_service():
+    executor = _make_executor(emoji_service=_FakeEmojiListService(text=""))
+    assert "没有可用的自定义表情包" in await executor.execute("list_emojis", {})
+
+    no_service = _make_executor()
+    assert "表情包服务未配置" in await no_service.execute("list_emojis", {})
 
 
 # ── Markdown 技能读取 ─────────────────────────────────────────────
