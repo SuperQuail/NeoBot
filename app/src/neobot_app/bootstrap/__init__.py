@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from neobot_contracts.ports.clock import SystemClock
@@ -455,21 +456,87 @@ def _make_maintenance_coro(
     return _loop()
 
 
+# ── 核心对象复用（待机软重启）────────────────────────────────
+# 软重启要「按新配置重建 bot 运行时」，但核心对象（日志/配置/数据库/适配器/插件主机/
+# 命令服务/插件运行时/文件服务/待机服务）必须复用：重建它们会抢端口、丢插件命令、
+# 把面板一起重启，还会让几十处持有引用的组件失联。
+#
+# 因此这里用「显式开启的对象缓存」代替把 1000 行的 _build_app 拆成两段：
+# - 默认关闭：普通调用与测试完全不受影响（每次都是全新对象）；
+# - 由待机装配路径 enable_core_reuse() 打开：第一次构建把核心对象放进缓存，
+#   之后每次 create_application() 复用它们，只重建 bot 侧对象。
+_REUSE_ENABLED = False
+_CORE_CACHE: dict[str, Any] = {}
+
+
+def enable_core_reuse() -> None:
+    """开启核心对象复用（幂等）：待机控制器接线时调用一次。"""
+    global _REUSE_ENABLED
+    _REUSE_ENABLED = True
+
+
+def disable_core_reuse() -> None:
+    """关闭复用并清空缓存（测试隔离用）。"""
+    global _REUSE_ENABLED
+    _REUSE_ENABLED = False
+    _CORE_CACHE.clear()
+
+
+def get_cached_core(key: str, default: Any = None) -> Any:
+    """读取已缓存的核心对象（未开启复用或未构建时为 default）。"""
+    return _CORE_CACHE.get(key, default)
+
+
+def _reuse_or(key: str, factory: Callable[[], Any]) -> Any:
+    """复用缓存中的核心对象；首次调用时用 factory 构建并缓存。"""
+    if _REUSE_ENABLED and key in _CORE_CACHE:
+        return _CORE_CACHE[key]
+    value = factory()
+    if _REUSE_ENABLED:
+        _CORE_CACHE[key] = value
+    return value
+
+
+def _run_once(key: str, action: Callable[[], Any]) -> None:
+    """只执行一次（复用开启时）：避免软重启重复配置日志等全局副作用。"""
+    if _REUSE_ENABLED and key in _CORE_CACHE:
+        return
+    action()
+    if _REUSE_ENABLED:
+        _CORE_CACHE[key] = True
+
+
+def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
+    """迁移前备份 → 跑迁移 → 建引擎（核心对象，软重启复用）。"""
+    backup_logger = logger_factory.get_logger("app.db_backup")
+    backup_path = backup_sqlite_database(db_path, DATA_DIR / "db_backup", logger=backup_logger)
+    if backup_path is not None:
+        backup_logger.info(f"迁移前已备份数据库: {backup_path}")
+    run_migrations(db_url)
+    return build_storage(db_url)
+
+
 def create_application() -> NeoBotApplication:
-    configure_loguru(DATA_DIR / "logs", runtime_events=True)
-    logger_factory = LoguruLoggerFactory()
-    config = build_config()
+    _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
+    logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
+    config = _reuse_or("config", build_config)
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
-    prompt_store = PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
+    prompt_store = _reuse_or(
+        "prompt_store",
+        lambda: PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt")),
+    )
 
     # ── 睡眠服务(/sleep /awake 命令、睡眠 skill、事件管线共用) ──
     from neobot_app.runtime.sleep_service import SleepService
 
-    sleep_service = SleepService(
-        prompt_store=prompt_store,
-        logger=logger_factory.get_logger("app.sleep"),
+    sleep_service = _reuse_or(
+        "sleep_service",
+        lambda: SleepService(
+            prompt_store=prompt_store,
+            logger=logger_factory.get_logger("app.sleep"),
+        ),
     )
 
     # ── 待机服务(面板待机按钮、/standby /reboot 共用的状态机) ──
@@ -477,11 +544,14 @@ def create_application() -> NeoBotApplication:
     from neobot_app.runtime.standby_service import StandbyService
 
     standby_cfg = getattr(config, "standby", None)
-    standby_service = StandbyService(
-        logger=logger_factory.get_logger("app.standby"),
-        state_path=DATA_DIR / "standby.json",
-        connect_onebot=bool(getattr(standby_cfg, "connect_onebot", True)),
-        start_in_standby=bool(getattr(standby_cfg, "start_in_standby", False)),
+    standby_service = _reuse_or(
+        "standby_service",
+        lambda: StandbyService(
+            logger=logger_factory.get_logger("app.standby"),
+            state_path=DATA_DIR / "standby.json",
+            connect_onebot=bool(getattr(standby_cfg, "connect_onebot", True)),
+            start_in_standby=bool(getattr(standby_cfg, "start_in_standby", False)),
+        ),
     )
 
     # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
@@ -497,8 +567,11 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.cache"),
     )
 
-    debug_recorder = build_debug_recorder(
-        config=config, logger=logger_factory.get_logger("app.debug")
+    debug_recorder = _reuse_or(
+        "debug_recorder",
+        lambda: build_debug_recorder(
+            config=config, logger=logger_factory.get_logger("app.debug")
+        ),
     )
 
     # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
@@ -510,34 +583,42 @@ def create_application() -> NeoBotApplication:
     # （如 0021 的去重 DELETE），失败时没有备份就只能人工恢复。
     db_path = DATA_DIR / "neobot.db"
     db_url = sqlite_url(db_path)
-    db_backup_logger = logger_factory.get_logger("app.db_backup")
-    backup_path = backup_sqlite_database(
-        db_path, DATA_DIR / "db_backup", logger=db_backup_logger
+    _engine, uow_factory = _reuse_or(
+        "storage", lambda: _build_storage(db_path, db_url, logger_factory)
     )
-    if backup_path is not None:
-        db_backup_logger.info(f"迁移前已备份数据库: {backup_path}")
-    run_migrations(db_url)
-    _engine, uow_factory = build_storage(db_url)
 
-    usage = build_usage_components(_engine=_engine, logger_factory=logger_factory)
+    usage = _reuse_or(
+        "usage",
+        lambda: build_usage_components(_engine=_engine, logger_factory=logger_factory),
+    )
 
     group_queue, friend_queue = build_message_queues(config=config)
 
-    adapter = build_adapter_service(
-        config=config,
-        logger=logger_factory.get_logger("adapter"),
-        debug_recorder=debug_recorder,
+    adapter = _reuse_or(
+        "adapter",
+        lambda: build_adapter_service(
+            config=config,
+            logger=logger_factory.get_logger("adapter"),
+            debug_recorder=debug_recorder,
+        ),
     )
 
     # ── 配置热重载编排：组件自己声明关心哪些配置项并负责生效 ──
     # 装配顺序即生效顺序：适配器先恢复连接，其余组件再按新配置重建。
-    hot_reload_registry = HotReloadRegistry(
-        [AdapterSupervisor(adapter, logger=logger_factory.get_logger("app.adapter_reload"))],
-        logger=logger_factory.get_logger("app.hot_reload"),
+    hot_reload_registry = _reuse_or(
+        "hot_reload_registry",
+        lambda: HotReloadRegistry(
+            [
+                AdapterSupervisor(
+                    adapter, logger=logger_factory.get_logger("app.adapter_reload")
+                )
+            ],
+            logger=logger_factory.get_logger("app.hot_reload"),
+        ),
     )
 
     # ── 插件主机基础设施 ──
-    plugin = build_plugin_host(logger_factory=logger_factory)
+    plugin = _reuse_or("plugin", lambda: build_plugin_host(logger_factory=logger_factory))
 
     # ── 记忆 / 用户画像 / 意愿 / 提示词 ──
     memory_svcs = build_memory_services(
@@ -570,7 +651,9 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
         logger_factory=logger_factory,
     )
-    file_server = build_file_server(config=config, data_dir=DATA_DIR)
+    file_server = _reuse_or(
+        "file_server", lambda: build_file_server(config=config, data_dir=DATA_DIR)
+    )
     image_pool = build_image_pool()
 
     # ── 运行时组件 ──
@@ -699,7 +782,9 @@ def create_application() -> NeoBotApplication:
             "changes": result.get("changes"),
         }
 
-    command_service = build_command_service(
+    command_service = _reuse_or(
+        "command_service",
+        lambda: build_command_service(
         config=config,
         adapter=adapter,
         logger_factory=logger_factory,
@@ -708,6 +793,7 @@ def create_application() -> NeoBotApplication:
         sleep_service=sleep_service,
         standby_service=standby_service,
         config_reload_callback=_reload_config_from_command,
+    ),
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
@@ -764,7 +850,9 @@ def create_application() -> NeoBotApplication:
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
-    plugin_runtime = build_plugin_runtime(
+    plugin_runtime = _reuse_or(
+        "plugin_runtime",
+        lambda: build_plugin_runtime(
         config=config,
         adapter=adapter,
         logger_factory=logger_factory,
@@ -777,6 +865,7 @@ def create_application() -> NeoBotApplication:
         skills_registry=markdown_skill_registry,
         screenshots=browser["screenshots"],
         command_registry=command_service.registry if command_service is not None else None,
+    ),
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -885,6 +974,8 @@ def create_application() -> NeoBotApplication:
         initial_vision_provider=vision_provider,
     )
     # 配置对象在运行期会被 ConfigProxy 原地替换，因此 builder 每次现取。
+    # 软重启会重建 provider：先移除指向上一轮对象的消费者，再注册新的
+    hot_reload_registry.unregister(getattr(_provider_reload, 'name', 'provider'))
     hot_reload_registry.register(_provider_reload)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
