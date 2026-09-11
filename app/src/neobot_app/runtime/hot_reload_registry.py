@@ -153,6 +153,18 @@ class HotReloadRegistry:
 
             register_rules(policies)
 
+    def unregister(self, name: str) -> bool:
+        """按名字移除消费者。
+
+        软重启会重建 bot 侧组件：旧消费者持有的是已释放对象的引用，必须在新一轮
+        注册前移除，否则配置重载会把改动喂给死对象（或报错）。
+        """
+        for index, consumer in enumerate(self._consumers):
+            if consumer.name == name:
+                self._consumers.pop(index)
+                return True
+        return False
+
     def consumers_for(self, changed_paths: Iterable[str]) -> tuple[ConfigConsumer, ...]:
         """返回声明关心任一改动路径的消费者（按注册顺序）。"""
         paths = [str(path) for path in changed_paths if str(path)]

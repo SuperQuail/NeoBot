@@ -68,6 +68,7 @@ class NeoBotApplication(Generic[T]):
         background_coros: list | None = None,
         self_heal_manager: Any = None,
         connection_probe: ConnectionReadinessProbe | None = None,
+        owns_plugins: bool = True,
     ) -> None:
         self.adapter: T = adapter
         self.chat_stream = chat_stream
@@ -98,6 +99,8 @@ class NeoBotApplication(Generic[T]):
         self._problem_solver_manager = problem_solver_manager
         self._markdown_image_converter = markdown_image_converter
         self._plugin_runtime = plugin_runtime
+        # 待机模式下插件运行时归「核心」所有：停 bot 运行时不得把面板一起停掉。
+        self._owns_plugins = bool(owns_plugins)
         self._report_service = report_service
         self._report_task: asyncio.Task | None = None
         self._engine = engine
@@ -138,7 +141,7 @@ class NeoBotApplication(Generic[T]):
                 started.append("tts")
                 await self.tts_service.initialize()
             self._logger.info("文件服务器启动完成")
-            if self._plugin_runtime is not None:
+            if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
                 started.append("plugin")
                 await self._plugin_runtime.load_registered()
                 self._logger.info("插件加载完成")
@@ -161,7 +164,7 @@ class NeoBotApplication(Generic[T]):
             if self._bot_detector is not None:
                 await self._bot_detector.refresh()
                 self._logger.info("官方Bot检测范围已加载")
-            if self._plugin_runtime is not None:
+            if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
                 await self._plugin_runtime.start_all()
                 self._logger.info("插件系统启动完成")
             await self.chat_stream.initialize()
@@ -242,12 +245,12 @@ class NeoBotApplication(Generic[T]):
             steps.append(("background tasks", self._cancel_background_tasks))
         if "emoji" in started and self._emoji_service is not None:
             steps.append(("emoji service", self._emoji_service.stop))
-        if "plugin" in started and self._plugin_runtime is not None:
+        if getattr(self, "_owns_plugins", True) and "plugin" in started and self._plugin_runtime is not None:
             steps.append(("plugin runtime", self._plugin_runtime.stop_all))
 
         # Registry closure follows reply/session cancellation so in-flight
         # delegate calls observe cancellation rather than a synthetic result.
-        if self._plugin_runtime is not None:
+        if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
             steps.append(("agent registry", self._close_agent_registry))
         if "adapter" in started:
             steps.append(("adapter", self._stop_adapter_with_timeout))
@@ -424,7 +427,7 @@ class NeoBotApplication(Generic[T]):
             steps.append(
                 ("archive summary service", self._archive_summary_service.close)
             )
-        if self._plugin_runtime is not None:
+        if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
             steps.append(("plugin runtime", self._plugin_runtime.stop_all))
         if self._creator_image_service is not None:
             steps.append(("creator image service", self._creator_image_service.close))
@@ -438,7 +441,7 @@ class NeoBotApplication(Generic[T]):
             steps.append(("background tasks", self._cancel_background_tasks))
 
         # Reply/session work is gone before the shared registry begins draining.
-        if self._plugin_runtime is not None:
+        if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
             steps.append(("agent registry", self._close_agent_registry))
         if self._browser_lifecycle_manager is not None:
             steps.append(

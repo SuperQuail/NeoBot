@@ -62,6 +62,21 @@ class StandbyService:
         self._lock = asyncio.Lock()
         self._restore()
 
+    def set_hooks(
+        self,
+        *,
+        on_enter: StandbyAction | None = None,
+        on_resume: StandbyAction | None = None,
+        on_onebot_change: OneBotAction | None = None,
+    ) -> None:
+        """注入生命周期动作（装配层在 core 建好运行时控制器后调用）。
+
+        只覆盖传入的钩子，未传的保持原值；允许传入 None 显式清除。
+        """
+        self._on_enter = on_enter
+        self._on_resume = on_resume
+        self._on_onebot_change = on_onebot_change
+
     # ── 状态查询 ────────────────────────────────────────────
 
     @property
