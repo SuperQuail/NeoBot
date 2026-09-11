@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from neobot_app.core import CONFIG_BACKUP_DIR, CONFIG_FILE
@@ -50,90 +49,91 @@ def build_credential_manager(*, permissions: Any) -> Any:
     return CredentialManager(permissions=permissions)
 
 
-def _make_config_save_callback(config: Any):
-    """配置保存回调:更新 chat.sub_admin_accounts 并触发热重载。"""
-
-    async def _save_sub_admins(new_list: list[int]) -> str:
-        try:
-            import tomlkit
-
-            from neobot_app.config.loader.backup import backup_config
-            from neobot_app.config.loader.converter import dict_to_dataclass
-            from neobot_app.config.schemas.bot import BotConfig
-
-            document = tomlkit.parse(CONFIG_FILE.read_text(encoding="utf-8"))
-            chat = document.get("chat", {})
-            if not isinstance(chat, dict):
-                raise TypeError("配置缺少 chat 段")
-            chat["sub_admin_accounts"] = [int(value) for value in new_list]
-            raw_config = document.unwrap()
-            validated = dict_to_dataclass(raw_config, BotConfig)
-            rendered = tomlkit.dumps(document)
-            await asyncio.to_thread(backup_config, CONFIG_FILE, CONFIG_BACKUP_DIR)
-            await asyncio.to_thread(_atomic_write, CONFIG_FILE, rendered)
-            config.reload(validated)
-        except Exception as exc:
-            return f"错误: 配置保存失败: {exc}"
-        return "ok"
-
-    return _save_sub_admins
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """原子写文件(临时文件 + replace)。"""
-    import tempfile
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    try:
-        with open(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            import os
-
-            os.fsync(handle.fileno())
-        tmp = Path(tmp_name)
-        tmp.replace(path)
-    except Exception:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
-# 允许 AI 工具通过回调更新的 chat 段键(白名单,防任意键注入)
+#: 允许 AI 工具通过回调更新的 chat 段键(白名单,防任意键注入)
 _CHAT_UPDATE_ALLOWED_KEYS = frozenset({
     "willing_agent_global_coefficient",
     "willing_global_coefficient",
 })
 
 
+def _reload_live_config(config: Any) -> bool:
+    """把磁盘上的 config.toml 重新加载进内存配置对象。
+
+    返回是否生效：config 不是 ConfigProxy（例如配置加载失败时的兜底对象）
+    时无法热重载，此时命令层会提示"重启后生效"，而不是把写盘成功当成失败。
+    """
+    reload = getattr(config, "reload", None)
+    if not callable(reload):
+        return False
+    try:
+        import tomlkit
+
+        from neobot_app.config.loader.converter import dict_to_dataclass
+        from neobot_app.config.schemas.bot import BotConfig
+
+        raw = tomlkit.parse(CONFIG_FILE.read_text(encoding="utf-8-sig")).unwrap()
+        reload(dict_to_dataclass(raw, BotConfig))
+    except Exception:
+        return False
+    return True
+
+
+def _make_config_save_callback(config: Any):
+    """配置保存回调:更新 chat.sub_admin_accounts 并触发热重载。
+
+    写盘走 chat_writer（缺 [chat] 段会在文档里创建、写盘前后都有校验），
+    返回 ConfigSaveResult：只有磁盘上确实写入成功才 ok=True。
+    """
+
+    async def _save_sub_admins(new_list: list[int]) -> Any:
+        from neobot_app.commands.model import ConfigSaveResult
+        from neobot_app.config.chat_writer import save_sub_admin_accounts
+
+        result = await asyncio.to_thread(
+            save_sub_admin_accounts,
+            CONFIG_FILE,
+            new_list,
+            backup_dir=CONFIG_BACKUP_DIR,
+        )
+        if not result.ok:
+            return ConfigSaveResult(ok=False, error=result.error, path=str(CONFIG_FILE))
+        accounts = tuple(
+            str(item) for item in (result.values.get("sub_admin_accounts") or ())
+        )
+        applied = await asyncio.to_thread(_reload_live_config, config)
+        return ConfigSaveResult(
+            ok=True, accounts=accounts, applied=applied, path=str(CONFIG_FILE)
+        )
+
+    return _save_sub_admins
+
+
 def _make_chat_config_update_callback(config: Any):
-    """chat 段指定键更新回调:写回 config.toml + 热重载(白名单键)。"""
+    """chat 段指定键更新回调:写回 config.toml + 热重载(白名单键)。
+
+    与次级管理员共用 chat_writer：缺 [chat] 段时同样会在文档里创建，
+    不会出现"返回 ok 但文件没变"的静默失败。
+    """
 
     async def _update_chat_config(key: str, value: Any) -> str:
         if key not in _CHAT_UPDATE_ALLOWED_KEYS:
             return f"错误: 不允许更新配置键 {key}"
+        from neobot_app.config.chat_writer import write_chat_values
+
         try:
-            import tomlkit
-
-            from neobot_app.config.loader.backup import backup_config
-            from neobot_app.config.loader.converter import dict_to_dataclass
-            from neobot_app.config.schemas.bot import BotConfig
-
-            document = tomlkit.parse(CONFIG_FILE.read_text(encoding="utf-8"))
-            chat = document.get("chat", {})
-            if not isinstance(chat, dict):
-                raise TypeError("配置缺少 chat 段")
-            chat[key] = value
-            raw_config = document.unwrap()
-            validated = dict_to_dataclass(raw_config, BotConfig)
-            rendered = tomlkit.dumps(document)
-            await asyncio.to_thread(backup_config, CONFIG_FILE, CONFIG_BACKUP_DIR)
-            await asyncio.to_thread(_atomic_write, CONFIG_FILE, rendered)
-            config.reload(validated)
+            result = await asyncio.to_thread(
+                write_chat_values,
+                CONFIG_FILE,
+                {key: value},
+                backup_dir=CONFIG_BACKUP_DIR,
+            )
         except Exception as exc:
             return f"错误: 配置保存失败: {exc}"
+        if not result.ok:
+            return f"错误: 配置保存失败: {result.error}"
+        await asyncio.to_thread(_reload_live_config, config)
         return "ok"
 
     return _update_chat_config
+
+

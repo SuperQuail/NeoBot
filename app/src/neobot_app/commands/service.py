@@ -11,12 +11,13 @@ from neobot_app.commands.builtin import build_builtin_commands
 from neobot_app.commands.model import (
     CommandContext,
     CommandHandleResult,
+    ConfigSaveResult,
 )
 from neobot_app.commands.permissions import PermissionManager
 from neobot_app.commands.registry import CommandRegistry
 
 SendCallback = Callable[[str, str, str, int | None], Awaitable[Any]]
-ConfigSaveCallback = Callable[[list[int]], Awaitable[str]]
+ConfigSaveCallback = Callable[[list[int]], Awaitable[ConfigSaveResult]]
 RestartCallback = Callable[[], Any]
 ConfigReloadCallback = Callable[[], Awaitable[Any]]
 
@@ -310,11 +311,26 @@ class CommandService:
         except Exception as exc:
             self._log(f"命令回复发送失败: {exc}")
 
-    async def save_sub_admins(self, new_list: list[int]) -> str:
-        """保存次级管理员列表(经注入的回调,含配置写回与热重载)。"""
+    async def save_sub_admins(self, new_list: list[int]) -> ConfigSaveResult:
+        """保存次级管理员列表(经注入的回调,含配置写回与热重载)。
+
+        回调返回 ConfigSaveResult：只有 ok=True 才代表磁盘上确实写成功了。
+        """
         if self._config_save_callback is None:
-            return "错误: 配置保存能力未注入"
+            return ConfigSaveResult(ok=False, error="配置保存能力未注入")
         return await self._config_save_callback(new_list)
+
+    def config_path_hint(self) -> str:
+        """配置文件路径提示（命令回复里帮助用户定位问题）。"""
+        path = getattr(self._config, "config_path", None)
+        if path:
+            return str(path)
+        try:
+            from neobot_app.core import CONFIG_FILE
+
+            return str(CONFIG_FILE)
+        except Exception:  # pragma: no cover - 导入失败时不影响命令
+            return "data/config.toml"
 
     def _log(self, message: str) -> None:
         logger = self._logger

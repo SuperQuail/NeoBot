@@ -36,6 +36,25 @@ class CommandHandleResult:
     background: str | None = None
 
 
+@dataclass(frozen=True)
+class ConfigSaveResult:
+    """配置写回结果。
+
+    命令层据此区分「真的写进磁盘并生效」与「看起来成功」：
+    早期实现只返回字符串，写盘静默失败时命令照样回复成功，
+    于是 /add_admin 加了管理员、重启后却没了。
+    """
+
+    ok: bool
+    error: str = ""
+    #: 写盘后回读到的次级管理员列表（规范化后的字符串）
+    accounts: tuple[str, ...] = ()
+    #: 是否已经把新配置热重载进当前进程（False 表示需重启生效）
+    applied: bool = False
+    #: 实际写入的配置文件路径（用于失败提示）
+    path: str = ""
+
+
 @dataclass
 class CommandContext:
     """命令执行上下文。"""
