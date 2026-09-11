@@ -48,26 +48,21 @@ jobs:
     needs: checks
     runs-on: ubuntu-latest
     environment: pypi
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v10.0.1
 
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: app/src/neobot_app/builtin_plugins/dashboard/frontend/pnpm-lock.yaml
+      - name: 检测版本更新
+        id: version
+        run: uv run --no-project --python 3.13 --with packaging python scripts/prepare_release.py --base-ref "${{ github.event.before }}"
 
       - name: 检查发布凭据
+        if: steps.version.outputs.publish == 'true'
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
         run: |
@@ -76,32 +71,29 @@ jobs:
             exit 1
           fi
 
-      - name: 查询 PyPI 并同步工作区版本
-        id: version
-        run: uv run --no-project --python 3.13 --with packaging python scripts/prepare_release.py
+      - uses: pnpm/action-setup@v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          package_json_file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
 
-      - name: 更新 Python 锁文件
-        run: uv lock
+      - uses: actions/setup-node@v6
+        if: steps.version.outputs.publish == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/src/neobot_app/builtin_plugins/dashboard/frontend/pnpm-lock.yaml
 
-      - name: 构建与发布预检（不上传）
+      - name: 检查 Python 锁文件
+        if: steps.version.outputs.publish == 'true'
+        run: uv lock --check
+
+      - name: 构建与发布预检
+        if: steps.version.outputs.publish == 'true'
         shell: pwsh
         run: ./scripts/publish.ps1 -DryRun
 
-      # Persist the chosen version first. A protected-branch or concurrent-push
-      # rejection must fail BEFORE uploading, never force-push over newer code.
-      - name: 回写版本和锁文件
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add pyproject.toml app/pyproject.toml packages/*/pyproject.toml uv.lock
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: release ${RELEASE_VERSION}"
-          fi
-          git push origin HEAD:main
-
-      - name: 上传已验证的产物（已存在的文件由 check-url 跳过）
+      - name: 上传已验证的产物
+        if: steps.version.outputs.publish == 'true'
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
         run: uv publish --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
