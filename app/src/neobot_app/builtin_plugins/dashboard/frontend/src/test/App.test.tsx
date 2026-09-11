@@ -1,4 +1,4 @@
-// 路由与侧栏回归测试 —— 8 条导航、当前项高亮、工作区页隐藏全局头部
+// 路由与侧栏回归测试 —— 一级导航、当前项高亮、工作区页隐藏全局头部
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -24,8 +24,25 @@ vi.mock('../pages/Usage.jsx', () => ({ default: () => <div data-testid="page-usa
 vi.mock('../pages/Analysis.jsx', () => ({ default: () => <div data-testid="page-analysis" /> }));
 vi.mock('../pages/Bots.jsx', () => ({ default: () => <div data-testid="page-bots" /> }));
 vi.mock('../pages/Logs.jsx', () => ({ default: () => <div data-testid="page-logs" /> }));
+vi.mock('../pages/Prompts.jsx', () => ({ default: () => <div data-testid="page-prompts" /> }));
+vi.mock('../pages/ChatFlows.jsx', () => ({ default: () => <div data-testid="page-chat-flows" /> }));
+vi.mock('../pages/ScheduledTasks.jsx', () => ({
+  default: () => <div data-testid="page-scheduled-tasks" />,
+}));
 
-const NAV_LABELS = ['主页', '插件', '配置', '系统', '用量', '分析', '机器人', '日志'];
+const NAV_LABELS = [
+  '主页',
+  '插件',
+  '配置',
+  '系统',
+  '用量',
+  '分析',
+  '提示词',
+  '聊天流',
+  '定时',
+  '机器人',
+  '日志',
+];
 
 function renderAt(path: string) {
   return render(
@@ -41,7 +58,7 @@ beforeEach(() => {
 });
 
 describe('应用外壳', () => {
-  it('侧栏固定渲染 8 条一级导航', () => {
+  it('侧栏渲染全部一级导航', () => {
     renderAt('/dashboard');
 
     for (const label of NAV_LABELS) {

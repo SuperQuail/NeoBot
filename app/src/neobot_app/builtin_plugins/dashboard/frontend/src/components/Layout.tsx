@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useLayoutEffect, useRef } from 'react';
-import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code, Rocket } from 'lucide-react';
+import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code, Rocket, Pencil, MessagesSquare, Clock } from 'lucide-react';
 import { useQuery } from '../data/useQuery';
 import { QK, POLL } from '../data/queryKeys';
 import { api } from '../api/endpoints';
@@ -27,6 +27,9 @@ const NAV: NavEntry[] = [
   { to: '/system', label: '系统', name: '系统状态', icon: 'cpu' },
   { to: '/usage', label: '用量', name: '用量统计', icon: 'chart' },
   { to: '/analysis', label: '分析', name: '提示词分析', icon: 'code' },
+  { to: '/prompts', label: '提示词', name: '提示词模板', icon: 'edit' },
+  { to: '/chat-flows', label: '聊天流', name: '聊天流', icon: 'message' },
+  { to: '/scheduled-tasks', label: '定时', name: '定时任务', icon: 'clock' },
   { to: '/bots', label: '机器人', name: '机器人', icon: 'bot' },
   { to: '/logs', label: '日志', name: '日志', icon: 'log' },
 ];
@@ -42,6 +45,9 @@ const SIDEBAR_GLYPHS: Record<string, typeof Home> = {
   bot: Bot,
   log: ScrollText,
   game: Rocket,
+  edit: Pencil,
+  message: MessagesSquare,
+  clock: Clock,
 };
 
 /** 面板 HTTP 扩展（例如官方星舰游戏插件）的侧栏入口；扩展不存在时不渲染任何东西 */

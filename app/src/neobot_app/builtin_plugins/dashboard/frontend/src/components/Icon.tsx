@@ -11,6 +11,7 @@ import {
   Bot,
   Check,
   ChevronRight,
+  Clock,
   Code,
   Cpu,
   Download,
@@ -18,9 +19,11 @@ import {
   Eye,
   FileText,
   Home,
+  MessagesSquare,
   MoreHorizontal,
   Package,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -58,6 +61,9 @@ const registry = {
   chart: BarChart3,
   bot: Bot,
   log: FileText,
+  edit: Pencil,
+  message: MessagesSquare,
+  clock: Clock,
 } as const;
 
 export type IconName = keyof typeof registry;

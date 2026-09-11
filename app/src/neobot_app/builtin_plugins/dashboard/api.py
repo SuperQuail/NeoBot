@@ -1432,6 +1432,200 @@ class DashboardApi:
             report = _redact_prompt_report(report)
         return _json_ok(report)
 
+
+    # ------------------------------------------------------------------
+    # 提示词模板（data/prompts）
+    # ------------------------------------------------------------------
+
+    def _prompt_store(self) -> Any:
+        return self._service("prompt_store")
+
+    def _custom_prompts_file(self) -> Any:
+        store = self._prompt_store()
+        custom_file = getattr(store, "custom_file", None)
+        if custom_file is None:
+            return None
+        return Path(custom_file)
+
+    async def prompts(self, request: web.Request) -> web.Response:
+        """提示词分区总览：默认值、自定义值与合并后的实际取值。"""
+        from . import prompt_admin
+
+        store = self._prompt_store()
+        if store is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        custom_file = self._custom_prompts_file()
+        custom_sections = (
+            prompt_admin.read_custom_sections(custom_file)
+            if custom_file is not None
+            else {}
+        )
+        payload = prompt_admin.describe_sections(
+            store, custom_sections=custom_sections
+        )
+        payload["editable"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def prompts_preview(self, request: web.Request) -> web.Response:
+        """按模拟取值渲染模板，返回「转义后内容」。
+
+        纯计算，不写盘；values 里可以覆盖任意占位符的模拟取值。
+        """
+        from . import prompt_admin
+
+        payload = await self._read_json(request)
+        template = payload.get("template")
+        if template is None:
+            section = str(payload.get("section") or "").strip()
+            path = str(payload.get("path") or "template").strip() or "template"
+            store = self._prompt_store()
+            if store is None:
+                return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+            template = _prompt_value(store, section, path)
+            if template is None:
+                return _json_error(f"未找到提示词 {section}.{path}", status=404)
+        values = payload.get("values")
+        if values is not None and not isinstance(values, dict):
+            return _json_error("values 必须是对象")
+        result = prompt_admin.preview_template(str(template), values or {})
+        return _json_ok(result)
+
+    async def prompts_save(self, request: web.Request) -> web.Response:
+        """把某个键写进 data/prompts/custom/prompts.toml（只动自定义文件）。"""
+        from . import prompt_admin
+
+        denied = self._require_manage(request, action="编辑提示词")
+        if denied is not None:
+            return denied
+        custom_file = self._custom_prompts_file()
+        if custom_file is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        payload = await self._read_json(request)
+        section = str(payload.get("section") or "").strip()
+        path = str(payload.get("path") or "template").strip() or "template"
+        value = payload.get("value")
+        if value is None:
+            return _json_error("缺少 value")
+        try:
+            prompt_admin.write_override(custom_file, section, path, str(value))
+        except ValueError as exc:
+            return _json_error(str(exc))
+        self._reload_prompt_store()
+        self.logger.info(
+            f"面板修改提示词 ip={self.console.request_ip(request)} {section}.{path}"
+        )
+        return _json_ok({"message": f"已保存 {section}.{path}", "section": section, "path": path})
+
+    async def prompts_reset(self, request: web.Request) -> web.Response:
+        """删除自定义覆盖，恢复该键的默认提示词。"""
+        from . import prompt_admin
+
+        denied = self._require_manage(request, action="恢复默认提示词")
+        if denied is not None:
+            return denied
+        custom_file = self._custom_prompts_file()
+        if custom_file is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        payload = await self._read_json(request)
+        section = str(payload.get("section") or "").strip()
+        path = str(payload.get("path") or "template").strip() or "template"
+        try:
+            result = prompt_admin.remove_override(custom_file, section, path)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        self._reload_prompt_store()
+        message = (
+            f"已恢复默认 {section}.{path}" if result.get("removed") else "该键没有自定义内容"
+        )
+        return _json_ok({**result, "message": message})
+
+    def _reload_prompt_store(self) -> None:
+        store = self._prompt_store()
+        reload_store = getattr(store, "reload", None)
+        if callable(reload_store):
+            try:
+                reload_store()
+            except Exception as exc:
+                self.logger.warning(f"提示词缓存刷新失败: {exc}")
+
+    # ------------------------------------------------------------------
+    # 聊天流（最近一次发给模型的内容 + 后台任务）
+    # ------------------------------------------------------------------
+
+    def _flow_registry(self) -> Any:
+        return self._service("chat_flow_registry")
+
+    async def chat_flows(self, request: web.Request) -> web.Response:
+        registry = self._flow_registry()
+        if registry is None:
+            return _json_error(
+                "聊天流登记处不可用（未注入 chat_flow_registry）", status=503
+            )
+        return _json_ok({"items": registry.list_flows()})
+
+    async def chat_flow_detail(self, request: web.Request) -> web.Response:
+        registry = self._flow_registry()
+        if registry is None:
+            return _json_error(
+                "聊天流登记处不可用（未注入 chat_flow_registry）", status=503
+            )
+        key = str(request.query.get("key") or "").strip()
+        if not key:
+            return _json_error("缺少查询参数 key")
+        snapshot = await registry.snapshot(key)
+        if snapshot is None:
+            return _json_error(f"没有该聊天流的记录: {key}", status=404)
+        return _json_ok(snapshot)
+
+    # ------------------------------------------------------------------
+    # 定时任务（读走管理器投影，写走 reminder skill）
+    # ------------------------------------------------------------------
+
+    def _scheduled_task_manager(self) -> Any:
+        return self._service("scheduled_task_manager")
+
+    async def scheduled_tasks(self, request: web.Request) -> web.Response:
+        from . import scheduled_admin
+
+        include_disabled = str(request.query.get("include_disabled") or "") not in {
+            "0",
+            "false",
+            "",
+        }
+        limit = self._int_arg(request, "limit", 200, minimum=1, maximum=2000)
+        payload = await scheduled_admin.read_managed_tasks(
+            self._scheduled_task_manager(),
+            include_disabled=include_disabled,
+            limit=limit,
+        )
+        payload["editable"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def scheduled_tasks_action(self, request: web.Request) -> web.Response:
+        """新建/编辑/启停/删除定时任务。"""
+        from . import scheduled_admin
+
+        denied = self._require_manage(request, action="管理定时任务")
+        if denied is not None:
+            return denied
+        body = await self._read_json(request)
+        action = str(body.get("action") or "").strip()
+        try:
+            result = await scheduled_admin.execute_action(
+                self._service("skill_manager"), action, body
+            )
+        except ValueError as exc:
+            return _json_error(str(exc))
+        except RuntimeError as exc:
+            return _json_error(str(exc), status=503)
+        if not result.get("ok"):
+            return _json_error(str(result.get("error") or "操作失败"))
+        message = _SCHEDULED_ACTION_MESSAGES.get(action, "操作完成")
+        self.logger.info(
+            f"面板管理定时任务 ip={self.console.request_ip(request)} action={action}"
+        )
+        return _json_ok({"message": message, "action": action, "result": result})
+
     # ------------------------------------------------------------------
     # 运行状态（待机 / 软重启运行）
     # ------------------------------------------------------------------
@@ -1576,6 +1770,30 @@ class DashboardApi:
             if item.name == name:
                 return item
         return None
+
+
+#: 定时任务写操作成功后的提示文案
+_SCHEDULED_ACTION_MESSAGES = {
+    "create": "定时任务已创建",
+    "update": "定时任务已更新",
+    "set_state": "定时任务状态已更新",
+    "set_notification_policy": "通知策略已更新",
+    "delete": "定时任务已删除",
+}
+
+
+def _prompt_value(store: Any, section: str, path: str) -> str | None:
+    """按「分区.键」或「分区.子表.键」读取提示词当前取值。"""
+    if not section:
+        return None
+    parts = [part for part in str(path or "").split(".") if part]
+    if len(parts) == 1:
+        return store.get(section, parts[0], default="") or None
+    if len(parts) == 2:
+        sub = store.sub_section(section, parts[0])
+        value = sub.get(parts[1])
+        return value if isinstance(value, str) and value.strip() else None
+    return None
 
 
 def _status_text(snapshot: Any) -> str:

@@ -172,3 +172,170 @@
   border-radius: 8px;
   padding: 10px 12px;
 }
+
+/* ── 提示词 / 聊天流页：左侧列表 + 右侧编辑预览 ───────────────── */
+.prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .prompt-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.prompt-list {
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+}
+.prompt-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.prompt-section + .prompt-section {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 6px;
+}
+.prompt-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.prompt-key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.prompt-key:hover {
+  background: var(--panel-2);
+}
+.prompt-key.active {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-hover);
+}
+.prompt-editor {
+  min-height: 320px;
+}
+.prompt-textarea {
+  min-height: 240px;
+}
+.prompt-placeholders {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.prompt-placeholders code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.prompt-preview {
+  margin-top: 14px;
+}
+.prompt-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.prompt-preview-body {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 聊天流消息与后台任务 ─────────────────────────────────────── */
+.flow-messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flow-message {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+}
+.flow-message.role-assistant {
+  border-color: var(--ok);
+}
+.flow-message-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.flow-message-body {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.flow-tool-calls,
+.flow-tasks {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.flow-tool-calls code,
+.flow-tasks code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  margin-right: 8px;
+}
+
+/* ── 定时任务表单 ─────────────────────────────────────────────── */
+.binding-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.binding-row .input {
+  min-width: 0;
+}
+.binding-row select {
+  flex: 0 0 110px;
+}
+

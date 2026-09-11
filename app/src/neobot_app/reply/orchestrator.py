@@ -346,6 +346,7 @@ class ReplyOrchestrator:
         file_server: FileServer | None = None,
         skills_registry: Any = None,
         prompt_store: PromptStore | None = None,
+        flow_registry: Any = None,
         cache_calculator: CacheCalculator | None = None,
         credential_manager: Any = None,
         config_update_callback: Any = None,
@@ -357,6 +358,8 @@ class ReplyOrchestrator:
         self._standby_service = standby_service
         self._prompt_builder = prompt_builder
         self._prompt_store = prompt_store
+        #: 聊天流快照登记处（面板只读视图）；None 时全部记录调用直接跳过
+        self._flow_registry = flow_registry
         self._cache_calculator = cache_calculator
         self._provider = provider
         self._group_queue = group_message_queue
@@ -1214,6 +1217,86 @@ class ReplyOrchestrator:
                 return value
         return default
 
+    # ── 聊天流快照(网页面板只读视图) ──
+
+    def _flow_key(self, event: ReplyEvent, queue_key: str) -> str:
+        ref = event.conversation_ref
+        kind = getattr(ref, "kind", "") if ref is not None else ""
+        return f"{kind}:{queue_key}" if kind else ""
+
+    @staticmethod
+    def _flow_queue_key(event: ReplyEvent) -> str:
+        """从事件推导队列键(common 模式的 _generate_reply 拿不到 queue_key)。"""
+        ref = event.conversation_ref
+        if ref is None:
+            return ""
+        return str(getattr(ref, "id", "") or "")
+
+    def _flow_conversation(self, event: ReplyEvent, queue_key: str) -> tuple[str, str]:
+        ref = event.conversation_ref
+        kind = getattr(ref, "kind", "") if ref is not None else ""
+        return str(kind or ""), str(queue_key or "")
+
+    def _current_model_name(self) -> str:
+        return str(getattr(self._provider, "model", "") or "")
+
+    def _record_flow_prompt(self, event: ReplyEvent, queue_key: str, prompt: str) -> None:
+        """登记本轮 system 提示词;未接入面板时零开销。"""
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        kind, conv_id = self._flow_conversation(event, queue_key)
+        try:
+            registry.record_prompt(
+                key,
+                system_prompt=prompt,
+                model=self._current_model_name(),
+                conversation_kind=kind,
+                conversation_id=conv_id,
+            )
+        except Exception:
+            self._logger.debug("登记聊天流提示词失败(忽略)", pipeline_key=key)
+
+    def _record_flow_request(
+        self,
+        event: ReplyEvent,
+        queue_key: str,
+        messages: list[dict],
+        *,
+        iteration: int = 0,
+    ) -> None:
+        """登记最近一次模型请求的消息列表。"""
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        try:
+            registry.record_request(
+                key,
+                messages=messages,
+                model=self._current_model_name(),
+                iteration=iteration,
+            )
+        except Exception:
+            self._logger.debug("登记聊天流请求失败(忽略)", pipeline_key=key)
+
+    def _set_flow_active(self, event: ReplyEvent, queue_key: str, active: bool) -> None:
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        try:
+            registry.set_active(key, active)
+        except Exception:
+            self._logger.debug("登记聊天流状态失败(忽略)", pipeline_key=key)
+
     # ── 提示词分区(统一从 prompts.toml 读取,缺失时用内置兜底) ──
 
     def _prompt_template(self, key: str, sub: str = "template") -> str:
@@ -1498,10 +1581,12 @@ class ReplyOrchestrator:
                     "reply.cancel", event, queue_key=queue_key
                 )
                 return
+            self._set_flow_active(event, queue_key, True)
             if event.mode == "agent":
                 await self._run_agent_mode(event, queue, queue_key)
             else:
                 await self._run_common_mode(event, queue, queue_key)
+            self._set_flow_active(event, queue_key, False)
             if event.state == ReplyState.CANCELLED:
                 self._record_debug("cancelled", event, queue_key=queue_key)
                 await self._emit_runtime_event(
@@ -1541,6 +1626,7 @@ class ReplyOrchestrator:
                 "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
             )
         except asyncio.CancelledError:
+            self._set_flow_active(event, queue_key, False)
             event.error = "cancelled"
             if not event.is_terminal:
                 try:
@@ -1552,6 +1638,7 @@ class ReplyOrchestrator:
             await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
             raise
         except Exception as exc:
+            self._set_flow_active(event, queue_key, False)
             try:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
@@ -1596,6 +1683,7 @@ class ReplyOrchestrator:
             all_new=all_new,
             context_blocks=context_messages,
         )
+        self._record_flow_prompt(event, queue_key, prompt)
         self._record_debug(
             "base_prompt_built", event, queue_key=queue_key, prompt=prompt
         )
@@ -1842,6 +1930,7 @@ class ReplyOrchestrator:
             all_new=all_new,
             context_blocks=context_messages,
         )
+        self._record_flow_prompt(event, queue_key, prompt)
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）：先完成匹配与 allowed-tools 判定，
@@ -2446,6 +2535,9 @@ class ReplyOrchestrator:
                 append_current_time_block()
                 request_messages = (
                     vision_context.request_messages(messages) if native_vision_active else list(messages)
+                )
+                self._record_flow_request(
+                    event, queue_key, request_messages, iteration=iteration + 1
                 )
                 remaining = silent_remaining()
                 if remaining is not None and remaining <= 0:
@@ -3865,6 +3957,7 @@ class ReplyOrchestrator:
         if time_block is not None:
             messages.append(time_block)
         append_image_context(messages, common_image_parts)
+        self._record_flow_request(event, self._flow_queue_key(event), messages)
         timeout = self._get_model_response_timeout_seconds(event)
         before_model = await self._emit_runtime_event(
             "model.call.before", event, messages=messages, timeout_seconds=timeout

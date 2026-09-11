@@ -236,6 +236,16 @@ def _parse_sections(path: Path, logger: Logger | None = None) -> dict[str, dict[
     return sections
 
 
+def parse_prompt_file(
+    path: Path, logger: Logger | None = None
+) -> dict[str, dict[str, Any]]:
+    """解析一个提示词文件为 {分区名: {键: 值}}（面板等外部读者用）。
+
+    文件缺失、编码无法识别或 TOML 损坏时返回空字典,不抛异常。
+    """
+    return _parse_sections(Path(path), logger)
+
+
 def get_template_value(
     store: "PromptStore | None",
     section: str,

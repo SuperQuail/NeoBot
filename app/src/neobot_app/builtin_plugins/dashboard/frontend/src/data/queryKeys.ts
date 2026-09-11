@@ -16,6 +16,10 @@ export const QK = {
   usage: 'stats:usage',
   usageSeries: 'series:usage',
   analysis: 'analysis:prompts',
+  prompts: 'prompts',
+  chatFlows: 'chat-flows',
+  scheduledTasks: 'scheduled-tasks',
+  chatFlowDetail: (key: string) => `chat-flow:${key}`,
   plugins: 'plugins',
   /** 面板 HTTP 扩展（子插件页面入口） */
   extensions: 'extensions',
@@ -50,6 +54,10 @@ export const POLL = {
   usage: 60_000,
   /** 提示词分析：30s */
   analysis: 30_000,
+  /** 聊天流：5s（管线状态要能实时反映） */
+  chatFlows: 5_000,
+  /** 定时任务：15s */
+  scheduledTasks: 15_000,
   /** 插件列表：20s */
   plugins: 20_000,
   /** 运行状态：5s（待机状态变化要能马上看到） */

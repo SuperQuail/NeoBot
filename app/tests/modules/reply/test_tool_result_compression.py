@@ -144,7 +144,7 @@ def _make_group_message(message_id: int = 1) -> GroupMessage:
 
 
 def _make_orchestrator(
-    *, provider=None, config=None, prompt_store=None
+    *, provider=None, config=None, prompt_store=None, flow_registry=None
 ) -> ReplyOrchestrator:
     return ReplyOrchestrator(
         adapter=_FakeAdapter(),
@@ -152,6 +152,7 @@ def _make_orchestrator(
         provider=provider,
         config=config or _Config(),
         prompt_store=prompt_store,
+        flow_registry=flow_registry,
         logger=None,
     )
 
@@ -418,6 +419,60 @@ async def test_tool_results_compressed_only_on_later_rounds(monkeypatch):
 
     # 第 1 轮开始前不压缩;进入第 2 轮前压缩一次
     assert len(calls) == 1
+    await orch.shutdown()
+
+
+async def test_flow_registry_receives_prompt_request_and_state(monkeypatch):
+    """回复管线必须把 system 提示词、模型请求与活动状态登记到聊天流登记处。"""
+    from neobot_app.reply.flow_registry import ChatFlowRegistry
+
+    registry = ChatFlowRegistry()
+    provider = _ScriptedProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider, flow_registry=registry)
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    orch.start_reply(
+        message=_make_private_message(),
+        queue=MessageQueue(),
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    await _wait_until_idle(orch)
+
+    flows = registry.list_flows()
+    assert [flow["pipeline_key"] for flow in flows] == ["private:123456"]
+    assert flows[0]["active"] is False  # 管线结束后必须复位,避免面板显示一直运行中
+
+    snapshot = await registry.snapshot("private:123456")
+    assert snapshot is not None
+    assert snapshot["system_prompt"] == "私聊提示词"
+    roles = [message["role"] for message in snapshot["messages"]]
+    assert roles[0] == "system"
+    assert "user" in roles
+    await orch.shutdown()
+
+
+async def test_flow_recording_is_optional(monkeypatch):
+    """未注入登记处时（默认装配之外）不得影响回复管线。"""
+    provider = _ScriptedProvider([{"content": "回复", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider)
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=MessageQueue(),
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    await _wait_until_idle(orch)
+
+    assert event.error is None
     await orch.shutdown()
 
 

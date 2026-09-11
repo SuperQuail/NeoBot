@@ -423,3 +423,135 @@ export interface PromptAnalysisPayload {
   agents?: AgentPromptReport[];
   error?: string;
 }
+
+/** 提示词模板 /api/prompts —— 一个可编辑键（template 可预览渲染，text 为纯文本） */
+export interface PromptKeyView {
+  /** 键路径：template 或 runtime.template */
+  path: string;
+  label: string;
+  kind: 'template' | 'text';
+  /** 当前生效值（自定义优先，其次默认） */
+  value: string;
+  /** 内置默认值（用于「恢复默认」差异展示） */
+  default: string | null;
+  /** 自定义文件里的值；为 null 表示未覆盖 */
+  custom: string | null;
+  overridden: boolean;
+  /** 模板里出现的占位符名 */
+  placeholders: string[];
+}
+
+export interface PromptSectionView {
+  name: string;
+  keys: PromptKeyView[];
+  /** 分区内的 enabled 开关（未写时为 null） */
+  enabled?: boolean | null;
+  customized?: boolean;
+}
+
+export interface PromptsPayload {
+  sections?: PromptSectionView[];
+  default_file?: string;
+  custom_file?: string;
+  /** 当前会话是否有管理权限（决定能否保存） */
+  editable?: boolean;
+}
+
+/** 提示词预览 /api/prompts/preview */
+export interface PromptPreviewPayload {
+  rendered?: string;
+  placeholders?: string[];
+  /** 渲染后仍未替换的占位符（说明取值缺失） */
+  unresolved?: string[];
+  /** 各占位符使用的模拟取值 */
+  values?: Record<string, string>;
+}
+
+/** 聊天流 /api/chat-flows */
+export interface ChatFlowItem {
+  pipeline_key: string;
+  conversation_kind?: string;
+  conversation_id?: string;
+  model?: string;
+  active?: boolean;
+  iterations?: number;
+  /** 快照里保留的消息条数 */
+  message_count?: number;
+  /** 本次请求实际发出的消息总数 */
+  total_messages?: number;
+  prompt_chars?: number;
+  updated_at?: number;
+  age_seconds?: number | null;
+  stale?: boolean;
+}
+
+export interface ChatFlowsPayload {
+  ok?: boolean;
+  items?: ChatFlowItem[];
+  error?: string;
+}
+
+export interface ChatFlowMessage {
+  role?: string;
+  content?: string;
+  truncated?: boolean;
+  chars?: number;
+  images?: number;
+  tool_call_id?: string;
+  tool_calls?: Array<{ id?: string; name?: string; arguments?: string }>;
+}
+
+/** 聊天流详情：比列表多出最近一次请求的完整内容 */
+export interface ChatFlowDetailPayload extends ChatFlowItem {
+  system_prompt?: string;
+  /** 最近一次模型请求的消息（已截断，仅保留最近若干条） */
+  messages?: ChatFlowMessage[];
+  background_tasks?: Record<string, unknown>;
+}
+
+/** 定时任务 /api/scheduled-tasks */
+export interface ScheduledTaskItem {
+  task_id: string;
+  title: string;
+  detail?: string;
+  recurrence: string;
+  state: string;
+  enabled: boolean;
+  start_at?: string;
+  end_at?: string;
+  /** datetime-local 输入框需要的本地时间串 */
+  start_at_local?: string;
+  end_at_local?: string;
+  next_run?: string;
+  bindings?: Array<{ kind: string; id: string }>;
+  metadata?: Record<string, unknown>;
+  one_shot_notification?: boolean;
+  completed_windows?: number;
+  created_at?: string;
+  updated_at?: string;
+  version?: number;
+}
+
+export interface ScheduledTasksPayload {
+  ok?: boolean;
+  available?: boolean;
+  tasks?: ScheduledTaskItem[];
+  editable?: boolean;
+  error?: string | null;
+}
+
+/** 定时任务写操作 /api/scheduled-tasks/action（action 必填，其余按动作透传） */
+export interface ScheduledTaskActionBody {
+  action: 'create' | 'update' | 'set_state' | 'set_notification_policy' | 'delete';
+  task_uuid?: string;
+  title?: string;
+  detail?: string;
+  recurrence?: string;
+  start_at?: string;
+  end_at?: string;
+  bindings?: Array<{ kind: string; id: string }>;
+  metadata?: Record<string, unknown>;
+  one_shot_notification?: boolean;
+  state?: 'active' | 'disabled';
+}
+

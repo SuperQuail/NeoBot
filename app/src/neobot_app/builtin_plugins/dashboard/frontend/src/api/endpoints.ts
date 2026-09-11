@@ -3,6 +3,8 @@ import { getJSON, getResult, postJSON } from './client';
 import type {
   ActiveUser,
   BotSummary,
+  ChatFlowDetailPayload,
+  ChatFlowsPayload,
   ConfigChanges,
   ConfigDocument,
   EnvPayload,
@@ -12,9 +14,13 @@ import type {
   Overview,
   PluginListPayload,
   PromptAnalysisPayload,
+  PromptPreviewPayload,
+  PromptsPayload,
   ProxyInfo,
   RankPayload,
   Result,
+  ScheduledTaskActionBody,
+  ScheduledTasksPayload,
   SeriesPayload,
   SeriesPoint,
   ServiceItem,
@@ -101,6 +107,28 @@ export const api = {
 
   // 提示词分析
   analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),
+
+  // 提示词模板（data/prompts）
+  prompts: () => getResult<PromptsPayload>('/api/prompts'),
+  promptsPreview: (body: { template?: string; section?: string; path?: string; values?: Record<string, string> }) =>
+    postJSON<PromptPreviewPayload>('/api/prompts/preview', body),
+  promptsSave: (body: { section: string; path: string; value: string }) =>
+    postJSON<SimpleMessage>('/api/prompts/save', body),
+  promptsReset: (body: { section: string; path: string }) =>
+    postJSON<SimpleMessage>('/api/prompts/reset', body),
+
+  // 聊天流（最近一次发给模型的内容 + 后台任务）
+  chatFlows: () => getJSON<ChatFlowsPayload>('/api/chat-flows'),
+  chatFlowDetail: (key: string) =>
+    getJSON<ChatFlowDetailPayload>('/api/chat-flows/detail?key=' + encodeURIComponent(key)),
+
+  // 定时任务管理
+  scheduledTasks: (includeDisabled = true, limit = 200) =>
+    getJSON<ScheduledTasksPayload>(
+      '/api/scheduled-tasks?include_disabled=' + (includeDisabled ? '1' : '0') + '&limit=' + limit,
+    ),
+  scheduledTaskAction: (body: ScheduledTaskActionBody) =>
+    postJSON<SimpleMessage>('/api/scheduled-tasks/action', body),
 
   // 面板 HTTP 扩展（依赖面板的插件挂载的页面入口）
   extensions: () => getJSON<{ items?: ExtensionEntry[] }>('/api/extensions'),
