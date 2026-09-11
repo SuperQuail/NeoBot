@@ -66,11 +66,32 @@ def _json_error(message: str, *, status: int = 400, **extra: Any) -> web.Respons
     return web.json_response(payload, status=status)
 
 
+def _redact_prompt_report(report: dict[str, Any]) -> dict[str, Any]:
+    """非管理会话只保留统计：系统提示词原文与工具 schema 不整段外发。"""
+    redacted = dict(report)
+    agents: list[dict[str, Any]] = []
+    for entry in report.get("agents", []):
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        parts: list[dict[str, Any]] = []
+        for part in item.get("parts", []):
+            if isinstance(part, dict):
+                parts.append({**part, "text": "", "redacted": True})
+        item["parts"] = parts
+        item["text_redacted"] = True
+        agents.append(item)
+    redacted["agents"] = agents
+    return redacted
+
+
 class DashboardApi:
     """面板接口集合。"""
 
     def __init__(self, *, console: Any) -> None:
         self.console = console
+        #: 后台电源动作的强引用：create_task 的返回值被丢弃时任务可能被 GC 回收
+        self._power_tasks: set[asyncio.Task[Any]] = set()
 
     # ------------------------------------------------------------------
     # 基础设施
@@ -106,6 +127,9 @@ class DashboardApi:
             control = self._service("plugin_runtime")
             control = getattr(control, "control", None)
         return control
+
+    def _standby_service(self) -> Any:
+        return self._service("standby_service")
 
     def _require_manage(self, request: web.Request, *, action: str = "管理操作") -> web.Response | None:
         if not self.console.manage_plugins:
@@ -287,8 +311,21 @@ class DashboardApi:
                 "latency_ms": self.metrics.latency_series()["current_ms"],
                 "python_version": system.get("python_version"),
                 "hostname": system.get("hostname"),
+                "standby": bool(self.power_state().get("standby")),
             }
         )
+
+    def power_state(self) -> dict[str, Any]:
+        """当前运行状态（运行中 / 待机中）；待机服务未注册时返回 available=False。"""
+        service = self._standby_service()
+        if service is None:
+            return {"available": False, "state": "running", "standby": False}
+        try:
+            status = dict(service.status())
+        except Exception:
+            return {"available": False, "state": "running", "standby": False}
+        status["available"] = True
+        return status
 
     async def system(self, request: web.Request) -> web.Response:
         payload = system_module.snapshot(data_dir=self.console.data_dir)
@@ -540,9 +577,9 @@ class DashboardApi:
             "hot_reload": bool(getattr(snapshot, "hot_reload", True)),
             "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
             "hot_reloadable": bool(getattr(snapshot, "hot_reloadable", True)),
-            "config_section": self._official_config_section(snapshot.name)
-            if getattr(snapshot, "official", False)
-            else "",
+            "config_path": str(self._plugin_config_path(snapshot.name) or ""),
+            # 配置校验告警：非空表示已存值非法、运行时已回落默认值
+            "config_error": getattr(snapshot, "config_error", None),
         }
 
     async def plugins(self, request: web.Request) -> web.Response:
@@ -581,13 +618,54 @@ class DashboardApi:
                 return {}
         return {}
 
-    def _official_config_section(self, name: str) -> str:
+    def _plugin_config_path(self, name: str) -> Path | None:
+        """插件配置文件路径（插件数据目录下的 config.toml）。"""
+        control = self._plugin_control()
+        if control is None:
+            return None
+        getter = getattr(control, "plugin_config_path", None)
+        if not callable(getter):
+            return None
         try:
-            from neobot_app.bootstrap._skills import OFFICIAL_CONFIG_SECTIONS
-
-            return str(OFFICIAL_CONFIG_SECTIONS.get(str(name)) or "")
+            return getter(name)
         except Exception:
-            return ""
+            return None
+
+    def _plugin_config_editor(self, control: Any, name: str) -> PluginConfigEditor | None:
+        path = self._plugin_config_path(name)
+        if path is None:
+            return None
+        defaults: dict[str, Any] = {}
+        getter = getattr(control, "plugin_config_defaults", None)
+        if callable(getter):
+            try:
+                defaults = dict(getter(name))
+            except Exception:
+                defaults = {}
+        return PluginConfigEditor(path, defaults=defaults)
+
+    def _plugin_config_meta(
+        self, snapshot: Any, name: str, document: dict[str, Any]
+    ) -> dict[str, Any]:
+        """插件配置文档的公共元信息（官方与第三方插件一致）。"""
+        official = bool(getattr(snapshot, "official", False))
+        hot_reload = bool(getattr(snapshot, "hot_reload", True))
+        document.update(
+            {
+                "name": name,
+                "version": str(getattr(snapshot, "version", "") or ""),
+                "official": official,
+                "manage_enabled": self.console.manage_plugins,
+                "can_reload": hot_reload,
+                "hot_reload": hot_reload,
+                "config_hot_reload": bool(
+                    getattr(snapshot, "config_hot_reload", True)
+                ),
+                "config_error": getattr(snapshot, "config_error", None),
+                "message": "插件配置保存在插件数据目录，与插件代码和启停状态分离",
+            }
+        )
+        return document
 
     async def plugins_proxy_save(self, request: web.Request) -> web.Response:
         """插件下载代理设置：写入 config.toml 的 [plugins] 并立即生效。"""
@@ -648,7 +726,8 @@ class DashboardApi:
             return _json_error(f"插件不存在: {name}", status=404)
         if name == self.console.plugin_name:
             return _json_error(
-                "不能从面板内部停用面板自身；请修改 config.toml 的 [dashboard].enabled 后重启 NeoBot",
+                "不能从面板内部停用面板自身；如需关闭网页面板，"
+                "请把 data/plugin_state.json 里 dashboard 的 enabled 改为 false 后重启 NeoBot",
                 status=400,
             )
         target_enabled = not bool(snapshot.enabled)
@@ -761,84 +840,65 @@ class DashboardApi:
         )
 
     async def plugin_config_get(self, request: web.Request) -> web.Response:
+        """插件配置：读取插件数据目录下的 config.toml（官方/第三方同一路径）。"""
         control = self._plugin_control()
+        if control is None:
+            return _json_error("插件运行时不可用", status=503)
         name = request.match_info["name"]
-        snapshot = self._find_snapshot(control, name) if control is not None else None
-        if snapshot is not None and snapshot.official:
-            return self._official_config_document(control, name, snapshot)
-        path = self._plugin_manifest_path(snapshot)
-        if path is None:
-            return _json_error(f"插件 {name} 没有 plugin.toml，无法在线编辑配置", status=404)
+        snapshot = self._find_snapshot(control, name)
+        editor = self._plugin_config_editor(control, name)
+        if editor is None:
+            return _json_error(f"插件不存在或没有独立数据目录: {name}", status=404)
         try:
-            document = PluginConfigEditor(path).read()
+            document = editor.read()
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
-        document["official"] = False
-        document["can_reload"] = True
-        document["hot_reload"] = bool(getattr(snapshot, "hot_reload", True))
-        document["config_hot_reload"] = bool(getattr(snapshot, "config_hot_reload", True))
-        document["manage_enabled"] = self.console.manage_plugins
-        return _json_ok(document)
-
-    def _official_config_document(
-        self, control: Any, name: str, snapshot: Any
-    ) -> web.Response:
-        """官方插件配置：直接读写 config.toml 的同名分区。"""
-        section = self._official_config_section(name)
-        if not section:
-            return _json_error(
-                f"官方插件 {name} 没有对应的 config.toml 分区，无法在线编辑", status=404
-            )
-        manager = self._config_manager()
-        try:
-            values = manager.section_values(section)
-            revision = manager.revision()
-        except Exception as exc:
-            return _json_error(f"读取插件配置失败: {exc}", status=500)
-        model = control.config_model(name) if control is not None else None
-        schema = describe_pydantic_model(model, values)
-        return _json_ok(
-            {
-                "official": True,
-                "name": name,
-                "section": section,
-                "path": str(manager.config_path),
-                "values": values,
-                "config": values,
-                "schema": schema,
-                "form_supported": bool(schema),
-                "source": "",
-                "source_available": False,
-                "secret_policy": "write_only",
-                "revision": revision,
-                "hot_reload": bool(getattr(snapshot, "hot_reload", True)),
-                "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
-                "can_reload": bool(getattr(snapshot, "hot_reload", True)),
-                "can_manage": self.console.manage_plugins,
-                "message": "官方插件配置来自 config.toml 的同名分区，保存后会写回该分区",
-            }
-        )
+        model = control.config_model(name)
+        schema = describe_pydantic_model(model, document.get("config") or {})
+        if schema:
+            # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）
+            document["schema"] = schema
+            document["form_supported"] = True
+        return _json_ok(self._plugin_config_meta(snapshot, name, document))
 
     async def plugin_config_save(self, request: web.Request) -> web.Response:
+        """插件配置：写入插件数据目录下的 config.toml，可选立即重载插件。"""
         denied = self._require_manage(request)
         if denied is not None:
             return denied
         control = self._plugin_control()
+        if control is None:
+            return _json_error("插件运行时不可用", status=503)
         name = request.match_info["name"]
-        snapshot = self._find_snapshot(control, name) if control is not None else None
+        snapshot = self._find_snapshot(control, name)
         try:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
-        if snapshot is not None and snapshot.official:
-            return await self._official_config_save(control, name, snapshot, payload)
-        path = self._plugin_manifest_path(snapshot)
-        if path is None:
-            return _json_error(f"插件 {name} 没有 plugin.toml，无法在线编辑配置", status=404)
-        editor = PluginConfigEditor(path)
+        editor = self._plugin_config_editor(control, name)
+        if editor is None:
+            return _json_error(f"插件不存在或没有独立数据目录: {name}", status=404)
+        values = payload.get("config")
+        if not isinstance(values, dict):
+            values = payload.get("values")
+        model = control.config_model(name)
+        if model is not None and isinstance(values, dict):
+            defaults: dict[str, Any] = {}
+            getter = getattr(control, "plugin_config_defaults", None)
+            if callable(getter):
+                try:
+                    defaults = dict(getter(name))
+                except Exception:
+                    defaults = {}
+            try:
+                model.model_validate({**defaults, **values})
+            except Exception as exc:
+                return _json_error(
+                    "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
+                )
         try:
             document = editor.save(
-                config=payload.get("config"),
+                config=values if isinstance(values, dict) else None,
                 source=payload.get("source"),
                 expected_revision=payload.get("revision"),
             )
@@ -846,83 +906,26 @@ class DashboardApi:
             return _json_error(str(exc), status=409)
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
-        reload_requested = bool(payload.get("reload"))
+        schema = describe_pydantic_model(model, document.get("config") or {})
+        if schema:
+            document["schema"] = schema
         applied = False
-        message = "配置已保存"
-        if reload_requested and control is not None:
-            outcome = await control.reload(name)
-            applied = outcome.ok
-            message = (
-                f"配置已保存并重载 {name}" if outcome.ok else f"配置已保存，但重载失败: {outcome.error or outcome.state}"
-            )
-        document["official"] = False
-        document["can_reload"] = True
-        document["applied"] = applied
-        document["message"] = message
-        return _json_ok(document)
-
-    async def _official_config_save(
-        self, control: Any, name: str, snapshot: Any, payload: dict[str, Any]
-    ) -> web.Response:
-        """保存官方插件配置：校验 -> 写回 config.toml 分区 -> 可选热重载。"""
-        section = self._official_config_section(name)
-        if not section:
-            return _json_error(
-                f"官方插件 {name} 没有对应的 config.toml 分区，无法在线编辑", status=404
-            )
-        values = payload.get("config")
-        if not isinstance(values, dict):
-            values = payload.get("values")
-        if not isinstance(values, dict):
-            return _json_error("缺少配置内容（config）", status=400)
-
-        model = control.config_model(name) if control is not None else None
-        if model is not None:
-            current = self._config_manager().section_values(section)
-            try:
-                model.model_validate({**current, **values})
-            except Exception as exc:
-                return _json_error(
-                    "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
-                )
-        try:
-            document = self._config_manager().update_section(
-                section, values, expected_revision=payload.get("revision")
-            )
-        except ConfigConflictError as exc:
-            return _json_error(str(exc), status=409)
-        except ConfigValidationError as exc:
-            return _json_error(str(exc), status=400, errors=exc.errors)
-        except Exception as exc:
-            return _json_error(f"保存插件配置失败: {exc}", status=500)
-
-        applied = False
-        message = f"已写回 config.toml 的 [{section}] 分区"
+        message = "配置已保存到插件数据目录"
         reload_requested = bool(payload.get("reload"))
         if reload_requested:
             if bool(getattr(snapshot, "config_hot_reload", True)):
-                result = await self._reload_config(with_changes=True)
-                applied = bool(result.get("ok"))
-                message = str(result.get("message") or message)
-                if result.get("changes"):
-                    document["changes"] = result["changes"]
-                if (
-                    applied
-                    and bool(getattr(snapshot, "hot_reload", True))
-                    and control is not None
-                ):
-                    outcome = await control.reload(name)
-                    message += (
-                        f"；插件 {name} 已重载"
-                        if outcome.ok
-                        else f"；插件 {name} 重载失败: {outcome.error or outcome.state}"
-                    )
+                outcome = await control.reload(name)
+                applied = outcome.ok
+                message = (
+                    f"配置已保存并重载 {name}"
+                    if outcome.ok
+                    else f"配置已保存，但重载失败: {outcome.error or outcome.state}"
+                )
             else:
                 message += "；该插件配置需要重启 NeoBot 才能生效"
         document["applied"] = applied
         document["message"] = message
-        document["official"] = True
-        return _json_ok(document)
+        return _json_ok(self._plugin_config_meta(snapshot, name, document))
 
     # ------------------------------------------------------------------
     # 本体配置 / .env
@@ -1353,6 +1356,131 @@ class DashboardApi:
         )
         return _json_ok(document)
 
+    def _prompt_analyzer(self) -> Any:
+        return self._service("prompt_analyzer")
+
+    async def analysis_prompts(self, request: web.Request) -> web.Response:
+        """提示词分析：各 agent 装配出的提示词字符数与估算 token（不调用模型）。
+
+        统计口径来自分析器自身（中文 ×0.6 + 其他 ×0.3）；单个来源装配失败只影响
+        该条目，接口仍返回可用数据。
+        """
+        analyzer = self._prompt_analyzer()
+        if analyzer is None:
+            return _json_error("提示词分析不可用（未注入分析器）", status=503)
+        try:
+            report = await analyzer.collect()
+        except Exception as exc:
+            return _json_error(f"提示词分析失败: {exc}", status=500)
+        # 提示词原文/工具 schema 属于运营内部信息：非管理会话（远程或关闭管理功能）
+        # 只返回计数，与 config_get 的按权限裁剪保持一致。
+        if not self._can_manage(request):
+            report = _redact_prompt_report(report)
+        return _json_ok(report)
+
+    # ------------------------------------------------------------------
+    # 运行状态（待机 / 软重启运行）
+    # ------------------------------------------------------------------
+
+    async def power_status(self, request: web.Request) -> web.Response:
+        return _json_ok(self.power_state())
+
+    async def _power_reason(self, request: web.Request) -> str:
+        """读取可选请求体里的原因；空 body 视为无参数。"""
+        try:
+            payload = await self._read_json(request)
+        except ValueError:
+            payload = {}
+        return str(payload.get("reason") or "").strip()
+
+    def _schedule_power_action(self, *, action: str, runner, log: str) -> str:
+        """把「停运行时/重建运行时」这类重活丢到后台任务，接口立刻返回。
+
+        软重启要重建全部 bot 侧对象（可能几十秒），同步等待会让面板请求超时，
+        期间事件循环也被占住（面板看起来像卡死）。后台执行后，前端按
+        /api/admin/power 轮询即可看到状态变化，界面不需要额外改造。
+        """
+        self.logger.warning(log)
+
+        async def _worker() -> None:
+            try:
+                ok, message = await runner()
+            except Exception as exc:
+                self.logger.exception(f"{action}异常: {exc}")
+                return
+            if not ok:
+                self.logger.error(f"{action}失败: {message}")
+
+        task = asyncio.create_task(_worker())
+        # 必须持有强引用：返回值被丢弃的后台任务可能被 GC 回收，待机/软重启会静默半途而废。
+        self._power_tasks.add(task)
+        task.add_done_callback(self._power_tasks.discard)
+        return f"已开始{action}：面板会自动刷新状态，不需要重启进程。"
+
+    async def admin_standby(self, request: web.Request) -> web.Response:
+        """进入待机：停掉 bot 运行时，只保留面板与核心服务。
+
+        进入待机后回复与记忆管线不再工作，但面板、命令与配置热重载仍然可用，
+        改完配置用 /reboot（或面板「软重启运行」）即可恢复，不必重启进程。
+        """
+        denied = self._require_manage(request, action="进入待机")
+        if denied is not None:
+            return denied
+        service = self._standby_service()
+        if service is None:
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
+        reason = await self._power_reason(request)
+        operator = f"panel:{self.console.request_ip(request)}"
+        message = self._schedule_power_action(
+            action="进入待机",
+            runner=lambda: service.enter(reason=reason or "panel", operator=operator),
+            log=f"面板请求进入待机 ip={operator} reason={reason or 'panel'}",
+        )
+        return _json_ok({**self.power_state(), "message": message})
+
+    async def admin_resume(self, request: web.Request) -> web.Response:
+        """退出待机：按当前配置重建并启动 bot 运行时。"""
+        return await self._soft_restart(request)
+
+    async def admin_reboot(self, request: web.Request) -> web.Response:
+        """软重启 bot 运行时：不重启进程，面板与连接保持可用。"""
+        return await self._soft_restart(request)
+
+    async def _soft_restart(self, request: web.Request) -> web.Response:
+        denied = self._require_manage(request, action="软重启运行")
+        if denied is not None:
+            return denied
+        service = self._standby_service()
+        if service is None:
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
+        reason = await self._power_reason(request)
+        operator = f"panel:{self.console.request_ip(request)}"
+        message = self._schedule_power_action(
+            action="软重启运行",
+            runner=lambda: service.resume(reason=reason or "panel", operator=operator),
+            log=f"面板请求软重启运行 ip={operator} reason={reason or 'panel'}",
+        )
+        return _json_ok({**self.power_state(), "message": message})
+
+    async def admin_standby_onebot(self, request: web.Request) -> web.Response:
+        """待机期是否保持与 OneBot 的连接（立即生效）。"""
+        denied = self._require_manage(request, action="切换待机连接")
+        if denied is not None:
+            return denied
+        service = self._standby_service()
+        if service is None:
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        enabled = bool(payload.get("enabled"))
+        operator = f"panel:{self.console.request_ip(request)}"
+        ok, message = await service.set_connect_onebot(enabled, operator=operator)
+        if not ok:
+            return _json_error(message)
+        return _json_ok({**self.power_state(), "message": message})
+
     async def admin_restart(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)
         if denied is not None:
@@ -1394,18 +1522,6 @@ class DashboardApi:
             if item.name == name:
                 return item
         return None
-
-    @staticmethod
-    def _plugin_manifest_path(snapshot: Any) -> Path | None:
-        path = getattr(snapshot, "path", None)
-        if path is None:
-            return None
-        candidate = Path(path)
-        if candidate.is_dir():
-            manifest = candidate / "plugin.toml"
-        else:
-            manifest = candidate.parent / "plugin.toml"
-        return manifest if manifest.is_file() else None
 
 
 def _status_text(snapshot: Any) -> str:

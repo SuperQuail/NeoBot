@@ -38,7 +38,7 @@ def test_run_builds_once_and_returns_restart_intent(monkeypatch, restart) -> Non
         async def run_forever(self):
             calls.extend(["run", "stop"])
 
-    def create():
+    def create(*, owns_plugins: bool = True):
         calls.append("create")
         assert calls.count("create") == 1, "不能在旧解释器中再次装配应用"
         return Application()
@@ -108,7 +108,7 @@ def test_cmd_run_executes_after_application_and_loop_cleanup(monkeypatch) -> Non
             assert not worker_finished.is_set()
             state.stopped = True
 
-    def create():
+    def create(*, owns_plugins: bool = True):
         nonlocal create_calls
         create_calls += 1
         assert create_calls == 1, "旧进程不得重新调用 create_application"

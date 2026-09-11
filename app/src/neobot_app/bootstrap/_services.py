@@ -20,7 +20,7 @@ from neobot_app.core import DATA_DIR
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.emoji.service import EmojiService
 from neobot_app.image import ImageParseService
-from neobot_app.observability.debug import DebugRecorder
+from neobot_app.observability.debug import DEFAULT_RETENTION_DAYS, DebugRecorder
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.user_profiles import UserProfileService
 from neobot_app.willing import WillingService
@@ -29,12 +29,16 @@ from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummarySe
 
 
 def build_debug_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
-    if getattr(getattr(config, "debug", None), "enabled", False):
-        return DebugRecorder(
-            DATA_DIR / "debug" / "log",
-            logger=logger,
-        )
-    return None
+    debug_cfg = getattr(config, "debug", None)
+    if not getattr(debug_cfg, "enabled", False):
+        return None
+    return DebugRecorder(
+        DATA_DIR / "debug" / "log",
+        logger=logger,
+        retention_days=int(
+            getattr(debug_cfg, "retention_days", DEFAULT_RETENTION_DAYS)
+        ),
+    )
 
 
 def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
@@ -323,6 +327,7 @@ def build_archive_summary_service(
     fallback_provider: Any,
     logger_factory: Any,
     skill_manager: Any,
+    standby_service: Any = None,
 ) -> ArchiveMemoryAutoSummaryService:
     from neobot_app.bootstrap._providers import build_optional_agent_provider
 
@@ -350,6 +355,7 @@ def build_archive_summary_service(
         logger=logger_factory.get_logger("app.archive_summary"),
         tool_definitions=summary_tool_defs,
         tool_executor=_summary_tool_executor,
+        standby_service=standby_service,
     )
 
 

@@ -20,7 +20,7 @@ class _FakeSkillManager:
     def __init__(self) -> None:
         self.executions: list[tuple[str, dict]] = []
 
-    def get_tools(self) -> list:
+    def get_tools(self, activated=None) -> list:
         return []
 
     def is_session_tool(self, name: str) -> bool:
@@ -557,7 +557,7 @@ class _FakeSkillManagerPlain:
         self.executed: list[str] = []
         self.executed_args: list[dict] = []
 
-    def get_tools(self) -> list:
+    def get_tools(self, activated=None) -> list:
         return self._tools
 
     def is_session_tool(self, name: str) -> bool:
@@ -1476,3 +1476,99 @@ def test_skill_schema_rejects_invalid_regex_pattern():
         assert "pattern" in str(exc)
     else:
         raise AssertionError("invalid regex pattern was accepted")
+
+
+# ── 技能工具按需加载 ─────────────────────────────────────────────
+
+
+class _DeferrableSkillManager:
+    """支持常驻/按需两部分工具的假管理器。"""
+
+    def __init__(self) -> None:
+        self.skill_names = ["always", "lazy"]
+        self.deferred_skill_names = ["lazy"]
+        self.executed: list[str] = []
+
+    def is_tool_deferred(self, name: str) -> bool:
+        return name == "lazy"
+
+    def skill_tool_names(self, name: str) -> list[str]:
+        if name == "lazy":
+            return ["lazy__fetch", "lazy__store"]
+        return ["always__ping"]
+
+    def get_tools(self, activated=None) -> list:
+        activated = set(activated or ())
+        tools = [_skill_def("always__ping")]
+        if "lazy" in activated:
+            tools.extend([_skill_def("lazy__fetch"), _skill_def("lazy__store")])
+        return tools
+
+    def is_session_tool(self, name: str) -> bool:
+        return False
+
+
+def test_load_tools_activates_deferred_skill_tools():
+    """skills__load_tools 之后，被延后的技能工具必须出现在下一轮 tools 里。"""
+    manager = _DeferrableSkillManager()
+    executor = _make_executor(skill_manager=manager)
+
+    before = {d["function"]["name"] for d in executor.definitions()}
+    assert {"always__ping", "skills__load_tools"} <= before
+    assert "lazy__fetch" not in before
+
+    result = executor._load_skill_tools({"skills": ["lazy"]})
+
+    assert "lazy__fetch" in result
+    assert executor.consume_tools_dirty() is True
+    after = {d["function"]["name"] for d in executor.definitions()}
+    assert {"always__ping", "lazy__fetch", "lazy__store"} <= after
+    assert executor.activated_skill_names() == ["lazy"]
+
+
+def test_load_tools_reports_unknown_and_duplicate_skills():
+    manager = _DeferrableSkillManager()
+    executor = _make_executor(skill_manager=manager)
+
+    first = executor._load_skill_tools({"skills": ["lazy", "nope"]})
+    assert "已加载技能工具" in first
+    assert "未知技能名：nope" in first
+
+    executor.consume_tools_dirty()
+    second = executor._load_skill_tools({"skills": ["lazy"]})
+    assert "已经可用" in second
+    assert executor.consume_tools_dirty() is False
+
+
+def test_load_tools_requires_skill_list():
+    executor = _make_executor(skill_manager=_DeferrableSkillManager())
+    assert executor._load_skill_tools({}).startswith("Error")
+    assert executor._load_skill_tools({"skills": []}).startswith("Error")
+
+
+def test_no_loader_tool_when_nothing_is_deferred():
+    """没有延后技能时不暴露 skills__load_tools，避免白占 schema。"""
+    executor = _make_executor(
+        skill_manager=_FakeSkillManagerPlain([_skill_def("demo__ping")])
+    )
+    names = {d["function"]["name"] for d in executor.definitions()}
+    assert "skills__load_tools" not in names
+
+
+async def test_load_tools_executes_through_normal_execute_path():
+    """skills__load_tools 必须走 execute 分支并可正常加载。"""
+    executor = _make_executor(skill_manager=_DeferrableSkillManager())
+    result = await executor.execute("skills__load_tools", {"skills": ["lazy"]})
+    assert "已加载技能工具" in result
+    assert executor.activated_skill_names() == ["lazy"]
+
+
+async def test_load_tools_respects_allowed_tool_whitelist():
+    """技能白名单外的技能不能被加载，否则会绕过 allowed-tools 限制。"""
+    executor = _make_executor(
+        skill_manager=_DeferrableSkillManager(), allowed_tools={"send_emoji"}
+    )
+    result = await executor.execute("skills__load_tools", {"skills": ["lazy"]})
+    assert "无法使用" in result
+    assert executor.activated_skill_names() == []
+

@@ -161,10 +161,13 @@ def register_config_reload_command(
             payload["hot_reload"] = reload_report
         return payload
 
+    # override=True：软重启会重新装配 bot 侧组件，处理器必须换成新对象上的闭包
+    # （旧闭包持有已释放的技能注册表等），否则配置重载会打到死对象上。
     host_facade.commands.register(
         "config.reload",
         "重新加载配置文件并通知所有已订阅 lifecycle 的插件",
         _reload_config,
+        override=True,
     )
 
 
@@ -244,6 +247,7 @@ def build_reply_orchestrator(
     credential_manager: Any = None,
     config_update_callback: Any = None,
     sleep_service: Any = None,
+    standby_service: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -279,6 +283,7 @@ def build_reply_orchestrator(
         credential_manager=credential_manager,
         config_update_callback=config_update_callback,
         sleep_service=sleep_service,
+        standby_service=standby_service,
     )
 
 
@@ -319,6 +324,8 @@ def build_pipelines_and_app(
     command_service: Any = None,
     credential_manager: Any = None,
     sleep_service: Any = None,
+    standby_service: Any = None,
+    owns_plugins: bool = True,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -342,6 +349,7 @@ def build_pipelines_and_app(
         command_service=command_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
+        standby_service=standby_service,
     )
 
     notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)
@@ -401,4 +409,5 @@ def build_pipelines_and_app(
         background_coros=background_coros,
         self_heal_manager=self_heal_manager,
         connection_probe=connection_probe,
+        owns_plugins=owns_plugins,
     )

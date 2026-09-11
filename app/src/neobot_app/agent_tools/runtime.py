@@ -172,14 +172,20 @@ class AgentToolRuntime:
 
     async def _execute(self, name: str, args: dict, context: ToolContext, *,
                       external_dispatch: Dispatch | None = None, external_definitions: list[dict] | None = None,
-                      history: list[dict] | None = None, _program_dispatch: object | None = None) -> Any:
+                      history: list[dict] | None = None, _program_dispatch: object | None = None,
+                      direct: bool = False) -> Any:
         if self._closed:
             raise AgentToolError("CLOSED", "Agent tools have been closed")
         if not isinstance(context, ToolContext):
             raise AgentToolError("CONTEXT_REQUIRED", "Model-supplied context is not accepted")
         if context.allowed_tools is not None and name not in context.allowed_tools:
             raise AgentToolError("TOOL_DENIED", "Tool is outside the inherited skill allowlist")
-        if _program_dispatch is not _PROGRAM_DISPATCH and not self.is_wire_tool(name):
+        # direct=True 只由宿主在「自己决定呈现方式」的入口传入(主回复管线的按需工具包):
+        # 任务工具模式决定的是任务型 Agent 的编排方式,不应反过来限制宿主直接调用叶子工具。
+        directly_exposed = direct and name in NATIVE_TOOLS and name in self._definitions
+        if (_program_dispatch is not _PROGRAM_DISPATCH
+                and not directly_exposed
+                and not self.is_wire_tool(name)):
             raise AgentToolError("MODE_TOOL_DENIED", f"Tool {name} is not directly callable in {self.mode} mode")
         if name == "run_code" and (_program_dispatch is _PROGRAM_DISPATCH or not self.config.ptc_enabled):
             raise AgentToolError("MODE_TOOL_DENIED", "Recursive or disabled PTC execution is not allowed")

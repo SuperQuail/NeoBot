@@ -22,7 +22,12 @@ if PYTHON_LSP_WORKER_FLAG in sys.argv[1:]:
     run_python_lsp_worker()
     raise SystemExit(0)
 
-from neobot_app.bootstrap import create_application
+from neobot_app.bootstrap import (
+    create_application,
+    enable_core_reuse,
+    get_cached_core,
+)
+from neobot_app.bootstrap._standby_runtime import StandbyController
 from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
@@ -31,10 +36,11 @@ from neobot_app.runtime.application import ConnectionTimeoutError
 async def run() -> bool:
     """运行一轮应用，优雅关闭后将重启意图交给循环外的 CLI。"""
     loop = asyncio.get_running_loop()
-    current_application = {"value": None}
+    state = {"application": None, "stopping": False}
 
     def request_stop() -> None:
-        application = current_application["value"]
+        state["stopping"] = True
+        application = state["application"]
         if application is not None:
             application.request_stop()
 
@@ -48,13 +54,54 @@ async def run() -> bool:
                     lambda _signum, _frame: loop.call_soon_threadsafe(request_stop),
                 )
 
-    application = create_application()
-    current_application["value"] = application
+    enable_core_reuse()
+    application = create_application(owns_plugins=False)
+    standby_service = get_cached_core("standby_service")
+    if standby_service is None:
+        # 装配降级（测试桩，或未启用核心复用）：按旧的单运行时流程运行
+        state["application"] = application
+        try:
+            await application.run_forever()
+            return application.restart_requested
+        finally:
+            state["application"] = None
+    controller = StandbyController(
+        standby_service=standby_service,
+        runtime_factory=lambda: create_application(owns_plugins=False),
+        adapter=get_cached_core("adapter"),
+        initial_application=application,
+        logger=get_cached_core("logger_factory").get_logger("app.standby"),
+    )
+    standby_service.set_hooks(
+        on_enter=controller.enter,
+        on_resume=controller.resume,
+        on_onebot_change=controller.set_onebot,
+    )
+    plugin_runtime = get_cached_core("plugin_runtime")
+    if plugin_runtime is not None:
+        # 插件运行时归核心所有：这里启动一次；进入待机不再停它（面板常驻）
+        await plugin_runtime.load_registered()
+        await plugin_runtime.start_all()
+    await controller.start()
     try:
-        await application.run_forever()
-        return application.restart_requested
+        while True:
+            runtime = controller.application
+            if runtime is None:
+                if state["stopping"]:
+                    return False
+                # 待机：进程与面板继续存活，等 /reboot 或面板「启动运行」唤醒
+                await asyncio.sleep(0.5)
+                continue
+            state["application"] = runtime
+            await runtime.run_forever()
+            state["application"] = None
+            if runtime.restart_requested:
+                return True
+            if standby_service.is_standby():
+                continue
+            return False
     finally:
-        current_application["value"] = None
+        state["application"] = None
 
 
 def _add_inbound_rule(program: str, port: int) -> bool:
@@ -345,7 +392,8 @@ async def _run_sandbox_cleanup() -> int:
         _mgr: SkillManager
 
         def definitions(self):
-            return self._mgr.get_tools()
+            # 维护 Agent 自建工具集，不经过主回复管线的按需加载，需拿到全部工具
+            return self._mgr.get_all_tools()
 
         async def execute(self, name: str, args: dict) -> str:
             return await self._mgr.execute(name, args)
@@ -357,7 +405,7 @@ async def _run_sandbox_cleanup() -> int:
         from neobot_chat.schema.types import ToolAccessRule
         return ToolAccessRule(action="allow")
 
-    tool_defs = mgr.get_tools()
+    tool_defs = mgr.get_all_tools()
     specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
     toolset = Toolset(executor=_SkillToolExecutor(mgr), specs=specs)
     print(f"已加载 {len(tool_defs)} 个工具")

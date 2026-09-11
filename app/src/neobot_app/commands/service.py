@@ -37,6 +37,7 @@ class CommandService:
         markdown_image_converter: Any = None,
         file_server: Any = None,
         sleep_service: Any = None,
+        standby_service: Any = None,
         config_reload_callback: ConfigReloadCallback | None = None,
     ) -> None:
         self._config = config
@@ -50,6 +51,7 @@ class CommandService:
         self._markdown_image_converter = markdown_image_converter
         self._file_server = file_server
         self._sleep_service = sleep_service
+        self._standby_service = standby_service
         self._config_reload_callback = config_reload_callback
         if register_builtins:
             for command in build_builtin_commands(self):
@@ -93,6 +95,11 @@ class CommandService:
     def sleep_service(self) -> Any:
         """睡眠服务(/sleep /awake 命令使用;未注入时为 None)。"""
         return self._sleep_service
+
+    @property
+    def standby_service(self) -> Any:
+        """待机服务(/standby /reboot 命令使用;未注入时为 None)。"""
+        return self._standby_service
 
     # ── 消息入口 ──
 
@@ -159,11 +166,7 @@ class CommandService:
 
         if command.sync_reply:
             # 同步触发回复管线:结果作为背景内容交给主 Agent 处理
-            background = (
-                "<这是新的必须要回答的内容>\n"
-                f"命令 /{command.name} 执行结果:\n{result_text}\n"
-                "</这是新的必须要回答的内容>"
-            )
+            background = f"命令 /{command.name} 执行结果:\n{result_text}"
             return CommandHandleResult(consumed=True, background=background)
 
         if result_text is not None:

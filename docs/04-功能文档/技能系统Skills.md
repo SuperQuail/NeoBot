@@ -9,6 +9,66 @@ Skill 是 NeoBot 给 LLM 扩展能力的核心机制：每个 Skill 以 OpenAI f
 - **注入**：Skill 工具定义随提示词注入主 Agent（[`packages/chat/skills/inject.py`](../../packages/chat/src/neobot_chat/skills/inject.py)），模型调用时经 SkillManager 分发到对应 Skill 的 `execute()`。
 - **会话模式**：耗时工具（绘图等）以 Session 模式运行，模型提交后立即返回，完成后通过通知系统告知。
 
+## 工具定义按需加载
+
+Skill 的工具定义（JSON Schema）会随每一次模型调用一起发送。全部常驻时，实测单次调用的工具
+schema 在两万 token 以上，且与对话内容无关——属于纯固定开销。
+
+因此默认只常驻「主回复管线几乎每轮都会用到」的技能工具：
+
+```python
+# app/src/neobot_app/skills/__init__.py
+DEFAULT_EAGER_TOOL_SKILLS = {
+    "chat_history", "drawing", "gallery",
+    "image_context", "image_pool", "image_send",
+}
+```
+
+其余技能的工具定义**不注入提示词**，只保留 `get_instructions()` 生成的一行摘要索引。
+模型需要某个技能时先调用 `skills__load_tools`（一次可加载多个），加载后该技能的工具
+立即出现在下一轮模型调用里，本轮回合内即可直接使用：
+
+```text
+skills__load_tools(skills=["archive_crud", "browser"])
+→ 已加载技能工具（本轮即可直接调用）：
+    - archive_crud: archive_crud__read_archive, archive_crud__patch_archive, ...
+```
+
+### 工具包（把一个大技能拆成多个按需包）
+
+`agent_tools` 的 20 个叶子工具（read/write/edit/run_python/web_search/…）曾经常驻提示词，
+实测 8.9K 字符 / 每次模型调用，而生产 18 小时内只被调用过 2 次。现在它拆成 5 个按需包，
+**共享同一个工具名前缀 `agent_tools`**，因此加载前后工具名完全一致（`agent_tools__read` 等）：
+
+| 包名 | 覆盖的叶子工具 |
+|---|---|
+| `agent_tools_files` | read / write / edit / glob / grep |
+| `agent_tools_exec` | run_python / pwsh / bash / job_list / job_output / job_kill |
+| `agent_tools_web` | web_search / web_fetch |
+| `agent_tools_plan` | todo_write / ask_user_question / question_status / enter_plan_mode / exit_plan_mode |
+| `agent_tools_misc` | lsp / read_image / skill |
+
+实现要点：`SkillModule.tool_prefix` 允许一个技能群共用前缀，`SkillManager` 改为按**最终工具名**
+精确路由（前缀不再与技能名一一对应）；`SkillModule.exposed_to_main_agent=False` 的技能
+（如 `agent_tools` 本体）既非常驻也不出现在 `skills__load_tools` 候选里，只作为共享运行时
+与执行入口，供解题/子 Agent 与按需包复用。
+
+按需加载状态由 [`skills/activation.py`](../../app/src/neobot_app/skills/activation.py) 的
+`SkillToolActivation` 承载，主回复管线（`ReplyToolExecutor`）与独立 Agent 共用同一实现：
+
+- `SkillManager.get_tools(activated, resident=...)` 的 `resident` 可为单个 Agent 覆盖常驻名单
+  （沙箱维护 Agent 只常驻维护相关技能，见 `skills/agent_toolset.py` 的
+  `SkillToolsetExecutor` + `LiveToolset`：后者每轮从执行器重算工具集，加载后立即生效）；
+
+要点：
+
+- 加载状态属于**当前回复管线**（`ReplyToolExecutor` 实例），管线结束时自然失效，
+  不会跨会话泄漏；
+- `allowed-tools` 白名单技能限制仍然生效：白名单外的技能即使被加载也不可用；
+- 独立 Agent（沙箱维护等）不经过按需加载，用 `SkillManager.get_all_tools()` 一次取全量；
+- 可用 `SkillManager(eager_tool_skills=...)` / `build_all_skills(eager_tool_skills=...)`
+  覆盖常驻名单；传 `None` 表示保持「全部常驻」的历史行为。
+
 ## 内置技能清单（30+）
 
 ### 记忆与画像

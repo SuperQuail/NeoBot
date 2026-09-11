@@ -111,8 +111,42 @@ CONFIG_CANDIDATES = (
 )
 
 
+def plugin_config_candidates() -> list[Path]:
+    """面板配置的当前位置：数据目录下 plugins_data/dashboard/config.toml。"""
+    roots: list[Path] = []
+    data_dir = os.environ.get("NEOBOT_DATA_DIR")
+    if data_dir:
+        roots.append(Path(data_dir))
+    here = Path(__file__).resolve().parent
+    for base in (here, here.parent):
+        roots.extend((base / "data", base / "app" / "data", base))
+    return [(root / "plugins_data" / "dashboard" / "config.toml").resolve() for root in roots]
+
+
 def read_dashboard_config() -> tuple[str | None, int | None, str | None]:
-    """从可能的 config.toml 里读 [dashboard] 的 host / port。"""
+    """读面板的 host / port。
+
+    面板配置现在在插件数据目录 ``plugins_data/dashboard/config.toml``（无分区头），
+    旧版本写在本体 ``config.toml`` 的 ``[dashboard]`` 分区，这里两个位置都找一遍。
+    """
+    seen: set[Path] = set()
+    for path in plugin_config_candidates():
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        host_match = re.search(r'^\s*host\s*=\s*"([^"]*)"', text, re.MULTILINE)
+        port_match = re.search(r"^\s*port\s*=\s*(\d+)", text, re.MULTILINE)
+        if host_match is None and port_match is None:
+            continue
+        host = host_match.group(1) if host_match else None
+        port = int(port_match.group(1)) if port_match else None
+        say(INFO, f"已读取插件配置: {path} -> host={host or '未设置'} port={port or '未设置'}")
+        return host, port, str(path)
+
     candidates: list[Path] = []
     data_dir = os.environ.get("NEOBOT_DATA_DIR")
     if data_dir:
@@ -122,7 +156,6 @@ def read_dashboard_config() -> tuple[str | None, int | None, str | None]:
         for rel in CONFIG_CANDIDATES:
             candidates.append((base / rel).resolve())
 
-    seen: set[Path] = set()
     for path in candidates:
         if path in seen or not path.is_file():
             continue
@@ -143,7 +176,7 @@ def read_dashboard_config() -> tuple[str | None, int | None, str | None]:
         port = int(port_match.group(1)) if port_match else None
         say(INFO, f"已读取配置: {path} -> host={host or '未设置'} port={port or '未设置'}")
         return host, port, str(path)
-    say(WARN, "未找到含 [dashboard] 的 config.toml，使用默认端口 9981（可用 --port 指定）")
+    say(WARN, "未找到面板配置（plugins_data/dashboard/config.toml 或含 [dashboard] 的 config.toml），使用默认端口 9981（可用 --port 指定）")
     return None, None, None
 
 
@@ -526,7 +559,7 @@ def diagnose_local(port: int, expected_host: str | None, public_ip_arg: str | No
                 say(OK, f"监听 {label}:{port}（全部网卡）{('进程: ' + name) if name else pid_text}")
             elif label.startswith("127.") or label == "::1":
                 say(FAIL, f"监听 {label}:{port}（仅本机回环，远程必然连不上）")
-                say(INFO, '把 config.toml 的 [dashboard].host 改成 "0.0.0.0" 后重启 NeoBot')
+                say(INFO, '把 plugins_data/dashboard/config.toml 的 host 改成 "0.0.0.0" 后重启 NeoBot')
                 problems += 1
             else:
                 say(WARN, f"监听 {label}:{port}（只绑定单个地址）{('进程: ' + name) if name else pid_text}")

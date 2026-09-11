@@ -1,4 +1,7 @@
-"""第三方插件 plugin.toml 在线编辑：密钥只写不读。"""
+"""插件配置文件在线编辑：密钥只写不读。
+
+配置文件位于插件数据目录 plugins_data/<插件名>/config.toml（官方与第三方插件同一个位置）。
+"""
 
 from __future__ import annotations
 
@@ -13,23 +16,20 @@ from neobot_app.builtin_plugins.dashboard.plugin_config import (
 )
 from neobot_app.builtin_plugins.dashboard.security import SECRET_PLACEHOLDER
 
-PLUGIN_TOML = '''name = "demo"
-version = "1.0.0"
-
-[config]
-api_key = "sk-plugin-secret"
+PLUGIN_CONFIG = '''api_key = "sk-plugin-secret"
 base_url = "https://api.example.com"
 timeout = 30
 
-[config.extra]
+[extra]
 token = "tok-plugin-secret"
 '''
 
 
-def _editor(tmp_path: Path) -> PluginConfigEditor:
-    path = tmp_path / "plugin.toml"
-    path.write_text(PLUGIN_TOML, encoding="utf-8")
-    return PluginConfigEditor(path)
+def _editor(tmp_path: Path, **kwargs) -> PluginConfigEditor:
+    path = tmp_path / "plugins_data" / "demo" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(PLUGIN_CONFIG, encoding="utf-8")
+    return PluginConfigEditor(path, **kwargs)
 
 
 def test_read_masks_secrets_and_disables_source(tmp_path: Path) -> None:
@@ -84,3 +84,28 @@ def test_save_rejects_source_when_secrets_present(tmp_path: Path) -> None:
 
     with pytest.raises(PluginConfigError):
         editor.save(source='api_key = "sk-x"\n')
+
+
+def test_missing_file_renders_defaults_and_creates_on_save(tmp_path: Path) -> None:
+    """配置还没保存过时按插件默认值渲染，首次保存才创建文件。"""
+    path = tmp_path / "plugins_data" / "demo" / "config.toml"
+    editor = PluginConfigEditor(path, defaults={"host": "0.0.0.0", "port": 9981})
+
+    document = editor.read()
+    assert document["exists"] is False
+    assert document["revision"] == ""
+    assert document["config"] == {"host": "0.0.0.0", "port": 9981}
+
+    saved = editor.save(config={"port": 9999})
+    assert saved["exists"] is True
+    assert path.read_text(encoding="utf-8").strip() == "port = 9999"
+    # 未提交的字段继续沿用插件默认值
+    assert saved["config"] == {"host": "0.0.0.0", "port": 9999}
+
+
+def test_saving_empty_config_is_rejected(tmp_path: Path) -> None:
+    """空配置没有意义，直接拒绝，避免写空文件把插件配置抹掉。"""
+    editor = _editor(tmp_path)
+
+    with pytest.raises(PluginConfigError):
+        editor.save(config={})

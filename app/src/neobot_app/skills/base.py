@@ -8,6 +8,7 @@ import inspect
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,8 @@ class SkillExecutionToken:
 class _RegisteredSkill:
     module: Any
     name: str
+    prefix: str
+    exposed: bool
     description: str
     instructions: str
     tools: tuple[dict[str, Any], ...]
@@ -75,6 +78,24 @@ class SkillModule(ABC):
     def session_tools(self) -> set[str]:
         """返回需要以 Session 模式（提交后立即返回，后台执行完成后通知）执行的无前缀工具名集合。"""
         return set()
+
+    @property
+    def tool_prefix(self) -> str:
+        """工具名前缀；默认与技能名相同。
+
+        允许多个技能共享同一前缀（例如把一组工具拆成若干按需子包），
+        此时路由按最终工具名精确匹配，而不是按技能名反查。
+        """
+        return ""
+
+    @property
+    def exposed_to_main_agent(self) -> bool:
+        """是否参与主回复管线的常驻/按需加载。
+
+        返回 False 表示该技能的工具仅供任务型 Agent 或内部组件使用：
+        既不常驻注入，也不会出现在 skills__load_tools 的候选列表里。
+        """
+        return True
 
     @abstractmethod
     def get_tools(self) -> list[dict]:
@@ -132,9 +153,18 @@ class SkillManager:
         result = await mgr.execute("browser__navigate", {"url": "..."})
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, eager_tool_skills: Collection[str] | None = None) -> None:
         self._skills: dict[str, _RegisteredSkill] = {}
         self._session_tools: set[str] = set()
+        # 最终工具名 → 技能名；前缀可以被多个技能共享，因此路由必须按最终名精确匹配。
+        self._final_owners: dict[str, str] = {}
+        # None = 所有技能的工具定义常驻提示词（保持历史行为）。
+        # 给定时，只有列表内的技能常驻，其余技能的工具定义改为
+        # skills__load_tools 按需加载：工具 schema 会随每次模型调用一起发送，
+        # 全部常驻时实测在 2 万 token 以上。
+        self._eager_tool_skills: set[str] | None = (
+            set(eager_tool_skills) if eager_tool_skills is not None else None
+        )
 
     def register(self, skill: SkillModule) -> None:
         """注册一个 Skill 模块。"""
@@ -162,6 +192,14 @@ class SkillManager:
             )
         if reset is not None and not callable(reset):
             raise ValueError(f"Skill {name!r} reset must be callable")
+        raw_prefix = getattr(skill, "tool_prefix", "") or name
+        if not isinstance(raw_prefix, str) or not _SKILL_NAME_RE.fullmatch(raw_prefix):
+            raise ValueError(f"Skill {name!r} 工具前缀无效: {raw_prefix!r}")
+        if _SEPARATOR in raw_prefix or raw_prefix.endswith("_"):
+            raise ValueError(f"Skill {name!r} 工具前缀与分隔符冲突: {raw_prefix!r}")
+        exposed = getattr(skill, "exposed_to_main_agent", True)
+        if not isinstance(exposed, bool):
+            raise ValueError(f"Skill {name!r} exposed_to_main_agent must be a bool")
         try:
             raw_tools = get_tools()
         except Exception as exc:
@@ -175,13 +213,17 @@ class SkillManager:
         local_names: set[str] = set()
         for index, tool_def in enumerate(raw_tools):
             original_name, validated = _validate_tool_definition(tool_def, name, index)
-            final_name = f"{name}{_SEPARATOR}{original_name}"
+            final_name = f"{raw_prefix}{_SEPARATOR}{original_name}"
             if not _FINAL_NAME_RE.fullmatch(final_name):
                 raise ValueError(f"无效的最终工具名: {final_name!r}")
             if final_name in _RESERVED_FINAL_TOOL_NAMES:
                 raise ValueError(f"保留的最终工具名: {final_name}")
-            if original_name in local_names:
-                raise ValueError(f"重复的最终工具定义: {final_name}")
+            if original_name in local_names or final_name in self._final_owners:
+                owner = self._final_owners.get(final_name)
+                raise ValueError(
+                    f"重复的最终工具定义: {final_name}"
+                    + (f"（已被技能 {owner!r} 注册）" if owner else "")
+                )
             local_names.add(original_name)
             validated["function"]["name"] = final_name
             tools.append(validated)
@@ -199,6 +241,8 @@ class SkillManager:
         registered = _RegisteredSkill(
             module=skill,
             name=name,
+            prefix=raw_prefix,
+            exposed=exposed,
             description=description,
             instructions=instructions,
             tools=tuple(tools),
@@ -206,8 +250,11 @@ class SkillManager:
             session_tools=frozenset(raw_session_tools),
         )
         self._skills[name] = registered
+        for final_name in tokens:
+            self._final_owners[final_name] = name
         self._session_tools.update(
-            f"{name}{_SEPARATOR}{tool_name}" for tool_name in registered.session_tools
+            f"{raw_prefix}{_SEPARATOR}{tool_name}"
+            for tool_name in registered.session_tools
         )
 
     def unregister(self, name: str) -> None:
@@ -215,8 +262,11 @@ class SkillManager:
         registration = self._skills.pop(name, None)
         if registration is None:
             return
+        for final_name in registration.tokens:
+            if self._final_owners.get(final_name) == name:
+                self._final_owners.pop(final_name, None)
         for tool_name in registration.session_tools:
-            self._session_tools.discard(f"{name}{_SEPARATOR}{tool_name}")
+            self._session_tools.discard(f"{registration.prefix}{_SEPARATOR}{tool_name}")
 
     def get(self, name: str) -> SkillModule | None:
         registration = self._skills.get(name)
@@ -230,8 +280,63 @@ class SkillManager:
     def skill_names(self) -> list[str]:
         return list(self._skills.keys())
 
-    def get_tools(self) -> list[dict]:
-        """聚合所有 Skill 的工具定义，自动加 ``{name}__`` 前缀。"""
+    def is_tool_deferred(self, name: str) -> bool:
+        """该技能的工具定义是否默认不注入提示词(需 skills__load_tools 加载)。"""
+        if self._eager_tool_skills is None:
+            return False
+        return name not in self._eager_tool_skills
+
+    @property
+    def deferred_skill_names(self) -> list[str]:
+        """全部被延后加载的技能名(仍会以一行摘要出现在提示词索引里)。
+
+        不参与主回复管线的技能(exposed_to_main_agent=False)不会出现在这里：
+        它们既不能常驻，也不能被 skills__load_tools 加载。
+        """
+        return [
+            name
+            for name, registration in self._skills.items()
+            if registration.exposed and self.is_tool_deferred(name)
+        ]
+
+    def skill_tool_names(self, name: str) -> list[str]:
+        """指定技能的最终工具名列表(已加前缀)。"""
+        registration = self._skills.get(name)
+        if registration is None:
+            return []
+        return [tool["function"]["name"] for tool in registration.tools]
+
+    def get_tools(
+        self,
+        activated: Iterable[str] | None = None,
+        *,
+        resident: Collection[str] | None = None,
+    ) -> list[dict]:
+        """聚合 Skill 的工具定义，自动加 ``{prefix}__`` 前缀。
+
+        activated 中列出的技能会连同常驻技能一起返回；被延后加载的技能
+        只有被显式激活后才会出现在提示词里(见 skills__load_tools)。
+
+        resident=None 使用管理器自身的常驻策略；传入集合则按该集合常驻
+        （不同 Agent 需要不同的常驻技能，例如沙箱维护 Agent 只需要维护相关技能）。
+        """
+        active = set(activated or ())
+        eager = self._eager_tool_skills if resident is None else set(resident)
+        tools: list[dict] = []
+        for name, registration in self._skills.items():
+            if not registration.exposed:
+                continue
+            if eager is not None and name not in eager and name not in active:
+                continue
+            tools.extend(_deep_copy(tool) for tool in registration.tools)
+        return tools
+
+    def get_all_tools(self) -> list[dict]:
+        """返回全部技能的工具定义（忽略按需加载策略）。
+
+        仅用于自建工具集的独立 Agent（沙箱维护等）：它们不经过主回复管线的
+        按需加载流程，必须一次拿到全部工具。
+        """
         tools: list[dict] = []
         for registration in self._skills.values():
             tools.extend(_deep_copy(tool) for tool in registration.tools)
@@ -249,11 +354,13 @@ class SkillManager:
         return [_deep_copy(tool) for tool in registration.tools]
 
     def capture_execution_token(self, prefixed_name: str) -> SkillExecutionToken | None:
-        parsed = self._parse_name(prefixed_name)
-        if parsed is None:
-            return None
-        registration = self._skills.get(parsed[0])
+        registration = self._owner_of(prefixed_name)
         return registration.tokens.get(prefixed_name) if registration else None
+
+    def _owner_of(self, prefixed_name: str) -> _RegisteredSkill | None:
+        """按最终工具名精确定位注册项(前缀可被多个技能共享)。"""
+        owner = self._final_owners.get(prefixed_name)
+        return self._skills.get(owner) if owner else None
 
     def get_instructions(self) -> str:
         """聚合所有 Skill 的一行摘要(默认注入提示词,节省 token)。
@@ -263,6 +370,8 @@ class SkillManager:
         """
         lines: list[str] = []
         for registration in self._skills.values():
+            if not registration.exposed:
+                continue
             summary = self._instructions_summary(registration)
             if summary:
                 lines.append(summary)
@@ -303,34 +412,27 @@ class SkillManager:
         args: dict[str, Any],
         token: SkillExecutionToken | None = None,
     ) -> str:
-        """路由执行：解析 ``{name}__{tool}`` 并分派到对应的 Skill。"""
-        supplied_token = token is not None
-        parsed = (
-            self._split_name(prefixed_name)
-            if supplied_token
-            else self._parse_name(prefixed_name)
-        )
-        if parsed is None:
-            available = ", ".join(self._skills)
+        """路由执行：按最终工具名 ``{prefix}__{tool}`` 分派到对应的 Skill。"""
+        registration = self._owner_of(prefixed_name)
+        if registration is None:
+            if token is not None:
+                # 调用方持有令牌但注册项已注销/重建
+                return f"{_STALE_TOOL_ERROR} [{prefixed_name}]"
+            prefixes = sorted({r.prefix for r in self._skills.values()})
+            parsed = self._split_name(prefixed_name)
+            if parsed is not None and parsed[0] in prefixes:
+                return f"未知工具: {prefixed_name}"
+            available = ", ".join(prefixes)
             return (
                 f"未知工具: {prefixed_name}\n"
                 f"可用工具名前缀: {available}\n"
-                f"格式: {{skill_name}}{_SEPARATOR}{{tool_name}}"
+                f"格式: {{prefix}}{_SEPARATOR}{{tool_name}}"
             )
-
-        skill_name, tool_name = parsed
-        registration = self._skills.get(skill_name)
         if token is None:
-            token = registration.tokens.get(prefixed_name) if registration else None
-        elif (
-            registration is None or registration.tokens.get(prefixed_name) is not token
-        ):
+            token = registration.tokens.get(prefixed_name)
+        elif registration.tokens.get(prefixed_name) is not token:
             return f"{_STALE_TOOL_ERROR} [{prefixed_name}]"
-        if (
-            token is None
-            or token.final_name != prefixed_name
-            or token.local_name != tool_name
-        ):
+        if token is None or token.final_name != prefixed_name:
             return f"未知工具: {prefixed_name}"
 
         try:
@@ -345,7 +447,7 @@ class SkillManager:
             safe_detail = redact_sensitive(raw)
             logger.warning(
                 f"技能工具执行失败: {prefixed_name}",
-                skill=skill_name,
+                skill=registration.prefix,
                 tool=token.local_name,
                 # 日志同样只能用脱敏后的文本：异常里可能带密钥，而日志会进
                 # 文件/控制台/自修复采集。

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from neobot_contracts.ports.clock import SystemClock
@@ -69,6 +70,9 @@ from neobot_app.bootstrap._pipeline import (
     register_config_reload_command,
     register_host_services,
 )
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
@@ -100,8 +104,63 @@ _MAINTENANCE_SYSTEM_PROMPT = (
     "7. 完成后调用 file_storage__update_storage_doc 更新索引\n\n"
     "## 注意\n"
     "- 只做文件清理和整理，不实现新工具，不处理 TODO\n"
-    "- 输出简洁明了，完成每步后汇报结果"
+    "- 输出简洁明了，完成每步后汇报结果\n\n"
+    "## 按需加载工具\n"
+    "- 常驻工具只覆盖维护常用能力；需要其它技能时先调用 skills__load_tools 加载"
+    "（如 [\"gallery\"]、[\"agent_tools_files\"]），加载后本轮即可直接调用"
 )
+
+# 沙箱维护 Agent 的常驻技能：它每次运行要发 16~23 次模型调用，
+# 常驻全部技能（173 个工具 / 71K 字符）是纯固定开销；其余能力用 skills__load_tools 按需加载。
+MAINTENANCE_RESIDENT_SKILLS = frozenset(
+    {"archive", "file_storage", "sandbox_maintenance", "sandbox_manager"}
+)
+
+# 沙箱维护调度默认间隔（可被 agent.sandbox.maintenance.interval_seconds 覆盖）。
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 10800
+
+
+@dataclass(frozen=True)
+class MaintenancePlan:
+    """本轮沙箱维护的调度决定。"""
+
+    due: bool
+    wait_seconds: float
+    reason: str
+
+
+def plan_maintenance_run(
+    *,
+    last_success: datetime | None,
+    last_status: str | None,
+    interval_seconds: int,
+    now: datetime,
+) -> MaintenancePlan:
+    """按数据库里的历史决定本轮是否需要跑沙箱维护。
+
+    - 上一次没能正常结束（failed / running，后者多为进程中断）→ 立即补跑；
+    - 从未成功过 → 跑；
+    - 距上次成功已超过间隔 → 跑；
+    - 否则跳过，并给出需等待的秒数。
+
+    时间列按无时区 UTC 解读（与写入时的归一化保持一致）。
+    """
+    if last_status in _MAINTENANCE_RETRY_STATUSES:
+        return MaintenancePlan(True, 0.0, "")
+    if last_success is None:
+        return MaintenancePlan(True, 0.0, "")
+    stamp = last_success if last_success.tzinfo else last_success.replace(tzinfo=timezone.utc)
+    elapsed = (now - stamp).total_seconds()
+    if elapsed >= interval_seconds:
+        return MaintenancePlan(True, 0.0, "")
+    remaining = interval_seconds - elapsed
+    reason = (
+        f"距上次成功维护仅 {int(elapsed)} 秒（配置间隔 {interval_seconds} 秒），"
+        f"约 {int(remaining)} 秒后到期"
+    )
+    return MaintenancePlan(False, remaining, reason)
+# 这些状态说明上一次维护没有正常完成，启动后应立即补跑一次。
+_MAINTENANCE_RETRY_STATUSES = frozenset({"failed", "running"})
 
 
 def _build_provider_reload_consumer(
@@ -186,13 +245,15 @@ def _make_maintenance_coro(
     admin_id: str,
     logger: Any,
     prompt_store: Any = None,
+    engine: Any = None,
+    interval_seconds: int = DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
 ):
-    """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。"""
-    from dataclasses import dataclass
+    """创建沙箱维护 AI Agent 后台循环协程。不经过聊天流，直接调用 AI。
 
+    调度以数据库里的运行记录为准：进程重启不再无条件重跑一次，
+    而是看「距上次成功维护是否已到 interval_seconds」；上次失败/中断则立即补跑。
+    """
     from neobot_chat.runtime.agent import Agent
-    from neobot_chat.tools.toolset import ToolSpec, Toolset
-    from neobot_chat.schema.types import ToolAccessRule
 
     maintenance_prompt = _MAINTENANCE_SYSTEM_PROMPT
     if prompt_store is not None:
@@ -200,32 +261,150 @@ def _make_maintenance_coro(
             "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
         )
 
-    @dataclass(frozen=True)
-    class _SkillToolExecutor:
-        _mgr: Any = skill_manager
+    from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
 
-        def definitions(self):
-            return self._mgr.get_tools()
+    # 常驻精简集 + skills__load_tools 按需加载：维护 Agent 每轮都重算工具集。
+    toolset = LiveToolset(
+        executor=SkillToolsetExecutor(
+            skill_manager, resident=MAINTENANCE_RESIDENT_SKILLS
+        )
+    )
 
-        async def execute(self, name: str, args: dict) -> str:
-            return await self._mgr.execute(name, args)
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        async def close(self) -> None:
-            pass
+    from neobot_storage.models import MaintenanceRunRecord
+    from neobot_storage.repositories.maintenance import (
+        SqlAlchemyMaintenanceRunRepository,
+    )
 
-    def _always_allow(_args: dict, _ctx: Any, _policy: Any) -> ToolAccessRule:
-        return ToolAccessRule(action="allow")
+    from neobot_app.time_context import now_utc
 
-    tool_defs = skill_manager.get_tools()
-    specs = [ToolSpec(definition=d, access_resolver=_always_allow) for d in tool_defs]
-    toolset = Toolset(executor=_SkillToolExecutor(), specs=specs)
+    session_factory = (
+        async_sessionmaker(engine, expire_on_commit=False) if engine is not None else None
+    )
+    interval = max(60, int(interval_seconds))
+
+    def _stored(value: datetime | None) -> datetime | None:
+        """时间列一律存无时区 UTC。"""
+        return None if value is None else value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def _as_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        # 列里是无时区 UTC，不能按本地时区解读
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    async def _history() -> tuple[datetime | None, str | None]:
+        """(最近一次成功维护时间, 最近一次尝试的状态)；读不到时返回 (None, None)。"""
+        if session_factory is None:
+            return None, None
+        try:
+            async with session_factory() as session:
+                repo = SqlAlchemyMaintenanceRunRepository(session)
+                success = await repo.last_finished_success()
+                attempt = await repo.last_attempt()
+                return (
+                    success.started_at if success is not None else None,
+                    attempt.status if attempt is not None else None,
+                )
+        except Exception as exc:  # 数据库不可用不应让维护永久停摆
+            logger.warning(f"沙箱维护：读取运行记录失败，按到期处理: {exc}")
+            return None, None
+
+    async def _begin(trigger: str) -> int | None:
+        if session_factory is None:
+            return None
+        try:
+            async with session_factory() as session:
+                record = MaintenanceRunRecord(
+                    started_at=_stored(now_utc()),
+                    status="running",
+                    trigger=trigger,
+                    tool_calls=0,
+                )
+                await SqlAlchemyMaintenanceRunRepository(session).add(record)
+                await session.commit()
+                return record.id
+        except Exception as exc:
+            logger.warning(f"沙箱维护：写入运行记录失败: {exc}")
+            return None
+
+    async def _finish(
+        run_id: int | None,
+        *,
+        status: str,
+        tool_calls: int = 0,
+        summary: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if session_factory is None or run_id is None:
+            return
+        try:
+            async with session_factory() as session:
+                await SqlAlchemyMaintenanceRunRepository(session).finish(
+                    run_id,
+                    status=status,
+                    finished_at=_stored(now_utc()),
+                    tool_calls=tool_calls,
+                    summary=summary,
+                    error=error,
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(f"沙箱维护：结算运行记录失败: {exc}")
+
+    async def _record_skip(trigger: str, reason: str) -> None:
+        if session_factory is None:
+            return
+        try:
+            async with session_factory() as session:
+                stamp = _stored(now_utc())
+                await SqlAlchemyMaintenanceRunRepository(session).add(
+                    MaintenanceRunRecord(
+                        started_at=stamp,
+                        finished_at=stamp,
+                        status="skipped",
+                        trigger=trigger,
+                        tool_calls=0,
+                        skipped_reason=reason[:500],
+                    )
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(f"沙箱维护：写入跳过记录失败: {exc}")
 
     async def _loop() -> None:
         await asyncio.sleep(60)
+        first_pass = True
         while True:
+            trigger = "startup" if first_pass else "interval"
+            first_pass = False
+
+            last_success, last_status = await _history()
+            if last_status in _MAINTENANCE_RETRY_STATUSES:
+                logger.info(f"沙箱维护：上次记录状态为 {last_status}，立即补跑一次")
+            plan = plan_maintenance_run(
+                last_success=last_success,
+                last_status=last_status,
+                interval_seconds=interval,
+                now=now_utc(),
+            )
+            if not plan.due:
+                logger.info(f"沙箱维护未到期，跳过本轮：{plan.reason}")
+                await _record_skip(trigger, plan.reason)
+                try:
+                    # 分片上界避免长时间休眠拖延配置变更/关闭
+                    await asyncio.sleep(min(max(plan.wait_seconds, 60.0), 1800.0))
+                except asyncio.CancelledError:
+                    raise
+                continue
+
             agent: Agent | None = None
+            run_id: int | None = None
+            tool_count = 0
             try:
                 logger.info("沙箱维护 Agent 开始执行")
+                run_id = await _begin(trigger)
                 agent = Agent(
                     provider=provider,
                     toolset=toolset,
@@ -253,10 +432,14 @@ def _make_maintenance_coro(
                     f"沙箱维护完成: {tool_count} 次工具调用, "
                     f"最后输出: {last_content}"
                 )
+                await _finish(
+                    run_id, status="success", tool_calls=tool_count, summary=last_content
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning(f"沙箱维护 Agent 异常: {exc}")
+                await _finish(run_id, status="failed", tool_calls=tool_count, error=str(exc))
             finally:
                 if agent is not None:
                     try:
@@ -266,29 +449,165 @@ def _make_maintenance_coro(
                     except Exception as exc:
                         logger.warning(f"沙箱维护 Agent 关闭异常: {exc}")
             try:
-                await asyncio.sleep(10800)  # 3 小时
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
 
     return _loop()
 
 
-def create_application() -> NeoBotApplication:
-    configure_loguru(DATA_DIR / "logs", runtime_events=True)
-    logger_factory = LoguruLoggerFactory()
-    config = build_config()
+# ── 核心对象复用（待机软重启）────────────────────────────────
+# 软重启要「按新配置重建 bot 运行时」，但核心对象（日志/配置/数据库/适配器/插件主机/
+# 命令服务/插件运行时/文件服务/待机服务）必须复用：重建它们会抢端口、丢插件命令、
+# 把面板一起重启，还会让几十处持有引用的组件失联。
+#
+# 因此这里用「显式开启的对象缓存」代替把 1000 行的 _build_app 拆成两段：
+# - 默认关闭：普通调用与测试完全不受影响（每次都是全新对象）；
+# - 由待机装配路径 enable_core_reuse() 打开：第一次构建把核心对象放进缓存，
+#   之后每次 create_application() 复用它们，只重建 bot 侧对象。
+_REUSE_ENABLED = False
+_CORE_CACHE: dict[str, Any] = {}
+
+#: 配置加载失败的原因（缺失必需项 / config.toml 解析失败）。非空表示「启动即待机」，
+#: 让面板先起来、用户就地修配置，改完点「软重启运行」即可，不必重启进程。
+_CONFIG_ERROR = ""
+
+
+def config_load_error() -> str:
+    """最近一次配置加载失败的原因（成功时为空串）。"""
+    return _CONFIG_ERROR
+
+
+def _load_config_or_defaults() -> Any:
+    """加载配置；失败时**不退出程序**，返回默认配置并记录原因。
+
+    过去缺失必需项或解析失败会让进程直接退出，用户只能改文件再重启。现在改为：
+    用默认配置把核心服务（面板、配置编辑、命令、数据库）拉起来并进入待机。
+    """
+    global _CONFIG_ERROR
+    try:
+        config = build_config()
+    except Exception as exc:
+        _CONFIG_ERROR = f"{type(exc).__name__}: {exc}".strip()
+        # 失败时不缓存配置：软重启必须重新读文件，否则会一直复用这份兜底配置
+        _CORE_CACHE.pop("config", None)
+        from neobot_app.config.loader.converter import dict_to_dataclass
+        from neobot_app.config.proxy import ConfigProxy
+        from neobot_app.config.schemas.bot import BotConfig
+
+        # 兜底也返回 ConfigProxy：配置损坏时面板/QQ 的「配置重载」仍要能跑，
+        # 否则会在这条路径上抛 AttributeError，用户就没有别的恢复手段了。
+        return ConfigProxy(dict_to_dataclass({}, BotConfig))
+    _CONFIG_ERROR = ""
+    return config
+
+
+
+
+
+def enable_core_reuse() -> None:
+    """开启核心对象复用（幂等）：待机控制器接线时调用一次。"""
+    global _REUSE_ENABLED
+    _REUSE_ENABLED = True
+
+
+def disable_core_reuse() -> None:
+    """关闭复用并清空缓存（测试隔离用）。"""
+    global _REUSE_ENABLED
+    _REUSE_ENABLED = False
+    _CORE_CACHE.clear()
+
+
+def get_cached_core(key: str, default: Any = None) -> Any:
+    """读取已缓存的核心对象（未开启复用或未构建时为 default）。"""
+    return _CORE_CACHE.get(key, default)
+
+
+def _reuse_or(key: str, factory: Callable[[], Any]) -> Any:
+    """复用缓存中的核心对象；首次调用时用 factory 构建并缓存。"""
+    if _REUSE_ENABLED and key in _CORE_CACHE:
+        return _CORE_CACHE[key]
+    value = factory()
+    if _REUSE_ENABLED:
+        _CORE_CACHE[key] = value
+    return value
+
+
+def _load_config_for_reuse() -> Any:
+    """软重启复用的配置加载：兜底默认值绝不进缓存。
+
+    配置加载失败时 _load_config_or_defaults 返回的是默认配置，若被 _reuse_or
+    写回缓存，用户修好 config.toml 后每次软重启都会复用这份空配置、
+    _CONFIG_ERROR 也永远清不掉，恢复路径形同虚设。
+    """
+    config = _reuse_or("config", _load_config_or_defaults)
+    if _CONFIG_ERROR:
+        _CORE_CACHE.pop("config", None)
+    return config
+
+
+def _run_once(key: str, action: Callable[[], Any]) -> None:
+    """只执行一次（复用开启时）：避免软重启重复配置日志等全局副作用。"""
+    if _REUSE_ENABLED and key in _CORE_CACHE:
+        return
+    action()
+    if _REUSE_ENABLED:
+        _CORE_CACHE[key] = True
+
+
+def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
+    """迁移前备份 → 跑迁移 → 建引擎（核心对象，软重启复用）。"""
+    backup_logger = logger_factory.get_logger("app.db_backup")
+    backup_path = backup_sqlite_database(db_path, DATA_DIR / "db_backup", logger=backup_logger)
+    if backup_path is not None:
+        backup_logger.info(f"迁移前已备份数据库: {backup_path}")
+    run_migrations(db_url)
+    return build_storage(db_url)
+
+
+def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
+    _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
+    logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
+    config = _load_config_for_reuse()
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
-    prompt_store = PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
+    prompt_store = _reuse_or(
+        "prompt_store",
+        lambda: PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt")),
+    )
 
     # ── 睡眠服务(/sleep /awake 命令、睡眠 skill、事件管线共用) ──
     from neobot_app.runtime.sleep_service import SleepService
 
-    sleep_service = SleepService(
-        prompt_store=prompt_store,
-        logger=logger_factory.get_logger("app.sleep"),
+    sleep_service = _reuse_or(
+        "sleep_service",
+        lambda: SleepService(
+            prompt_store=prompt_store,
+            logger=logger_factory.get_logger("app.sleep"),
+        ),
     )
+
+    # ── 待机服务(面板待机按钮、/standby /reboot 共用的状态机) ──
+    # 待机 = 停掉 bot 运行时、只留面板与命令；运行时的停/启由装配层通过回调注入。
+    from neobot_app.runtime.standby_service import StandbyService
+
+    standby_cfg = getattr(config, "standby", None)
+    standby_service = _reuse_or(
+        "standby_service",
+        lambda: StandbyService(
+            logger=logger_factory.get_logger("app.standby"),
+            state_path=DATA_DIR / "standby.json",
+            connect_onebot=bool(getattr(standby_cfg, "connect_onebot", True)),
+            # 配置缺失时强制「启动即待机」：用默认配置把面板拉起来修配置
+            start_in_standby=bool(_CONFIG_ERROR)
+            or bool(getattr(standby_cfg, "start_in_standby", False)),
+        ),
+    )
+    if _CONFIG_ERROR:
+        standby_service.set_startup_reason(
+            f"配置缺失，已进入待机等待修复：{_CONFIG_ERROR}"
+        )
 
     # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
     from neobot_app.cache import CacheCalculator
@@ -303,8 +622,11 @@ def create_application() -> NeoBotApplication:
         logger=logger_factory.get_logger("app.cache"),
     )
 
-    debug_recorder = build_debug_recorder(
-        config=config, logger=logger_factory.get_logger("app.debug")
+    debug_recorder = _reuse_or(
+        "debug_recorder",
+        lambda: build_debug_recorder(
+            config=config, logger=logger_factory.get_logger("app.debug")
+        ),
     )
 
     # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
@@ -316,34 +638,42 @@ def create_application() -> NeoBotApplication:
     # （如 0021 的去重 DELETE），失败时没有备份就只能人工恢复。
     db_path = DATA_DIR / "neobot.db"
     db_url = sqlite_url(db_path)
-    db_backup_logger = logger_factory.get_logger("app.db_backup")
-    backup_path = backup_sqlite_database(
-        db_path, DATA_DIR / "db_backup", logger=db_backup_logger
+    _engine, uow_factory = _reuse_or(
+        "storage", lambda: _build_storage(db_path, db_url, logger_factory)
     )
-    if backup_path is not None:
-        db_backup_logger.info(f"迁移前已备份数据库: {backup_path}")
-    run_migrations(db_url)
-    _engine, uow_factory = build_storage(db_url)
 
-    usage = build_usage_components(_engine=_engine, logger_factory=logger_factory)
+    usage = _reuse_or(
+        "usage",
+        lambda: build_usage_components(_engine=_engine, logger_factory=logger_factory),
+    )
 
     group_queue, friend_queue = build_message_queues(config=config)
 
-    adapter = build_adapter_service(
-        config=config,
-        logger=logger_factory.get_logger("adapter"),
-        debug_recorder=debug_recorder,
+    adapter = _reuse_or(
+        "adapter",
+        lambda: build_adapter_service(
+            config=config,
+            logger=logger_factory.get_logger("adapter"),
+            debug_recorder=debug_recorder,
+        ),
     )
 
     # ── 配置热重载编排：组件自己声明关心哪些配置项并负责生效 ──
     # 装配顺序即生效顺序：适配器先恢复连接，其余组件再按新配置重建。
-    hot_reload_registry = HotReloadRegistry(
-        [AdapterSupervisor(adapter, logger=logger_factory.get_logger("app.adapter_reload"))],
-        logger=logger_factory.get_logger("app.hot_reload"),
+    hot_reload_registry = _reuse_or(
+        "hot_reload_registry",
+        lambda: HotReloadRegistry(
+            [
+                AdapterSupervisor(
+                    adapter, logger=logger_factory.get_logger("app.adapter_reload")
+                )
+            ],
+            logger=logger_factory.get_logger("app.hot_reload"),
+        ),
     )
 
     # ── 插件主机基础设施 ──
-    plugin = build_plugin_host(logger_factory=logger_factory)
+    plugin = _reuse_or("plugin", lambda: build_plugin_host(logger_factory=logger_factory))
 
     # ── 记忆 / 用户画像 / 意愿 / 提示词 ──
     memory_svcs = build_memory_services(
@@ -376,7 +706,9 @@ def create_application() -> NeoBotApplication:
         vision_provider=vision_provider,
         logger_factory=logger_factory,
     )
-    file_server = build_file_server(config=config, data_dir=DATA_DIR)
+    file_server = _reuse_or(
+        "file_server", lambda: build_file_server(config=config, data_dir=DATA_DIR)
+    )
     image_pool = build_image_pool()
 
     # ── 运行时组件 ──
@@ -505,14 +837,18 @@ def create_application() -> NeoBotApplication:
             "changes": result.get("changes"),
         }
 
-    command_service = build_command_service(
+    command_service = _reuse_or(
+        "command_service",
+        lambda: build_command_service(
         config=config,
         adapter=adapter,
         logger_factory=logger_factory,
         markdown_image_converter=markdown_image_converter,
         file_server=file_server,
         sleep_service=sleep_service,
+        standby_service=standby_service,
         config_reload_callback=_reload_config_from_command,
+    ),
     )
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
@@ -569,7 +905,9 @@ def create_application() -> NeoBotApplication:
     )
     plugin["host_facade"]._set_skills(skill_manager)
 
-    plugin_runtime = build_plugin_runtime(
+    plugin_runtime = _reuse_or(
+        "plugin_runtime",
+        lambda: build_plugin_runtime(
         config=config,
         adapter=adapter,
         logger_factory=logger_factory,
@@ -582,6 +920,15 @@ def create_application() -> NeoBotApplication:
         skills_registry=markdown_skill_registry,
         screenshots=browser["screenshots"],
         command_registry=command_service.registry if command_service is not None else None,
+    ),
+    )
+
+    # 插件运行时是核心对象：软重启会重建 agent/skill 注册表与截图端口，必须显式
+    # 绑定新代际，否则插件注册会落在上一代对象上（插件 Agent/Skill 静默消失）。
+    plugin_runtime.bind_generation(
+        agent_registry=agent_registry,
+        skills_registry=markdown_skill_registry,
+        screenshots=browser["screenshots"],
     )
 
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
@@ -599,6 +946,7 @@ def create_application() -> NeoBotApplication:
         fallback_provider=provider,
         logger_factory=logger_factory,
         skill_manager=skill_manager,
+        standby_service=standby_service,
     )
     tts_service = build_tts_service(config=config, logger_factory=logger_factory)
 
@@ -668,6 +1016,7 @@ def create_application() -> NeoBotApplication:
         credential_manager=credential_manager,
         config_update_callback=_make_chat_config_update_callback(config),
         sleep_service=sleep_service,
+        standby_service=standby_service,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
@@ -688,6 +1037,8 @@ def create_application() -> NeoBotApplication:
         initial_vision_provider=vision_provider,
     )
     # 配置对象在运行期会被 ConfigProxy 原地替换，因此 builder 每次现取。
+    # 软重启会重建 provider：先移除指向上一轮对象的消费者，再注册新的
+    hot_reload_registry.unregister(getattr(_provider_reload, 'name', 'provider'))
     hot_reload_registry.register(_provider_reload)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
@@ -700,6 +1051,12 @@ def create_application() -> NeoBotApplication:
         and admin_accounts
         and provider is not None
     ):
+        _sandbox_cfg = getattr(config.agent, "sandbox", None)
+        _maintenance_cfg = getattr(_sandbox_cfg, "maintenance", None)
+        maintenance_interval = int(
+            getattr(_maintenance_cfg, "interval_seconds", None)
+            or DEFAULT_MAINTENANCE_INTERVAL_SECONDS
+        )
         maintenance_coros.append(
             _make_maintenance_coro(
                 provider=provider,
@@ -709,8 +1066,227 @@ def create_application() -> NeoBotApplication:
                 admin_id=admin_accounts[0],
                 logger=logger_factory.get_logger("app.sandbox_maintenance_agent"),
                 prompt_store=prompt_store,
+                engine=_engine,
+                interval_seconds=maintenance_interval,
             )
         )
+
+    # ── 提示词分析（面板「分析」页）：只做本地装配统计，不调用模型 ──
+    from neobot_app.analysis.agent_spec import PromptPartsProvider
+    from neobot_app.analysis.prompt_analysis import PromptAnalyzer, tools_to_text
+
+    prompt_analyzer = PromptAnalyzer(logger=logger_factory.get_logger("app.analysis"))
+
+    async def _main_agent_parts() -> list:
+        try:
+            empty_queue = type(group_queue)()
+        except Exception:
+            empty_queue = group_queue
+        system_prompt = await memory_svcs["prompt_builder"].build_group_chat_prompt(
+            0, empty_queue
+        )
+        from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
+
+        definitions = LiveToolset(executor=SkillToolsetExecutor(skill_manager)).definitions()
+        return [
+            ("系统提示词（群聊 · 空聊天）", "system", system_prompt),
+            (f"工具定义（{len(definitions)} 个 · 全部 skill 包）", "tools", tools_to_text(definitions)),
+        ]
+
+    async def _maintenance_agent_parts() -> list:
+        prompt = _MAINTENANCE_SYSTEM_PROMPT
+        if prompt_store is not None:
+            prompt = prompt_store.get(
+                "maintenance", "system_prompt", default=_MAINTENANCE_SYSTEM_PROMPT
+            )
+        from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
+
+        definitions = LiveToolset(
+            executor=SkillToolsetExecutor(skill_manager, resident=MAINTENANCE_RESIDENT_SKILLS)
+        ).definitions()
+        return [
+            ("系统提示词", "system", prompt),
+            (f"工具定义（{len(definitions)} 个 · 常驻精简集）", "tools", tools_to_text(definitions)),
+        ]
+
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "主 Agent（对话）",
+            _main_agent_parts,
+            agent_kind="agent",
+            agent_note="空聊天（不含历史与记忆）；工具按全部 skill 包统计，实际请求还会按 agent 模式裁剪",
+        )
+    )
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "沙箱维护 Agent",
+            _maintenance_agent_parts,
+            agent_kind="agent",
+            agent_note="独立 AI 循环：常驻精简工具集 + 按需加载",
+        )
+    )
+
+    def _archive_summary_parts() -> list:
+        service = archive_summary_service
+        prompt = service._build_summary_prompt(
+            conversation_kind="group", conversation_id="0", messages=[]
+        )
+        definitions = list(getattr(service, "_tool_definitions", []) or [])
+        parts = [("总结指令（群聊 · 空会话）", "system", prompt)]
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+    def _problem_solver_parts() -> list:
+        from neobot_app.agents.problem_solver import _build_system_prompt
+
+        cfg = getattr(getattr(config, "agent", None), "problem_solver", None)
+        return [("系统提示词", "system", _build_system_prompt(cfg, prompt_store=prompt_store))]
+
+    def _self_heal_parts() -> list:
+        from neobot_app.agents.self_heal import SelfHealAgentConfig, _build_system_prompt
+
+        cfg = getattr(getattr(config, "agent", None), "self_heal", None) or SelfHealAgentConfig()
+        return [("系统提示词", "system", _build_system_prompt(cfg, prompt_store=prompt_store))]
+
+    def _delegation_parts() -> list:
+        instructions = ""
+        description = ""
+        if skill_manager is not None:
+            for key in ("agents", "agent_delegation"):
+                skill = skill_manager.get(key)
+                if skill is None:
+                    continue
+                value = getattr(skill, "instructions", "") or ""
+                if isinstance(value, str) and value.strip():
+                    instructions = value
+                description = str(getattr(skill, "description", "") or "")
+                if instructions:
+                    break
+        parts = []
+        if instructions:
+            parts.append(("工具使用指令", "instructions", instructions))
+        if description:
+            parts.append(("技能描述（注入给模型的工具说明）", "instructions", description))
+        if not parts:
+            parts.append(("工具使用指令", "instructions", ""))
+        return parts
+
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "子 Agent 委派（agents__*）",
+            _delegation_parts,
+            agent_kind="instructions",
+            agent_note="委派工具的使用指令；可用子 Agent 列表由 agents__list 在运行时给出",
+        )
+    )
+
+    # 解题/自修复 Agent 的工具定义：优先取运行时 agent 实例上真正会发出去的清单，
+    # 取不到再回退模块级构造器（避免分析页只显示提示词、漏掉工具这一大块）。
+    def _problem_solver_parts() -> list:
+        from neobot_app.agents.problem_solver import (
+            ProblemSolverAgentConfig,
+            _build_system_prompt,
+            build_problem_solver_toolset,
+        )
+
+        schema_cfg = getattr(getattr(config, "agent", None), "problem_solver", None)
+        parts = [
+            ("系统提示词", "system", _build_system_prompt(schema_cfg, prompt_store=prompt_store))
+        ]
+        definitions: list = []
+        agent = getattr(problem_solver_manager, "_agent", None)
+        if agent is not None:
+            definitions = list(getattr(agent, "tool_definitions", []) or [])
+        if not definitions:
+            try:
+                definitions = list(
+                    build_problem_solver_toolset(
+                        config=ProblemSolverAgentConfig.from_schema(schema_cfg),
+                        logger=logger_factory.get_logger("app.problem_solver"),
+                        sandbox_service=sandbox["sandbox_service"],
+                        vision_provider=vision_provider,
+                    ).definitions()
+                )
+            except Exception:
+                definitions = []
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+    def _self_heal_parts() -> list:
+        from neobot_app.agents.self_heal import SelfHealAgentConfig, _build_system_prompt
+
+        schema_cfg = getattr(getattr(config, "agent", None), "self_heal", None)
+        # 该构造器需要真实配置对象（读 timeout_seconds）：缺失时用 schema 默认值兜底
+        agent_cfg = (
+            SelfHealAgentConfig.from_schema(schema_cfg)
+            if schema_cfg is not None
+            else SelfHealAgentConfig()
+        )
+        parts = [
+            ("系统提示词", "system", _build_system_prompt(agent_cfg, prompt_store=prompt_store))
+        ]
+        agent = getattr(self_heal_manager, "_agent", None)
+        definitions = (
+            list(getattr(agent, "tool_definitions", []) or []) if agent is not None else []
+        )
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
+
+    # 已注册的子 Agent（AgentRegistry）：每个 specialist 一条，便于对照 agents__list
+    try:
+        for item in agent_registry.snapshot():
+            sub_name = str(item.get("name") or "")
+            sub_description = str(item.get("description") or "")
+            if not sub_name:
+                continue
+            prompt_analyzer.add_source(
+                f"子 Agent · {sub_name}",
+                (lambda text_value=sub_description: [
+                    ("描述（模型看到的 specialist 说明）", "instructions", text_value)
+                ]),
+                kind="subagent",
+                note="由 agents__delegate 调用；提示词在委派时按任务拼装",
+            )
+    except Exception:
+        pass
+
+    # 编号 Agent（agent_model_N）：只做模型路由，提示词复用委派指令 + 任务文本
+    def _numbered_agent_parts() -> list:
+        import dataclasses
+
+        routing = getattr(config, "agent_model", None)
+        if routing is None or not dataclasses.is_dataclass(routing):
+            return []
+        lines: list = []
+        for field_info in dataclasses.fields(routing):
+            value = getattr(routing, field_info.name, None)
+            if value in (None, "", 0):
+                continue
+            description = str((field_info.metadata or {}).get("description") or "")
+            suffix = f"  # {description}" if description else ""
+            lines.append(f"{field_info.name} = {value}{suffix}")
+        if not lines:
+            return []
+        return [("模型路由", "instructions", chr(10).join(lines))]
+
+    prompt_analyzer.catalog.register(
+        PromptPartsProvider(
+            "编号 Agent（agent_model_1-3）",
+            _numbered_agent_parts,
+            agent_kind="routing",
+            agent_note="编号只决定用哪个模型；提示词 = 委派指令 + 具体任务文本",
+        )
+    )
 
     # ── 宿主服务注册（官方/第三方插件通过 ctx.plugin_host.services 读取）──
     register_host_services(
@@ -740,6 +1316,8 @@ def create_application() -> NeoBotApplication:
             "command_service": (command_service, "命令服务"),
             "credential_manager": (credential_manager, "凭据管理器"),
             "sleep_service": (sleep_service, "睡眠服务"),
+            "standby_service": (standby_service, "待机服务（只保留核心服务 / 软重启运行）"),
+            "prompt_analyzer": (prompt_analyzer, "提示词分析（面板分析页）"),
             "cache_calculator": (cache_calculator, "缓存命中计算器"),
             "skill_manager": (skill_manager, "Skill 管理器"),
             "markdown_skill_registry": (markdown_skill_registry, "Markdown Skill 注册表"),
@@ -751,6 +1329,10 @@ def create_application() -> NeoBotApplication:
             ),
             "report_service": (usage["report_service"], "用量报告服务"),
             "archive_memory_service": (memory_svcs["archive_memory_service"], "档案记忆服务"),
+            "archive_summary_service": (
+                archive_summary_service,
+                "档案自动总结服务（实现 agent_prompt_parts，供分析页自动收集）",
+            ),
             "profile_service": (memory_svcs["profile_service"], "用户画像服务"),
             "willing_service": (memory_svcs["willing_service"], "回复意愿服务"),
             "chat_stream": (memory_svcs["chat_stream"], "聊天流管理器"),
@@ -759,6 +1341,13 @@ def create_application() -> NeoBotApplication:
             "prompt_store": (prompt_store, "提示词存储"),
             "plugin_runtime": (plugin_runtime, "插件运行时"),
         },
+    )
+
+    # 自动收集所有实现 agent_prompt_parts() 的宿主服务：新增 Agent 只要实现规范并注册服务，
+    # 分析页就会出现，**不需要**再改这里的来源列表。
+    discovered = prompt_analyzer.catalog.discover(plugin["host_facade"].services)
+    logger_factory.get_logger("app.analysis").info(
+        f"提示词分析自动收集到 {discovered} 个 Agent"
     )
 
     # ── 管线 / 网关 / 应用 ──
@@ -798,6 +1387,8 @@ def create_application() -> NeoBotApplication:
         command_service=command_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
+        standby_service=standby_service,
+        owns_plugins=owns_plugins,
     )
 
     # 面板等服务需要读取 application（重启入口）

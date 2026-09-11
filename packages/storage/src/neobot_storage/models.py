@@ -153,6 +153,7 @@ class CreatorImageData(Base):
     original_width: Mapped[int | None] = mapped_column(Integer)
     original_height: Mapped[int | None] = mapped_column(Integer)
     image_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    gallery_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -160,7 +161,23 @@ class CreatorImageData(Base):
     __table_args__ = (
         Index("ix_creator_images_source_updated_at", "source", "updated_at"),
         Index("ix_creator_images_file_hash", "file_hash"),
+        Index("ix_creator_images_gallery_no", "gallery_no", unique=True),
     )
+
+
+class CreatorImageSequenceData(Base):
+    """编号序列高水位：编号一旦分配就永远不再回收（删除也不复用）。
+
+    creator_images.gallery_no 是唯一编号，但 MAX(gallery_no)+1 在删除最大号后
+    会复用旧号，让历史引用（聊天记录/Agent 记忆里的"编号 N"）指向另一张图。
+    这里把"已发到几号"独立落库，分配走单条原子 UPDATE ... RETURNING，既保证
+    不复用，也消除并发读到同一个 MAX 后撞唯一索引的窗口。
+    """
+
+    __tablename__ = "creator_image_sequences"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    last_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class ScheduledTaskData(Base):
@@ -230,3 +247,25 @@ class ModelUsageRecord(Base):
         Index("ix_usage_records_created_at", "created_at"),
         Index("ix_usage_records_module", "module_name"),
     )
+
+
+class MaintenanceRunRecord(Base):
+    __tablename__ = "maintenance_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # "running" | "success" | "failed" | "skipped"
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    # "startup" | "interval" | "manual"
+    trigger: Mapped[str] = mapped_column(String, nullable=False)
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skipped_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_maintenance_runs_started_at", "started_at"),
+        Index("ix_maintenance_runs_status", "status"),
+    )
+

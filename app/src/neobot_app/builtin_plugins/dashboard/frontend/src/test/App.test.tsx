@@ -1,4 +1,4 @@
-// 路由与侧栏回归测试 —— 7 条导航、当前项高亮、工作区页隐藏全局头部
+// 路由与侧栏回归测试 —— 8 条导航、当前项高亮、工作区页隐藏全局头部
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -21,10 +21,11 @@ vi.mock('../pages/Plugins.jsx', () => ({ default: () => <div data-testid="page-p
 vi.mock('../pages/ConfigManager.jsx', () => ({ default: () => <div data-testid="page-config" /> }));
 vi.mock('../pages/System.jsx', () => ({ default: () => <div data-testid="page-system" /> }));
 vi.mock('../pages/Usage.jsx', () => ({ default: () => <div data-testid="page-usage" /> }));
+vi.mock('../pages/Analysis.jsx', () => ({ default: () => <div data-testid="page-analysis" /> }));
 vi.mock('../pages/Bots.jsx', () => ({ default: () => <div data-testid="page-bots" /> }));
 vi.mock('../pages/Logs.jsx', () => ({ default: () => <div data-testid="page-logs" /> }));
 
-const NAV_LABELS = ['主页', '插件', '配置', '系统', '用量', '机器人', '日志'];
+const NAV_LABELS = ['主页', '插件', '配置', '系统', '用量', '分析', '机器人', '日志'];
 
 function renderAt(path: string) {
   return render(
@@ -40,7 +41,7 @@ beforeEach(() => {
 });
 
 describe('应用外壳', () => {
-  it('侧栏固定渲染 7 条一级导航', () => {
+  it('侧栏固定渲染 8 条一级导航', () => {
     renderAt('/dashboard');
 
     for (const label of NAV_LABELS) {
@@ -84,6 +85,13 @@ describe('应用外壳', () => {
     fireEvent.click(screen.getByRole('link', { name: '系统' }));
     expect(screen.getByTestId('page-system')).toBeInTheDocument();
     confirm.mockRestore();
+  });
+
+  it('分析路由渲染分析页并高亮侧栏', () => {
+    renderAt('/analysis');
+
+    expect(screen.getByTestId('page-analysis')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '分析' })).toHaveClass('active');
   });
 
   it('未知路由回落到仪表盘', () => {

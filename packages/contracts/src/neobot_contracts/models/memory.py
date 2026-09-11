@@ -98,3 +98,5 @@ class CreatorImageRecord:
     updated_at: datetime
     version: int
     image_source: str | None = None
+    #: 图库固定编号（只在入库时分配一次，不随排序/更新变化）；非图库记录为 None
+    gallery_no: int | None = None
