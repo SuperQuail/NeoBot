@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 
 import httpx
@@ -28,6 +30,15 @@ class _Services:
 
     def get(self, name: str, default=None):
         return self._mapping.get(name, default)
+
+
+async def _wait_standby(service, expected: bool, seconds: float = 5.0) -> bool:
+    """进入待机/软重启在服务端后台执行：等状态落定再断言。"""
+    for _ in range(int(seconds * 20)):
+        if service.is_standby() is expected:
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
 async def _panel(tmp_path: Path, *, with_service: bool):
@@ -87,17 +98,17 @@ async def test_power_status_and_standby_round_trip(tmp_path: Path) -> None:
                 base + "/api/admin/standby", headers=headers, json={"reason": "token 风暴"}
             )
             assert entered.status_code == 200, entered.text
-            assert entered.json()["standby"] is True
-            assert entered.json()["reason"] == "token 风暴"
-            assert standby.is_standby() is True
+            assert "已开始进入待机" in entered.json()["message"]
+            assert await _wait_standby(standby, True), "接口后台执行，状态应很快落定"
+            assert standby.status()["reason"] == "token 风暴"
 
             overview = await client.get(base + "/api/overview", headers={"X-Token": token})
             assert overview.json()["standby"] is True
 
             resumed = await client.post(base + "/api/admin/resume", headers=headers, json={})
             assert resumed.status_code == 200, resumed.text
-            assert resumed.json()["standby"] is False
-            assert standby.is_standby() is False
+            assert "已开始软重启运行" in resumed.json()["message"]
+            assert await _wait_standby(standby, False), "软重启后应回到运行中"
     finally:
         await server.stop()
 

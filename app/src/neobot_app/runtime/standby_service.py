@@ -77,6 +77,15 @@ class StandbyService:
         self._on_resume = on_resume
         self._on_onebot_change = on_onebot_change
 
+    def set_startup_reason(self, reason: str) -> None:
+        """启动即待机时补充原因（如配置缺失）。只改文案，不改变状态。"""
+        if self._state != STANDBY:
+            return
+        text = str(reason).strip()
+        if text:
+            self._reason = text
+            self._persist()
+
     # ── 状态查询 ────────────────────────────────────────────
 
     @property

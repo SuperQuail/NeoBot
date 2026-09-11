@@ -468,6 +468,39 @@ def _make_maintenance_coro(
 _REUSE_ENABLED = False
 _CORE_CACHE: dict[str, Any] = {}
 
+#: 配置加载失败的原因（缺失必需项 / config.toml 解析失败）。非空表示「启动即待机」，
+#: 让面板先起来、用户就地修配置，改完点「软重启运行」即可，不必重启进程。
+_CONFIG_ERROR = ""
+
+
+def config_load_error() -> str:
+    """最近一次配置加载失败的原因（成功时为空串）。"""
+    return _CONFIG_ERROR
+
+
+def _load_config_or_defaults() -> Any:
+    """加载配置；失败时**不退出程序**，返回默认配置并记录原因。
+
+    过去缺失必需项或解析失败会让进程直接退出，用户只能改文件再重启。现在改为：
+    用默认配置把核心服务（面板、配置编辑、命令、数据库）拉起来并进入待机。
+    """
+    global _CONFIG_ERROR
+    try:
+        config = build_config()
+    except Exception as exc:
+        _CONFIG_ERROR = f"{type(exc).__name__}: {exc}".strip()
+        # 失败时不缓存配置：软重启必须重新读文件，否则会一直复用这份兜底配置
+        _CORE_CACHE.pop("config", None)
+        from neobot_app.config.loader.converter import dict_to_dataclass
+        from neobot_app.config.schemas.bot import BotConfig
+
+        return dict_to_dataclass({}, BotConfig)
+    _CONFIG_ERROR = ""
+    return config
+
+
+
+
 
 def enable_core_reuse() -> None:
     """开启核心对象复用（幂等）：待机控制器接线时调用一次。"""
@@ -519,7 +552,7 @@ def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
 def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
-    config = _reuse_or("config", build_config)
+    config = _reuse_or("config", _load_config_or_defaults)
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
@@ -550,9 +583,15 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             logger=logger_factory.get_logger("app.standby"),
             state_path=DATA_DIR / "standby.json",
             connect_onebot=bool(getattr(standby_cfg, "connect_onebot", True)),
-            start_in_standby=bool(getattr(standby_cfg, "start_in_standby", False)),
+            # 配置缺失时强制「启动即待机」：用默认配置把面板拉起来修配置
+            start_in_standby=bool(_CONFIG_ERROR)
+            or bool(getattr(standby_cfg, "start_in_standby", False)),
         ),
     )
+    if _CONFIG_ERROR:
+        standby_service.set_startup_reason(
+            f"配置缺失，已进入待机等待修复：{_CONFIG_ERROR}"
+        )
 
     # ── 字符级缓存命中计算器(成本管线;仅聊天管线接入) ──
     from neobot_app.cache import CacheCalculator

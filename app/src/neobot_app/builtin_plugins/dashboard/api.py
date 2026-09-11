@@ -1347,6 +1347,27 @@ class DashboardApi:
             payload = {}
         return str(payload.get("reason") or "").strip()
 
+    def _schedule_power_action(self, *, action: str, runner, log: str) -> str:
+        """把「停运行时/重建运行时」这类重活丢到后台任务，接口立刻返回。
+
+        软重启要重建全部 bot 侧对象（可能几十秒），同步等待会让面板请求超时，
+        期间事件循环也被占住（面板看起来像卡死）。后台执行后，前端按
+        /api/admin/power 轮询即可看到状态变化，界面不需要额外改造。
+        """
+        self.logger.warning(log)
+
+        async def _worker() -> None:
+            try:
+                ok, message = await runner()
+            except Exception as exc:
+                self.logger.exception(f"{action}异常: {exc}")
+                return
+            if not ok:
+                self.logger.error(f"{action}失败: {message}")
+
+        asyncio.create_task(_worker())
+        return f"已开始{action}：面板会自动刷新状态，不需要重启进程。"
+
     async def admin_standby(self, request: web.Request) -> web.Response:
         """进入待机：停掉 bot 运行时，只保留面板与核心服务。
 
@@ -1361,10 +1382,11 @@ class DashboardApi:
             return _json_error("待机服务不可用，请重启 NeoBot", status=503)
         reason = await self._power_reason(request)
         operator = f"panel:{self.console.request_ip(request)}"
-        ok, message = await service.enter(reason=reason or "panel", operator=operator)
-        if not ok:
-            return _json_error(message)
-        self.logger.warning(f"面板请求进入待机 ip={operator} reason={reason or 'panel'}")
+        message = self._schedule_power_action(
+            action="进入待机",
+            runner=lambda: service.enter(reason=reason or "panel", operator=operator),
+            log=f"面板请求进入待机 ip={operator} reason={reason or 'panel'}",
+        )
         return _json_ok({**self.power_state(), "message": message})
 
     async def admin_resume(self, request: web.Request) -> web.Response:
@@ -1384,10 +1406,11 @@ class DashboardApi:
             return _json_error("待机服务不可用，请重启 NeoBot", status=503)
         reason = await self._power_reason(request)
         operator = f"panel:{self.console.request_ip(request)}"
-        ok, message = await service.resume(reason=reason or "panel", operator=operator)
-        if not ok:
-            return _json_error(message)
-        self.logger.warning(f"面板请求软重启运行 ip={operator} reason={reason or 'panel'}")
+        message = self._schedule_power_action(
+            action="软重启运行",
+            runner=lambda: service.resume(reason=reason or "panel", operator=operator),
+            log=f"面板请求软重启运行 ip={operator} reason={reason or 'panel'}",
+        )
         return _json_ok({**self.power_state(), "message": message})
 
     async def admin_standby_onebot(self, request: web.Request) -> web.Response:

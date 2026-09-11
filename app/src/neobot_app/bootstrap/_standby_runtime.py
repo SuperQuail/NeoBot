@@ -119,10 +119,17 @@ class StandbyController:
     async def _sync_adapter(self, *, desired: bool) -> None:
         if self._adapter is None or desired == self._adapter_running:
             return
-        if desired:
-            await self._adapter.start()
-            self._logger.info("待机期已保持 OneBot 连接")
-        else:
-            await self._adapter.stop()
-            self._logger.info("待机期已断开 OneBot 连接")
+        try:
+            if desired:
+                await self._adapter.start()
+            else:
+                await self._adapter.stop()
+        except Exception as exc:
+            # 待机期适配器起不来（端口占用等）绝不能拖垮核心：面板与命令必须继续可用，
+            # 保持原状态，用户可在面板「运行状态」里重试切换。
+            self._logger.error(f"待机期切换 OneBot 连接失败: {exc}")
+            return
         self._adapter_running = desired
+        self._logger.info(
+            "待机期已保持 OneBot 连接" if desired else "待机期已断开 OneBot 连接"
+        )
