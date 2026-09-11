@@ -1,16 +1,11 @@
 name: CI
 
-# 每次推送到 main / 每个 PR：先跑静态检查，再跑测试。
-# browser / network / slow / llm 四个标记用于隔离依赖外部环境的用例；当前仓库里
-# 只有 browser 有实际用例，新增真实网络/真实 LLM 用例时请务必打上对应标记，
-# 否则它们会进入 CI 默认集合（--strict-markers 会拦下拼错的标记名）。
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -23,31 +18,27 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: 安装 uv
         uses: astral-sh/setup-uv@v10.0.1
 
-      - name: 安装依赖（全部工作区包 + dev 组，严格用锁文件）
+      - name: 安装依赖
         run: uv sync --all-packages --locked
 
-      - name: ruff（阻断）
+      - name: ruff
         run: uv run ruff check .
 
-      # --strict-markers：标记写错（例如把 network 打成 netwrok）会直接失败，
-      # 而不是让用例静默落进默认运行集合。
-      - name: 测试（阻断；排除 browser / network / slow / llm）
+      - name: 测试
         run: uv run pytest --strict-markers -m "not browser and not network and not slow and not llm"
 
-      # 存量类型错误约 820 条，先只暴露不阻断；清理到可接受规模后再摘掉
-      # continue-on-error。
-      - name: mypy（暂不阻断）
+      - name: mypy
         continue-on-error: true
         run: uv run mypy app/src packages
 
-  # 网页面板前端（app/src/neobot_app/builtin_plugins/dashboard/frontend）
-  # 产物 web/ 随包分发并入库，因此这里既跑质量门禁，也校验产物与源码一致。
   frontend:
-    name: 前端（lint / 类型 / 测试 / 产物一致性）
+    name: 前端
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -55,36 +46,39 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: app/src/neobot_app/builtin_plugins/dashboard/frontend/pnpm-lock.yaml
 
-      - name: 安装依赖（严格用锁文件）
+      - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: ESLint（阻断）
+      - name: ESLint
         run: pnpm run lint
 
-      - name: TypeScript 类型检查（阻断）
+      - name: TypeScript 类型检查
         run: pnpm run typecheck
 
-      - name: 单元测试（阻断）
+      - name: 单元测试
         run: pnpm run test
 
-      - name: 构建（阻断）
+      - name: 构建
         run: pnpm run build
 
-      # web/ 是入库产物：构建后若与提交内容有差异，说明改了源码没重新构建。
-      - name: 校验构建产物已同步（阻断）
+      - name: 校验构建产物已同步
         run: |
-          if ! git diff --quiet -- ../web; then
+          if [ -n "$(git status --porcelain --untracked-files=all -- ../web)" ]; then
             echo "::error::web/ 构建产物与源码不一致，请在 frontend 目录执行 pnpm run build 并提交产物。"
             git --no-pager diff --stat -- ../web
             exit 1

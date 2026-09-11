@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest_asyncio
@@ -46,18 +47,50 @@ async def _set(
     )
 
 
-async def test_next_gallery_no_starts_at_one_and_skips_used(session_factory):
-    """编号从 1 开始，并且永远取当前最大编号 +1。"""
+async def test_allocate_gallery_no_starts_at_one_and_never_goes_back(session_factory):
+    """编号从 1 开始；分配即消耗高水位，回滚/未使用只留空洞不回头。"""
 
     async with session_factory() as session:
         repo = SqlAlchemyCreatorImageAccess(session)
-        assert await repo.next_gallery_no() == 1
+        assert await repo.allocate_gallery_no() == 1
 
-        await _set(repo, "g_a", gallery_no=await repo.next_gallery_no())
-        await _set(repo, "g_b", gallery_no=await repo.next_gallery_no())
+        await _set(repo, "g_a", gallery_no=await repo.allocate_gallery_no())
+        await _set(repo, "g_b", gallery_no=await repo.allocate_gallery_no())
 
-        assert await repo.next_gallery_no() == 3
+        assert await repo.allocate_gallery_no() == 4
         await session.commit()
+
+
+async def test_allocate_gallery_no_does_not_reuse_deleted_max(session_factory):
+    """回归：删除当前最大编号后，下一张图不得复用该编号。"""
+
+    async with session_factory() as session:
+        repo = SqlAlchemyCreatorImageAccess(session)
+        await _set(repo, "g_a", gallery_no=await repo.allocate_gallery_no())
+        await _set(repo, "g_b", gallery_no=await repo.allocate_gallery_no())
+        await session.commit()
+
+        assert await repo.delete("g_b")
+        await session.commit()
+
+        # MAX+1 在这里会返回 2（复用被删掉的编号），高水位必须继续前进
+        assert await repo.allocate_gallery_no() == 3
+        await session.commit()
+
+
+async def test_concurrent_allocations_are_unique(engine, session_factory):
+    """并发分配不撞唯一索引，也不出现重号。"""
+
+    async def allocate_once() -> int:
+        async with session_factory() as session:
+            repo = SqlAlchemyCreatorImageAccess(session)
+            value = await repo.allocate_gallery_no()
+            await session.commit()
+            return value
+
+    values = await asyncio.gather(*(allocate_once() for _ in range(4)))
+
+    assert sorted(values) == [1, 2, 3, 4]
 
 
 async def test_gallery_no_is_written_once_and_survives_updates(session_factory):
@@ -176,3 +209,16 @@ async def test_migration_backfills_gallery_numbers_by_created_at(tmp_path):
 
     # 先入库的 g_first（created_at 更早）拿 1 号，与插入顺序无关；暂存记录不编号
     assert dict(rows) == {"g_first": 1, "g_second": 2, "tmp_only": None}
+
+    # 0024 必须把历史最大编号回填为高水位，下一次分配从 3 号继续
+    engine = create_engine(url)
+    try:
+        async with engine.connect() as conn:
+            last_no = (
+                await conn.execute(
+                    text("SELECT last_no FROM creator_image_sequences WHERE name = 'gallery'")
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert last_no == 2

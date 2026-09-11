@@ -49,6 +49,8 @@ class PluginSnapshot:
     dependency_issues: tuple[str, ...] = ()
     #: 依赖本插件的其他插件（停用 / 卸载时会被联动处理）
     dependents: tuple[str, ...] = ()
+    #: 插件配置校验告警：非空表示部分已存值非法、已回落默认值运行
+    config_error: str | None = None
 
     @property
     def official(self) -> bool:

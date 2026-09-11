@@ -159,6 +159,7 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                 </InlineAlert>
               )}
               {selected.error && <InlineAlert tone="error">运行错误：{selected.error}</InlineAlert>}
+              {selected.config_error && <InlineAlert tone="warning">配置告警：{selected.config_error}（已回落到默认值运行）</InlineAlert>}
               {configError && (
                 <InlineAlert
                   tone="error"

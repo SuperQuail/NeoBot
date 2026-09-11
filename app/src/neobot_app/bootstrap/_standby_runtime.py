@@ -50,6 +50,9 @@ class StandbyController:
     async def start(self) -> None:
         """进程启动：非待机则构建并启动运行时；待机则只按需保持 OneBot 连接。"""
         if self._standby.is_standby():
+            # 启动即待机：启动前建好的初始运行时从未 start()，且可能是用兜底配置建的；
+            # resume 会按最新配置重新构建，因此这里直接放弃引用，避免它一直被挂着。
+            self._initial = None
             await self._sync_adapter(desired=bool(self._standby.connect_onebot))
             self._logger.warning(
                 "以待机状态启动：仅启动核心服务（面板/配置/命令）",
@@ -68,19 +71,21 @@ class StandbyController:
 
     async def enter(self) -> tuple[bool, str]:
         """进入待机：停掉 bot 运行时并释放引用，核心服务与面板保持运行。"""
-        if self._app is not None:
-            await self._app.stop()
-            self._app = None
-            self._adapter_running = False
+        # 先摘掉引用再 await stop()：入口循环一旦观察到运行时退出，
+        # 读到的 application 必须已经是 None，不能是正在停止的旧对象。
+        application, self._app = self._app, None
+        self._adapter_running = False
+        if application is not None:
+            await application.stop()
         await self._sync_adapter(desired=bool(self._standby.connect_onebot))
         return True, "bot 运行时已停止：只保留面板、配置与命令，/reboot 可软重启运行。"
 
     async def resume(self) -> tuple[bool, str]:
         """软重启运行：按当前配置在进程内重建并启动 bot 运行时。"""
-        if self._app is not None:
-            await self._app.stop()
-            self._app = None
-            self._adapter_running = False
+        application, self._app = self._app, None
+        self._adapter_running = False
+        if application is not None:
+            await application.stop()
         await self._start_runtime()
         return True, "已按当前配置软重启运行（进程未重启，面板未断线）。"
 
@@ -88,7 +93,8 @@ class StandbyController:
         """待机期启停 OneBot 连接（运行中不生效：运行时自己持有连接）。"""
         if self._app is not None:
             return False, "运行中始终使用 OneBot 连接；请先进入待机再切换。"
-        await self._sync_adapter(desired=bool(enabled))
+        if not await self._sync_adapter(desired=bool(enabled)):
+            return False, "切换 OneBot 连接失败（详见日志）；当前连接状态未改变。"
         if enabled:
             return True, "待机期已保持 OneBot 连接：QQ 命令仍可用。"
         return True, "待机期已断开 OneBot 连接：仅面板可用。"
@@ -116,9 +122,10 @@ class StandbyController:
         # 运行时的 start() 会启动适配器；保持标记一致，避免多余的 start/stop
         self._adapter_running = self._adapter is not None
 
-    async def _sync_adapter(self, *, desired: bool) -> None:
+    async def _sync_adapter(self, *, desired: bool) -> bool:
+        """按需启停适配器；返回是否成功（失败时保持原状态并如实上报）。"""
         if self._adapter is None or desired == self._adapter_running:
-            return
+            return True
         try:
             if desired:
                 await self._adapter.start()
@@ -128,8 +135,9 @@ class StandbyController:
             # 待机期适配器起不来（端口占用等）绝不能拖垮核心：面板与命令必须继续可用，
             # 保持原状态，用户可在面板「运行状态」里重试切换。
             self._logger.error(f"待机期切换 OneBot 连接失败: {exc}")
-            return
+            return False
         self._adapter_running = desired
         self._logger.info(
             "待机期已保持 OneBot 连接" if desired else "待机期已断开 OneBot 连接"
         )
+        return True

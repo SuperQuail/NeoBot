@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from neobot_modloader.dependency import parse_dependency
-from neobot_modloader.plugins.registration import validate_plugin_name
 
 MAX_TAG_COUNT = 16
 MAX_TAG_LENGTH = 32

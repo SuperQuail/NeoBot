@@ -9,7 +9,6 @@ from typing import Any
 
 from neobot_contracts.ports.plugin import PluginState
 from neobot_modloader.dependency import (
-    PluginDependency,
     PluginDependencyError,
     parse_dependencies,
     parse_dependency,

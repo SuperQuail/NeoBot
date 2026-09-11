@@ -103,3 +103,24 @@ def test_core_keys_documented() -> None:
         "plugin_runtime",
     ):
         assert f'"{key}"' in source, f"核心对象未纳入复用: {key}"
+
+
+def test_soft_restart_rebinds_plugin_generation() -> None:
+    """软重启重建的注册表/截图端口必须显式绑定给核心持有的插件运行时。
+
+    只断言核心对象清单不够：注册表不在清单里，却必须每代重新绑定，否则插件
+    注册会落在上一代对象上（Agent/Skill 静默消失）。
+    """
+    import inspect
+
+    from neobot_app import bootstrap
+
+    source = inspect.getsource(bootstrap.create_application)
+
+    assert ".bind_generation(" in source
+    for binding in (
+        "agent_registry=agent_registry",
+        "skills_registry=markdown_skill_registry",
+        'screenshots=browser["screenshots"]',
+    ):
+        assert binding in source, f"bind_generation 未绑定: {binding}"

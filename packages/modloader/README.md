@@ -402,6 +402,11 @@ allow_remote_manage = true
   才用这里的注释兜底；
 - 保存配置时会保留文件里已有的注释与顺序，用户自己写的说明优先；
 - 表头 `[config]` 上方的注释会作为没有单独注释的字段的兜底说明。
+宿主在注入 `ctx.config` 前会用 `Plugin(config=...)` 声明的模型做一次校验：
+越界的已存值回落到打包默认值（打包默认值也非法时回落模型默认值），
+插件因此不会在 `on_load` 里因旧配置直接进入 ERROR（面板这类插件失败会断掉恢复入口）。
+回落会记 WARNING，并通过 `PluginSnapshot.config_error` / 面板插件配置页展示；
+磁盘上的原始值不变，`plugin_config_values()` 仍返回用户写入的原文。
 
 **是否启用不是配置项**：启停状态保存在数据目录的 `plugin_state.json`
 （`PluginStateStore`），与 `plugin.toml` 的顶层 `enabled` 默认值解耦：
@@ -773,6 +778,7 @@ from neobot_modloader import (
     PluginSnapshot,
     PythonDependencyInstaller,
     Reply,
+    RuntimeGeneration,
     RuntimePluginContext,
     UserDirectory,
     UserProfile,
