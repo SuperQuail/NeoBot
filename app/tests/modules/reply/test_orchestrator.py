@@ -1997,9 +1997,17 @@ async def test_native_vision_tool_images_and_live_fallback(monkeypatch, degrade)
     messages = provider.calls[1][0]
     tool_positions = [i for i, message in enumerate(messages) if message.get("role") == "tool"]
     assert len(tool_positions) == 2
-    vision_message = messages[tool_positions[-1] + 1]
+    # 图片附件始终追加在整批工具结果之后;两者之间只允许出现回复前的
+    # <当前时间> user 块(它是纯文本,不会把图片挤进工具结果里)
+    vision_message = messages[-1]
     assert vision_message["role"] == "user"
+    assert isinstance(vision_message["content"], list)
     assert len([p for p in vision_message["content"] if p.get("type") == "image_url"]) == 2
+    between = messages[tool_positions[-1] + 1 : -1]
+    assert all(
+        message.get("role") == "user" and "当前时间" in str(message.get("content", ""))
+        for message in between
+    )
     assert all(encoded not in messages[i]["content"] for i in tool_positions)
     assert all("data:image/" not in messages[i]["content"] for i in tool_positions)
     if not degrade:

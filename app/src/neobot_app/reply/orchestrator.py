@@ -15,6 +15,8 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
+from neobot_app.prompt.render import render_template
+from neobot_app.prompt.store import get_template_value
 from neobot_app.reply._utils import entry_fingerprint
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -30,7 +32,7 @@ from neobot_app.reply.vision_context import (
 from neobot_app.statistics.tracker import get_usage_tracker
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
-from neobot_app.time_context import monotonic_seconds
+from neobot_app.time_context import get_current_time_values, monotonic_seconds
 
 
 def _xml_escape(value: str) -> str:
@@ -127,6 +129,36 @@ def _bounded_tool_text(value: object, limit: int = _MAX_TOOL_TEXT_CHARS) -> str:
         except Exception:
             text = f"<{type(value).__name__}>"
     return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+
+def _clip_tool_summary(text: str, limit: int) -> str:
+    """压缩工具输出时保留的摘要:优先在换行处截断,避免半截 JSON 误导模型。"""
+    cleaned = text.strip()
+    if limit <= 0 or len(cleaned) <= limit:
+        return cleaned
+    head = cleaned[:limit]
+    newline = head.rfind("\n")
+    if newline >= limit // 2:
+        head = head[:newline]
+    return head.rstrip() + "..."
+
+
+def _render_tool_result_template(
+    template: str,
+    *,
+    tool_name: str,
+    summary: str,
+    original_chars: int,
+) -> str:
+    """渲染工具输出压缩模板(占位符与转义规则与其它提示词一致)。"""
+    return render_template(
+        template,
+        {
+            "tool_name": tool_name or "未知工具",
+            "summary": summary,
+            "original_chars": original_chars,
+        },
+    )
 
 
 def _redact_tool_value(
@@ -1182,6 +1214,122 @@ class ReplyOrchestrator:
                 return value
         return default
 
+    # ── 提示词分区(统一从 prompts.toml 读取,缺失时用内置兜底) ──
+
+    def _prompt_template(self, key: str, sub: str = "template") -> str:
+        """读取提示词分区模板:文件(自定义覆盖默认) -> 内置兜底。"""
+        return get_template_value(self._prompt_store, key, sub)
+
+    def _prompt_section_enabled(self, key: str, default: bool = True) -> bool:
+        if self._prompt_store is None:
+            return default
+        return self._prompt_store.enabled(key, default=default)
+
+    def _build_current_time_message(self) -> dict[str, str] | None:
+        """渲染"回复前"追加的 <当前时间> user 块;关闭或为空时返回 None。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_current_time_message", None)
+        if callable(render):
+            return render()
+        if not self._prompt_section_enabled("current_time"):
+            return None
+        text = render_template(
+            self._prompt_template("current_time"), get_current_time_values()
+        )
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    # ── 工具输出压缩 ──
+
+    def _get_tool_result_full_keep(self) -> int:
+        """重新构建提示词后保留完整内容的最近工具返回条数。"""
+        if self._config is None:
+            return 10
+        value = getattr(self._config.chat, "tool_result_full_keep", 10)
+        return value if isinstance(value, int) and value >= 0 else 10
+
+    def _get_tool_result_summary_chars(self) -> int:
+        """非基础工具压缩后保留的结果摘要字符数。"""
+        if self._config is None:
+            return 200
+        value = getattr(self._config.chat, "tool_result_summary_chars", 200)
+        return value if isinstance(value, int) and value > 0 else 200
+
+    def _render_compressed_tool_result(
+        self, tool_name: str, content: object, summary_chars: int
+    ) -> str:
+        """把一条工具返回渲染成压缩形式。"""
+        from neobot_app.reply.tools import BASIC_REPLY_TOOLS
+
+        original = "" if content is None else str(content)
+        summary = _clip_tool_summary(original, summary_chars)
+        if tool_name in BASIC_REPLY_TOOLS:
+            text = _render_tool_result_template(
+                self._prompt_template("tool_result_compressed"),
+                tool_name=tool_name,
+                summary=summary,
+                original_chars=len(original),
+            )
+            return text or f"[已压缩] 工具 {tool_name or '未知工具'} 调用成功。"
+        text = _render_tool_result_template(
+            self._prompt_template("tool_result_compressed_detail"),
+            tool_name=tool_name,
+            summary=summary,
+            original_chars=len(original),
+        )
+        return text or summary
+
+    def _compress_stale_tool_results(
+        self,
+        messages: list[dict],
+        compressed_call_ids: set[str],
+        tool_names: dict[str, str],
+        *,
+        event: ReplyEvent | None = None,
+        queue_key: str = "",
+    ) -> int:
+        """压缩较早的工具返回:只保留最近 N 条完整内容,其余压缩。
+
+        在"重新构建/续用提示词"的新一轮开始时调用;已压缩过的条目按
+        tool_call_id 去重,不会重复处理。压缩只改写内容,不动消息顺序,
+        也不会让 assistant 的 tool_calls 与结果消息失配。
+        """
+        keep = self._get_tool_result_full_keep()
+        indices = [
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, dict) and message.get("role") == "tool"
+        ]
+        if keep >= 0 and len(indices) <= keep:
+            return 0
+        stale = list(indices) if keep <= 0 else indices[:-keep]
+        stale = [
+            index
+            for index in stale
+            if str(messages[index].get("tool_call_id", "")) not in compressed_call_ids
+        ]
+        if not stale:
+            return 0
+        summary_chars = self._get_tool_result_summary_chars()
+        for index in stale:
+            message = messages[index]
+            call_id = str(message.get("tool_call_id", ""))
+            message["content"] = self._render_compressed_tool_result(
+                tool_names.get(call_id, ""), message.get("content"), summary_chars
+            )
+            if call_id:
+                compressed_call_ids.add(call_id)
+        if event is not None:
+            self._record_debug(
+                "tool_results_compressed",
+                event,
+                queue_key=queue_key,
+                compressed_count=len(stale),
+                kept_full=len(indices) - len(stale),
+            )
+        return len(stale)
+
     def _get_long_reply_max_length(self) -> int:
         if self._config is None:
             return 300
@@ -1439,12 +1587,14 @@ class ReplyOrchestrator:
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
+        context_messages: list[dict[str, str]] = []
         prompt = await self._build_prompt(
             event,
             queue,
             queue_key,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            context_blocks=context_messages,
         )
         self._record_debug(
             "base_prompt_built", event, queue_key=queue_key, prompt=prompt
@@ -1453,7 +1603,9 @@ class ReplyOrchestrator:
         # pre-reply hooks：可短路跳过 AI 生成
         reply_text = await self._apply_pre_reply_hooks(event)
         if reply_text is None:
-            reply_text = await self._generate_reply(event, prompt, role_messages)
+            reply_text = await self._generate_reply(
+                event, prompt, role_messages, context_messages
+            )
 
         self._record_debug(
             "reply_generated", event, queue_key=queue_key, reply_text=reply_text
@@ -1668,7 +1820,9 @@ class ReplyOrchestrator:
         queue_copy = queue.clone(queue_key)
 
         # 2. 构建角色消息(聊天记录拆分为真实 user/assistant 消息,先于 system
-        #    构建以填充消息编号映射)与 system 提示词(不含聊天记录)
+        #    构建以填充消息编号映射)与 system 提示词(不含聊天记录)。
+        #    每轮会变的上下文(群友信息/对方档案/印象)由 builder 渲染成 user 块,
+        #    追加在 system 之后、聊天记录之前,而不是塞进 system。
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
         role_messages = await self._build_role_messages(
             event,
@@ -1678,6 +1832,7 @@ class ReplyOrchestrator:
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
+        context_messages: list[dict[str, str]] = []
         prompt = await self._build_prompt(
             event,
             queue_copy,
@@ -1685,6 +1840,7 @@ class ReplyOrchestrator:
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            context_blocks=context_messages,
         )
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
@@ -1781,10 +1937,18 @@ class ReplyOrchestrator:
 
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
-        # 3. 准备消息列表(system + 角色消息 + 后台通知)
+        # 3. 准备消息列表(system + 上下文块 + 角色消息 + 后台通知)
         event.transition(ReplyState.GENERATING)
         messages: list[dict] = [{"role": "system", "content": prompt}]
+        messages.extend(context_messages)
         messages.extend(role_messages)
+        if context_messages:
+            self._record_debug(
+                "chat_context_injected",
+                event,
+                queue_key=queue_key,
+                injected_count=len(context_messages),
+            )
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
@@ -2189,8 +2353,32 @@ class ReplyOrchestrator:
             await self._send_reply(event, pre_hook_text)
             return
 
+        # 工具输出压缩状态:已压缩的 tool_call_id 与调用名映射(压缩只改内容,
+        # 不动消息顺序,assistant.tool_calls 与结果消息始终配对)
+        compressed_tool_call_ids: set[str] = set()
+        tool_name_by_call_id: dict[str, str] = {}
+
+        # 回复前追加的 <当前时间> user 块:每次调用模型前追加一条最新时间,
+        # 已追加的时间块保留在对话历史里(不清理),让模型能看到时间推进。
+        def append_current_time_block() -> None:
+            block = self._build_current_time_message()
+            if block is not None:
+                messages.append(block)
+
         previous_entries = queue_copy.entries(queue_key)
+        round_index = 0
         while True:
+            # 需要重新构建/续用提示词的新一轮:把较早的工具返回压缩,
+            # 只保留最近 N 条完整内容,控制上下文成本
+            if round_index > 0:
+                self._compress_stale_tool_results(
+                    messages,
+                    compressed_tool_call_ids,
+                    tool_name_by_call_id,
+                    event=event,
+                    queue_key=queue_key,
+                )
+            round_index += 1
             reply_sent = False
             cancelled = False
             ai_check_prompted = False
@@ -2254,6 +2442,8 @@ class ReplyOrchestrator:
                         )
                     except asyncio.TimeoutError:
                         self._logger.warning("默认原生视觉图片加载超时", queue_key=queue_key)
+                # 回复前:追加独立的 <当前时间> user 块(始终是最后一条消息)
+                append_current_time_block()
                 request_messages = (
                     vision_context.request_messages(messages) if native_vision_active else list(messages)
                 )
@@ -2584,15 +2774,16 @@ class ReplyOrchestrator:
                             tool_args=safe_args,
                             tool_error=tool_error,
                         )
+                    tool_call_id = (
+                        str(tc.get("id", "")) if isinstance(tc, dict) else ""
+                    )
+                    if tool_call_id:
+                        tool_name_by_call_id[tool_call_id] = name
                     if tool_error is not None:
                         messages.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": (
-                                    str(tc.get("id", ""))
-                                    if isinstance(tc, dict)
-                                    else ""
-                                ),
+                                "tool_call_id": tool_call_id,
                                 "content": f"工具调用失败：{tool_error}",
                             }
                         )
@@ -2624,11 +2815,7 @@ class ReplyOrchestrator:
                         messages.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": (
-                                    str(tc.get("id", ""))
-                                    if isinstance(tc, dict)
-                                    else ""
-                                ),
+                                "tool_call_id": tool_call_id,
                                 "content": str(result),
                             }
                         )
@@ -3436,8 +3623,9 @@ class ReplyOrchestrator:
             include_boundary_markers=self._show_boundary_markers(),
         )
 
-        # 新成员档案
+        # 新成员档案(user 块内容,不插入 system 提示词)
         new_member_text = ""
+        group_name = ""
         if new_user_ids and self._prompt_builder is not None:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
@@ -3446,51 +3634,44 @@ class ReplyOrchestrator:
                     include_archives=self._inject_member_archives(),
                 )
                 if member_profiles:
-                    new_member_text = f"[新出现的群友档案]\n{member_profiles}"
+                    try:
+                        group_name = await profile_service.get_group_name(queue_key)
+                    except Exception:
+                        group_name = ""
+                    render_profiles = getattr(
+                        self._prompt_builder, "build_new_member_profiles_text", None
+                    )
+                    if callable(render_profiles):
+                        new_member_text = render_profiles(
+                            member_profiles,
+                            group_name=group_name,
+                            group_id=queue_key,
+                        )
+                    else:
+                        new_member_text = member_profiles
 
         resume_messages: list[dict[str, str]] = []
 
-        # 说明消息(新成员档案 + 当前时间 + 续接说明),位于新消息之前
+        # 说明消息(新成员档案 + 续接说明),位于新消息之前。
+        # 当前时间由回复前的独立 <当前时间> user 块提供,这里不再重复。
         if new_member_text or role_messages:
-            from neobot_app.time_context import get_current_time_and_lunar_date
-            from neobot_app.utils.formater import safe_format
-
-            current_time = get_current_time_and_lunar_date()
-            template = ""
-            if self._prompt_store is not None:
-                template = self._prompt_store.template("group_chat_resume")
-            if not template:
-                template = (
-                    "{new_member_profiles}\n\n"
-                    "<当前时间>{current_time}</当前时间>\n\n"
-                    "这是群聊对话的续接。请根据新消息决定是否需要回复。"
-                )
-            # safe_format:自定义模板含未提供占位符/畸形花括号时保留可渲染部分,
-            # 而不是整段丢弃
-            context_text = safe_format(
-                template,
-                new_member_profiles=new_member_text,
-                current_time=current_time,
-            )
-            # 模板缺少占位符时补齐档案/时间,避免内容静默丢失
-            parts = [context_text]
-            if new_member_text and "{new_member_profiles}" not in template:
-                parts.append(f"[新出现的群友档案]\n{new_member_text}")
-            if "{current_time}" not in template:
-                parts.append(f"<当前时间>{current_time}</当前时间>")
-            context_text = "\n\n".join(part for part in parts if part and part.strip())
-            if not context_text.strip():
-                parts = []
-                if new_member_text:
-                    parts.append(new_member_text)
-                parts.append(f"<当前时间>{current_time}</当前时间>")
-                parts.append("这是群聊对话的续接。请根据新消息决定是否需要回复。")
-                context_text = "\n\n".join(parts)
-            if context_text.strip():
+            context_text = self._render_resume_context(new_member_text)
+            if context_text:
                 resume_messages.append({"role": "user", "content": context_text})
 
         resume_messages.extend(role_messages)
         return resume_messages
+
+    def _render_resume_context(self, new_member_text: str) -> str:
+        """渲染群聊挂起恢复的说明文本(模板来自 [group_chat_resume])。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_group_chat_resume_text", None)
+        if callable(render):
+            return render(new_member_profiles=new_member_text)
+        template = self._prompt_template("group_chat_resume")
+        values = get_current_time_values()
+        values["new_member_profiles"] = new_member_text
+        return render_template(template, values)
 
     # ── Prompt 构建 ──
 
@@ -3502,6 +3683,7 @@ class ReplyOrchestrator:
         numbering: MessageNumbering | None = None,
         last_reply_message_id: int | None = None,
         all_new: bool = False,
+        context_blocks: list[dict[str, str]] | None = None,
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
@@ -3539,6 +3721,7 @@ class ReplyOrchestrator:
                         numbering=numbering,
                         last_reply_message_id=last_reply_message_id,
                         all_new=all_new,
+                        context_blocks=context_blocks,
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
@@ -3563,6 +3746,7 @@ class ReplyOrchestrator:
                     numbering=numbering,
                     last_reply_message_id=last_reply_message_id,
                     all_new=all_new,
+                    context_blocks=context_blocks,
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
@@ -3644,6 +3828,7 @@ class ReplyOrchestrator:
         event: ReplyEvent,
         prompt: str,
         role_messages: list[dict[str, str]] | None = None,
+        context_messages: list[dict[str, str]] | None = None,
     ) -> str:
         event.transition(ReplyState.GENERATING)
         if self._provider is None:
@@ -3652,6 +3837,8 @@ class ReplyOrchestrator:
         messages: list[dict] = [
             {"role": "system", "content": prompt},
         ]
+        if context_messages:
+            messages.extend(context_messages)
         if role_messages:
             messages.extend(role_messages)
         common_image_parts: list[dict] = []
@@ -3673,6 +3860,10 @@ class ReplyOrchestrator:
                 event,
                 notification=event.background_content[:200],
             )
+        # 回复前追加独立的 <当前时间> user 块
+        time_block = self._build_current_time_message()
+        if time_block is not None:
+            messages.append(time_block)
         append_image_context(messages, common_image_parts)
         timeout = self._get_model_response_timeout_seconds(event)
         before_model = await self._emit_runtime_event(

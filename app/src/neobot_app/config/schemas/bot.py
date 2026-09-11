@@ -55,7 +55,7 @@ class Chat:
         metadata={"description": "原生视觉每轮默认自动加载的图片数量，0 关闭自动加载；手动加图工具不受此数量限制"},
     )
     max_group_chat_observations: Optional[int] = field(
-        default=100,
+        default=200,
         metadata={"description": "群聊观察上限"},
     )
     group_chat_chance: Optional[float] = field(
@@ -79,7 +79,7 @@ class Chat:
         metadata={"description": "群描述"},
     )
     max_friend_chat_observations: Optional[int] = field(
-        default=100,
+        default=200,
         metadata={"description": "私聊观察上限"},
     )
     friend_use_black_list: Optional[bool] = field(
@@ -1592,6 +1592,16 @@ class EnhancedChat(Chat):
     archive_fetch_window: Optional[int] = field(
         default=20,
         metadata={"description": "群成员列表窗口；只列出消息队列中最新的此数量消息的发送者，戳一戳等同0.2条消息"},
+    )
+    tool_result_full_keep: Optional[int] = field(
+        default=10,
+        metadata={
+            "description": "工具输出压缩:重新构建提示词后保留完整内容的最近工具返回条数,其余压缩"
+        },
+    )
+    tool_result_summary_chars: Optional[int] = field(
+        default=200,
+        metadata={"description": "工具输出压缩:非基础工具压缩后保留的结果摘要字符数"},
     )
     inject_member_archives: Optional[bool] = field(
         default=False,

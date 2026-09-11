@@ -60,6 +60,30 @@ _SKILL_GUARD_BASE_TOOLS = frozenset(
         "mark_scheduled_task_complete",
     }
 )
+# 工具输出压缩:这些"基础回复类"工具的返回值只是控制流回执(是否发送成功、
+# 是否切分、等待是否结束、表情是否发出等),压缩后只保留"调用成功",不再保留
+# 具体内容;其余工具压缩后仍保留一段结果摘要。
+BASIC_REPLY_TOOLS = frozenset(
+    {
+        "cancel",
+        "split_reply",
+        "send_reply",
+        "send_long_reply",
+        "send_emoji",
+        "wait",
+        "speak",
+        "poke_user",
+        "react_emoji",
+        "search_qq_emoji",
+        "search_custom_emoji",
+        "adjust_reply_willingness",
+        "get_willingness_config",
+        "manage_willing_config",
+        "cancel_task",
+        "check_last_drawing",
+        "mark_scheduled_task_complete",
+    }
+)
 _MAX_TOOL_TEXT_CHARS = 16 * 1024
 _MAX_SKILL_RESOURCE_BYTES = 1024 * 1024
 _SKILL_INTERNAL_KEYS = frozenset(

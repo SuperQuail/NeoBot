@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+
+import tomlkit
 
 from neobot_app.agents.problem_solver import (
+    _FALLBACK_RUNTIME_TEMPLATE,
+    _FALLBACK_SYSTEM_PROMPT,
     _SOLUTION_RESULT,
     ProblemSolverAgentConfig,
     ProblemSolverManager,
+    _build_system_prompt,
+)
+from neobot_app.prompt.store import PromptStore, sync_default_prompts
+
+TEMPLATE_FILE = (
+    Path(__file__).resolve().parents[3]
+    / "src"
+    / "neobot_app"
+    / "prompt"
+    / "templates"
+    / "prompts.toml"
 )
 
 
@@ -253,3 +269,60 @@ async def test_submit_returns_busy_when_active_solve() -> None:
 
     agent.release.set()
     await manager.shutdown()
+
+
+# ── 提示词装配 ──
+
+
+def test_builtin_template_matches_inline_fallback() -> None:
+    """内置 prompts.toml 的解题提示词必须与源码内兜底逐字一致,避免两处漂移。"""
+    doc = tomlkit.parse(TEMPLATE_FILE.read_text(encoding="utf-8")).unwrap()
+    section = doc["problem_solver"]
+
+    assert section["system_prompt"].strip() == _FALLBACK_SYSTEM_PROMPT.strip()
+    assert section["runtime"]["template"].strip() == _FALLBACK_RUNTIME_TEMPLATE.strip()
+
+
+def test_build_system_prompt_renders_runtime_placeholders(tmp_path) -> None:
+    """运行时占位符(超时/轮次/模式/同级描述)必须被真实取值替换。"""
+    sync_default_prompts(tmp_path)
+    store = PromptStore(tmp_path)
+
+    prompt = _build_system_prompt(
+        ProblemSolverAgentConfig(timeout_seconds=120),
+        peer_descriptions="- self_heal: 自修复",
+        prompt_store=store,
+        max_iterations=7,
+        mode_note="当前任务模式为普通模式。",
+    )
+
+    assert "{timeout_seconds}" not in prompt
+    assert "{max_iterations}" not in prompt
+    assert "{mode_note}" not in prompt
+    assert "{peer_descriptions}" not in prompt
+    assert "120 秒" in prompt
+    assert "最大模型轮次: 7" in prompt
+    assert "当前任务模式为普通模式。" in prompt
+    assert "- self_heal: 自修复" in prompt
+    assert "submit_solution" in prompt
+
+
+def test_build_system_prompt_honours_custom_template(tmp_path) -> None:
+    """自定义 system_prompt / runtime 模板必须覆盖默认值。"""
+    sync_default_prompts(tmp_path)
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.write_text(
+        '[problem_solver]\nsystem_prompt = """自定义解题提示词 {max_iterations}"""\n'
+        '[problem_solver.runtime]\ntemplate = """RT {timeout_seconds}"""\n',
+        encoding="utf-8",
+    )
+    store = PromptStore(tmp_path)
+
+    prompt = _build_system_prompt(
+        ProblemSolverAgentConfig(timeout_seconds=30),
+        prompt_store=store,
+        max_iterations=9,
+    )
+
+    assert prompt.startswith("自定义解题提示词 9")
+    assert "RT 30" in prompt

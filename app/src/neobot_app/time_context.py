@@ -109,8 +109,35 @@ def lunar_date_text(day: date | None = None) -> str:
     return LunarStr(lunar).get_date_str()
 
 
+def get_current_time_values(moment: datetime | None = None) -> dict[str, str]:
+    """返回当前时间的各字段值,供提示词模板按需拼装(与整句版本同源)。
+
+    键与提示词模板占位符一一对应:
+        current_time     完整句子(与 get_current_time_and_lunar_date 同源,兼容旧模板)
+        current_datetime 原始时间戳 YYYY-MM-DD HH:MM:SS
+        current_date     日期 YYYY-MM-DD
+        current_weekday  星期X
+        lunar_date       农历日期
+        timezone         时区名
+    """
+    current = to_local(moment or now_local())
+    values = {
+        "current_datetime": current.strftime("%Y-%m-%d %H:%M:%S"),
+        "current_date": current.strftime("%Y-%m-%d"),
+        "current_weekday": WEEKDAY_NAMES[current.weekday()],
+        "lunar_date": lunar_date_text(current.date()),
+        "timezone": current.tzname() or str(LOCAL_TIMEZONE),
+    }
+    values["current_time"] = (
+        f"现在的时间是{values['current_datetime']},{values['current_weekday']}."
+        f"农历日期是{values['lunar_date']}"
+    )
+    return values
+
+
 def get_current_time_and_lunar_date() -> str:
-    current = now_local()
-    current_time = current.strftime("%Y-%m-%d %H:%M:%S")
-    week = WEEKDAY_NAMES[current.weekday()]
-    return f"现在的时间是{current_time},{week}.农历日期是{lunar_date_text(current.date())}"
+    values = get_current_time_values()
+    return (
+        f"现在的时间是{values['current_time']},{values['current_weekday']}."
+        f"农历日期是{values['lunar_date']}"
+    )
