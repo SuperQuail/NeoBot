@@ -1,4 +1,4 @@
-﻿"""命令系统单元测试:解析 / 权限树 / 内置命令 / 热重载回调。"""
+"""命令系统单元测试:解析 / 权限树 / 内置命令 / 热重载回调。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from neobot_app.commands.model import (
     PERM_SUB_ADMIN,
     PERM_SUPER_ADMIN,
     Command,
+    ConfigSaveResult,
 )
 from neobot_app.commands.permissions import PermissionManager
 from neobot_app.commands.registry import CommandRegistry
@@ -148,11 +149,18 @@ async def test_permission_denied_consumes_and_replies() -> None:
 
 
 def _admin_service(save_result: str = "ok") -> tuple[CommandService, list[list[int]]]:
+    """保存回调按新契约返回 ConfigSaveResult（只有 ok=True 才算写盘成功）。"""
     saved: list[list[int]] = []
 
     async def save(new_list):
         saved.append(new_list)
-        return save_result
+        ok = save_result == "ok"
+        return ConfigSaveResult(
+            ok=ok,
+            error="" if ok else save_result,
+            accounts=tuple(str(item) for item in new_list),
+            applied=ok,
+        )
 
     service = CommandService(
         config=_config(admin_accounts=[SUPER], sub_admin_accounts=[SUB]),
@@ -191,7 +199,7 @@ async def test_add_admin_super_admin_protected() -> None:
 
     async def save(new_list):
         saved2.append(new_list)
-        return "ok"
+        return ConfigSaveResult(ok=True, accounts=tuple(str(item) for item in new_list))
 
     service = CommandService(
         config=_config(admin_accounts=[SUPER, 20000], sub_admin_accounts=[SUB]),
