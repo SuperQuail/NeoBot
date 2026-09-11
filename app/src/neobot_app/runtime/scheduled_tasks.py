@@ -436,13 +436,21 @@ class ScheduledTaskManager:
                 finalize_reason="one_shot_notification_sent",
             )
         if now >= window.end:
-            if missed:
-                # 重复任务错过的过期窗口跳过即可：周期滚动后会自动计算下一个窗口，
-                # 不需要写入 completed_window_keys。
-                self._log_missed_window(task, window, now)
-                return None
             if window.key in task.completed_window_keys:
+                # 该窗口已经处理过（提醒已发，或已按"错过"标记为处理完毕）
                 return None
+            if missed:
+                # 重复任务错过的过期窗口：跳过补发，但必须把窗口标记为已处理。
+                # 只跳过不落库时，下一次扫描（默认每 10 秒）会重新判定同一个窗口
+                # "已错过"并再记一条日志；对于季度/年度这类下次触发还很远的任务，
+                # 同一行日志会一直刷下去。
+                self._log_missed_window(task, window, now)
+                return _ScanPlan(
+                    task=task,
+                    window=window,
+                    finalize="mark_completed",
+                    finalize_requires_notified=False,
+                )
             return _ScanPlan(
                 task=task,
                 window=window,
