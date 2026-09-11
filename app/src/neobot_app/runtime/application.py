@@ -80,6 +80,9 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event = asyncio.Event()
         self._restart_requested = False
         self._started = False
+        #: 串行化 stop()：run_forever 的 finally 与外部 stop() 可能同时进入，
+        #: 没有这把锁会双跑整套清理链（适配器、管理器、引擎 dispose）。
+        self._stop_lock = asyncio.Lock()
         if file_server is not None:
             self.file_server = file_server
         else:
@@ -382,17 +385,22 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event.set()
 
     async def stop(self) -> None:
-        if not self._started:
-            return
-        deferred: BaseException | None = None
-        try:
-            deferred = await self._stop_components()
-        finally:
-            self._started = False
-            self._connection_state = None
-            self._logger.info("NeoBot已停止")
-        if deferred is not None:
-            raise deferred
+        # 允许测试用 __new__ 之类的轻量构造绕过 __init__：锁按需创建
+        lock = getattr(self, "_stop_lock", None)
+        if lock is None:
+            lock = self._stop_lock = asyncio.Lock()
+        async with lock:
+            if not self._started:
+                return
+            deferred: BaseException | None = None
+            try:
+                deferred = await self._stop_components()
+            finally:
+                self._started = False
+                self._connection_state = None
+                self._logger.info("NeoBot已停止")
+            if deferred is not None:
+                raise deferred
 
     async def _stop_components(self) -> BaseException | None:
         self._shutdown_event.set()

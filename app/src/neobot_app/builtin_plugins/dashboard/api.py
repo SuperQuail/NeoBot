@@ -66,11 +66,32 @@ def _json_error(message: str, *, status: int = 400, **extra: Any) -> web.Respons
     return web.json_response(payload, status=status)
 
 
+def _redact_prompt_report(report: dict[str, Any]) -> dict[str, Any]:
+    """非管理会话只保留统计：系统提示词原文与工具 schema 不整段外发。"""
+    redacted = dict(report)
+    agents: list[dict[str, Any]] = []
+    for entry in report.get("agents", []):
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        parts: list[dict[str, Any]] = []
+        for part in item.get("parts", []):
+            if isinstance(part, dict):
+                parts.append({**part, "text": "", "redacted": True})
+        item["parts"] = parts
+        item["text_redacted"] = True
+        agents.append(item)
+    redacted["agents"] = agents
+    return redacted
+
+
 class DashboardApi:
     """面板接口集合。"""
 
     def __init__(self, *, console: Any) -> None:
         self.console = console
+        #: 后台电源动作的强引用：create_task 的返回值被丢弃时任务可能被 GC 回收
+        self._power_tasks: set[asyncio.Task[Any]] = set()
 
     # ------------------------------------------------------------------
     # 基础设施
@@ -1348,6 +1369,10 @@ class DashboardApi:
             report = await analyzer.collect()
         except Exception as exc:
             return _json_error(f"提示词分析失败: {exc}", status=500)
+        # 提示词原文/工具 schema 属于运营内部信息：非管理会话（远程或关闭管理功能）
+        # 只返回计数，与 config_get 的按权限裁剪保持一致。
+        if not self._can_manage(request):
+            report = _redact_prompt_report(report)
         return _json_ok(report)
 
     # ------------------------------------------------------------------
@@ -1383,7 +1408,10 @@ class DashboardApi:
             if not ok:
                 self.logger.error(f"{action}失败: {message}")
 
-        asyncio.create_task(_worker())
+        task = asyncio.create_task(_worker())
+        # 必须持有强引用：返回值被丢弃的后台任务可能被 GC 回收，待机/软重启会静默半途而废。
+        self._power_tasks.add(task)
+        task.add_done_callback(self._power_tasks.discard)
         return f"已开始{action}：面板会自动刷新状态，不需要重启进程。"
 
     async def admin_standby(self, request: web.Request) -> web.Response:

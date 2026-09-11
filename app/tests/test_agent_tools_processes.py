@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 
 import pytest
 
@@ -294,6 +295,16 @@ def test_spill_file_count_is_bounded(tmp_path):
     run(scenario())
 
 
+def wait_until_dead(pid, timeout=5.0):
+    """SIGKILL 是异步投递：给内核/init 一点回收时间，避免瞬时断言误报。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.02)
+    return not pid_alive(pid)
+
+
 def pid_alive(pid):
     if os.name != "nt":
         try:
@@ -334,9 +345,9 @@ def test_process_tree_reaped_even_after_parent_exit(tmp_path, parent_exits):
             child_pid = int(result["stdout"].strip())
             if parent_exits:
                 await asyncio.wait_for(manager._records[job["job_id"]].done.wait(), 5)
-                assert not pid_alive(child_pid)
+                assert wait_until_dead(child_pid)
             await manager.close()
-            assert not pid_alive(child_pid)
+            assert wait_until_dead(child_pid)
         finally:
             await manager.close()
     run(scenario())

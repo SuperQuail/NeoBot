@@ -2,3 +2,12 @@
 
 *.bat text eol=crlf
 *.sh text eol=lf
+
+# 面板入口 HTML 与入库构建产物：强制 LF。
+# Vite 会保留输入换行符，Windows 工作区若被 autocrlf 转成 CRLF，本地构建产物
+# 就会与 Linux CI 的重建结果字节不一致（前端 job 的产物一致性校验会失败）。
+app/src/neobot_app/builtin_plugins/dashboard/frontend/index.html text eol=lf
+app/src/neobot_app/builtin_plugins/dashboard/web/index.html text eol=lf
+# 构建产物按字节入库（Vite 输出 LF）：不做任何换行转换，避免 Windows 工作区
+# 因 autocrlf 把产物判成「已修改」而与 CI 的产物一致性校验结果不一致。
+app/src/neobot_app/builtin_plugins/dashboard/web/assets/** -text

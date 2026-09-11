@@ -492,9 +492,12 @@ def _load_config_or_defaults() -> Any:
         # 失败时不缓存配置：软重启必须重新读文件，否则会一直复用这份兜底配置
         _CORE_CACHE.pop("config", None)
         from neobot_app.config.loader.converter import dict_to_dataclass
+        from neobot_app.config.proxy import ConfigProxy
         from neobot_app.config.schemas.bot import BotConfig
 
-        return dict_to_dataclass({}, BotConfig)
+        # 兜底也返回 ConfigProxy：配置损坏时面板/QQ 的「配置重载」仍要能跑，
+        # 否则会在这条路径上抛 AttributeError，用户就没有别的恢复手段了。
+        return ConfigProxy(dict_to_dataclass({}, BotConfig))
     _CONFIG_ERROR = ""
     return config
 
@@ -530,6 +533,19 @@ def _reuse_or(key: str, factory: Callable[[], Any]) -> Any:
     return value
 
 
+def _load_config_for_reuse() -> Any:
+    """软重启复用的配置加载：兜底默认值绝不进缓存。
+
+    配置加载失败时 _load_config_or_defaults 返回的是默认配置，若被 _reuse_or
+    写回缓存，用户修好 config.toml 后每次软重启都会复用这份空配置、
+    _CONFIG_ERROR 也永远清不掉，恢复路径形同虚设。
+    """
+    config = _reuse_or("config", _load_config_or_defaults)
+    if _CONFIG_ERROR:
+        _CORE_CACHE.pop("config", None)
+    return config
+
+
 def _run_once(key: str, action: Callable[[], Any]) -> None:
     """只执行一次（复用开启时）：避免软重启重复配置日志等全局副作用。"""
     if _REUSE_ENABLED and key in _CORE_CACHE:
@@ -552,7 +568,7 @@ def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
 def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
-    config = _reuse_or("config", _load_config_or_defaults)
+    config = _load_config_for_reuse()
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))

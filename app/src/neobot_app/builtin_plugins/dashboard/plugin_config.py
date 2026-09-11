@@ -185,7 +185,9 @@ class PluginConfigEditor:
             "config": masked,
             "schema": schema,
             "form_supported": bool(schema),
-            "defaults": self._defaults,
+            # 默认值同样可能来自 plugin.toml 且含密钥形态的键：与 config/source 一起打码，
+            # 不能因为 secret_policy=write_only 却把 defaults 明文发出去。
+            "defaults": mask_mapping(self._defaults),
         }
 
     def save(

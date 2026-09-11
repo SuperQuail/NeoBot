@@ -147,19 +147,23 @@ class OneBotAdapter:
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._dispatch_task is not None:
+        # 从分发循环内部调用 stop()（例如 QQ 命令触发进入待机 / 软重启）时，等待
+        # 自己会先空转到超时、再把自己取消：命令回执与拆除流程都会丢。此时只能
+        # 放弃等待，让当前命令先返回，分发循环随后会因 _stopping 退出。
+        task = self._dispatch_task
+        if task is not None and task is not asyncio.current_task():
             try:
-                await asyncio.wait_for(self._dispatch_task, timeout=2.0)
+                await asyncio.wait_for(task, timeout=2.0)
             except asyncio.TimeoutError:
                 self._logger.warning("适配器分发循环停止超时，正在取消")
-                self._dispatch_task.cancel()
-                await asyncio.gather(self._dispatch_task, return_exceptions=True)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             except Exception as exc:
                 self._logger.warning(
                     "适配器分发循环关闭失败",
                     error=str(exc),
                 )
-            self._dispatch_task = None
+        self._dispatch_task = None
         try:
             stopped = await asyncio.to_thread(self._core.stop, 8.0)
             if not stopped:
