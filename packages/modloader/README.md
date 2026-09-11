@@ -372,7 +372,9 @@ dependencies = []
 python_dependencies = ["httpx"]
 
 [config]                      # 打包默认配置（安装/更新会被覆盖）
+# API 密钥（面板里只显示「已设置 / 未设置」）
 api_key = "secret"
+# 默认城市
 default_city = "Shanghai"
 ```
 
@@ -380,6 +382,26 @@ default_city = "Shanghai"
 读取时以 `[config]` 的打包默认值打底、插件数据目录里已保存的值覆盖，
 插件收到的 `ctx.config` 就是合并后的结果，插件更新不会覆盖用户配置。
 
+这套位置对**官方插件与第三方插件完全一致**，也与本体 `config.toml` 解耦：
+官方插件的配置不会写回本体配置的任何分区。
+
+### 配置项的注释（字段说明）
+
+`[config]` 里每个键**上方的注释**会被网页面板读成该字段的说明，并且写进
+首次生成的 `plugins_data/<插件名>/config.toml`，让配置文件自解释：
+
+```toml
+[config]
+# 面板监听端口（被占用时向后自动尝试 10 个）
+port = 9981
+# 是否允许远程管理
+allow_remote_manage = true
+```
+
+- 面板表单里优先用 pydantic 模型的 `Field(description=...)`，模型没写说明的字段
+  才用这里的注释兜底；
+- 保存配置时会保留文件里已有的注释与顺序，用户自己写的说明优先；
+- 表头 `[config]` 上方的注释会作为没有单独注释的字段的兜底说明。
 宿主在注入 `ctx.config` 前会用 `Plugin(config=...)` 声明的模型做一次校验：
 越界的已存值回落到打包默认值（打包默认值也非法时回落模型默认值），
 插件因此不会在 `on_load` 里因旧配置直接进入 ERROR（面板这类插件失败会断掉恢复入口）。
@@ -624,6 +646,77 @@ await runtime.reload_plugin("ping")
 ```
 
 重载插件时，运行时会停止旧插件、清理已跟踪的订阅、Host 注册和 Agent 注册，清除模块缓存，然后重新导入插件并按需启动。
+
+## 插件依赖
+
+插件可以在 `plugin.toml` 或 `Plugin(...)` 里声明前置插件，声明支持版本约束：
+
+```toml
+# plugin.toml
+name = "starship"
+version = "1.0.0"
+dependencies = ["dashboard>=1.0.0"]
+priority = -1
+```
+
+```python
+plugin = Plugin(
+    "starship",
+    version="1.0.0",
+    # 支持 >= <= == != > < ~= ，逗号分隔表示「与」
+    dependencies=("dashboard>=1.0.0",),
+)
+```
+
+### 加载顺序与自动禁用
+
+- **拓扑排序**：有前置插件的插件一定在前置插件之后加载（同级按 `priority` 降序）；
+- **自动禁用**：前置插件缺失、版本不满足、被停用或依赖成环时，该插件会被
+  **自动禁用**，程序照常启动、其他插件不受影响；
+- **自动恢复**：前置插件被重新启用 / 恢复运行后，运行时会自动把它拉起来；
+- **反向联动**：停用 / 卸载 / 重载前置插件时，依赖它的插件会被联动停用，
+  前置插件恢复后自动重新加载。
+
+自动禁用的原因会在面板「插件」页展示（`disabled_reason` / `dependency_issues` /
+`dependents`），日志里也有对应告警：
+
+```text
+插件依赖未满足，已自动禁用 (starship): 前置插件不可用: dashboard>=1.0.0（插件已停用）
+```
+
+版本号只比较数字段（`1.0.0-alpha.1` 按 `1.0.0` 处理）；无法比较时按「满足」处理
+并记录告警，不会因为版本号写法把插件拦死。
+
+### 调用前置插件的功能
+
+前置插件用 `@plugin.capability(...)` 暴露能力，依赖方用
+`ctx.require_plugin(...).call(...)` 调用：
+
+```python
+# 前置插件：dashboard
+@plugin.capability("web.register_extension")
+async def _register_extension(payload):
+    return server.register_extension(payload["name"], payload["extension"])
+
+
+# 依赖方：starship
+@plugin.on_load
+async def _load(ctx):
+    handle = ctx.require_plugin("dashboard", ">=1.0.0")   # 未就绪/版本不符会抛 PluginDependencyError
+    prefix = await handle.call(
+        "web.register_extension",
+        {"name": "starship", "extension": extension},
+    )
+    ctx.logger.info(f"已挂载到面板: {prefix}/")
+```
+
+- `ctx.require_plugin(name, specifier="")`：前置插件不存在 / 未就绪 / 版本不满足时抛
+  `PluginDependencyError`，错误文本可直接展示；
+- `ctx.plugins.get(name)` / `optional(name)`：拿句柄但不抛异常的宽松版本；
+- `ctx.plugins.dependents_of(name)` / `dependency_issues(name)`：反向依赖与依赖体检；
+- `PluginHandle.call(capability, payload)`：调用能力，同步/异步处理器都支持；
+- `PluginControlFacade.dependencies(name)`：面板侧的依赖报告
+  （声明、未满足项、反向依赖、自动禁用原因）。
 
 ## 插件管理 API
 
