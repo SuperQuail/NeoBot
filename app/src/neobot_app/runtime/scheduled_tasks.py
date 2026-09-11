@@ -38,6 +38,10 @@ class ScheduledTaskConfig:
     default_window_seconds: int = 3600
     max_repeating_tasks: int = 15
     default_one_shot_notification: bool = True
+    #: 错过窗口的补发宽限期：窗口结束超过该秒数才被扫描到的任务视为「停机期间
+    #: 错过」，不再补发提醒。没有这个上限时，进程重启会把停机期间早已结束的
+    #: 窗口（昨天的、上个月的）全部当成刚到期的任务通知一遍。
+    missed_window_grace_seconds: int = 300
 
     @classmethod
     def from_schema(cls, config: Any | None) -> "ScheduledTaskConfig":
@@ -63,6 +67,10 @@ class ScheduledTaskConfig:
             ),
             default_one_shot_notification=bool(
                 getattr(config, "default_one_shot_notification", True)
+            ),
+            missed_window_grace_seconds=max(
+                int(getattr(config, "missed_window_grace_seconds", 300) or 300),
+                1,
             ),
         )
 
@@ -395,16 +403,29 @@ class ScheduledTaskManager:
         task: ScheduledTaskRecord,
         now: datetime,
     ) -> _ScanPlan | None:
+        window = self._current_window(task, now)
+        if window is None:
+            return None
+        # 窗口是否已经错过补发宽限期：超过宽限期的窗口不再补发提醒，避免进程
+        # 重启后把停机期间早已结束的窗口（昨天 / 上个周期的）当成刚到期的通知。
+        missed = self._is_missed_window(window, now)
         if task.recurrence == ScheduledTaskRecurrence.ONCE and now >= task.end_at:
-            window = self._current_window(task, now)
-            if window is None:
-                return None
             if self._was_notified(task):
                 return _ScanPlan(
                     task=task,
                     window=window,
                     finalize="archive",
                     finalize_reason="expired_auto_completed",
+                    finalize_requires_notified=False,
+                )
+            if missed:
+                # 一次性任务的窗口已经过期太久：只归档，不再打扰用户。
+                self._log_missed_window(task, window, now)
+                return _ScanPlan(
+                    task=task,
+                    window=window,
+                    finalize="archive",
+                    finalize_reason="missed_window_expired",
                     finalize_requires_notified=False,
                 )
             return _ScanPlan(
@@ -414,10 +435,12 @@ class ScheduledTaskManager:
                 finalize="archive",
                 finalize_reason="one_shot_notification_sent",
             )
-        window = self._current_window(task, now)
-        if window is None:
-            return None
         if now >= window.end:
+            if missed:
+                # 重复任务错过的过期窗口跳过即可：周期滚动后会自动计算下一个窗口，
+                # 不需要写入 completed_window_keys。
+                self._log_missed_window(task, window, now)
+                return None
             if window.key in task.completed_window_keys:
                 return None
             return _ScanPlan(
@@ -454,6 +477,31 @@ class ScheduledTaskManager:
             window=window,
             remind=True,
             finalize="mark_completed",
+        )
+
+    def _is_missed_window(self, window: ScheduledTaskWindow, now: datetime) -> bool:
+        """窗口是否已经超出补发宽限期（重启后不应再补发的过期窗口）。
+
+        BUG-0002 的补发是为了「窗口比轮询间隔短 / 扫描刚刚错过」这类情况，必须
+        有上限：无上限时进程重启会把停机期间结束很久的窗口全部补发一遍，用户看到
+        的就是「早就不在触发时间了，重启后还会被提醒」。
+        """
+        overdue_seconds = (now - window.end).total_seconds()
+        return overdue_seconds > self._config.missed_window_grace_seconds
+
+    def _log_missed_window(
+        self,
+        task: ScheduledTaskRecord,
+        window: ScheduledTaskWindow,
+        now: datetime,
+    ) -> None:
+        self._logger.info(
+            "定时任务窗口已过期，跳过补发",
+            task_id=task.task_uuid,
+            window_key=window.key,
+            window_end=window.end.isoformat(),
+            overdue_seconds=int((now - window.end).total_seconds()),
+            grace_seconds=self._config.missed_window_grace_seconds,
         )
 
     def _was_notified(self, task: ScheduledTaskRecord) -> bool:

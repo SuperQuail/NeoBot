@@ -929,6 +929,12 @@ class ScheduledTask:
             "description": "新建定时任务默认是否使用一次性通知；一次性通知指每个触发窗口只通知一次并自动完成该窗口，不等同于 once 一次性任务"
         },
     )
+    missed_window_grace_seconds: Optional[int] = field(
+        default=300,
+        metadata={
+            "description": "错过窗口的补发宽限期（秒）：窗口结束超过该秒数才被扫描到的任务视为停机期间错过，不再补发提醒（默认 300 秒）。没有上限时进程重启会把早已过期的任务补发一遍"
+        },
+    )
 
 
 @dataclass

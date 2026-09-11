@@ -60,3 +60,23 @@ def test_poll_interval_override_is_honoured() -> None:
         SimpleNamespace(poll_interval_seconds=30)
     )
     assert built.poll_interval_seconds == 30
+
+
+# ── missed_window_grace_seconds ─────────────────────────────────────
+
+
+def test_missed_window_grace_schema_default_is_five_minutes() -> None:
+    assert ScheduledTask().missed_window_grace_seconds == 300
+
+
+def test_missed_window_grace_config_defaults_match_schema() -> None:
+    assert ScheduledTaskConfig().missed_window_grace_seconds == 300
+    built = ScheduledTaskConfig.from_schema(SimpleNamespace())
+    assert built.missed_window_grace_seconds == 300
+
+
+def test_missed_window_grace_override_is_honoured() -> None:
+    built = ScheduledTaskConfig.from_schema(
+        SimpleNamespace(missed_window_grace_seconds=60)
+    )
+    assert built.missed_window_grace_seconds == 60

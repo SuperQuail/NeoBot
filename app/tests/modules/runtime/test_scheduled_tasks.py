@@ -294,7 +294,11 @@ async def test_scan_due_tasks_notifies_expired_short_window_once_task(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scan_due_tasks_backfills_overdue_repeating_window(tmp_path):
-    """BUG-0002: 早于任何扫描就已结束的重复窗口应补发提醒，再标记完成。"""
+    """BUG-0002: 早于任何扫描就已结束的重复窗口应补发提醒，再标记完成。
+
+    只有刚刚错过的窗口（仍在 missed_window_grace_seconds 宽限期内）才补发；
+    超出宽限期的过期窗口由 test_scan_due_tasks_skips_stale_windows_after_restart 覆盖。
+    """
     engine, uow_factory = await _make_storage(tmp_path)
     hub = _FakeHub()
     manager = _make_manager(uow_factory, hub)
@@ -305,8 +309,8 @@ async def test_scan_due_tasks_backfills_overdue_repeating_window(tmp_path):
             title="每日提醒",
             detail="",
             recurrence="daily",
-            start_at=now - timedelta(minutes=30),
-            end_at=now - timedelta(minutes=20),
+            start_at=now - timedelta(minutes=4),
+            end_at=now - timedelta(minutes=3),
             bindings=[ConversationRef(kind="group", id="222")],
         )
         await manager.scan_due_tasks(now=now)
@@ -522,8 +526,8 @@ async def test_scan_due_tasks_concurrent_scans_do_not_double_notify(tmp_path):
             title="每日提醒",
             detail="",
             recurrence="daily",
-            start_at=now - timedelta(minutes=30),
-            end_at=now - timedelta(minutes=20),
+            start_at=now - timedelta(minutes=4),
+            end_at=now - timedelta(minutes=3),
             bindings=[ConversationRef(kind="group", id="333")],
         )
 
@@ -555,8 +559,8 @@ async def test_scan_due_tasks_backfill_completed_key_persists_across_instances(t
             title="每日提醒",
             detail="",
             recurrence="daily",
-            start_at=now - timedelta(minutes=30),
-            end_at=now - timedelta(minutes=20),
+            start_at=now - timedelta(minutes=4),
+            end_at=now - timedelta(minutes=3),
             bindings=[ConversationRef(kind="group", id="444")],
         )
 
@@ -686,5 +690,146 @@ async def test_scan_due_tasks_monthly_31st_occurrence_clamps_in_short_month(tmp_
         assert persisted is not None
         assert len(persisted.completed_window_keys) == 1
         assert "2026-02-28T09:00" in persisted.completed_window_keys[0]
+    finally:
+        await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_scan_due_tasks_skips_stale_windows_after_restart(tmp_path):
+    """重启后不得补发早已结束的窗口。
+
+    此前 now >= window.end 的补发没有上限：进程重启后内存态 _last_reminder_at 清空，
+    停机期间结束很久的窗口会被当成刚到期的任务通知一遍（用户看到「早就不在触发时间，
+    重启后还会被提醒」）。现在超过 missed_window_grace_seconds 的窗口视为已错过：
+    ONCE 只归档，重复任务跳过本窗口。
+    """
+    engine, uow_factory = await _make_storage(tmp_path)
+    hub = _FakeHub()
+    manager = _make_manager(uow_factory, hub)
+    now = datetime(2026, 8, 3, 20, 0, 0, tzinfo=timezone.utc)
+
+    try:
+        once = await manager.create_task(
+            title="两天前的一次性提醒",
+            detail="",
+            recurrence="once",
+            start_at=now - timedelta(days=2),
+            end_at=now - timedelta(days=2) + timedelta(minutes=5),
+            bindings=[ConversationRef(kind="group", id="888")],
+        )
+        daily = await manager.create_task(
+            title="当天早些时候的每日提醒",
+            detail="",
+            recurrence="daily",
+            start_at=now - timedelta(days=2, hours=11),  # 09:00，今天的窗口已结束 10 小时
+            end_at=now - timedelta(days=2, hours=10),
+            bindings=[ConversationRef(kind="group", id="999")],
+        )
+        yearly = await manager.create_task(
+            title="半年前的年度提醒",
+            detail="",
+            recurrence="yearly",
+            start_at=datetime(2026, 2, 1, 9, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 2, 1, 10, 0, tzinfo=timezone.utc),
+            bindings=[ConversationRef(kind="group", id="777")],
+        )
+
+        # 模拟进程重启：全新 manager（进程内冷却/提醒记录全部清空）扫描同一批任务
+        restarted_hub = _FakeHub()
+        restarted = _make_manager(uow_factory, restarted_hub)
+        await restarted.scan_due_tasks(now=now)
+
+        assert restarted_hub.published == []
+        async with uow_factory() as uow:
+            assert await uow.scheduled_tasks.get(once.task_uuid) is None
+            for task in (daily, yearly):
+                persisted = await uow.scheduled_tasks.get(task.task_uuid)
+                assert persisted is not None
+                assert persisted.completed_window_keys == ()
+        archived = await _list_archived(engine)
+        assert [row.task_uuid for row in archived] == [once.task_uuid]
+        assert archived[0].completion_reason == "missed_window_expired"
+
+        # 重复任务继续跳过同一个过期窗口，不会因扫描次数增加而补发
+        await restarted.scan_due_tasks(now=now + timedelta(minutes=10))
+        assert restarted_hub.published == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan_due_tasks_backfill_stops_at_missed_window_grace(tmp_path):
+    """补发只覆盖宽限期内的窗口：同一次重启里刚错过的补发、超期的跳过。"""
+    engine, uow_factory = await _make_storage(tmp_path)
+    hub = _FakeHub()
+    manager = _make_manager(uow_factory, hub)
+    now = datetime(2026, 8, 3, 10, 0, 0, tzinfo=timezone.utc)
+
+    try:
+        fresh = await manager.create_task(
+            title="刚错过的每日提醒",
+            detail="",
+            recurrence="daily",
+            start_at=now - timedelta(minutes=4),
+            end_at=now - timedelta(minutes=3),
+            bindings=[ConversationRef(kind="group", id="121")],
+        )
+        stale = await manager.create_task(
+            title="早就错过的每日提醒",
+            detail="",
+            recurrence="daily",
+            start_at=now - timedelta(minutes=124),
+            end_at=now - timedelta(minutes=123),
+            bindings=[ConversationRef(kind="group", id="122")],
+        )
+
+        restarted_hub = _FakeHub()
+        restarted = _make_manager(uow_factory, restarted_hub)
+        await restarted.scan_due_tasks(now=now)
+
+        assert [p["conversation_id"] for p in restarted_hub.published] == ["121"]
+        async with uow_factory() as uow:
+            fresh_row = await uow.scheduled_tasks.get(fresh.task_uuid)
+            assert fresh_row is not None
+            assert len(fresh_row.completed_window_keys) == 1
+            stale_row = await uow.scheduled_tasks.get(stale.task_uuid)
+            assert stale_row is not None
+            assert stale_row.completed_window_keys == ()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan_due_tasks_honours_custom_missed_window_grace(tmp_path):
+    """补发宽限期可配置：调大宽限期后，同样的超期窗口恢复补发。"""
+    engine, uow_factory = await _make_storage(tmp_path)
+    hub = _FakeHub()
+    now = datetime(2026, 8, 3, 10, 0, 0, tzinfo=timezone.utc)
+    manager = ScheduledTaskManager(
+        uow_factory=uow_factory,
+        config=ScheduledTaskConfig(
+            poll_interval_seconds=60,
+            reminder_cooldown_seconds=1,
+            missed_window_grace_seconds=1800,
+        ),
+        notification_hub=hub,
+    )
+
+    try:
+        created = await manager.create_task(
+            title="二十分钟前错过的每日提醒",
+            detail="",
+            recurrence="daily",
+            start_at=now - timedelta(minutes=24),
+            end_at=now - timedelta(minutes=23),
+            bindings=[ConversationRef(kind="group", id="131")],
+        )
+
+        await manager.scan_due_tasks(now=now)
+
+        assert [p["conversation_id"] for p in hub.published] == ["131"]
+        async with uow_factory() as uow:
+            persisted = await uow.scheduled_tasks.get(created.task_uuid)
+        assert persisted is not None
+        assert len(persisted.completed_window_keys) == 1
     finally:
         await engine.dispose()
