@@ -30,12 +30,14 @@ class StandbyController:
         runtime_factory: RuntimeFactory,
         adapter: Any = None,
         logger: Logger | None = None,
+        initial_application: Any = None,
     ) -> None:
         self._standby = standby_service
         self._factory = runtime_factory
         self._adapter = adapter
         self._logger = logger or NullLogger()
         self._app: Any | None = None
+        self._initial = initial_application
         self._adapter_running = False
 
     @property
@@ -53,6 +55,14 @@ class StandbyController:
                 "以待机状态启动：仅启动核心服务（面板/配置/命令）",
                 connect_onebot=bool(self._standby.connect_onebot),
             )
+            return
+        if self._app is None and self._initial is not None:
+            # 复用启动时已经建好的运行时，避免开机白建一份 bot 侧对象
+            application = self._initial
+            self._initial = None
+            await application.start()
+            self._app = application
+            self._adapter_running = self._adapter is not None
             return
         await self._start_runtime()
 

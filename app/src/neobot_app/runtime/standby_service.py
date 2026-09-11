@@ -128,15 +128,24 @@ class StandbyService:
                 self._operator = operator or self._operator
                 self._persist()
                 return True, f"已更新待机原因：{reason}"
-            if self._on_enter is not None:
-                ok, detail = await self._on_enter()
-                if not ok:
-                    self._logger.error(f"进入待机失败: {detail}")
-                    return False, detail
+            # 先把状态落定再拆运行时：拆除期间事件必须被丢弃，
+            # 入口循环也据此判断「停机是进入待机，而不是退出进程」。
+            previous = (self._state, self._reason, self._operator, self._since)
             self._state = STANDBY
             self._reason = reason or "未记录原因"
             self._operator = operator
             self._since = epoch_seconds()
+            if self._on_enter is not None:
+                ok, detail = await self._on_enter()
+                if not ok:
+                    (
+                        self._state,
+                        self._reason,
+                        self._operator,
+                        self._since,
+                    ) = previous
+                    self._logger.error(f"进入待机失败: {detail}")
+                    return False, detail
             self._persist()
             self._logger.warning(
                 "Bot 已进入待机：仅保留面板与核心服务",

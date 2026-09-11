@@ -516,7 +516,7 @@ def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
     return build_storage(db_url)
 
 
-def create_application() -> NeoBotApplication:
+def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
     config = _reuse_or("config", build_config)
@@ -1096,6 +1096,7 @@ def create_application() -> NeoBotApplication:
         credential_manager=credential_manager,
         sleep_service=sleep_service,
         standby_service=standby_service,
+        owns_plugins=owns_plugins,
     )
 
     # 面板等服务需要读取 application（重启入口）

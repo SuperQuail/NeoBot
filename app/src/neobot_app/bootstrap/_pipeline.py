@@ -322,6 +322,7 @@ def build_pipelines_and_app(
     credential_manager: Any = None,
     sleep_service: Any = None,
     standby_service: Any = None,
+    owns_plugins: bool = True,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -405,4 +406,5 @@ def build_pipelines_and_app(
         background_coros=background_coros,
         self_heal_manager=self_heal_manager,
         connection_probe=connection_probe,
+        owns_plugins=owns_plugins,
     )
