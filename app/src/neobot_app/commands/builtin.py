@@ -376,9 +376,22 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
         action = "删除"
 
     result = await ctx.service.save_sub_admins(sorted(current))
-    if result.startswith("错误"):
-        return result
-    return f"已{action}次级管理员 QQ {target_qq}。\n当前次级管理员: {'、'.join(str(qq) for qq in sorted(current)) or '(无)'}"
+    if not result.ok:
+        return f"错误: 配置保存失败: {result.error or '未知原因'}"
+
+    # 以"磁盘上回读到的列表"为准回复：写盘静默失败时不能再报成功
+    persisted = list(result.accounts)
+    wanted = str(target_qq)
+    if (add and wanted not in persisted) or (not add and wanted in persisted):
+        return (
+            f"错误: 配置写入后内容不符合预期（QQ {wanted}），"
+            f"请检查配置文件权限与内容（{result.path or ctx.service.config_path_hint()}）"
+        )
+    suffix = "" if result.applied else "\n（配置已写入文件，重启 NeoBot 后生效）"
+    return (
+        f"已{action}次级管理员 QQ {target_qq}。\n"
+        f"当前次级管理员: {'、'.join(persisted) or '(无)'}{suffix}"
+    )
 
 
 async def _handle_set_password(ctx: CommandContext) -> str:
