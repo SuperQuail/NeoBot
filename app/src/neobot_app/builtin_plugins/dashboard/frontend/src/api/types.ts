@@ -116,7 +116,6 @@ export interface Plugin {
   repo?: string;
   homepage?: string;
   tags?: string[];
-  config_section?: string;
   /** 依赖声明（可能带版本约束，如 dashboard>=1.0.0） */
   dependencies?: string[];
   /** 当前未满足的依赖说明（缺失 / 未就绪 / 版本不符） */

@@ -23,7 +23,13 @@ from .config_manager import (
     models_view,
 )
 from .model_probe import list_provider_models
-from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
+from .plugin_config import (
+    PluginConfigConflictError,
+    PluginConfigEditor,
+    PluginConfigError,
+    apply_field_descriptions,
+    read_manifest_comments,
+)
 from neobot_app.panel_auth import PasswordPolicyError
 
 from .security import is_loopback
@@ -635,7 +641,34 @@ class DashboardApi:
                 defaults = dict(getter(name))
             except Exception:
                 defaults = {}
-        return PluginConfigEditor(path, defaults=defaults)
+        # 字段说明来自插件自带 plugin.toml 的 [config] 注释（生成的配置也带注释）
+        return PluginConfigEditor(
+            path,
+            defaults=defaults,
+            comments=self._plugin_field_comments(control, name),
+        )
+
+    def _plugin_field_comments(self, control: Any, name: str) -> dict[str, str]:
+        """插件 plugin.toml 里 [config] 各键的注释（失败时返回空字典）。"""
+        getter = getattr(control, "plugin_manifest_path", None)
+        if not callable(getter):
+            return {}
+        try:
+            manifest = getter(name)
+        except Exception:
+            return {}
+        try:
+            return read_manifest_comments(manifest)
+        except Exception:
+            return {}
+
+    def _with_field_comments(
+        self, schema: list[dict[str, Any]], comments: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """给 pydantic 生成的 schema 补上 plugin.toml 注释（不覆盖已有说明）。"""
+        if not schema or not comments:
+            return schema
+        return apply_field_descriptions(schema, comments)
 
     def _plugin_config_meta(
         self, snapshot: Any, name: str, document: dict[str, Any]
@@ -848,8 +881,11 @@ class DashboardApi:
         model = control.config_model(name)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
-            # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）
-            document["schema"] = schema
+            # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）；
+            # 模型没写 description 的字段用 plugin.toml 的注释兜底
+            document["schema"] = self._with_field_comments(
+                schema, self._plugin_field_comments(control, name)
+            )
             document["form_supported"] = True
         return _json_ok(self._plugin_config_meta(snapshot, name, document))
 
@@ -900,7 +936,9 @@ class DashboardApi:
             return _json_error(str(exc), status=400)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
-            document["schema"] = schema
+            document["schema"] = self._with_field_comments(
+                schema, self._plugin_field_comments(control, name)
+            )
         applied = False
         message = "配置已保存到插件数据目录"
         reload_requested = bool(payload.get("reload"))

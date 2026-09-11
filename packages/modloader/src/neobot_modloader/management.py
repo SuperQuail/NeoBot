@@ -172,6 +172,13 @@ class PluginControlFacade:
             return getter(name)
         return None
 
+    def plugin_manifest_path(self, name: str) -> Path | None:
+        """插件自带 plugin.toml 的路径（不存在时为 None）。"""
+        getter = getattr(self._runtime, "plugin_manifest_path", None)
+        if callable(getter):
+            return getter(name)
+        return None
+
     def plugin_config_defaults(self, name: str) -> dict[str, Any]:
         """插件打包默认值（plugin.toml 的 [config]）。"""
         getter = getattr(self._runtime, "plugin_config_defaults", None)

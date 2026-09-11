@@ -372,13 +372,36 @@ dependencies = []
 python_dependencies = ["httpx"]
 
 [config]                      # 打包默认配置（安装/更新会被覆盖）
+# API 密钥（面板里只显示「已设置 / 未设置」）
 api_key = "secret"
+# 默认城市
 default_city = "Shanghai"
 ```
 
 运行期配置不写在这里，而是插件数据目录的 `plugins_data/<插件名>/config.toml`：
 读取时以 `[config]` 的打包默认值打底、插件数据目录里已保存的值覆盖，
 插件收到的 `ctx.config` 就是合并后的结果，插件更新不会覆盖用户配置。
+
+这套位置对**官方插件与第三方插件完全一致**，也与本体 `config.toml` 解耦：
+官方插件的配置不会写回本体配置的任何分区。
+
+### 配置项的注释（字段说明）
+
+`[config]` 里每个键**上方的注释**会被网页面板读成该字段的说明，并且写进
+首次生成的 `plugins_data/<插件名>/config.toml`，让配置文件自解释：
+
+```toml
+[config]
+# 面板监听端口（被占用时向后自动尝试 10 个）
+port = 9981
+# 是否允许远程管理
+allow_remote_manage = true
+```
+
+- 面板表单里优先用 pydantic 模型的 `Field(description=...)`，模型没写说明的字段
+  才用这里的注释兜底；
+- 保存配置时会保留文件里已有的注释与顺序，用户自己写的说明优先；
+- 表头 `[config]` 上方的注释会作为没有单独注释的字段的兜底说明。
 
 **是否启用不是配置项**：启停状态保存在数据目录的 `plugin_state.json`
 （`PluginStateStore`），与 `plugin.toml` 的顶层 `enabled` 默认值解耦：

@@ -157,13 +157,23 @@ class PluginRuntime:
         #: 因前置插件不满足而被自动禁用的插件: 插件名 -> (前置插件名, 原因)
         #: 前置插件恢复后运行时会自动把这些插件重新拉起来。
         self._auto_disabled: dict[str, tuple[str, str]] = {}
+        #: 未注入 PluginStateStore 时的进程内启停记录（装配期测试/嵌入式用法）。
+        #: 没有它，set_enabled 会「报告成功但什么都没变」，面板上的启停按钮看起来失灵。
+        self._memory_enabled: dict[str, bool] = {}
         self.control = _RuntimePluginControlFacade(self)
 
     def _resolve_enabled_state(self, name: str, default: bool) -> bool:
         store = self._state_store
         if store is None:
-            return default
+            return self._memory_enabled.get(name, default)
         return store.is_enabled(name, default)
+
+    def _persist_enabled_state(self, name: str, enabled: bool) -> None:
+        """记录启停状态：有持久化存储就落盘，否则退化为进程内记录。"""
+        if self._state_store is not None:
+            self._state_store.set_enabled(name, enabled)
+            return
+        self._memory_enabled[name] = bool(enabled)
 
     @property
     def builtin_plugin_dirs(self) -> tuple[Path, ...]:
@@ -1384,8 +1394,7 @@ class PluginRuntime:
                 result = await self.unload_plugin(name)
                 if not result.ok:
                     return result
-            if self._state_store is not None:
-                self._state_store.set_enabled(name, False)
+            self._persist_enabled_state(name, False)
             self._loaded_sources.pop(name, None)
             self._loaded_flags.pop(name, None)
             return PluginOperationResult(
@@ -1394,8 +1403,7 @@ class PluginRuntime:
                 state=PluginState.UNLOADED.value,
                 path=path,
             )
-        if self._state_store is not None:
-            self._state_store.set_enabled(name, True)
+        self._persist_enabled_state(name, True)
         outcome = await self.load_plugin_path(path, start=True)
         if outcome.ok:
             # 前置插件回来了：把之前因它而自动禁用的插件一并拉起来
@@ -1417,8 +1425,7 @@ class PluginRuntime:
             return PluginOperationResult(
                 ok=False, name=result.name, error=result.error, path=result.path
             )
-        if self._state_store is not None:
-            self._state_store.set_enabled(result.name, True)
+        self._persist_enabled_state(result.name, True)
         if result.path is None:
             return PluginOperationResult(ok=True, name=result.name)
         outcome = await self.load_plugin_path(result.path, start=start)
@@ -1454,6 +1461,7 @@ class PluginRuntime:
             return PluginOperationResult(ok=False, name=name, error=result.error, path=path)
         if self._state_store is not None:
             self._state_store.forget(name)
+        self._memory_enabled.pop(name, None)
         self._loaded_sources.pop(name, None)
         self._loaded_paths.pop(name, None)
         return PluginOperationResult(
@@ -1899,6 +1907,16 @@ class PluginRuntime:
     def plugin_config_path(self, name: str) -> Path | None:
         store = self.plugin_config_store(name)
         return store.path if store is not None else None
+
+    def plugin_manifest_path(self, name: str) -> Path | None:
+        """插件自带 plugin.toml 的路径（面板用它读取 [config] 的注释作为字段说明）。
+
+        插件未加载时回落到目录扫描；单文件插件没有 manifest，返回 None。
+        """
+        path = self._loaded_paths.get(name) or self._find_plugin_path(name)
+        if path is None:
+            return None
+        return self._manifest_path_for(path)
 
     def plugin_config_defaults(self, name: str) -> dict[str, Any]:
         store = self.plugin_config_store(name)
