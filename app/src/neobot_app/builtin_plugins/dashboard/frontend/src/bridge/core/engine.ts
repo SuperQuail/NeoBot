@@ -7,10 +7,19 @@
 // 这样面板可以随时卸载重建，渲染循环不受影响，也不会因为 React 重渲染丢状态。
 
 import * as THREE from 'three';
-import { compileColliders, findFreePosition, isLineBlocked, type CompiledBox } from './collision';
+import {
+  compileColliders,
+  findFreePosition,
+  isBlocked,
+  isLineBlocked,
+  playerBox,
+  type CompiledBox,
+} from './collision';
 import { createInput, ACTION, HOTKEY_ORDER, type InputHandle } from './input';
 import {
   DOOR_WIDTH,
+  PLAYER_EYE,
+  PLAYER_HEIGHT,
   PLAYER_RADIUS,
   SPAWN_POSITION,
   SPAWN_YAW,
@@ -26,6 +35,8 @@ import { STATIONS, type PanelId, type Station, type VitalKey } from './types';
 import { vitalStatus } from './vitals';
 import { buildShip, type ShipHandle, type ShipInteractable } from '../three/ship';
 import type { PanelCompositor } from '../three/composite';
+import type { PanelPlane } from '../three/projector';
+import { panelVisibility as measurePanelVisibility } from './occlusion';
 
 /** 面向 React 的每帧（节流后）快照 */
 export interface HudSnapshot {
@@ -129,10 +140,6 @@ export class BridgeEngine {
   private viewportWidth = 1;
   private viewportHeight = 1;
   private frameCount = 0;
-  /** 面板是否打开：打开时才做深度预处理，关闭时省下一次全场景绘制 */
-  private panelActive = false;
-  /** 深度预处理用的临时容器场景（舰体临时挂进来画一次深度，随后挂回主场景） */
-  private readonly depthHolder = new THREE.Scene();
 
   constructor(options: EngineOptions) {
     this.canvas = options.canvas;
@@ -363,30 +370,14 @@ export class BridgeEngine {
   }
 
   /**
-   * 预处理舰体深度，供面板合成器判断遮挡。
+   * 面板的遮挡可见度（0~1）：相机到面板之间的连线有多少条没被舰体挡住。
    *
-   * 必须在主渲染器上执行（render target 属于主上下文），因此由引擎来画。
-   * overrideMaterial 只有 Scene 才有，而舰体是 Scene 下的一个 Group，
-   * 所以这里用一个专用的临时场景把舰体装进去再画——只画舰体是刻意的：
-   * 尘埃与星空不该挡住面板。
+   * 纯 CPU 计算（几条线段 × 几百个包围盒，微秒级），每帧调用都没有问题；
+   * 早期的 GPU 版本需要一次跨上下文采样 + GPU 同步回读，那正是「一开面板就
+   * 卡死」的根源，详见 core/occlusion.ts 与 three/composite.ts 的说明。
    */
-  private capturePanelDepth(): void {
-    const compositor = this.compositor;
-    const ship = this.ship;
-    if (!compositor || !ship || !compositor.isSupported) return;
-    compositor.captureDepth((target, material) => {
-      const holder = this.depthHolder;
-      holder.add(ship.root);
-      holder.overrideMaterial = material;
-      // 深度比较用的是相机空间米数，与色调映射/颜色空间无关，保持默认即可
-      this.renderer.setRenderTarget(target);
-      this.renderer.clear();
-      this.renderer.render(holder, this.camera);
-      this.renderer.setRenderTarget(null);
-      holder.overrideMaterial = null;
-      // 立刻把舰体还回主场景，避免主渲染少画一帧
-      this.scene.add(ship.root);
-    });
+  panelVisibility(plane: PanelPlane): number {
+    return measurePanelVisibility(this.boxes, this.camera.position, plane);
   }
 
   // ------------------------------------------------------------------
@@ -418,11 +409,6 @@ export class BridgeEngine {
     this.updateTracking(dt);
     this.ensureNotStuck();
     this.handleActions();
-
-    // 深度预处理放在主渲染**之前**：它要用主渲染器把舰体画进离屏目标，
-    // 画完把 renderTarget 复位，接着画主画面即可。
-    // 面板没打开时完全跳过——省下一次全场景绘制。
-    if (this.panelActive) this.capturePanelDepth();
 
     this.renderer.render(this.scene, this.camera);
     this.frameCount += 1;
@@ -736,11 +722,6 @@ export class BridgeEngine {
     return this.currentTarget;
   }
 
-  /** 面板开关状态：打开时才做深度预处理 */
-  setPanelActive(active: boolean): void {
-    this.panelActive = active;
-  }
-
   /**
    * 舰内跃迁：瞬移到终端**正面**的前方并转身面向它。
    *
@@ -751,29 +732,16 @@ export class BridgeEngine {
    * 距离是**自适应**的，不是固定 2.4m：贴南墙的终端（机库那两座）身后只有
    * 1.6m 净深，固定距离会把玩家送到舱壁外。这里向前探路，取
    * 「够看清面板」与「不越出可通行区域」两者中较小的那个。
+   *
+   * 探路用 isLineBlocked，它会**跳过包含端点的碰撞盒**（见 collision.ts）：
+   * 探路起点就是站位锚点，正落在终端自己的机身里；不跳过的话第一步就判「撞墙」，
+   * 距离退化成 0，玩家被放进机身内部、再由脱困逻辑推到旁边，朝向还因为
+   * atan2(0, 0) 变成 0（背对终端）。实测 8 座终端全部命中这一条。
+   * 具体的探路判据见 warpLanding（同一份代码，测试直接覆盖）。
    */
   warpTo(station: Station): void {
-    const [x, y, z] = station.anchor;
-    const forwardX = Math.sin(station.facing);
-    const forwardZ = Math.cos(station.facing);
-
-    const PREFERRED = 2.4;
-    const step = 0.2;
-    let distance = 0;
-    for (let d = step; d <= PREFERRED + 1e-6; d += step) {
-      const px = x + forwardX * d;
-      const pz = z + forwardZ * d;
-      // 越出可通行区域或撞上障碍就停在上一步。容差取 0.1 而不是更大的值：
-      // 探路是 0.2m 一跳，容差过大会让落点冲出舱壁半个身位。
-      if (!isInsideHull(px, pz, 0.1) || isLineBlocked(this.boxes, { x, y: y + 0.9, z }, { x: px, y: y + 0.9, z: pz })) {
-        break;
-      }
-      distance = d;
-    }
-
-    const target: Vec3 = [x + forwardX * distance, y, z + forwardZ * distance];
-    const yaw = Math.atan2(x - target[0], z - target[2]);
-    this.player.teleport(target, yaw);
+    const landing = warpLanding(station, this.boxes);
+    this.player.teleport([landing.x, landing.y, landing.z], landing.yaw);
     this.triggerShake(0.6);
     sfx.warp();
     notify(`已跃迁至 ${station.label}`, 'info');
@@ -790,6 +758,96 @@ export class BridgeEngine {
 
   /** 门宽常量导出给 HUD 做提示文案时保持一致 */
   static readonly doorWidth = DOOR_WIDTH;
+}
+
+/**
+ * 跃迁落点的最大前伸距离（米）。
+ *
+ * 面板放大 2.4 倍后有 2~3.8m 宽、约 2.5m 高，站得太近会顶满整个视口（连抬头的
+ * 「断开」按钮都跑到屏幕外）。按 74° 垂直视场角反推，想把整块面板收进画面大约
+ * 需要 2.6m，再算上屏幕相对站位锚点已经前移的 0.5m，取 3.0m —— 同时不能超过
+ * 接入距离（INTERACT_RANGE 3.4m），否则跃迁完反而够不着终端了。
+ * 贴墙的终端没有这么多净深、探路撞上货箱时，都会自动截短到最近的可站位置。
+ */
+const WARP_PREFERRED = 3.0;
+/** 探路步长（米） */
+const WARP_STEP = 0.2;
+/**
+ * 探路时可以左右错开的距离（米），按优先顺序排列。
+ *
+ * 正前方可能正好摆着家具 —— 指挥台前的舰长席就是这样：正对着走过去会被它挡住，
+ * 只能就近停在 2m 处，面板顶满整个视口。面板挂在终端**上方**，横向错开半步并不
+ * 影响看到它，却能让人退到收得下整块面板的距离。0 排在最前，同分时优先正对。
+ */
+const WARP_LATERAL_OFFSETS: readonly number[] = [0, 0.9, -0.9, 1.5, -1.5];
+
+/**
+ * 舰内跃迁的落点：从终端站位锚点沿它的正面方向探路，挑一个「站得下、看得见」的位置。
+ *
+ * ## 为什么必须单独抽成纯函数
+ *
+ * 这段逻辑此前只活在 warpTo 里，而测试为了方便**自己复刻了一遍**探路公式。
+ * 复刻时漏掉了 isLineBlocked 那一项，于是真实实现里「起点落在终端机身内部、
+ * 第一步就判撞墙」的缺陷一直没被抓住 —— 8 座终端的落点全部退化成锚点本身。
+ * 抽出来之后测试跑的就是线上同一份代码，复刻不可能再和实现走偏。
+ *
+ * 判据三条：
+ *   1. 不越出舰体（isInsideHull）；越出即停，再往前只会穿墙；
+ *   2. 从锚点到落点的视线不被墙挡住（isLineBlocked，它会跳过包含端点的机身）；
+ *   3. 落点必须放得下整个玩家碰撞体 —— 终端机身、货箱占据的格子直接跳过，
+ *      玩家应该站到它们**前面**去，而不是站在箱子顶上。
+ * 三处探路各试一遍（正对 + 左右错开，见 WARP_LATERAL_OFFSETS），取能退得最远的那条；
+ * 同分时优先正对，保证绝大多数终端都是「走到正前方站定」的直觉结果。
+ * 最后 yaw 由「落点 → 锚点」得出，保证视线正对终端；落点与锚点重合这种退化情形
+ * （探路一步都没走成）退回终端自身的朝向，否则 atan2(0,0)=0 会让玩家背对终端。
+ */
+export function warpLanding(
+  station: Station,
+  boxes: readonly CompiledBox[],
+): { x: number; y: number; z: number; yaw: number } {
+  const [x, y, z] = station.anchor;
+  const forwardX = Math.sin(station.facing);
+  const forwardZ = Math.cos(station.facing);
+  const sideX = Math.cos(station.facing);
+  const sideZ = -Math.sin(station.facing);
+  // 通视判据取**眼睛高度**：腰高的货箱会挡住腰线，却挡不住抬头看面板的视线，
+  // 用 0.9m 探路会因为几个箱子就白白缩短跃迁距离（实测 CMD-01 因此只剩 1.5m）。
+  const eyeY = y + PLAYER_EYE;
+
+  /** 沿某个横向偏移探路，返回能站的最远距离（一步都站不住时退回通视的最远距离） */
+  const probe = (offset: number): number => {
+    const ox = sideX * offset;
+    const oz = sideZ * offset;
+    const eye = { x: x + ox, y: eyeY, z: z + oz };
+    let standable = 0;
+    let reachable = 0;
+    for (let d = WARP_STEP; d <= WARP_PREFERRED + 1e-6; d += WARP_STEP) {
+      const px = x + forwardX * d + ox;
+      const pz = z + forwardZ * d + oz;
+      // 容差取 0.1 而不是更大的值：探路是 0.2m 一跳，容差过大会让落点冲出舱壁半个身位
+      if (!isInsideHull(px, pz, 0.1)) break;
+      if (isLineBlocked(boxes, eye, { x: px, y: eyeY, z: pz })) break;
+      reachable = d;
+      if (isBlocked(boxes, playerBox({ x: px, y, z: pz }, PLAYER_RADIUS, PLAYER_HEIGHT))) continue;
+      standable = d;
+    }
+    return standable > 0 ? standable : reachable;
+  };
+
+  let distance = 0;
+  let offset = 0;
+  for (const candidate of WARP_LATERAL_OFFSETS) {
+    const reached = probe(candidate);
+    if (reached > distance + 1e-6) {
+      distance = reached;
+      offset = candidate;
+    }
+  }
+
+  const tx = x + forwardX * distance + sideX * offset;
+  const tz = z + forwardZ * distance + sideZ * offset;
+  const yaw = distance > 1e-3 ? Math.atan2(x - tx, z - tz) : station.facing;
+  return { x: tx, y, z: tz, yaw };
 }
 
 /**

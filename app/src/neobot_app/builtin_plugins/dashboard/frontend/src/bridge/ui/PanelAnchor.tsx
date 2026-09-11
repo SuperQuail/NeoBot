@@ -14,13 +14,14 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { PerspectiveCamera } from 'three';
 import {
   PIXELS_PER_METER,
+  type PanelPlane,
   panelPlaneFromScreen,
-  perspectiveDistance,
   projectPanel,
 } from '../three/projector';
 import type { PanelCompositor } from '../three/composite';
 import { HOLO_ACCENT, HOLO_ACCENT_ALT } from './tokens';
 import type { Station } from '../core/types';
+import { PANEL_LAYOUT, panelWorldSize } from './panelSizing';
 
 export interface PanelAnchorProps {
   station: Station;
@@ -28,6 +29,8 @@ export interface PanelAnchorProps {
   getCamera: () => PerspectiveCamera | null;
   /** 提供视口尺寸（CSS 像素） */
   getViewport: () => { width: number; height: number };
+  /** 面板可见度（0~1，由引擎按碰撞盒算出）：被挡住时面板整体暗下去 */
+  getVisibility: (plane: PanelPlane) => number;
   /** 合成器：负责遮挡与全息辉光；为 null 时退化成纯 CSS 效果 */
   compositor: PanelCompositor | null;
   /** 置 true 播放收起动画 */
@@ -35,34 +38,21 @@ export interface PanelAnchorProps {
   children: ReactNode;
 }
 
-/**
- * 面板相对终端屏幕的放大倍率。
- *
- * 屏幕本身只有 0.8~1.6m 宽，原样贴上去字号小到不可读；放大 2.4 倍后面板
- * 约 2~3.8m 宽，玩家站在交互距离（2.5~3.4m）时读起来正好，同时仍然明显
- * 挂在终端那一侧、需要转头去看——这才是「场景里的面板」。
- */
-const PANEL_SCALE = 2.4;
 /** 面板中心相对屏幕中心抬高（米）：悬在终端上方，不挡住屏幕本身 */
-const PANEL_RISE = 0.62;
+const PANEL_RISE = 0.38;
 /** 向玩家一侧浮出的距离（米） */
 const PANEL_FORWARD = 0.42;
 
 /** 元素像素尺寸 = 米数 × 这个系数（与 projector 的换算必须一致） */
 const PX_PER_METER = PIXELS_PER_METER;
-/**
- * 字号补偿的上下限。元素被投影缩放了 renderedWidth / elementWidth 倍，
- * 字号乘上它的倒数就能让屏幕上的字号基本恒定；夹在区间内避免极端视距下溢出。
- */
-const MIN_LIFT = 0.6;
-const MAX_LIFT = 2.4;
 /** 展开/收起动画时长（秒）；与 bridge.tsx 里延时卸载的时间保持一致 */
 const REVEAL_SECONDS = 0.26;
 /**
  * 可见度采样的间隔（帧）。
  *
- * 采样内部是 readRenderTargetPixels —— **GPU 同步回读**，每帧做会让 CPU 一直
- * 等 GPU 完成，实测直接把页面卡死。遮挡变化本来就慢，每 6 帧一次完全够用。
+ * 遮挡本身是纯 CPU 的线段求交（几百个包围盒 × 20 条线段，微秒级），不降频也
+ * 跑得动；这里仍然每 6 帧算一次，是因为遮挡只会随走动缓慢变化，没必要每帧算，
+ * 中间几帧沿用上一次的结果。
  */
 const VISIBILITY_INTERVAL = 6;
 /**
@@ -77,6 +67,7 @@ export default function PanelAnchor({
   station,
   getCamera,
   getViewport,
+  getVisibility,
   compositor,
   closing = false,
   children,
@@ -86,20 +77,19 @@ export default function PanelAnchor({
   const closingRef = useRef(closing);
   const dockRef = useRef<{
     transform: string;
-    perspective: number;
-    principalX: number;
-    principalY: number;
     opacity: number;
   } | null>(null);
   closingRef.current = closing;
 
-  // 面板尺寸由「屏幕尺寸 × 倍率」决定，是常量，不必每帧重算
+  // World size never depends on the camera: this remains a station-bound projection.
   const plane = useMemo(
     () =>
-      panelPlaneFromScreen(station.screen, station.screenYaw, station.screenSize, {
-        scale: PANEL_SCALE,
-        rise: PANEL_RISE,
-        forward: PANEL_FORWARD,
+      ({
+        ...panelPlaneFromScreen(station.screen, station.screenYaw, station.screenSize, {
+          rise: PANEL_RISE,
+          forward: PANEL_FORWARD,
+        }),
+        ...panelWorldSize(station.screenSize.width),
       }),
     [station],
   );
@@ -116,9 +106,18 @@ export default function PanelAnchor({
       frame += 1;
       const host = hostRef.current;
       const camera = getCamera();
-      if (!host || !camera) return;
+      if (!host) return;
+      const hide = () => {
+        host.style.opacity = '0';
+        host.style.visibility = 'hidden';
+        host.dataset.interactive = 'false';
+        host.setAttribute('inert', '');
+        dockRef.current = null;
+        compositor?.clear();
+      };
+      if (!camera) { hide(); return; }
       const viewport = getViewport();
-      if (viewport.width < 2 || viewport.height < 2) return;
+      if (viewport.width < 2 || viewport.height < 2) { hide(); return; }
 
       // ---- 展开量：0→1 展开，1→0 收起 ----
       const step = 1 / 60 / REVEAL_SECONDS;
@@ -135,63 +134,64 @@ export default function PanelAnchor({
         ? null
         : projectPanel(camera, plane, viewport.width, viewport.height, eased * 0.12);
 
-      if (projected === null || projected.behind) {
+      if (projected === null) {
+        host.dataset.interactive = 'false';
+        host.setAttribute('inert', '');
         const dock = dockRef.current;
         if (dock) {
-          host.style.transform = `perspective(${dock.perspective.toFixed(2)}px) ${dock.transform}`;
-          host.style.perspectiveOrigin = `${dock.principalX.toFixed(1)}px ${dock.principalY.toFixed(1)}px`;
+          host.style.transform = dock.transform;
           host.style.opacity = (eased * dock.opacity).toFixed(3);
         } else {
-          host.style.opacity = '0';
+          hide();
         }
+        if (eased === 0) hide();
         compositor?.clear();
         return;
       }
 
-      const perspective = perspectiveDistance(camera, viewport.height);
-      host.style.transform = `perspective(${perspective.toFixed(2)}px) ${projected.transform}`;
-      // 视角原点必须显式设置：CSS 默认在元素中心，而面板元素很大，
-      // 用默认值会让透视往元素中心收，与 WebGL 相机对不上。
-      host.style.perspectiveOrigin = `${projected.principalX.toFixed(1)}px ${projected.principalY.toFixed(1)}px`;
+      /**
+       * 面板跑到相机背后（转过头 / 走出终端所在的方向）：保留上一次的 transform
+       * 以便转回来时立刻归位，但**必须隐藏**。
+       *
+       * 早期这里和「收起动画」共用一条分支，于是隐藏时仍按上一次的透明度显示 ——
+       * 玩家转身走开几十米后，面板会像一块 HUD 一样钉在屏幕上不动（实测人已经
+       * 在中央枢纽，主机机柜的面板还挂在画面中央、77% 不透明度）。
+       */
+      if (projected.behind) {
+        hide();
+        return;
+      }
+
+      // matrix3d 已经包含透视（第 4 行是同次项 w），不需要 perspective()，
+      // 也不需要 perspective-origin —— 后者默认在元素中心，只会把画面对错位。
+      host.style.transform = projected.transform;
 
       // ---- 遮挡响应（降频采样）----
-      // sampleVisibility 内部是 readRenderTargetPixels，属于 **GPU 同步回读**：
-      // 每帧调用会让 CPU 一直等 GPU，实测直接把页面卡死。遮挡变化本来就慢，
-      // 每 VISIBILITY_INTERVAL 帧采一次完全够用，其余帧复用上次结果。
+      // 引擎按碰撞盒算出「相机到面板的连线有多少条没被挡住」，纯 CPU、不碰 GPU。
       if (frame % VISIBILITY_INTERVAL === 0) {
-        const visibility =
-          compositor?.sampleVisibility(projected.quad, viewport.width, viewport.height) ?? 1;
+        const visibility = getVisibility(plane);
         occlusionFade = 0.25 + 0.75 * visibility;
       }
 
       // 距离越远越淡：投影在空气里衰减，但保留下限，别让远处的面板直接消失
       const falloff = Math.min(
         1,
-        Math.max(MIN_DISTANCE_FALLOFF, 1 - (projected.distance - 1.2) / 6),
+        Math.max(MIN_DISTANCE_FALLOFF, 1 - (projected.distance - 3) / 6),
       );
       const opacity = eased * falloff * occlusionFade;
       host.style.opacity = opacity.toFixed(3);
+      host.style.visibility = opacity > 0.01 ? 'visible' : 'hidden';
+      host.dataset.interactive = opacity > 0.01 ? 'true' : 'false';
+      host.toggleAttribute('inert', opacity <= 0.01);
       dockRef.current = {
         transform: projected.transform,
-        perspective,
-        principalX: projected.principalX,
-        principalY: projected.principalY,
         opacity: falloff * occlusionFade,
       };
 
-      // ---- 字号补偿 ----
-      // 元素被投影缩放了 renderedWidth / elementWidth 倍；把字号乘上它的倒数，
-      // 屏幕上的字号就基本恒定。夹在 [MIN_LIFT, MAX_LIFT] 内避免极端视距下溢出。
-      const renderedWidth = Math.hypot(
-        projected.quad[1].x - projected.quad[0].x,
-        projected.quad[1].y - projected.quad[0].y,
-      );
-      const elementWidth = plane.width * PX_PER_METER;
-      const lift = Math.min(MAX_LIFT, Math.max(MIN_LIFT, elementWidth / Math.max(1, renderedWidth)));
-      host.style.setProperty('--panel-lift', lift.toFixed(3));
-
+      // 辉光要跟着面板一起淡：传进去的是最终不透明度，而不是只有展开量，
+      // 否则面板已经暗下去了、全息光却还亮着贴在墙上。
       compositor?.draw(
-        { quad: projected.quad, reveal, opacity: eased, accent: HOLO_ACCENT, accent2: HOLO_ACCENT_ALT },
+        { quad: projected.quad, reveal, opacity, accent: HOLO_ACCENT, accent2: HOLO_ACCENT_ALT },
         viewport.width,
         viewport.height,
       );
@@ -202,7 +202,7 @@ export default function PanelAnchor({
       if (raf) cancelAnimationFrame(raf);
       compositor?.clear();
     };
-  }, [plane, getCamera, getViewport, compositor]);
+  }, [plane, getCamera, getViewport, getVisibility, compositor]);
 
   return (
     <div
@@ -211,8 +211,9 @@ export default function PanelAnchor({
       style={{
         width: `${plane.width * PX_PER_METER}px`,
         height: `${plane.height * PX_PER_METER}px`,
-        // 字号补偿倍数，每帧由投影循环写入
-        '--panel-lift': 1,
+        '--panel-layout-width': `${PANEL_LAYOUT.width}px`,
+        '--panel-layout-height': `${PANEL_LAYOUT.height}px`,
+        '--panel-layout-scale': plane.width * PX_PER_METER / PANEL_LAYOUT.width,
       } as React.CSSProperties}
       data-station={station.id}
     >

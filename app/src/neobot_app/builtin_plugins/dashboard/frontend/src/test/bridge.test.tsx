@@ -17,6 +17,9 @@ import {
   DOORS,
   DECK_Y,
   HUB,
+  PLAYER_EYE,
+  PLAYER_HEIGHT,
+  PLAYER_RADIUS,
   ROOMS,
   SPAWN_POSITION,
   WALL_THICKNESS,
@@ -36,13 +39,15 @@ import {
 } from '../bridge/core/collision';
 import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
 import { Player } from '../bridge/core/player';
-import { doorDistance } from '../bridge/core/engine';
+import { doorDistance, warpLanding } from '../bridge/core/engine';
 import {
   PIXELS_PER_METER,
   panelPlaneFromScreen,
   perspectiveDistance,
   projectPanel,
 } from '../bridge/three/projector';
+import { PanelCompositor } from '../bridge/three/composite';
+import { panelVisibility } from '../bridge/core/occlusion';
 import { STATIONS, ITEMS, ITEM_IDS, ACHIEVEMENTS, type ItemId } from '../bridge/core/types';
 import {
   __setLogForTest,
@@ -410,6 +415,59 @@ describe('面板投影', () => {
 
   const VIEWPORT = { width: 1600, height: 900 };
 
+  /**
+   * 按 CSS 的语义把元素局部像素投到视口像素：matrix3d 是齐次矩阵，
+   * 结果要做一次齐次除法（w 在第 4 行）。
+   */
+  function cssProject(matrix: number[], u: number, v: number) {
+    const x = matrix[0] * u + matrix[4] * v + matrix[12];
+    const y = matrix[1] * u + matrix[5] * v + matrix[13];
+    const w = matrix[3] * u + matrix[7] * v + matrix[15];
+    return { x: x / w, y: y / w };
+  }
+
+  /**
+   * 回归：CSS 层拿到的 matrix3d 必须与 WebGL 的像素坐标逐角吻合。
+   *
+   * 这里曾经踩过一个很难从代码上看出来的坑：矩阵直接抄 CSS3DRenderer 的
+   * 「perspective(P) + view·plane」，而那是按「世界单位 = CSS 像素」写的。
+   * 本场景的世界单位是米、元素却是 150px/m，于是矩阵退化成单位阵，面板被原样
+   * 画在元素框里并翻到视口左上角外侧（getBoundingClientRect 恒为
+   * [-577,-372,577,372]，与视口零面积相交）—— 玩家接入终端后只会看到画面暗了
+   * 一下，什么都没有，正是「点终端没反应」。
+   */
+  it('CSS 矩阵投出的四角与 WebGL 像素坐标一致（面板真的落在视野里）', () => {
+    const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
+    const elementWidth = plane.width * PIXELS_PER_METER;
+    const elementHeight = plane.height * PIXELS_PER_METER;
+    // 元素局部四角（CSS：左上原点、y 向下），顺序与 QUAD_ORDER 对齐
+    const corners: Array<[number, number]> = [
+      [0, elementHeight],
+      [elementWidth, elementHeight],
+      [elementWidth, 0],
+      [0, 0],
+    ];
+
+    const poses: Array<[THREE.Vector3, THREE.Vector3]> = [
+      // 正对面板
+      [new THREE.Vector3(0, 1.9, -28.6), new THREE.Vector3(0, 1.6, -26)],
+      // 站到侧面斜看（透视更明显，单位换算错一点就会差出几百像素）
+      [new THREE.Vector3(0, 1.9, -28.6), new THREE.Vector3(1.6, 1.5, -25.5)],
+      [new THREE.Vector3(0, 2.4, -28.6), new THREE.Vector3(1.2, 3.1, -20)],
+    ];
+
+    for (const [target, from] of poses) {
+      const camera = cameraLookingAt(target, from, 0);
+      const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+      expect(projected.behind).toBe(false);
+      corners.forEach(([u, v], index) => {
+        const css = cssProject(projected.matrix, u, v);
+        expect(css.x).toBeCloseTo(projected.quad[index].x, 3);
+        expect(css.y).toBeCloseTo(projected.quad[index].y, 3);
+      });
+    }
+  });
+
   it('正对终端时，面板中心投在屏幕中心、四角顺序正确', () => {
     const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const camera = cameraLookingAt(
@@ -565,7 +623,7 @@ describe('面板投影', () => {
     expect(projected.behind).toBe(true);
   });
 
-  it('视角原点落在面板元素范围内（用于修正 CSS 的 perspective-origin）', () => {
+  it('视角原点落在面板元素范围内（排障读数）', () => {
     const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const camera = cameraLookingAt(
       new THREE.Vector3(0, 1.5, -29.2),
@@ -573,16 +631,18 @@ describe('面板投影', () => {
       0,
     );
     const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
+    const elementWidth = plane.width * PIXELS_PER_METER;
+    const elementHeight = plane.height * PIXELS_PER_METER;
 
     // 面板悬在屏幕上方（rise），相机略低于面板中心，因此消失点会稍稍偏下；
-    // 关键是它必须落在元素范围内，否则 CSS 的透视原点会跑到元素外面。
+    // 关键是它必须落在元素范围内 —— 这个读数就是「相机主光轴打在面板的哪里」。
     expect(projected.principalX).toBeGreaterThan(0);
-    expect(projected.principalX).toBeLessThan(plane.width * 150);
+    expect(projected.principalX).toBeLessThan(elementWidth);
     expect(projected.principalY).toBeGreaterThan(0);
-    expect(projected.principalY).toBeLessThan(plane.height * 150);
+    expect(projected.principalY).toBeLessThan(elementHeight);
 
     // 水平方向正对时，消失点应接近元素水平中心
-    expect(projected.principalX).toBeCloseTo((plane.width / 2) * 150, 0);
+    expect(projected.principalX).toBeCloseTo(elementWidth / 2, 0);
 
     // 侧视（相机偏到一侧）时消失点应随之偏移，而不是固定在中心
     const offAxis = cameraLookingAt(
@@ -959,6 +1019,22 @@ describe('碰撞求解', () => {
     expect(isLineBlocked(boxes, { x: 0, y: 1.6, z: 0 }, { x: 0, y: 1.6, z: -9 })).toBe(false);
     expect(isLineBlocked(boxes, { x: 0, y: 1.6, z: 0 }, { x: 0, y: 1.6, z: 12 })).toBe(true);
   });
+
+  /**
+   * 回归：端点落在碰撞体内部时，该碰撞体不算遮挡。
+   *
+   * 终端机身与站位锚点就是这个关系（锚点在机身中央），不跳过的话
+   * 「走到终端正前方」的视线永远穿不过终端自己的机身。
+   */
+  it('视线端点落在碰撞体内部时，该碰撞体不参与遮挡判定', () => {
+    const solid = compileColliders([{ center: [0, 0.5, 0], size: [2, 1, 2] }]);
+    // 从盒子内部看向盒外：不算被这堵「墙」挡住
+    expect(isLineBlocked(solid, { x: 0, y: 0.5, z: 0 }, { x: 6, y: 0.5, z: 0 })).toBe(false);
+    // 端点落在盒子里（另一端点在外）：同样不算
+    expect(isLineBlocked(solid, { x: -6, y: 0.5, z: 0 }, { x: 0, y: 0.5, z: 0 })).toBe(false);
+    // 盒子夹在两点之间才是真的遮挡
+    expect(isLineBlocked(solid, { x: -6, y: 0.5, z: 0 }, { x: 6, y: 0.5, z: 0 })).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1102,5 +1178,162 @@ describe('舰内存档', () => {
     localStorage.setItem('neobot-bridge-log', '{ this is not json');
     __setLogForTest(emptyLog());
     expect(getLog().visited).toEqual([]);
+  });
+});
+
+describe('面板遮挡', () => {
+  const VIEW = { width: 1600, height: 900 };
+
+  function cmdPlane() {
+    return panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
+  }
+
+  it('没有任何碰撞体时可见度为 1', () => {
+    expect(panelVisibility([], { x: 0, y: 1.6, z: -26 }, cmdPlane())).toBe(1);
+  });
+
+  it('舱壁夹在相机与面板之间时可见度归零', () => {
+    // 一块横在相机与面板之间的舱壁（面板在 z≈-28.6，相机在 z=-26）
+    const wall = compileColliders([{ center: [0, 1.5, -27.4], size: [8, 3, 0.4] }]);
+    expect(panelVisibility(wall, { x: 0, y: 1.6, z: -26 }, cmdPlane())).toBe(0);
+    // 相机挪到舱壁另一侧（与面板同侧）后重新可见
+    expect(panelVisibility(wall, { x: 0, y: 1.6, z: -28 }, cmdPlane())).toBe(1);
+  });
+
+  /**
+   * 回归：终端机身自己也有一块碰撞盒，且站位锚点就落在里面。
+   *
+   * 早期 isLineBlocked 把「起点在盒子里」也算命中，于是站在终端正前方时
+   * 每一条视线都被终端自己的机身挡住 —— 可见度恒为 0，面板被永久压到 25%
+   * 不透明度；同一条判据还让 warpTo 的探路第一步就「撞墙」（距离退化成 0），
+   * 以及让终端永远选不中（提示「附近没有可接入的舰载设备」）。
+   */
+  it('跃迁落点站得下、朝着终端，且面板可见（机身不算遮挡）', () => {
+    const ship = buildShip(new THREE.Scene(), { quality: 'low' });
+    try {
+      const boxes = compileColliders(ship.colliders);
+      for (const station of STATIONS) {
+        // 直接跑线上那份探路代码（warpLanding），不再自己复刻一遍公式：
+        // 之前正是因为复刻时漏了 isLineBlocked，才没发现 8 座终端全部落点退化成锚点。
+        const landing = warpLanding(station, boxes);
+        expect(
+          Math.hypot(landing.x - station.anchor[0], landing.z - station.anchor[2]),
+          `${station.code} 的跃迁距离退化成 0（玩家会被放进机身里）`,
+        ).toBeGreaterThanOrEqual(0.4);
+        // 落点必须放得下玩家，否则会被脱困逻辑随机推开
+        expect(
+          isBlocked(
+            boxes,
+            playerBox({ x: landing.x, y: landing.y, z: landing.z }, PLAYER_RADIUS, PLAYER_HEIGHT),
+          ),
+          `${station.code} 的跃迁落点站不下`,
+        ).toBe(false);
+        // 朝向：视线指向终端（前向与「落点→锚点」方向同向）
+        const toStation = {
+          x: station.anchor[0] - landing.x,
+          z: station.anchor[2] - landing.z,
+        };
+        const length = Math.hypot(toStation.x, toStation.z) || 1;
+        const facing = (Math.sin(landing.yaw) * toStation.x + Math.cos(landing.yaw) * toStation.z) / length;
+        expect(facing, `${station.code} 跃迁后没有面向终端`).toBeGreaterThan(0.95);
+
+        const plane = panelPlaneFromScreen(station.screen, station.screenYaw, station.screenSize);
+        const eye = {
+          x: landing.x,
+          y: landing.y + PLAYER_EYE,
+          z: landing.z,
+        };
+        // 落点到面板的距离要落在「看得清整块面板」的区间里。
+        // 太近说明机身朝向写反了、玩家被顶在舱壁夹缝里 —— 面板会顶满整个视口，
+        // 连抬头的「断开」按钮都跑到屏幕外（机库那三座终端原本就是这样，实测
+        // 只剩 1.2m）。下限取 1.4 是因为指挥台正前方摆着舰长席：探路被椅子挡住时
+        // 会就近落在 1.5m 左右，那属于正常布局，不是缺陷。
+        const panelDistance = new THREE.Vector3(eye.x, eye.y, eye.z).distanceTo(plane.center);
+        expect(
+          panelDistance,
+          `${station.code} 的落点离面板 ${panelDistance.toFixed(2)}m（太近会顶满视口）`,
+        ).toBeGreaterThan(1.4);
+        expect(panelDistance, `${station.code} 的落点离面板 ${panelDistance.toFixed(2)}m（太远看不清）`)
+          .toBeLessThan(3.6);
+        // 下限放到 0.8：火控台（WPN-08）紧贴机库北墙、身前就是门洞，
+        // 门楣会合理地压掉面板最上面一行采样，其余终端都应是满值 1。
+        expect(
+          panelVisibility(boxes, eye, plane),
+          `${station.code} 站在终端正前方却看不到自己的面板`,
+        ).toBeGreaterThan(0.8);
+      }
+    } finally {
+      ship.dispose();
+    }
+  });
+
+  /**
+   * 回归：玩家背对终端时，面板已经跑到相机背后。
+   *
+   * 旧判据只看「相机在面板正面一侧」，此时仍然为真，于是面板照常拿到一个
+   * 投影矩阵并被 CSS 摆到屏幕外（实测 x ≈ -577px，正好差一个视口宽度）。
+   */
+  it('相机背对终端时标记为 behind，不再往屏幕外投影', () => {
+    const plane = cmdPlane();
+    // 站在面板正前方但朝 +z 看（背对面板）
+    const away = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+    away.position.set(0, 1.6, -26);
+    away.lookAt(new THREE.Vector3(0, 1.6, -10));
+    away.updateMatrixWorld(true);
+    const back = projectPanel(away, plane, VIEW.width, VIEW.height);
+    expect(back.facing).toBeGreaterThan(0);
+    expect(back.behind).toBe(true);
+
+    // 正面朝向面板时不受影响
+    const facing = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
+    facing.position.set(0, 1.6, -26);
+    facing.lookAt(new THREE.Vector3(0, 1.9, -28.6));
+    facing.updateMatrixWorld(true);
+    expect(projectPanel(facing, plane, VIEW.width, VIEW.height).behind).toBe(false);
+  });
+
+  /**
+   * 合成层只负责画全息辉光：早期那套 GPU 深度预处理（离屏目标 + 同步回读）
+   * 既是「一开面板就卡死」的根源，又因为跨上下文而从未生效，已整体移除。
+   * 这里守住「不再出现任何 GPU 回读」，防止它被重新加回来。
+   */
+  it('全息合成层不做任何 GPU 回读', () => {
+    const calls: string[] = [];
+    const renderer = {
+      setClearColor: () => {},
+      setPixelRatio: () => {},
+      setSize: () => {},
+      setRenderTarget: () => calls.push('setRenderTarget'),
+      clear: () => calls.push('clear'),
+      render: () => calls.push('render'),
+      dispose: () => {},
+      readRenderTargetPixels: () => calls.push('readRenderTargetPixels(sync)'),
+      readRenderTargetPixelsAsync: () => {
+        calls.push('readRenderTargetPixelsAsync');
+        return Promise.resolve(new Uint8Array(0));
+      },
+    } as unknown as THREE.WebGLRenderer;
+
+    const compositor = new PanelCompositor(document.createElement('canvas'), { renderer });
+    compositor.draw(
+      {
+        quad: [
+          { x: 0, y: 0, depth: 2 },
+          { x: 200, y: 0, depth: 2 },
+          { x: 200, y: 200, depth: 2 },
+          { x: 0, y: 200, depth: 2 },
+        ],
+        reveal: 1,
+        opacity: 0.8,
+        accent: new THREE.Color(0x3fe0ff),
+        accent2: new THREE.Color(0xff3bd0),
+      },
+      800,
+      600,
+    );
+    compositor.clear();
+    expect(calls).toContain('render');
+    expect(calls.filter((call) => call.startsWith('readRenderTargetPixels'))).toEqual([]);
+    compositor.dispose();
   });
 });

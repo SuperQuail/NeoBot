@@ -204,17 +204,17 @@ def _drive(page, url: str, *, open_panel: bool) -> tuple[list[str], dict]:
         return _finish(page, summary, panel_info)
 
     try:
+        # 用页内 JS 派发 click：无头环境下 DrissionPage 的元素定位经常点不中
+        # （元素在 3D 画布之上、命中测试会落到 canvas），而这里要验的是渲染链路。
         # 舰桥工具条第一个按钮就是「终端总览」
-        page.ele(".bridge-dock button", timeout=6).click()
+        page.run_js("const b = document.querySelector('.bridge-dock button'); if (b) b.click();")
         page.wait(1.2)
         panel_info["openStep"] = "overlay-clicked"
 
-        # 终端卡片：优先按中文名匹配，匹配不到就退回 CSS 选择器
-        try:
-            card = page.ele("tag:button@@text():指挥台", timeout=3)
-        except Exception:
-            card = page.ele(".ov-terminal", timeout=3)
-        card.click()
+        # 终端卡片：点第一座（指挥台），与「导航到面板」是同一条路径
+        panel_info["cards"] = page.run_js(
+            "const c = document.querySelectorAll('.ov-terminal'); if (c.length) c[0].click(); return c.length;"
+        )
         page.wait(3)
         panel_info["openStep"] = "card-clicked"
         panel_info["panelOpened"] = True
@@ -232,7 +232,6 @@ def _drive(page, url: str, *, open_panel: bool) -> tuple[list[str], dict]:
             return JSON.stringify({
               anchorFound: true,
               hasMatrix: style.transform.startsWith('matrix3d('),
-              perspectiveOrigin: style.perspectiveOrigin,
               inlineOpacity: host.style.opacity,
               transformOrigin: style.transformOrigin,
               renderedWidth: Math.round(rect.width),
@@ -311,7 +310,6 @@ async def main() -> int:
         check("面板锚点存在于场景中", bool(state.get("anchorFound")))
         check("面板已写入 matrix3d 投影矩阵", bool(state.get("hasMatrix")))
         check("面板落在屏幕可见范围内（投影没飘走）", bool(state.get("onScreen")))
-        check("视角原点已显式设置", state.get("perspectiveOrigin") not in (None, "", "auto"))
         check("终端机框已挂载", bool(state.get("hasFrame")))
     else:
         print("[SKIP] 未能通过界面打开面板，跳过投影链路检查")

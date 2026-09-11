@@ -138,11 +138,16 @@ export const STATIONS: Station[] = [
     // 机库南墙内表面 z=+33；与北墙终端保持同一条规则：机身中心离内表面约 1.4m，
     // 屏幕落在机身与舱室之间。改装前屏幕被放在 z=32.12（越过舱壁），
     // 全息面板会挂到舰体外面去。
+    //
+    // facing 取 π（朝 -z，即舱室内侧）：机库在 z∈[17,33]，机身已经贴到南墙，
+    // 屏幕若朝 +z 就是朝墙，玩家只剩 1.3m 的夹缝可站 —— 实测跃迁会把人顶到
+    // 墙根、面板占满整个视口。机身模型本身也是按「正面朝舱内」摆的
+    // （ship.ts 的 flight 规格里操纵台/屏幕都在局部 +z 侧）。
     anchor: [-10, 0, 31.4],
-    facing: 0,
+    facing: Math.PI,
     subsystem: '舰载机与僚机编队',
     screen: [-10, 1.18, 31.26],
-    screenYaw: 0,
+    screenYaw: Math.PI,
     screenSize: { width: 1.1, height: 0.56 },
   },
   {
@@ -152,10 +157,11 @@ export const STATIONS: Station[] = [
     label: '船坞调配台',
     title: '补给与装载',
     anchor: [10, 0, 31.4],
-    facing: 0,
+    // 同 FLT-06：贴机库南墙，屏幕必须朝舱内（-z），否则玩家没有立足空间
+    facing: Math.PI,
     subsystem: '船坞与补给调度',
     screen: [10, 1.3, 31.26],
-    screenYaw: 0,
+    screenYaw: Math.PI,
     screenSize: { width: 1.2, height: 0.6 },
   },
   {
@@ -164,12 +170,18 @@ export const STATIONS: Station[] = [
     code: 'WPN-08',
     label: '火控台',
     title: '舰炮管制',
-    // 机库北墙内表面 z=+17（靠舱内一侧），火控台朝 +z
+    // 机库北墙内表面 z=+17（靠舱内一侧），火控台朝 +z（舱内）。
+    //
+    // 校正前这里写的是 facing=π（朝 -z，即朝墙），而屏幕坐标却按 +z 侧的机身算，
+    // 于是面板浮在机身与舱壁之间、玩家根本站不进去；跃迁只能把人送到门洞外的
+    // 走廊里，隔着门框看这块面板。机身模型同样以 +z 为正面（操纵杆、脚踏都在
+    // 局部 +z 侧）。
     anchor: [0, 0, 18.1],
-    facing: Math.PI,
+    facing: 0,
     subsystem: '近防炮与护盾',
+    // 屏幕贴在机身靠舱内的一侧，与其余终端同一条规则（机身中心 + 0.12m）
     screen: [0, 1.16, 18.22],
-    screenYaw: Math.PI,
+    screenYaw: 0,
     screenSize: { width: 1.0, height: 0.52 },
   },
 ];

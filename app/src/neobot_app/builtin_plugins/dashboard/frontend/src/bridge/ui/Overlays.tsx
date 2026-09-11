@@ -251,7 +251,10 @@ export function HelpOverlay({ onOpenClassic, onClose }: HelpOverlayProps) {
               按 <kbd>F</kbd> 接入；按 <kbd>1</kbd>–<kbd>8</kbd> 可快接对应终端，距离过远会自动跃迁
             </li>
             <li>
-              面板内 <kbd>Esc</kbd> 断开终端、<kbd>R</kbd> 刷新数据；断开局域网连接时面板会明确提示而不是显示旧值
+              接入后仍可用 <kbd>WASD</kbd> 移动，按住鼠标右键拖动可转视角；<kbd>V</kbd> 切换鼠标操作 / 自由视角，<kbd>F</kbd> 可重新操作已连接的终端。编辑输入框时不会触发移动。
+            </li>
+            <li>
+              <kbd>Esc</kbd> 断开终端，点击「刷新」更新数据；断开局域网连接时面板会明确提示而不是显示旧值
             </li>
           </ul>
         </section>
@@ -357,7 +360,7 @@ export function TerminalFrame({
         <span className="hologram-live" aria-hidden="true" />
         <span>链路已加密 · 数据实时来自舰载主机</span>
         <span className="hologram-hint">
-          <kbd>Esc</kbd> 断开
+          <kbd>WASD</kbd> 移动 · 右键拖动转视角 · <kbd>V</kbd> 切换 · <kbd>Esc</kbd> 断开
         </span>
       </footer>
     </div>

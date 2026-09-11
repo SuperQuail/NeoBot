@@ -7,13 +7,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { HudSnapshot, InteractionTarget } from '../core/engine';
 import type { BridgeNotice } from '../core/store';
 import { hasCritical, vitalStatus, type VitalsState } from '../core/vitals';
-import type { Vital } from '../core/types';
+import type { PanelId, Vital } from '../core/types';
 
 export interface HudProps {
   snapshot: HudSnapshot;
   vitals: VitalsState;
   notices: BridgeNotice[];
   target: InteractionTarget | null;
+  /** 已连接的终端不再显示重复接入提示；不影响引擎的 F 交互。 */
+  connectedPanel?: PanelId | null;
   /** 是否处于指针锁定（未锁定时显示「点击继续」遮罩） */
   locked: boolean;
   /** 面板/小游戏打开时隐藏准星与提示 */
@@ -70,6 +72,7 @@ export default function Hud({
   vitals,
   notices,
   target,
+  connectedPanel = null,
   locked,
   dimmed,
   pickupProgress,
@@ -92,6 +95,8 @@ export default function Hud({
   }, [criticalKey]);
 
   const unavailable = vitals.availability === 'unavailable';
+  const connectedTarget = target?.kind === 'station' && target.station?.id === connectedPanel;
+  const showTarget = target !== null && !connectedTarget;
 
   return (
     <div className={`hud${dimmed ? ' hud-dimmed' : ''}${critical ? ' hud-alert' : ''}`}>
@@ -161,18 +166,18 @@ export default function Hud({
       <div className="hud-center">
         {!dimmed && (
           <>
-            <div className={`hud-crosshair${target ? ' hud-crosshair-active' : ''}`} aria-hidden="true">
+            <div className={`hud-crosshair${showTarget ? ' hud-crosshair-active' : ''}`} aria-hidden="true">
               <span className="hud-crosshair-dot" />
               <span className="hud-crosshair-ring" />
             </div>
-            {target && (
+            {showTarget && target && (
               <button type="button" className="hud-prompt" onClick={onInteract}>
                 <kbd>F</kbd>
                 <span className="hud-prompt-label">{target.hint}</span>
                 <span className="hud-prompt-distance">{target.distance.toFixed(1)}m</span>
               </button>
             )}
-            {!target && snapshot.nearestStation && snapshot.nearestStation.distance < 14 && (
+            {!target && snapshot.nearestStation && snapshot.nearestStation.id !== connectedPanel && snapshot.nearestStation.distance < 14 && (
               <div className="hud-nearby">
                 最近终端 · {snapshot.nearestStation.label}（{snapshot.nearestStation.distance.toFixed(0)}m）
               </div>

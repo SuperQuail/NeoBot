@@ -1205,7 +1205,7 @@
 /*                                                                     */
 /* 这一层是「融入场景」的关键：元素不再是屏幕空间里的窗口，而是被       */
 /* matrix3d 投影到终端前的一块平面上。所有内容都放在 panel-anchor-body */
-/* 里，字号乘以 --panel-lift（由投影循环每帧写入）以补偿透视缩放。      */
+/* 里，使用固定桌面排版尺寸，再整体缩放到世界平面；不单独缩放字号。     */
 /* ------------------------------------------------------------------ */
 
 .panel-anchor {
@@ -1216,16 +1216,68 @@
   /* 尺寸与 transform-origin 必须与 projector.ts 的换算一致 */
   transform-origin: 0 0;
   will-change: transform, opacity;
+  opacity: 0;
+  visibility: hidden;
   /* 面板是「投影在空气里」的，不该拦住场景的点击 */
   pointer-events: none;
 }
 
 .panel-anchor-body {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
+  width: var(--panel-layout-width);
+  height: var(--panel-layout-height);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  transform-origin: 0 0;
+  transform: scale(var(--panel-layout-scale));
+  pointer-events: none;
+  font-size: 13px;
+}
+
+.panel-anchor[data-interactive="true"] .panel-anchor-body {
   pointer-events: auto;
-  /* 字号补偿：内容按 --panel-lift 缩放，屏幕上的字号因此保持稳定 */
-  font-size: calc(13px * var(--panel-lift, 1));
+}
+
+/* Descendants must not opt back into hit testing while the projection is hidden. */
+.panel-anchor:not([data-interactive="true"]) .panel-anchor-body * {
+  pointer-events: none !important;
+}
+
+.panel-anchor-body > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-anchor .hologram-head,
+.panel-anchor .hologram-foot {
+  flex-shrink: 0;
+}
+
+.panel-anchor .hologram-actions {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.panel-anchor .hologram-title h2 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-anchor .hologram-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.panel-anchor .hologram-foot {
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 /* 全息外发光：只做观感，不参与遮挡（遮挡由合成层与深度比较负责） */
@@ -1269,7 +1321,7 @@
 
 /* 面板始终保持世界空间投影：不做「凑近接管全屏」。
    一旦接管，面板就从场景里掉出来变成网页 UI —— 那正是之前「看着不像场景里的」
-   的根因。可读性改由「面板相对终端屏幕放大 2.4 倍 + 字号随视距补偿」解决。 */
+   的根因。可读性由最小世界尺寸和固定桌面排版解决，不随视距重新排版。 */
 
 .bridge-panel-host {
   position: absolute;

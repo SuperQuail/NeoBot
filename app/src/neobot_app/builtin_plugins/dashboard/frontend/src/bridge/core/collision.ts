@@ -231,6 +231,22 @@ export function isBlocked(boxes: readonly Box[], player: Box): boolean {
   return false;
 }
 
+/** 点是否落在包围盒内（带一点容差，避免贴面时的浮点抖动） */
+export function pointInBox(
+  box: Box,
+  point: { x: number; y: number; z: number },
+  tolerance = 0.02,
+): boolean {
+  return (
+    point.x > box.minX - tolerance &&
+    point.x < box.maxX + tolerance &&
+    point.y > box.minY - tolerance &&
+    point.y < box.maxY + tolerance &&
+    point.z > box.minZ - tolerance &&
+    point.z < box.maxZ + tolerance
+  );
+}
+
 /** 相机中心射线与包围盒求交，返回命中距离（未命中为 null） */
 export function rayBoxes(
   boxes: readonly Box[],
@@ -276,7 +292,21 @@ function rayBox(
   return tMin;
 }
 
-/** 两点之间的直线是否被遮挡（用于「隔墙不能操作终端」） */
+/**
+ * 两点之间的直线是否被遮挡（用于「隔墙不能操作终端」与跃迁落点探路）。
+ *
+ * ## 为什么必须跳过「包含端点」的碰撞体
+ *
+ * 终端机身自己也有一块碰撞盒，而站位的锚点就落在机身中心（interact 判定用的
+ * 目标点在锚点上方 1m，同样在盒子里）。若不跳过，任何一条「玩家 → 终端」的
+ * 视线都会从终端自己的机身里穿过去并被判成隔墙，于是：
+ *   · 走到终端正前方也提示「附近没有可接入的舰载设备」（点终端没反应）；
+ *   · warpTo 从锚点向前探路，第一步就「撞墙」，距离退化成 0，玩家被丢进机身里。
+ * 两个都是这条判据引起的，且都只表现为「什么都点不到」。
+ *
+ * 端点落在盒子里意味着「该点本来就在实体内部」，那是另一类问题（由脱困逻辑
+ * 处理），不该在这里重复计入遮挡。
+ */
 export function isLineBlocked(
   boxes: readonly Box[],
   from: { x: number; y: number; z: number },
@@ -287,7 +317,8 @@ export function isLineBlocked(
   const dz = to.z - from.z;
   const length = Math.hypot(dx, dy, dz);
   if (length < 1e-6) return false;
-  const hit = rayBoxes(boxes, from, { x: dx / length, y: dy / length, z: dz / length }, length - 0.05);
+  const candidates = boxes.filter((box) => !pointInBox(box, from) && !pointInBox(box, to));
+  const hit = rayBoxes(candidates, from, { x: dx / length, y: dy / length, z: dz / length }, length - 0.05);
   return hit !== null;
 }
 

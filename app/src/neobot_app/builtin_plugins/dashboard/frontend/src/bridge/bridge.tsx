@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PerspectiveCamera } from 'three';
+import type { PanelPlane } from './three/projector';
 import { clearToken } from '../api/client';
 import { BridgeEngine, type HudSnapshot, type InteractionTarget } from './core/engine';
 import { initSound, isMuted, sfx, toggleMuted } from './core/sound';
@@ -90,6 +91,10 @@ export default function Bridge() {
       panelCompositor = new PanelCompositor(overlayCanvasRef.current);
       compositorRef.current = panelCompositor;
       setCompositor(panelCompositor);
+      (window as unknown as Record<string, unknown>).__bridgeDebug = {
+        getEngine: () => engineRef.current,
+        stations: STATIONS,
+      };
     }
     let engine: BridgeEngine;
     try {
@@ -99,6 +104,8 @@ export default function Bridge() {
         callbacks: {
           onTargetChange: setTarget,
           onOpenPanel: (id) => {
+            // Reentry must release the cursor even when React sees the same panel id.
+            engineRef.current?.input.exitLock();
             setPanelClosing(false);
             setPanel(id);
           },
@@ -131,18 +138,13 @@ export default function Bridge() {
     };
   }, []);
 
-  // 面板开关时通知引擎：只有打开才做深度预处理
-  useEffect(() => {
-    engineRef.current?.setPanelActive(panel !== null);
-  }, [panel]);
-
   // 收起动画播完 → 真正卸载面板
   useEffect(() => {
     if (!panelClosing) return;
     const timer = window.setTimeout(() => {
       setPanel(null);
       setPanelClosing(false);
-      engineRef.current?.input.requestLock();
+      // Never reacquire pointer lock from a timer after Escape.
     }, 320);
     return () => window.clearTimeout(timer);
   }, [panelClosing]);
@@ -152,15 +154,29 @@ export default function Bridge() {
     () => engineRef.current?.viewport ?? { width: 0, height: 0 },
     [],
   );
+  const getVisibility = useCallback(
+    (plane: PanelPlane) => engineRef.current?.panelVisibility(plane) ?? 1,
+    [],
+  );
 
-  // 面板 / 浮层 / 小游戏打开时冻结移动并释放指针
+  // 世界空间终端不冻结移动；只有模态浮层和小游戏接管输入。
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    const busy = panel !== null || overlay !== null || miniGame !== null || phase !== 'play';
+    const busy = overlay !== null || miniGame !== null || phase !== 'play';
     engine.input.setEnabled(!busy);
-    if (busy) engine.input.exitLock();
+    if (busy || panel !== null) engine.input.exitLock();
   }, [panel, overlay, miniGame, phase]);
+
+  // Browsers can consume Escape before keydown while pointer-locked.
+  // Input distinguishes that unlock from our own V/F/overlay releases.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !panel || overlay || miniGame) return;
+    const closeOnUnlock = () => setPanelClosing(true);
+    canvas.addEventListener('bridge-pointer-unlock', closeOnUnlock);
+    return () => canvas.removeEventListener('bridge-pointer-unlock', closeOnUnlock);
+  }, [panel, overlay, miniGame]);
 
   // 离开舰桥时记录位置，供下次「继续上次位置」
   useEffect(
@@ -246,6 +262,12 @@ export default function Bridge() {
         return;
       }
       if (typing) return;
+      if (event.code === 'KeyV' && panel && !overlay && !miniGame && !event.repeat) {
+        const input = engineRef.current?.input;
+        if (input?.isLocked()) input.exitLock();
+        else input?.requestLock();
+        return;
+      }
       const toggle = (kind: Exclude<OverlayKind, null>) => {
         event.preventDefault();
         setOverlay((current) => (current === kind ? null : kind));
@@ -257,7 +279,7 @@ export default function Bridge() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [panel, overlay, miniGame]);
 
   // ------------------------------------------------------------------
   // 交互回调
@@ -279,7 +301,8 @@ export default function Bridge() {
   );
 
   const handleClosePanel = useCallback(() => {
-    // 先播收起动画，动画结束（见 panelClosing 的 effect）再卸载并交回指针
+    // 先释放指针并播收起动画，动画结束后卸载；不再自动抢回鼠标。
+    engineRef.current?.input.exitLock();
     setPanelClosing(true);
   }, []);
 
@@ -294,6 +317,7 @@ export default function Bridge() {
     const engine = engineRef.current;
     const station = STATION_BY_ID[id];
     if (engine) {
+      engine.input.exitLock();
       engine.warpTo(station);
       // 落地后再开面板，避免跃迁的瞬移与面板展开动画叠在一起看不清
       engine.triggerShake(0.35);
@@ -341,9 +365,9 @@ export default function Bridge() {
   }, [navigate]);
 
   const handleCanvasClick = useCallback(() => {
-    if (phase !== 'play' || panel || overlay || miniGame) return;
+    if (phase !== 'play' || overlay || miniGame) return;
     engineRef.current?.input.requestLock();
-  }, [phase, panel, overlay, miniGame]);
+  }, [phase, overlay, miniGame]);
 
   const activeStation: Station | null = panel ? STATION_BY_ID[panel] : null;
   const miniGameMeta = miniGame ? MINIGAME_META[miniGame] : null;
@@ -360,7 +384,7 @@ export default function Bridge() {
           这一层必须始终存在（哪怕面板没开），否则面板永远浮在最上面。 */}
       <canvas ref={overlayCanvasRef} className="bridge-overlay" aria-hidden="true" />
       {/* 面板打开时压暗场景：注意力集中到终端上，同时掩盖面板穿透导致的观感问题 */}
-      <div className={`bridge-dimmer${panel ? ' is-on' : ''}`} aria-hidden="true" />
+      <div className={`bridge-dimmer${panel && !locked ? ' is-on' : ''}`} aria-hidden="true" />
 
       {fatal && (
         <div className="bridge-fatal" role="alert">
@@ -401,8 +425,9 @@ export default function Bridge() {
           vitals={vitals}
           notices={notices}
           target={target}
+          connectedPanel={panel}
           locked={locked}
-          dimmed={panel !== null || overlay !== null || miniGame !== null}
+          dimmed={(panel !== null && !locked) || overlay !== null || miniGame !== null}
           pickupProgress={{ collected: collectedCount, total: TOTAL_PICKUPS }}
           onInteract={handleInteract}
         />
@@ -427,6 +452,15 @@ export default function Bridge() {
             <span className="dock-key">M</span>
             {muted ? '已静音' : '音效'}
           </button>
+          {panel && !overlay && !miniGame && (
+            <button type="button" onClick={() => {
+              const input = engineRef.current?.input;
+              if (input?.isLocked()) input.exitLock();
+              else input?.requestLock();
+            }} title="保持连接，切换鼠标与视角控制（V）；WASD 移动">
+              <span className="dock-key">V</span>{locked ? '操作终端' : '自由视角'}
+            </button>
+          )}
           <button type="button" onClick={handleExitToClassic} title="切换到 2D 面板">
             经典面板
           </button>
@@ -454,6 +488,7 @@ export default function Bridge() {
           station={activeStation}
           getCamera={getCamera}
           getViewport={getViewport}
+          getVisibility={getVisibility}
           compositor={compositor}
           closing={panelClosing}
         >

@@ -49,13 +49,19 @@ export interface ProjectedPanel {
   /**
    * 可直接写进 style.transform 的值。
    *
-   * 约定与 three 的 CSS3DRenderer 完全一致（见其 getCameraCSSMatrix：
-   * 相机矩阵的第 2 行要取负），因为 CSS 的 Y 轴向下、three 的 Y 轴向上：
-   *   transform-origin: 0 0
-   *   perspective-origin: 0 0（即元素左上角）——由 principalX/Y 给出消失点，
-   *   因此这里把 perspective 与视角原点一起交给调用方写入 style。
+   * 形式是**单个 matrix3d**：把元素自己的像素坐标（左上原点、y 向下）直接映射到
+   * 视口像素坐标（左上原点、y 向下）。调用方只需要 `transform-origin: 0 0`，
+   * 既不需要 `perspective()` 也不需要 perspective-origin —— 透视已经在矩阵的
+   * 第 4 行里（w = -z），推导见 projectPanel。
    */
   transform: string;
+  /**
+   * 上面那条 matrix3d 的 16 个分量（列主序，与 CSS 相同）。
+   *
+   * 单独给出来是为了能被测试直接验算：把元素四角代进去做齐次除法，
+   * 结果必须与 quad 逐个吻合 —— 这条正是用来盯住「CSS 投影与 WebGL 对不上」的。
+   */
+  matrix: number[];
   /** CSS 视角原点（元素内像素坐标）：相机主光轴与面板平面的交点 */
   principalX: number;
   principalY: number;
@@ -65,7 +71,21 @@ export interface ProjectedPanel {
   distance: number;
   /** 面板法线与视线方向的夹角余弦：<0 表示背对相机 */
   facing: number;
-  /** 是否在相机背后（此时不应渲染） */
+  /**
+   * 面板是否落在相机背后（此时不应渲染）。
+   *
+   * 判据有两条，缺一不可：
+   *   · 相机在面板的正面一侧（facing > 0）——否则看到的是面板背面；
+   *   · 面板整个落在相机前方（每个角的相机空间深度都 > 0）。
+   *
+   * 只判第一条是不够的：玩家转过身背对终端时，相机仍在面板正面一侧，
+   * 但面板已经跑到相机背后了。此时写进 CSS 的矩阵会把面板投影到屏幕外
+   * （实测落在 x ≈ -577px，正好差一个视口宽度），DOM 元素跟着飘出可视区，
+   * 「面板就在旁边」的错觉和可点击性一起没了。
+   *
+   * 逐角判而不是只判中心：面板比玩家近时会有角越过相机平面，齐次矩阵在那里
+   * 会翻号，画出来的内容是镜像的乱码。
+   */
   behind: boolean;
 }
 
@@ -87,10 +107,24 @@ export const QUAD_ORDER = ['bottomLeft', 'bottomRight', 'topRight', 'topLeft'] a
 /**
  * 面板元素自身的像素尺寸与米数的换算（PIXELS_PER_METER）。
  *
- * 投影矩阵按米缩放，CSS 视角原点要换算到元素像素坐标，两边必须用同一个系数；
- * 因此这里导出，PanelAnchor 用它设置元素尺寸，projector 用它算消失点。
+ * 这个系数同时决定两件事：
+ *   · **元素内部有多少排版空间**（px）—— 面板内容是桌面级界面，正文 13px、
+ *     抬头一行（编号 + 标题 + 两个按钮）至少 640px 才排得下；
+ *   · **面板在场景里的物理尺寸** —— 元素像素 ÷ 这个系数 = 米。
+ *
+ * 取 240 时 640px 对应约 2.67m：内容排得下，同时仍是一块挂在终端上方、
+ * 需要转头去看的投影。曾经取 150，小终端（CPU-05 的屏幕宽 0.86m）算出来
+ * 只有 310px 宽，抬头被挤成竖排、按钮溢出机框 —— 就是「显示不完全」。
  */
-export const PIXELS_PER_METER = 150;
+export const PIXELS_PER_METER = 240;
+
+/**
+ * 面板内容的**设计像素尺寸**：低于这个尺寸排版一定会挤爆机框。
+ *
+ * 所有终端共用同一套机框排版，因此面板平面有一个下限（见 panelPlaneFromScreen）；
+ * PanelAnchor 也用它来限制字号补偿的上限，避免把内容放大到超出机框。
+ */
+export const PANEL_CONTENT_SIZE = { width: 640, height: 430 } as const;
 
 /**
  * 由「终端屏幕 + 朝向」推出面板应该贴在哪块平面上。
@@ -141,10 +175,15 @@ export function panelPlaneFromScreen(
     forward,
   );
 
-  // 宽度 = 屏幕宽 × 倍率（下限 0.9m 保证小终端也能放下表格式内容）；
-  // 高度按屏幕比例走，但用 aspect 兜住下限，避免出现细长条。
-  const width = Math.max(0.9, screenSize.width * scale);
-  const height = Math.max(width / aspect, screenSize.height * scale * 1.25);
+  // 宽度 = 屏幕宽 × 倍率，但**不得小于内容的排版宽度**：小终端的屏幕只有
+  // 0.8~0.9m，按倍率算出来放不下抬头那一行（编号 / 标题 / 按钮会被挤成竖排）。
+  const width = Math.max(screenSize.width * scale, PANEL_CONTENT_SIZE.width / PIXELS_PER_METER);
+  // 高度按屏幕比例走，同样兜住内容的高度下限，避免出现细长条
+  const height = Math.max(
+    width / aspect,
+    (screenSize.height * scale * 1.25),
+    PANEL_CONTENT_SIZE.height / PIXELS_PER_METER,
+  );
 
   return { center, right, up, normal, width, height };
 }
@@ -166,28 +205,66 @@ export function projectPanel(
 ): ProjectedPanel {
   const center = plane.center.clone().addScaledVector(plane.normal, lift);
 
-  // ---- CSS 用的 view·plane 矩阵 ----
+  // ---- CSS 投影矩阵（单应） ----
   //
-  // 与 three 的 CSS3DRenderer 保持同一约定：相机矩阵的第 2 行（Y 行）取负。
-  // 原因是 CSS 的 Y 轴朝下、three 的朝上，不取负面板会上下颠倒。
+  // 面板是一块平面，透视投影就是「平面 → 屏幕」的一个 3×3 齐次变换（单应），
+  // CSS 的 matrix3d 正好能表达它：第 1、2 列放 x/y 的线性部分，第 4 列放平移，
+  // 第 4 行放 w，浏览器做完齐次除法就得到视口像素。
+  //
+  // ## 为什么不是 `transform: perspective(P) matrix3d(...)`
+  //
+  // 那是 three 的 CSS3DRenderer 的写法，前提是「世界单位 = CSS 像素」。本场景以
+  // **米**为单位，元素尺寸却是 `plane.width × PIXELS_PER_METER` 像素，照搬会把
+  // 1 米当成 1 像素：矩阵退化成单位阵（平移只剩零点几像素），面板于是被原样画在
+  // 元素尺寸的框里并整体翻到左上角外侧 —— 实测 getBoundingClientRect() 恒为
+  // [-577,-372,577,372]，与视口零面积相交，表现就是「接入终端后屏幕只是暗了一下，
+  // 什么都没出现」。
+  //
+  // 正确做法是把两条换算显式写进矩阵：
+  //   元素像素 (u,v) --E--> 面板局部米(x,y) --view·plane--> 相机空间米(X,Y,Z)
+  //                --内参--> 视口像素(x_s,y_s)，其中 w = -Z
+  // 内参由垂直视场角推出焦距 f（像素），主点取视口中心，与 PerspectiveCamera 的
+  // 投影矩阵严格一致，CSS 层与 WebGL 层因此逐像素对得上。
   const planeMatrix = new THREE.Matrix4().makeBasis(plane.right, plane.up, plane.normal);
   planeMatrix.setPosition(center);
   const view = new THREE.Matrix4().copy(camera.matrixWorld).invert();
-  const local = view.clone().multiply(planeMatrix);
-  const e = local.elements;
+  // E：元素像素（左上原点、y 向下）→ 面板局部米（左下原点、y 向上）
+  const elementToPlane = new THREE.Matrix4().set(
+    1 / PIXELS_PER_METER, 0, 0, -plane.width / 2,
+    0, -1 / PIXELS_PER_METER, 0, plane.height / 2,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  );
+  const elementToCamera = view.clone().multiply(planeMatrix).multiply(elementToPlane);
+  const e = elementToCamera.elements;
+
+  const focal = perspectiveDistance(camera, height);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  // (u,v,1) → 齐次屏幕坐标：x_s = f·X − cx·Z，y_s = −f·Y − cy·Z，w = −Z
+  const h00 = focal * e[0] - centerX * e[2];
+  const h01 = focal * e[4] - centerX * e[6];
+  const h02 = focal * e[12] - centerX * e[14];
+  const h10 = -focal * e[1] - centerY * e[2];
+  const h11 = -focal * e[5] - centerY * e[6];
+  const h12 = -focal * e[13] - centerY * e[14];
+  const h20 = -e[2];
+  const h21 = -e[6];
+  const h22 = -e[14];
+  // 列主序：第 1/2 列是 x、y 基向量的像，第 4 列是平移，第 4 行是同次分量
   const cssElements = [
-    e[0], -e[1], e[2], e[3],
-    e[4], -e[5], e[6], e[7],
-    e[8], -e[9], e[10], e[11],
-    e[12], -e[13], e[14], e[15],
+    h00, h10, 0, h20,
+    h01, h11, 0, h21,
+    0, 0, 1, 0,
+    h02, h12, 0, h22,
   ];
+  const matrix = cssElements.slice();
   const transform = `matrix3d(${cssElements
     .map((value) => (Math.abs(value) < 1e-6 ? 0 : Number(value.toFixed(6))))
     .join(',')})`;
 
   // ---- 消失点：相机主光轴与面板平面的交点（元素内像素坐标） ----
-  // CSS 的 perspective-origin 默认是元素中心，而面板很大且不透明，
-  // 不修正就会出现「透视往元素中心收」的错位；这里显式给出正确的视角原点。
+  // 不再用于 CSS（透视已经在 matrix3d 里），保留作为排障时的读数。
   const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
   const denominator = forward.dot(plane.normal);
   const principal = new THREE.Vector3();
@@ -237,7 +314,16 @@ export function projectPanel(
   const distance = toCamera.length();
   const facing = distance < 1e-4 ? 1 : toCamera.normalize().dot(plane.normal);
 
-  return { transform, principalX, principalY, quad, distance, facing, behind: facing <= 0.02 };
+  return {
+    transform,
+    matrix,
+    principalX,
+    principalY,
+    quad,
+    distance,
+    facing,
+    behind: facing <= 0.02 || quad.some((corner) => corner.depth <= 0.05),
+  };
 }
 
 /** 面板的透视距离：取相机焦距（垂直视场角），CSS 用它才能与 WebGL 完全一致 */

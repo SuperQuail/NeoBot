@@ -1,85 +1,56 @@
-// composite.ts —— 用场景深度给 DOM 面板做遮挡与全息合成
+// composite.ts —— 面板的全息合成层（叠在场景之上、DOM 面板之下）
 //
-// ## 问题
+// ## 这一层负责什么
 //
-// 用 matrix3d 投影出来的 DOM 面板永远画在 canvas **之上**：相机贴着舱壁时，
-// 面板会穿墙浮在墙外面，「贴在场景里」的错觉立刻崩掉。赛博朋克那种终端观感
-// 的前提是「面板被世界挡住一部分」。
+// 用 matrix3d 投影出来的 DOM 面板永远画在 canvas **之上**，所以「面板是投影在
+// 空气里的一块光」这件事得靠额外一层来补：在 canvas 之上、DOM 面板之下再叠一个
+// 透明 WebGL 层，在**面板投影所在的四边形**上画边缘辉光、扫描线、网格与展开时
+// 扫过的那道亮线。DOM 面板半透明，底层的光就透出来，观感才成立。
 //
-// ## 做法
+// 顺序：主 canvas → 本层的 overlay canvas → 面板 DOM。
 //
-// 1. 深度预处理：把舰体几何用一个只写深度的材质重绘到 1x1 的离屏目标里，
-//    把「归一化深度」打包进 RGBA（4 字节，精度足够）。
-// 2. 合成：在 canvas 之上再叠一个 WebGL 层，在**面板投影所在的四边形**上
-//    画效果（边缘辉光、扫描线、全息噪点），并按深度比较结果决定每个像素的
-//    alpha——被场景挡住的像素 alpha 为 0，于是 DOM 层从那里透出来的是场景本身。
+// ## 遮挡不在这里做
 //
-// 深度比较用的是相机空间 z（米），不是 NDC 深度：伪线性化和精度问题都省了。
-// 四边形内部按 1/z 线性插值——平面在屏幕空间的 1/z 是线性的，
-// 这样遮挡边界（比如门框切过面板）才对得准。
+// 这里曾经还有一条「按场景深度裁剪全息辉光」的链路：把舰体重绘到离屏目标、
+// 比较相机空间深度、再读回一张 8×8 的遮罩图算可见比例。那条链路有两个致命的
+// 结构性问题，且都已经实证：
+//
+//   1. **跨上下文**：离屏目标由本层（第二个 WebGL 上下文）创建，真正画进去的却是
+//      引擎的主上下文。同一个 WebGLRenderTarget 不能跨上下文使用，本层采样到的
+//      永远是没写过的空纹理 —— 逐像素遮挡从未生效。
+//   2. **同步回读**：为了拿那个可见比例，每 6 帧要做一次 GPU 同步回读，实测占掉
+//      主线程 38% 的时间（单次阻塞约 240ms），表现就是「一开面板就卡死」。
+//
+// 现在遮挡改由 core/occlusion.ts 在 CPU 上用碰撞盒做线段求交，算出一个 0~1 的
+// 可见比例，再乘进面板的整体不透明度（见 ui/PanelAnchor.tsx）。这里只保留合成。
 
 import * as THREE from 'three';
 import type { Corner } from './projector';
 
-const PACK_VERT = /* glsl */ `
-  varying float vDepth;
-  void main() {
-    vec4 view = modelViewMatrix * vec4(position, 1.0);
-    vDepth = -view.z;
-    gl_Position = projectionMatrix * view;
-  }
-`;
-
-const PACK_FRAG = /* glsl */ `
-  varying float vDepth;
-  void main() {
-    // 把 0..1 的深度摊到 4 个字节：远离相机处精度自动变粗，正好符合需要
-    float d = clamp(vDepth / 1000.0, 0.0, 1.0);
-    vec4 enc = fract(d * vec4(1.0, 255.0, 65025.0, 16581375.0));
-    enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
-    gl_FragColor = enc;
-  }
-`;
-
 const OVERLAY_VERT = /* glsl */ `
-  // 顶点已经是屏幕像素坐标，这里换算成 NDC；同时传 1/z 供片元线性插值
+  // 顶点已经是屏幕像素坐标，这里换算成 NDC
   uniform vec2 uViewport;
-  uniform vec4 uDepths;
   attribute float aCorner;
-  varying float vInvZ;
   void main() {
     vec2 ndc = vec2(position.x / uViewport.x * 2.0 - 1.0, 1.0 - position.y / uViewport.y * 2.0);
-    float depth = mix(mix(uDepths.x, uDepths.y, aCorner), mix(uDepths.w, uDepths.z, aCorner), step(1.5, aCorner));
-    vInvZ = 1.0 / max(0.05, depth);
     gl_Position = vec4(ndc, 0.0, 1.0);
   }
 `;
 
 const OVERLAY_FRAG = /* glsl */ `
   precision highp float;
-  uniform sampler2D uDepth;
   uniform vec2 uViewport;
   uniform float uTime;
   uniform float uReveal;   // 0..1 展开动画
-  uniform float uOpacity;  // 整体不透明度（淡入淡出）
+  uniform float uOpacity;  // 整体不透明度（含距离衰减与遮挡可见度）
   uniform vec3 uAccent;    // 主色（青）
   uniform vec3 uAccent2;   // 辅色（品红/琥珀），用于边缘色散
-  varying float vInvZ;
-
-  float unpack(vec4 c) {
-    return dot(c, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0)) * 1000.0;
-  }
 
   void main() {
     vec2 uv = gl_FragCoord.xy / uViewport;
     // 面板中心相对屏幕中心的归一化坐标：用于算辉光与扫描线
     vec2 rel = uv - 0.5;
     float radial = length(rel * vec2(1.0, 0.85));
-
-    // ---- 遮挡：场景深度比面板更近 => 被挡住 ----
-    float sceneDepth = unpack(texture2D(uDepth, uv));
-    float panelDepth = 1.0 / max(0.05, vInvZ);
-    float occluded = step(panelDepth - 0.04, sceneDepth);
 
     // ---- 全息质感 ----
     float scan = 0.5 + 0.5 * sin((gl_FragCoord.y + uTime * 240.0) * 1.6);
@@ -96,73 +67,9 @@ const OVERLAY_FRAG = /* glsl */ `
     color += uAccent2 * rim * rim * 0.35;
     float alpha = (0.10 + rim * 0.42 + gridMask + scanMask + sweep * 0.75) * uOpacity;
 
-    // 被遮挡处直接丢弃：DOM 面板从那里透出来的是场景本身，边缘因此会「切」过面板
-    alpha *= (1.0 - occluded);
-
     gl_FragColor = vec4(color * flicker, clamp(alpha, 0.0, 0.9));
   }
 `;
-
-/**
- * 可见度图：把「面板有多少部分没被场景挡住」渲染成一张极小的图。
- *
- * 用途是驱动面板的淡出与透视削弱：面板的一半钻进墙里时，让它整体暗下去，
- * 比让 DOM 硬生生浮在墙上自然得多。之所以不做逐像素裁剪，是因为那需要把
- * 遮罩图每帧同步回读到 DOM（`toDataURL` 会触发 PNG 编码，十几毫秒起步），
- * 帧预算根本不够；这里退一步只读 8×8 的统计量，开销可以忽略。
- *
- * 颜色编码：可见处 alpha=1，被遮挡处 alpha=0。vUv 的 (0,0) 是四边形左下角。
- */
-const MASK_VERT = /* glsl */ `
-  attribute float aCorner;
-  varying vec2 vUv;
-  void main() {
-    // 四角固定位置：0=左下 1=右下 2=右上 3=左上，直接把 0..1 的四边形铺满
-    vec2 positions[4];
-    positions[0] = vec2(-1.0, -1.0);
-    positions[1] = vec2( 1.0, -1.0);
-    positions[2] = vec2( 1.0,  1.0);
-    positions[3] = vec2(-1.0,  1.0);
-    int index = int(aCorner + 0.5);
-    gl_Position = vec4(positions[index], 0.0, 1.0);
-    vUv = positions[index] * 0.5 + 0.5;
-  }
-`;
-
-const MASK_FRAG = /* glsl */ `
-  precision highp float;
-  uniform sampler2D uDepth;
-  uniform vec4 uBbox;      // 四边形包围盒（像素）：x, y, w, h
-  uniform vec2 uViewport;
-  uniform vec4 uDepths;    // 四角相机空间深度（米）
-  varying vec2 vUv;
-
-  float unpack(vec4 c) {
-    return dot(c, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0)) * 1000.0;
-  }
-
-  /** 四边形内的深度插值：vUv 的 (0,0) 对应左下角（uDepths.x） */
-  float cornerDepth(vec2 uv) {
-    float bottom = mix(uDepths.x, uDepths.y, uv.x);
-    float top = mix(uDepths.w, uDepths.z, uv.x);
-    return mix(bottom, top, uv.y);
-  }
-
-  void main() {
-    // 还原到屏幕像素坐标去采样深度图
-    vec2 screen = (uBbox.xy + vUv * uBbox.zw) / uViewport;
-    float sceneDepth = unpack(texture2D(uDepth, screen));
-    float panelDepth = cornerDepth(vUv);
-    float occluded = step(panelDepth - 0.04, sceneDepth);
-    // 可见处 alpha=1（供统计），颜色无关紧要
-    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0 - occluded);
-  }
-`;
-
-/** 深度目标尺寸：深度只需要在遮挡边界处准，半分辨率足够且更省 */
-const DEPTH_SCALE = 0.5;
-/** 可见度采样的边长：8×8 已经足够判断「面板是不是钻进墙里了」 */
-const VISIBILITY_SAMPLES = 8;
 
 export interface PanelCompositeInput {
   quad: [Corner, Corner, Corner, Corner];
@@ -172,121 +79,64 @@ export interface PanelCompositeInput {
   accent2: THREE.Color;
 }
 
-/** 面板包围盒（像素）：遮罩图按这个范围生成 */
-function quadBounds(quad: readonly Corner[]): { x: number; y: number; width: number; height: number } {
-  const xs = quad.map((corner) => corner.x);
-  const ys = quad.map((corner) => corner.y);
-  const minX = Math.max(0, Math.min(...xs));
-  const minY = Math.max(0, Math.min(...ys));
-  const maxX = Math.max(...xs);
-  const maxY = Math.max(...ys);
-  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+export interface PanelCompositorOptions {
+  /**
+   * 注入渲染器，**仅供测试**：jsdom 里造不出 WebGL 上下文，
+   * 有了这个口子才能直接断言「本层不再做任何 GPU 回读」。
+   */
+  renderer?: THREE.WebGLRenderer;
 }
 
 /**
- * 面板合成器。
+ * 面板全息合成器。
  *
- * ## 为什么要两个渲染器
+ * ## 为什么要第二个渲染器
  *
  * 主渲染器每帧已经把画面画进默认帧缓冲，要在其上再叠一层就得改整条渲染流程
- * （后处理链 / RT 转存 / 手动 blit），改动面大且容易碰坏既有效果。
- * 这里改成「叠一个透明 canvas」：顺序上是 主 canvas → 合成 canvas → DOM 面板，
- * 面板的 HTML 从最上层透出来，全息辉光与噪点由合成层贡献，被遮挡的像素则由
- * 深度比较结果把 DOM 面板**裁掉**（见 draw 里对 CSS mask 的用法）。
+ * （后处理链 / RT 转存 / 手动 blit），改动面大且容易碰坏既有效果。这里改成
+ * 「叠一个透明 canvas」：顺序上是 主 canvas → 合成 canvas → DOM 面板，
+ * 面板的 HTML 从最上层透出来，全息辉光与噪点由合成层贡献。
  *
  * 多一个 GL 上下文是这里唯一的代价：浏览器上限通常 16 个，本方案只用 2 个。
- *
- * ## 深度预处理为什么要回调
- *
- * WebGLRenderTarget 属于创建它的 GL 上下文，不能跨上下文用。而舰体几何与相机
- * 都在**主渲染器**的场景里，因此深度这一步必须由主渲染器来画：
- * captureDepth 只负责「借出」自己的 render target，真正的 render 由调用方执行。
+ * 注意它只负责**画**，不负责读 —— 任何 readPixels 都会把主线程钉住（见文件头）。
  */
 export class PanelCompositor {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly overlayScene = new THREE.Scene();
   private readonly overlayCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  private readonly maskScene = new THREE.Scene();
   private readonly material: THREE.ShaderMaterial;
-  private readonly maskMaterial: THREE.ShaderMaterial;
   private readonly geometry: THREE.BufferGeometry;
-  private readonly depthTarget: THREE.WebGLRenderTarget;
-  private readonly maskTarget: THREE.WebGLRenderTarget;
-  private readonly packMaterial: THREE.ShaderMaterial;
-  /** 可见度采样的像素缓冲：只要 alpha 通道，8×8 即 256 字节 */
-  private readonly maskPixels: Uint8Array;
   private supported = true;
 
-  constructor(canvas: HTMLCanvasElement) {
-    try {
-      this.renderer = new THREE.WebGLRenderer({
-        canvas,
-        alpha: true,
-        antialias: false,
-        premultipliedAlpha: false,
-        powerPreference: 'low-power',
-      });
-    } catch {
-      // 拿不到第二个上下文也不能让整个舰桥挂掉：退化成「无遮挡的全息层」由 CSS 承担
-      this.supported = false;
-      this.renderer = {
-        setSize() {},
-        setPixelRatio() {},
-        setClearColor() {},
-        setRenderTarget() {},
-        clear() {},
-        render() {},
-        dispose() {},
-      } as unknown as THREE.WebGLRenderer;
+  constructor(canvas: HTMLCanvasElement, options: PanelCompositorOptions = {}) {
+    if (options.renderer) {
+      this.renderer = options.renderer;
+    } else {
+      try {
+        this.renderer = new THREE.WebGLRenderer({
+          canvas,
+          alpha: true,
+          antialias: false,
+          premultipliedAlpha: false,
+          powerPreference: 'low-power',
+        });
+      } catch {
+        // 拿不到第二个上下文也不能让整个舰桥挂掉：退化成「没有辉光」，
+        // 面板本身（DOM 层）照常显示
+        this.supported = false;
+        this.renderer = {
+          setSize() {},
+          setPixelRatio() {},
+          setClearColor() {},
+          setRenderTarget() {},
+          clear() {},
+          render() {},
+          dispose() {},
+        } as unknown as THREE.WebGLRenderer;
+      }
     }
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.autoClear = true;
-
-    this.depthTarget = new THREE.WebGLRenderTarget(2, 2, {
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      depthBuffer: true,
-      stencilBuffer: false,
-    });
-    // 遮罩图只需覆盖面板包围盒，尺寸跟随视口按比例给，避免大块空白拷贝
-    this.maskTarget = new THREE.WebGLRenderTarget(2, 2, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      depthBuffer: false,
-      stencilBuffer: false,
-    });
-    this.maskPixels = new Uint8Array(VISIBILITY_SAMPLES * VISIBILITY_SAMPLES * 4);
-    this.packMaterial = new THREE.ShaderMaterial({
-      vertexShader: PACK_VERT,
-      fragmentShader: PACK_FRAG,
-      side: THREE.DoubleSide,
-    });
-
-    this.maskMaterial = new THREE.ShaderMaterial({
-      vertexShader: MASK_VERT,
-      fragmentShader: MASK_FRAG,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      uniforms: {
-        uDepth: { value: this.depthTarget.texture },
-        uBbox: { value: new THREE.Vector4(0, 0, 1, 1) },
-        uViewport: { value: new THREE.Vector2(1, 1) },
-        uDepths: { value: new THREE.Vector4(1, 1, 1, 1) },
-      },
-    });
-    this.maskScene.add(
-      new THREE.Mesh(
-        new THREE.BufferGeometry()
-          .setAttribute(
-            'position',
-            new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]), 3),
-          )
-          .setAttribute('aCorner', new THREE.BufferAttribute(new Float32Array([0, 1, 2, 3]), 1))
-          .setIndex([0, 1, 2, 0, 2, 3]),
-        this.maskMaterial,
-      ),
-    );
 
     this.material = new THREE.ShaderMaterial({
       vertexShader: OVERLAY_VERT,
@@ -296,14 +146,12 @@ export class PanelCompositor {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       uniforms: {
-        uDepth: { value: this.depthTarget.texture },
         uViewport: { value: new THREE.Vector2(1, 1) },
         uTime: { value: 0 },
         uReveal: { value: 0 },
         uOpacity: { value: 1 },
         uAccent: { value: accentColor() },
         uAccent2: { value: new THREE.Color(0xff3bd0) },
-        uDepths: { value: new THREE.Vector4(1, 1, 1, 1) },
       },
     });
 
@@ -320,24 +168,9 @@ export class PanelCompositor {
     this.overlayScene.add(new THREE.Mesh(this.geometry, this.material));
   }
 
+  /** 第二个 GL 上下文是否可用（不可用时退化成「没有辉光」，面板本身照常显示） */
   get isSupported(): boolean {
     return this.supported;
-  }
-
-  /** 深度目标尺寸，供调用方在 resize 时提供 */
-  get depthSize(): { width: number; height: number } {
-    return { width: this.depthTarget.width, height: this.depthTarget.height };
-  }
-
-  /**
-   * 预处理场景深度。
-   *
-   * 调用方（engine）用自己的渲染器把舰体几何画进这里借出的 render target：
-   * 期间要把材质临时换成只写深度的 packMaterial，画完立刻还原。
-   */
-  captureDepth(render: (target: THREE.WebGLRenderTarget, material: THREE.Material) => void): void {
-    if (!this.supported) return;
-    render(this.depthTarget, this.packMaterial);
   }
 
   /** 合成：在面板四边形上画全息层 */
@@ -360,60 +193,10 @@ export class PanelCompositor {
     uniforms.uOpacity.value = input.opacity;
     (uniforms.uAccent.value as THREE.Color).copy(input.accent);
     (uniforms.uAccent2.value as THREE.Color).copy(input.accent2);
-    (uniforms.uDepths.value as THREE.Vector4).set(
-      quad[0].depth,
-      quad[1].depth,
-      quad[2].depth,
-      quad[3].depth,
-    );
 
     this.renderer.setRenderTarget(null);
     this.renderer.clear();
     this.renderer.render(this.overlayScene, this.overlayCamera);
-  }
-
-  /**
-   * 遮挡可见度：面板有多大比例没被挡住（0~1）。
-   *
-   * 为什么不直接用遮罩图裁 DOM：把 512×512 的遮罩每帧 `toDataURL()` 会触发
-   * 同步 PNG 编码（10ms 级），把帧预算吃光；而 `readRenderTargetPixels` 本身
-   * 也是一次 GPU 同步回读。真正可行的折中是「只在极小的离屏目标上算一个标量」：
-   * 8×8 的可见度图一次只读 256 字节，开销可以忽略，用它驱动面板的
-   * 淡出与透视削弱——面板钻进墙里时会自然地「暗下去」，比硬裁更耐看，
-   * 也不会出现边缘像被刀切出来的硬伤。
-   *
-   * @returns 0~1；返回 null 表示本帧不可用（不支持 / 尺寸异常）
-   */
-  sampleVisibility(
-    quad: readonly [Corner, Corner, Corner, Corner],
-    viewportWidth: number,
-    viewportHeight: number,
-  ): number | null {
-    if (!this.supported) return null;
-    const box = quadBounds(quad);
-    if (box.width < 4 || box.height < 4) return null;
-
-    const uniforms = this.maskMaterial.uniforms;
-    uniforms.uViewport.value.set(viewportWidth, viewportHeight);
-    (uniforms.uBbox.value as THREE.Vector4).set(box.x, box.y, box.width, box.height);
-    (uniforms.uDepths.value as THREE.Vector4).set(
-      quad[0].depth,
-      quad[1].depth,
-      quad[2].depth,
-      quad[3].depth,
-    );
-
-    const size = VISIBILITY_SAMPLES;
-    this.maskTarget.setSize(size, size);
-    this.renderer.setRenderTarget(this.maskTarget);
-    this.renderer.clear();
-    this.renderer.render(this.maskScene, this.overlayCamera);
-    this.renderer.readRenderTargetPixels(this.maskTarget, 0, 0, size, size, this.maskPixels);
-    this.renderer.setRenderTarget(null);
-
-    let visible = 0;
-    for (let i = 0; i < size * size; i += 1) visible += this.maskPixels[i * 4 + 3];
-    return visible / (size * size * 255);
   }
 
   /** 清空合成层（面板关闭时调用，否则上一帧的辉光会留在画面上） */
@@ -427,17 +210,11 @@ export class PanelCompositor {
     if (!this.supported) return;
     this.renderer.setPixelRatio(Math.min(pixelRatio, 1.5));
     this.renderer.setSize(width, height, false);
-    this.depthTarget.setSize(
-      Math.max(2, Math.floor(width * DEPTH_SCALE)),
-      Math.max(2, Math.floor(height * DEPTH_SCALE)),
-    );
   }
 
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();
-    this.packMaterial.dispose();
-    this.depthTarget.dispose();
     this.renderer.dispose();
   }
 }

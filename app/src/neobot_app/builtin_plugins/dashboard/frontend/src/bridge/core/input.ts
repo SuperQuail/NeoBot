@@ -111,26 +111,29 @@ export function createInput(canvas: HTMLCanvasElement, options: InputOptions = {
   let longPressTimer: number | null = null;
 
   const isLocked = () => document.pointerLockElement === canvas;
+  let wasLocked = isLocked();
+  let exitLockRequested = false;
+  let focusLoss = false;
+  let dragLast: { x: number; y: number } | null = null;
 
   const isTypingTarget = (target: EventTarget | null): boolean => {
-    if (!(target instanceof HTMLElement)) return false;
-    return (
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      target.isContentEditable
+    if (!(target instanceof Element)) return false;
+    const editable = target.closest('[contenteditable]');
+    return Boolean(
+      target.closest('input, textarea, select') ||
+      (target instanceof HTMLElement && target.isContentEditable) ||
+      (editable && editable.getAttribute('contenteditable')?.toLowerCase() !== 'false')
     );
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (PREVENT_DEFAULT.has(event.code)) event.preventDefault();
     if (!enabled) return;
     if (isTypingTarget(event.target)) {
       // 表单里只保留 Esc（关闭面板），其余按键交给输入框
       if (event.code === 'Escape') state.actions.push(ACTION.close);
       return;
     }
-    if (MOVEMENT_KEYS.has(event.code) && event.code !== 'Space') event.preventDefault();
+    if (PREVENT_DEFAULT.has(event.code) || MOVEMENT_KEYS.has(event.code)) event.preventDefault();
     if (event.repeat) {
       held.add(event.code);
       return;
@@ -156,27 +159,52 @@ export function createInput(canvas: HTMLCanvasElement, options: InputOptions = {
     held.delete(event.code);
   };
 
+  const isLookTarget = (target: EventTarget | null) =>
+    target instanceof Element && !isTypingTarget(target) &&
+    (target === canvas || Boolean(target.closest('.panel-anchor')));
+
   const onMouseMove = (event: MouseEvent) => {
-    if (!isLocked() || !enabled) return;
-    state.lookDx += event.movementX * sensitivity;
-    state.lookDy += event.movementY * sensitivity;
+    if (!enabled) return;
+    if (isLocked()) {
+      state.lookDx += event.movementX * sensitivity;
+      state.lookDy += event.movementY * sensitivity;
+    } else if (dragLast) {
+      state.lookDx += (event.clientX - dragLast.x) * sensitivity;
+      state.lookDy += (event.clientY - dragLast.y) * sensitivity;
+      dragLast = { x: event.clientX, y: event.clientY };
+    }
   };
 
   const onMouseDown = (event: MouseEvent) => {
     if (event.button === 0) firing = true;
+    if (event.button === 2 && enabled && !isLocked() && isLookTarget(event.target)) {
+      dragLast = { x: event.clientX, y: event.clientY };
+      event.preventDefault();
+    }
   };
   const onMouseUp = (event: MouseEvent) => {
     if (event.button === 0) firing = false;
+    if (event.button === 2) dragLast = null;
+  };
+  const onContextMenu = (event: MouseEvent) => {
+    if (enabled && isLookTarget(event.target)) event.preventDefault();
   };
 
   const onLockChange = () => {
     const locked = isLocked();
+    const browserUnlock = wasLocked && !locked && !exitLockRequested &&
+      !focusLoss && !document.hidden && document.hasFocus();
+    wasLocked = locked;
+    exitLockRequested = false;
+    focusLoss = false;
+    dragLast = null;
     if (!locked) {
       firing = false;
       held.clear();
       touchMove.x = 0;
       touchMove.y = 0;
     }
+    if (browserUnlock) canvas.dispatchEvent(new CustomEvent('bridge-pointer-unlock'));
     options.onLockChange?.(locked);
   };
 
@@ -243,13 +271,32 @@ export function createInput(canvas: HTMLCanvasElement, options: InputOptions = {
     }
   };
 
-  const onBlur = () => {
+  const clearHeldInput = () => {
+    dragLast = null;
     held.clear();
     firing = false;
     touchMove.x = 0;
     touchMove.y = 0;
   };
 
+  const onBlur = () => {
+    if (wasLocked) focusLoss = true;
+    clearHeldInput();
+  };
+  const onVisibilityChange = () => {
+    if (document.hidden) onBlur();
+  };
+
+  const onFocusIn = (event: FocusEvent) => {
+    if (isTypingTarget(event.target)) {
+      clearHeldInput();
+      state.jumpPressed = false;
+    }
+  };
+
+  document.addEventListener('focusin', onFocusIn);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('contextmenu', onContextMenu);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('mousemove', onMouseMove);
@@ -295,12 +342,7 @@ export function createInput(canvas: HTMLCanvasElement, options: InputOptions = {
     },
     setEnabled(next: boolean) {
       enabled = next;
-      if (!next) {
-        held.clear();
-        firing = false;
-        touchMove.x = 0;
-        touchMove.y = 0;
-      }
+      if (!next) clearHeldInput();
     },
     isEnabled: () => enabled,
     requestLock() {
@@ -319,12 +361,23 @@ export function createInput(canvas: HTMLCanvasElement, options: InputOptions = {
       }
     },
     exitLock() {
-      if (isLocked()) document.exitPointerLock();
+      if (isLocked()) {
+        exitLockRequested = true;
+        try {
+          document.exitPointerLock();
+        } catch (error) {
+          exitLockRequested = false;
+          throw error;
+        }
+      }
     },
     isLocked,
     isFiring: () => firing || held.has('KeyF'),
     dispose() {
       clearLongPress();
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('mousemove', onMouseMove);
