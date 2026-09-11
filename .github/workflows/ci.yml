@@ -12,6 +12,28 @@ permissions:
   contents: read
 
 jobs:
+  # 历史卫生：这些文件曾在历史里带有硬编码密钥 / 无用大图，已在远端历史中彻底清除。
+  # 一旦被重新提交，清理就白做了，所以对任意来源的提交在这里兜底拦一次。
+  hygiene:
+    name: 历史卫生（阻断）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 阻止已从历史清除的调试脚本回流
+        run: |
+          denied="scripts/test_downloaded.png scripts/test_drawing_formats.py scripts/test_drawing_quick.py scripts/test_drawing_sim.py scripts/test_image_reference.py"
+          hits=$(git log --all --oneline -- $denied)
+          if [ -n "$hits" ]; then
+            echo "::error::仓库历史中出现已从远端清除的调试脚本（含硬编码密钥），请移除相关提交。"
+            echo "$hits" | head -n 20
+            exit 1
+          fi
+          echo "OK：未发现已清除的调试脚本。"
+
   test:
     name: 测试与静态检查
     runs-on: ubuntu-latest
