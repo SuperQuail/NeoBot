@@ -686,6 +686,28 @@ class ArchiveMemoryAutoSummaryService:
             lines.append(f"[{index}] {_format_sender(item)}: {text}")
         return "\n".join(lines), truncated
 
+    # ── 提示词规范化：实现 agent_prompt_parts() 即被分析页自动收集 ──
+
+    agent_name = "档案自动总结 Agent"
+    agent_note = "空会话 + 群聊模板；运行时还会按会话追加用户画像/好感度/条目归档等指令"
+
+    def agent_prompt_parts(self) -> list[tuple[str, str, str]]:
+        from neobot_app.analysis.prompt_analysis import tools_to_text
+
+        try:
+            prompt = self._build_summary_prompt(
+                conversation_kind="group", conversation_id="0", messages=[]
+            )
+        except Exception as exc:
+            prompt = f"（装配失败: {type(exc).__name__}: {exc}）"
+        parts = [("总结指令（群聊 · 空会话）", "system", prompt)]
+        definitions = list(getattr(self, "_tool_definitions", []) or [])
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
     def _build_summary_prompt(
         self,
         *,

@@ -237,6 +237,27 @@ class SelfHealManager:
 
     # ── wiring ──
 
+    # ── 提示词规范化：实现 agent_prompt_parts() 即被分析页自动收集 ──
+
+    agent_name = "自修复 Agent"
+    agent_note = "系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配"
+
+    def agent_prompt_parts(self) -> list[tuple[str, str, str]]:
+        from neobot_app.agents.self_heal import _build_system_prompt
+        from neobot_app.analysis.prompt_analysis import tools_to_text
+
+        prompt = _build_system_prompt(
+            self._config, prompt_store=getattr(self, "_prompt_store", None)
+        )
+        parts = [("系统提示词", "system", prompt)]
+        agent = getattr(self, "_agent", None)
+        definitions = list(getattr(agent, "tool_definitions", []) or []) if agent else []
+        if definitions:
+            parts.append(
+                (f"工具定义（{len(definitions)} 个）", "tools", tools_to_text(definitions))
+            )
+        return parts
+
     def set_agent(self, agent: Any) -> None:
         self._agent = agent
 

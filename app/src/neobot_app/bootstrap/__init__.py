@@ -1144,21 +1144,6 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         return parts
 
     prompt_analyzer.add_source(
-        "档案自动总结 Agent",
-        _archive_summary_parts,
-        note="空会话 + 群聊模板；运行时还会按会话追加用户画像/好感度/条目归档等指令",
-    )
-    prompt_analyzer.add_source(
-        "解题 Agent",
-        _problem_solver_parts,
-        note="仅系统提示词；peer 描述与工具定义在运行时按需装配",
-    )
-    prompt_analyzer.add_source(
-        "自修复 Agent",
-        _self_heal_parts,
-        note="仅系统提示词；peer 描述与工具定义在运行时按需装配",
-    )
-    prompt_analyzer.add_source(
         "子 Agent 委派（agents__*）",
         _delegation_parts,
         kind="instructions",
@@ -1223,16 +1208,6 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             )
         return parts
 
-    prompt_analyzer.add_source(
-        "解题 Agent",
-        _problem_solver_parts,
-        note="系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配",
-    )
-    prompt_analyzer.add_source(
-        "自修复 Agent",
-        _self_heal_parts,
-        note="系统提示词 + 该 Agent 自带工具；peer 描述在运行时按需装配",
-    )
 
     # 已注册的子 Agent（AgentRegistry）：每个 specialist 一条，便于对照 agents__list
     try:
@@ -1319,6 +1294,10 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             ),
             "report_service": (usage["report_service"], "用量报告服务"),
             "archive_memory_service": (memory_svcs["archive_memory_service"], "档案记忆服务"),
+            "archive_summary_service": (
+                archive_summary_service,
+                "档案自动总结服务（实现 agent_prompt_parts，供分析页自动收集）",
+            ),
             "profile_service": (memory_svcs["profile_service"], "用户画像服务"),
             "willing_service": (memory_svcs["willing_service"], "回复意愿服务"),
             "chat_stream": (memory_svcs["chat_stream"], "聊天流管理器"),
@@ -1327,6 +1306,13 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "prompt_store": (prompt_store, "提示词存储"),
             "plugin_runtime": (plugin_runtime, "插件运行时"),
         },
+    )
+
+    # 自动收集所有实现 agent_prompt_parts() 的宿主服务：新增 Agent 只要实现规范并注册服务，
+    # 分析页就会出现，**不需要**再改这里的来源列表。
+    discovered = prompt_analyzer.catalog.discover(plugin["host_facade"].services)
+    logger_factory.get_logger("app.analysis").info(
+        f"提示词分析自动收集到 {discovered} 个 Agent"
     )
 
     # ── 管线 / 网关 / 应用 ──

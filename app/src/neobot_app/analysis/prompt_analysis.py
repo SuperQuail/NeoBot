@@ -21,6 +21,8 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.analysis.agent_spec import AgentCatalog
+
 #: 展示口径说明（面板直接展示这行，避免用户误解为真实计费 token）
 TOKEN_RULE_TEXT = "估算口径：中文字符 × 0.6 + 其他字符 × 0.3（非真实计费 token）"
 
@@ -92,14 +94,23 @@ class PromptSource:
 
 @dataclass(slots=True)
 class PromptAnalyzer:
-    """收集各来源的提示词装配结果并统计（不调用模型）。"""
+    """收集各来源的提示词装配结果并统计（不调用模型）。
+
+    两类来源：
+    - catalog：**规范化 Agent**（实现 agent_prompt_parts()，由装配层注册或经宿主服务自动发现），
+      新增 Agent 不需要改这里；
+    - _sources：非 Agent 的补充条目（模型路由、委派指令等）。
+    """
 
     logger: Logger | None = None
     text_limit: int = DEFAULT_TEXT_LIMIT
+    catalog: AgentCatalog | None = None
     _sources: list[PromptSource] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.logger = self.logger or NullLogger()
+        if self.catalog is None:
+            self.catalog = AgentCatalog(logger=self.logger)
 
     def add_source(
         self,
@@ -123,7 +134,18 @@ class PromptAnalyzer:
     async def collect(self) -> dict[str, Any]:
         """逐个来源装配并统计；单个来源失败不影响其余（错误写进该条目）。"""
         agents: list[dict[str, Any]] = []
-        for source in self._sources:
+        catalog_specs = self.catalog.specs if self.catalog is not None else ()
+        sources = list(self._sources) + [
+            PromptSource(
+                name=spec.name,
+                loader=spec.loader,
+                kind=spec.kind,
+                note=spec.note,
+                model=spec.model,
+            )
+            for spec in catalog_specs
+        ]
+        for source in sources:
             entry: dict[str, Any] = {
                 "name": source.name,
                 "kind": source.kind,
