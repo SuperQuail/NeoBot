@@ -1,6 +1,25 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+
+/**
+ * 产物 index.html 的行尾统一成 LF。
+ *
+ * Vite 生成 HTML 时会保留模板（frontend/index.html）的行尾：Windows 检出的是 CRLF，
+ * Linux 是 LF，因此同一份源码在两个平台会产出**不同字节**的 web/index.html，而
+ * web/ 又是入库产物——CI 在 Linux 上跑「产物与源码一致」检查时必然报不一致。
+ * 这里在 HTML 生成（含资源标签注入）之后统一行尾，顺带清掉 Windows 模板里
+ * 残留的孤立 CR。`enforce: 'post'` 保证它排在核心 HTML 插件之后。
+ */
+function normalizeHtmlEol(): Plugin {
+  return {
+    name: 'neobot-normalize-html-eol',
+    enforce: 'post',
+    transformIndexHtml(html) {
+      return html.replace(/\r\n?/g, '\n');
+    },
+  };
+}
 
 // 面板由官方 dashboard 插件提供，产物输出到 ../web 并随 Python 包入库。
 //
@@ -10,7 +29,7 @@ import tailwindcss from '@tailwindcss/vite';
 // 用绝对 base 后 chunk 与静态资源的 URL 恒定指向 /bridge/assets/*，服务端只需把
 // /bridge/* 映射到 web/ 目录（见 dashboard/server.py 的 _bridge_asset）。
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), normalizeHtmlEol()],
   base: '/bridge/',
   build: {
     outDir: '../web',

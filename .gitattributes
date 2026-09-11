@@ -2,3 +2,6 @@
 
 *.bat text eol=crlf
 *.sh text eol=lf
+# 构建产物 index.html 由 Vite 从 frontend/index.html 生成，Windows 上会保留模板的
+# CRLF、Linux 上则是 LF；不统一的话 CI 的「产物与源码一致」检查在 Linux 上必然失败。
+app/src/neobot_app/builtin_plugins/dashboard/web/index.html text eol=lf
