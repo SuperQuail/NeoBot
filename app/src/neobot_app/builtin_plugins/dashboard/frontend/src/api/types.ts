@@ -32,6 +32,8 @@ export interface SystemInfo {
 /** 概览 /api/overview */
 export interface Overview {
   online?: boolean;
+  /** 是否处于待机状态（原 frozen 字段） */
+  standby?: boolean;
   app_name?: string;
   app_version?: string;
   uptime_seconds?: number;

@@ -16,7 +16,7 @@ export const QK = {
   usage: 'stats:usage',
   usageSeries: 'series:usage',
   plugins: 'plugins',
-  freeze: 'admin:freeze',
+  power: 'admin:power',
   pluginConfig: (id: string) => `plugin-config:${id}`,
   config: 'config',
   env: 'env',
@@ -47,8 +47,8 @@ export const POLL = {
   usage: 60_000,
   /** 插件列表：20s */
   plugins: 20_000,
-  /** 冻结状态：5s（事故熔断要能马上看到状态变化） */
-  freeze: 5_000,
+  /** 运行状态：5s（待机状态变化要能马上看到） */
+  power: 5_000,
   /** 配置类：不轮询（由用户主动刷新） */
   none: 0,
 } as const;

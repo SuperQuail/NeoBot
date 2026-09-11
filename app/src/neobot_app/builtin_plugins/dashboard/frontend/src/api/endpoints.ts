@@ -42,17 +42,22 @@ export interface SimpleMessage {
   [key: string]: unknown;
 }
 
-/** 运维冻结状态（/api/admin/freeze*） */
-export interface FreezeState {
+/** 运行状态（/api/admin/power，待机 / 软重启） */
+export interface PowerState {
   ok?: boolean;
+  /** 待机服务不可用时为 false，其余字段可能缺省 */
   available?: boolean;
-  frozen?: boolean;
+  state?: 'running' | 'standby';
+  standby?: boolean;
   reason?: string;
   operator?: string;
-  frozen_at_text?: string;
-  frozen_for_seconds?: number;
-  /** 剩余自动解冻秒数；无限期冻结时为 null */
-  remaining_seconds?: number | null;
+  /** 进入待机的时间戳与可读文本 */
+  since?: number;
+  since_text?: string;
+  standby_seconds?: number;
+  /** 待机期间是否保持 OneBot 连接 */
+  connect_onebot?: boolean;
+  /** 写操作（待机 / 恢复 / 软重启 / OneBot）返回的提示文案 */
   message?: string;
 }
 
@@ -142,13 +147,14 @@ export const api = {
   envSave: (body: unknown) => postJSON<EnvPayload>('/api/config/env', body),
   envAddPlatform: (body: unknown) => postJSON<EnvPayload>('/api/config/env/platform', body),
 
-  // 运维冻结（事故熔断）
-  freezeStatus: () => getJSON<FreezeState>('/api/admin/freeze'),
-  freeze: (seconds?: number | null, reason = '') =>
-    postJSON<FreezeState>('/api/admin/freeze', { seconds: seconds ?? null, reason }),
-  unfreeze: () => postJSON<FreezeState>('/api/admin/unfreeze'),
+  // 运行状态（待机 / 软重启运行）
+  powerStatus: () => getJSON<PowerState>('/api/admin/power'),
+  standbyEnter: (reason = '') => postJSON<PowerState>('/api/admin/standby', { reason }),
+  resume: (reason = '') => postJSON<PowerState>('/api/admin/resume', { reason }),
+  reboot: (reason = '') => postJSON<PowerState>('/api/admin/reboot', { reason }),
+  setStandbyOnebot: (enabled: boolean) => postJSON<PowerState>('/api/admin/standby/onebot', { enabled }),
 
-  // 管理
+  // 管理（重启进程以加载代码改动）
   restart: () => postJSON<SimpleMessage>('/api/admin/restart'),
 };
 

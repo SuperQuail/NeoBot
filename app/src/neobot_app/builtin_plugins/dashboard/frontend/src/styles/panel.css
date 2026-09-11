@@ -115,23 +115,29 @@
 .model-key-hint { margin: 0 0 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .model-key-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface-2, rgba(127,127,127,.1)); }
 
-/* ── 运维冻结（事故熔断）───────────────────────────── */
-.freeze-banner {
+/* ── 运行状态（待机 / 软重启）───────────────────────── */
+.standby-banner {
   display: flex;
   align-items: center;
   gap: 12px;
   margin: 12px 16px 0;
   padding: 10px 14px;
-  border: 1px solid var(--danger, #d9534f);
+  border: 1px solid var(--warn, #f1c40f);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+  background: color-mix(in srgb, var(--warn, #f1c40f) 12%, transparent);
 }
-.freeze-banner-text { display: flex; flex-direction: column; gap: 2px; }
-.freeze-banner-text strong { color: var(--danger, #d9534f); }
-.freeze-banner .btn { margin-left: auto; }
+.standby-banner-text { display: flex; flex-direction: column; gap: 2px; }
+.standby-banner-text strong { color: #b7950b; }
+.standby-banner .btn { margin-left: auto; }
 
-.freeze-card.frozen { border-color: var(--danger, #d9534f); }
-.freeze-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
-.freeze-controls .field { display: flex; flex-direction: column; gap: 4px; margin: 0; }
-.freeze-controls .field.grow { flex: 1 1 240px; }
-.freeze-controls .btn { min-height: 34px; height: auto; padding-top: 7px; padding-bottom: 7px; }
+.standby-card.standby {
+  border-color: var(--warn, #f1c40f);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn, #f1c40f) 60%, transparent);
+}
+.standby-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.standby-controls .field { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.standby-controls .field.grow { flex: 1 1 240px; }
+.standby-controls .btn { min-height: 34px; height: auto; padding-top: 7px; padding-bottom: 7px; }
+.standby-switch { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; cursor: pointer; }
+.standby-switch input { width: auto; margin: 0; accent-color: var(--brand, #4a90e2); }
+.standby-hints { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }

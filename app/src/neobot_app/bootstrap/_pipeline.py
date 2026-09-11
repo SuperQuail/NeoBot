@@ -244,7 +244,7 @@ def build_reply_orchestrator(
     credential_manager: Any = None,
     config_update_callback: Any = None,
     sleep_service: Any = None,
-    freeze_service: Any = None,
+    standby_service: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -280,7 +280,7 @@ def build_reply_orchestrator(
         credential_manager=credential_manager,
         config_update_callback=config_update_callback,
         sleep_service=sleep_service,
-        freeze_service=freeze_service,
+        standby_service=standby_service,
     )
 
 
@@ -321,7 +321,7 @@ def build_pipelines_and_app(
     command_service: Any = None,
     credential_manager: Any = None,
     sleep_service: Any = None,
-    freeze_service: Any = None,
+    standby_service: Any = None,
 ) -> NeoBotApplication:
     inbound_pipeline = InboundPipeline(
         adapter=adapter,
@@ -345,7 +345,7 @@ def build_pipelines_and_app(
         command_service=command_service,
         credential_manager=credential_manager,
         sleep_service=sleep_service,
-        freeze_service=freeze_service,
+        standby_service=standby_service,
     )
 
     notice_handler = NoticeHandler(legacy_pipeline=legacy_event_pipeline)

@@ -327,7 +327,7 @@ def build_archive_summary_service(
     fallback_provider: Any,
     logger_factory: Any,
     skill_manager: Any,
-    freeze_service: Any = None,
+    standby_service: Any = None,
 ) -> ArchiveMemoryAutoSummaryService:
     from neobot_app.bootstrap._providers import build_optional_agent_provider
 
@@ -355,7 +355,7 @@ def build_archive_summary_service(
         logger=logger_factory.get_logger("app.archive_summary"),
         tool_definitions=summary_tool_defs,
         tool_executor=_summary_tool_executor,
-        freeze_service=freeze_service,
+        standby_service=standby_service,
     )
 
 

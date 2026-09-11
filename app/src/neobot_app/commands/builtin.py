@@ -41,13 +41,6 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_help,
         ),
         Command(
-            name="reboot",
-            description="重启 Bot",
-            permission=PERM_SUPER_ADMIN,
-            params=(),
-            handler=_handle_reboot,
-        ),
-        Command(
             name="add_admin",
             description="添加次级管理员,用 QQ 号或 @ 指定",
             permission=PERM_SUPER_ADMIN,
@@ -88,38 +81,43 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_awake,
         ),
         Command(
-            name="freeze",
+            name="standby",
             description=(
-                "冻结 Bot:立即停止一切自动回复与档案自动总结(进程继续运行),"
-                "用于 token 风暴等失控场景;命令系统仍可用"
+                "进入待机:停掉 bot 运行时(回复/记忆/后台任务),只保留面板与核心服务,"
+                "用于 token 风暴、改配置等场景;面板与命令仍可用"
             ),
             permission=PERM_SUPER_ADMIN,
-            usage="[时长] [原因]",
+            usage="[原因]",
             params=(
                 (
-                    "时长",
-                    "可选。如 30m / 2h;留空表示一直冻结到手动 /unfreeze",
-                ),
-                (
                     "原因",
-                    "可选。记录到日志与面板状态的冻结原因",
+                    "可选。记录到日志与面板状态的待机原因",
                 ),
             ),
-            handler=_handle_freeze,
+            handler=_handle_standby,
         ),
         Command(
-            name="unfreeze",
-            description="解除 Bot 冻结,恢复正常回复与记忆处理",
+            name="reboot",
+            description=(
+                "软重启运行:按当前配置重建并启动 bot 运行时(不重启进程、面板不掉线);"
+                "待机中执行等同于恢复运行"
+            ),
             permission=PERM_SUPER_ADMIN,
-            params=(),
-            handler=_handle_unfreeze,
+            usage="[原因]",
+            params=(
+                (
+                    "原因",
+                    "可选。记录到日志的软重启原因",
+                ),
+            ),
+            handler=_handle_reboot,
         ),
         Command(
-            name="freeze_status",
-            description="查看 Bot 当前是否处于冻结状态",
+            name="standby_status",
+            description="查看 Bot 当前是运行中还是待机中",
             permission=PERM_SUB_ADMIN,
             params=(),
-            handler=_handle_freeze_status,
+            handler=_handle_standby_status,
         ),
         Command(
             name="reload",
@@ -269,63 +267,46 @@ async def _handle_help(ctx: CommandContext) -> str | None:
     return "\n".join(lines)
 
 
-async def _handle_reboot(ctx: CommandContext) -> str:
-    """重启 Bot(优雅关闭后由 CLI 重新启动全新进程)。"""
-    if not ctx.service.request_restart():
-        return "重启功能不可用(当前启动方式不支持)"
-    return "正在重启…请稍候"
-
-
-async def _handle_freeze(ctx: CommandContext) -> str:
-    """冻结 Bot:一切自动行为立即停止,命令系统仍可用于解冻。"""
-    service = getattr(ctx.service, "freeze_service", None)
+async def _handle_standby(ctx: CommandContext) -> str:
+    """进入待机:停掉 bot 运行时,只保留面板与核心服务。"""
+    service = getattr(ctx.service, "standby_service", None)
     if service is None:
-        return "冻结功能不可用(未注入冻结服务)"
-
-    seconds: float | None = None
-    reason_parts = list(ctx.args)
-    if reason_parts:
-        parsed, error = parse_sleep_duration(reason_parts[0])
-        if error is None:
-            seconds = parsed
-            reason_parts = reason_parts[1:]
-        elif _looks_like_duration(reason_parts[0]):
-            return error
-
-    reason = " ".join(part for part in reason_parts if part).strip()
-    _ok, message = service.freeze(
-        reason=reason or "freeze_command",
+        return "待机功能不可用(未注入待机服务)"
+    reason = " ".join(part for part in ctx.args if part).strip()
+    _ok, message = await service.enter(
+        reason=reason or "standby_command",
         operator=f"{ctx.kind}:{ctx.user_id}",
-        seconds=seconds,
     )
     return message
 
 
-async def _handle_unfreeze(ctx: CommandContext) -> str:
-    """解除冻结。"""
-    service = getattr(ctx.service, "freeze_service", None)
+async def _handle_reboot(ctx: CommandContext) -> str:
+    """软重启 bot 运行时:不重启进程,面板与连接保持可用。"""
+    service = getattr(ctx.service, "standby_service", None)
     if service is None:
-        return "冻结功能不可用(未注入冻结服务)"
-    _was_frozen, message = service.unfreeze(
-        reason="unfreeze_command", operator=f"{ctx.kind}:{ctx.user_id}"
+        return "待机功能不可用(未注入待机服务)"
+    reason = " ".join(part for part in ctx.args if part).strip()
+    _ok, message = await service.reboot(
+        reason=reason or "reboot_command",
+        operator=f"{ctx.kind}:{ctx.user_id}",
     )
     return message
 
 
-async def _handle_freeze_status(ctx: CommandContext) -> str:
-    """查看冻结状态。"""
-    service = getattr(ctx.service, "freeze_service", None)
+async def _handle_standby_status(ctx: CommandContext) -> str:
+    """查看待机状态。"""
+    service = getattr(ctx.service, "standby_service", None)
     if service is None:
-        return "冻结功能不可用(未注入冻结服务)"
+        return "待机功能不可用(未注入待机服务)"
     status = service.status()
-    if not status.get("frozen"):
-        return "Bot 当前未冻结。"
-    remaining = status.get("remaining_seconds")
-    tail = "需要手动 /unfreeze 解冻。" if remaining is None else f"剩余约 {remaining} 秒自动解冻。"
+    if not status.get("standby"):
+        return "Bot 当前运行中(回复与记忆管线正常)。"
+    connect = "保持 OneBot 连接" if status.get("connect_onebot") else "已断开 OneBot 连接"
     return (
-        f"Bot 已冻结(自 {status.get('frozen_at_text') or '未知时间'},"
-        f"已持续 {status.get('frozen_for_seconds')} 秒)。"
-        f"原因:{status.get('reason') or '未说明'};操作者:{status.get('operator') or '未知'}。{tail}"
+        f"Bot 处于待机状态(自 {status.get('since_text') or '未知时间'},"
+        f"已持续 {status.get('standby_seconds')} 秒)。"
+        f"原因:{status.get('reason') or '未说明'};操作者:{status.get('operator') or '未知'};{connect}。"
+        "执行 /reboot 可软重启运行。"
     )
 
 

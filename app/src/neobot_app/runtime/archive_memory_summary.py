@@ -70,7 +70,7 @@ class ArchiveMemoryAutoSummaryService:
         logger: Logger | None = None,
         tool_definitions: list[dict] | None = None,
         tool_executor: Any = None,
-        freeze_service: Any = None,
+        standby_service: Any = None,
     ) -> None:
         self._archive = archive_memory_service
         self._provider = provider
@@ -86,8 +86,8 @@ class ArchiveMemoryAutoSummaryService:
         self._counter_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self._tool_definitions = tool_definitions or []
         self._tool_executor = tool_executor
-        # 冻结熔断:即使消息管线漏掉了拦截,总结本身也必须停。
-        self._freeze_service = freeze_service
+        # 待机熔断:即使消息管线漏掉了拦截,总结本身也必须停。
+        self._standby_service = standby_service
         fav_cfg = getattr(getattr(getattr(config, "agent", None), "memory", None), "favorability", None)
         self._favorability_max_change: int = int(getattr(fav_cfg, "max_change_per_summary", 5) or 5)
         self._favorability_min: int = int(getattr(fav_cfg, "min_value", -1000) or -1000)
@@ -137,9 +137,9 @@ class ArchiveMemoryAutoSummaryService:
         """记录一条实时消息，并在达到配置间隔时触发摘要。"""
         if conversation_kind not in {"group", "private"}:
             return
-        if self.is_frozen():
+        if self.is_standby():
             self._logger.debug(
-                "Bot 已冻结，跳过档案自动总结记录",
+                "Bot 已进入待机，跳过档案自动总结记录",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
             )
@@ -215,10 +215,10 @@ class ArchiveMemoryAutoSummaryService:
         finally:
             self._end_summary(counter_key)
 
-    def is_frozen(self) -> bool:
-        """Bot 是否处于运维冻结状态。"""
-        service = getattr(self, "_freeze_service", None)
-        return bool(service is not None and service.is_frozen())
+    def is_standby(self) -> bool:
+        """Bot 是否处于待机状态。"""
+        service = getattr(self, "_standby_service", None)
+        return bool(service is not None and service.is_standby())
 
     async def _summarize_and_reset(
         self,

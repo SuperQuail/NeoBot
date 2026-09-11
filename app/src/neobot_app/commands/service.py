@@ -37,7 +37,7 @@ class CommandService:
         markdown_image_converter: Any = None,
         file_server: Any = None,
         sleep_service: Any = None,
-        freeze_service: Any = None,
+        standby_service: Any = None,
         config_reload_callback: ConfigReloadCallback | None = None,
     ) -> None:
         self._config = config
@@ -51,7 +51,7 @@ class CommandService:
         self._markdown_image_converter = markdown_image_converter
         self._file_server = file_server
         self._sleep_service = sleep_service
-        self._freeze_service = freeze_service
+        self._standby_service = standby_service
         self._config_reload_callback = config_reload_callback
         if register_builtins:
             for command in build_builtin_commands(self):
@@ -97,9 +97,9 @@ class CommandService:
         return self._sleep_service
 
     @property
-    def freeze_service(self) -> Any:
-        """冻结服务(/freeze /unfreeze 命令使用;未注入时为 None)。"""
-        return self._freeze_service
+    def standby_service(self) -> Any:
+        """待机服务(/standby /reboot 命令使用;未注入时为 None)。"""
+        return self._standby_service
 
     # ── 消息入口 ──
 

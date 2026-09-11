@@ -318,11 +318,11 @@ class ReplyOrchestrator:
         credential_manager: Any = None,
         config_update_callback: Any = None,
         sleep_service: Any = None,
-        freeze_service: Any = None,
+        standby_service: Any = None,
     ) -> None:
         self._adapter = adapter
         self._sleep_service = sleep_service
-        self._freeze_service = freeze_service
+        self._standby_service = standby_service
         self._prompt_builder = prompt_builder
         self._prompt_store = prompt_store
         self._cache_calculator = cache_calculator
@@ -2199,11 +2199,11 @@ class ReplyOrchestrator:
             for iteration in range(max_iterations + 1):
                 if iteration >= max_iterations and not vision_fallback_bonus:
                     break
-                # 冻结熔断：运维冻结后已启动的管线必须立刻停火，
+                # 待机熔断：进入待机后已启动的管线必须立刻停火，
                 # 否则一次风暴期间仍然会把排队中的模型调用全部跑完。
-                if self.is_frozen():
+                if self.is_standby():
                     self._logger.warning(
-                        "Bot 已冻结，回复管线提前结束",
+                        "Bot 已进入待机，回复管线提前结束",
                         event_id=event.event_id,
                         queue_key=queue_key,
                         iteration=iteration + 1,
@@ -2910,12 +2910,12 @@ class ReplyOrchestrator:
             except RuntimeError:
                 pass
 
-    # ── 冻结熔断(运维事故中立即停火) ──
+    # ── 待机熔断(只保留核心服务,已启动管线立即停火) ──
 
-    def is_frozen(self) -> bool:
-        """Bot 是否处于运维冻结状态。"""
-        service = getattr(self, "_freeze_service", None)
-        return bool(service is not None and service.is_frozen())
+    def is_standby(self) -> bool:
+        """Bot 是否处于待机状态。"""
+        service = getattr(self, "_standby_service", None)
+        return bool(service is not None and service.is_standby())
 
     # ── 睡眠拦截(挂起循环 / wait 工具共用) ──
 

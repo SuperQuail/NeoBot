@@ -107,8 +107,8 @@ class DashboardApi:
             control = getattr(control, "control", None)
         return control
 
-    def _freeze_service(self) -> Any:
-        return self._service("freeze_service")
+    def _standby_service(self) -> Any:
+        return self._service("standby_service")
 
     def _require_manage(self, request: web.Request, *, action: str = "管理操作") -> web.Response | None:
         if not self.console.manage_plugins:
@@ -290,19 +290,19 @@ class DashboardApi:
                 "latency_ms": self.metrics.latency_series()["current_ms"],
                 "python_version": system.get("python_version"),
                 "hostname": system.get("hostname"),
-                "frozen": self.frozen_state()["frozen"],
+                "standby": bool(self.power_state().get("standby")),
             }
         )
 
-    def frozen_state(self) -> dict[str, Any]:
-        """当前冻结状态；冻结服务未注册时返回 available=False。"""
-        service = self._freeze_service()
+    def power_state(self) -> dict[str, Any]:
+        """当前运行状态（运行中 / 待机中）；待机服务未注册时返回 available=False。"""
+        service = self._standby_service()
         if service is None:
-            return {"available": False, "frozen": False}
+            return {"available": False, "state": "running", "standby": False}
         try:
             status = dict(service.status())
         except Exception:
-            return {"available": False, "frozen": False}
+            return {"available": False, "state": "running", "standby": False}
         status["available"] = True
         return status
 
@@ -1333,59 +1333,81 @@ class DashboardApi:
         return _json_ok(document)
 
     # ------------------------------------------------------------------
-    # 运维冻结（事故熔断）
+    # 运行状态（待机 / 软重启运行）
     # ------------------------------------------------------------------
 
-    async def freeze_status(self, request: web.Request) -> web.Response:
-        return _json_ok(self.frozen_state())
+    async def power_status(self, request: web.Request) -> web.Response:
+        return _json_ok(self.power_state())
 
-    async def admin_freeze(self, request: web.Request) -> web.Response:
-        """冻结 Bot：停掉回复管线与档案自动总结，进程继续运行。
+    async def _power_reason(self, request: web.Request) -> str:
+        """读取可选请求体里的原因；空 body 视为无参数。"""
+        try:
+            payload = await self._read_json(request)
+        except ValueError:
+            payload = {}
+        return str(payload.get("reason") or "").strip()
 
-        事故中最重要的能力是「立刻停火」——不需要重启进程、也不依赖命令通道。
+    async def admin_standby(self, request: web.Request) -> web.Response:
+        """进入待机：停掉 bot 运行时，只保留面板与核心服务。
+
+        进入待机后回复与记忆管线不再工作，但面板、命令与配置热重载仍然可用，
+        改完配置用 /reboot（或面板「软重启运行」）即可恢复，不必重启进程。
         """
-        denied = self._require_manage(request, action="冻结 Bot")
+        denied = self._require_manage(request, action="进入待机")
         if denied is not None:
             return denied
-        service = self._freeze_service()
+        service = self._standby_service()
         if service is None:
-            return _json_error("冻结服务不可用，请重启 NeoBot", status=503)
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
+        reason = await self._power_reason(request)
+        operator = f"panel:{self.console.request_ip(request)}"
+        ok, message = await service.enter(reason=reason or "panel", operator=operator)
+        if not ok:
+            return _json_error(message)
+        self.logger.warning(f"面板请求进入待机 ip={operator} reason={reason or 'panel'}")
+        return _json_ok({**self.power_state(), "message": message})
+
+    async def admin_resume(self, request: web.Request) -> web.Response:
+        """退出待机：按当前配置重建并启动 bot 运行时。"""
+        return await self._soft_restart(request)
+
+    async def admin_reboot(self, request: web.Request) -> web.Response:
+        """软重启 bot 运行时：不重启进程，面板与连接保持可用。"""
+        return await self._soft_restart(request)
+
+    async def _soft_restart(self, request: web.Request) -> web.Response:
+        denied = self._require_manage(request, action="软重启运行")
+        if denied is not None:
+            return denied
+        service = self._standby_service()
+        if service is None:
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
+        reason = await self._power_reason(request)
+        operator = f"panel:{self.console.request_ip(request)}"
+        ok, message = await service.resume(reason=reason or "panel", operator=operator)
+        if not ok:
+            return _json_error(message)
+        self.logger.warning(f"面板请求软重启运行 ip={operator} reason={reason or 'panel'}")
+        return _json_ok({**self.power_state(), "message": message})
+
+    async def admin_standby_onebot(self, request: web.Request) -> web.Response:
+        """待机期是否保持与 OneBot 的连接（立即生效）。"""
+        denied = self._require_manage(request, action="切换待机连接")
+        if denied is not None:
+            return denied
+        service = self._standby_service()
+        if service is None:
+            return _json_error("待机服务不可用，请重启 NeoBot", status=503)
         try:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
-        raw_seconds = payload.get("seconds")
-        seconds: float | None = None
-        if raw_seconds not in (None, ""):
-            try:
-                seconds = float(raw_seconds)
-            except (TypeError, ValueError):
-                return _json_error("seconds 必须是数字（秒），留空表示一直冻结")
-        reason = str(payload.get("reason") or "").strip()
-        ok, message = service.freeze(
-            reason=reason or "panel",
-            operator=f"panel:{self.console.request_ip(request)}",
-            seconds=seconds,
-        )
+        enabled = bool(payload.get("enabled"))
+        operator = f"panel:{self.console.request_ip(request)}"
+        ok, message = await service.set_connect_onebot(enabled, operator=operator)
         if not ok:
             return _json_error(message)
-        self.logger.warning(
-            f"面板请求冻结 Bot ip={self.console.request_ip(request)} reason={reason or 'panel'}"
-        )
-        return _json_ok({**self.frozen_state(), "message": message})
-
-    async def admin_unfreeze(self, request: web.Request) -> web.Response:
-        denied = self._require_manage(request, action="解冻 Bot")
-        if denied is not None:
-            return denied
-        service = self._freeze_service()
-        if service is None:
-            return _json_error("冻结服务不可用，请重启 NeoBot", status=503)
-        _was_frozen, message = service.unfreeze(
-            reason="panel", operator=f"panel:{self.console.request_ip(request)}"
-        )
-        self.logger.warning(f"面板请求解冻 Bot ip={self.console.request_ip(request)}")
-        return _json_ok({**self.frozen_state(), "message": message})
+        return _json_ok({**self.power_state(), "message": message})
 
     async def admin_restart(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)

@@ -876,6 +876,30 @@ class Debug:
 
 
 @dataclass
+class Standby:
+    """待机状态配置。
+
+    待机 = 只启动最基本的服务（面板、配置、命令），bot 运行时整体停掉；
+    面板可改任意配置并软重启运行，不必重启进程。
+    """
+
+    start_in_standby: Optional[bool] = field(
+        default=False,
+        metadata={
+            "description": "启动时直接进入待机（只启动面板等核心服务，不启动 bot 运行时）；"
+            "适合先开面板补配置再启动运行"
+        },
+    )
+    connect_onebot: Optional[bool] = field(
+        default=True,
+        metadata={
+            "description": "待机时是否保持与 OneBot 的连接（默认保持：QQ 命令仍可用，"
+            "便于随时恢复运行；关闭后待机期只有面板可用）"
+        },
+    )
+
+
+@dataclass
 class ScheduledTask:
     """定时任务系统配置。"""
 
@@ -1430,6 +1454,7 @@ class BotConfig:
     file_server: FileServer = field(default_factory=FileServer)
     adapter: Adapter = field(default_factory=Adapter)
     debug: Debug = field(default_factory=Debug)
+    standby: Standby = field(default_factory=Standby)
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)

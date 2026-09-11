@@ -1,19 +1,20 @@
-// System.jsx —— 运维熔断 / 服务状态 / 后台任务 / 模型用量
+// System.tsx —— 运行状态（待机）/ 服务状态 / 后台任务 / 模型用量
 import { useState } from 'react';
 import { api } from '../api/endpoints';
+import type { Result } from '../api/types';
 import { useMutation, useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { fmtNum } from '../utils/format';
 import Icon from '../components/Icon';
-import { formatRemaining } from '../components/FreezeBanner';
+import Modal from '../components/Modal';
+import { formatDuration } from '../components/StandbyBanner';
 
-/** 冻结时长选项（秒）；null = 一直冻结到手动解冻 */
-const FREEZE_DURATIONS: Array<[number | null, string]> = [
-  [null, '一直冻结（手动解冻）'],
-  [600, '10 分钟'],
-  [1800, '30 分钟'],
-  [3600, '60 分钟'],
-];
+/** 把 Result<T> 信封（外层 {ok,data,error,status}）转成一句提示文案 */
+function noticeFrom<T extends { message?: string }>(result: Result<T> | null, fallback: string): string {
+  if (!result) return fallback;
+  if (!result.ok) return result.error || '操作失败';
+  return result.data?.message || fallback;
+}
 
 const HOUR_OPTIONS = [
   [1, '最近 1 小时'],
@@ -24,24 +25,44 @@ const HOUR_OPTIONS = [
 
 export default function System() {
   const [hours, setHours] = useState(24);
-  const [freezeSeconds, setFreezeSeconds] = useState<number | null>(null);
-  const [freezeReason, setFreezeReason] = useState('');
-  const [freezeNotice, setFreezeNotice] = useState('');
+  const [reason, setReason] = useState('');
+  const [notice, setNotice] = useState('');
+  const [restartOpen, setRestartOpen] = useState(false);
   const services = useQuery(QK.services, () => api.services(), { interval: POLL.services });
   const tasks = useQuery(QK.tasks, () => api.tasks(), { interval: POLL.tasks });
   const usage = useQuery(`${QK.usage}:${hours}`, () => api.statsUsage(hours), { interval: POLL.usage, deps: [hours] });
   const system = useQuery(QK.system, () => api.system(), { interval: POLL.system });
-  const freeze = useQuery(QK.freeze, () => api.freezeStatus(), { interval: POLL.freeze });
-  const doFreeze = useMutation(
-    () => api.freeze(freezeSeconds, freezeReason),
-    { invalidate: [QK.freeze], onSuccess: (result) => setFreezeNotice(result?.data?.message || '已冻结') },
-  );
-  const doUnfreeze = useMutation(() => api.unfreeze(), {
-    invalidate: [QK.freeze],
-    onSuccess: (result) => setFreezeNotice(result?.data?.message || '已解冻'),
+  const power = useQuery(QK.power, () => api.powerStatus(), { interval: POLL.power });
+
+  const doStandby = useMutation(() => api.standbyEnter(reason), {
+    invalidate: [QK.power],
+    onSuccess: (result) => setNotice(noticeFrom(result, '已进入待机')),
   });
-  const freezeState = freeze.data;
-  const freezeAvailable = freezeState?.available !== false;
+  const doResume = useMutation(() => api.resume(reason), {
+    invalidate: [QK.power],
+    onSuccess: (result) => setNotice(noticeFrom(result, '已启动运行')),
+  });
+  const doReboot = useMutation(() => api.reboot(reason), {
+    invalidate: [QK.power],
+    onSuccess: (result) => setNotice(noticeFrom(result, '已按当前配置软重启运行')),
+  });
+  const doOnebot = useMutation((enabled: boolean) => api.setStandbyOnebot(enabled), {
+    invalidate: [QK.power],
+    onSuccess: (result) => setNotice(noticeFrom(result, '已更新待机时的 OneBot 连接设置')),
+  });
+  const doRestart = useMutation(() => api.restart(), {
+    onSuccess: (result) => {
+      setNotice(noticeFrom(result, '已请求重启进程'));
+      setRestartOpen(false);
+    },
+  });
+
+  const powerState = power.data;
+  const standby = !!powerState?.standby;
+  const powerAvailable = powerState?.available !== false;
+  const connectOnebot = !!powerState?.connect_onebot;
+  const controlBusy = !!doStandby.busy || !!doResume.busy || !!doReboot.busy;
+  const actionError = doStandby.error || doResume.error || doReboot.error || doOnebot.error || doRestart.error;
 
   const serviceItems = services.data?.items || [];
   const scheduled = tasks.data?.scheduled || [];
@@ -52,65 +73,91 @@ export default function System() {
 
   return (
     <div className="page">
-      <section className={'card freeze-card' + (freezeState?.frozen ? ' frozen' : '')}>
+      <section className={'card standby-card' + (standby ? ' standby' : '')}>
         <div className="card-head">
-          <h3>运维熔断</h3>
-          <span className={'tag ' + (freezeState?.frozen ? 'err' : 'ok')}>
-            {freezeState?.frozen ? '冻结中' : '运行中'}
-          </span>
+          <h3>运行状态</h3>
+          <span className={'tag ' + (standby ? 'warn' : 'ok')}>{standby ? '待机中' : '运行中'}</span>
           <div className="spacer" />
           <span className="muted small">
-            {freezeState?.frozen
-              ? `${freezeState.operator || '未记录操作者'} · ${formatRemaining(freezeState.remaining_seconds)}`
-              : '冻结后：群聊/私聊不再回复、档案总结停止，进程与面板保持可用'}
+            {standby
+              ? `${powerState?.operator || '未记录操作者'} · 已待机 ${formatDuration(powerState?.standby_seconds)}`
+              : '进入待机：停掉回复与记忆管线，只保留面板与命令'}
           </span>
         </div>
-        <div className="freeze-controls">
-          <label className="field">
-            <span>冻结时长</span>
-            <select
-              className="input"
-              value={String(freezeSeconds)}
-              disabled={!!doFreeze.busy}
-              onChange={(event) =>
-                setFreezeSeconds(event.target.value === 'null' ? null : Number(event.target.value))
-              }
-            >
-              {FREEZE_DURATIONS.map(([value, label]) => (
-                <option key={String(value)} value={String(value)}>{label}</option>
-              ))}
-            </select>
-          </label>
+        <div className="standby-controls">
           <label className="field grow">
-            <span>冻结原因（可选）</span>
+            <span>原因（可选）</span>
             <input
               className="input"
-              value={freezeReason}
-              placeholder="例如：token 风暴排查中"
-              disabled={!!doFreeze.busy}
-              onChange={(event) => setFreezeReason(event.target.value)}
+              value={reason}
+              placeholder="例如：维护模型配置中"
+              disabled={controlBusy}
+              onChange={(event) => setReason(event.target.value)}
             />
           </label>
           <button
             className="btn danger"
-            disabled={!freezeAvailable || !!doFreeze.busy || !!doUnfreeze.busy}
-            onClick={() => void doFreeze.run()}
+            disabled={!powerAvailable || standby || controlBusy}
+            onClick={() => void doStandby.run()}
           >
-            <Icon name="cpu" />{doFreeze.busy ? '冻结中…' : '冻结 Bot'}
+            <Icon name="cpu" />{doStandby.busy ? '进入中…' : '进入待机'}
           </button>
-          <button
-            className="btn primary"
-            disabled={!freezeAvailable || !freezeState?.frozen || !!doUnfreeze.busy}
-            onClick={() => void doUnfreeze.run()}
-          >
-            {doUnfreeze.busy ? '解冻中…' : '解冻 Bot'}
+          {standby ? (
+            <button
+              className="btn primary"
+              disabled={!powerAvailable || controlBusy}
+              onClick={() => void doResume.run()}
+            >
+              {doResume.busy ? '启动中…' : '启动运行'}
+            </button>
+          ) : (
+            <button
+              className="btn primary"
+              disabled={!powerAvailable || controlBusy}
+              onClick={() => void doReboot.run()}
+            >
+              {doReboot.busy ? '软重启中…' : '软重启运行'}
+            </button>
+          )}
+          <button className="btn" disabled={!!doRestart.busy} onClick={() => setRestartOpen(true)}>
+            {doRestart.busy ? '重启中…' : '重启进程'}
           </button>
         </div>
-        {!freezeAvailable && <div className="workspace-error" role="alert">冻结服务不可用，请重启 NeoBot</div>}
-        {(freezeNotice || doFreeze.error || doUnfreeze.error) && (
-          <div className="muted small" role="status">{doFreeze.error || doUnfreeze.error || freezeNotice}</div>
+        <label className="standby-switch">
+          <input
+            type="checkbox"
+            checked={connectOnebot}
+            disabled={!powerAvailable || !!doOnebot.busy}
+            onChange={(event) => void doOnebot.run(event.target.checked)}
+          />
+          <span>待机时保持 OneBot 连接</span>
+          <span className="muted small">
+            {connectOnebot ? '待机期间不断开连接，恢复后继续使用' : '进入待机时断开连接，减少无效心跳'}
+          </span>
+        </label>
+        <div className="standby-hints muted small">
+          <span>进入待机：停掉回复与记忆管线，只保留面板与命令。</span>
+          <span>软重启运行：按当前配置重建运行时，不重启进程。</span>
+          <span>重启进程：加载代码改动，会短暂断线。</span>
+        </div>
+        {!powerAvailable && <div className="workspace-error" role="alert">待机服务不可用，请重启 NeoBot</div>}
+        {(actionError || notice) && (
+          <div className="muted small" role="status">{actionError || notice}</div>
         )}
       </section>
+
+      <Modal open={restartOpen} title="重启进程" onClose={() => { if (!doRestart.busy) setRestartOpen(false); }}>
+        <p className="muted">
+          重启进程用于加载代码改动，会短暂断线（面板与平台连接都会中断几秒到十几秒）。
+          只想按当前配置重建运行时，请用「软重启运行」。
+        </p>
+        <div className="modal-actions">
+          <button className="btn" disabled={!!doRestart.busy} onClick={() => setRestartOpen(false)}>取消</button>
+          <button className="btn danger" disabled={!!doRestart.busy} onClick={() => void doRestart.run()}>
+            {doRestart.busy ? '重启中…' : '确认重启'}
+          </button>
+        </div>
+      </Modal>
 
       <section className="card">
         <div className="card-head">

@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu } from 'lucide-react';
 import { ToastHost } from './Toast';
 import SidebarTooltip from './SidebarTooltip';
-import FreezeBanner from './FreezeBanner';
+import StandbyBanner from './StandbyBanner';
 import { clearToken } from '../api/client';
 import type { IconName } from './Icon';
 
@@ -124,8 +124,8 @@ export default function Layout() {
       </aside>
 
       <div className="main">
-        {/* 冻结是全局状态：任意页面都要能看到并一键解冻 */}
-        <FreezeBanner />
+        {/* 待机是全局状态：任意页面都要能看到并一键启动运行 */}
+        <StandbyBanner />
         {!isWorkspace && <header className="header">
           <div className="crumbs">
             <Home size={14} strokeWidth={2} aria-hidden="true" />

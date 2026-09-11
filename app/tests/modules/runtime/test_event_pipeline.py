@@ -115,16 +115,30 @@ async def test_group_message_event_duplicate_not_pushed_twice():
     assert queue.size("42") == 1
 
 
+def test_constructor_actually_wires_standby_service() -> None:
+    """回归：__init__ 必须真的保存 standby_service。
+
+    旧实现只在构造参数里接收 freeze_service，却没有赋值给实例属性，
+    于是 getattr(self, "_standby_service", None) 恒为 None ——
+    生产装配下丢弃门从未生效，只有测试手工赋属性才通过。
+    """
+    import inspect
+
+    source = inspect.getsource(EventPipeline.__init__)
+
+    assert "self._standby_service = standby_service" in source
+
+
 @pytest.mark.asyncio
-async def test_frozen_pipeline_drops_message_before_queue_and_summary():
+async def test_standby_pipeline_drops_message_before_queue_and_summary():
     """运维冻结期间:消息不入队、不触发档案总结,命令系统之外的一切都不执行。"""
-    from neobot_app.runtime.freeze_service import FreezeService
+    from neobot_app.runtime.standby_service import StandbyService
 
     queue = MessageQueue()
     pipeline = _pipeline_with_queue(group_queue=queue)
-    freeze_service = FreezeService()
-    freeze_service.freeze(reason="token 风暴", operator="panel")
-    pipeline._freeze_service = freeze_service
+    standby_service = StandbyService()
+    await standby_service.enter(reason="token 风暴", operator="panel")
+    pipeline._standby_service = standby_service
 
     recorded: list[dict] = []
 
@@ -150,17 +164,17 @@ async def test_frozen_pipeline_drops_message_before_queue_and_summary():
 
 
 @pytest.mark.asyncio
-async def test_frozen_pipeline_resumes_after_unfreeze():
+async def test_standby_pipeline_resumes_after_resume():
     """解冻后同一条链路必须恢复正常入队。"""
-    from neobot_app.runtime.freeze_service import FreezeService
+    from neobot_app.runtime.standby_service import StandbyService
 
     queue = MessageQueue()
     pipeline = _pipeline_with_queue(group_queue=queue)
-    freeze_service = FreezeService()
-    pipeline._freeze_service = freeze_service
+    standby_service = StandbyService()
+    pipeline._standby_service = standby_service
 
-    freeze_service.freeze(reason="storm")
-    pipeline._freeze_service = freeze_service
+    await standby_service.enter(reason="storm")
+    pipeline._standby_service = standby_service
     await pipeline.handle_group_message_event(
         {
             "post_type": "message",
@@ -174,7 +188,7 @@ async def test_frozen_pipeline_resumes_after_unfreeze():
     )
     assert queue.size("42") == 0
 
-    freeze_service.unfreeze()
+    await standby_service.resume()
     await pipeline.handle_group_message_event(
         {
             "post_type": "message",
@@ -190,15 +204,15 @@ async def test_frozen_pipeline_resumes_after_unfreeze():
 
 
 @pytest.mark.asyncio
-async def test_private_frozen_pipeline_drops_message():
+async def test_private_standby_pipeline_drops_message():
     """私聊同样受冻结熔断约束。"""
-    from neobot_app.runtime.freeze_service import FreezeService
+    from neobot_app.runtime.standby_service import StandbyService
 
     queue = MessageQueue()
     pipeline = _pipeline_with_queue(friend_queue=queue)
-    freeze_service = FreezeService()
-    freeze_service.freeze(reason="storm")
-    pipeline._freeze_service = freeze_service
+    standby_service = StandbyService()
+    await standby_service.enter(reason="storm")
+    pipeline._standby_service = standby_service
 
     await pipeline.handle_private_message_event(
         {
