@@ -187,8 +187,9 @@ class ArchiveMemoryAutoSummaryService:
             return
 
         # 同一会话只允许一次总结在跑：消息在总结期间继续累计，
-        # 但不会为每条消息都排一个「必然超时」的任务。
-        if not self._begin_summary(counter_key):
+        # 但不会为每条消息都排一个「必然超时」的任务。占位由
+        # _summarize_and_reset 内部统一持有（flush_all 路径共用），这里只预检。
+        if counter_key in self._active_summaries:
             self._logger.debug(
                 "档案自动总结已在执行，跳过本次调度",
                 conversation_kind=conversation_kind,
@@ -196,24 +197,22 @@ class ArchiveMemoryAutoSummaryService:
             )
             return
 
-        try:
-            if not self._retry_ready(state):
-                self._logger.debug(
-                    "档案自动总结处于失败冷却中，保留待总结消息",
-                    conversation_kind=conversation_kind,
-                    conversation_id=conversation_id,
-                    retry_after=state.get("retry_after"),
-                    failures=state.get("failures"),
-                )
-                return
-            await self._summarize_and_reset(
+        if not self._retry_ready(state):
+            self._logger.debug(
+                "档案自动总结处于失败冷却中，保留待总结消息",
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
-                counter_key=counter_key,
-                messages=list(state.get("messages", [])),
+                retry_after=state.get("retry_after"),
+                failures=state.get("failures"),
             )
-        finally:
-            self._end_summary(counter_key)
+            return
+        await self._summarize_and_reset(
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
+            counter_key=counter_key,
+            messages=list(state.get("messages", [])),
+            snapshot_count=count,
+        )
 
     def is_standby(self) -> bool:
         """Bot 是否处于待机状态。"""
@@ -227,10 +226,39 @@ class ArchiveMemoryAutoSummaryService:
         conversation_id: str,
         counter_key: str,
         messages: list[Any],
+        snapshot_count: int,
     ) -> bool:
-        """执行一次总结。返回 True 表示计数器已复位（含空消息），False 表示保留待重试。"""
+        """执行一次总结。返回 True 表示计数器已复位（含空消息），False 表示保留待重试。
+
+        并发协议：总结占位在方法内统一持有（record_message 与 flush_all 共用），
+        模型调用期间不持计数器锁；成功/失败都在短锁内基于库内最新状态合并，
+        绝不回写快照。snapshot_count 是快照对应的 count，用来算出总结期间新到的
+        消息条数——这些消息必须保留到下一轮，不能被成功路径清零。
+        """
+        if not self._begin_summary(counter_key):
+            return False
+        try:
+            return await self._run_summary(
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                counter_key=counter_key,
+                messages=messages,
+                snapshot_count=snapshot_count,
+            )
+        finally:
+            self._end_summary(counter_key)
+
+    async def _run_summary(
+        self,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        counter_key: str,
+        messages: list[Any],
+        snapshot_count: int,
+    ) -> bool:
         if not messages:
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+            await self._commit_success(counter_key, snapshot_count=snapshot_count)
             return True
 
         prompt = self._build_summary_prompt(
@@ -346,7 +374,19 @@ class ArchiveMemoryAutoSummaryService:
                 )
                 return False
 
-            await self._save_counter(counter_key, {"count": 0, "messages": []})
+            await self._commit_success(counter_key, snapshot_count=snapshot_count)
+            if tool_failures:
+                # 部分工具失败仍按"至少写入过内容"清账：档案是增量 append 语义，
+                # 重跑同一批消息可能重复写入事实。但必须留下可排查的告警，
+                # 否则"模型没处理完就被销账"是完全静默的。
+                self._logger.warning(
+                    "档案自动总结存在工具失败，已按部分成功清账",
+                    conversation_kind=conversation_kind,
+                    conversation_id=conversation_id,
+                    message_count=len(messages),
+                    tool_failures=tool_failures,
+                    tool_calls_succeeded=tool_successes,
+                )
             self._logger.info(
                 "档案已更新",
                 conversation_kind=conversation_kind,
@@ -531,25 +571,47 @@ class ArchiveMemoryAutoSummaryService:
             RETRY_BACKOFF_BASE_SECONDS * (2**doublings), RETRY_BACKOFF_MAX_SECONDS
         )
 
+    async def _commit_success(self, counter_key: str, *, snapshot_count: int) -> None:
+        """总结成功后清账：只移除已总结的消息，保留总结期间新到的消息。
+
+        计数器读路径带 30 秒缓存，这里必须回库读最新状态。用 count 差值而不是
+        消息下标计算新到条数：总结期间消息会因 interval 截断把最早的挤掉，
+        下标会错位；count 每条消息恰好 +1，差值就是新到条数（截断只影响队列）。
+        """
+        async with self._counter_lock(counter_key):
+            state = await self._load_counter(counter_key)
+            messages = list(state.get("messages", []))
+            count = int(state.get("count", 0) or 0)
+            arrivals = max(0, count - int(snapshot_count))
+            kept = messages[-arrivals:] if arrivals else []
+            # count 语义 = 缓冲中尚未总结的消息条数：下一次攒满 interval 才总结，
+            # 总量与旧行为一致，但不再丢掉总结期间到的那几条。
+            await self._save_counter(
+                counter_key, {"count": len(kept), "messages": kept}
+            )
+
     async def _defer_after_failure(self, counter_key: str) -> int:
         """总结失败后保留待总结消息,并写入指数退避冷却。
 
         没有冷却时，计数器一旦越过阈值且总结持续失败，每条新消息都会重跑
         一整轮工具调用循环，把「失败重试」放大成按消息计费的 token 风暴。
+        整个读-改-写必须在计数器锁内完成：否则会把总结期间新到消息的追加
+        用旧快照覆盖掉（失败路径只允许合并冷却字段，不得改写 count/messages）。
         """
         try:
-            state = await self._load_counter(counter_key)
-            failures = int(state.get("failures", 0) or 0) + 1
-            await self._save_counter(
-                counter_key,
-                self._counter_state(
-                    count=int(state.get("count", 0) or 0),
-                    messages=list(state.get("messages", [])),
-                    failures=failures,
-                    retry_after=epoch_seconds() + self._backoff_seconds(failures),
-                ),
-            )
-            return failures
+            async with self._counter_lock(counter_key):
+                state = await self._load_counter(counter_key)
+                failures = int(state.get("failures", 0) or 0) + 1
+                await self._save_counter(
+                    counter_key,
+                    self._counter_state(
+                        count=int(state.get("count", 0) or 0),
+                        messages=list(state.get("messages", [])),
+                        failures=failures,
+                        retry_after=epoch_seconds() + self._backoff_seconds(failures),
+                    ),
+                )
+                return failures
         except Exception:
             return 0
 
@@ -595,20 +657,23 @@ class ArchiveMemoryAutoSummaryService:
 
                 counter_key = item.key
                 async with semaphore:
+                    # 只在锁内读最新状态并判断条件；总结本身不持锁——
+                    # 持锁跑模型会让总结期间每条消息都卡在这把锁上。
                     async with self._counter_lock(counter_key):
                         current = await self._load_counter(counter_key)
                         current_count = int(current.get("count", 0))
                         if current_count <= 0 or current_count >= interval:
                             return False
-                        current_messages = current.get("messages", [])
+                        current_messages = list(current.get("messages", []))
                         if not current_messages:
                             return False
-                        return await self._summarize_and_reset(
-                            conversation_kind=conversation_kind,
-                            conversation_id=conversation_id,
-                            counter_key=counter_key,
-                            messages=current_messages,
-                        )
+                    return await self._summarize_and_reset(
+                        conversation_kind=conversation_kind,
+                        conversation_id=conversation_id,
+                        counter_key=counter_key,
+                        messages=current_messages,
+                        snapshot_count=current_count,
+                    )
             except Exception as exc:
                 self._logger.warning(
                     "档案自动总结刷新：处理计数器失败",

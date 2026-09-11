@@ -1028,3 +1028,111 @@ async def test_timed_out_model_call_is_logged_with_request_size():
     assert state["retry_after"] > epoch_seconds()
 
 
+# ── 成功清账不得丢掉总结期间新到的消息 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_messages_arriving_during_summary_survive_success():
+    """总结成功只销账已总结的消息：总结期间新到的消息必须留到下一轮。"""
+
+    class _ReentrantProvider:
+        async def chat(self, messages, tools=None):
+            # 模拟总结进行中用户继续发言：走同一条 record_message 路径
+            await service.record_message(
+                conversation_kind="group",
+                conversation_id="1200",
+                message_text="并发消息",
+            )
+            return {"role": "assistant", "content": "ok", "tool_calls": None}
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    service = _make_service(archive=archive, provider=_ReentrantProvider(), group_interval=3)
+
+    for index in range(3):
+        await service.record_message(
+            conversation_kind="group", conversation_id="1200", message_text=f"消息{index}"
+        )
+
+    state = json.loads(archive.raw("memory_counter", "group:1200")["value"])
+    assert state["count"] == 1, "count 应等于缓冲中未总结的消息条数"
+    assert [message["text"] for message in state["messages"]] == ["并发消息"]
+
+
+@pytest.mark.asyncio
+async def test_failure_merge_holds_lock_and_keeps_concurrent_appends():
+    """失败写回必须持锁：总结期间到达的消息不能被旧快照覆盖。"""
+
+    class _PausingArchive(_FakeArchive):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_started = asyncio.Event()
+            self.resume_write = asyncio.Event()
+
+        async def set(self, table_name, key, value, tags):
+            data = json.loads(value)
+            if data.get("failures"):
+                self.write_started.set()
+                await self.resume_write.wait()
+            return await super().set(table_name, key, value, tags)
+
+    archive = _PausingArchive()
+    provider = _FakeProvider(fail=True)
+    service = _make_service(archive=archive, provider=provider, group_interval=1)
+
+    first = asyncio.create_task(
+        service.record_message(
+            conversation_kind="group", conversation_id="1300", message_text="一"
+        )
+    )
+    await asyncio.wait_for(archive.write_started.wait(), timeout=2.0)
+
+    second = asyncio.create_task(
+        service.record_message(
+            conversation_kind="group", conversation_id="1300", message_text="二"
+        )
+    )
+    await asyncio.sleep(0)
+    assert not second.done(), "追加必须等失败写回释放计数器锁"
+
+    archive.resume_write.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
+
+    state = json.loads(archive.raw("memory_counter", "group:1300")["value"])
+    assert state["count"] == 2
+    assert [message["text"] for message in state["messages"]] == ["二"]
+
+
+@pytest.mark.asyncio
+async def test_partial_tool_failure_clear_is_logged():
+    """部分工具失败仍按成功清账时必须告警，不能静默丢内容。"""
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    logger = Mock(spec=NullLogger)
+    calls = {"n": 0}
+
+    async def executor(name, args):
+        calls["n"] += 1
+        return '{"ok": true}' if calls["n"] > 1 else "未知工具: archive_crud__save"
+
+    service = _make_service_with_loop_config(
+        archive=archive,
+        provider=provider,
+        executor=executor,
+        group_interval=1,
+        max_tool_rounds=2,
+    )
+    service._logger = logger
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="1400", message_text="一"
+    )
+
+    state = json.loads(archive.raw("memory_counter", "group:1400")["value"])
+    assert state == {"count": 0, "messages": []}
+    warnings = [call.args[0] for call in logger.warning.call_args_list]
+    assert "档案自动总结存在工具失败，已按部分成功清账" in warnings
+
+

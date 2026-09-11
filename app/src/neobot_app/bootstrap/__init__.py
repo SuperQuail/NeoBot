@@ -923,6 +923,14 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     ),
     )
 
+    # 插件运行时是核心对象：软重启会重建 agent/skill 注册表与截图端口，必须显式
+    # 绑定新代际，否则插件注册会落在上一代对象上（插件 Agent/Skill 静默消失）。
+    plugin_runtime.bind_generation(
+        agent_registry=agent_registry,
+        skills_registry=markdown_skill_registry,
+        screenshots=browser["screenshots"],
+    )
+
     # ── 图片解析 / 记忆摘要 / TTS / 余额检查 ──
     image_parse_service = build_image_parse_service(
         vision_provider=vision_provider,

@@ -113,6 +113,8 @@ export interface Plugin {
   description?: string;
   author?: string;
   error?: string;
+  /** 配置校验告警：非空表示已存值非法、运行时已回落默认值 */
+  config_error?: string | null;
   repo?: string;
   homepage?: string;
   tags?: string[];

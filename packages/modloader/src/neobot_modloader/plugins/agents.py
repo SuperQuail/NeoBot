@@ -14,10 +14,12 @@ class PluginAgentRegistrar:
         self,
         *,
         plugin_name: str,
-        registry: Any | None,
-        record_registration: Any | None,
+        registry: Any | None = None,
+        registry_provider: Any | None = None,
+        record_registration: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
+        self._registry_provider = registry_provider
         self._registry = registry
         self._record_registration = record_registration
         self._registered: dict[str, Any] = {}
@@ -27,8 +29,18 @@ class PluginAgentRegistrar:
     def names(self) -> list[str]:
         return list(self._registered)
 
+    def _current_registry(self) -> Any | None:
+        if self._registry_provider is not None:
+            current = self._registry_provider()
+            if current is not None:
+                self._registry = current
+                return current
+            return None
+        return self._registry
+
     def register(self, name: str, agent: Any) -> str:
-        if self._registry is None:
+        registry = self._current_registry()
+        if registry is None:
             raise RuntimeError("Agent registry is not available")
         local_name = validate_agent_name(name)
         self._validate_agent(agent)
@@ -36,16 +48,31 @@ class PluginAgentRegistrar:
         if registered_name in self._registered:
             raise ValueError(f"插件 Agent 已注册: {registered_name}")
         # 兼容属性与方法的两种 names 写法（真实 AgentRegistry 是属性，鸭子类型注册表可能是方法）
-        registry_names = getattr(self._registry, "names", None)
+        registry_names = getattr(registry, "names", None)
         if callable(registry_names):
             registry_names = registry_names()
         if registered_name in (registry_names or []):
             raise ValueError(f"Agent 已注册: {registered_name}")
-        self._registry.register(registered_name, agent)
+        registry.register(registered_name, agent)
         self._registered[registered_name] = agent
         if self._record_registration is not None:
             self._record_registration(registered_name, agent)
         return registered_name
+
+    def rebind(self, previous: Any, current: Any) -> None:
+        """代际切换：把插件 Agent 注册迁入新注册表。
+
+        刻意不调用旧注册表的 unregister：AgentRegistry.unregister 会启动排空并
+        最终 close 实例，而这些插件 Agent 要在新代际继续服役。旧注册表随代际被
+        丢弃，运行时保证不再 close 已退役的代际。
+        """
+        if current is None or current is previous:
+            return
+        self._registry = current
+        for registered_name, agent in list(self._registered.items()):
+            register = getattr(current, "register", None)
+            if callable(register):
+                register(registered_name, agent)
 
     def unregister(self, registered_name: str) -> Any | None:
         agent = self._registered.get(registered_name)

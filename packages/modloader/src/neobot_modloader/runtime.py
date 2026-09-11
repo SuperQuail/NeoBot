@@ -14,6 +14,7 @@ from neobot_contracts.ports.plugin import PluginState
 from neobot_contracts.ports.screenshot import ScreenshotPort
 
 from neobot_modloader.config_store import PluginConfigStore
+from neobot_modloader.config_validation import validate_plugin_config
 from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.hooks import PluginHookBus
@@ -26,6 +27,7 @@ from neobot_modloader.loading.manifest import (
     read_python_dependencies,
 )
 from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
+from neobot_modloader.generation import UNSET, RuntimeGeneration
 from neobot_modloader.loader import (
     DiscoveredPlugin,
     FilesystemPluginLoader,
@@ -97,11 +99,17 @@ class PluginRuntime:
         self.installer = installer
         self.adapter = adapter
         self.logger_factory = logger_factory
-        self.agent_registry = agent_registry
-        self.skills_registry = skills_registry
+        #: 生成时代际绑定：软重启时由组合根调用 bind_generation 整体替换，
+        #: 插件侧通过 property/解析器读取当前值，避免构造期捕获上一代对象。
+        self._generation = RuntimeGeneration(
+            agent_registry=agent_registry,
+            skills_registry=skills_registry,
+            screenshots=screenshots,
+        )
+        #: 插件配置校验告警（插件名 -> 文本），随 snapshot/面板暴露。
+        self._config_errors: dict[str, str] = {}
         self._file_server = file_server
         self._media_sender = media_sender
-        self.screenshots = screenshots
         self._app_commands = app_commands
         self.record_ai_reply_block = record_ai_reply_block
         self.output = output or NullOutput()
@@ -155,6 +163,61 @@ class PluginRuntime:
     @property
     def state_store(self) -> PluginStateStore | None:
         return self._state_store
+
+    @property
+    def generation(self) -> RuntimeGeneration:
+        """当前代际绑定。"""
+        return self._generation
+
+    @property
+    def agent_registry(self) -> Any | None:
+        return self._generation.agent_registry
+
+    @property
+    def skills_registry(self) -> Any | None:
+        return self._generation.skills_registry
+
+    @property
+    def screenshots(self) -> ScreenshotPort | None:
+        return self._generation.screenshots
+
+    def _current_generation(self) -> RuntimeGeneration:
+        return self._generation
+
+    def bind_generation(
+        self,
+        *,
+        agent_registry: Any = UNSET,
+        skills_registry: Any = UNSET,
+        screenshots: Any = UNSET,
+    ) -> RuntimeGeneration:
+        """绑定新的运行时代际，并把插件注册的资源迁到新对象上。
+
+        组合根在每次软重启重建 bot 侧对象后调用；同一对象重复调用是幂等的。
+        迁移只覆盖插件注册进运行时的资源（Agent / Markdown Skill），读时解析的
+        依赖（截图端口）自动跟随。
+        """
+        previous = self._generation
+        current = previous.merged(
+            agent_registry=agent_registry,
+            skills_registry=skills_registry,
+            screenshots=screenshots,
+        )
+        if not current.differs_from(previous):
+            return previous
+        self._generation = current
+        for name in self.manager.names():
+            record = self.manager.get_record(name)
+            context = getattr(record, "context", None)
+            notify = getattr(context, "on_generation_change", None)
+            if not callable(notify):
+                continue
+            try:
+                notify(previous, current)
+            except Exception as exc:
+                self.logger.warning(f"插件代际重绑失败 ({name}): {exc}")
+        self.logger.info("插件运行时已绑定新的运行时代际")
+        return current
 
     def scan_dirs(self) -> list[tuple[Path, FilesystemPluginLoader]]:
         """按优先级返回 (目录, 加载器)：官方插件目录在前，第三方插件目录在后。"""
@@ -1007,6 +1070,7 @@ class PluginRuntime:
                         kind=self._kind_for_path(path),
                         error=_error_text(result.error),
                         source=self._source_for_path(path),
+                        config_error=self._config_errors.get(result.name),
                     )
                 )
                 seen_names.add(result.name)
@@ -1044,6 +1108,7 @@ class PluginRuntime:
                     config_hot_reload=(
                         loaded_flags[1] if loaded_flags else result.config_hot_reload
                     ),
+                    config_error=self._config_errors.get(result.name),
                 )
             )
             seen_names.add(result.name)
@@ -1075,6 +1140,7 @@ class PluginRuntime:
                     source=self._loaded_sources.get(name, THIRD_PARTY_SOURCE),
                     hot_reload=bool(getattr(plugin, "hot_reload", True)),
                     config_hot_reload=bool(getattr(plugin, "config_hot_reload", True)),
+                    config_error=self._config_errors.get(name),
                 )
             )
 
@@ -1424,6 +1490,7 @@ class PluginRuntime:
         if self._loaded_paths.get(name) == path or self.manager.get_record(name) is None:
             self._loaded_paths.pop(name, None)
             self._loaded_sources.pop(name, None)
+            self._config_errors.pop(name, None)
         self._prune_operation_state(name, path)
         self._prune_operation_lock(name)
 
@@ -1627,9 +1694,17 @@ class PluginRuntime:
         return store.defaults if store is not None else {}
 
     def plugin_config_values(self, name: str) -> dict[str, Any]:
-        """插件当前生效的配置（打包默认值 + 插件数据目录里保存的值）。"""
+        """插件当前生效的原始配置（打包默认值 + 插件数据目录里保存的值）。
+
+        返回磁盘上的原始合并值；校验/回落后的值只注入插件上下文，告警见
+        plugin_config_error。
+        """
         store = self.plugin_config_store(name)
         return store.read() if store is not None else {}
+
+    def plugin_config_error(self, name: str) -> str | None:
+        """插件配置校验告警：非空表示部分已存值非法、运行时已回落默认值。"""
+        return self._config_errors.get(name)
 
     def _manifest_config(self, name: str) -> dict[str, Any]:
         """plugin.toml 的 [config]：插件打包默认值（插件未加载时回落到磁盘读取）。"""
@@ -1676,11 +1751,27 @@ class PluginRuntime:
                 loaded.name, {str(key): value for key, value in (loaded.config or {}).items()}
             )
             store = self.plugin_config_store(loaded.name)
+            merged_config = (
+                store.read() if store is not None else dict(loaded.config or {})
+            )
+            stored_config = store.read_stored() if store is not None else {}
+            config, config_error = validate_plugin_config(
+                getattr(loaded.plugin, "config_model", None),
+                merged_config,
+                stored_config,
+            )
+            if config_error:
+                self._config_errors[loaded.name] = config_error
+                self.logger.warning(
+                    f"插件配置校验失败，已回落默认值 ({loaded.name}): {config_error}"
+                )
+            else:
+                self._config_errors.pop(loaded.name, None)
             context = RuntimePluginContext(
                 plugin_name=loaded.name,
                 plugin_dir=loaded.plugin_dir,
                 data_dir=plugin_data_dir,
-                config=store.read() if store is not None else dict(loaded.config or {}),
+                config=config,
                 logger=logger,
                 adapter=self.adapter,
                 hook_bus=self.hook_bus,
@@ -1702,6 +1793,7 @@ class PluginRuntime:
                 app_commands=self._app_commands,
                 plugin_control=self.control,
                 source=loaded.source,
+                generation_provider=self._current_generation,
             )
             self.manager.register(loaded.plugin, context)
             self._loaded_modules[loaded.name] = loaded.module_names

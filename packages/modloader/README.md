@@ -380,6 +380,12 @@ default_city = "Shanghai"
 读取时以 `[config]` 的打包默认值打底、插件数据目录里已保存的值覆盖，
 插件收到的 `ctx.config` 就是合并后的结果，插件更新不会覆盖用户配置。
 
+宿主在注入 `ctx.config` 前会用 `Plugin(config=...)` 声明的模型做一次校验：
+越界的已存值回落到打包默认值（打包默认值也非法时回落模型默认值），
+插件因此不会在 `on_load` 里因旧配置直接进入 ERROR（面板这类插件失败会断掉恢复入口）。
+回落会记 WARNING，并通过 `PluginSnapshot.config_error` / 面板插件配置页展示；
+磁盘上的原始值不变，`plugin_config_values()` 仍返回用户写入的原文。
+
 **是否启用不是配置项**：启停状态保存在数据目录的 `plugin_state.json`
 （`PluginStateStore`），与 `plugin.toml` 的顶层 `enabled` 默认值解耦：
 
@@ -679,6 +685,7 @@ from neobot_modloader import (
     PluginSnapshot,
     PythonDependencyInstaller,
     Reply,
+    RuntimeGeneration,
     RuntimePluginContext,
     UserDirectory,
     UserProfile,

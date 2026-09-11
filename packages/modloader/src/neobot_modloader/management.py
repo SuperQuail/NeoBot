@@ -41,6 +41,8 @@ class PluginSnapshot:
     hot_reload: bool = True
     #: 插件配置改动是否支持不重启进程生效
     config_hot_reload: bool = True
+    #: 插件配置校验告警：非空表示部分已存值非法、已回落默认值运行
+    config_error: str | None = None
 
     @property
     def official(self) -> bool:

@@ -5,15 +5,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import case, delete as sql_delete, func, or_, select
+from sqlalchemy import case, delete as sql_delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_contracts.models.memory import CreatorImageRecord
 from neobot_contracts.time_context import now_utc, to_utc
 from neobot_contracts.ports.creator_image_access import CreatorImageAccess
 
-from neobot_storage.models import CreatorImageData
+from neobot_storage.models import CreatorImageData, CreatorImageSequenceData
+
+#: 图库编号的序列键（只有 source=gallery 的记录参与编号）
+GALLERY_SEQUENCE_NAME = "gallery"
 
 
 class SqlAlchemyCreatorImageAccess:
@@ -172,11 +176,76 @@ class SqlAlchemyCreatorImageAccess:
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
-    async def next_gallery_no(self) -> int:
-        """下一个可用的图库编号：现有编号最大值 + 1（已删除的编号不回收）。"""
-        result = await self._session.execute(select(func.max(CreatorImageData.gallery_no)))
-        current = result.scalar_one_or_none()
-        return int(current or 0) + 1
+    async def allocate_gallery_no(self) -> int:
+        """分配下一个图库编号：持久化高水位 + 1。
+
+        - 删除不回收：已分配过的编号永不再次发出，历史引用不会指到新图片；
+        - 并发安全：单条 UPDATE ... RETURNING / UPDATE + SELECT 原子自增，
+          不再出现"两个事务读到同一个 MAX 后撞唯一索引"；
+        - 必须与 set() 在同一个 UnitOfWork 事务内调用：事务回滚会浪费一个号
+          （允许空洞），但不会发出重号。
+
+        （SQLite < 3.35 不支持 RETURNING 时退回同事务内的 UPDATE + SELECT，
+        UPDATE 已持有写锁，读到的是本事务刚写入的值。）
+        """
+        await self._ensure_gallery_sequence()
+        statement = (
+            update(CreatorImageSequenceData)
+            .where(CreatorImageSequenceData.name == GALLERY_SEQUENCE_NAME)
+            .values(last_no=CreatorImageSequenceData.last_no + 1)
+        )
+        if self._dialect_name() == "sqlite" and not self._sqlite_supports_returning():
+            await self._session.execute(statement)
+            result = await self._session.execute(
+                select(CreatorImageSequenceData.last_no).where(
+                    CreatorImageSequenceData.name == GALLERY_SEQUENCE_NAME
+                )
+            )
+            return int(result.scalar_one())
+        result = await self._session.execute(
+            statement.returning(CreatorImageSequenceData.last_no)
+        )
+        return int(result.scalar_one())
+
+    async def _ensure_gallery_sequence(self) -> None:
+        """保证序列行存在；缺失时以现有最大编号为高水位回填。
+
+        生产路径由迁移 0024 建立并回填；这里同时兼容直接用 metadata.create_all
+        建库的测试/全新库。并发首次调用由 ON CONFLICT DO NOTHING / savepoint
+        兜底，不会写出两条序列行。
+        """
+        seed = select(func.coalesce(func.max(CreatorImageData.gallery_no), 0)).scalar_subquery()
+        if self._dialect_name() == "sqlite":
+            statement = (
+                sqlite_insert(CreatorImageSequenceData)
+                .values(name=GALLERY_SEQUENCE_NAME, last_no=seed)
+                .on_conflict_do_nothing(index_elements=["name"])
+            )
+            await self._session.execute(statement)
+            return
+        if await self._session.get(CreatorImageSequenceData, GALLERY_SEQUENCE_NAME) is not None:
+            return
+        current = await self._session.execute(
+            select(func.coalesce(func.max(CreatorImageData.gallery_no), 0))
+        )
+        row = CreatorImageSequenceData(
+            name=GALLERY_SEQUENCE_NAME, last_no=int(current.scalar_one())
+        )
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+        except IntegrityError:
+            # 并发首次分配：另一事务已建行，使用它的高水位
+            pass
+
+    def _dialect_name(self) -> str:
+        bind = self._session.bind
+        return bind.dialect.name if bind is not None else ""
+
+    def _sqlite_supports_returning(self) -> bool:
+        bind = self._session.bind
+        version = getattr(bind.dialect, "server_version_info", None) if bind is not None else None
+        return bool(version and version >= (3, 35))
 
     async def list(
         self,

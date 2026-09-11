@@ -578,6 +578,8 @@ class DashboardApi:
             "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
             "hot_reloadable": bool(getattr(snapshot, "hot_reloadable", True)),
             "config_path": str(self._plugin_config_path(snapshot.name) or ""),
+            # 配置校验告警：非空表示已存值非法、运行时已回落默认值
+            "config_error": getattr(snapshot, "config_error", None),
         }
 
     async def plugins(self, request: web.Request) -> web.Response:
@@ -659,6 +661,7 @@ class DashboardApi:
                 "config_hot_reload": bool(
                     getattr(snapshot, "config_hot_reload", True)
                 ),
+                "config_error": getattr(snapshot, "config_error", None),
                 "message": "插件配置保存在插件数据目录，与插件代码和启停状态分离",
             }
         )

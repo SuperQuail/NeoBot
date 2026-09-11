@@ -1329,8 +1329,8 @@ class CreatorImageService:
             explicit_description=description,
         )
         async with self._uow_factory() as uow:
-            # 图库编号只在这里分配一次（现有最大值 +1），仓库层不会覆盖已有编号
-            gallery_no = await self._allocate_gallery_no(uow, source)
+            # 图库编号只在这里分配一次（持久化高水位 +1），仓库层不会覆盖已有编号
+            gallery_no = await self._allocate_gallery_no(uow, source, image_id)
             record = await uow.creator_images.set(
                 image_id,
                 source=source,
@@ -1454,7 +1454,7 @@ class CreatorImageService:
                     original_height=prepared.original_height,
                     image_source="部署者提供",
                     # 手动放进图库目录的图片同样要有固定编号
-                    gallery_no=await self._allocate_gallery_no(uow, disk_source),
+                    gallery_no=await self._allocate_gallery_no(uow, disk_source, image_id),
                 )
             await uow.commit()
 
@@ -1513,11 +1513,18 @@ class CreatorImageService:
             return await uow.creator_images.get(normalized)
 
     @staticmethod
-    async def _allocate_gallery_no(uow: Any, source: str) -> int | None:
-        """图库记录入库时分配固定编号；暂存区等其它来源不参与编号。"""
+    async def _allocate_gallery_no(uow: Any, source: str, image_id: str) -> int | None:
+        """图库记录入库时分配固定编号；暂存区等其它来源不参与编号。
+
+        高水位编号是消耗品：只为新记录或历史缺号记录分配，更新已有编号的记录
+        直接复用旧号，否则每次改描述都会打出空洞（编号只增不复用，空洞不可回填）。
+        """
         if source != GALLERY_SOURCE:
             return None
-        return await uow.creator_images.next_gallery_no()
+        existing = await uow.creator_images.get(image_id)
+        if existing is not None and existing.gallery_no is not None:
+            return None
+        return await uow.creator_images.allocate_gallery_no()
 
     async def _ensure_gallery_capacity(self) -> None:
         async with self._uow_factory() as uow:

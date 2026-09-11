@@ -165,6 +165,21 @@ class CreatorImageData(Base):
     )
 
 
+class CreatorImageSequenceData(Base):
+    """编号序列高水位：编号一旦分配就永远不再回收（删除也不复用）。
+
+    creator_images.gallery_no 是唯一编号，但 MAX(gallery_no)+1 在删除最大号后
+    会复用旧号，让历史引用（聊天记录/Agent 记忆里的"编号 N"）指向另一张图。
+    这里把"已发到几号"独立落库，分配走单条原子 UPDATE ... RETURNING，既保证
+    不复用，也消除并发读到同一个 MAX 后撞唯一索引的窗口。
+    """
+
+    __tablename__ = "creator_image_sequences"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    last_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class ScheduledTaskData(Base):
     __tablename__ = "scheduled_tasks"
 

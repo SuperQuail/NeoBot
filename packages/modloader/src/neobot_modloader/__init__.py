@@ -17,6 +17,7 @@ from neobot_modloader.config_store import (
     merge_plugin_config,
 )
 from neobot_modloader.dependencies import PythonDependencyInstaller
+from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import DefaultServiceRegistry, PluginHostFacade
 from neobot_modloader.installer import (
@@ -99,6 +100,7 @@ __all__ = [
     "PluginSnapshot",
     "PythonDependencyInstaller",
     "Reply",
+    "RuntimeGeneration",
     "RuntimePluginContext",
     "UserDirectory",
     "UserProfile",
