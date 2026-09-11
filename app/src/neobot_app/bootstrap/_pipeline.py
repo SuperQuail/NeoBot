@@ -161,10 +161,13 @@ def register_config_reload_command(
             payload["hot_reload"] = reload_report
         return payload
 
+    # override=True：软重启会重新装配 bot 侧组件，处理器必须换成新对象上的闭包
+    # （旧闭包持有已释放的技能注册表等），否则配置重载会打到死对象上。
     host_facade.commands.register(
         "config.reload",
         "重新加载配置文件并通知所有已订阅 lifecycle 的插件",
         _reload_config,
+        override=True,
     )
 
 

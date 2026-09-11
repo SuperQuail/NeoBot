@@ -145,7 +145,8 @@ class _FakeCommands:
     def __init__(self) -> None:
         self.handlers: dict[str, Any] = {}
 
-    def register(self, name: str, description: str, handler) -> None:
+    def register(self, name: str, description: str, handler, **kwargs) -> None:
+        # **kwargs：真实注册表支持 override=True（软重启会替换 config.reload 处理器）
         self.handlers[name] = handler
 
 
