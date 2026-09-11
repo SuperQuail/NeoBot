@@ -8,6 +8,14 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.plugin import PluginState
+from neobot_modloader.dependency import (
+    PluginDependencyError,
+    parse_dependencies,
+    version_satisfies,
+)
+
+#: 前置插件处于这些状态才允许被依赖方调用
+_READY_STATES = frozenset({PluginState.LOADED, PluginState.RUNNING})
 
 
 class ReentrantLock:
@@ -101,8 +109,37 @@ class PluginHandle:
         return self._manager.get_state(self._name)
 
     @property
+    def dependencies(self) -> tuple[str, ...]:
+        """本插件声明的依赖（原始声明文本，可能带版本约束）。"""
+        return tuple(str(item) for item in (getattr(self._record().plugin, "dependencies", ()) or ()))
+
+    @property
+    def ready(self) -> bool:
+        """前置插件是否处于可调用状态（已加载或运行中）。"""
+        return self._record().state in _READY_STATES
+
+    @property
     def capabilities(self) -> tuple[str, ...]:
         return tuple(_capability_names(self._record().plugin))
+
+    def satisfies(self, specifier: str = "") -> bool | None:
+        """本插件版本是否满足约束串（None 表示无法比较）。"""
+        if not specifier:
+            return True
+        return version_satisfies(self.version, specifier)
+
+    def require(self, specifier: str = "") -> "PluginHandle":
+        """校验本插件已就绪且版本满足约束，否则抛 PluginDependencyError。"""
+        if not self.ready:
+            raise PluginDependencyError(
+                f"前置插件未就绪: {self._name}（当前状态: {self.state.value}）"
+            )
+        verdict = self.satisfies(specifier)
+        if verdict is False:
+            raise PluginDependencyError(
+                f"前置插件版本不满足: 需要 {self._name}{specifier}，当前 {self.version}"
+            )
+        return self
 
     async def call(
         self, capability: str, payload: Mapping[str, Any] | None = None
@@ -161,6 +198,69 @@ class PluginRegistryView:
 
     def list(self) -> list[PluginHandle]:
         return [PluginHandle(self._manager, name) for name in self.names()]
+
+    def require(self, name: str, specifier: str = "") -> PluginHandle:
+        """取得前置插件句柄并校验就绪状态与版本。
+
+        插件里调用前置插件的功能一律走这里::
+
+            handle = ctx.plugins.require("dashboard", ">=1.0.0")
+            await handle.call("web.register_extension", {"extension": ext})
+
+        前置插件不存在 / 未就绪 / 版本不满足都会抛出 PluginDependencyError，
+        错误文本可直接展示给用户。
+        """
+        if not self.has(name):
+            raise PluginDependencyError(f"前置插件未加载: {name}")
+        return PluginHandle(self._manager, name).require(specifier)
+
+    def optional(self, name: str) -> PluginHandle | None:
+        """取得可选的前置插件句柄；不存在或未就绪时返回 None。"""
+        if not self.has(name):
+            return None
+        handle = PluginHandle(self._manager, name)
+        return handle if handle.ready else None
+
+    def dependents_of(self, name: str, *, transitive: bool = False) -> list[str]:
+        """返回依赖指定插件的插件名（transitive=True 时递归整条依赖链）。"""
+        direct: list[str] = []
+        for candidate in self.names():
+            if candidate == name:
+                continue
+            if name in _declared_dependency_names(self._manager, candidate):
+                direct.append(candidate)
+        if not transitive:
+            return direct
+        collected: list[str] = []
+        pending = list(direct)
+        while pending:
+            current = pending.pop()
+            if current in collected:
+                continue
+            collected.append(current)
+            pending.extend(self.dependents_of(current))
+        return collected
+
+    def dependency_issues(self, name: str) -> list[str]:
+        """指定插件当前未满足的依赖（缺失 / 未就绪 / 版本不符）。"""
+        issues: list[str] = []
+        if not self.has(name):
+            return [f"插件未加载: {name}"]
+        for dependency in _declared_dependencies(self._manager, name):
+            handle = self.get(dependency.name)
+            if handle is None:
+                issues.append(f"缺少前置插件: {dependency.describe()}")
+                continue
+            if not handle.ready:
+                issues.append(
+                    f"前置插件未就绪: {dependency.describe()}（{handle.state.value}）"
+                )
+                continue
+            if dependency.matches(handle.version) is False:
+                issues.append(
+                    f"前置插件版本不满足: {dependency.describe()}，当前 {handle.version}"
+                )
+        return issues
 
 
 class DefaultPluginManager:
@@ -712,6 +812,24 @@ def _remove_last_identity(items: list[Any], target: Any) -> None:
         if items[index] is target:
             items.pop(index)
             return
+
+
+def _declared_dependencies(
+    manager: DefaultPluginManager, name: str
+) -> list[Any]:
+    """解析某个插件声明的依赖；声明非法时按「无依赖」处理（不阻塞依赖链计算）。"""
+    record = manager.get_record(name)
+    if record is None:
+        return []
+    raw = getattr(record.plugin, "dependencies", ()) or ()
+    try:
+        return list(parse_dependencies(raw))
+    except (TypeError, ValueError):
+        return []
+
+
+def _declared_dependency_names(manager: DefaultPluginManager, name: str) -> set[str]:
+    return {dependency.name for dependency in _declared_dependencies(manager, name)}
 
 
 def _capability_names(plugin: Any) -> list[str]:

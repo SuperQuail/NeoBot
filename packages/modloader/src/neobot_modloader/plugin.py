@@ -22,6 +22,7 @@ from neobot_modloader.plugins.registration import (
     ToolRegistration,
     looks_like_context,
     validate_agent_name,
+    validate_capability_name,
     validate_parse_error,
     validate_plugin_name,
     validate_tool_name,
@@ -70,6 +71,8 @@ class Plugin:
         self._shutdown_handlers: list[Handler] = []
         self._agent_registrations: list[AgentRegistration] = []
         self._tool_registrations: list[ToolRegistration] = []
+        #: 对外暴露的能力：名字 -> 处理器（依赖方通过插件句柄调用）
+        self._capabilities: dict[str, Handler] = {}
         self._databases: dict[str, PluginDatabase] = {}
         self._context: Any | None = None
         self._config: BaseModel | None = None
@@ -303,6 +306,33 @@ class Plugin:
             return handler
 
         return decorate
+
+    def capability(self, name: str) -> Callable[[Handler], Handler]:
+        """注册一个供其他插件调用的能力。
+
+        依赖方写法::
+
+            handle = ctx.plugins.require("dashboard", ">=1.0.0")
+            await handle.call("web.register_extension", {"extension": ext})
+
+        处理器接收一个 payload 字典（无 payload 时为空字典），返回值原样回传；
+        同步与异步处理器都支持。能力名只在插件内部唯一，全局通过
+        {插件名} + 能力名定位。
+        """
+        local_name = validate_capability_name(name)
+
+        def decorate(handler: Handler) -> Handler:
+            if local_name in self._capabilities:
+                raise ValueError(f"插件 {self.name} 已注册同名能力: {local_name}")
+            self._capabilities[local_name] = handler
+            return handler
+
+        return decorate
+
+    @property
+    def capabilities(self) -> Mapping[str, Handler]:
+        """本插件对外暴露的能力（只读副本）。"""
+        return dict(self._capabilities)
 
     def on_load(self, value: Any) -> Any:
         """Register a load hook, or load the plugin when passed a context.

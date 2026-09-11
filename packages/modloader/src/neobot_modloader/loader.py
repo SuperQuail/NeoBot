@@ -20,6 +20,7 @@ from neobot_modloader.loading.manifest import (
 from neobot_modloader.loading.models import (
     OFFICIAL_SOURCE,
     THIRD_PARTY_SOURCE,
+    DisabledPlugin,
     DiscoveredPlugin,
     LoadedPlugin,
     PluginDiscoveryResult,
@@ -98,9 +99,17 @@ class FilesystemPluginLoader:
             if result is not None:
                 results.append(result)
         ordered = order_results(results)
-        retained = {id(result) for result in ordered if isinstance(result, LoadedPlugin)}
+        # 被自动禁用的插件同样要清掉刚导入的模块代：它不会注册，留着会污染 sys.modules
+        retained = {
+            result.name for result in ordered if isinstance(result, LoadedPlugin)
+        }
+        dropped = {
+            result.name for result in ordered if isinstance(result, DisabledPlugin)
+        }
         for result in results:
-            if isinstance(result, LoadedPlugin) and id(result) not in retained:
+            if isinstance(result, LoadedPlugin) and (
+                result.name not in retained or result.name in dropped
+            ):
                 self.clear_module_cache(result.module_names)
         return ordered
 

@@ -123,6 +123,7 @@ cov.xml
 
 # Node / 前端构建
 node_modules/
+.pnpm-store/
 
 # 临时提交信息
 .commit-msg-*.tmp

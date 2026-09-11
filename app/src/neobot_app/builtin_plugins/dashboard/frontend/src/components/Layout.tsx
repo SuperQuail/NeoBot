@@ -1,6 +1,9 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useLayoutEffect, useRef } from 'react';
-import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code } from 'lucide-react';
+import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code, Rocket } from 'lucide-react';
+import { useQuery } from '../data/useQuery';
+import { QK, POLL } from '../data/queryKeys';
+import { api } from '../api/endpoints';
 import { ToastHost } from './Toast';
 import SidebarTooltip from './SidebarTooltip';
 import StandbyBanner from './StandbyBanner';
@@ -38,7 +41,35 @@ const SIDEBAR_GLYPHS: Record<string, typeof Home> = {
   code: Code,
   bot: Bot,
   log: ScrollText,
+  game: Rocket,
 };
+
+/** 面板 HTTP 扩展（例如官方星舰游戏插件）的侧栏入口；扩展不存在时不渲染任何东西 */
+function ExtensionNav() {
+  const query = useQuery(QK.extensions, () => api.extensions(), { interval: POLL.power });
+  const entries = (query.data?.items || []).filter((item) => item?.panel?.path && item?.panel?.title);
+  if (entries.length === 0) return null;
+  return (
+    <>
+      {entries.map((item) => {
+        const panel = item.panel!;
+        const title = panel.title || item.name || '扩展页面';
+        return (
+          <a
+            key={item.name || title}
+            className="nav-item"
+            href={panel.path}
+            data-tooltip={title}
+            aria-label={title}
+            title={panel.description || title}
+          >
+            <NavGlyph name={(panel.icon as IconName) || 'game'} />
+          </a>
+        );
+      })}
+    </>
+  );
+}
 
 function NavGlyph({ name, size = 20 }: { name: IconName; size?: number }) {
   const Glyph = SIDEBAR_GLYPHS[name] ?? Package;
@@ -110,6 +141,8 @@ export default function Layout() {
               <NavGlyph name={n.icon} />
             </NavLink>
           ))}
+          {/* 子插件挂到面板端口上的页面（星舰游戏等） */}
+          <ExtensionNav />
         </nav>
 
         <nav className="nav-bottom">

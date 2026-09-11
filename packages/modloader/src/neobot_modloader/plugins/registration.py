@@ -104,6 +104,13 @@ def validate_qualified_tool_name(plugin_name: str, tool_name: str) -> str:
     return qualified
 
 
+def validate_capability_name(name: str) -> str:
+    """插件对外暴露能力的名字（依赖方通过 ctx.plugins.require(...).call(...) 调用）。"""
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", name):
+        raise ValueError(f"invalid capability name: {name!r}")
+    return name
+
+
 def validate_parse_error(value: str) -> None:
     if value not in {"ignore", "reply", "raise"}:
         raise ValueError("parse_error must be 'ignore', 'reply', or 'raise'")
