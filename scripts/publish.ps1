@@ -25,6 +25,8 @@ function Invoke-Checked {
 # Resolve paths from this script, not the caller's current directory.
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
+    Invoke-Checked "uv" @("run", "--no-project", "--python", "3.13", "--with", "packaging", "python", "scripts/prepare_release.py", "--check-only")
+
     Push-Location "app/src/neobot_app/builtin_plugins/dashboard/frontend"
     try {
         # The repository uses pnpm-lock.yaml, so this is the npm ci equivalent.

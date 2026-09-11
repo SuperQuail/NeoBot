@@ -6,6 +6,11 @@ import sys
 import tomllib
 from pathlib import Path
 
+if __package__:
+    from .semver_validation import validate_semver
+else:
+    from semver_validation import validate_semver
+
 
 def _workspace_members(root: Path) -> list[str]:
     """读取根 pyproject.toml 的 [tool.uv.workspace].members（如 packages/*、app）。"""
@@ -36,10 +41,15 @@ def find_pyproject_files(root: Path) -> list[Path]:
 
 
 def update_version(file_path: Path, new_version: str, root: Path) -> bool:
-    """更新单个文件的版本号"""
+    """更新单个文件的版本号；非法目标版本在读取文件前抛出 ValueError。"""
+    new_version = validate_semver(new_version, source="目标版本")
     try:
         content = file_path.read_text(encoding="utf-8")
-        pattern = r'(^\[project\].*?^version\s*=\s*)"([^"]+)"'
+        # Never cross a table boundary when project.version is absent.
+        pattern = (
+            r'(^[ \t]*\[project\][ \t]*(?:#[^\r\n]*)?\r?\n'
+            r'(?:(?!^[ \t]*\[).)*?^[ \t]*version[ \t]*=[ \t]*)"([^"\r\n]*)"'
+        )
         match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
 
         if match:
@@ -56,19 +66,24 @@ def update_version(file_path: Path, new_version: str, root: Path) -> bool:
         return False
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1:
         print("用法: python versions.py <新版本号>")
         print("示例: python versions.py 0.3.0")
-        sys.exit(1)
+        return 1
 
-    new_version = sys.argv[1]
+    try:
+        new_version = validate_semver(argv[0], source="目标版本")
+    except ValueError as error:
+        print(f"✗ {error}", file=sys.stderr)
+        return 1
     root = Path(__file__).parent.parent
     files = find_pyproject_files(root)
 
     if not files:
         print("未找到 pyproject.toml 文件")
-        sys.exit(1)
+        return 1
 
     print(f"找到 {len(files)} 个 pyproject.toml 文件:")
     for f in files:
@@ -78,8 +93,13 @@ if __name__ == "__main__":
     confirm = input(f"确认将版本号修改为 {new_version}? (y/N): ")
     if confirm.lower() != "y":
         print("已取消")
-        sys.exit(0)
+        return 0
 
     print()
     success = sum(update_version(f, new_version, root) for f in files)
     print(f"\n完成: {success}/{len(files)} 个文件已更新")
+    return 0 if success == len(files) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
