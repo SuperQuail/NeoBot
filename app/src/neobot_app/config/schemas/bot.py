@@ -1051,10 +1051,19 @@ class AgentMemoryTrigger:
         metadata={"description": "单次记忆总结最多允许的工具调用轮次，防止工具失败时反复重试烧token"},
     )
     max_summary_seconds: Optional[float] = field(
-        default=180.0,
+        default=300.0,
         metadata={
             "description": "单次记忆总结的总时长预算(秒)；超过即中止本轮并进入失败冷却，"
-            "避免多轮工具调用把一次总结拖成数十分钟"
+            "避免多轮工具调用把一次总结拖成数十分钟。至少要能装下两轮完整调用"
+            "(第一轮工具调用 + 第二轮收尾)，否则思考模型会在收尾时被腰斩"
+        },
+    )
+    model_call_timeout_seconds: Optional[float] = field(
+        default=0.0,
+        metadata={
+            "description": "记忆总结单次模型调用的超时(秒)；0 表示自动跟随总结模型自身的"
+            "请求超时(settings.timeout_seconds)并留 15 秒余量。开启思考/推理强度 max 的模型"
+            "单次调用常超过 60 秒，此处不应小于该模型的请求超时，否则会在正常推理中被掐断"
         },
     )
 

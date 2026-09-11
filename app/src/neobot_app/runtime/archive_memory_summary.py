@@ -45,9 +45,16 @@ RETRY_BACKOFF_MAX_SECONDS = 900.0
 RETRY_BACKOFF_MAX_DOUBLINGS = 4
 # 单次总结的总时长预算(秒)：超过即中止本轮并进入冷却，
 # 避免多轮工具调用把一次总结拖成数十分钟。
-DEFAULT_SUMMARY_BUDGET_SECONDS = 180.0
+# 取值要能装下至少两轮完整调用（第一轮工具调用 + 第二轮收尾）：单次调用超时
+# 默认跟随模型的请求超时(常见 120 秒)再留余量，180 秒会让第二轮必然被腰斩。
+DEFAULT_SUMMARY_BUDGET_SECONDS = 300.0
 # 单次总结内层模型调用的超时(秒)，同时也是单轮上限。
+# 仅作为兜底：配置 agent.memory.trigger.model_call_timeout_seconds 为 0（默认）时
+# 跟随总结模型自身的请求超时，provider 不暴露超时时才用它。
 DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS = 60.0
+#: 自动模式(配置为 0)下给 provider 自身超时留的余量：让 httpx 先超时并返回可读错误，
+#: 而不是被外层 wait_for 在模型仍在正常推理时掐断。
+PROVIDER_TIMEOUT_MARGIN_SECONDS = 15.0
 # 单条工具返回写入上下文的最大字符数。read_pending_messages 会返回 500 条消息全文，
 # list_archive 会返回整条档案 value，原样追加会让之后每一轮都把这几百 KB 重发一遍。
 MAX_TOOL_RESULT_CHARS = 4000
@@ -110,6 +117,12 @@ class ArchiveMemoryAutoSummaryService:
             self._summary_budget_seconds: float = max(1.0, float(budget))
         except (TypeError, ValueError):
             self._summary_budget_seconds = DEFAULT_SUMMARY_BUDGET_SECONDS
+        call_timeout = getattr(trigger_cfg, "model_call_timeout_seconds", 0.0)
+        try:
+            # 0 = 自动（跟随 provider 自身的请求超时）
+            self._model_call_timeout_seconds: float = max(0.0, float(call_timeout or 0.0))
+        except (TypeError, ValueError):
+            self._model_call_timeout_seconds = 0.0
         self._item_archive_enabled: bool = bool(item_archive_config.enabled) if item_archive_config else True
         self._item_archive_table: str = (
             str(item_archive_config.table_name).strip() or ITEM_ARCHIVE_TABLE
@@ -248,6 +261,52 @@ class ArchiveMemoryAutoSummaryService:
         finally:
             self._end_summary(counter_key)
 
+    def _next_call_timeout(self, remaining: float) -> float:
+        """算出本轮模型调用的超时，并保证不超出总预算。
+
+        默认跟随总结模型自身的请求超时（再留一点余量让 httpx 先超时并返回可读错误，
+        而不是被外层 wait_for 在模型仍正常推理时掐断）。开启思考、推理强度拉满的模型
+        单次调用经常超过 60 秒，用固定 60 秒会稳定超时并反复重试，每次都要重发完整
+        上下文，既浪费时间又烧 token。配置 model_call_timeout_seconds 可显式覆盖。
+        """
+        limit = self._model_call_timeout_seconds
+        if limit <= 0.0:
+            provider_timeout = getattr(self._provider, "timeout", None)
+            try:
+                limit = float(provider_timeout) + PROVIDER_TIMEOUT_MARGIN_SECONDS
+            except (TypeError, ValueError):
+                limit = DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS
+        return max(1.0, min(limit, remaining))
+
+    async def _commit_partial_success(
+        self,
+        counter_key: str,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        snapshot_count: int,
+        message_count: int,
+        tool_successes: int,
+        round_index: int,
+        reason: str,
+    ) -> None:
+        """写入过内容后中止：按部分成功清账，不重跑整批消息。
+
+        档案是增量 append 语义，重跑会把同一批事实再写一遍；而重试本身还要把同一批
+        消息再烧一遍 token，且大概率以同样的方式再次中止。但必须留下可排查的告警，
+        否则"模型没处理完就被销账"是完全静默的。
+        """
+        await self._commit_success(counter_key, snapshot_count=snapshot_count)
+        self._logger.warning(
+            "档案自动总结在写入部分内容后中止，按部分成功清账不再重试",
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
+            message_count=message_count,
+            round=round_index,
+            tool_calls_succeeded=tool_successes,
+            reason=reason,
+        )
+
     async def _run_summary(
         self,
         *,
@@ -289,6 +348,19 @@ class ArchiveMemoryAutoSummaryService:
             for _iteration in range(self._max_tool_rounds):
                 remaining = deadline - monotonic_seconds()
                 if remaining <= 1.0:
+                    if tool_successes:
+                        # 预算耗尽但已经写过档案：同上，清账优于重跑。
+                        await self._commit_partial_success(
+                            counter_key,
+                            conversation_kind=conversation_kind,
+                            conversation_id=conversation_id,
+                            snapshot_count=snapshot_count,
+                            message_count=len(messages),
+                            tool_successes=tool_successes,
+                            round_index=_iteration + 1,
+                            reason="budget_exhausted",
+                        )
+                        return True
                     self._logger.warning(
                         "档案自动总结超出单次时长预算，已中止并进入冷却",
                         conversation_kind=conversation_kind,
@@ -297,7 +369,7 @@ class ArchiveMemoryAutoSummaryService:
                     )
                     await self._defer_after_failure(counter_key)
                     return False
-                call_timeout = min(DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS, remaining)
+                call_timeout = self._next_call_timeout(remaining)
                 try:
                     response = await asyncio.wait_for(
                         self._provider.chat(chat_messages, tools=tools),
@@ -314,7 +386,21 @@ class ArchiveMemoryAutoSummaryService:
                         timeout_seconds=int(call_timeout),
                         request_chars=_request_chars(chat_messages),
                         messages_count=len(chat_messages),
+                        round=_iteration + 1,
+                        tool_calls_succeeded=tool_successes,
                     )
+                    if tool_successes:
+                        await self._commit_partial_success(
+                            counter_key,
+                            conversation_kind=conversation_kind,
+                            conversation_id=conversation_id,
+                            snapshot_count=snapshot_count,
+                            message_count=len(messages),
+                            tool_successes=tool_successes,
+                            round_index=_iteration + 1,
+                            reason="model_call_timeout",
+                        )
+                        return True
                     raise
                 await self._record_usage(
                     response,

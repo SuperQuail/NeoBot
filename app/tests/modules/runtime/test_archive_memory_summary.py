@@ -17,10 +17,12 @@ from neobot_chat.providers.openai import OpenAIProvider
 from neobot_contracts.ports.logging import NullLogger
 
 from neobot_app.runtime.archive_memory_summary import (
+    DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS,
     MAX_STORED_MESSAGE_CHARS,
     MAX_TOOL_FAILURES,
     MAX_TOOL_RESULT_CHARS,
     MAX_TOOL_RESULT_TOTAL_CHARS,
+    PROVIDER_TIMEOUT_MARGIN_SECONDS,
     RETRY_BACKOFF_MAX_SECONDS,
     ArchiveMemoryAutoSummaryService,
     _TOOL_DROPPED_MARKER,
@@ -536,6 +538,7 @@ def _make_service_with_loop_config(
     group_interval: int = 1,
     max_tool_rounds: int = 20,
     snippet_chars: int = 120,
+    model_call_timeout_seconds: float = 0.0,
 ) -> ArchiveMemoryAutoSummaryService:
     config = SimpleNamespace(
         agent=SimpleNamespace(
@@ -545,6 +548,7 @@ def _make_service_with_loop_config(
                     private_interval=group_interval,
                     prompt_snippet_chars=snippet_chars,
                     max_tool_rounds=max_tool_rounds,
+                    model_call_timeout_seconds=model_call_timeout_seconds,
                 )
             )
         )
@@ -1134,5 +1138,199 @@ async def test_partial_tool_failure_clear_is_logged():
     assert state == {"count": 0, "messages": []}
     warnings = [call.args[0] for call in logger.warning.call_args_list]
     assert "档案自动总结存在工具失败，已按部分成功清账" in warnings
+
+# ── 单次模型调用的超时来源 ───────────────────────────────────────
+
+
+class _TimedOutProvider:
+    """可声明自身请求超时的假 Provider；timeout=None 表示不暴露该属性。"""
+
+    def __init__(self, timeout: float | None) -> None:
+        if timeout is not None:
+            self.timeout = timeout
+
+    async def chat(self, messages, tools=None):
+        return {"role": "assistant", "content": "ok", "tool_calls": None}
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_call_timeout_follows_provider_timeout_by_default():
+    """默认(0=自动)跟随总结模型的请求超时并留余量。
+
+    固定在 60 秒会把「思考模式 + 推理强度 max」的模型掐断在正常推理中途，
+    超时后整批消息重试，每次都要重发完整上下文：既慢又费 token。
+    """
+    service = _make_service(provider=_TimedOutProvider(timeout=120.0))
+    assert service._next_call_timeout(600.0) == 120.0 + PROVIDER_TIMEOUT_MARGIN_SECONDS
+
+    # provider 不暴露 timeout 时回落到常量，而不是干脆放弃超时保护
+    fallback = _make_service(provider=_TimedOutProvider(timeout=None))
+    assert fallback._next_call_timeout(600.0) == DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_call_timeout_prefers_explicit_config_and_respects_budget():
+    """显式配置优先于 provider 超时，但任何情况下都不得超过剩余预算。"""
+    service = _make_service_with_loop_config(
+        archive=_FakeArchive(),
+        provider=_TimedOutProvider(timeout=120.0),
+        executor=AsyncMock(),
+        group_interval=1,
+        model_call_timeout_seconds=45.0,
+    )
+    assert service._next_call_timeout(600.0) == 45.0
+    assert service._next_call_timeout(4.0) == 4.0, "不得超过单次总结的总时长预算"
+
+
+@pytest.mark.asyncio
+async def test_timeout_after_tool_success_commits_instead_of_retrying():
+    """已写入部分内容后超时按部分成功清账，不重跑整批消息。
+
+    档案是增量 append 语义：重试会把同一批事实再写一遍，而重试本身还要
+    重发完整上下文，并且大概率再次超时。
+    """
+
+    class _OneCallThenHangProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "archive_crud__save_archive", "arguments": "{}"},
+                        }
+                    ],
+                }
+            await asyncio.sleep(30)
+            raise AssertionError("wait_for 应当先超时")
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    provider = _OneCallThenHangProvider()
+    logger = Mock(spec=NullLogger)
+    service = _make_service_with_loop_config(
+        archive=archive, provider=provider, executor=AsyncMock(return_value="已写入档案")
+    )
+    service._logger = logger
+    service._summary_budget_seconds = 2.0
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="1500", message_text="一"
+    )
+
+    assert provider.calls == 2, "第二轮超时后不应再重试"
+    state = json.loads(archive.raw("memory_counter", "group:1500")["value"])
+    assert state["count"] == 0, "已写入内容应按成功清账"
+    assert "retry_after" not in state, "不得进入冷却重试"
+    partial_kwargs = next(
+        call.kwargs
+        for call in logger.warning.call_args_list
+        if call.args and call.args[0] == "档案自动总结在写入部分内容后中止，按部分成功清账不再重试"
+    )
+    assert partial_kwargs["reason"] == "model_call_timeout"
+    assert partial_kwargs["round"] == 2
+    assert partial_kwargs["tool_calls_succeeded"] == 1
+    timeout_kwargs = next(
+        call.kwargs
+        for call in logger.warning.call_args_list
+        if call.args and call.args[0] == "档案自动总结模型调用超时，本次调用不会计入用量统计"
+    )
+    assert timeout_kwargs["round"] == 2
+    assert timeout_kwargs["tool_calls_succeeded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_after_tool_success_commits_instead_of_retrying():
+    """预算耗尽时同理：已经写过内容就清账，不能因为"没时间了"把已写入的事实再跑一遍。"""
+
+    class _ToolCallProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, tools=None):
+            self.calls += 1
+            # 第一轮先花掉绝大部分预算并成功写入，第二轮开头即判定预算耗尽
+            await asyncio.sleep(1.2)
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call-{self.calls}",
+                        "type": "function",
+                        "function": {"name": "archive_crud__save_archive", "arguments": "{}"},
+                    }
+                ],
+            }
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    provider = _ToolCallProvider()
+    logger = Mock(spec=NullLogger)
+    service = _make_service_with_loop_config(
+        archive=archive, provider=provider, executor=AsyncMock(return_value="已写入档案")
+    )
+    service._logger = logger
+    service._summary_budget_seconds = 2.0
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="1502", message_text="一"
+    )
+
+    assert provider.calls == 1, "预算耗尽后不应再发起第二轮调用"
+    state = json.loads(archive.raw("memory_counter", "group:1502")["value"])
+    assert state["count"] == 0
+    assert "retry_after" not in state
+    partial_kwargs = next(
+        call.kwargs
+        for call in logger.warning.call_args_list
+        if call.args and call.args[0] == "档案自动总结在写入部分内容后中止，按部分成功清账不再重试"
+    )
+    assert partial_kwargs["reason"] == "budget_exhausted"
+    assert partial_kwargs["round"] == 2
+
+
+@pytest.mark.asyncio
+async def test_timeout_without_any_tool_success_still_defers():
+    """一次工具都没成功 = 什么都没写进去，必须保留计数器进入冷却重试。"""
+
+    class _HangingProvider:
+        async def chat(self, messages, tools=None):
+            await asyncio.sleep(30)
+            raise AssertionError("wait_for 应当先超时")
+
+        async def close(self) -> None:
+            pass
+
+    archive = _FakeArchive()
+    logger = Mock(spec=NullLogger)
+    service = _make_service_with_loop_config(
+        archive=archive, provider=_HangingProvider(), executor=AsyncMock()
+    )
+    service._logger = logger
+    service._summary_budget_seconds = 2.0
+
+    await service.record_message(
+        conversation_kind="group", conversation_id="1501", message_text="一"
+    )
+
+    state = json.loads(archive.raw("memory_counter", "group:1501")["value"])
+    assert state["count"] == 1, "未写入任何内容时计数器必须保留"
+    assert state["retry_after"] > epoch_seconds()
+
 
 
