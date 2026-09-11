@@ -93,48 +93,60 @@ export const QUAD_ORDER = ['bottomLeft', 'bottomRight', 'topRight', 'topLeft'] a
 export const PIXELS_PER_METER = 150;
 
 /**
- * 由「站位 + 朝向」推出面板应该贴在哪块平面上。
+ * 由「终端屏幕 + 朝向」推出面板应该贴在哪块平面上。
  *
- * @param anchor   终端站位（脚下坐标，面板会抬到 screenHeight 高度）
- * @param facing   终端朝向（0=+z，π=-z，±π/2=∓x），与 STATIONS.facing 同义
- * @param screenOffset 面板中心相对锚点的偏移（沿 facing / 法线方向，米）
+ * ## 为什么锚点是屏幕而不是站位
+ *
+ * 站位锚点在终端机身中心，而玩家为了交互本来就必须站在它正前方 ——
+ * 面板一旦挂在站位上，出现时正好顶在脸中央，看起来就是个屏幕 UI，
+ * 完全不像场景里的东西。真实游戏（赛博朋克 2077 的终端、Elite 的面板）
+ * 都把投影挂在**设备自己的屏幕上方**：它会明显偏向一侧，玩家需要转头去看，
+ * 「这是舰内某个具体设备的一部分」这件事才成立。
+ *
+ * @param screen     终端屏幕的世界坐标（STATIONS[i].screen）
+ * @param yaw        屏幕朝向（0=+z，±π/2=∓x，π=-z）
+ * @param screenSize 屏幕物理尺寸；面板按倍率放大后贴在它上方
  */
-export function panelPlaneFromStation(
-  anchor: readonly [number, number, number],
-  facing: number,
+export function panelPlaneFromScreen(
+  screen: readonly [number, number, number],
+  yaw: number,
+  screenSize: { width: number; height: number },
   options: {
-    /** 面板中心高度（米，甲板面之上） */
-    height?: number;
-    /** 面板中心向玩家一侧推出的距离（米） */
+    /** 面板相对屏幕的放大倍率 */
+    scale?: number;
+    /** 面板中心相对屏幕中心的竖直偏移（米），正值向上 */
+    rise?: number;
+    /** 面板向玩家一侧浮出的距离（米） */
     forward?: number;
-    /** 面板宽度（米） */
-    width?: number;
-    /** 面板高度（米） */
-    heightMeters?: number;
+    /** 宽高比下限，避免窄终端投影出细长条面板 */
+    aspect?: number;
   } = {},
 ): PanelPlane {
-  const height = options.height ?? 1.5;
-  const forward = options.forward ?? 0.55;
-  const width = options.width ?? 2.1;
-  const heightMeters = options.heightMeters ?? 1.35;
+  const scale = options.scale ?? 2.4;
+  const rise = options.rise ?? 0.62;
+  const forward = options.forward ?? 0.42;
+  const aspect = options.aspect ?? 1.55;
 
-  // facing=0 时终端面向 +z：法线 = (sin, 0, cos)
-  const normal = new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing)).normalize();
+  // yaw=0 时终端面向 +z：法线 = (sin, 0, cos)
+  const normal = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
   // 面板「+x」对应的世界方向。
   //
-  // 这里取的是**朝向玩家时的左手边**，看似别扭，但它是唯一能让面板文字正着显示的选择：
-  // CSS 元素局部 +x 必须映射到「玩家看到的右边」，而本世界的坐标约定下
-  // (玩家右, 上, 法线) 构成的是左手基（det = -1），直接用 makeBasis 建出来的
-  // 面板矩阵会把内容**水平镜像**——文字会左右翻过来，这是必须避免的。
-  // 取负号后 det = +1，投影出来才是正常的正字。
-  const right = new THREE.Vector3(Math.cos(facing), 0, -Math.sin(facing)).normalize();
+  // 取的是**朝向玩家时的左手边**，看似别扭，但这是唯一能让面板文字正着显示的选择：
+  // 本世界的 (玩家右, 上, 法线) 构成左手基（det = -1），直接用 makeBasis 建出来的
+  // 面板矩阵会把内容**水平镜像**——文字会左右翻过来。取负号后 det = +1。
+  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)).normalize();
   const up = new THREE.Vector3(0, 1, 0);
-  const center = new THREE.Vector3(anchor[0], anchor[1] + height, anchor[2]).addScaledVector(
+  const center = new THREE.Vector3(screen[0], screen[1] + rise, screen[2]).addScaledVector(
     normal,
     forward,
   );
 
-  return { center, right, up, normal, width, height: heightMeters };
+  // 宽度 = 屏幕宽 × 倍率（下限 0.9m 保证小终端也能放下表格式内容）；
+  // 高度按屏幕比例走，但用 aspect 兜住下限，避免出现细长条。
+  const width = Math.max(0.9, screenSize.width * scale);
+  const height = Math.max(width / aspect, screenSize.height * scale * 1.25);
+
+  return { center, right, up, normal, width, height };
 }
 
 /**

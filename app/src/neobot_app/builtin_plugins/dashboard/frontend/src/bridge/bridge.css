@@ -1267,32 +1267,9 @@
   }
 }
 
-/* 凑到终端前：面板接管全屏。
-   此时放弃透视（transform 由 CSS 覆盖），字号回到 1:1，方便读日志与填表单。 */
-.panel-anchor-full {
-  left: 50% !important;
-  top: 50% !important;
-  width: min(1180px, 94vw) !important;
-  height: min(82vh, 780px) !important;
-  transform: translate(-50%, -50%) !important;
-  opacity: 1 !important;
-}
-
-.panel-anchor-full .panel-anchor-body {
-  font-size: 13.5px;
-}
-
-.panel-anchor-full .panel-anchor-holo {
-  inset: -1.2%;
-  box-shadow:
-    0 0 0 1px rgba(63, 224, 255, 0.45),
-    0 0 90px rgba(63, 224, 255, 0.28);
-}
-
-/* 全屏接管时终端机框不再需要自己的外框（面板自己撑满） */
-.panel-anchor-full .hologram {
-  height: 100%;
-}
+/* 面板始终保持世界空间投影：不做「凑近接管全屏」。
+   一旦接管，面板就从场景里掉出来变成网页 UI —— 那正是之前「看着不像场景里的」
+   的根因。可读性改由「面板相对终端屏幕放大 2.4 倍 + 字号随视距补偿」解决。 */
 
 .bridge-panel-host {
   position: absolute;

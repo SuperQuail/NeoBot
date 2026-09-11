@@ -33,12 +33,13 @@ import {
   rayBoxes,
   resolveMovement,
   type CollisionBody,
-} from '../bridge/core/collision';import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
+} from '../bridge/core/collision';
+import { deriveVitals, vitalStatus, hasCritical } from '../bridge/core/vitals';
 import { Player } from '../bridge/core/player';
 import { doorDistance } from '../bridge/core/engine';
 import {
   PIXELS_PER_METER,
-  panelPlaneFromStation,
+  panelPlaneFromScreen,
   perspectiveDistance,
   projectPanel,
 } from '../bridge/three/projector';
@@ -410,7 +411,7 @@ describe('面板投影', () => {
   const VIEWPORT = { width: 1600, height: 900 };
 
   it('正对终端时，面板中心投在屏幕中心、四角顺序正确', () => {
-    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const camera = cameraLookingAt(
       new THREE.Vector3(0, 1.5, -29.2),
       new THREE.Vector3(0, 1.5, -26),
@@ -419,9 +420,9 @@ describe('面板投影', () => {
     const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
 
     expect(projected.behind).toBe(false);
-    // 站位在 z=-29.2，面板中心向玩家一侧浮出 0.55m ⇒ 平面在 z=-28.65；
-    // 相机站在 z=-26，因此距离是 2.65m（这一条同时验证了 forward 偏移生效）
-    expect(projected.distance).toBeCloseTo(2.65, 2);
+    // 屏幕在 z=-29.06，面板中心向玩家一侧浮出 0.42m（默认 forward）⇒ 平面在 z=-28.64；
+    // 相机站在 z=-26，因此距离 2.64m（顺带验证屏幕锚点确实生效，而不是退回站位锚点）
+    expect(projected.distance).toBeCloseTo(2.64, 1);
 
     // 四角：0=左下 1=右下 2=右上 3=左上（屏幕坐标 y 向下 ⇒ 下方的 y 更大）
     const [bl, br, tr, tl] = projected.quad;
@@ -429,16 +430,19 @@ describe('面板投影', () => {
     expect(bl.y).toBeGreaterThan(tl.y);
     expect(tr.x).toBeGreaterThan(tl.x);
     expect(br.y).toBeGreaterThan(tr.y);
-    // 面板中心应落在屏幕中心附近（相机正对且水平居中）
+    // 面板悬在终端屏幕上方（rise），而相机与屏幕大致等高，因此面板中心
+    // 应当落在水平视线**上方**（屏幕坐标 y 更小）——这正是「浮在终端上方」
+    // 的观感来源；若两者重合，面板就又会顶在视线正中，退化成屏幕 UI。
     const centerX = (bl.x + br.x + tr.x + tl.x) / 4;
     const centerY = (bl.y + br.y + tr.y + tl.y) / 4;
     expect(centerX).toBeCloseTo(VIEWPORT.width / 2, 0);
-    expect(centerY).toBeCloseTo(VIEWPORT.height / 2, 0);
+    expect(centerY).toBeLessThan(VIEWPORT.height / 2);
+    expect(VIEWPORT.height / 2 - centerY).toBeGreaterThan(40);
   });
 
   it('面板基是右手系（right×up 与法线同向）：否则文字会被水平镜像', () => {
     for (const facing of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
-      const plane = panelPlaneFromStation([0, 0, 0], facing, { height: 1.5 });
+      const plane = panelPlaneFromScreen([0, 1.4, 0], facing, { width: 1.0, height: 0.5 });
       // 基必须右手：right × up == normal。取反会让面板矩阵行列式为 -1，
       // CSS 渲染出来就是左右镜像的文字。
       const cross = new THREE.Vector3().crossVectors(plane.right, plane.up);
@@ -463,7 +467,7 @@ describe('面板投影', () => {
   });
 
   it('相机后退时面板变小、变远，但始终正对', () => {
-    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const near = projectPanel(
       cameraLookingAt(new THREE.Vector3(0, 1.5, -29.2), new THREE.Vector3(0, 1.5, -27.5), 0),
       plane,
@@ -484,7 +488,7 @@ describe('面板投影', () => {
   });
 
   it('背对终端时 behind 为真（不应渲染那块假面板）', () => {
-    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+    const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     // 站在终端背后，朝远离它的方向看
     const camera = new THREE.PerspectiveCamera(74, 16 / 9, 0.05, 900);
     camera.position.set(0, 1.5, -30.5);
@@ -496,8 +500,8 @@ describe('面板投影', () => {
     expect(projected.behind).toBe(true);
   });
 
-  it('视角原点落在面板元素内部（用于修正 CSS 的 perspective-origin）', () => {
-    const plane = panelPlaneFromStation([0, 0, -29.2], 0, { height: 1.5, forward: 0.55 });
+  it('视角原点落在面板元素范围内（用于修正 CSS 的 perspective-origin）', () => {
+    const plane = panelPlaneFromScreen([0, 1.32, -29.06], 0, { width: 1.6, height: 0.62 });
     const camera = cameraLookingAt(
       new THREE.Vector3(0, 1.5, -29.2),
       new THREE.Vector3(0, 1.5, -26),
@@ -505,14 +509,20 @@ describe('面板投影', () => {
     );
     const projected = projectPanel(camera, plane, VIEWPORT.width, VIEWPORT.height);
 
-    // 正对时消失点应在元素中心的像素位置
-    expect(projected.principalX).toBeCloseTo((plane.width / 2) * 150, 0);
-    expect(projected.principalY).toBeCloseTo((plane.height / 2) * 150, 0);
+    // 面板悬在屏幕上方（rise），相机略低于面板中心，因此消失点会稍稍偏下；
+    // 关键是它必须落在元素范围内，否则 CSS 的透视原点会跑到元素外面。
+    expect(projected.principalX).toBeGreaterThan(0);
+    expect(projected.principalX).toBeLessThan(plane.width * 150);
+    expect(projected.principalY).toBeGreaterThan(0);
+    expect(projected.principalY).toBeLessThan(plane.height * 150);
 
-    // 测视（相机偏到一侧）时消失点应随之偏移，而不是固定在中心
+    // 水平方向正对时，消失点应接近元素水平中心
+    expect(projected.principalX).toBeCloseTo((plane.width / 2) * 150, 0);
+
+    // 侧视（相机偏到一侧）时消失点应随之偏移，而不是固定在中心
     const offAxis = cameraLookingAt(
-      new THREE.Vector3(0.6, 1.5, -29.2),
-      new THREE.Vector3(1.5, 1.5, -26),
+      new THREE.Vector3(0.9, 1.5, -29.2),
+      new THREE.Vector3(1.6, 1.5, -26),
       0,
     );
     const off = projectPanel(offAxis, plane, VIEWPORT.width, VIEWPORT.height);
@@ -520,7 +530,7 @@ describe('面板投影', () => {
   });
 
   it('投影矩阵与手算的相机空间结果一致（防止整体错位）', () => {
-    const plane = panelPlaneFromStation([12, 0, -24], -Math.PI / 2, { height: 1.5, forward: 0.55 });
+    const plane = panelPlaneFromScreen([12, 1.22, -23.26], -Math.PI / 2, { width: 0.8, height: 0.44 });
     const camera = cameraLookingAt(
       new THREE.Vector3(12, 1.5, -24),
       new THREE.Vector3(9.4, 1.5, -22),

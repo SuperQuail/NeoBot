@@ -10,11 +10,11 @@
 //   · 投影数学在 three/projector.ts，遮挡合成在 three/composite.ts；
 //   · 收起动画由 closing 属性触发，动画结束回调 onExited 让父级真正卸载。
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { PerspectiveCamera } from 'three';
 import {
   PIXELS_PER_METER,
-  panelPlaneFromStation,
+  panelPlaneFromScreen,
   perspectiveDistance,
   projectPanel,
 } from '../three/projector';
@@ -36,31 +36,28 @@ export interface PanelAnchorProps {
 }
 
 /**
- * 面板在世界里的物理尺寸（米）。
+ * 面板相对终端屏幕的放大倍率。
  *
- * 终端屏幕本身只有 0.8~1.6m 宽，照搬会让字号小到不可读；这里按「人凑到终端前
- * 2~3 米看」的可读视距设计，取 2.15×1.38m —— 在 2m 处大约占屏幕宽度的八成，
- * 既有「贴在终端上」的透视感，又不至于看不清。
+ * 屏幕本身只有 0.8~1.6m 宽，原样贴上去字号小到不可读；放大 2.4 倍后面板
+ * 约 2~3.8m 宽，玩家站在交互距离（2.5~3.4m）时读起来正好，同时仍然明显
+ * 挂在终端那一侧、需要转头去看——这才是「场景里的面板」。
  */
-const PANEL_WIDTH_M = 2.15;
-const PANEL_HEIGHT_M = 1.38;
-/**
- * 元素像素尺寸 = 米数 × PIXELS_PER_METER（定义在 projector，两处必须一致）。
- * 取 150 是让 2m 视距下的缩放比接近 1（内容按设计字号 1:1 呈现）；
- * 更远时元素被缩小，同时由 --panel-lift 反向补偿字号——两者相乘保证
- * **屏幕上的字号恒定在一个可读区间**。
- */
+const PANEL_SCALE = 2.4;
+/** 面板中心相对屏幕中心抬高（米）：悬在终端上方，不挡住屏幕本身 */
+const PANEL_RISE = 0.62;
+/** 向玩家一侧浮出的距离（米） */
+const PANEL_FORWARD = 0.42;
+
+/** 元素像素尺寸 = 米数 × 这个系数（与 projector 的换算必须一致） */
 const PX_PER_METER = PIXELS_PER_METER;
-/** 字号补偿的上下限：太低就不再放大（避免远处内容溢出面板） */
+/**
+ * 字号补偿的上下限。元素被投影缩放了 renderedWidth / elementWidth 倍，
+ * 字号乘上它的倒数就能让屏幕上的字号基本恒定；夹在区间内避免极端视距下溢出。
+ */
 const MIN_LIFT = 0.6;
 const MAX_LIFT = 2.4;
-/** 面板中心相对站位的偏移：抬到 1.5m 高、向玩家一侧浮出 0.55m */
-const PANEL_CENTER_HEIGHT = 1.5;
-const PANEL_FORWARD = 0.55;
 /** 展开/收起动画时长（秒）；与 bridge.tsx 里延时卸载的时间保持一致 */
 const REVEAL_SECONDS = 0.26;
-/** 凑到这个距离以内就接管全屏（设定说法：贴到终端前） */
-const TAKEOVER_DISTANCE = 1.75;
 
 export default function PanelAnchor({
   station,
@@ -71,7 +68,6 @@ export default function PanelAnchor({
   children,
 }: PanelAnchorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
   const revealRef = useRef(0);
   const closingRef = useRef(closing);
   const dockRef = useRef<{
@@ -83,15 +79,19 @@ export default function PanelAnchor({
   } | null>(null);
   closingRef.current = closing;
 
+  // 面板尺寸由「屏幕尺寸 × 倍率」决定，是常量，不必每帧重算
+  const plane = useMemo(
+    () =>
+      panelPlaneFromScreen(station.screen, station.screenYaw, station.screenSize, {
+        scale: PANEL_SCALE,
+        rise: PANEL_RISE,
+        forward: PANEL_FORWARD,
+      }),
+    [station],
+  );
+
   useEffect(() => {
     let raf = 0;
-
-    const plane = panelPlaneFromStation(station.anchor, station.facing, {
-      height: PANEL_CENTER_HEIGHT,
-      forward: PANEL_FORWARD,
-      width: PANEL_WIDTH_M,
-      heightMeters: PANEL_HEIGHT_M,
-    });
 
     const tick = () => {
       raf = requestAnimationFrame(tick);
@@ -136,7 +136,7 @@ export default function PanelAnchor({
       host.style.perspectiveOrigin = `${projected.principalX.toFixed(1)}px ${projected.principalY.toFixed(1)}px`;
 
       // ---- 遮挡响应 ----
-      // 面板钻进舱壁/货箱时整体变淡并略微收缩透视，观感上像投影被挡住而衰减，
+      // 面板钻进舱壁/货箱时整体变淡，观感上像投影被挡住而衰减，
       // 比让 DOM 直接浮在墙上自然。（逐像素裁剪需要每帧把遮罩读回 DOM，
       // 同步 PNG 编码会吃掉整个帧预算，因此这里用 8×8 的可见度统计量代替。）
       const visibility = compositor?.sampleVisibility(projected.quad, viewport.width, viewport.height) ?? 1;
@@ -161,7 +161,7 @@ export default function PanelAnchor({
         projected.quad[1].x - projected.quad[0].x,
         projected.quad[1].y - projected.quad[0].y,
       );
-      const elementWidth = PANEL_WIDTH_M * PX_PER_METER;
+      const elementWidth = plane.width * PX_PER_METER;
       const lift = Math.min(MAX_LIFT, Math.max(MIN_LIFT, elementWidth / Math.max(1, renderedWidth)));
       host.style.setProperty('--panel-lift', lift.toFixed(3));
 
@@ -170,10 +170,6 @@ export default function PanelAnchor({
         viewport.width,
         viewport.height,
       );
-
-      // 凑近接管全屏：状态变化很少，setState 开销可忽略
-      const near = projected.distance < TAKEOVER_DISTANCE;
-      setFullscreen((current) => (current === near ? current : near));
     };
 
     raf = requestAnimationFrame(tick);
@@ -181,15 +177,15 @@ export default function PanelAnchor({
       if (raf) cancelAnimationFrame(raf);
       compositor?.clear();
     };
-  }, [station, getCamera, getViewport, compositor]);
+  }, [plane, getCamera, getViewport, compositor]);
 
   return (
     <div
       ref={hostRef}
-      className={`panel-anchor${fullscreen ? ' panel-anchor-full' : ''}`}
+      className="panel-anchor"
       style={{
-        width: `${PANEL_WIDTH_M * PX_PER_METER}px`,
-        height: `${PANEL_HEIGHT_M * PX_PER_METER}px`,
+        width: `${plane.width * PX_PER_METER}px`,
+        height: `${plane.height * PX_PER_METER}px`,
         // 字号补偿倍数，每帧由投影循环写入
         '--panel-lift': 1,
       } as React.CSSProperties}

@@ -33,6 +33,22 @@ export interface Station {
   facing: number;
   /** 该终端读取的舰载系统名，用于交互提示 */
   subsystem: string;
+  /**
+   * 终端**屏幕**平面的世界坐标（全息面板就贴在这里，不是贴在站位锚点上）。
+   *
+   * 这两个点的区别是「面板像不像场景里的一部分」的关键：
+   * 站位锚点在终端机身中心，玩家为了交互本来就得站在它正前方，
+   * 于是面板一出现就顶在脸正中间 —— 看起来就是个屏幕 UI。
+   * 屏幕点偏在机身靠外一侧，面板因此会明显偏向一侧，需要转头去看，
+   * 才像「悬浮在终端上方的一块投影」。
+   *
+   * 取值与 ship.ts 的 consoleSpecs 一致（同一批坐标），改动需同步。
+   */
+  screen: Vec3;
+  /** 屏幕平面的朝向（与 facing 同义，独立列出便于单独微调） */
+  screenYaw: number;
+  /** 终端屏幕的物理尺寸（米），面板按它等比放大后贴上去 */
+  screenSize: { width: number; height: number };
 }
 
 /**
@@ -53,6 +69,9 @@ export const STATIONS: Station[] = [
     anchor: [0, 0, -29.2],
     facing: 0,
     subsystem: '指挥与控制系统',
+    screen: [0, 1.32, -29.06],
+    screenYaw: 0,
+    screenSize: { width: 1.6, height: 0.62 },
   },
   {
     id: 'comms',
@@ -64,6 +83,9 @@ export const STATIONS: Station[] = [
     anchor: [-11, 0, -23],
     facing: Math.PI / 2,
     subsystem: '通讯与日志阵列',
+    screen: [-11, 1.38, -22.7],
+    screenYaw: Math.PI / 2,
+    screenSize: { width: 0.92, height: 0.5 },
   },
   {
     id: 'nav',
@@ -75,6 +97,9 @@ export const STATIONS: Station[] = [
     anchor: [11, 0, -24],
     facing: -Math.PI / 2,
     subsystem: '星图与航迹推算',
+    screen: [11, 1.22, -23.26],
+    screenYaw: -Math.PI / 2,
+    screenSize: { width: 0.8, height: 0.44 },
   },
   {
     id: 'power',
@@ -86,6 +111,9 @@ export const STATIONS: Station[] = [
     anchor: [36.9, 0, 0],
     facing: -Math.PI / 2,
     subsystem: '反物质反应堆',
+    screen: [36.9, 1.55, 0.24],
+    screenYaw: -Math.PI / 2,
+    screenSize: { width: 1.0, height: 0.55 },
   },
   {
     id: 'mainframe',
@@ -97,6 +125,9 @@ export const STATIONS: Station[] = [
     anchor: [-36.9, 0, -2],
     facing: Math.PI / 2,
     subsystem: '舰载主机机群',
+    screen: [-36.9, 1.62, -1.54],
+    screenYaw: Math.PI / 2,
+    screenSize: { width: 0.86, height: 0.42 },
   },
   {
     id: 'flight',
@@ -108,6 +139,9 @@ export const STATIONS: Station[] = [
     anchor: [-10, 0, 31.9],
     facing: 0,
     subsystem: '舰载机与僚机编队',
+    screen: [-10, 1.18, 32.12],
+    screenYaw: 0,
+    screenSize: { width: 1.1, height: 0.56 },
   },
   {
     id: 'drydock',
@@ -118,6 +152,9 @@ export const STATIONS: Station[] = [
     anchor: [10, 0, 31.9],
     facing: 0,
     subsystem: '船坞与补给调度',
+    screen: [10, 1.3, 32.02],
+    screenYaw: 0,
+    screenSize: { width: 1.2, height: 0.6 },
   },
   {
     id: 'firecontrol',
@@ -129,6 +166,9 @@ export const STATIONS: Station[] = [
     anchor: [0, 0, 18.1],
     facing: Math.PI,
     subsystem: '近防炮与护盾',
+    screen: [0, 1.16, 18.22],
+    screenYaw: Math.PI,
+    screenSize: { width: 1.0, height: 0.52 },
   },
 ];
 
