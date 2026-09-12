@@ -21,7 +21,9 @@ class FakeAdapter:
         self._response = response
         self._error = error
 
-    async def send(self, conv_ref, segments: list[dict]) -> Any:
+    async def send(
+        self, conv_ref, segments: list[dict], wait_response: bool = True
+    ) -> Any:
         self.calls.append((conv_ref, segments))
         if self._error is not None:
             raise self._error

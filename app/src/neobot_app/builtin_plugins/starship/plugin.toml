@@ -1,0 +1,38 @@
+name = "starship"
+version = "1.0.0"
+description = "NeoBot 星舰：把控制台搬进一艘可自由探索的 3D 科幻战舰（three.js 第一人称）"
+author = "NeoBot"
+homepage = "https://github.com/SuperQuail/NeoBot"
+license = "MIT"
+tags = ["official", "web", "game"]
+
+# 依赖体系：前置插件 dashboard（网页面板）先加载，星舰把自己的页面与接口
+# 挂到面板的同一个端口上；面板不可用时本插件会被自动禁用，但不影响启动。
+dependencies = ["dashboard>=1.0.0"]
+priority = -1
+
+# 插件本体可热重载（重新注册 HTTP 扩展）；配置改动需要重载插件生效。
+hot_reload = true
+config_hot_reload = false
+
+# 星舰配置保存在插件数据目录 plugins_data/starship/config.toml（与本体 config.toml 解耦），
+# 可在面板「插件 → starship → 配置」在线编辑；这里是打包默认值。
+# 每行上方的注释会作为面板表单里的字段说明，并写进生成的 config.toml。
+
+[config]
+# 游戏挂载路径（面板根路径下的单段路径），默认 /game/。
+route = "game"
+# 面板侧栏入口与游戏引导页显示的名字。
+title = "NeoBot 星舰"
+# 是否在网页面板侧栏显示星舰入口。
+show_in_sidebar = true
+# 默认画质档位：low（节能）/ medium（标准）/ high（高画质）。玩家可在游戏内覆盖。
+default_quality = "medium"
+# 是否允许进入小游戏（舱外炮塔、损管抢修）。
+allow_minigames = true
+# 排行榜接口默认返回的条数。
+leaderboard_size = 20
+# 随机跃迁间隔（分钟），0 表示关闭自动跃迁（仍可在星图导航台手动跃迁）。
+jump_interval_minutes = 6
+# 是否启用 WebAudio 实时合成音效（脚步声、跃迁、告警、点唱机等）。
+enable_audio = true

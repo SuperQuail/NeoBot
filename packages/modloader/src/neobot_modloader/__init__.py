@@ -16,6 +16,14 @@ from neobot_modloader.config_store import (
     PluginConfigStore,
     merge_plugin_config,
 )
+from neobot_modloader.dependency import (
+    PluginDependency,
+    PluginDependencyError,
+    format_dependency,
+    parse_dependencies,
+    parse_dependency,
+    version_satisfies,
+)
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.hooks import PluginHookBus
@@ -83,6 +91,12 @@ __all__ = [
     "Message",
     "MessageChain",
     "MessageSegment",
+    "PluginDependency",
+    "PluginDependencyError",
+    "format_dependency",
+    "parse_dependencies",
+    "parse_dependency",
+    "version_satisfies",
     "Migration",
     "Plugin",
     "PluginConfigStore",

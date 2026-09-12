@@ -5,6 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
+from neobot_modloader.loading.models import DisabledPlugin
 from neobot_modloader.loader import DiscoveredPlugin, FilesystemPluginLoader, LoadedPlugin, PluginLoadError
 from neobot_modloader.plugin import Plugin
 
@@ -202,7 +203,7 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             self.assertFalse(any(name.startswith("neobot_user_plugins.missing_") for name in sys.modules))
             self.assertFalse(any(name.startswith("neobot_user_plugins.manifest_") for name in sys.modules))
 
-    def test_dependency_ordering_errors_clear_rejected_generations(self) -> None:
+    def test_dependency_unsatisfied_plugin_is_auto_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             package = root / "dependent"
@@ -217,7 +218,11 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
 
             for _ in range(2):
                 result = loader.load_all(root)[0]
-                self.assertIsInstance(result, PluginLoadError)
+                # 前置插件缺失不再算错误：插件被自动禁用，程序照常启动
+                self.assertIsInstance(result, DisabledPlugin)
+                assert isinstance(result, DisabledPlugin)
+                self.assertEqual(result.code, "dependency-missing")
+                self.assertIn("missing", result.reason)
 
             self.assertFalse(any(name.startswith("neobot_user_plugins.dependent_") for name in sys.modules))
 

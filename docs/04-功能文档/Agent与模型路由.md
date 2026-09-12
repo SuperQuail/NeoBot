@@ -12,7 +12,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - `model_name`：模型名
 - `pricing`：计费（每百万 Token 输入/输出/缓存命中价格，`billing_metric` 用于非 Token 计费平台）
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
-- `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式
+- `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式。`model_type = "vision"` 的图像识别模型**无需配置** `native_vision`，一律按原生视觉处理（原生视觉回退路由本就按「图片原样发送」处理）
 
 调用方在 `[models.assignments]` 中只保存 key，因此同一个模型可以被多个调用方复用：
 
@@ -41,7 +41,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `willingness` | 回复意愿 Agent | 1 |
 | `scheduled_task` | 定时任务 Agent | 1 |
 | `archive_summary` | 档案自动总结 | 1 |
-| `self_heal` | 自修复 Agent | 3（低成本非推理） |
+| `self_heal` | 自修复 Agent | 1（强推理，需读日志/定位缺陷） |
 
 ## 共享工具与 PTC
 
@@ -78,7 +78,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 主回复 Agent 在提示词约束下执行工具调用循环（`packages/chat` 中的 Agent 运行时）：
 
-1. 构建提示词（人设、当前时间、聊天记录、档案、技能说明）
+1. 构建提示词：system 承载人设与规则，上下文/聊天记录/当前时间作为独立 user 块追加（见 [提示词系统](./提示词系统.md)）
 2. 调用主模型，得到回复文本或工具调用
 3. 工具调用经 SkillManager / 插件工具注册表执行并回填结果
 4. 循环直至生成最终回复（send_reply）、取消（cancel）或达到 `agent_max_iterations`（默认 200）
@@ -87,7 +87,12 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 - `agent_wait_max_seconds`：wait 工具单次最大等待（默认 60s）
 - `agent_max_iterations`：单轮回复最大工具迭代次数
-- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 60s），wait 等待不计入
+- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 120s），wait 等待不计入。
+  这是**活动间隔**看门狗：模型/工具每次返回都会重置，超时后果是**强杀管线**
+- `silent_nudge_*`：**沉默提醒**。测的是「对用户可见的回复缺失」——连续工具调用轮数
+  （首次 5 轮、之后每 10 轮）或超过 `silent_nudge_seconds`（默认 45s）仍未调用过回复工具时，
+  注入一条 `[silent_nudge]` user 提醒（**不中断**管线，单事件最多 3 次）。
+  10 轮快速工具调用（每轮都 <120s）能躲过上面的看门狗，但躲不过 nudge。详见 [提示词系统](./提示词系统.md)
 
 ## 委托（delegate）与多轮协作
 

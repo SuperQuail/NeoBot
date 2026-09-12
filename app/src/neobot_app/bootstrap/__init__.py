@@ -565,6 +565,31 @@ def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
     return build_storage(db_url)
 
 
+def _register_flow_task_providers(
+    registry: Any,
+    *,
+    drawing_manager: Any = None,
+    scheduled_task_manager: Any = None,
+    problem_solver_manager: Any = None,
+    notification_hub: Any = None,
+) -> None:
+    """把各后台任务管理器的状态查询挂到聊天流登记处(与回复工具同源)。
+
+    只登记提供 get_pipeline_status 的实例;缺失的来源静默跳过,
+    面板仍能显示其余来源的状态。
+    """
+    sources = {
+        "drawing": drawing_manager,
+        "scheduled_task": scheduled_task_manager,
+        "problem_solver": problem_solver_manager,
+        "notification": notification_hub,
+    }
+    for name, manager in sources.items():
+        getter = getattr(manager, "get_pipeline_status", None)
+        if callable(getter):
+            registry.register_task_provider(name, getter)
+
+
 def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
@@ -575,6 +600,14 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     prompt_store = _reuse_or(
         "prompt_store",
         lambda: PromptStore(DATA_DIR, logger=logger_factory.get_logger("app.prompt")),
+    )
+
+    # ── 聊天流快照登记处(网页面板「聊天流」页只读视图) ──
+    from neobot_app.reply.flow_registry import ChatFlowRegistry
+
+    chat_flow_registry = _reuse_or(
+        "chat_flow_registry",
+        lambda: ChatFlowRegistry(logger=logger_factory.get_logger("app.reply")),
     )
 
     # ── 睡眠服务(/sleep /awake 命令、睡眠 skill、事件管线共用) ──
@@ -629,7 +662,9 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         ),
     )
 
-    # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
+    # 完整提示词历史记录器:每次模型调用的完整上下文,落盘保留最近 N 份(默认 100)。
+    # 由 [chat].chat_flow_prompt_history_enabled 控制,与 debug 开关解耦 —— 面板的
+    # 「聊天流 → 完整提示词」不依赖 debug.enabled。
     context_recorder = build_context_recorder(
         config=config, logger=logger_factory.get_logger("app.context")
     )
@@ -999,6 +1034,8 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
         context_recorder=context_recorder,
+        # Bot 自身发言落盘复用同一份 storage 引擎（软重启/冷启动补齐 assistant 块，见 feat(2) §11）
+        self_sent_uow_factory=uow_factory,
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
@@ -1012,6 +1049,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         file_server=file_server,
         skills_registry=markdown_skill_registry,
         prompt_store=prompt_store,
+        flow_registry=chat_flow_registry,
         cache_calculator=cache_calculator,
         credential_manager=credential_manager,
         config_update_callback=_make_chat_config_update_callback(config),
@@ -1020,6 +1058,14 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
+    # 面板「聊天流」页的后台任务聚合:与 check_background_tasks 工具同源
+    _register_flow_task_providers(
+        chat_flow_registry,
+        drawing_manager=drawing_manager,
+        scheduled_task_manager=scheduled_task_manager,
+        problem_solver_manager=problem_solver_manager,
+        notification_hub=notification_hub,
+    )
     if scheduled_task_manager is not None:
         scheduled_task_manager.set_orchestrator(reply_orchestrator)
     if problem_solver_manager is not None:
@@ -1339,6 +1385,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "bot_detector": (memory_svcs["bot_detector"], "官方 Bot 检测器"),
             "sandbox_service": (sandbox["sandbox_service"], "沙箱服务"),
             "prompt_store": (prompt_store, "提示词存储"),
+            "chat_flow_registry": (chat_flow_registry, "聊天流快照登记处（面板只读）"),
+            "context_recorder": (
+                context_recorder,
+                "完整提示词历史记录器（面板按需读取，落盘保留最近 N 份）",
+            ),
             "plugin_runtime": (plugin_runtime, "插件运行时"),
         },
     )

@@ -368,6 +368,57 @@ async def test_compatible_api_capability_error_forms(body):
         await provider.close()
 
 
+def test_wrapper_proxies_effective_max_tokens():
+    """包装器必须如实上报当前生效路由的输出上限。
+
+    不代理时编排器读到 None，「这一轮被输出上限截断」在开启原生视觉的主模型上
+    完全无法观测 —— 而截断正是丢回复的主因。
+    """
+    primary = TextProvider()
+    primary.max_tokens = 200000
+    fallback = TextProvider()
+    fallback.max_tokens = 4096
+
+    healthy = NativeVisionFallbackProvider(primary, fallback, logger=Mock())
+    assert healthy.max_tokens == 200000
+    assert healthy.model == "text-model"
+
+    degraded = NativeVisionFallbackProvider(
+        primary, fallback, logger=Mock(),
+        startup_reason="启动期不可用", strip_images=False,
+    )
+    assert degraded.max_tokens == 4096
+
+
+def test_wrapper_max_tokens_assignment_is_ignored_not_crashing():
+    """对包装器赋值 max_tokens 不得崩溃，也不得改写被代理的共享 provider 预算。
+
+    线上事故：self-heal / 解题 agent 用 `provider.max_tokens = cfg.max_tokens` 覆盖预算，
+    包装器一旦变成只读属性，启动即 AttributeError；而真的写下去又会把主回复模型的预算
+    一起压到 8192 一类的小值（那正是丢回复的根因），所以只告警、不改写。
+    """
+    primary = TextProvider()
+    primary.max_tokens = 200000
+    fallback = TextProvider()
+    fallback.max_tokens = 4096
+    logger = Mock()
+    provider = NativeVisionFallbackProvider(primary, fallback, logger=logger)
+
+    provider.max_tokens = 8192
+
+    assert provider.max_tokens == 200000
+    assert primary.max_tokens == 200000
+    assert fallback.max_tokens == 4096
+    assert logger.warning.called
+
+
+def test_wrapper_max_tokens_is_none_when_route_has_no_budget():
+    """底层没声明上限时如实返回 None，不要凭空编造数字。"""
+    provider = NativeVisionFallbackProvider(TextProvider(), TextProvider(), logger=Mock())
+
+    assert provider.max_tokens is None
+
+
 async def test_unrelated_array_schema_error_does_not_degrade():
     primary = with_transport(OpenAIProvider, lambda request: httpx.Response(400, text="Invalid type for tools: expected a string, but got an array instead"))
     fallback = TextProvider()

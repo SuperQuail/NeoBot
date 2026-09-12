@@ -16,11 +16,16 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
         <div className="plugin-breadcrumb"><Icon name="package" /><span>插件</span><Icon name="chevron" /><strong>{selected?.name || '选择插件'}</strong>
           {dirty && <span className="unsaved-dot" title="有未保存的修改" />}</div>
         <div className="plugin-toolbar-actions" role="group" aria-label="插件操作">
-          <button className="icon-btn" disabled={!selected || !permissions.manage_enabled || !!operation}
-            aria-label={selected?.enabled ? '停用插件' : '启用插件'}
-            title={dirty ? '请先保存或放弃修改' : selected?.enabled ? '停用插件' : '启用插件'}
-            onClick={async () => { const result = await act('toggle', () => api.pluginToggle(selectedId), '状态已更新'); if (result?.ok) read(selectedId); }}>
-            <Icon name={selected?.enabled ? 'pause' : 'play'} /></button>
+          <button className="icon-btn" disabled={!selected || !permissions.manage_enabled || !!operation || dirty || isConsole}
+            aria-label={selected?.enabled === false ? '启用插件' : '停用插件'}
+            title={isConsole ? '面板自身不能停用' : dirty ? '请先保存或放弃修改' : selected?.enabled === false ? '启用插件' : '停用插件'}
+            onClick={async () => {
+              const enabling = selected?.enabled === false;
+              if (!enabling && !confirm('停用 ' + (selected?.name ?? '') + '？依赖它的插件会被联动停用。')) return;
+              const result = await act('toggle', () => api.pluginToggle(selectedId), enabling ? '插件已启用' : '插件已停用');
+              if (result?.ok) void read(selectedId);
+            }}>
+            <Icon name={selected?.enabled === false ? 'play' : 'pause'} /></button>
           <button className="icon-btn" aria-label="重载插件" title={isConsole ? '面板自身不能热重载' : dirty ? '请先保存或放弃修改' : '重载插件'} disabled={!canReload}
             onClick={() => act('reload', () => api.pluginReload(selectedId), '插件已重载')}><Icon name="refresh" /></button>
           <span className="toolbar-divider" />
@@ -74,21 +79,85 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
             </div>
           </div>
           {!permissions.manage_enabled ? <div className="workspace-empty"><Icon name="settings" /><h3>当前为只读模式</h3>
-            <p>请在「配置管理 → 本体配置 → dashboard」中开启 manage_plugins。</p></div> : <>
+            <p>请在「插件 → dashboard → 配置」里把 <code>manage_plugins</code> 设为 true（该配置属于面板插件自己，不在本体 <code>config.toml</code> 里）。</p></div> : <>
             <>
-              {selected.official && (
-                <div className="config-notice" role="status">
-                  <Icon name="settings" />
-                  官方插件配置来自本体 <code>config.toml</code> 的 <code>[{configDocument?.section || selected.config_section || selected.name}]</code> 分区，保存后写回该分区。
+              {/* 运行状态：启停是独立于配置的运行期开关，放在配置区最上方最直观 */}
+              <div className={'plugin-runtime-row' + (selected.enabled === false ? ' off' : '')} role="status">
+                <div className="plugin-runtime-copy">
+                  <span className={'plugin-state ' + selected.status}>
+                    <i className={'plugin-status-dot ' + selected.status} />
+                    {statusLabels[selected.status] || selected.status}
+                  </span>
+                  <strong>{selected.enabled === false ? '插件已停用' : '插件已启用'}</strong>
+                  <span className="muted small">启停记录在 <code>plugin_state.json</code>，与下面的配置文件互不影响（停用后仍可编辑配置）。</span>
+                  {selected.disabled_reason && (
+                    <span className="plugin-runtime-warn">依赖未满足，已自动停用：{selected.disabled_reason}</span>
+                  )}
                 </div>
-              )}
+                <button
+                  className={'btn' + (selected.enabled === false ? ' primary' : '')}
+                  disabled={!!operation || dirty || isConsole}
+                  title={isConsole ? '面板自身不能停用' : dirty ? '请先保存或放弃修改' : selected.enabled === false ? '启用插件并加载' : '停用插件（依赖它的插件会联动停用）'}
+                  onClick={async () => {
+                    const enabling = selected.enabled === false;
+                    if (!enabling && !confirm('停用 ' + selected.name + '？依赖它的插件会被联动停用，前置插件恢复后会自动重新加载。')) return;
+                    const result = await act('toggle', () => api.pluginToggle(selectedId), enabling ? '插件已启用' : '插件已停用');
+                    if (result?.ok) void read(selectedId);
+                  }}>
+                  <Icon name={selected.enabled === false ? 'play' : 'pause'} />
+                  {selected.enabled === false ? '启用插件' : '停用插件'}
+                </button>
+              </div>
+              <div className="config-notice" role="status">
+                <Icon name="settings" />
+                <div>
+                  配置保存在插件数据目录 <code>{configDocument?.path || 'plugins_data/' + selected.name + '/config.toml'}</code>，
+                  与本体 <code>config.toml</code> 以及插件启停状态都是解耦的
+                  {selected.official ? '（官方插件与第三方插件使用同一套位置）' : ''}；
+                  默认值来自插件自带的 <code>plugin.toml</code> 的 <code>[config]</code>。
+                </div>
+              </div>
               <div className="config-tabs"><div role="tablist" aria-label="配置编辑方式">
                 <button role="tab" aria-selected={mode === 'form'} className={mode === 'form' ? 'active' : ''}
                   disabled={!configDocument?.form_supported || !!operation} onClick={() => onModeChange('form')}><Icon name="settings" />配置表单</button>
                 <button role="tab" aria-selected={mode === 'toml'} className={mode === 'toml' ? 'active' : ''}
                   disabled={!configDocument?.source_available || !!operation} onClick={() => onModeChange('toml')}><Icon name="code" />TOML</button>
-              </div><span className="muted small">{selected.official ? 'config.toml / ' + (configDocument?.section || selected.config_section || selected.name) : 'plugin.toml / config'}</span></div>
+              </div><span className="muted small">{selected.name}/config.toml</span></div>
               {notice && <InlineAlert tone={notice.warning ? 'warning' : 'success'}>{notice.text}</InlineAlert>}
+              {(selected.dependencies?.length ?? 0) > 0 || (selected.dependents?.length ?? 0) > 0 ? (
+                <div className="config-notice" role="status">
+                  <Icon name="package" />
+                  <div>
+                    {(selected.dependencies?.length ?? 0) > 0 && (
+                      <div>
+                        前置插件：
+                        {(selected.dependencies || []).map((item) => (
+                          <code key={item}>{item}</code>
+                        ))}
+                      </div>
+                    )}
+                    {(selected.dependents?.length ?? 0) > 0 && (
+                      <div>
+                        被依赖：{(selected.dependents || []).map((item) => (
+                          <code key={item}>{item}</code>
+                        ))}
+                        <span className="muted small">（停用或卸载本插件会联动停用它们）</span>
+                      </div>
+                    )}
+                    {(selected.dependency_issues?.length ?? 0) > 0 && (
+                      <div className="muted small">未满足：{(selected.dependency_issues || []).join('；')}</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              {selected.disabled_reason && (
+                <InlineAlert tone="warning">
+                  已因前置插件未满足自动禁用：{selected.disabled_reason}
+                  <span className="muted small">
+                    （启用对应前置插件后会自动恢复，无需手动重新启用）
+                  </span>
+                </InlineAlert>
+              )}
               {selected.error && <InlineAlert tone="error">运行错误：{selected.error}</InlineAlert>}
               {selected.config_error && <InlineAlert tone="warning">配置告警：{selected.config_error}（已回落到默认值运行）</InlineAlert>}
               {configError && (

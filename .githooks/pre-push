@@ -1,0 +1,43 @@
+#!/bin/sh
+# 推送前最后一道闸：阻止已从远端历史清除的调试脚本重新进入 GitHub。
+#
+# 背景：scripts/test_drawing_*.py、scripts/test_image_reference.py、scripts/test_downloaded.png
+# 曾带有硬编码密钥与无用大图，2026-09-11 已在远端历史里彻底清除（force-push 重写）。
+# 只要待推引用的历史或当前树里出现它们，这里就拒绝推送——否则清理白做。
+#
+# 启用方式（每个克隆一次）：git config core.hooksPath .githooks
+# 另注：D:\Code\Python\NeoBot-oldhistory 是旧历史暂存，不要把它加成本仓库的 remote。
+# 同一份清单在 CI 的 hygiene job 里还有一次兜底检查。
+
+denied="scripts/test_downloaded.png scripts/test_drawing_formats.py scripts/test_drawing_quick.py scripts/test_drawing_sim.py scripts/test_image_reference.py"
+zero=0000000000000000000000000000000000000000
+status=0
+
+check_ref() {
+  sha="$1"
+  touched=$(git rev-list "$sha" -- $denied 2>/dev/null)
+  present=$(git ls-tree -r --name-only "$sha" -- $denied 2>/dev/null)
+  if [ -n "$touched" ] || [ -n "$present" ]; then
+    echo "[pre-push] 拒绝推送：待推引用的历史中包含已从远端清除的文件。" >&2
+    if [ -n "$touched" ]; then
+      echo "[pre-push] 相关提交：" >&2
+      echo "$touched" | head -n 10 | sed 's/^/           /' >&2
+    fi
+    if [ -n "$present" ]; then
+      echo "[pre-push] 相关文件：" >&2
+      echo "$present" | sed 's/^/           /' >&2
+    fi
+    echo "[pre-push] 这些文件曾带硬编码密钥，禁止再次入库；如确需内容，请改名并重写。" >&2
+    status=1
+  fi
+}
+
+while read local_ref local_sha remote_ref remote_sha; do
+  local_ref=$(printf '%s' "$local_ref" | tr -d '\r')
+  local_sha=$(printf '%s' "$local_sha" | tr -d '\r')
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  check_ref "$local_sha"
+done
+
+exit $status

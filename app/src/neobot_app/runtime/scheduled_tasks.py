@@ -38,6 +38,10 @@ class ScheduledTaskConfig:
     default_window_seconds: int = 3600
     max_repeating_tasks: int = 15
     default_one_shot_notification: bool = True
+    #: 错过窗口的补发宽限期：窗口结束超过该秒数才被扫描到的任务视为「停机期间
+    #: 错过」，不再补发提醒。没有这个上限时，进程重启会把停机期间早已结束的
+    #: 窗口（昨天的、上个月的）全部当成刚到期的任务通知一遍。
+    missed_window_grace_seconds: int = 300
 
     @classmethod
     def from_schema(cls, config: Any | None) -> "ScheduledTaskConfig":
@@ -63,6 +67,10 @@ class ScheduledTaskConfig:
             ),
             default_one_shot_notification=bool(
                 getattr(config, "default_one_shot_notification", True)
+            ),
+            missed_window_grace_seconds=max(
+                int(getattr(config, "missed_window_grace_seconds", 300) or 300),
+                1,
             ),
         )
 
@@ -395,16 +403,29 @@ class ScheduledTaskManager:
         task: ScheduledTaskRecord,
         now: datetime,
     ) -> _ScanPlan | None:
+        window = self._current_window(task, now)
+        if window is None:
+            return None
+        # 窗口是否已经错过补发宽限期：超过宽限期的窗口不再补发提醒，避免进程
+        # 重启后把停机期间早已结束的窗口（昨天 / 上个周期的）当成刚到期的通知。
+        missed = self._is_missed_window(window, now)
         if task.recurrence == ScheduledTaskRecurrence.ONCE and now >= task.end_at:
-            window = self._current_window(task, now)
-            if window is None:
-                return None
             if self._was_notified(task):
                 return _ScanPlan(
                     task=task,
                     window=window,
                     finalize="archive",
                     finalize_reason="expired_auto_completed",
+                    finalize_requires_notified=False,
+                )
+            if missed:
+                # 一次性任务的窗口已经过期太久：只归档，不再打扰用户。
+                self._log_missed_window(task, window, now)
+                return _ScanPlan(
+                    task=task,
+                    window=window,
+                    finalize="archive",
+                    finalize_reason="missed_window_expired",
                     finalize_requires_notified=False,
                 )
             return _ScanPlan(
@@ -414,12 +435,22 @@ class ScheduledTaskManager:
                 finalize="archive",
                 finalize_reason="one_shot_notification_sent",
             )
-        window = self._current_window(task, now)
-        if window is None:
-            return None
         if now >= window.end:
             if window.key in task.completed_window_keys:
+                # 该窗口已经处理过（提醒已发，或已按"错过"标记为处理完毕）
                 return None
+            if missed:
+                # 重复任务错过的过期窗口：跳过补发，但必须把窗口标记为已处理。
+                # 只跳过不落库时，下一次扫描（默认每 10 秒）会重新判定同一个窗口
+                # "已错过"并再记一条日志；对于季度/年度这类下次触发还很远的任务，
+                # 同一行日志会一直刷下去。
+                self._log_missed_window(task, window, now)
+                return _ScanPlan(
+                    task=task,
+                    window=window,
+                    finalize="mark_completed",
+                    finalize_requires_notified=False,
+                )
             return _ScanPlan(
                 task=task,
                 window=window,
@@ -454,6 +485,31 @@ class ScheduledTaskManager:
             window=window,
             remind=True,
             finalize="mark_completed",
+        )
+
+    def _is_missed_window(self, window: ScheduledTaskWindow, now: datetime) -> bool:
+        """窗口是否已经超出补发宽限期（重启后不应再补发的过期窗口）。
+
+        BUG-0002 的补发是为了「窗口比轮询间隔短 / 扫描刚刚错过」这类情况，必须
+        有上限：无上限时进程重启会把停机期间结束很久的窗口全部补发一遍，用户看到
+        的就是「早就不在触发时间了，重启后还会被提醒」。
+        """
+        overdue_seconds = (now - window.end).total_seconds()
+        return overdue_seconds > self._config.missed_window_grace_seconds
+
+    def _log_missed_window(
+        self,
+        task: ScheduledTaskRecord,
+        window: ScheduledTaskWindow,
+        now: datetime,
+    ) -> None:
+        self._logger.info(
+            "定时任务窗口已过期，跳过补发",
+            task_id=task.task_uuid,
+            window_key=window.key,
+            window_end=window.end.isoformat(),
+            overdue_seconds=int((now - window.end).total_seconds()),
+            grace_seconds=self._config.missed_window_grace_seconds,
         )
 
     def _was_notified(self, task: ScheduledTaskRecord) -> bool:
@@ -646,6 +702,72 @@ class ScheduledTaskManager:
             end=end,
         )
 
+    # ── 面板只读投影（写操作统一走 reminder skill,避免两套校验） ──
+
+    async def list_managed_tasks(
+        self,
+        *,
+        include_disabled: bool = True,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """列出定时任务(默认含已停用),供网页面板的管理页展示完整字段。"""
+        if self._uow_factory is None:
+            return []
+        async with self._uow_factory() as uow:
+            tasks = await uow.scheduled_tasks.list(
+                include_disabled=include_disabled,
+                limit=max(1, int(limit)),
+                offset=max(0, int(offset)),
+            )
+        now = now_utc()
+        return [self._task_detail(task, now=now) for task in tasks]
+
+    async def get_managed_task(self, task_uuid: str) -> dict[str, Any] | None:
+        """读取单个任务的完整信息;不存在时返回 None。"""
+        task = await self._load_task(task_uuid)
+        if task is None:
+            return None
+        return self._task_detail(task, now=now_utc())
+
+    async def _load_task(self, task_uuid: str) -> ScheduledTaskRecord | None:
+        self._require_storage()
+        async with self._uow_factory() as uow:
+            return await uow.scheduled_tasks.get(task_uuid)
+
+    def _task_detail(
+        self, task: ScheduledTaskRecord, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """把任务记录转换为面板用的完整字段投影。"""
+        moment = _normalize_datetime(now or now_utc())
+        next_start = (
+            _next_occurrence_start(task, moment)
+            if task.state == ScheduledTaskState.ACTIVE
+            else None
+        )
+        return {
+            "task_id": task.task_uuid,
+            "title": task.title,
+            "detail": task.detail,
+            "recurrence": task.recurrence.value,
+            "state": task.state.value,
+            "enabled": task.state == ScheduledTaskState.ACTIVE,
+            "start_at": _format_task_time(task.start_at),
+            "end_at": _format_task_time(task.end_at),
+            "start_at_local": _format_task_input(task.start_at),
+            "end_at_local": _format_task_input(task.end_at),
+            "next_run": _format_task_time(next_start),
+            "bindings": [
+                {"kind": item.kind, "id": str(item.id)} for item in task.bindings
+            ],
+            "metadata": dict(task.metadata),
+            "one_shot_notification": self._is_one_shot_notification(task),
+            "completed_windows": len(task.completed_window_keys),
+            "created_at": _format_task_time(task.created_at),
+            "updated_at": _format_task_time(task.updated_at),
+            "version": task.version,
+        }
+
     def _require_storage(self) -> None:
         if self._uow_factory is None:
             raise RuntimeError("scheduled task storage is not configured")
@@ -695,3 +817,72 @@ def _format_task_time(value: datetime | None) -> str:
         return to_local(value).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(value)
+
+
+def _format_task_input(value: datetime | None) -> str:
+    """任务时间格式化为 <input type="datetime-local"> 需要的本地时间字符串。"""
+    if value is None:
+        return ""
+    try:
+        return to_local(value).strftime("%Y-%m-%dT%H:%M")
+    except Exception:
+        return ""
+
+
+def _occurrence_at_step(task: ScheduledTaskRecord, step: int) -> datetime | None:
+    """从 start_at 起第 step 个周期的窗口起点（月/年按 start_at 的日锚定,避免漂移）。"""
+    anchor = _normalize_datetime(task.start_at)
+    recurrence = task.recurrence
+    if recurrence == ScheduledTaskRecurrence.DAILY:
+        return _normalize_datetime(anchor + timedelta(days=step))
+    if recurrence == ScheduledTaskRecurrence.WEEKLY:
+        return _normalize_datetime(anchor + timedelta(days=7 * step))
+    if recurrence in (ScheduledTaskRecurrence.MONTHLY, ScheduledTaskRecurrence.YEARLY):
+        months = step if recurrence == ScheduledTaskRecurrence.MONTHLY else step * 12
+        total = anchor.year * 12 + (anchor.month - 1) + months
+        year, month_index = divmod(total, 12)
+        month = month_index + 1
+        day = min(anchor.day, calendar.monthrange(year, month)[1])
+        return to_utc(datetime.combine(date(year, month, day), anchor.timetz()))
+    return None
+
+
+def _starting_step(task: ScheduledTaskRecord, moment: datetime) -> int:
+    """估算 moment 落在第几个周期附近（-1 容错),避免长期运行的任务从 0 开始扫描。"""
+    anchor = _normalize_datetime(task.start_at)
+    recurrence = task.recurrence
+    if recurrence == ScheduledTaskRecurrence.DAILY:
+        return max(0, (moment.date() - anchor.date()).days - 1)
+    if recurrence == ScheduledTaskRecurrence.WEEKLY:
+        return max(0, (moment.date() - anchor.date()).days // 7 - 1)
+    if recurrence == ScheduledTaskRecurrence.MONTHLY:
+        return max(
+            0, (moment.year - anchor.year) * 12 + (moment.month - anchor.month) - 1
+        )
+    if recurrence == ScheduledTaskRecurrence.YEARLY:
+        return max(0, moment.year - anchor.year - 1)
+    return 0
+
+
+def _next_occurrence_start(
+    task: ScheduledTaskRecord, now: datetime
+) -> datetime | None:
+    """该任务当前或下一次窗口的起始时间(UTC);已结束的单次任务返回 None。"""
+    start_at = _normalize_datetime(task.start_at)
+    end_at = _normalize_datetime(task.end_at)
+    moment = _normalize_datetime(now)
+    if end_at <= start_at:
+        return None
+    if task.recurrence == ScheduledTaskRecurrence.ONCE:
+        return start_at if start_at > moment else None
+    if moment < start_at:
+        return start_at
+    duration = end_at - start_at
+    first = _starting_step(task, moment)
+    for step in range(first, first + 480):
+        candidate = _occurrence_at_step(task, step)
+        if candidate is None:
+            return None
+        if candidate + duration > moment:
+            return candidate
+    return None

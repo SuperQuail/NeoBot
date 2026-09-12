@@ -30,7 +30,7 @@ class Adapter:
     def __init__(self):
         self.calls = []
 
-    async def send(self, conversation, segments):
+    async def send(self, conversation, segments, wait_response: bool = True):
         self.calls.append((conversation, segments))
         return {"status": "ok", "retcode": 0}
 

@@ -181,8 +181,11 @@ class OneBotAdapter:
         action: str,
         params: Dict[str, Any],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        return await self._core.call_api(action, params, timeout)
+        return await self._core.call_api(
+            action, params, timeout, wait_response=wait_response
+        )
 
     def subscribe(
         self,
@@ -296,6 +299,7 @@ class OneBotAdapter:
         user_id: int,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
         if isinstance(message, str):
             payload = {
@@ -304,7 +308,9 @@ class OneBotAdapter:
             }
         else:
             payload = {"user_id": user_id, "message": message}
-        result = await self.call_api("send_private_msg", payload, timeout)
+        result = await self.call_api(
+            "send_private_msg", payload, timeout, wait_response=wait_response
+        )
         return safe_parse_model(result, response.SendMsgResponse)
 
     async def send_group_msg(
@@ -312,6 +318,7 @@ class OneBotAdapter:
         group_id: int,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
         if isinstance(message, str):
             payload = {
@@ -320,7 +327,9 @@ class OneBotAdapter:
             }
         else:
             payload = {"group_id": group_id, "message": message}
-        result = await self.call_api("send_group_msg", payload, timeout)
+        result = await self.call_api(
+            "send_group_msg", payload, timeout, wait_response=wait_response
+        )
         return safe_parse_model(result, response.SendMsgResponse)
 
     async def send(
@@ -328,12 +337,17 @@ class OneBotAdapter:
         conversation: ConversationRef,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
-        """统一的消息发送接口"""
+        """统一的消息发送接口；wait_response=False 时不等上游 echo 回执。"""
         if conversation.kind == "private":
-            return await self.send_private_msg(int(conversation.id), message, timeout)
+            return await self.send_private_msg(
+                int(conversation.id), message, timeout, wait_response=wait_response
+            )
         else:
-            return await self.send_group_msg(int(conversation.id), message, timeout)
+            return await self.send_group_msg(
+                int(conversation.id), message, timeout, wait_response=wait_response
+            )
 
     async def _dispatch_loop(self) -> None:
         while True:

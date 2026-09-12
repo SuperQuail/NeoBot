@@ -123,6 +123,7 @@ cov.xml
 
 # Node / 前端构建
 node_modules/
+.pnpm-store/
 
 # 临时提交信息
 .commit-msg-*.tmp
@@ -141,3 +142,9 @@ node_modules/
 
 # local bug tracker tool
 /bug_tracker/
+
+# 本地 bug 修复工作区(描述文档 + 日志分析工具, 不提交)
+/bugfixes/
+
+# 本地待实现功能工作区(功能方案文档, 不提交)
+/features/

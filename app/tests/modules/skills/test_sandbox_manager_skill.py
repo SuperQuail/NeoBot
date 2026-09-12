@@ -31,7 +31,7 @@ class FakeAdapter:
         self.calls: list[tuple[Any, Any]] = []
         self._response = response if response is not None else SimpleNamespace(status="ok", retcode=0)
 
-    async def send(self, conv_ref, segments) -> Any:
+    async def send(self, conv_ref, segments, wait_response: bool = True) -> Any:
         self.calls.append((conv_ref, segments))
         return self._response
 
@@ -492,6 +492,25 @@ async def test_grep_files_invalid_regex_rejected(make_sandbox):
 
     assert result["ok"] is False
     assert "正则表达式无效" in result["error"]
+
+
+async def test_list_files_missing_directory_reports_reason_and_hint(make_sandbox):
+    """目录不存在时必须给出原因与下一步，而不是只回一个路径。
+
+    旧实现直接 `error: str(exc)`，实测最坏情况 error 里只有一个路径，
+    模型无法据此判断该换参数还是换工具，只能反复猜。
+    """
+    skill = _make_skill(make_sandbox())
+
+    result = _json_result(await skill.execute(
+        "list_files", {"path": "no-such-dir", "chat_flow_id": "g1"}
+    ))
+
+    assert result["ok"] is False
+    assert result["code"] == "not_found"
+    assert "目录不存在" in result["error"]
+    assert "no-such-dir" in result["error"]
+    assert result.get("hint"), "错误文案必须带下一步建议"
 
 
 async def test_list_files_with_pattern_filter(make_sandbox):

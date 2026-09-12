@@ -551,7 +551,14 @@ class SandboxManagerSkill(SkillModule):
         except PermissionError as exc:
             return _json({"ok": False, "code": "permission_denied", "error": str(exc)})
         except (OSError, ValueError, TypeError) as exc:
-            return _json({"ok": False, "code": "file_error", "error": str(exc)})
+            # 只回传 str(exc) 时，像 FileNotFoundError 这类异常可能只剩一个路径；
+            # 带上异常类型并给出下一步建议，模型才能自愈而不是反复换参数重试。
+            return _json({
+                "ok": False,
+                "code": "file_error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "hint": "确认路径存在且在允许目录内；目录不存在时先列上级目录，不要重复相同调用。",
+            })
 
 # ── Handlers ──
 
@@ -718,8 +725,29 @@ async def _handle_list_files(self: SandboxManagerSkill, args: dict) -> str:
         path = self._sandbox.resolve_read_path(rel_path, chat_flow_id)
         files = await self._sandbox.list_files(path, pattern)
         return _json({"ok": True, "files": files})
+    except (FileNotFoundError, NotADirectoryError):
+        # 旧实现只回传 str(exc)，最坏情况下 error 里只有一个路径，模型无法据此
+        # 判断该换参数还是换工具，只能反复猜（随后改去试别的工具）。
+        return _json({
+            "ok": False,
+            "code": "not_found",
+            "error": f"目录不存在或不是目录: {rel_path}",
+            "hint": "先用 path=\".\" 列出当前目录确认可用路径；不要重复同样的参数。",
+        })
+    except PermissionError as e:
+        return _json({
+            "ok": False,
+            "code": "permission_denied",
+            "error": str(e),
+            "hint": "该路径不在允许范围内：改用当前会话目录，或在允许时使用 shared: 前缀。",
+        })
     except Exception as e:
-        return _json({"ok": False, "error": str(e)})
+        return _json({
+            "ok": False,
+            "code": "file_error",
+            "error": f"{type(e).__name__}: {e}",
+            "hint": "检查路径拼写与后缀；若仍失败请换一个路径或改用其它工具。",
+        })
 
 async def _handle_move_file(self: SandboxManagerSkill, args: dict) -> str:
     if self._sandbox is None:
@@ -779,7 +807,8 @@ async def _handle_send_file(self: SandboxManagerSkill, args: dict) -> str:
             conv_ref = ConversationRef(kind="private", id=user_id)
 
         segment = prepare_image_segment(self._file_server, path)
-        resp = await self._adapter.send(conv_ref, [segment])
+        # 不等 echo：发送几乎不会失败，等待回执只会阻塞 agent 继续执行。
+        resp = await self._adapter.send(conv_ref, [segment], wait_response=False)
 
         if resp is None:
             return _json({"ok": False, "error": "发送超时，无响应"})
@@ -823,7 +852,7 @@ async def _handle_send_chat_file(self: SandboxManagerSkill, args: dict) -> str:
             conv_ref = ConversationRef(kind="private", id=user_id)
 
         segment = prepare_file_segment(self._file_server, path)
-        resp = await self._adapter.send(conv_ref, [segment])
+        resp = await self._adapter.send(conv_ref, [segment], wait_response=False)
 
         if resp is None:
             return _json({"ok": False, "error": "发送超时，无响应"})

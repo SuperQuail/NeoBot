@@ -38,6 +38,7 @@ export default function PluginListPanel(props: PluginListPanelProps) {
                 <small>
                   <span className={'source-badge' + (plugin.official ? ' official' : '')}>{plugin.official ? '官方' : '第三方'}</span>
                   {plugin.version || '未声明版本'}
+                  {plugin.auto_disabled && <span className="source-badge" title={plugin.disabled_reason || '依赖未满足'}>依赖未满足</span>}
                 </small>
               </span>
               <span className={`plugin-status-dot ${plugin.status}`} role="img" aria-label={statusLabels[plugin.status] || plugin.status} />

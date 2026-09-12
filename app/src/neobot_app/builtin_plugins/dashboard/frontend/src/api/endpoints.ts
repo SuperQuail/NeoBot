@@ -1,19 +1,37 @@
 // endpoints.ts —— 后端 /api/* 端点集中封装（返回类型来自 ./types）
-import { getJSON, getResult, postJSON } from './client';
+import { deleteJSON, getJSON, getResult, postJSON, putJSON } from './client';
 import type {
   ActiveUser,
+  ArchiveDeleteBody,
+  ArchiveItemDetail,
+  ArchiveItemQuery,
+  ArchiveItemsPayload,
+  ArchiveUpdateBody,
+  ArchivesPayload,
   BotSummary,
+  ChatFlowDetailPayload,
+  ChatFlowLatestPrompt,
+  ChatFlowPromptEntry,
+  ChatFlowPromptMeta,
+  ChatFlowPromptPayload,
+  ChatFlowPromptsPayload,
+  ChatFlowsPayload,
   ConfigChanges,
   ConfigDocument,
   EnvPayload,
+  ExtensionEntry,
   LogPayload,
   ModelsPayload,
   Overview,
   PluginListPayload,
   PromptAnalysisPayload,
+  PromptPreviewPayload,
+  PromptsPayload,
   ProxyInfo,
   RankPayload,
   Result,
+  ScheduledTaskActionBody,
+  ScheduledTasksPayload,
   SeriesPayload,
   SeriesPoint,
   ServiceItem,
@@ -72,6 +90,23 @@ export interface PluginConfigSaveBody {
 
 export type ConfigSaveBody = PluginConfigSaveBody;
 
+/** 完整提示词历史的过滤参数（空串 = 全部聊天流） */
+const promptsPath = (key: string): string =>
+  '/api/chat-flows/prompts' + (key ? '?key=' + encodeURIComponent(key) : '');
+
+/** 档案列表查询串：只带上非空条件，避免把空筛选写进 URL */
+export function archiveItemsQuery(query: ArchiveItemQuery): string {
+  const params = new URLSearchParams();
+  params.set('table', query.table);
+  if (query.keyQuery) params.set('key_query', query.keyQuery);
+  if (query.valueQuery) params.set('value_query', query.valueQuery);
+  if (query.tags) params.set('tags', query.tags);
+  params.set('limit', String(query.limit ?? 50));
+  params.set('offset', String(query.offset ?? 0));
+  if (query.overLimitOnly) params.set('over_limit', '1');
+  return params.toString();
+}
+
 export const api = {
   // 鉴权
   login: (password: string) => postJSON<{ token?: string; csrf_token?: string }>('/api/auth/login', { password }),
@@ -100,6 +135,73 @@ export const api = {
 
   // 提示词分析
   analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),
+
+  // 提示词模板（data/prompts）
+  prompts: () => getResult<PromptsPayload>('/api/prompts'),
+  promptsPreview: (body: { template?: string; section?: string; path?: string; values?: Record<string, string> }) =>
+    postJSON<PromptPreviewPayload>('/api/prompts/preview', body),
+  promptsSave: (body: { section: string; path: string; value: string }) =>
+    postJSON<SimpleMessage>('/api/prompts/save', body),
+  promptsReset: (body: { section: string; path: string }) =>
+    postJSON<SimpleMessage>('/api/prompts/reset', body),
+
+  // 聊天流（最近一次发给模型的内容 + 后台任务）
+  chatFlows: () => getJSON<ChatFlowsPayload>('/api/chat-flows'),
+  chatFlowDetail: (key: string) =>
+    getJSON<ChatFlowDetailPayload>('/api/chat-flows/detail?key=' + encodeURIComponent(key)),
+
+  // 完整提示词历史（spec(3)：列表只给元数据，正文按需读取、不截断）
+  chatFlowPrompts: (key = '') => getJSON<ChatFlowPromptsPayload>(promptsPath(key)),
+  chatFlowPrompt: (seq: number) =>
+    getJSON<ChatFlowPromptPayload>('/api/chat-flows/prompt?seq=' + encodeURIComponent(String(seq))),
+  chatFlowPromptClear: () => postJSON<SimpleMessage>('/api/chat-flows/prompts/clear'),
+  /**
+   * 默认视图：一次拿到元数据列表**和**最新一份全文（列表接口不返回正文）。
+   * 这样进入页面 / 切换聊天流时只读一次盘；切换到历史里的其它份才走 chatFlowPrompt。
+   */
+  chatFlowPromptLatest: async (key = ''): Promise<ChatFlowLatestPrompt | null> => {
+    const list = await getJSON<ChatFlowPromptsPayload>(promptsPath(key));
+    if (!list) return null;
+    const items = list.items || [];
+    const latest = items.length > 0 ? items[items.length - 1] : null;
+    const limit = Number(list.limit || 0);
+    if (!latest || latest.seq === undefined || latest.seq === null) {
+      return { items, limit, seq: null, entry: null };
+    }
+    const payload = await getJSON<ChatFlowPromptPayload>(
+      '/api/chat-flows/prompt?seq=' + encodeURIComponent(String(latest.seq)),
+    );
+    return {
+      items,
+      limit,
+      seq: latest.seq,
+      entry: (payload && payload.ok !== false ? payload.entry : null) ?? null,
+    };
+  },
+
+  // 档案管理（spec(2)：把模型侧的档案 CRUD 暴露到面板）
+  archives: () => getJSON<ArchivesPayload>('/api/archives'),
+  archiveItems: (query: ArchiveItemQuery) =>
+    getJSON<ArchiveItemsPayload>('/api/archives/items?' + archiveItemsQuery(query)),
+  archiveItem: (table: string, key: string) =>
+    getResult<ArchiveItemDetail>(
+      '/api/archives/item?table=' + encodeURIComponent(table) + '&key=' + encodeURIComponent(key),
+    ),
+  /** 编辑档案（乐观锁：版本不一致时后端返回 409 + current 内容） */
+  archiveUpdate: (body: ArchiveUpdateBody) => putJSON<ArchiveItemDetail>('/api/archives/item', body),
+  /** 删除档案（硬删除；需要 X-CSRF-Token 与面板开关 allow_archive_delete） */
+  archiveDelete: (body: ArchiveDeleteBody) => deleteJSON<SimpleMessage>('/api/archives/item', body),
+
+  // 定时任务管理
+  scheduledTasks: (includeDisabled = true, limit = 200) =>
+    getJSON<ScheduledTasksPayload>(
+      '/api/scheduled-tasks?include_disabled=' + (includeDisabled ? '1' : '0') + '&limit=' + limit,
+    ),
+  scheduledTaskAction: (body: ScheduledTaskActionBody) =>
+    postJSON<SimpleMessage>('/api/scheduled-tasks/action', body),
+
+  // 面板 HTTP 扩展（依赖面板的插件挂载的页面入口）
+  extensions: () => getJSON<{ items?: ExtensionEntry[] }>('/api/extensions'),
 
   // 插件
   plugins: () => getJSON<PluginListPayload>('/api/plugins'),
@@ -163,4 +265,4 @@ export const api = {
 };
 
 export type Api = typeof api;
-export type { Result, SeriesPoint };
+export type { ChatFlowPromptEntry, ChatFlowPromptMeta, Result, SeriesPoint };

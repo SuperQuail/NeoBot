@@ -187,7 +187,7 @@ class EventPipeline:
             )
             if isinstance(value, (int, float)):
                 return max(0.0, float(value))
-        return 60.0
+        return 120.0
 
     def _get_dependency_timeout_seconds(self) -> float:
         return 10.0

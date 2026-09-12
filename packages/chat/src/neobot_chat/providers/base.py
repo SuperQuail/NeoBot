@@ -18,11 +18,45 @@ def _is_transport_error(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
 
+def set_finish_reason(message: Message, finish_reason: object) -> None:
+    """把 provider 的结束原因写进 extensions["finish_reason"]。
+
+    编排器只能靠它区分「模型主动沉默」与「输出被长度上限截断」：没有这个字段时
+    两者都是「正文为空且没有工具调用」，会被当成同一种情况静默结束。
+
+    空值与非法类型不写入，避免产生空字符串这种伪信号。该字段只留在 extensions
+    里，_serialize_messages 不会把它回灌给 API。
+    """
+    if not isinstance(finish_reason, str):
+        return
+    value = finish_reason.strip()
+    if not value:
+        return
+    extensions = dict(message.get("extensions") or {})
+    extensions["finish_reason"] = value
+    message["extensions"] = extensions
+
+
+def normalize_anthropic_stop_reason(stop_reason: object) -> str | None:
+    """Anthropic 的 stop_reason 归一化为 OpenAI 语义（max_tokens -> length）。"""
+    if not isinstance(stop_reason, str) or not stop_reason.strip():
+        return None
+    value = stop_reason.strip()
+    if value == "max_tokens":
+        return "length"
+    return value
+
+
 class Provider(Protocol):
     """LLM Provider 接口：统一的 chat / stream / close 方法"""
 
     @property
     def native_vision(self) -> bool: ...
+
+    #: 单次调用生效的输出 token 上限（None = 由服务端决定）。
+    #: 上层用它判定「这一轮是不是被输出上限截断」，因此必须反映当前真正生效的
+    #: 路由（原生视觉回退包装器要如实透传，不能只在自己身上找不到就算了）。
+    max_tokens: int | None
 
     async def chat(
         self, messages: list[Message], tools: list[ToolDefinition] | None = None

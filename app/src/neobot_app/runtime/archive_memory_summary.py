@@ -45,14 +45,32 @@ RETRY_BACKOFF_MAX_SECONDS = 900.0
 RETRY_BACKOFF_MAX_DOUBLINGS = 4
 # 单次总结的总时长预算(秒)：超过即中止本轮并进入冷却，
 # 避免多轮工具调用把一次总结拖成数十分钟。
-DEFAULT_SUMMARY_BUDGET_SECONDS = 180.0
+# 取值要能装下至少两轮完整调用（第一轮工具调用 + 第二轮收尾）：单次调用超时
+# 默认跟随模型的请求超时(常见 120 秒)再留余量，180 秒会让第二轮必然被腰斩。
+DEFAULT_SUMMARY_BUDGET_SECONDS = 300.0
 # 单次总结内层模型调用的超时(秒)，同时也是单轮上限。
+# 仅作为兜底：配置 agent.memory.trigger.model_call_timeout_seconds 为 0（默认）时
+# 跟随总结模型自身的请求超时，provider 不暴露超时时才用它。
 DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS = 60.0
+#: 自动模式(配置为 0)下给 provider 自身超时留的余量：让 httpx 先超时并返回可读错误，
+#: 而不是被外层 wait_for 在模型仍在正常推理时掐断。
+PROVIDER_TIMEOUT_MARGIN_SECONDS = 15.0
 # 单条工具返回写入上下文的最大字符数。read_pending_messages 会返回 500 条消息全文，
 # list_archive 会返回整条档案 value，原样追加会让之后每一轮都把这几百 KB 重发一遍。
 MAX_TOOL_RESULT_CHARS = 4000
 # 整个总结过程中保留的工具返回总量上限；超出后丢弃最早的工具返回。
 MAX_TOOL_RESULT_TOTAL_CHARS = 60_000
+
+# ── 档案长度硬上限（spec(1)）──
+#: 「档案超限压缩」单次注入提示词的档案内容上限（字符）：超限档案在冷却/失败期间可能
+#: 继续变大，全量塞进提示词会顶爆上下文；超过时保留首尾（头通常是总体概述、尾是最新
+#: 内容），中间部分省略。
+MAX_OVERFLOW_PROMPT_CHARS = 60_000
+_ARCHIVE_PROMPT_OMITTED = "\n...[档案中间部分已省略，仅保留首尾用于压缩]...\n"
+#: 失败退避表最多保留的条目数（防止长时间运行后无界增长）。
+MAX_OVERFLOW_BACKOFF_ENTRIES = 512
+#: 配置缺省时使用的超限压缩冷却秒数（与 AgentMemoryArchive 默认值一致）。
+DEFAULT_OVERFLOW_COOLDOWN_SECONDS = 600.0
 _TOOL_TRUNCATED_MARKER = "\n...[工具返回已截断，需要更多内容请缩小查询范围后重试]"
 _TOOL_DROPPED_MARKER = "[已省略：更早的工具返回，避免上下文膨胀]"
 
@@ -110,10 +128,34 @@ class ArchiveMemoryAutoSummaryService:
             self._summary_budget_seconds: float = max(1.0, float(budget))
         except (TypeError, ValueError):
             self._summary_budget_seconds = DEFAULT_SUMMARY_BUDGET_SECONDS
+        call_timeout = getattr(trigger_cfg, "model_call_timeout_seconds", 0.0)
+        try:
+            # 0 = 自动（跟随 provider 自身的请求超时）
+            self._model_call_timeout_seconds: float = max(0.0, float(call_timeout or 0.0))
+        except (TypeError, ValueError):
+            self._model_call_timeout_seconds = 0.0
         self._item_archive_enabled: bool = bool(item_archive_config.enabled) if item_archive_config else True
         self._item_archive_table: str = (
             str(item_archive_config.table_name).strip() or ITEM_ARCHIVE_TABLE
         ) if item_archive_config else ITEM_ARCHIVE_TABLE
+        # ── 档案长度硬上限（spec(1)）──
+        archive_cfg = getattr(
+            getattr(getattr(config, "agent", None), "memory", None), "archive", None
+        )
+        #: 单条档案的存储上限；0 = 未配置/已禁用（行为与现状一致）。
+        self._overflow_max_total_chars: int = _positive_int_or_zero(
+            getattr(archive_cfg, "max_total_chars", None)
+        )
+        self._overflow_cooldown_seconds: float = _cooldown_seconds_or_default(
+            getattr(archive_cfg, "overflow_summary_cooldown_seconds", None)
+        )
+        #: 每个档案条目（overflow:table:key）的连续失败次数与冷却到期时刻（epoch 秒）。
+        #: 复用计数器那套指数退避：没有它时压缩失败会在每次写入时重跑一整轮模型调用。
+        self._overflow_failures: dict[str, int] = {}
+        self._overflow_retry_after: dict[str, float] = {}
+        #: 在途的「档案超限」压缩任务（单飞占位复用 self._active_summaries）。
+        self._overflow_tasks: set[asyncio.Task] = set()
+        self._configure_archive_overflow_policy(archive_memory_service, archive_cfg)
 
     def install_provider(self, provider: "Provider | None") -> "Provider | None":
         """换用新的总结 provider，返回被替换下来的旧 provider。
@@ -124,6 +166,33 @@ class ArchiveMemoryAutoSummaryService:
         previous = self._provider
         self._provider = provider
         return previous
+
+    def _configure_archive_overflow_policy(self, archive_service: Any, archive_cfg: Any) -> None:
+        """把存储上限接到档案服务的写路径上（D1-B：上限收口在 ArchiveMemoryService.set）。
+
+        档案服务在 packages/memory 里，是纯服务、读不到 BotConfig；由装配期在这里注入
+        「上限策略 + 超限触发回调」，避免 memory 包反向依赖 app 层。
+        """
+        configure = getattr(archive_service, "configure_overflow_policy", None)
+        if not callable(configure):
+            # 测试替身 / 旧实现没有容量治理接口：保持原行为。
+            return
+        configure(
+            max_total_chars=self._overflow_max_total_chars,
+            overflow_action=str(getattr(archive_cfg, "overflow_action", None) or "summarize"),
+            cooldown_seconds=self._overflow_cooldown_seconds,
+            # 豁免名单以 COUNTER_TABLE 为唯一事实来源：内部计数表永不参与容量治理，
+            # 否则自动总结要么写不进计数（reject），要么压缩器把待总结消息吃掉。
+            exempt_tables=(COUNTER_TABLE,),
+        )
+        setter = getattr(archive_service, "set_overflow_trigger", None)
+        if callable(setter):
+            setter(self._schedule_overflow_compression)
+        self._logger.debug(
+            "档案长度上限已接线",
+            max_total_chars=self._overflow_max_total_chars,
+            cooldown_seconds=int(self._overflow_cooldown_seconds),
+        )
 
     async def record_message(
         self,
@@ -248,6 +317,52 @@ class ArchiveMemoryAutoSummaryService:
         finally:
             self._end_summary(counter_key)
 
+    def _next_call_timeout(self, remaining: float) -> float:
+        """算出本轮模型调用的超时，并保证不超出总预算。
+
+        默认跟随总结模型自身的请求超时（再留一点余量让 httpx 先超时并返回可读错误，
+        而不是被外层 wait_for 在模型仍正常推理时掐断）。开启思考、推理强度拉满的模型
+        单次调用经常超过 60 秒，用固定 60 秒会稳定超时并反复重试，每次都要重发完整
+        上下文，既浪费时间又烧 token。配置 model_call_timeout_seconds 可显式覆盖。
+        """
+        limit = self._model_call_timeout_seconds
+        if limit <= 0.0:
+            provider_timeout = getattr(self._provider, "timeout", None)
+            try:
+                limit = float(provider_timeout) + PROVIDER_TIMEOUT_MARGIN_SECONDS
+            except (TypeError, ValueError):
+                limit = DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS
+        return max(1.0, min(limit, remaining))
+
+    async def _commit_partial_success(
+        self,
+        counter_key: str,
+        *,
+        conversation_kind: str,
+        conversation_id: str,
+        snapshot_count: int,
+        message_count: int,
+        tool_successes: int,
+        round_index: int,
+        reason: str,
+    ) -> None:
+        """写入过内容后中止：按部分成功清账，不重跑整批消息。
+
+        档案是增量 append 语义，重跑会把同一批事实再写一遍；而重试本身还要把同一批
+        消息再烧一遍 token，且大概率以同样的方式再次中止。但必须留下可排查的告警，
+        否则"模型没处理完就被销账"是完全静默的。
+        """
+        await self._commit_success(counter_key, snapshot_count=snapshot_count)
+        self._logger.warning(
+            "档案自动总结在写入部分内容后中止，按部分成功清账不再重试",
+            conversation_kind=conversation_kind,
+            conversation_id=conversation_id,
+            message_count=message_count,
+            round=round_index,
+            tool_calls_succeeded=tool_successes,
+            reason=reason,
+        )
+
     async def _run_summary(
         self,
         *,
@@ -289,6 +404,19 @@ class ArchiveMemoryAutoSummaryService:
             for _iteration in range(self._max_tool_rounds):
                 remaining = deadline - monotonic_seconds()
                 if remaining <= 1.0:
+                    if tool_successes:
+                        # 预算耗尽但已经写过档案：同上，清账优于重跑。
+                        await self._commit_partial_success(
+                            counter_key,
+                            conversation_kind=conversation_kind,
+                            conversation_id=conversation_id,
+                            snapshot_count=snapshot_count,
+                            message_count=len(messages),
+                            tool_successes=tool_successes,
+                            round_index=_iteration + 1,
+                            reason="budget_exhausted",
+                        )
+                        return True
                     self._logger.warning(
                         "档案自动总结超出单次时长预算，已中止并进入冷却",
                         conversation_kind=conversation_kind,
@@ -297,7 +425,7 @@ class ArchiveMemoryAutoSummaryService:
                     )
                     await self._defer_after_failure(counter_key)
                     return False
-                call_timeout = min(DEFAULT_SUMMARY_CALL_TIMEOUT_SECONDS, remaining)
+                call_timeout = self._next_call_timeout(remaining)
                 try:
                     response = await asyncio.wait_for(
                         self._provider.chat(chat_messages, tools=tools),
@@ -314,7 +442,21 @@ class ArchiveMemoryAutoSummaryService:
                         timeout_seconds=int(call_timeout),
                         request_chars=_request_chars(chat_messages),
                         messages_count=len(chat_messages),
+                        round=_iteration + 1,
+                        tool_calls_succeeded=tool_successes,
                     )
+                    if tool_successes:
+                        await self._commit_partial_success(
+                            counter_key,
+                            conversation_kind=conversation_kind,
+                            conversation_id=conversation_id,
+                            snapshot_count=snapshot_count,
+                            message_count=len(messages),
+                            tool_successes=tool_successes,
+                            round_index=_iteration + 1,
+                            reason="model_call_timeout",
+                        )
+                        return True
                     raise
                 await self._record_usage(
                     response,
@@ -694,6 +836,298 @@ class ArchiveMemoryAutoSummaryService:
                 flushed_count=flushed,
             )
 
+    async def wait_pending_overflow_tasks(self, timeout: float = 30.0) -> None:
+        """等待所有在途的「档案超限」压缩任务结束（测试与关闭路径使用）。"""
+        pending = [task for task in self._overflow_tasks if not task.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
+
+    # ── 档案超限 → 后台压缩（spec(1)）──
+
+    def _schedule_overflow_compression(self, table_name: str, key: str) -> bool:
+        """档案超限触发入口：由 ArchiveMemoryService 在写路径同步调用。
+
+        只做「要不要调度」的判定并立刻返回；真正的压缩在后台任务里跑。这是「先写后
+        压缩」的关键：写入工具不会被一次完整的模型调用拖住（max_summary_seconds 量级）。
+        单飞复用总结的 _active_summaries 占位（同一 (table_name, key) 同时只跑一个）。
+        """
+        if self._overflow_max_total_chars <= 0:
+            return False
+        task_key = self._overflow_task_key(table_name, key)
+        if self._provider is None:
+            # D3 选项一：AI 不可用时保留原内容、不截断，等下次写入再试。
+            self._logger.warning(
+                "档案超过存储上限但总结模型不可用，保留原内容等待下次写入重试",
+                table_name=table_name,
+                key=key,
+            )
+            return False
+        if not self._overflow_retry_ready(task_key):
+            self._logger.debug(
+                "档案超限压缩处于失败冷却中，跳过本次触发",
+                table_name=table_name,
+                key=key,
+                retry_after=self._overflow_retry_after.get(task_key),
+            )
+            return False
+        if not self._begin_summary(task_key):
+            self._logger.debug(
+                "档案超限压缩已在执行，跳过本次触发",
+                table_name=table_name,
+                key=key,
+            )
+            return False
+        try:
+            task = asyncio.create_task(
+                self._run_overflow_compression(table_name, key, task_key)
+            )
+        except RuntimeError as exc:
+            self._end_summary(task_key)
+            self._logger.warning(
+                "档案超限压缩无法调度（没有运行中的事件循环）",
+                table_name=table_name,
+                key=key,
+                error=str(exc),
+            )
+            return False
+        self._overflow_tasks.add(task)
+        task.add_done_callback(self._overflow_tasks.discard)
+        self._logger.info(
+            "档案超过存储上限，已调度后台压缩",
+            table_name=table_name,
+            key=key,
+        )
+        return True
+
+    async def _run_overflow_compression(
+        self, table_name: str, key: str, task_key: str
+    ) -> bool:
+        """后台压缩任务入口：异常一律转成「保留原文 + 失败退避」，绝不影响写入方。"""
+        try:
+            return await self._compress_overflow_archive(table_name, key, task_key)
+        except Exception as exc:
+            failures = self._record_overflow_failure(task_key)
+            # 异常同样算失败：清掉服务侧冷却，重试节奏交给这里的失败退避，
+            # 否则一次异常会把「下次写入再试」压成 600 秒的静默。
+            self._clear_overflow_cooldown(table_name, key)
+            self._logger.warning(
+                "档案超限压缩失败，保留原内容等待下次写入重试",
+                table_name=table_name,
+                key=key,
+                error=str(exc) or type(exc).__name__,
+                consecutive_failures=failures,
+            )
+            return False
+        finally:
+            self._end_summary(task_key)
+
+    async def _compress_overflow_archive(
+        self, table_name: str, key: str, task_key: str
+    ) -> bool:
+        """对单条超限档案跑一轮「压缩」工具循环，并把结果落库。
+
+        复用总结的预算与保护：max_tool_rounds / max_summary_seconds / 单次调用超时 /
+        用量统计 / 工具连续失败熔断 / 失败指数退避。
+        """
+        limit = self._overflow_max_total_chars
+        if limit <= 0:
+            return True
+        item = await self._archive.get(table_name, key)
+        value = (item.value or "") if item is not None else ""
+        if not value:
+            return False
+        if len(value) <= limit:
+            # 已被别的路径压缩过（例如同一批写入共享一次压缩），无需再跑模型。
+            return True
+
+        prompt = self._build_overflow_compression_prompt(
+            table_name=table_name,
+            key=key,
+            value=value,
+            limit=limit,
+        )
+        tool_successes, tool_failures = await self._run_overflow_tool_loop(
+            prompt, table_name=table_name, key=key
+        )
+
+        after = await self._archive.get(table_name, key)
+        remaining = len((after.value if after is not None else "") or "")
+        if tool_successes <= 0 or remaining > limit:
+            failures = self._record_overflow_failure(task_key)
+            # 压缩没成功 → 清掉服务侧冷却，让「下次写入再试」不被 600 秒冷却掩盖；
+            # 真正的重试节奏由这里的失败退避控制。
+            self._clear_overflow_cooldown(table_name, key)
+            self._logger.warning(
+                "档案超限压缩未压到上限内，保留原内容等待下次写入重试",
+                table_name=table_name,
+                key=key,
+                chars_before=len(value),
+                chars_after=remaining,
+                max_total_chars=limit,
+                tool_calls_succeeded=tool_successes,
+                tool_failures=tool_failures,
+                consecutive_failures=failures,
+            )
+            return False
+
+        self._overflow_failures.pop(task_key, None)
+        self._overflow_retry_after.pop(task_key, None)
+        self._logger.info(
+            "档案超限压缩完成",
+            table_name=table_name,
+            key=key,
+            chars_before=len(value),
+            chars_after=remaining,
+            max_total_chars=limit,
+        )
+        return True
+
+    async def _run_overflow_tool_loop(
+        self, prompt: str, *, table_name: str, key: str
+    ) -> tuple[int, int]:
+        """压缩专用的模型工具循环，返回 (成功工具调用数, 失败工具调用数)。"""
+        chat_messages: list[dict] = [
+            {
+                "role": "system",
+                "content": (
+                    "You compress a single chat archive record that exceeded its storage "
+                    "limit. Rewrite it with the archive tools: keep every durable fact, "
+                    "drop redundancy. When you are done, respond without tool calls."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        tools = self._tool_definitions if self._tool_definitions else None
+        tool_failures = 0
+        tool_successes = 0
+        deadline = monotonic_seconds() + self._summary_budget_seconds
+
+        for iteration in range(self._max_tool_rounds):
+            remaining = deadline - monotonic_seconds()
+            if remaining <= 1.0:
+                self._logger.warning(
+                    "档案超限压缩超出单次时长预算，已中止",
+                    table_name=table_name,
+                    key=key,
+                    budget_seconds=int(self._summary_budget_seconds),
+                )
+                break
+            call_timeout = self._next_call_timeout(remaining)
+            try:
+                response = await asyncio.wait_for(
+                    self._provider.chat(chat_messages, tools=tools),
+                    timeout=call_timeout,
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "档案超限压缩模型调用超时，本次调用不会计入用量统计",
+                    table_name=table_name,
+                    key=key,
+                    timeout_seconds=int(call_timeout),
+                    request_chars=_request_chars(chat_messages),
+                    round=iteration + 1,
+                )
+                break
+            await self._record_usage(
+                response,
+                conversation_kind="archive_overflow",
+                conversation_id=f"{table_name}:{key}",
+            )
+            chat_messages.append(response)
+
+            tool_calls = response.get("tool_calls")
+            if not tool_calls or self._tool_executor is None:
+                break
+            for tc in tool_calls:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    args = {}
+                try:
+                    result = await self._tool_executor(name, args)
+                except Exception as tool_exc:
+                    result = f"Tool error: {tool_exc}"
+                if _is_tool_failure(result):
+                    tool_failures += 1
+                else:
+                    tool_successes += 1
+                chat_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": _bounded_tool_result(result),
+                })
+            _trim_tool_history(chat_messages)
+
+            if tool_failures >= MAX_TOOL_FAILURES:
+                self._logger.warning(
+                    "档案超限压缩因工具连续失败而中止",
+                    table_name=table_name,
+                    key=key,
+                    tool_failures=tool_failures,
+                )
+                break
+        return tool_successes, tool_failures
+
+    def _build_overflow_compression_prompt(
+        self, *, table_name: str, key: str, value: str, limit: int
+    ) -> str:
+        """构造「压缩单条超限档案」的提示词（要求保留事实、只丢冗余）。"""
+        current_time = get_current_time_and_lunar_date()
+        return (
+            f"Current time: {current_time}\n"
+            f"The archive record below exceeded its storage limit and must be compressed now.\n"
+            f"table_name: {table_name}\n"
+            f"key: {key}\n"
+            f"current_chars: {len(value)}\n"
+            f"hard_limit: {limit}\n"
+            f"Compression rules:\n"
+            f"- Call archive_crud__save_archive with table_name='{table_name}', "
+            f"key='{key}' and the FULL compressed record.\n"
+            f"- Keep every durable fact (names, dates, numbers, preferences, decisions, "
+            f"unresolved items); merge duplicates and drop repetition/verbose wording.\n"
+            f"- Never invent facts that are not in the original record.\n"
+            f"- The compressed record MUST be <= {limit} characters; "
+            f"aim for roughly {max(limit // 2, 1)} characters.\n"
+            f"- Do not touch any other archive record.\n"
+            f"\nRecord to compress:\n{_bounded_archive_text(value)}"
+        )
+
+    @staticmethod
+    def _overflow_task_key(table_name: str, key: str) -> str:
+        return f"overflow:{table_name}:{key}"
+
+    def _overflow_retry_ready(self, task_key: str) -> bool:
+        retry_after = self._overflow_retry_after.get(task_key, 0.0)
+        return retry_after <= 0.0 or epoch_seconds() >= retry_after
+
+    def _record_overflow_failure(self, task_key: str) -> int:
+        """记录一次压缩失败并写入指数退避（复用计数器的退避算法）。"""
+        failures = int(self._overflow_failures.get(task_key, 0)) + 1
+        self._overflow_failures[task_key] = failures
+        self._overflow_retry_after[task_key] = epoch_seconds() + self._backoff_seconds(failures)
+        self._prune_overflow_backoff()
+        return failures
+
+    def _prune_overflow_backoff(self) -> None:
+        """退避表只保留未过期条目，避免长期运行后无界增长。"""
+        if len(self._overflow_retry_after) <= MAX_OVERFLOW_BACKOFF_ENTRIES:
+            return
+        now = epoch_seconds()
+        for task_key, retry_after in list(self._overflow_retry_after.items()):
+            if retry_after <= now:
+                self._overflow_retry_after.pop(task_key, None)
+                self._overflow_failures.pop(task_key, None)
+
+    def _clear_overflow_cooldown(self, table_name: str, key: str) -> None:
+        """压缩失败后清除服务侧冷却，让下次写入能立刻再试。"""
+        clearer = getattr(self._archive, "clear_overflow_cooldown", None)
+        if callable(clearer):
+            try:
+                clearer(table_name, key)
+            except Exception:
+                return
+
     async def close(self) -> None:
         if self._provider is not None:
             await self._provider.close()
@@ -863,16 +1297,53 @@ class ArchiveMemoryAutoSummaryService:
                 f"conversation_key='{conversation_key}' and indices=[...]; "
                 f"only fetch what you actually need.\n"
             )
+        overflow_note = ""
+        overflow_limit = getattr(self, "_overflow_max_total_chars", 0)
+        if overflow_limit > 0:
+            overflow_note = (
+                f"\nArchive records have a storage cap of {overflow_limit} characters per record. "
+                f"Keep appends compact; a record that exceeds the cap is compressed automatically "
+                f"in the background, so never rewrite a whole record just to shrink it yourself.\n"
+            )
         return (
             f"Current time: {current_time}\n"
             f"Conversation: {kind_label}\n"
             f"conversation_key: {conversation_key}\n"
             f"The messages below were generated shortly before this time. "
             f"Use the available tools to update the archive records based on these messages.\n"
-            f"{profile_instruction}{favorability_instruction}{item_instruction}"
+            f"{overflow_note}{profile_instruction}{favorability_instruction}{item_instruction}"
             f"{truncation_note}"
             f"\nRecent messages (each line is '[index] sender: text'):\n{recent}"
         )
+
+def _positive_int_or_zero(value: Any) -> int:
+    """配置读取：非负整数上限；None/非法值/负数一律视为 0（禁用）。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _cooldown_seconds_or_default(value: Any, default: float = DEFAULT_OVERFLOW_COOLDOWN_SECONDS) -> float:
+    """配置读取：冷却秒数；None/非法值回落默认值，0 表示不冷却。"""
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, parsed)
+
+
+def _bounded_archive_text(value: str) -> str:
+    """限制注入压缩提示词的档案长度：超长时保留首尾，中间省略。"""
+    if len(value) <= MAX_OVERFLOW_PROMPT_CHARS:
+        return value
+    head_chars = MAX_OVERFLOW_PROMPT_CHARS // 2
+    tail_chars = MAX_OVERFLOW_PROMPT_CHARS - head_chars
+    return f"{value[:head_chars]}{_ARCHIVE_PROMPT_OMITTED}{value[-tail_chars:]}"
+
 
 def _request_chars(messages: list[Any]) -> int:
     """估算一次请求的可见字符数(图片按固定额度计，不把 base64 当文本)。"""

@@ -486,8 +486,25 @@ class AdapterCore:
         except Exception as e:
             logger.error(f"心跳检测任务异常: {e}")
 
-    async def _call_action(self, websocket, action, params, timeout=20):
+    async def _call_action(self, websocket, action, params, timeout=20, wait_response=True):
         echo = f"{action}_{id(params)}_{asyncio.get_event_loop().time()}"
+        if not wait_response:
+            # 只把请求写上线，不等回执：回复管线不应被上游 echo 的往返延迟阻塞。
+            # 代价是拿不到 message_id，也看不到 retcode；发送失败只能靠上游连接
+            # 状态与心跳发现（实测发送几乎不会失败）。
+            try:
+                request = {"action": action, "params": params, "echo": echo}
+                logger.info(f"发送API请求(不等待回执): {request}")
+                await websocket.send(json.dumps(request))
+            except Exception as exc:
+                logger.warning(f"发送API请求失败(不等待回执): {action} - {exc}")
+                return None
+            return {
+                "status": "ok",
+                "retcode": 0,
+                "echo": echo,
+                "wording": "已发送(未等待回执)",
+            }
         fut = asyncio.get_event_loop().create_future()
         self._pending[echo] = fut
         async with self._connections_lock:
@@ -497,10 +514,12 @@ class AdapterCore:
             self._conn_to_echo[websocket].add(echo)
         try:
             request = {"action": action, "params": params, "echo": echo}
-            logger.info(f"发送API请求: {request}")
+            # 高频恒定日志：降为 DEBUG。DEBUG 仍会落盘与进入面板缓冲（sink 等级为 DEBUG），
+            # 但不再污染 INFO 级别的业务日志；失败/超时分支保留 WARNING 作为诊断主线。
+            logger.debug(f"发送API请求: {request}")
             await websocket.send(json.dumps(request))
             response = await asyncio.wait_for(fut, timeout)
-            logger.info(f"收到API响应: {response.get('status')}")
+            logger.debug(f"收到API响应: {response.get('status')}")
             # 根据 OneBot 协议规范，响应有 status 字段
             if response.get("status") == "ok":
                 return response
@@ -523,8 +542,8 @@ class AdapterCore:
                 if conn_echo_set and echo in conn_echo_set:
                     conn_echo_set.remove(echo)
 
-    async def call_api(self, action, params, timeout=20, websocket=None):
-        """调用 API 并等待响应"""
+    async def call_api(self, action, params, timeout=20, websocket=None, wait_response=True):
+        """调用 API；wait_response=False 时只发请求不等回执。"""
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
@@ -533,7 +552,9 @@ class AdapterCore:
                     logger.debug("没有活跃连接，无法调用 API")
                     return None
                 websocket = next(iter(self.active_connections))  # 选择第一个连接
-        return await self._call_action(websocket, action, params, timeout)
+        return await self._call_action(
+            websocket, action, params, timeout, wait_response=wait_response
+        )
 
     async def send_message(self, data, websocket=None):
         """通过一条活跃的 WebSocket 连接发送原始 OneBot 数据。"""

@@ -158,10 +158,11 @@ export async function getResult<T>(path: string): Promise<Result<T>> {
   }
 }
 
-export async function postJSON<T>(path: string, body?: unknown): Promise<Result<T>> {
+/** 写操作的公共实现：POST / PUT / DELETE 只差 method，错误与状态码语义完全一致 */
+async function sendJSON<T>(method: string, path: string, body?: unknown): Promise<Result<T>> {
   try {
     const r = await authFetch(path, {
-      method: 'POST',
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -175,4 +176,18 @@ export async function postJSON<T>(path: string, body?: unknown): Promise<Result<
   } catch (e) {
     return { ok: false, data: null, error: (e as Error).message, status: 0 };
   }
+}
+
+export function postJSON<T>(path: string, body?: unknown): Promise<Result<T>> {
+  return sendJSON<T>('POST', path, body);
+}
+
+/** PUT：档案编辑等写操作需要区分 409 乐观锁冲突，因此必须带 HTTP 状态码 */
+export function putJSON<T>(path: string, body?: unknown): Promise<Result<T>> {
+  return sendJSON<T>('PUT', path, body);
+}
+
+/** DELETE：档案删除等写操作（body 里带 version 做乐观锁） */
+export function deleteJSON<T>(path: string, body?: unknown): Promise<Result<T>> {
+  return sendJSON<T>('DELETE', path, body);
 }

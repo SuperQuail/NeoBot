@@ -280,6 +280,61 @@ def _delete_guard(self: ArchiveCRUDSkill) -> str | None:
     )
 
 
+def _overflow_payload_fields(outcome: Any) -> dict[str, Any]:
+    """把服务的容量治理结果翻译成工具返回字段（供模型判断「已超限、正在压缩」）。"""
+    return {
+        "over_limit": True,
+        "total_chars": int(getattr(outcome, "chars", 0) or 0),
+        "max_total_chars": int(getattr(outcome, "max_total_chars", 0) or 0),
+        "compressing": bool(getattr(outcome, "scheduled", False)),
+        "hint": str(getattr(outcome, "hint", "") or ""),
+    }
+
+
+async def _write_archive_entry(
+    self: ArchiveCRUDSkill,
+    table_name: str,
+    key: str,
+    value: str,
+    tags: Any,
+) -> dict[str, Any]:
+    """写入一条档案，并把「是否超过存储上限」如实回给模型。
+
+    优先走 ArchiveMemoryService.set_with_outcome（可拿到 over_limit / hint /
+    是否已调度压缩）；档案服务只实现 set 时（旧实现、测试替身）退化为老路径。
+    overflow_action='reject' 时服务不落库，这里返回明确错误与压缩指引。
+    """
+    service = self._archive_service
+    writer = getattr(service, "set_with_outcome", None)
+    if not callable(writer):
+        item = await service.set(table_name, key, value, tags)
+        return {
+            "ok": True,
+            "table_name": item.table_name,
+            "key": item.key,
+            "version": item.version,
+            "total_chars": len(value or ""),
+        }
+    outcome = await writer(table_name, key, value, tags)
+    item = getattr(outcome, "item", None)
+    if item is None:
+        return {
+            "ok": False,
+            "error": str(getattr(outcome, "error", "") or "档案超过存储上限，已拒绝写入"),
+            **_overflow_payload_fields(outcome),
+        }
+    payload: dict[str, Any] = {
+        "ok": True,
+        "table_name": item.table_name,
+        "key": item.key,
+        "version": item.version,
+        "total_chars": len(value or ""),
+    }
+    if getattr(outcome, "over_limit", False):
+        payload.update(_overflow_payload_fields(outcome))
+    return payload
+
+
 def _apply_patch_operations(value: str, operations: list[Any]) -> tuple[str, list[str]]:
     """按顺序应用增量编辑操作，返回 (新内容, 错误列表)。
 
@@ -428,17 +483,12 @@ async def _handle_save_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if blocked is not None:
         return blocked
     try:
-        # 原始档案完整保存,不做长度截断;超长档案在渲染时自动生成摘要,
-        # 完整内容通过 read_archive 的 offset 分页阅读
-        item = await self._archive_service.set(table_name, key, value, args.get("tags"))
-        return _json(
-            {
-                "ok": True,
-                "table_name": item.table_name,
-                "key": item.key,
-                "version": item.version,
-            }
-        )
+        # 原始档案完整保存(不截断)。存储上限由 ArchiveMemoryService 统一收口：
+        # 超过 agent.memory.archive.max_total_chars 时先落库、再异步触发压缩，
+        # 返回体里带 over_limit/hint 让模型知道「已超限、正在压缩」；
+        # overflow_action='reject' 时服务直接拒绝，这里回明确错误。
+        # 渲染侧仍按 max_chars/group_profile_max_chars 截断展示，完整内容用 offset 分页读。
+        return _json(await _write_archive_entry(self, table_name, key, value, args.get("tags")))
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -489,17 +539,13 @@ async def _handle_patch_archive(self: ArchiveCRUDSkill, args: dict) -> str:
                     "unchanged": True,
                 }
             )
-        saved = await self._archive_service.set(table_name, key, new_value, tags)
-        return _json(
-            {
-                "ok": True,
-                "table_name": saved.table_name,
-                "key": saved.key,
-                "version": saved.version,
-                "total_chars": len(new_value),
-                "applied": len(operations),
-            }
-        )
+        payload = await _write_archive_entry(self, table_name, key, new_value, tags)
+        if not payload.get("ok"):
+            # 超过存储上限且配置为拒绝：不落库，把压缩指引回给模型。
+            return _json(payload)
+        payload["total_chars"] = len(new_value)
+        payload["applied"] = len(operations)
+        return _json(payload)
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 

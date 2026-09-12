@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,8 +17,12 @@ from neobot_adapter.model.message import (
     PrivateMessage,
 )
 from neobot_app.message.queue import MessageQueue, QueueEntry, QueueEntryType
+from neobot_app.prompt.store import TEMPLATES_DIR, PromptStore
 from neobot_app.reply.orchestrator import (
+    EMPTY_TURN_NO_OUTPUT,
+    EMPTY_TURN_TRUNCATED,
     ReplyOrchestrator,
+    _classify_empty_turn,
     _parse_tool_args,
     _redacted_tool_text,
     _safe_tool_args,
@@ -70,6 +75,9 @@ class _HangingProvider:
 class _ScriptedProvider:
     """按脚本依次返回响应，用于最小 agent 循环。"""
 
+    #: 输出预算：与 provider 契约一致，用于验证 agent_iteration 能观测到上限。
+    max_tokens = 10000
+
     def __init__(self, responses: list[dict]) -> None:
         self._responses = list(responses)
         self.calls: list[tuple[list, object]] = []
@@ -83,7 +91,7 @@ class _ScriptedProvider:
 
 
 class _FakeAdapter:
-    async def send(self, conversation_ref, payload):
+    async def send(self, conversation_ref, payload, wait_response: bool = True):
         return {"status": "ok", "message_id": 2001}
 
     async def call_api(self, action, params):
@@ -129,6 +137,7 @@ def _make_orchestrator(
     config=None,
     group_queue=None,
     friend_queue=None,
+    prompt_store=None,
 ) -> ReplyOrchestrator:
     return ReplyOrchestrator(
         adapter=_FakeAdapter(),
@@ -138,6 +147,7 @@ def _make_orchestrator(
         friend_message_queue=friend_queue,
         config=config or _FakeConfig(),
         logger=None,
+        prompt_store=prompt_store,
     )
 
 
@@ -302,6 +312,259 @@ async def test_private_pipeline_event_reaches_completed_state(monkeypatch):
 
     assert event.state.name == "COMPLETED"
     assert event.completed_at is not None
+    await orch.shutdown()
+
+
+# ── 工具加固：poke 文案与同参失败熔断 ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,args,expected",
+    [
+        ("poke_user", {"user_id": 1}, "poke_user|{\"user_id\": 1}"),
+        ("t", {"b": 1, "a": 2}, "t|{\"a\": 2, \"b\": 1}"),
+    ],
+)
+def test_tool_failure_key_is_stable_for_same_args(name, args, expected):
+    """同工具 + 同参数的指纹必须与键序无关，否则熔断形同虚设。"""
+    assert ReplyOrchestrator._tool_failure_key(name, args) == expected
+
+
+def test_tool_failure_key_survives_unserializable_args():
+    assert "t|" in ReplyOrchestrator._tool_failure_key("t", object())
+
+
+def test_tool_repeat_failure_hint_advises_but_allows_retry():
+    """软限制：提示重复失败，但明确说明修复后可以继续调用。"""
+    message = ReplyOrchestrator._tool_repeat_failure_hint("agent_tools__pwsh", 3)
+
+    assert "agent_tools__pwsh" in message
+    assert "已连续失败 3 次" in message
+    assert "可以继续调用" in message
+
+
+async def _run_agent_once(monkeypatch, provider, adapter_patch=None):
+    orch = _make_orchestrator(provider=provider)
+    if adapter_patch is not None:
+        monkeypatch.setattr(orch._adapter, "call_api", adapter_patch)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+    await orch.shutdown()
+    return orch, event, stages
+
+
+def _poke_call(call_id: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "poke_user", "arguments": json.dumps({"user_id": 10002})},
+    }
+
+
+async def test_poke_failure_keeps_raw_error_for_model(monkeypatch):
+    """戳一戳失败保留原始错误原文：模型要据此判断真正的问题出在哪。"""
+    raw_error = (
+        "packetBackend 发包能力不可用，请参照文档检查 packetBackend 状态；"
+        "PacketBackend 不支持当前QQ版本架构：9.9.32-51246-x64"
+    )
+    provider = _ScriptedProvider([
+        {"content": "", "tool_calls": [_poke_call("p1")]},
+        {"content": "知道了", "tool_calls": []},
+    ])
+
+    async def _failed(action, params):
+        return {"status": "failed", "retcode": 1400, "message": raw_error}
+
+    _, event, _stages = await _run_agent_once(monkeypatch, provider, _failed)
+
+    tool_messages = [m for m in provider.calls[1][0] if m.get("role") == "tool"]
+    content = "\n".join(m["content"] for m in tool_messages)
+    assert "戳一戳失败" in content
+    assert "PacketBackend 不支持当前QQ版本架构" in content
+    assert event.error is None
+
+
+async def test_identical_failing_tool_calls_get_soft_hint_but_still_execute(monkeypatch):
+    """软限制：连续失败后只加提示，后续调用依旧真实执行（修复后必须立刻可用）。"""
+    provider = _ScriptedProvider([
+        {"content": "", "tool_calls": [_poke_call("p1")]},
+        {"content": "", "tool_calls": [_poke_call("p2")]},
+        {"content": "", "tool_calls": [_poke_call("p3")]},
+        {"content": "", "tool_calls": [_poke_call("p4")]},
+        {"content": "算了", "tool_calls": []},
+    ])
+    executed: list = []
+
+    async def _boom(action, params):
+        executed.append((action, params))
+        raise RuntimeError("packetBackend 不可用")
+
+    _, event, stages = await _run_agent_once(monkeypatch, provider, _boom)
+
+    assert len(executed) == 4, "软限制不得短路：每次调用都必须真实执行"
+    hints = [extra for stage, extra in stages if stage == "tool_repeat_failure_hint"]
+    assert [h["failures"] for h in hints] == [3, 4]
+    assert hints[0]["tool_name"] == "poke_user"
+    last_messages = provider.calls[-1][0]
+    tool_content = "\n".join(
+        str(m.get("content", "")) for m in last_messages if m.get("role") == "tool"
+    )
+    assert "已连续失败 3 次" in tool_content
+    assert event.error is None
+
+
+# ── 空轮次：不再静默结束 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        ({"extensions": {"finish_reason": "length"}}, EMPTY_TURN_TRUNCATED),
+        ({"extensions": {"finish_reason": "LENGTH"}}, EMPTY_TURN_TRUNCATED),
+        ({"extensions": {"finish_reason": "stop"}}, EMPTY_TURN_NO_OUTPUT),
+        ({"extensions": {}}, EMPTY_TURN_NO_OUTPUT),
+        ({}, EMPTY_TURN_NO_OUTPUT),
+        (None, EMPTY_TURN_NO_OUTPUT),
+    ],
+)
+def test_classify_empty_turn_distinguishes_truncation(response, expected):
+    """超限截断与其它空输出必须区分：只有前者要额外记录原因。"""
+    assert _classify_empty_turn(response) == expected
+
+
+async def test_empty_turn_marks_event_failed_and_records_reason(monkeypatch):
+    """空轮次不得静默收尾：必须置 FAILED、写 error、留 empty_turn_* 记录，且不重试。"""
+    provider = _ScriptedProvider(
+        [
+            {
+                "content": "",
+                "tool_calls": [],
+                "extensions": {
+                    "finish_reason": "length",
+                    "usage": {
+                        "input_tokens": 23718,
+                        "output_tokens": 10000,
+                        "completion_tokens_details": {"reasoning_tokens": 10000},
+                    },
+                },
+            }
+        ]
+    )
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+
+    # 决策：不做重试（实测大概率拿不到有效输出，只会白烧 input token）。
+    assert len(provider.calls) == 1
+    assert event.state.name == "FAILED"
+    assert event.error and "截断" in event.error
+    assert event.generated_text == ""
+
+    detected = [extra for stage, extra in stages if stage == "empty_turn_detected"]
+    assert len(detected) == 1
+    assert detected[0]["reason"] == EMPTY_TURN_TRUNCATED
+    assert detected[0]["finish_reason"] == "length"
+    assert detected[0]["output_tokens"] == 10000
+    assert detected[0]["reasoning_tokens"] == 10000
+    assert any(stage == "empty_turn_truncated" for stage, _ in stages)
+    assert any(stage == "failed" for stage, _ in stages)
+
+    # 规范化：agent_iteration 必须把结束原因与预算提升为一级字段，
+    # 否则排查截断只能去挖 response.extensions 的嵌套结构。
+    iterations = [extra for stage, extra in stages if stage == "agent_iteration"]
+    assert len(iterations) == 1
+    assert iterations[0]["finish_reason"] == "length"
+    assert iterations[0]["max_tokens"] == 10000
+    assert iterations[0]["output_tokens"] == 10000
+    assert iterations[0]["reasoning_tokens"] == 10000
+    await orch.shutdown()
+
+
+async def test_empty_turn_without_finish_reason_is_recorded_as_empty(monkeypatch):
+    """没有 finish_reason 的空输出同样必须留痕，且不得被当成截断。"""
+    provider = _ScriptedProvider([{"content": "", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+
+    assert event.state.name == "FAILED"
+    assert event.error and "空输出" in event.error
+    detected = [extra for stage, extra in stages if stage == "empty_turn_detected"]
+    assert len(detected) == 1
+    assert detected[0]["reason"] == EMPTY_TURN_NO_OUTPUT
+    assert not any(stage == "empty_turn_truncated" for stage, _ in stages)
     await orch.shutdown()
 
 
@@ -855,18 +1118,23 @@ async def test_agent_mode_no_allowed_tools_passes_none(monkeypatch):
     await orch.shutdown()
 
 
-# ── allowed-tools 下表情包搜索提示一致性 ──────────────────────────
+# ── 表情包不再注入提示词（改为按需工具） ──────────────────────────
 
 
 class _FakeEmojiService:
-    """假表情包服务：图库数量超过分页上限（50）时触发搜索提示。"""
+    """假表情包服务：只提供 list_emojis 工具需要的清单接口。
+
+    提示词注入已移除，因此这里生成的清单不会出现在 system 提示词里；
+    保留它用于验证「即使服务可用，提示词也不会被污染」。
+    """
 
     def __init__(self, count: int = 200) -> None:
         self.emoji_count = count
 
-    def build_prompt_text(self, limit: int = 50) -> str:
-        limit = limit or 50  # _FakeChat.__getattr__ 缺失配置属性返回 None
-        return "\n".join(f"#{i}" for i in range(1, min(self.emoji_count, limit) + 1))
+    def build_list_text(self, offset: int = 0, limit: int | None = None) -> str:
+        limit = limit or 50
+        end = min(self.emoji_count, offset + limit)
+        return "\n".join(f"#{i}" for i in range(offset + 1, end + 1))
 
     def get_entry(self, number: int):
         return None
@@ -891,9 +1159,8 @@ def _capture_toolset_build(monkeypatch) -> dict:
     return captured
 
 
-async def test_agent_mode_allowed_tools_omits_search_custom_emoji_hint(monkeypatch):
-    """限制激活时提示词省略 search_custom_emoji 搜索提示（该工具已被 definitions
-    过滤），表情包段其余内容与限制说明保留。"""
+async def test_agent_mode_allowed_tools_keeps_emoji_out_of_prompt(monkeypatch):
+    """限制激活时：工具集受限、提示词带限制说明，且表情包清单不进入提示词。"""
     captured = _capture_toolset_build(monkeypatch)
     orch = _make_orchestrator(
         provider=_ScriptedProvider([{"content": "收到", "tool_calls": []}])
@@ -912,15 +1179,16 @@ async def test_agent_mode_allowed_tools_omits_search_custom_emoji_hint(monkeypat
 
     chat_context = captured["chat_context"]
     assert captured.get("allowed_tools") is not None
-    assert "<可用的表情包>" in chat_context
-    assert "可用 search_custom_emoji 按关键词搜索" not in chat_context
     assert "限制了可用工具" in chat_context
+    # 表情包清单已改为按需工具，任何情况下都不再注入 system 提示词
+    assert "<可用的表情包>" not in chat_context
+    assert "#1" not in chat_context
     assert event.state.name == "COMPLETED"
     await orch.shutdown()
 
 
-async def test_agent_mode_no_restriction_keeps_search_custom_emoji_hint(monkeypatch):
-    """无限制时提示词保留 search_custom_emoji 搜索提示。"""
+async def test_agent_mode_no_restriction_also_keeps_emoji_out_of_prompt(monkeypatch):
+    """不限制工具时同样不注入表情包清单。"""
     captured = _capture_toolset_build(monkeypatch)
     orch = _make_orchestrator(
         provider=_ScriptedProvider([{"content": "收到", "tool_calls": []}])
@@ -939,7 +1207,8 @@ async def test_agent_mode_no_restriction_keeps_search_custom_emoji_hint(monkeypa
 
     chat_context = captured["chat_context"]
     assert captured.get("allowed_tools") is None
-    assert "可用 search_custom_emoji 按关键词搜索" in chat_context
+    assert "<可用的表情包>" not in chat_context
+    assert "#1" not in chat_context
     assert event.state.name == "COMPLETED"
     await orch.shutdown()
 
@@ -1997,9 +2266,17 @@ async def test_native_vision_tool_images_and_live_fallback(monkeypatch, degrade)
     messages = provider.calls[1][0]
     tool_positions = [i for i, message in enumerate(messages) if message.get("role") == "tool"]
     assert len(tool_positions) == 2
-    vision_message = messages[tool_positions[-1] + 1]
+    # 图片附件始终追加在整批工具结果之后;两者之间只允许出现回复前的
+    # <当前时间> user 块(它是纯文本,不会把图片挤进工具结果里)
+    vision_message = messages[-1]
     assert vision_message["role"] == "user"
+    assert isinstance(vision_message["content"], list)
     assert len([p for p in vision_message["content"] if p.get("type") == "image_url"]) == 2
+    between = messages[tool_positions[-1] + 1 : -1]
+    assert all(
+        message.get("role") == "user" and "当前时间" in str(message.get("content", ""))
+        for message in between
+    )
     assert all(encoded not in messages[i]["content"] for i in tool_positions)
     assert all("data:image/" not in messages[i]["content"] for i in tool_positions)
     if not degrade:
@@ -2104,3 +2381,492 @@ async def test_agent_default_images_are_labelled_only_at_prompt_end(monkeypatch,
     else:
         assert all(isinstance(m["content"], str) for m in request)
     await orch.shutdown()
+
+
+# ── §12–§15:防重复提醒 / 时间块分级 / 长任务沉默提醒(nudge) ──────────────────
+
+
+class _DisabledPromptStore:
+    """只读提示词 store 包装:把指定分区报为 enabled = false(模拟 custom 覆盖)。"""
+
+    def __init__(self, inner, disabled) -> None:
+        self._inner = inner
+        self._disabled = set(disabled)
+
+    def enabled(self, key: str, default: bool = True) -> bool:
+        if key in self._disabled:
+            return False
+        return self._inner.enabled(key, default=default)
+
+    def get(self, key: str, sub: str = "template", default: str = "") -> str:
+        return self._inner.get(key, sub, default=default)
+
+    def template(self, key: str, default: str = "") -> str:
+        return self._inner.template(key, default)
+
+
+def _builtin_prompts(*disabled: str):
+    """直接读内置 templates/prompts.toml 的只读 store(不写任何文件)。"""
+    store = PromptStore(TEMPLATES_DIR)
+    if disabled:
+        return _DisabledPromptStore(store, disabled)
+    return store
+
+
+def _section_text(key: str) -> str:
+    """读取内置提示词分区的定稿文本。"""
+    return PromptStore(TEMPLATES_DIR).template(key)
+
+
+class _NudgeChat(_FakeChat):
+    """轮次触发开、时间触发关(保证测试确定性),其余属性沿用默认分支。"""
+
+    silent_nudge_enabled = True
+    silent_nudge_first_rounds = 5
+    silent_nudge_repeat_rounds = 10
+    silent_nudge_seconds = 0.0
+    silent_nudge_max = 3
+    random_sticker_probability = 0.0
+
+
+class _NudgeConfig(_FakeConfig):
+    chat = _NudgeChat()
+
+
+class _GroupNudgeChat(_NudgeChat):
+    group_chat_reply_lifespan = 2
+    group_agent_silent_timeout_seconds = 120.0
+
+
+class _GroupNudgeConfig(_FakeConfig):
+    chat = _GroupNudgeChat()
+
+
+def _tool_round_responses(count: int, *, final: str = "好了") -> list[dict]:
+    """count 轮工具调用 + 一条最终回复的脚本。"""
+    return [
+        {"content": "", "tool_calls": [_poke_call(f"p{index}")]}
+        for index in range(count)
+    ] + [{"content": final, "tool_calls": []}]
+
+
+def _texts(messages: list) -> list[str]:
+    return [
+        message.get("content")
+        for message in messages
+        if isinstance(message.get("content"), str)
+    ]
+
+
+def _count_content(messages: list, text: str) -> int:
+    return sum(1 for content in _texts(messages) if content == text)
+
+
+def _nudge_injection_indexes(provider, text: str) -> list[int]:
+    """返回提醒累计条数发生增加的模型请求下标。"""
+    counts = [_count_content(messages, text) for messages, _tools in provider.calls]
+    return [index for index in range(1, len(counts)) if counts[index] > counts[index - 1]]
+
+
+def _time_block_texts(messages: list) -> list[str]:
+    return [content for content in _texts(messages) if "<当前时间>" in content]
+
+
+def _uses_full_time_block(content: str) -> bool:
+    return "现在的时间是" in content
+
+
+async def _run_agent_pipeline(
+    monkeypatch,
+    provider,
+    *,
+    config=None,
+    prompt_store=None,
+    message=None,
+    queue_key: str = "123456",
+    suspend_attr: str = "_suspend_private_chat",
+    suspend_result=None,
+):
+    """跑一次 agent 管线(默认私聊),返回 (orch, event, stages)。"""
+    if suspend_result is None:
+        suspend_result = ([], None)
+    orch = _make_orchestrator(
+        provider=provider, config=config, prompt_store=prompt_store
+    )
+    queue = MessageQueue()
+    queue.push(queue_key, _make_private_message(message_id=1, text="帮我做点事"))
+    monkeypatch.setattr(orch, suspend_attr, AsyncMock(return_value=suspend_result))
+    stages: list[tuple[str, dict]] = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+    event = orch.start_reply(
+        message=message or _make_private_message(message_id=2),
+        queue=queue,
+        queue_key=queue_key,
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+    await orch.shutdown()
+    return orch, event, stages
+
+
+# ── 沉默提醒(nudge) ──
+
+
+async def test_silent_nudge_fires_after_five_tool_rounds(monkeypatch):
+    """连续 5 轮工具调用未回复 → 第 6 次请求里出现提醒,并留下 silent_nudge 记录。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(7))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert [index for index in _nudge_injection_indexes(provider, text)] == [5]
+    assert _count_content(provider.calls[4][0], text) == 0
+    assert _count_content(provider.calls[5][0], text) == 1
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert len(nudges) == 1
+    assert nudges[0]["reason"] == "rounds"
+    assert nudges[0]["emitted"] == 1
+    assert nudges[0]["iteration"] == 6
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_refreshes_and_fires_again_on_ladder(monkeypatch):
+    """提醒后刷新记录器:30 轮内提醒点落在累计第 5/15/25 轮(共 3 次,恰好触达上限)。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(30))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _nudge_injection_indexes(provider, text) == [5, 15, 25]
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert [extra["emitted"] for extra in nudges] == [1, 2, 3]
+    assert {extra["reason"] for extra in nudges} == {"rounds"}
+    assert _count_content(provider.calls[-1][0], text) == 3
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_disabled_keeps_current_behavior(monkeypatch):
+    """silent_nudge_enabled = false → 不再注入任何提醒。"""
+
+    class _OffChat(_NudgeChat):
+        silent_nudge_enabled = False
+
+    class _OffConfig(_FakeConfig):
+        chat = _OffChat()
+
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(8))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_OffConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _count_content(provider.calls[-1][0], text) == 0
+    assert [stage for stage, _extra in stages if stage == "silent_nudge"] == []
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_skipped_for_short_task(monkeypatch):
+    """短任务(3 轮工具调用)不受影响:0 次提醒。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(3))
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _count_content(provider.calls[-1][0], text) == 0
+
+
+async def test_silent_nudge_time_trigger(monkeypatch):
+    """时间触发独立生效:即使不足 5 轮,超过阈值秒数也提醒一次。"""
+    from neobot_app.reply import orchestrator as orchestrator_module
+
+    clock = {"now": 1000.0}
+
+    def _fake_monotonic() -> float:
+        return clock["now"]
+
+    monkeypatch.setattr(orchestrator_module, "monotonic_seconds", _fake_monotonic)
+
+    class _TimeOnlyChat(_FakeChat):
+        silent_nudge_enabled = True
+        silent_nudge_first_rounds = 0
+        silent_nudge_repeat_rounds = 10
+        silent_nudge_seconds = 45.0
+        silent_nudge_max = 3
+        random_sticker_probability = 0.0
+
+    class _TimeOnlyConfig(_FakeConfig):
+        chat = _TimeOnlyChat()
+
+    class _ClockProvider(_ScriptedProvider):
+        async def chat(self, messages, tools=None):
+            response = await super().chat(messages, tools=tools)
+            clock["now"] += 61.0
+            return response
+
+    text = _section_text("silent_nudge")
+    provider = _ClockProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_TimeOnlyConfig(),
+        prompt_store=_builtin_prompts(),
+    )
+
+    assert _nudge_injection_indexes(provider, text) == [1]
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert len(nudges) == 1
+    assert nudges[0]["reason"] == "seconds"
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_does_not_trigger_group_silence_watchdog(monkeypatch):
+    """提醒不改变既有 120s 活动看门狗语义:群聊管线不得被强杀。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(6))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_GroupNudgeConfig(),
+        prompt_store=_builtin_prompts(),
+        message=_make_group_message(),
+        queue_key="888888",
+        suspend_attr="_suspend_group_chat",
+        suspend_result=([], None, None),
+    )
+
+    assert [stage for stage, _extra in stages if stage == "group_agent_silent_timeout"] == []
+    assert _nudge_injection_indexes(provider, text) == [5]
+    assert event.state.name == "COMPLETED"
+
+
+def test_should_nudge_respects_reply_sent_limits_and_threshold():
+    """提醒判定的三条硬约束:已回复不提醒、未达阈值不提醒、达到上限不提醒。"""
+    orch = _make_orchestrator(config=_NudgeConfig())
+
+    assert (
+        orch._should_nudge(reply_sent=True, rounds=99, next_at=5, emitted=0, deadline=0.0)
+        is False
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=4, next_at=5, emitted=0, deadline=0.0)
+        is False
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=5, next_at=5, emitted=0, deadline=0.0)
+        is True
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=99, next_at=5, emitted=3, deadline=0.0)
+        is False
+    )
+
+
+async def test_reply_sent_clears_nudge_counter(monkeypatch):
+    """send_reply 之后计数清零:同一激活内剩余轮次不再触发提醒。"""
+
+    class _ReplyChat(_NudgeChat):
+        silent_nudge_first_rounds = 3
+
+    class _ReplyConfig(_FakeConfig):
+        chat = _ReplyChat()
+
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "reply",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps({"text": "我先说一句"}),
+                        },
+                    }
+                ],
+            },
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_ReplyConfig(), prompt_store=_builtin_prompts()
+    )
+
+    # send_reply 会让本轮收尾,因此只可能有一轮"未回复"的提醒机会
+    assert _count_content(provider.calls[-1][0], text) == 0
+    assert [stage for stage, _extra in stages if stage == "silent_nudge"] == []
+    assert event.state.name == "COMPLETED"
+
+
+# ── 时间块分级注入 ──
+
+
+async def test_time_block_full_then_short_within_activation(monkeypatch):
+    """同一激活内:第一次完整时间块,后续只注入 YYYY-MM-DD HH:MM:SS 短时间戳。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "", "tool_calls": [_poke_call("p1")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    blocks = [_time_block_texts(messages) for messages, _tools in provider.calls]
+    assert [[_uses_full_time_block(text) for text in block] for block in blocks] == [
+        [True],
+        [True, False],
+        [True, False, False],
+    ]
+    short = blocks[1][1]
+    assert re.fullmatch(
+        r"<当前时间>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</当前时间>", short
+    ), short
+    # 时间随轮次推进:短时间戳不早于完整块里的时间戳
+    full_stamp = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", blocks[0][0])
+    short_stamp = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", short)
+    assert full_stamp is not None and short_stamp is not None
+    assert short_stamp.group(0) >= full_stamp.group(0)
+
+
+async def test_time_block_full_injected_again_in_new_activation(monkeypatch):
+    """新一轮管线激活(挂起恢复)时重新注入完整时间块。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "回复1", "tool_calls": []},
+            {"content": "回复2", "tool_calls": []},
+        ]
+    )
+
+    _, event, _stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_GroupNudgeConfig(),
+        prompt_store=_builtin_prompts(),
+        message=_make_group_message(),
+        queue_key="888888",
+        suspend_attr="_suspend_group_chat",
+        suspend_result=([], "resume", None),
+    )
+
+    assert len(provider.calls) == 3
+    blocks = [_time_block_texts(messages) for messages, _tools in provider.calls]
+    assert [len(block) for block in blocks] == [1, 2, 3]
+    assert [_uses_full_time_block(block[-1]) for block in blocks] == [True, False, True]
+    assert event.state.name == "COMPLETED"
+
+
+async def test_time_blocks_are_absent_when_current_time_disabled(monkeypatch):
+    """[current_time] 关闭后不再有任何时间注入(短时间戳也不会单独出现)。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_NudgeConfig(),
+        prompt_store=_builtin_prompts("current_time"),
+    )
+
+    for messages, _tools in provider.calls:
+        assert _time_block_texts(messages) == []
+
+
+# ── 防重复提醒([avoid_repeat]) ──
+
+
+async def test_avoid_repeat_appended_once_per_activation_verbatim(monkeypatch):
+    """每次管线激活只追加一次;紧随时间块之后,文本与分区逐字一致。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    first = provider.calls[0][0]
+    second = provider.calls[1][0]
+    assert first[-1] == {"role": "user", "content": text}
+    assert "<当前时间>" in first[-2]["content"]
+    assert _count_content(first, text) == 1
+    assert _count_content(second, text) == 1
+
+
+async def test_avoid_repeat_can_be_disabled_without_touching_time_block(monkeypatch):
+    """[avoid_repeat] enabled = false → 不再追加,时间块行为不变。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider([{"content": "好了", "tool_calls": []}])
+
+    await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_NudgeConfig(),
+        prompt_store=_builtin_prompts("avoid_repeat"),
+    )
+
+    messages = provider.calls[0][0]
+    assert _count_content(messages, text) == 0
+    assert _time_block_texts(messages) != []
+
+
+async def test_common_path_appends_avoid_repeat_once(monkeypatch):
+    """common 单次路径同样追加一次防重复提醒(时间块之后)。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider([{"content": "hello", "tool_calls": []}])
+    orch = _make_orchestrator(
+        provider=provider, config=_CommonConfig(), prompt_store=_builtin_prompts()
+    )
+    queue = MessageQueue()
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+
+    messages = provider.calls[0][0]
+    assert messages[-1] == {"role": "user", "content": text}
+    assert "<当前时间>" in messages[-2]["content"]
+    assert _count_content(messages, text) == 1
+    await orch.shutdown()
+

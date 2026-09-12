@@ -27,6 +27,9 @@ from neobot_app.willing import WillingService
 from neobot_app.core.file_server import FileServer
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
 
+#: 完整提示词历史(聊天流)默认全局保留份数
+DEFAULT_PROMPT_HISTORY_LIMIT = 100
+
 
 def build_debug_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
     debug_cfg = getattr(config, "debug", None)
@@ -42,15 +45,43 @@ def build_debug_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
 
 
 def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
-    """构建聊天上下文记录器(debug 模式):记录每次模型调用的完整上下文,保留最近 100 轮。"""
-    if not getattr(getattr(config, "debug", None), "enabled", False):
+    """构建完整提示词历史记录器(每次模型调用的完整上下文)。
+
+    由 ``[chat].chat_flow_prompt_history_enabled``(默认 True)控制,与 ``debug.enabled`` 解耦;
+    目录为 ``<DATA_DIR>/chat_flows/prompts/``(原 ``debug/context/`` 的历史不迁移、不消费),
+    全局保留份数取 ``chat_flow_prompt_history_limit``(默认 100)。
+    """
+    chat_cfg = getattr(config, "chat", None)
+    enabled = getattr(chat_cfg, "chat_flow_prompt_history_enabled", True)
+    if enabled is None:
+        enabled = True
+    if not enabled:
         return None
+    limit = getattr(
+        chat_cfg, "chat_flow_prompt_history_limit", DEFAULT_PROMPT_HISTORY_LIMIT
+    )
+    if limit is None:
+        limit = DEFAULT_PROMPT_HISTORY_LIMIT
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = DEFAULT_PROMPT_HISTORY_LIMIT
+    if limit <= 0:
+        warning = getattr(logger, "warning", None)
+        if callable(warning):
+            warning(
+                f"chat_flow_prompt_history_limit={limit} 非法,回退默认 "
+                f"{DEFAULT_PROMPT_HISTORY_LIMIT}"
+            )
+        limit = DEFAULT_PROMPT_HISTORY_LIMIT
+    latest_in_memory = getattr(chat_cfg, "chat_flow_latest_in_memory", False)
     from neobot_app.observability.context_recorder import ContextRecorder
 
     return ContextRecorder(
-        DATA_DIR / "debug" / "context",
-        max_files=100,
+        DATA_DIR / "chat_flows" / "prompts",
+        max_files=limit,
         logger=logger,
+        latest_in_memory=bool(latest_in_memory),
     )
 
 

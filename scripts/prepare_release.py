@@ -1,18 +1,13 @@
-"""Choose one workspace release version; run with uv --no-project --with packaging.
-
-No pyproject is written until every local file and every PyPI response is valid.
-Only static project.version string values are changed, not dependency constraints.
-"""
+"""Detect a manually updated workspace version without modifying project files."""
 from __future__ import annotations
 
 import argparse
-import copy
 from dataclasses import dataclass
 from http.client import HTTPException
 import json
 import os
 from pathlib import Path
-import re
+import subprocess
 import sys
 import tomllib
 from urllib.error import HTTPError, URLError
@@ -21,12 +16,19 @@ from urllib.request import urlopen
 
 from packaging.version import InvalidVersion, Version
 
+if __package__:
+    from .semver_validation import validate_semver
+else:
+    from semver_validation import validate_semver
+
 
 class ReleaseError(ValueError):
     """Release preparation is unsafe; leave the project unchanged."""
 
 
 def parse_version(value: str, source: str) -> Version:
+    if not isinstance(value, str) or value != value.strip() or "\n" in value or "\r" in value:
+        raise ReleaseError(f"Invalid version in {source}: {value!r}")
     try:
         version = Version(value)
     except (InvalidVersion, TypeError) as exc:
@@ -39,10 +41,9 @@ def parse_version(value: str, source: str) -> Version:
 @dataclass(frozen=True)
 class Project:
     path: Path
-    text: str
-    data: dict
     name: str
     version: Version
+    raw_version: str
     publishable: bool
 
 
@@ -54,7 +55,6 @@ def load_projects(root: Path) -> list[Project]:
     projects = []
     for path in paths:
         try:
-            # Preserve CRLF and all formatting outside the version literal.
             text = path.read_bytes().decode("utf-8")
             data = tomllib.loads(text)
             name = data["project"]["name"]
@@ -63,10 +63,17 @@ def load_projects(root: Path) -> list[Project]:
                 raise ReleaseError(f"Missing static project name/version in {path}")
             if "version" in data["project"].get("dynamic", []):
                 raise ReleaseError(f"Dynamic project.version is not supported: {path}")
-            version = parse_version(raw_version, str(path))
+            try:
+                validate_semver(raw_version, str(path))
+            except ValueError as exc:
+                raise ReleaseError(str(exc)) from exc
+            try:
+                version = parse_version(raw_version, str(path))
+            except ReleaseError as exc:
+                raise ReleaseError(f"Valid SemVer but not supported for PyPI in {path}: {raw_version!r}") from exc
         except (OSError, UnicodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
             raise ReleaseError(f"Cannot load {path}: {exc}") from exc
-        projects.append(Project(path, text, data, name, version, "build-system" in data))
+        projects.append(Project(path, name, version, raw_version, "build-system" in data))
     if any(project.version != projects[0].version for project in projects):
         raise ReleaseError("Local project versions are not synchronized")
     return projects
@@ -99,76 +106,69 @@ def published_versions(name: str) -> list[Version]:
     return versions
 
 
-def choose_version(local: Version, published: list[Version]) -> Version:
-    if not published or local > max(published):
-        return local
-    latest = max(local, *published)
-    prefix = f"{latest.epoch}!" if latest.epoch else ""
-    if latest.pre is not None:
-        stage, number = latest.pre
-        return Version(prefix + ".".join(map(str, latest.release)) + f"{stage}{number + 1}")
-    release = list(latest.release)
-    if len(release) > 3:
-        raise ReleaseError(f"Cannot increment patch of non-standard release: {latest}")
-    release += [0] * (3 - len(release))
-    release[2] += 1
-    return Version(prefix + ".".join(map(str, release)))
+@dataclass(frozen=True)
+class ReleasePlan:
+    version: str
+    publish: bool
+    reason: str
 
 
-# Candidates are proved by parsing, not by assuming a regex understands TOML tables.
-_VERSION_LINE = re.compile(
-    r'''(?m)^[ \t]*(?:version|"version"|'version')[ \t]*=[ \t]*(?P<literal>"[^"\r\n]*"|'[^'\r\n]*')[ \t]*(?:\#[^\r\n]*)?\r?$'''
-)
+def previous_version(root: Path, base_ref: str) -> Version:
+    # Require an explicit baseline; never guess HEAD^ for a multi-commit push.
+    if not base_ref or base_ref.startswith("-") or set(base_ref) == {"0"}:
+        raise ReleaseError("A valid pre-push base ref is required")
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{base_ref}:pyproject.toml"],
+            cwd=root, check=True, capture_output=True, text=True, encoding="utf-8",
+        )
+        data = tomllib.loads(result.stdout)
+        if "version" in data["project"].get("dynamic", []):
+            raise ReleaseError("Dynamic baseline project.version is not supported")
+        return parse_version(data["project"]["version"], f"{base_ref}:pyproject.toml")
+    except (OSError, subprocess.CalledProcessError, UnicodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
+        raise ReleaseError(f"Cannot read baseline {base_ref}: {exc}") from exc
 
 
-def replace_project_version(project: Project, version: str) -> str:
-    expected = copy.deepcopy(project.data)
-    marker = "__prepare_release_version_marker__"
-    expected["project"]["version"] = marker
-    candidates = []
-    for match in _VERSION_LINE.finditer(project.text):
-        start, end = match.span("literal")
-        probe = project.text[:start] + json.dumps(marker) + project.text[end:]
-        try:
-            if tomllib.loads(probe) == expected:
-                candidates.append((start, end))
-        except tomllib.TOMLDecodeError:
-            pass
-    if len(candidates) != 1:
-        raise ReleaseError(f"Cannot precisely locate static project.version in {project.path}")
-    start, end = candidates[0]
-    delimiter = project.text[start]
-    updated = project.text[:start] + delimiter + version + delimiter + project.text[end:]
-    expected["project"]["version"] = version
-    if tomllib.loads(updated) != expected:
-        raise ReleaseError(f"Unexpected TOML change in {project.path}")
-    return updated
-
-
-def prepare_release(root: Path) -> str:
-    projects = load_projects(Path(root))
-    published = []
-    for project in projects:
-        if project.publishable:
-            published.extend(published_versions(project.name))
-    version = str(choose_version(projects[0].version, published))
-    # Stage every edit before the first write (including precise-edit validation).
-    updates = [(project.path, replace_project_version(project, version)) for project in projects]
-    for path, text in updates:
-        path.write_bytes(text.encode("utf-8"))
-    return version
+def prepare_release(root: Path, *, base_ref: str) -> ReleasePlan:
+    root = Path(root)
+    projects = load_projects(root)
+    local = projects[0].version
+    version = projects[0].raw_version
+    previous = previous_version(root, base_ref)
+    if local == previous:
+        return ReleasePlan(version, False, "Version unchanged")
+    if local < previous:
+        raise ReleaseError(f"Version must increase manually: {previous} -> {version}")
+    publishable = [project for project in projects if project.publishable]
+    if not publishable:
+        raise ReleaseError("No publishable workspace packages")
+    histories = [(project, published_versions(project.name)) for project in publishable]
+    for project, published in histories:
+        if published and local < max(published):
+            raise ReleaseError(f"{project.name}: {version} is older than PyPI {max(published)}; update versions manually")
+    if all(local in published for _, published in histories):
+        return ReleasePlan(version, False, "Version already published for all packages")
+    return ReleasePlan(version, True, "Manual version update detected")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--base-ref", help="Git ref before the push (github.event.before)")
+    mode.add_argument("--check-only", action="store_true", help="Validate local versions without Git or PyPI access")
     args = parser.parse_args(argv)
     try:
-        version = prepare_release(args.repo_root)
+        if args.check_only:
+            projects = load_projects(args.repo_root)
+            print(f"{projects[0].raw_version}: Workspace versions validated")
+            return 0
+        plan = prepare_release(args.repo_root, base_ref=args.base_ref)
         if output := os.environ.get("GITHUB_OUTPUT"):
             with open(output, "a", encoding="utf-8") as stream:
-                stream.write(f"version={version}\n")
-        print(version)
+                stream.write(f"version={plan.version}\npublish={str(plan.publish).lower()}\n")
+        print(f"{plan.version}: {plan.reason}")
     except (ReleaseError, OSError) as exc:
         print(f"prepare_release: {exc}", file=sys.stderr)
         return 1

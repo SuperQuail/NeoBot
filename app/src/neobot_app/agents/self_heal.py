@@ -1789,7 +1789,15 @@ def build_self_heal_agent(
             "self-heal agent 未启用：provider 不可用，请检查模型配置"
         )
         return None
-    provider.max_tokens = cfg.max_tokens
+    # provider 可能是只读/共享实例（原生视觉包装器的 max_tokens 是只读属性）。
+    # 这里失败不能让 Bot 启动崩溃：自修复是可选能力，降级为「沿用 provider 自身预算」即可。
+    try:
+        provider.max_tokens = cfg.max_tokens
+    except AttributeError:
+        (logger or NullLogger()).warning(
+            "provider.max_tokens 只读，已跳过自修复 Agent 的输出预算覆盖",
+            requested_max_tokens=cfg.max_tokens,
+        )
     agent = SelfHealAgent(
         provider=provider,
         config=cfg,

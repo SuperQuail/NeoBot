@@ -1,17 +1,14 @@
-"""Run-local images: textual history plus a labelled image appendix per request."""
+"""Run-local images: textual history plus a labelled image appendix per request.
+
+原生视觉的"怎么用"说明(位置约定、别改用外部解析模型、加载失败不许猜)属于稳定的
+system 提示词内容,见 prompts.toml 的 [native_vision] 分区;本模块只负责每次请求
+动态生成的图片附录。
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
-
-VISION_INSTRUCTIONS = (
-    "[原生视觉模式] 图片正文保留文本描述，默认图片及来源标注位于提示词末尾。"
-    "需要看其他图片时调用 image_context__add_image，可从聊天编号、URL、文件、暂存池和自身图库获取。"
-    "主动加载图片没有张数限制，不受默认自动加载数量影响；这是普通工具，无需等待后台通知。"
-    "用户回复引用图片时使用被回复消息的编号。不要调用外部视觉模型解析工具。"
-    "只能描述实际加载并看到的图片，加载失败时不要根据占位描述猜测。"
-)
 
 
 def append_image_context(messages: list[dict], parts: list[dict]) -> None:

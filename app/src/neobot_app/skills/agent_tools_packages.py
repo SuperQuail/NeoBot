@@ -79,7 +79,8 @@ _PACKAGE_SPECS: dict[str, tuple[str, frozenset[str], str]] = {
         frozenset({"run_python", "pwsh", "bash", "job_list", "job_output", "job_kill"}),
         "run_python 与命令执行使用宿主进程权限，需要先通过 credential 技能申请 "
         "agent_execute 凭据；run_in_background=true 会返回作业 id，用 job_output 增量读取、"
-        "job_kill 停止。",
+        "job_kill 停止。未持凭据时不要反复重试：每次都会以 CREDENTIAL_REQUIRED 失败，"
+        "纯文件读写请改用 sandbox_manager__* 工具。",
     ),
     "agent_tools_web": (
         "联网检索（web_search/web_fetch）",

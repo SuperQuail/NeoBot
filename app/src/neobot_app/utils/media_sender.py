@@ -71,10 +71,12 @@ async def send_image(
     adapter: Any,
     conversation: ConversationRef,
     file_path: Path,
+    *,
+    wait_response: bool = True,
 ) -> SendMsgResponse:
-    """发送图片消息"""
+    """发送图片消息；wait_response=False 时不等上游 echo 回执。"""
     segment = prepare_image_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment])
+    return await adapter.send(conversation, [segment], wait_response=wait_response)
 
 
 async def send_audio(
@@ -82,7 +84,9 @@ async def send_audio(
     adapter: Any,
     conversation: ConversationRef,
     file_path: Path,
+    *,
+    wait_response: bool = True,
 ) -> SendMsgResponse:
-    """发送语音消息"""
+    """发送语音消息；wait_response=False 时不等上游 echo 回执。"""
     segment = prepare_audio_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment])
+    return await adapter.send(conversation, [segment], wait_response=wait_response)

@@ -91,8 +91,12 @@ class _FakeControl:
         ]
         self.installer_available = True
         self.enabled_calls: list[tuple[str, bool]] = []
+        self.reload_calls: list[str] = []
         self.proxy_mode = "system"
         self.plugins_data = Path(plugins_data or "/tmp/plugins_data")
+        #: 插件配置「原地生效」消费者（bugfixes/feat(2) §6）
+        self.config_consumers: dict[str, object] = {}
+        self.plugin_values: dict[str, dict] = {}
 
     def plugin_config_path(self, name: str) -> Path:
         """插件配置一律在插件数据目录下。"""
@@ -135,9 +139,29 @@ class _FakeControl:
 
         return PluginOperationResult(ok=True, name=name, state="running" if enabled else "unloaded")
 
+    def plugin_config_values(self, name: str) -> dict:
+        """与真实 PluginRuntime 一致：打包默认值 + 插件数据目录里保存的值。"""
+        import tomllib
+
+        merged = dict(self.plugin_config_defaults(name))
+        path = self.plugin_config_path(name)
+        if path.is_file():
+            try:
+                with path.open("rb") as handle:
+                    loaded = tomllib.load(handle)
+            except Exception:
+                loaded = {}
+            if isinstance(loaded, dict):
+                merged.update(loaded)
+        return merged
+
+    def config_consumer(self, name: str):
+        return self.config_consumers.get(name)
+
     async def reload(self, name: str):
         from neobot_modloader import PluginOperationResult
 
+        self.reload_calls.append(name)
         return PluginOperationResult(ok=True, name=name, state="running")
 
     async def check_updates(self):
@@ -1025,3 +1049,167 @@ async def test_loopback_panel_does_not_warn(tmp_path: Path) -> None:
         assert logger.warnings == []
     finally:
         await server.stop()
+
+
+# ---------------------------------------------------------------------------
+# 插件配置「原地生效」（bugfixes/feat(2) §6）
+#
+# 目标：保存 latency_probe_* 等运行期安全字段 → 立即生效、不重载插件、不中断 HTTP 服务；
+# 绑定期字段（host/port/base_path）与安全类字段仍提示「需要重启 NeoBot」。
+# ---------------------------------------------------------------------------
+
+
+class _FakeConfigConsumer:
+    """插件配置消费者替身：只记录 apply_config 收到的载荷。"""
+
+    name = "dashboard"
+    config_paths = ("plugin.dashboard",)
+
+    def __init__(self, policies=(), *, fail: bool = False) -> None:
+        self._policies = tuple(policies)
+        self.fail = fail
+        self.applied: list[dict] = []
+
+    @property
+    def hot_reload_policies(self):
+        return self._policies
+
+    async def apply_config(self, config) -> None:
+        if self.fail:
+            raise RuntimeError("注入的生效失败")
+        self.applied.append(dict(config))
+
+
+async def _plugin_config_revision(base: str, token: str) -> str:
+    async with httpx.AsyncClient() as client:
+        read = await client.get(
+            base + "/api/plugins/dashboard/config", headers={"X-Token": token}
+        )
+    assert read.status_code == 200, read.text
+    return read.json()["revision"]
+
+
+async def _save_plugin_config(base: str, token: str, csrf: str, config: dict, *, reload: bool):
+    revision = await _plugin_config_revision(base, token)
+    async with httpx.AsyncClient() as client:
+        return await client.post(
+            base + "/api/plugins/dashboard/config",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"config": config, "reload": reload, "revision": revision},
+        )
+
+
+async def test_runtime_safe_plugin_config_applies_without_reload(panel) -> None:
+    """运行期安全字段：保存即生效，且**不**触发整插件重载。"""
+    from neobot_app.config.hot_reload import HotReloadRule
+
+    _, control, base, _ = panel
+    consumer = _FakeConfigConsumer(
+        [HotReloadRule("plugin.dashboard.latency_probe_interval_seconds", True, "运行期安全")]
+    )
+    control.config_consumers["dashboard"] = consumer
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(
+        base, token, csrf, {"latency_probe_interval_seconds": 120}, reload=True
+    )
+
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["applied"] is True
+    assert "已生效" in body["message"] and "无需重启" in body["message"]
+    assert consumer.applied, "运行期安全字段必须被喂给插件"
+    assert consumer.applied[-1]["latency_probe_interval_seconds"] == 120
+    assert body["changes"]["hot_reload_count"] == 1
+    # 关键：绝不能走「整插件重载」——那会关闭 HTTP 服务并丢掉全部内存指标
+    assert control.reload_calls == []
+
+
+async def test_binding_plugin_config_still_requires_restart(panel) -> None:
+    """绑定期字段（port）：不调用 apply_config，提示仍需重启。"""
+    from neobot_app.config.hot_reload import HotReloadRule
+
+    _, control, base, _ = panel
+    consumer = _FakeConfigConsumer(
+        [
+            HotReloadRule("plugin.dashboard.port", False, "监听端口在启动时绑定"),
+            HotReloadRule("plugin.dashboard.latency_probe_interval_seconds", True, "运行期安全"),
+        ]
+    )
+    control.config_consumers["dashboard"] = consumer
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(base, token, csrf, {"port": 9999}, reload=True)
+
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["applied"] is False
+    assert "需要重启" in body["message"]
+    assert consumer.applied == []
+    assert control.reload_calls == []
+
+
+async def test_apply_config_failure_keeps_old_config(panel) -> None:
+    """apply_config 抛异常：不报 500、提示保留原配置、不改动任何状态。"""
+    from neobot_app.config.hot_reload import HotReloadRule
+
+    _, control, base, _ = panel
+    consumer = _FakeConfigConsumer(
+        [HotReloadRule("plugin.dashboard.log_buffer_size", True, "运行期安全")], fail=True
+    )
+    control.config_consumers["dashboard"] = consumer
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(base, token, csrf, {"log_buffer_size": 320}, reload=True)
+
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["applied"] is False
+    assert "已保留原配置" in body["message"] and "注入的生效失败" in body["message"]
+    assert consumer.applied == []
+
+
+async def test_plugin_without_consumer_keeps_restart_message(panel) -> None:
+    """未声明消费者的插件：行为与改动前完全一致（提示需要重启）。"""
+    _, control, base, _ = panel
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(base, token, csrf, {"log_buffer_size": 320}, reload=True)
+
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["applied"] is False
+    assert "需要重启 NeoBot" in body["message"]
+    assert control.reload_calls == []
+
+
+async def test_save_only_does_not_apply_runtime_fields(panel) -> None:
+    """「仅保存配置」按钮（reload=false）：只落盘，不改变运行期行为。"""
+    from neobot_app.config.hot_reload import HotReloadRule
+
+    _, control, base, _ = panel
+    consumer = _FakeConfigConsumer(
+        [HotReloadRule("plugin.dashboard.log_buffer_size", True, "运行期安全")]
+    )
+    control.config_consumers["dashboard"] = consumer
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(base, token, csrf, {"log_buffer_size": 320}, reload=False)
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["applied"] is False
+    assert consumer.applied == []
+
+
+async def test_save_surfaces_effective_message(panel) -> None:
+    """回归：保存响应里的 message 必须是保存结论，不能被通用说明吞掉。"""
+    _, control, base, _ = panel
+    token, csrf = await _login(base)
+
+    saved = await _save_plugin_config(base, token, csrf, {"log_buffer_size": 600}, reload=True)
+
+    assert saved.status_code == 200, saved.text
+    message = saved.json()["message"]
+    assert message != "插件配置保存在插件数据目录，与插件代码和启停状态分离"
+    assert "配置已保存" in message
+

@@ -15,13 +15,14 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 
+from neobot_app.prompt.render import render_template
+from neobot_app.prompt.store import get_template_value
 from neobot_app.reply._utils import entry_fingerprint
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import process_reply_text
 from neobot_app.reply.sender import ReplySender
 from neobot_app.reply.vision_context import (
-    VISION_INSTRUCTIONS,
     ReplyVisionContext,
     append_image_context,
     labelled_tool_images,
@@ -30,7 +31,7 @@ from neobot_app.reply.vision_context import (
 from neobot_app.statistics.tracker import get_usage_tracker
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
-from neobot_app.time_context import monotonic_seconds
+from neobot_app.time_context import get_current_time_values, monotonic_seconds
 
 
 def _xml_escape(value: str) -> str:
@@ -54,6 +55,11 @@ def _safe_int(value: object) -> int:
     except (TypeError, ValueError):
         return 0
 
+
+#: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
+#: 刻意只提示、不短路：部署者修好环境（例如换对 QQ 版本）之后继续调用必须
+#: 真实执行，否则工具会永久不可用。
+_TOOL_FAILURE_HINT_AFTER = 3
 
 _MAX_TOOL_TEXT_CHARS = 16 * 1024
 _MAX_TOOL_LOG_CHARS = 2 * 1024
@@ -127,6 +133,36 @@ def _bounded_tool_text(value: object, limit: int = _MAX_TOOL_TEXT_CHARS) -> str:
         except Exception:
             text = f"<{type(value).__name__}>"
     return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+
+def _clip_tool_summary(text: str, limit: int) -> str:
+    """压缩工具输出时保留的摘要:优先在换行处截断,避免半截 JSON 误导模型。"""
+    cleaned = text.strip()
+    if limit <= 0 or len(cleaned) <= limit:
+        return cleaned
+    head = cleaned[:limit]
+    newline = head.rfind("\n")
+    if newline >= limit // 2:
+        head = head[:newline]
+    return head.rstrip() + "..."
+
+
+def _render_tool_result_template(
+    template: str,
+    *,
+    tool_name: str,
+    summary: str,
+    original_chars: int,
+) -> str:
+    """渲染工具输出压缩模板(占位符与转义规则与其它提示词一致)。"""
+    return render_template(
+        template,
+        {
+            "tool_name": tool_name or "未知工具",
+            "summary": summary,
+            "original_chars": original_chars,
+        },
+    )
 
 
 def _redact_tool_value(
@@ -257,6 +293,57 @@ def _parse_tool_args(value: object) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, dict) else {}
 
 
+#: 空轮次成因：输出预算被思维链吃光（finish_reason=length）。
+EMPTY_TURN_TRUNCATED = "truncated"
+#: 空轮次成因：模型没给正文也没调工具，且不是长度截断。
+EMPTY_TURN_NO_OUTPUT = "empty"
+
+#: [silent_nudge] 分区缺失时的内置兜底文本（与 templates/prompts.toml 的定稿逐字一致）。
+_SILENT_NUDGE_TEXT = (
+    "[系统提示] 请检查是否有必要使用回复工具告知其他人你的工作进度."
+    "不使用send_reply的情况下他们不知道你做了什么."
+)
+
+
+def _extract_finish_reason(response: object) -> str:
+    """读取 provider 透出的结束原因（缺失时返回空串）。"""
+    if not isinstance(response, dict):
+        return ""
+    extensions = response.get("extensions")
+    if not isinstance(extensions, dict):
+        return ""
+    value = extensions.get("finish_reason")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _extract_usage_summary(response: object) -> dict[str, object]:
+    """取出这一轮的 output / reasoning token 数（缺失时为 None）。
+
+    空轮次判定与日志观测共用同一套取值，避免两处口径漂移。
+    """
+    extensions = response.get("extensions") if isinstance(response, dict) else None
+    usage = extensions.get("usage") if isinstance(extensions, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    return {
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens"),
+    }
+
+
+def _classify_empty_turn(response: object) -> str:
+    """给「正文为空且没有工具调用」的一轮定性。
+
+    两种情况都会导致回复丢失，必须区分记录：
+    - EMPTY_TURN_TRUNCATED：finish_reason=length，输出预算被思维链吃光；
+    - EMPTY_TURN_NO_OUTPUT：其它原因的空输出。
+    """
+    if _extract_finish_reason(response).casefold() == "length":
+        return EMPTY_TURN_TRUNCATED
+    return EMPTY_TURN_NO_OUTPUT
+
+
 if TYPE_CHECKING:
     from neobot_adapter import OneBotAdapter
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
@@ -301,6 +388,7 @@ class ReplyOrchestrator:
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
         context_recorder: Any = None,
+        self_sent_uow_factory: Any = None,
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
@@ -314,6 +402,7 @@ class ReplyOrchestrator:
         file_server: FileServer | None = None,
         skills_registry: Any = None,
         prompt_store: PromptStore | None = None,
+        flow_registry: Any = None,
         cache_calculator: CacheCalculator | None = None,
         credential_manager: Any = None,
         config_update_callback: Any = None,
@@ -325,6 +414,8 @@ class ReplyOrchestrator:
         self._standby_service = standby_service
         self._prompt_builder = prompt_builder
         self._prompt_store = prompt_store
+        #: 聊天流快照登记处（面板只读视图）；None 时全部记录调用直接跳过
+        self._flow_registry = flow_registry
         self._cache_calculator = cache_calculator
         self._provider = provider
         self._group_queue = group_message_queue
@@ -377,6 +468,8 @@ class ReplyOrchestrator:
             adapter=adapter,
             file_server=file_server,
             config=config,
+            # Bot 自身发言的落盘复用宿主共享的 storage 引擎（缺省时 sender 自己惰性打开同一份库）
+            self_sent_uow_factory=self_sent_uow_factory,
             bot_name=self._get_bot_name(),
             emoji_service=emoji_service,
             markdown_image_converter=markdown_image_converter,
@@ -952,7 +1045,33 @@ class ReplyOrchestrator:
             val = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
             if isinstance(val, (int, float)):
                 return max(0.0, float(val))
-        return 60.0
+        return 120.0
+
+    def _get_silent_nudge_settings(self) -> tuple[bool, int, int, float, int]:
+        """读取沉默提醒(nudge)配置,容忍缺省与 None:返回 (开关, 首次轮数, 后续轮数, 秒数, 上限)。"""
+        enabled = True
+        first_rounds = 5
+        repeat_rounds = 10
+        seconds = 45.0
+        max_emitted = 3
+        if self._config is not None:
+            chat = getattr(self._config, "chat", None)
+            val = getattr(chat, "silent_nudge_enabled", None)
+            if isinstance(val, bool):
+                enabled = val
+            val = getattr(chat, "silent_nudge_first_rounds", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                first_rounds = max(0, val)
+            val = getattr(chat, "silent_nudge_repeat_rounds", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                repeat_rounds = max(0, val)
+            val = getattr(chat, "silent_nudge_seconds", None)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                seconds = max(0.0, float(val))
+            val = getattr(chat, "silent_nudge_max", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                max_emitted = max(0, val)
+        return enabled, first_rounds, repeat_rounds, seconds, max_emitted
 
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
@@ -1182,6 +1301,293 @@ class ReplyOrchestrator:
                 return value
         return default
 
+    # ── 聊天流快照(网页面板只读视图) ──
+
+    def _flow_key(self, event: ReplyEvent, queue_key: str) -> str:
+        ref = event.conversation_ref
+        kind = getattr(ref, "kind", "") if ref is not None else ""
+        return f"{kind}:{queue_key}" if kind else ""
+
+    @staticmethod
+    def _flow_queue_key(event: ReplyEvent) -> str:
+        """从事件推导队列键(common 模式的 _generate_reply 拿不到 queue_key)。"""
+        ref = event.conversation_ref
+        if ref is None:
+            return ""
+        return str(getattr(ref, "id", "") or "")
+
+    def _flow_conversation(self, event: ReplyEvent, queue_key: str) -> tuple[str, str]:
+        ref = event.conversation_ref
+        kind = getattr(ref, "kind", "") if ref is not None else ""
+        return str(kind or ""), str(queue_key or "")
+
+    def _current_model_name(self) -> str:
+        return str(getattr(self._provider, "model", "") or "")
+
+    def _record_flow_prompt(self, event: ReplyEvent, queue_key: str, prompt: str) -> None:
+        """登记本轮 system 提示词;未接入面板时零开销。"""
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        kind, conv_id = self._flow_conversation(event, queue_key)
+        try:
+            registry.record_prompt(
+                key,
+                system_prompt=prompt,
+                model=self._current_model_name(),
+                conversation_kind=kind,
+                conversation_id=conv_id,
+            )
+        except Exception:
+            self._logger.debug("登记聊天流提示词失败(忽略)", pipeline_key=key)
+
+    def _record_flow_request(
+        self,
+        event: ReplyEvent,
+        queue_key: str,
+        messages: list[dict],
+        *,
+        iteration: int = 0,
+    ) -> None:
+        """登记最近一次模型请求的消息列表。"""
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        try:
+            registry.record_request(
+                key,
+                messages=messages,
+                model=self._current_model_name(),
+                iteration=iteration,
+            )
+        except Exception:
+            self._logger.debug("登记聊天流请求失败(忽略)", pipeline_key=key)
+
+    def _set_flow_active(self, event: ReplyEvent, queue_key: str, active: bool) -> None:
+        registry = self._flow_registry
+        if registry is None:
+            return
+        key = self._flow_key(event, queue_key)
+        if not key:
+            return
+        try:
+            registry.set_active(key, active)
+        except Exception:
+            self._logger.debug("登记聊天流状态失败(忽略)", pipeline_key=key)
+
+    # ── 提示词分区(统一从 prompts.toml 读取,缺失时用内置兜底) ──
+
+    def _prompt_template(self, key: str, sub: str = "template") -> str:
+        """读取提示词分区模板:文件(自定义覆盖默认) -> 内置兜底。"""
+        return get_template_value(self._prompt_store, key, sub)
+
+    def _prompt_section_enabled(self, key: str, default: bool = True) -> bool:
+        if self._prompt_store is None:
+            return default
+        return self._prompt_store.enabled(key, default=default)
+
+    def _native_vision_note(self) -> str:
+        """原生视觉说明([native_vision] 模板);分区关闭或模板为空时返回空串。
+
+        这段说明是**稳定内容**,因此追加在 system 提示词里而不是对话末尾:
+        系统提示词在各条管线之间逐字节相同,能持续命中上下文缓存;
+        追加在历史之后的位置随历史长度变化,永远无法进入可复用前缀。
+        """
+        if not self._prompt_section_enabled("native_vision"):
+            return ""
+        return render_template(self._prompt_template("native_vision"), {})
+
+    def _build_current_time_message(self) -> dict[str, str] | None:
+        """渲染"回复前"追加的 <当前时间> user 块;关闭或为空时返回 None。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_current_time_message", None)
+        if callable(render):
+            return render()
+        if not self._prompt_section_enabled("current_time"):
+            return None
+        text = render_template(
+            self._prompt_template("current_time"), get_current_time_values()
+        )
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    def _build_short_time_message(self) -> dict[str, str] | None:
+        """渲染同一轮管线激活内第 2 次起的短时间戳 user 块;关闭或为空时返回 None。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_short_time_message", None)
+        if callable(render):
+            return render()
+        if not self._prompt_section_enabled("current_time_short"):
+            return None
+        text = render_template(
+            self._prompt_template("current_time_short"), get_current_time_values()
+        )
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    def _build_avoid_repeat_message(self) -> dict[str, str] | None:
+        """渲染防重复提醒 user 块（每次管线激活追加一次）;分区关闭或为空时返回 None。"""
+        if not self._prompt_section_enabled("avoid_repeat"):
+            return None
+        text = self._prompt_template("avoid_repeat")
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    # ── 沉默提醒(nudge) ──
+
+    def _nudge_text(self) -> str:
+        """沉默提醒文本;[silent_nudge] 分区优先,分区缺失时用内置兜底文本。"""
+        text = self._prompt_template("silent_nudge")
+        return text or _SILENT_NUDGE_TEXT
+
+    def _nudge_reason(
+        self,
+        *,
+        reply_sent: bool,
+        rounds: int,
+        next_at: int,
+        emitted: int,
+        deadline: float,
+    ) -> str | None:
+        """判断此刻是否需要注入沉默提醒。
+
+        满足轮次或时间任一触发条件时返回原因("rounds" / "seconds"),否则返回 None。
+        时间用 monotonic_seconds(),与 120s 活动看门狗语义不同(后者测"两次活动之间的空档")。
+        """
+        enabled, first_rounds, _repeat_rounds, seconds, max_emitted = (
+            self._get_silent_nudge_settings()
+        )
+        if not enabled or emitted >= max_emitted or reply_sent:
+            return None
+        if not self._prompt_section_enabled("silent_nudge"):
+            # 分区被关闭时既不注入也不刷新记录器,行为回到现状
+            return None
+        if first_rounds > 0 and rounds >= next_at:
+            return "rounds"
+        if seconds > 0 and monotonic_seconds() >= deadline:
+            return "seconds"
+        return None
+
+    def _should_nudge(
+        self,
+        *,
+        reply_sent: bool,
+        rounds: int,
+        next_at: int,
+        emitted: int,
+        deadline: float,
+    ) -> bool:
+        """是否需要注入沉默提醒(_nudge_reason 的布尔形式)。"""
+        return (
+            self._nudge_reason(
+                reply_sent=reply_sent,
+                rounds=rounds,
+                next_at=next_at,
+                emitted=emitted,
+                deadline=deadline,
+            )
+            is not None
+        )
+
+    # ── 工具输出压缩 ──
+
+    def _get_tool_result_full_keep(self) -> int:
+        """重新构建提示词后保留完整内容的最近工具返回条数。"""
+        if self._config is None:
+            return 10
+        value = getattr(self._config.chat, "tool_result_full_keep", 10)
+        return value if isinstance(value, int) and value >= 0 else 10
+
+    def _get_tool_result_summary_chars(self) -> int:
+        """非基础工具压缩后保留的结果摘要字符数。"""
+        if self._config is None:
+            return 200
+        value = getattr(self._config.chat, "tool_result_summary_chars", 200)
+        return value if isinstance(value, int) and value > 0 else 200
+
+    def _render_compressed_tool_result(
+        self, tool_name: str, content: object, summary_chars: int
+    ) -> str:
+        """把一条工具返回渲染成压缩形式。"""
+        from neobot_app.reply.tools import BASIC_REPLY_TOOLS
+
+        original = "" if content is None else str(content)
+        summary = _clip_tool_summary(original, summary_chars)
+        if tool_name in BASIC_REPLY_TOOLS:
+            text = _render_tool_result_template(
+                self._prompt_template("tool_result_compressed"),
+                tool_name=tool_name,
+                summary=summary,
+                original_chars=len(original),
+            )
+            return text or f"[已压缩] 工具 {tool_name or '未知工具'} 调用成功。"
+        text = _render_tool_result_template(
+            self._prompt_template("tool_result_compressed_detail"),
+            tool_name=tool_name,
+            summary=summary,
+            original_chars=len(original),
+        )
+        return text or summary
+
+    def _compress_stale_tool_results(
+        self,
+        messages: list[dict],
+        compressed_call_ids: set[str],
+        tool_names: dict[str, str],
+        *,
+        event: ReplyEvent | None = None,
+        queue_key: str = "",
+    ) -> int:
+        """压缩较早的工具返回:只保留最近 N 条完整内容,其余压缩。
+
+        在"重新构建/续用提示词"的新一轮开始时调用;已压缩过的条目按
+        tool_call_id 去重,不会重复处理。压缩只改写内容,不动消息顺序,
+        也不会让 assistant 的 tool_calls 与结果消息失配。
+        """
+        keep = self._get_tool_result_full_keep()
+        indices = [
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, dict) and message.get("role") == "tool"
+        ]
+        if keep >= 0 and len(indices) <= keep:
+            return 0
+        stale = list(indices) if keep <= 0 else indices[:-keep]
+        stale = [
+            index
+            for index in stale
+            if str(messages[index].get("tool_call_id", "")) not in compressed_call_ids
+        ]
+        if not stale:
+            return 0
+        summary_chars = self._get_tool_result_summary_chars()
+        for index in stale:
+            message = messages[index]
+            call_id = str(message.get("tool_call_id", ""))
+            message["content"] = self._render_compressed_tool_result(
+                tool_names.get(call_id, ""), message.get("content"), summary_chars
+            )
+            if call_id:
+                compressed_call_ids.add(call_id)
+        if event is not None:
+            self._record_debug(
+                "tool_results_compressed",
+                event,
+                queue_key=queue_key,
+                compressed_count=len(stale),
+                kept_full=len(indices) - len(stale),
+            )
+        return len(stale)
+
     def _get_long_reply_max_length(self) -> int:
         if self._config is None:
             return 300
@@ -1277,13 +1683,17 @@ class ReplyOrchestrator:
             conv_ref = event.conversation_ref
             from datetime import datetime, timezone
 
+            conv_kind = getattr(conv_ref, "kind", "") if conv_ref else ""
+            conv_id = getattr(conv_ref, "id", "") if conv_ref else ""
+            # pipeline_key 让面板能把「完整提示词历史」按聊天流过滤（spec(3) §4.2）
             payload = {
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "stage": stage,
                 "event_id": event.event_id,
                 "mode": event.mode,
-                "conversation_kind": getattr(conv_ref, "kind", "") if conv_ref else "",
-                "conversation_id": getattr(conv_ref, "id", "") if conv_ref else "",
+                "conversation_kind": conv_kind,
+                "conversation_id": conv_id,
+                "pipeline_key": f"{conv_kind}:{conv_id}" if conv_kind else "",
                 "iteration": iteration,
                 "messages_count": len(messages),
                 "total_chars": total_chars,
@@ -1350,14 +1760,30 @@ class ReplyOrchestrator:
                     "reply.cancel", event, queue_key=queue_key
                 )
                 return
+            self._set_flow_active(event, queue_key, True)
             if event.mode == "agent":
                 await self._run_agent_mode(event, queue, queue_key)
             else:
                 await self._run_common_mode(event, queue, queue_key)
+            self._set_flow_active(event, queue_key, False)
             if event.state == ReplyState.CANCELLED:
                 self._record_debug("cancelled", event, queue_key=queue_key)
                 await self._emit_runtime_event(
                     "reply.cancel", event, queue_key=queue_key
+                )
+                return
+            if event.state == ReplyState.FAILED:
+                # 管线内部判定失败（例如模型空轮次）。必须走失败收尾：旧实现
+                # 一路记成 completed，日志里看不出「这条消息根本没回复」。
+                self._logger.warning(
+                    "回复事件失败（管线内部判定）",
+                    event_id=event.event_id,
+                    mode=event.mode,
+                    error=event.error,
+                )
+                self._record_debug("failed", event, queue_key=queue_key)
+                await self._emit_runtime_event(
+                    "reply.fail", event, queue_key=queue_key, error=event.error
                 )
                 return
             # 记录完成时间用于冷却
@@ -1393,6 +1819,7 @@ class ReplyOrchestrator:
                 "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
             )
         except asyncio.CancelledError:
+            self._set_flow_active(event, queue_key, False)
             event.error = "cancelled"
             if not event.is_terminal:
                 try:
@@ -1404,6 +1831,7 @@ class ReplyOrchestrator:
             await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
             raise
         except Exception as exc:
+            self._set_flow_active(event, queue_key, False)
             try:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
@@ -1439,13 +1867,16 @@ class ReplyOrchestrator:
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
+        context_messages: list[dict[str, str]] = []
         prompt = await self._build_prompt(
             event,
             queue,
             queue_key,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            context_blocks=context_messages,
         )
+        self._record_flow_prompt(event, queue_key, prompt)
         self._record_debug(
             "base_prompt_built", event, queue_key=queue_key, prompt=prompt
         )
@@ -1453,7 +1884,9 @@ class ReplyOrchestrator:
         # pre-reply hooks：可短路跳过 AI 生成
         reply_text = await self._apply_pre_reply_hooks(event)
         if reply_text is None:
-            reply_text = await self._generate_reply(event, prompt, role_messages)
+            reply_text = await self._generate_reply(
+                event, prompt, role_messages, context_messages
+            )
 
         self._record_debug(
             "reply_generated", event, queue_key=queue_key, reply_text=reply_text
@@ -1506,6 +1939,7 @@ class ReplyOrchestrator:
                 self._adapter,
                 event.conversation_ref,
                 entry.file_path,
+                wait_response=False,
             )
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
@@ -1668,7 +2102,9 @@ class ReplyOrchestrator:
         queue_copy = queue.clone(queue_key)
 
         # 2. 构建角色消息(聊天记录拆分为真实 user/assistant 消息,先于 system
-        #    构建以填充消息编号映射)与 system 提示词(不含聊天记录)
+        #    构建以填充消息编号映射)与 system 提示词(不含聊天记录)。
+        #    每轮会变的上下文(群友信息/对方档案/印象)由 builder 渲染成 user 块,
+        #    追加在 system 之后、聊天记录之前,而不是塞进 system。
         last_reply_message_id, all_new = self._resolve_last_reply(queue, queue_key)
         role_messages = await self._build_role_messages(
             event,
@@ -1678,6 +2114,7 @@ class ReplyOrchestrator:
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
         )
+        context_messages: list[dict[str, str]] = []
         prompt = await self._build_prompt(
             event,
             queue_copy,
@@ -1685,7 +2122,9 @@ class ReplyOrchestrator:
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            context_blocks=context_messages,
         )
+        self._record_flow_prompt(event, queue_key, prompt)
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）：先完成匹配与 allowed-tools 判定，
@@ -1711,34 +2150,8 @@ class ReplyOrchestrator:
                     union.update(tools)
                 allowed_tools = union
 
-        # 注入表情包列表(只注入一页的五分之一,避免占用过多上下文)
-        if self._emoji_service is not None:
-            emoji_page_size = (
-                getattr(getattr(self._config, "chat", None), "emoji_page_size", 50)
-                if self._config
-                else 50
-            )
-            inject_limit = max(1, emoji_page_size // 5)
-            emoji_text = self._emoji_service.build_prompt_text(limit=inject_limit)
-            if emoji_text:
-                emoji_total = self._emoji_service.emoji_count
-                search_hint = (
-                    f"\n当前共{emoji_total}个表情包，列表仅显示前{inject_limit}个；"
-                    "如未找到合适的，可用 search_custom_emoji 按关键词搜索，"
-                    "或用 emoji_list 翻页查看全部。"
-                    if emoji_total > inject_limit and allowed_tools is None
-                    else ""
-                )
-                prompt += (
-                    "\n\n<可用的表情包>\n"
-                    f"{emoji_text}\n"
-                    "发送表情包时：\n"
-                    "- 同时发送文字回复和表情包：使用 send_reply 工具，通过 images 参数指定表情包编号列表（先逐一发送图片，再发送切分后的文字）\n"
-                    "- 仅发送表情包（无独立文字回复）：使用 send_emoji 工具，参数 number 为表情包编号\n"
-                    "表情包按使用次数从少到多排列（使用次数均衡器），优先使用不常用的表情包。\n"
-                    f"{search_hint}\n"
-                    "</可用的表情包>"
-                )
+        # 表情包列表不再注入提示词:它按使用次数排序且带"已用N次",每次发出表情包都会
+        # 改变 system 前缀,让整段缓存失效。改为按需工具 list_emojis / search_custom_emoji。
 
         # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
@@ -1779,12 +2192,28 @@ class ReplyOrchestrator:
                 "（以及始终可用的基础回复工具与技能读取工具）。"
             )
 
+        # 原生视觉说明属于稳定内容:放进 system 提示词(跨管线逐字节相同、可缓存),
+        # 不再作为对话末尾的 user 消息(那个位置随历史长度变化,永远命中不了缓存)
+        native_vision_active = getattr(self._provider, "native_vision", False) is True
+        if native_vision_active:
+            vision_note = self._native_vision_note()
+            if vision_note:
+                prompt += f"\n\n{vision_note}"
+
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
-        # 3. 准备消息列表(system + 角色消息 + 后台通知)
+        # 3. 准备消息列表(system + 上下文块 + 角色消息 + 后台通知)
         event.transition(ReplyState.GENERATING)
         messages: list[dict] = [{"role": "system", "content": prompt}]
+        messages.extend(context_messages)
         messages.extend(role_messages)
+        if context_messages:
+            self._record_debug(
+                "chat_context_injected",
+                event,
+                queue_key=queue_key,
+                injected_count=len(context_messages),
+            )
         if event.background_content:
             messages.append({"role": "user", "content": event.background_content})
             _bg_kind = event.conversation_ref.kind if event.conversation_ref else ""
@@ -2061,7 +2490,8 @@ class ReplyOrchestrator:
                 await self._send_with_timeout(conv_ref, caption_segs)
             # 发送图片（不附带引用，图片单独发送）
             await send_image(
-                self._file_server, self._adapter, conv_ref, Path(image_path)
+                self._file_server, self._adapter, conv_ref, Path(image_path),
+                wait_response=False,
             )
             # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
             if markdown.strip():
@@ -2136,7 +2566,6 @@ class ReplyOrchestrator:
                 self._agent_tool_turns[event.event_id] = (shared_tools.runtime, context, messages)
 
         tools = reply_toolset.definitions()
-        native_vision_active = getattr(self._provider, "native_vision", False) is True
         vision_context = ReplyVisionContext()
         from neobot_app.skills.image_context_skill import ImageContextSkill
 
@@ -2145,8 +2574,6 @@ class ReplyOrchestrator:
             group_message_queue=queue_copy if conv_kind == "group" else None,
             friend_message_queue=queue_copy if conv_kind != "group" else None,
         )
-        if native_vision_active:
-            messages.append({"role": "user", "content": VISION_INSTRUCTIONS})
 
         # 5. Agent 循环（外层 while 支持私聊连续会话）
         max_iterations = self._get_agent_max_iterations()
@@ -2189,11 +2616,66 @@ class ReplyOrchestrator:
             await self._send_reply(event, pre_hook_text)
             return
 
+        # 工具输出压缩状态:已压缩的 tool_call_id 与调用名映射(压缩只改内容,
+        # 不动消息顺序,assistant.tool_calls 与结果消息始终配对)
+        compressed_tool_call_ids: set[str] = set()
+        tool_name_by_call_id: dict[str, str] = {}
+        #: 工具失败指纹 -> 连续失败次数；成功一次即清零。
+        tool_failure_streak: dict[str, int] = {}
+
+        # 回复前追加的 <当前时间> user 块:每次调用模型前追加一条最新时间,
+        # 已追加的时间块保留在对话历史里(不清理),让模型能看到时间推进。
+        # 分级注入:每次管线激活的第一次模型调用用完整 [current_time],
+        # 同一激活内的后续调用只追加 [current_time_short](短时间戳)。
+        time_block_full_sent = False
+
+        def append_current_time_block() -> None:
+            nonlocal time_block_full_sent
+            if time_block_full_sent:
+                block = self._build_short_time_message()
+                if block is None:
+                    # 短时间戳分区关闭/缺失时回退完整块,保证时间仍在推进
+                    block = self._build_current_time_message()
+            else:
+                block = self._build_current_time_message()
+                if block is not None:
+                    time_block_full_sent = True
+            if block is not None:
+                messages.append(block)
+
         previous_entries = queue_copy.entries(queue_key)
+        round_index = 0
         while True:
+            # 需要重新构建/续用提示词的新一轮:把较早的工具返回压缩,
+            # 只保留最近 N 条完整内容,控制上下文成本
+            if round_index > 0:
+                self._compress_stale_tool_results(
+                    messages,
+                    compressed_tool_call_ids,
+                    tool_name_by_call_id,
+                    event=event,
+                    queue_key=queue_key,
+                )
+            round_index += 1
             reply_sent = False
             cancelled = False
             ai_check_prompted = False
+            # 时间块分级:每轮(每次管线激活)重置为"尚未注入完整时间块"
+            time_block_full_sent = False
+            # 防重复提醒:每次管线激活只追加一次
+            avoid_repeat_sent = False
+            # 沉默提醒记录器:轮次归零、阶梯阈值取首次值、时间基准从本轮开始
+            (
+                _nudge_enabled,
+                nudge_first_rounds,
+                nudge_repeat_rounds,
+                nudge_seconds,
+                _nudge_max,
+            ) = self._get_silent_nudge_settings()
+            nudge_rounds = 0
+            nudge_emitted = 0
+            nudge_next_at = nudge_first_rounds
+            nudge_deadline = monotonic_seconds() + nudge_seconds
 
             vision_fallback_bonus = False
             for iteration in range(max_iterations + 1):
@@ -2242,6 +2724,40 @@ class ReplyOrchestrator:
                         notification=notification_text[:200],
                     )
 
+                # 沉默提醒:读完后台通知之后、发起模型调用之前判定。
+                # 模型长时间只调用工具、对用户一条消息都不发时注入一条 user 提醒;
+                # 提醒后刷新记录器(轮次归零、时间基准重置、阶梯阈值切到 repeat_rounds),
+                # 于是之后可再次提醒;提醒次数上限 silent_nudge_max。
+                nudge_reason = self._nudge_reason(
+                    reply_sent=reply_sent,
+                    rounds=nudge_rounds,
+                    next_at=nudge_next_at,
+                    emitted=nudge_emitted,
+                    deadline=nudge_deadline,
+                )
+                if nudge_reason is not None:
+                    messages.append({"role": "user", "content": self._nudge_text()})
+                    nudge_rounds = 0
+                    nudge_deadline = monotonic_seconds() + nudge_seconds
+                    nudge_next_at = nudge_repeat_rounds
+                    nudge_emitted += 1
+                    self._logger.info(
+                        "长任务沉默提醒已注入",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        emitted=nudge_emitted,
+                        reason=nudge_reason,
+                    )
+                    self._record_debug(
+                        "silent_nudge",
+                        event,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        emitted=nudge_emitted,
+                        reason=nudge_reason,
+                    )
+
                 if native_vision_active:
                     try:
                         await asyncio.wait_for(
@@ -2254,8 +2770,19 @@ class ReplyOrchestrator:
                         )
                     except asyncio.TimeoutError:
                         self._logger.warning("默认原生视觉图片加载超时", queue_key=queue_key)
+                # 回复前:追加独立的 <当前时间> user 块(始终是最后一条消息)
+                append_current_time_block()
+                # 防重复提醒:每次管线激活只追加一次,节奏独立于时间块
+                if not avoid_repeat_sent:
+                    avoid_repeat_sent = True
+                    avoid_repeat_message = self._build_avoid_repeat_message()
+                    if avoid_repeat_message is not None:
+                        messages.append(avoid_repeat_message)
                 request_messages = (
                     vision_context.request_messages(messages) if native_vision_active else list(messages)
+                )
+                self._record_flow_request(
+                    event, queue_key, request_messages, iteration=iteration + 1
                 )
                 remaining = silent_remaining()
                 if remaining is not None and remaining <= 0:
@@ -2343,12 +2870,19 @@ class ReplyOrchestrator:
                     except Exception:
                         pass
 
+                # 规范化：把「这一轮为什么结束」与「预算用在哪」提升为一级字段，
+                # 排查截断时不必再挖 response.extensions 的嵌套结构。
+                iteration_counters = _extract_usage_summary(response)
                 self._record_debug(
                     "agent_iteration",
                     event,
                     queue_key=queue_key,
                     iteration=iteration + 1,
                     response=response,
+                    finish_reason=_extract_finish_reason(response) or None,
+                    max_tokens=getattr(self._provider, "max_tokens", None),
+                    output_tokens=iteration_counters["output_tokens"],
+                    reasoning_tokens=iteration_counters["reasoning_tokens"],
                 )
                 messages.append(response)
 
@@ -2414,7 +2948,20 @@ class ReplyOrchestrator:
                             )
                             await self._send_reply(event, text)
                             reply_sent = True
+                        else:
+                            # 空轮次：正文为空且没有工具调用。旧实现在这里直接
+                            # break，事件以 COMPLETED/err=None 收尾，回复丢失且
+                            # 完全不可观测；现在必须显式记录并置为 FAILED。
+                            self._handle_empty_turn(
+                                event,
+                                response,
+                                queue_key=queue_key,
+                                iteration=iteration + 1,
+                            )
                     break
+
+                # 只有本轮确实产生了 tool_calls 才计入"埋头干"轮数
+                nudge_rounds += 1
 
                 image_parts: list[dict] = []
                 for tc in tool_calls:
@@ -2453,6 +3000,7 @@ class ReplyOrchestrator:
                     safe_result: str | None = None
                     tool_error: str | None = None
                     remaining: float | None = None
+                    tool_failure_key = self._tool_failure_key(name, args)
                     try:
                         remaining = silent_remaining()
                         tool_timeout = (
@@ -2512,6 +3060,7 @@ class ReplyOrchestrator:
                                     + self._get_dependency_timeout_seconds(),
                                 )
                             )
+                            tool_failure_key = self._tool_failure_key(name, args)
                             if not reply_toolset.executor.is_tool_authorized(name):
                                 result = reply_toolset.executor.authorization_error(
                                     name
@@ -2584,16 +3133,43 @@ class ReplyOrchestrator:
                             tool_args=safe_args,
                             tool_error=tool_error,
                         )
+                    tool_call_id = (
+                        str(tc.get("id", "")) if isinstance(tc, dict) else ""
+                    )
+                    if tool_call_id:
+                        tool_name_by_call_id[tool_call_id] = name
                     if tool_error is not None:
+                        tool_failure_streak[tool_failure_key] = (
+                            tool_failure_streak.get(tool_failure_key, 0) + 1
+                        )
+                        failures = tool_failure_streak[tool_failure_key]
+                        hint = ""
+                        if failures >= _TOOL_FAILURE_HINT_AFTER:
+                            # 软限制：只提示不短路。同工具同参数连续失败说明大概率是
+                            # 环境/权限问题，再重试只会把推理链拖长（截断的放大器）；
+                            # 但调用依旧真实执行，修复环境后立刻就能继续用。
+                            hint = "\n" + self._tool_repeat_failure_hint(name, failures)
+                            self._logger.warning(
+                                f"工具连续失败，已附加软提示: {name}",
+                                event_id=event.event_id,
+                                tool=name,
+                                failures=failures,
+                            )
+                            self._record_debug(
+                                "tool_repeat_failure_hint",
+                                event,
+                                queue_key=queue_key,
+                                iteration=iteration + 1,
+                                tool_name=name,
+                                tool_args=safe_args,
+                                failures=failures,
+                                tool_error=tool_error,
+                            )
                         messages.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": (
-                                    str(tc.get("id", ""))
-                                    if isinstance(tc, dict)
-                                    else ""
-                                ),
-                                "content": f"工具调用失败：{tool_error}",
+                                "tool_call_id": tool_call_id,
+                                "content": f"工具调用失败：{tool_error}{hint}",
                             }
                         )
                         self._record_debug(
@@ -2606,6 +3182,7 @@ class ReplyOrchestrator:
                             tool_error=tool_error,
                         )
                     else:
+                        tool_failure_streak.pop(tool_failure_key, None)
                         self._logger.info(
                             f"工具返回: {name}",
                             event_id=event.event_id,
@@ -2624,11 +3201,7 @@ class ReplyOrchestrator:
                         messages.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": (
-                                    str(tc.get("id", ""))
-                                    if isinstance(tc, dict)
-                                    else ""
-                                ),
+                                "tool_call_id": tool_call_id,
                                 "content": str(result),
                             }
                         )
@@ -2649,6 +3222,11 @@ class ReplyOrchestrator:
                 vision_context.manual_parts.extend(image_parts)
                 if vision_just_disabled:
                     messages.append({"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"})
+
+                # 已经回复过:清零轮次与时间基准,本次管线激活不再提醒
+                if reply_sent:
+                    nudge_rounds = 0
+                    nudge_deadline = monotonic_seconds() + nudge_seconds
 
                 if reply_sent or cancelled:
                     break
@@ -2909,6 +3487,103 @@ class ReplyOrchestrator:
                 event.transition(ReplyState.COMPLETED)
             except RuntimeError:
                 pass
+
+    # ── 空轮次(模型没给正文也没调工具) ──
+
+    @staticmethod
+    def _tool_failure_key(name: str, args: object) -> str:
+        """同工具 + 同参数的失败指纹（参数不可序列化时退化为 repr）。"""
+        try:
+            payload = json.dumps(
+                args, ensure_ascii=False, sort_keys=True, default=str
+            )
+        except (TypeError, ValueError, RecursionError):
+            payload = repr(args)
+        return f"{name}|{payload}"
+
+    @staticmethod
+    def _tool_repeat_failure_hint(name: str, failures: int) -> str:
+        """软提示：说明重复失败，但仍允许继续调用（工具不会被永久摘除）。"""
+        return (
+            f"注意：{name} 用相同参数已连续失败 {failures} 次。"
+            "若判断是环境或权限问题，请不要再重复尝试，改用其它工具或直接向用户说明；"
+            "如果确认问题已经修复，可以继续调用。"
+        )
+
+    @staticmethod
+    def _build_empty_turn_error(
+        reason: str, finish_reason: str, output_tokens: object
+    ) -> str:
+        if reason == EMPTY_TURN_TRUNCATED:
+            return (
+                "模型输出被输出上限截断：本轮没有正文也没有工具调用"
+                f"（finish_reason=length, output_tokens={output_tokens}）"
+            )
+        return (
+            "模型返回空输出：本轮没有正文也没有工具调用"
+            f"（finish_reason={finish_reason or '未提供'}）"
+        )
+
+    def _handle_empty_turn(
+        self,
+        event: ReplyEvent,
+        response: object,
+        *,
+        queue_key: str,
+        iteration: int,
+    ) -> None:
+        """空轮次不再静默结束：区分成因、留痕，并把事件置为 FAILED。
+
+        这里刻意不做重试：实测重试大概率拿不到有效输出，只会再多烧一轮
+        input token。也不发兜底回复（避免群聊刷屏）。要保证的只有一件事——
+        「模型没产出导致回复丢失」一定留下可检索的记录，而不是 COMPLETED。
+        """
+        finish_reason = _extract_finish_reason(response)
+        reason = _classify_empty_turn(response)
+        counters = _extract_usage_summary(response)
+        output_tokens = counters["output_tokens"]
+        reasoning_tokens = counters["reasoning_tokens"]
+
+        event.error = self._build_empty_turn_error(
+            reason, finish_reason, output_tokens
+        )
+        if not event.is_terminal:
+            try:
+                event.transition(ReplyState.FAILED)
+            except RuntimeError:
+                pass
+
+        self._logger.warning(
+            "模型空轮次：该轮没有正文也没有工具调用，回复未发出",
+            event_id=event.event_id,
+            queue_key=queue_key,
+            iteration=iteration,
+            reason=reason,
+            finish_reason=finish_reason or None,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        self._record_debug(
+            "empty_turn_detected",
+            event,
+            queue_key=queue_key,
+            iteration=iteration,
+            reason=reason,
+            finish_reason=finish_reason or None,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        if reason == EMPTY_TURN_TRUNCATED:
+            # 超限截断是成本问题，单独留一条便于直接检索/统计。
+            self._record_debug(
+                "empty_turn_truncated",
+                event,
+                queue_key=queue_key,
+                iteration=iteration,
+                finish_reason=finish_reason,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
 
     # ── 待机熔断(只保留核心服务,已启动管线立即停火) ──
 
@@ -3436,8 +4111,9 @@ class ReplyOrchestrator:
             include_boundary_markers=self._show_boundary_markers(),
         )
 
-        # 新成员档案
+        # 新成员档案(user 块内容,不插入 system 提示词)
         new_member_text = ""
+        group_name = ""
         if new_user_ids and self._prompt_builder is not None:
             profile_service = getattr(self._prompt_builder, "_profile_service", None)
             if profile_service is not None:
@@ -3446,51 +4122,44 @@ class ReplyOrchestrator:
                     include_archives=self._inject_member_archives(),
                 )
                 if member_profiles:
-                    new_member_text = f"[新出现的群友档案]\n{member_profiles}"
+                    try:
+                        group_name = await profile_service.get_group_name(queue_key)
+                    except Exception:
+                        group_name = ""
+                    render_profiles = getattr(
+                        self._prompt_builder, "build_new_member_profiles_text", None
+                    )
+                    if callable(render_profiles):
+                        new_member_text = render_profiles(
+                            member_profiles,
+                            group_name=group_name,
+                            group_id=queue_key,
+                        )
+                    else:
+                        new_member_text = member_profiles
 
         resume_messages: list[dict[str, str]] = []
 
-        # 说明消息(新成员档案 + 当前时间 + 续接说明),位于新消息之前
+        # 说明消息(新成员档案 + 续接说明),位于新消息之前。
+        # 当前时间由回复前的独立 <当前时间> user 块提供,这里不再重复。
         if new_member_text or role_messages:
-            from neobot_app.time_context import get_current_time_and_lunar_date
-            from neobot_app.utils.formater import safe_format
-
-            current_time = get_current_time_and_lunar_date()
-            template = ""
-            if self._prompt_store is not None:
-                template = self._prompt_store.template("group_chat_resume")
-            if not template:
-                template = (
-                    "{new_member_profiles}\n\n"
-                    "<当前时间>{current_time}</当前时间>\n\n"
-                    "这是群聊对话的续接。请根据新消息决定是否需要回复。"
-                )
-            # safe_format:自定义模板含未提供占位符/畸形花括号时保留可渲染部分,
-            # 而不是整段丢弃
-            context_text = safe_format(
-                template,
-                new_member_profiles=new_member_text,
-                current_time=current_time,
-            )
-            # 模板缺少占位符时补齐档案/时间,避免内容静默丢失
-            parts = [context_text]
-            if new_member_text and "{new_member_profiles}" not in template:
-                parts.append(f"[新出现的群友档案]\n{new_member_text}")
-            if "{current_time}" not in template:
-                parts.append(f"<当前时间>{current_time}</当前时间>")
-            context_text = "\n\n".join(part for part in parts if part and part.strip())
-            if not context_text.strip():
-                parts = []
-                if new_member_text:
-                    parts.append(new_member_text)
-                parts.append(f"<当前时间>{current_time}</当前时间>")
-                parts.append("这是群聊对话的续接。请根据新消息决定是否需要回复。")
-                context_text = "\n\n".join(parts)
-            if context_text.strip():
+            context_text = self._render_resume_context(new_member_text)
+            if context_text:
                 resume_messages.append({"role": "user", "content": context_text})
 
         resume_messages.extend(role_messages)
         return resume_messages
+
+    def _render_resume_context(self, new_member_text: str) -> str:
+        """渲染群聊挂起恢复的说明文本(模板来自 [group_chat_resume])。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_group_chat_resume_text", None)
+        if callable(render):
+            return render(new_member_profiles=new_member_text)
+        template = self._prompt_template("group_chat_resume")
+        values = get_current_time_values()
+        values["new_member_profiles"] = new_member_text
+        return render_template(template, values)
 
     # ── Prompt 构建 ──
 
@@ -3502,6 +4171,7 @@ class ReplyOrchestrator:
         numbering: MessageNumbering | None = None,
         last_reply_message_id: int | None = None,
         all_new: bool = False,
+        context_blocks: list[dict[str, str]] | None = None,
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
@@ -3539,6 +4209,7 @@ class ReplyOrchestrator:
                         numbering=numbering,
                         last_reply_message_id=last_reply_message_id,
                         all_new=all_new,
+                        context_blocks=context_blocks,
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
@@ -3563,6 +4234,7 @@ class ReplyOrchestrator:
                     numbering=numbering,
                     last_reply_message_id=last_reply_message_id,
                     all_new=all_new,
+                    context_blocks=context_blocks,
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
@@ -3644,6 +4316,7 @@ class ReplyOrchestrator:
         event: ReplyEvent,
         prompt: str,
         role_messages: list[dict[str, str]] | None = None,
+        context_messages: list[dict[str, str]] | None = None,
     ) -> str:
         event.transition(ReplyState.GENERATING)
         if self._provider is None:
@@ -3652,6 +4325,8 @@ class ReplyOrchestrator:
         messages: list[dict] = [
             {"role": "system", "content": prompt},
         ]
+        if context_messages:
+            messages.extend(context_messages)
         if role_messages:
             messages.extend(role_messages)
         common_image_parts: list[dict] = []
@@ -3673,7 +4348,16 @@ class ReplyOrchestrator:
                 event,
                 notification=event.background_content[:200],
             )
+        # 回复前追加独立的 <当前时间> user 块
+        time_block = self._build_current_time_message()
+        if time_block is not None:
+            messages.append(time_block)
+        # 防重复提醒:common 路径只有一次模型调用,追加一次即可(独立于时间块开关)
+        avoid_repeat_message = self._build_avoid_repeat_message()
+        if avoid_repeat_message is not None:
+            messages.append(avoid_repeat_message)
         append_image_context(messages, common_image_parts)
+        self._record_flow_request(event, self._flow_queue_key(event), messages)
         timeout = self._get_model_response_timeout_seconds(event)
         before_model = await self._emit_runtime_event(
             "model.call.before", event, messages=messages, timeout_seconds=timeout

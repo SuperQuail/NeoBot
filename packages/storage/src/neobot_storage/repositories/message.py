@@ -40,14 +40,38 @@ class SqlAlchemyMessageRepository:
         )
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
-        return [
-            IncomingMessage(
-                event_id=r.event_id,
-                conversation=ConversationRef(kind=r.conversation_kind, id=r.conversation_id),
-                sender_id=r.sender_id,
-                sender_name=r.sender_name,
-                text=r.text,
-                occurred_at=r.occurred_at,
+        return [_row_to_message(r) for r in reversed(rows)]
+
+    async def get_recent_by_sender(
+        self, conversation: ConversationRef, sender_id: str, limit: int = 20
+    ) -> list[IncomingMessage]:
+        """取该会话内某个发送者最近的若干条消息（按时间正序返回）。
+
+        用于软重启/冷启动后从本地记录补齐 Bot 自身发言（assistant 块）：
+        只看「最近 N 条消息」不够——那 N 条可能全是用户消息，必须按发送者过滤。
+        """
+        stmt = (
+            select(MessageData)
+            .where(
+                MessageData.conversation_kind == conversation.kind,
+                MessageData.conversation_id == conversation.id,
+                MessageData.sender_id == sender_id,
             )
-            for r in reversed(rows)
-        ]
+            .order_by(MessageData.occurred_at.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        return [_row_to_message(r) for r in reversed(rows)]
+
+
+def _row_to_message(row: MessageData) -> IncomingMessage:
+    """ORM 行 -> 领域消息。"""
+    return IncomingMessage(
+        event_id=row.event_id,
+        conversation=ConversationRef(kind=row.conversation_kind, id=row.conversation_id),
+        sender_id=row.sender_id,
+        sender_name=row.sender_name,
+        text=row.text,
+        occurred_at=row.occurred_at,
+    )

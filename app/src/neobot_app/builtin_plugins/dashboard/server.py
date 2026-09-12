@@ -23,7 +23,7 @@ from . import system as system_module
 from .api import DashboardApi, _json_error
 from .config import DashboardConfig
 from .config_manager import BotConfigManager, EnvFileManager
-from .metrics import Metrics
+from .metrics import Metrics, latency_sample_capacity
 from .security import (
     LoginLimiter,
     SessionStore,
@@ -31,6 +31,7 @@ from .security import (
     is_loopback,
     secrets_equal,
 )
+from .web_extension import extension_metadata
 
 COOKIE_NAME = "neobot_dashboard_session"
 _STATIC_DIR = Path(__file__).resolve().parent / "web"
@@ -124,10 +125,15 @@ class DashboardServer:
         )
         self.passwords = get_panel_password_store(self.data_dir / "auth.json")
 
+        # 延迟样本容量按实际采样间隔推导（间隔可在运行期热更新，探针循环会同步刷新）
+        probe_interval = float(config.latency_probe_interval_seconds or 0)
+        if probe_interval <= 0:
+            probe_interval = float(config.latency_probe_idle_seconds or 0)
         self.metrics = Metrics(
             data_dir=self.data_dir,
             history_max_days=config.history_max_days,
             log_buffer_size=config.log_buffer_size,
+            latency_samples=latency_sample_capacity(probe_interval),
             logger=logger,
         )
         self.config_manager = BotConfigManager(
@@ -143,11 +149,62 @@ class DashboardServer:
         self._started_at = time.time()
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
+        #: 运行期安全字段的最新配置快照（由插件配置消费者原地刷新；绑定期/安全类字段仍看 self.config）
+        self.runtime_config: DashboardConfig = config
         self._bot_cache: dict[str, Any] = {}
         self._bot_cache_at = 0.0
         self._bot_lock = asyncio.Lock()
+        #: 依赖面板的插件注册进来的 HTTP 扩展（星舰游戏等）
+        self._extensions: dict[str, Any] = {}
         self.public_url: str | None = None
         self.bound_port: int | None = None
+
+    # ------------------------------------------------------------------
+    # HTTP 扩展点（供依赖面板的插件挂载页面与接口）
+    # ------------------------------------------------------------------
+
+    def register_extension(self, name: str, extension: Any) -> str:
+        """注册一个 HTTP 扩展，返回它挂载的路径前缀。"""
+        key = str(name or "").strip()
+        if not key:
+            raise ValueError("扩展名不能为空")
+        prefixes = tuple(str(item) for item in (getattr(extension, "prefixes", ()) or ()))
+        if not prefixes:
+            raise ValueError(f"扩展 {key} 没有声明任何路径前缀")
+        for prefix in prefixes:
+            if not prefix.startswith("/"):
+                raise ValueError(f"扩展 {key} 的路径前缀必须以 / 开头: {prefix!r}")
+        self._extensions[key] = extension
+        self.logger.info(f"面板 HTTP 扩展已注册: {key} -> {', '.join(prefixes)}")
+        return prefixes[0]
+
+    def unregister_extension(self, name: str) -> bool:
+        removed = self._extensions.pop(str(name or ""), None)
+        if removed is not None:
+            self.logger.info(f"面板 HTTP 扩展已注销: {name}")
+        return removed is not None
+
+    def web_extensions(self) -> list[Any]:
+        return list(self._extensions.values())
+
+    def describe_extensions(self) -> list[dict[str, Any]]:
+        return [extension_metadata(item) for item in self._extensions.values()]
+
+    def _extension_for(self, path: str) -> Any | None:
+        for extension in self._extensions.values():
+            for prefix in getattr(extension, "prefixes", ()) or ():
+                prefix = str(prefix)
+                if path == prefix or path.startswith(prefix + "/"):
+                    return extension
+        return None
+
+    def _extension_requires_auth(self, path: str) -> bool:
+        for extension in self._extensions.values():
+            for prefix in getattr(extension, "auth_prefixes", ()) or ():
+                prefix = str(prefix)
+                if path == prefix or path.startswith(prefix + "/"):
+                    return True
+        return False
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -311,6 +368,26 @@ class DashboardServer:
         self._route(app, "POST", "/api/config/env", self.api.env_save)
         self._route(app, "POST", "/api/config/env/platform", self.api.env_platform_add)
         self._route(app, "GET", "/api/analysis/prompts", self.api.analysis_prompts)
+        self._route(app, "GET", "/api/prompts", self.api.prompts)
+        self._route(app, "POST", "/api/prompts/preview", self.api.prompts_preview)
+        self._route(app, "POST", "/api/prompts/save", self.api.prompts_save)
+        self._route(app, "POST", "/api/prompts/reset", self.api.prompts_reset)
+        self._route(app, "GET", "/api/chat-flows", self.api.chat_flows)
+        self._route(app, "GET", "/api/chat-flows/detail", self.api.chat_flow_detail)
+        self._route(app, "GET", "/api/chat-flows/prompts", self.api.chat_flow_prompts)
+        self._route(app, "GET", "/api/chat-flows/prompt", self.api.chat_flow_prompt)
+        self._route(
+            app, "POST", "/api/chat-flows/prompts/clear", self.api.chat_flow_prompts_clear
+        )
+        # ── 档案管理（features/spec(2)）──
+        self._route(app, "GET", "/api/archives", self.api.archives)
+        self._route(app, "GET", "/api/archives/over-limit", self.api.archives_over_limit)
+        self._route(app, "GET", "/api/archives/items", self.api.archive_items)
+        self._route(app, "GET", "/api/archives/item", self.api.archive_item)
+        self._route(app, "PUT", "/api/archives/item", self.api.archive_update)
+        self._route(app, "DELETE", "/api/archives/item", self.api.archive_delete)
+        self._route(app, "GET", "/api/scheduled-tasks", self.api.scheduled_tasks)
+        self._route(app, "POST", "/api/scheduled-tasks/action", self.api.scheduled_tasks_action)
         self._route(app, "GET", "/api/admin/power", self.api.power_status)
         self._route(app, "POST", "/api/admin/standby", self.api.admin_standby)
         self._route(app, "POST", "/api/admin/resume", self.api.admin_resume)
@@ -321,8 +398,11 @@ class DashboardServer:
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)
         self._route(app, "GET", "/assets/{name}", self._asset)
+        self._route(app, "GET", "/api/extensions", self.api.extensions)
         self._route(app, "GET", "/", self._index)
-        self._route(app, "GET", "/{tail:.*}", self._spa_fallback)
+        # 兜底路由承接所有方法：先问 HTTP 扩展（子插件挂载的页面与接口），
+        # 都不认领时再回落到面板自己的 SPA。
+        self._route(app, "*", "/{tail:.*}", self._catch_all)
         return app
 
     def _route(self, app: web.Application, method: str, path: str, handler: Any) -> None:
@@ -396,10 +476,20 @@ class DashboardServer:
             # 已配置密码时由处理器直接返回「请直接登录」，避免暴露为需登录接口
             "/api/auth/setup",
         }
-        if not path.startswith(_API_PREFIX) and path not in public and not path.startswith("/assets/") and not path.startswith("/image/"):
-            # 静态资源与 SPA 页面本身不需要鉴权（数据全部来自 /api）
+        # 子插件挂载的接口（auth_prefixes）与面板 /api 一样必须先有会话；
+        # 其余静态资源与 SPA 页面本身不需要鉴权（数据全部来自受保护的接口）
+        extension_protected = self._extension_requires_auth(path)
+        if (
+            not extension_protected
+            and not path.startswith(_API_PREFIX)
+            and path not in public
+            and not path.startswith("/assets/")
+            and not path.startswith("/image/")
+        ):
             return await handler(request)
-        if path in public or path.startswith("/assets/") or path.startswith("/image/"):
+        if not extension_protected and (
+            path in public or path.startswith("/assets/") or path.startswith("/image/")
+        ):
             return await handler(request)
 
         token = request.headers.get("X-Token") or request.cookies.get(COOKIE_NAME) or ""
@@ -420,8 +510,9 @@ class DashboardServer:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+            "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; connect-src 'self'; media-src 'self' blob:; "
+            "worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
         )
         if self._strip_base(request.path).startswith(_API_PREFIX):
             response.headers["Cache-Control"] = "no-store"
@@ -453,6 +544,20 @@ class DashboardServer:
         if path.startswith(_API_PREFIX):
             return _json_error("接口不存在", status=404)
         return await self._index(request)
+
+    async def _catch_all(self, request: web.Request) -> web.StreamResponse:
+        """扩展优先、面板兜底的统一入口。"""
+        path = self._strip_base(request.path)
+        extension = self._extension_for(path)
+        if extension is not None:
+            handler = getattr(extension, "handle_request", None)
+            if callable(handler):
+                response = await handler(request, path)
+                if response is not None:
+                    return response
+        if request.method not in {"GET", "HEAD"}:
+            return _json_error("接口不存在", status=404)
+        return await self._spa_fallback(request)
 
     async def _asset(self, request: web.Request) -> web.StreamResponse:
         return self._static_file("assets", request.match_info.get("name", ""))
@@ -524,7 +629,7 @@ class DashboardServer:
 
     async def bot_info(self) -> dict[str, Any]:
         """获取机器人信息（带缓存）。"""
-        ttl = float(self.config.bot_info_cache_ttl)
+        ttl = float(self.runtime_config.bot_info_cache_ttl)
         now = time.time()
         if ttl > 0 and self._bot_cache and now - self._bot_cache_at < ttl:
             return self._bot_cache
@@ -573,6 +678,20 @@ class DashboardServer:
             info["avatar_url"] = f"https://q1.qlogo.cn/g?b=qq&nk={info['user_id']}&s=640"
         return info
 
+    def apply_runtime_config(self, config: DashboardConfig) -> None:
+        """让「运行期安全」的插件配置字段原地生效。
+
+        只刷新不涉及监听端口 / 会话 / 安全开关的部分：
+        - log_buffer_size / history_max_days：立刻重建内存缓冲与历史裁剪；
+        - bot_info_cache_ttl、延迟探针四项：由读取方按 runtime_config 按需取用。
+
+        绑定期字段（host / port / base_path）与安全类字段**不在这里处理** —— 它们仍以
+        启动快照 self.config 为准，面板继续提示「需要重启 NeoBot」。
+        """
+        self.runtime_config = config
+        self.metrics.set_log_buffer_capacity(config.log_buffer_size)
+        self.metrics.set_history_max_days(config.history_max_days)
+
     async def probe_latency(self) -> float | None:
         """测量一次 API 往返延迟并写入指标。"""
         adapter = self.adapter
@@ -603,6 +722,7 @@ class DashboardServer:
             "loopback_only": is_loopback(self.config.host),
             "sessions": self.sessions.describe(),
             "system": system_module.snapshot(data_dir=self.data_dir),
+            "extensions": self.describe_extensions(),
         }
 
 

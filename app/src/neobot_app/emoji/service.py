@@ -1,4 +1,4 @@
-"""EmojiService — 表情包扫描、解析、编号与提示词生成"""
+"""EmojiService — 表情包扫描、解析、编号与清单生成（清单按需由 list_emojis 返回）"""
 
 from __future__ import annotations
 
@@ -38,6 +38,28 @@ class EmojiEntry:
 class EmojiImportResult:
     number: int
     entry: EmojiEntry
+
+
+class EmojiDuplicateError(ValueError):
+    """内容哈希已存在。
+
+    重复加入不是错误：调用方应当把它当成幂等成功处理（返回已有编号），
+    否则模型会在不同事件里反复重试同一个必然失败的调用。
+    继承 ValueError 以保持既有 except ValueError 调用方的行为不变。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        number: int | None = None,
+        file_name: str = "",
+        analysis_text: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.number = number
+        self.file_name = file_name
+        self.analysis_text = analysis_text
 
 
 class EmojiService:
@@ -98,6 +120,14 @@ class EmojiService:
         self._notify_disk_changed()
         return self._entries.get(number)
 
+    def find_number_by_hash(self, file_hash: str) -> int | None:
+        """按内容哈希反查表情包编号（重复加入时用它做幂等返回）。"""
+        self._notify_disk_changed()
+        for number, entry in self._entries.items():
+            if entry.file_hash == file_hash:
+                return number
+        return None
+
     def list_entries(self) -> list[tuple[int, EmojiEntry]]:
         """返回所有表情包，按使用次数从少到多排列。"""
         self._notify_disk_changed()
@@ -133,14 +163,16 @@ class EmojiService:
         matches.sort(key=lambda item: item[1].use_count)
         return matches[:limit]
 
-    def build_prompt_text(
+    def build_list_text(
         self,
         offset: int = 0,
         limit: int | None = None,
     ) -> str:
-        """构建表情包提示词文本，按使用次数从少到多排列（使用次数均衡器）。
+        """构建表情包清单文本（list_emojis 工具的返回值），按使用次数从少到多排列。
 
-        格式为 [编号]: [表情包：描述 | 已用N次]
+        格式为 [编号]: [表情包：描述 | 已用N次]；超出本页时附带翻页提示。
+        只作为工具结果按需返回，不再注入系统提示词——用量后缀与排序会随使用次数变化，
+        放进 system 前缀会让整段缓存失效。
         """
         self._notify_disk_changed()
         if not self._entries:
@@ -159,9 +191,9 @@ class EmojiService:
         if total > limit:
             header += f"，当前显示第{offset + 1}-{min(offset + limit, total)}个"
             if offset > 0:
-                header += f"，往前翻页: emoji_list(offset={max(0, offset - limit)})"
+                header += f"，往前翻页: list_emojis(offset={max(0, offset - limit)})"
             if offset + limit < total:
-                header += f"，往后翻页: emoji_list(offset={offset + limit})"
+                header += f"，往后翻页: list_emojis(offset={offset + limit})"
         return header + "\n" + "\n".join(lines)
 
     async def send_sticker(
@@ -284,9 +316,13 @@ class EmojiService:
         async with self._uow_factory() as uow:
             existing = await uow.emojis.get_by_hash(file_hash)
             if existing is not None:
-                raise ValueError(
+                number = self.find_number_by_hash(file_hash)
+                raise EmojiDuplicateError(
                     f"该图片与已有表情包重复（哈希 {file_hash[:12]}…），"
-                    f"已有文件: {existing.file_name}，不允许重复加入"
+                    f"已有文件: {existing.file_name}，编号 {number}",
+                    number=number,
+                    file_name=existing.file_name,
+                    analysis_text=existing.analysis_text or "",
                 )
 
         suffix = _detect_image_suffix(image_bytes)

@@ -55,7 +55,7 @@ class Chat:
         metadata={"description": "原生视觉每轮默认自动加载的图片数量，0 关闭自动加载；手动加图工具不受此数量限制"},
     )
     max_group_chat_observations: Optional[int] = field(
-        default=100,
+        default=200,
         metadata={"description": "群聊观察上限"},
     )
     group_chat_chance: Optional[float] = field(
@@ -79,7 +79,7 @@ class Chat:
         metadata={"description": "群描述"},
     )
     max_friend_chat_observations: Optional[int] = field(
-        default=100,
+        default=200,
         metadata={"description": "私聊观察上限"},
     )
     friend_use_black_list: Optional[bool] = field(
@@ -277,7 +277,8 @@ class ModelDefinition:
     native_vision: bool = field(
         default=False,
         metadata={
-            "description": "该模型可直接接收图片块；主推理模型开启后，不可用或无法处理图片时"
+            "description": "该模型可直接接收图片块；model_type=vision 的图像识别模型无需配置"
+            "（一律视为原生视觉）。主推理模型开启后，不可用或无法处理图片时"
             "自动回退到 vision_model（无需手选回退模型）"
         },
     )
@@ -299,6 +300,10 @@ class ModelDefinition:
     def __post_init__(self) -> None:
         self.key = normalize_model_key(self.key)
         self.model_type = normalize_model_type(self.model_type)
+        # 图像识别模型天然具备视觉能力（原生视觉回退路由本就按"图片原样发送"处理），
+        # 因此 model_type=vision 的模型无需用户手工配置 native_vision。
+        if self.model_type == "vision":
+            self.native_vision = True
         if not str(self.description or "").strip():
             self.description = MODEL_TYPE_LABELS.get(self.model_type, "模型")
 
@@ -321,10 +326,11 @@ def _default_primary_chat_model() -> "ModelDefinition":
         model_type="chat",
         description="主对话模型（Agent模型编号0）",
         provider="DeepSeek",
-        model_name="deepseek-v4-pro",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -344,12 +350,13 @@ def _default_agent_model_1() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-max",
         model_type="chat",
-        description="Agent模型编号1：deepseek-v4-flash max 推理模式",
+        description="Agent模型编号1：deepseek-flash max 推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -369,12 +376,13 @@ def _default_agent_model_2() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-high",
         model_type="chat",
-        description="Agent模型编号2：deepseek-v4-flash high 推理模式",
+        description="Agent模型编号2：deepseek-flash high 推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -394,12 +402,13 @@ def _default_agent_model_3() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-off",
         model_type="chat",
-        description="Agent模型编号3：deepseek-v4-flash 非推理模式",
+        description="Agent模型编号3：deepseek-flash 非推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -422,6 +431,7 @@ def _default_vision_model() -> "ModelDefinition":
         description="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
+        # native_vision 无需显式配置：vision 类型在 __post_init__ 中自动视为原生视觉
         settings=ModelSettings(
             temperature=0.7,
             max_output_tokens=2048,
@@ -635,8 +645,11 @@ class AgentModelRouting:
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
     self_heal: int = field(
-        default=3,
-        metadata={"description": "自修复 Agent 使用的模型编号，0-3；默认 3（低成本非推理模型）"},
+        default=1,
+        metadata={
+            "description": "自修复 Agent 使用的模型编号，0-3；默认 1（强推理模型）——"
+            "自修复要读日志、定位缺陷并改代码，弱模型会反复试错"
+        },
     )
 
 
@@ -929,6 +942,12 @@ class ScheduledTask:
             "description": "新建定时任务默认是否使用一次性通知；一次性通知指每个触发窗口只通知一次并自动完成该窗口，不等同于 once 一次性任务"
         },
     )
+    missed_window_grace_seconds: Optional[int] = field(
+        default=300,
+        metadata={
+            "description": "错过窗口的补发宽限期（秒）：窗口结束超过该秒数才被扫描到的任务视为停机期间错过，不再补发提醒（默认 300 秒）。没有上限时进程重启会把早已过期的任务补发一遍"
+        },
+    )
 
 
 @dataclass
@@ -1045,10 +1064,19 @@ class AgentMemoryTrigger:
         metadata={"description": "单次记忆总结最多允许的工具调用轮次，防止工具失败时反复重试烧token"},
     )
     max_summary_seconds: Optional[float] = field(
-        default=180.0,
+        default=300.0,
         metadata={
             "description": "单次记忆总结的总时长预算(秒)；超过即中止本轮并进入失败冷却，"
-            "避免多轮工具调用把一次总结拖成数十分钟"
+            "避免多轮工具调用把一次总结拖成数十分钟。至少要能装下两轮完整调用"
+            "(第一轮工具调用 + 第二轮收尾)，否则思考模型会在收尾时被腰斩"
+        },
+    )
+    model_call_timeout_seconds: Optional[float] = field(
+        default=0.0,
+        metadata={
+            "description": "记忆总结单次模型调用的超时(秒)；0 表示自动跟随总结模型自身的"
+            "请求超时(settings.timeout_seconds)并留 15 秒余量。开启思考/推理强度 max 的模型"
+            "单次调用常超过 60 秒，此处不应小于该模型的请求超时，否则会在正常推理中被掐断"
         },
     )
 
@@ -1074,6 +1102,18 @@ class AgentMemoryArchive:
     group_profile_max_chars: Optional[int] = field(
         default=1500,
         metadata={"description": "群聊记忆渲染进提示词时的展示长度上限(截取开头部分)；超出部分由模型用 archive_crud 分页查阅；group_summary 条目也以此为准"},
+    )
+    max_total_chars: Optional[int] = field(
+        default=10000,
+        metadata={"description": "单条档案的存储硬上限(字符)；超过后按 overflow_action 处理；0表示禁用(不限制)。与渲染上限 max_chars 无关"},
+    )
+    overflow_action: Optional[str] = field(
+        default="summarize",
+        metadata={"description": "档案超过 max_total_chars 时的动作：summarize(异步自动压缩)或reject(拒绝写入并返回错误)"},
+    )
+    overflow_summary_cooldown_seconds: Optional[int] = field(
+        default=600,
+        metadata={"description": "同一档案两次自动压缩之间的最小间隔(秒)，用于防抖"},
     )
 
 
@@ -1533,10 +1573,42 @@ class EnhancedChat(Chat):
         metadata={"description": "Agent 模式单轮回复最大工具调用迭代次数"},
     )
     group_agent_silent_timeout_seconds: Optional[float] = field(
-        default=60.0,
+        default=120.0,
         metadata={
             "description": "群聊 agent 回复管线最长静默时间；超过后强制关闭管线。wait 工具等待时间不计入静默时间，0 表示禁用"
         },
+    )
+    silent_nudge_enabled: Optional[bool] = field(
+        default=True,
+        metadata={"description": "长任务沉默提醒：模型长时间只调用工具不回复时注入一条系统提醒；关闭后回到原行为"},
+    )
+    silent_nudge_first_rounds: Optional[int] = field(
+        default=5,
+        metadata={"description": "首次沉默提醒需要的连续工具调用轮数；0表示关闭轮次触发"},
+    )
+    silent_nudge_repeat_rounds: Optional[int] = field(
+        default=10,
+        metadata={"description": "首次提醒之后，每次再累积多少轮工具调用才再次提醒"},
+    )
+    silent_nudge_seconds: Optional[float] = field(
+        default=45.0,
+        metadata={"description": "自本轮开始(或上次提醒)起超过此秒数仍未使用回复工具即提醒；0表示关闭时间触发"},
+    )
+    silent_nudge_max: Optional[int] = field(
+        default=3,
+        metadata={"description": "单次回复事件内最多注入的沉默提醒次数"},
+    )
+    chat_flow_prompt_history_enabled: Optional[bool] = field(
+        default=True,
+        metadata={"description": "是否把完整提示词写入本地磁盘(全局保留最近N份)；开启意味着完整聊天内容(含私聊与图片引用)会被持久化"},
+    )
+    chat_flow_prompt_history_limit: Optional[int] = field(
+        default=100,
+        metadata={"description": "完整提示词历史的全局保留份数；直接决定磁盘占用(总量约该值×单份体积0.5~1.2MB，100份约50~120MB)"},
+    )
+    chat_flow_latest_in_memory: Optional[bool] = field(
+        default=False,
+        metadata={"description": "是否把最新一份完整提示词常驻内存；false(默认)全部读盘，常驻内存仅约15KB索引；true则最新一份留在内存(约0.5~1.2MB)"},
     )
     random_sticker_probability: Optional[float] = field(
         default=0.1,
@@ -1586,6 +1658,16 @@ class EnhancedChat(Chat):
     archive_fetch_window: Optional[int] = field(
         default=20,
         metadata={"description": "群成员列表窗口；只列出消息队列中最新的此数量消息的发送者，戳一戳等同0.2条消息"},
+    )
+    tool_result_full_keep: Optional[int] = field(
+        default=10,
+        metadata={
+            "description": "工具输出压缩:重新构建提示词后保留完整内容的最近工具返回条数,其余压缩"
+        },
+    )
+    tool_result_summary_chars: Optional[int] = field(
+        default=200,
+        metadata={"description": "工具输出压缩:非基础工具压缩后保留的结果摘要字符数"},
     )
     inject_member_archives: Optional[bool] = field(
         default=False,

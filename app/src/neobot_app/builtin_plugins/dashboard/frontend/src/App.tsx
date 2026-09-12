@@ -8,6 +8,10 @@ import ConfigManager from './pages/ConfigManager';
 import System from './pages/System';
 import Usage from './pages/Usage';
 import Analysis from './pages/Analysis';
+import Prompts from './pages/Prompts';
+import ChatFlows from './pages/ChatFlows';
+import ScheduledTasks from './pages/ScheduledTasks';
+import Archives from './pages/Archives';
 import Bots from './pages/Bots';
 import Logs from './pages/Logs';
 import Login from './pages/Login';
@@ -38,6 +42,10 @@ export default function App() {
           <Route path="system" element={<System />} />
           <Route path="usage" element={<Usage />} />
           <Route path="analysis" element={<Analysis />} />
+          <Route path="prompts" element={<Prompts />} />
+          <Route path="chat-flows" element={<ChatFlows />} />
+          <Route path="scheduled-tasks" element={<ScheduledTasks />} />
+          <Route path="archives" element={<Archives />} />
           <Route path="bots" element={<Bots />} />
           <Route path="logs" element={<Logs />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

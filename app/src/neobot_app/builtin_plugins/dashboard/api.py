@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,13 @@ from .config_manager import (
     models_view,
 )
 from .model_probe import list_provider_models
-from .plugin_config import PluginConfigConflictError, PluginConfigEditor, PluginConfigError
+from .plugin_config import (
+    PluginConfigConflictError,
+    PluginConfigEditor,
+    PluginConfigError,
+    apply_field_descriptions,
+    read_manifest_comments,
+)
 from neobot_app.panel_auth import PasswordPolicyError
 
 from .security import is_loopback
@@ -88,10 +95,17 @@ def _redact_prompt_report(report: dict[str, Any]) -> dict[str, Any]:
 class DashboardApi:
     """面板接口集合。"""
 
+    #: 聊天流可读名称的缓存 TTL（秒）。面板 5s 轮询、最多 128 条流，
+    #: 没有缓存就会变成「每轮每流一次 DB 查询」（features/spec(3) §4.5 A12）。
+    DISPLAY_NAME_TTL_SECONDS = 60.0
+
     def __init__(self, *, console: Any) -> None:
         self.console = console
         #: 后台电源动作的强引用：create_task 的返回值被丢弃时任务可能被 GC 回收
         self._power_tasks: set[asyncio.Task[Any]] = set()
+        #: pipeline_key -> 可读名称（TTL 见 DISPLAY_NAME_TTL_SECONDS）
+        self._display_names: dict[str, str] = {}
+        self._display_names_at = 0.0
 
     # ------------------------------------------------------------------
     # 基础设施
@@ -578,9 +592,25 @@ class DashboardApi:
             "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
             "hot_reloadable": bool(getattr(snapshot, "hot_reloadable", True)),
             "config_path": str(self._plugin_config_path(snapshot.name) or ""),
+            # 依赖体系：前置插件、反向依赖与自动禁用原因
+            "dependency_issues": list(getattr(snapshot, "dependency_issues", ()) or ()),
+            "dependents": list(getattr(snapshot, "dependents", ()) or ()),
+            "disabled_reason": getattr(snapshot, "disabled_reason", None),
+            "auto_disabled": bool(getattr(snapshot, "auto_disabled", False)),
             # 配置校验告警：非空表示已存值非法、运行时已回落默认值
             "config_error": getattr(snapshot, "config_error", None),
         }
+
+    async def extensions(self, request: web.Request) -> web.Response:
+        """面板 HTTP 扩展：依赖面板的插件挂到同一端口上的页面入口。"""
+        describe = getattr(self.console, "describe_extensions", None)
+        items: list[dict[str, Any]] = []
+        if callable(describe):
+            try:
+                items = list(describe())
+            except Exception:
+                items = []
+        return _json_ok({"items": items})
 
     async def plugins(self, request: web.Request) -> web.Response:
         control = self._plugin_control()
@@ -642,7 +672,34 @@ class DashboardApi:
                 defaults = dict(getter(name))
             except Exception:
                 defaults = {}
-        return PluginConfigEditor(path, defaults=defaults)
+        # 字段说明来自插件自带 plugin.toml 的 [config] 注释（生成的配置也带注释）
+        return PluginConfigEditor(
+            path,
+            defaults=defaults,
+            comments=self._plugin_field_comments(control, name),
+        )
+
+    def _plugin_field_comments(self, control: Any, name: str) -> dict[str, str]:
+        """插件 plugin.toml 里 [config] 各键的注释（失败时返回空字典）。"""
+        getter = getattr(control, "plugin_manifest_path", None)
+        if not callable(getter):
+            return {}
+        try:
+            manifest = getter(name)
+        except Exception:
+            return {}
+        try:
+            return read_manifest_comments(manifest)
+        except Exception:
+            return {}
+
+    def _with_field_comments(
+        self, schema: list[dict[str, Any]], comments: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """给 pydantic 生成的 schema 补上 plugin.toml 注释（不覆盖已有说明）。"""
+        if not schema or not comments:
+            return schema
+        return apply_field_descriptions(schema, comments)
 
     def _plugin_config_meta(
         self, snapshot: Any, name: str, document: dict[str, Any]
@@ -856,8 +913,11 @@ class DashboardApi:
         model = control.config_model(name)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
-            # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）
-            document["schema"] = schema
+            # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）；
+            # 模型没写 description 的字段用 plugin.toml 的注释兜底
+            document["schema"] = self._with_field_comments(
+                schema, self._plugin_field_comments(control, name)
+            )
             document["form_supported"] = True
         return _json_ok(self._plugin_config_meta(snapshot, name, document))
 
@@ -896,6 +956,8 @@ class DashboardApi:
                 return _json_error(
                     "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
                 )
+        # 保存前的生效配置：用于判断哪些改动可以在运行期原地生效（不重载插件）
+        before_values = self._plugin_config_values(control, name)
         try:
             document = editor.save(
                 config=values if isinstance(values, dict) else None,
@@ -908,11 +970,22 @@ class DashboardApi:
             return _json_error(str(exc), status=400)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
-            document["schema"] = schema
+            document["schema"] = self._with_field_comments(
+                schema, self._plugin_field_comments(control, name)
+            )
         applied = False
         message = "配置已保存到插件数据目录"
         reload_requested = bool(payload.get("reload"))
-        if reload_requested:
+        consumer = self._plugin_config_consumer(control, name)
+        if reload_requested and consumer is not None:
+            # ① 原地生效（bugfixes/feat(2) §6）：把运行期安全的字段直接喂给插件，
+            #    不重载插件本体 —— HTTP 服务不中断、当前保存请求正常返回、内存指标不重置。
+            applied, message, changes = await self._apply_plugin_config_in_place(
+                name, consumer, before=before_values, control=control
+            )
+            if changes is not None:
+                document["changes"] = changes
+        elif reload_requested:
             if bool(getattr(snapshot, "config_hot_reload", True)):
                 outcome = await control.reload(name)
                 applied = outcome.ok
@@ -923,9 +996,86 @@ class DashboardApi:
                 )
             else:
                 message += "；该插件配置需要重启 NeoBot 才能生效"
-        document["applied"] = applied
-        document["message"] = message
-        return _json_ok(self._plugin_config_meta(snapshot, name, document))
+        # 注意顺序：_plugin_config_meta 会写入一条**通用**说明，必须先在它之后再覆盖
+        # applied / message，否则插件配置保存后的「已生效 / 需重启」提示会被通用文案吞掉。
+        payload = self._plugin_config_meta(snapshot, name, document)
+        payload["applied"] = applied
+        payload["message"] = message
+        return _json_ok(payload)
+
+    @staticmethod
+    def _plugin_config_values(control: Any, name: str) -> dict[str, Any]:
+        """插件当前生效的原始配置（打包默认值 + 数据目录里保存的值）。"""
+        getter = getattr(control, "plugin_config_values", None)
+        if not callable(getter):
+            return {}
+        try:
+            values = getter(name)
+        except Exception:
+            return {}
+        return dict(values) if isinstance(values, dict) else {}
+
+    @staticmethod
+    def _plugin_config_consumer(control: Any, name: str) -> Any | None:
+        """插件声明的「配置原地生效」消费者；未声明时返回 None（维持原有重启语义）。"""
+        getter = getattr(control, "config_consumer", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(name)
+        except Exception:
+            return None
+
+    async def _apply_plugin_config_in_place(
+        self,
+        name: str,
+        consumer: Any,
+        *,
+        before: dict[str, Any],
+        control: Any,
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """把插件配置里「运行期安全」的改动原地生效，返回 (是否已生效, 提示文案, 改动明细)。"""
+        from neobot_app.runtime.plugin_config_reload import (
+            apply_plugin_config_change,
+            diff_summary,
+        )
+
+        after = self._plugin_config_values(control, name)
+        try:
+            result = await apply_plugin_config_change(
+                consumer, plugin_name=name, before=before, after=after
+            )
+        except Exception as exc:
+            self.logger.error(f"插件配置原地生效失败: {name}", error=str(exc))
+            return False, f"配置已保存，但立即生效失败（已保留原配置）: {exc}", None
+
+        changes = diff_summary(result.changes) if result.changes else None
+        restart_note = (
+            f"；另有 {len(result.needs_restart)} 项需重启 NeoBot 才能生效"
+            if result.needs_restart
+            else ""
+        )
+        if result.error:
+            self.logger.error(f"插件配置原地生效失败: {name}", error=result.error)
+            return (
+                False,
+                f"配置已保存，但立即生效失败（已保留原配置）: {result.error}{restart_note}",
+                changes,
+            )
+        if result.ok:
+            self.logger.info(
+                f"插件配置已原地生效: {name}",
+                applied=list(result.applied),
+                needs_restart=list(result.needs_restart),
+            )
+            return (
+                True,
+                f"配置已保存并已生效（{len(result.applied)} 项立即生效，无需重启）{restart_note}",
+                changes,
+            )
+        if result.needs_restart:
+            return False, f"配置已保存；该插件配置需要重启 NeoBot 才能生效{restart_note}", changes
+        return False, "配置已保存（本次没有检测到配置项变化）", changes
 
     # ------------------------------------------------------------------
     # 本体配置 / .env
@@ -1378,6 +1528,542 @@ class DashboardApi:
             report = _redact_prompt_report(report)
         return _json_ok(report)
 
+
+    # ------------------------------------------------------------------
+    # 提示词模板（data/prompts）
+    # ------------------------------------------------------------------
+
+    def _prompt_store(self) -> Any:
+        return self._service("prompt_store")
+
+    def _custom_prompts_file(self) -> Any:
+        store = self._prompt_store()
+        custom_file = getattr(store, "custom_file", None)
+        if custom_file is None:
+            return None
+        return Path(custom_file)
+
+    async def prompts(self, request: web.Request) -> web.Response:
+        """提示词分区总览：默认值、自定义值与合并后的实际取值。"""
+        from . import prompt_admin
+
+        store = self._prompt_store()
+        if store is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        custom_file = self._custom_prompts_file()
+        custom_sections = (
+            prompt_admin.read_custom_sections(custom_file)
+            if custom_file is not None
+            else {}
+        )
+        payload = prompt_admin.describe_sections(
+            store, custom_sections=custom_sections
+        )
+        payload["editable"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def prompts_preview(self, request: web.Request) -> web.Response:
+        """按模拟取值渲染模板，返回「转义后内容」。
+
+        纯计算，不写盘；values 里可以覆盖任意占位符的模拟取值。
+        """
+        from . import prompt_admin
+
+        payload = await self._read_json(request)
+        template = payload.get("template")
+        if template is None:
+            section = str(payload.get("section") or "").strip()
+            path = str(payload.get("path") or "template").strip() or "template"
+            store = self._prompt_store()
+            if store is None:
+                return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+            template = _prompt_value(store, section, path)
+            if template is None:
+                return _json_error(f"未找到提示词 {section}.{path}", status=404)
+        values = payload.get("values")
+        if values is not None and not isinstance(values, dict):
+            return _json_error("values 必须是对象")
+        result = prompt_admin.preview_template(str(template), values or {})
+        return _json_ok(result)
+
+    async def prompts_save(self, request: web.Request) -> web.Response:
+        """把某个键写进 data/prompts/custom/prompts.toml（只动自定义文件）。"""
+        from . import prompt_admin
+
+        denied = self._require_manage(request, action="编辑提示词")
+        if denied is not None:
+            return denied
+        custom_file = self._custom_prompts_file()
+        if custom_file is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        payload = await self._read_json(request)
+        section = str(payload.get("section") or "").strip()
+        path = str(payload.get("path") or "template").strip() or "template"
+        value = payload.get("value")
+        if value is None:
+            return _json_error("缺少 value")
+        try:
+            prompt_admin.write_override(custom_file, section, path, str(value))
+        except ValueError as exc:
+            return _json_error(str(exc))
+        self._reload_prompt_store()
+        self.logger.info(
+            f"面板修改提示词 ip={self.console.request_ip(request)} {section}.{path}"
+        )
+        return _json_ok({"message": f"已保存 {section}.{path}", "section": section, "path": path})
+
+    async def prompts_reset(self, request: web.Request) -> web.Response:
+        """删除自定义覆盖，恢复该键的默认提示词。"""
+        from . import prompt_admin
+
+        denied = self._require_manage(request, action="恢复默认提示词")
+        if denied is not None:
+            return denied
+        custom_file = self._custom_prompts_file()
+        if custom_file is None:
+            return _json_error("提示词存储不可用（未注入 prompt_store）", status=503)
+        payload = await self._read_json(request)
+        section = str(payload.get("section") or "").strip()
+        path = str(payload.get("path") or "template").strip() or "template"
+        try:
+            result = prompt_admin.remove_override(custom_file, section, path)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        self._reload_prompt_store()
+        message = (
+            f"已恢复默认 {section}.{path}" if result.get("removed") else "该键没有自定义内容"
+        )
+        return _json_ok({**result, "message": message})
+
+    def _reload_prompt_store(self) -> None:
+        store = self._prompt_store()
+        reload_store = getattr(store, "reload", None)
+        if callable(reload_store):
+            try:
+                reload_store()
+            except Exception as exc:
+                self.logger.warning(f"提示词缓存刷新失败: {exc}")
+
+    # ------------------------------------------------------------------
+    # 聊天流（最近一次发给模型的内容 + 后台任务）
+    # ------------------------------------------------------------------
+
+    def _flow_registry(self) -> Any:
+        return self._service("chat_flow_registry")
+
+    def _profile_service(self) -> Any:
+        return self._service("profile_service")
+
+    @staticmethod
+    def _split_pipeline_key(pipeline_key: str, state: dict[str, Any] | None = None) -> tuple[str, str]:
+        """解析聊天流身份：优先 split(pipeline_key)，其次回落记录里的 conversation_kind/id。
+
+        不依赖 record_prompt 是否被调用过（features/spec(3) §4.5）。
+        """
+        key = str(pipeline_key or "").strip()
+        kind = ""
+        conversation_id = ""
+        if ":" in key:
+            kind, conversation_id = key.split(":", 1)
+        data = state or {}
+        if not kind:
+            kind = str(data.get("conversation_kind") or "")
+        if not conversation_id:
+            conversation_id = str(data.get("conversation_id") or "")
+        return kind.strip(), conversation_id.strip()
+
+    async def _display_name(self, pipeline_key: str, state: dict[str, Any] | None = None) -> str:
+        """把 pipeline_key（group:123）解析成可读名称（群名 / 昵称）。
+
+        - 只走 profile_service 的**纯 DB** 路径（绝不调用 adapter.get_group_name，
+          那会在缓存未命中时打 OneBot API —— 面板 5s 轮询会造出周期性 API 调用）；
+        - 结果按 TTL 缓存，避免每轮每流一次 DB 查询；
+        - 任何异常都回落 pipeline_key，绝不让接口 500（R2）。
+        """
+        key = str(pipeline_key or "").strip()
+        if not key:
+            return ""
+        now = time.time()
+        if now - self._display_names_at > self.DISPLAY_NAME_TTL_SECONDS:
+            self._display_names.clear()
+            self._display_names_at = now
+        cached = self._display_names.get(key)
+        if cached is not None:
+            return cached
+
+        name = ""
+        try:
+            kind, conversation_id = self._split_pipeline_key(key, state)
+            service = self._profile_service()
+            getter = None
+            if service is not None and conversation_id:
+                if kind == "group":
+                    getter = getattr(service, "get_group_name", None)
+                elif kind in {"private", "friend"}:
+                    getter = getattr(service, "get_user_name", None)
+            if callable(getter):
+                name = str(await getter(conversation_id) or "").strip()
+        except Exception as exc:
+            self.logger.debug(f"聊天流名称解析失败，回落 pipeline_key: {key} {exc}")
+            name = ""
+        resolved = name or key
+        self._display_names[key] = resolved
+        return resolved
+
+    async def chat_flows(self, request: web.Request) -> web.Response:
+        registry = self._flow_registry()
+        if registry is None:
+            return _json_error(
+                "聊天流登记处不可用（未注入 chat_flow_registry）", status=503
+            )
+        items = list(registry.list_flows() or [])
+        for item in items:
+            if isinstance(item, dict):
+                item["display_name"] = await self._display_name(
+                    str(item.get("pipeline_key") or ""), item
+                )
+        return _json_ok({"items": items})
+
+    async def chat_flow_detail(self, request: web.Request) -> web.Response:
+        registry = self._flow_registry()
+        if registry is None:
+            return _json_error(
+                "聊天流登记处不可用（未注入 chat_flow_registry）", status=503
+            )
+        key = str(request.query.get("key") or "").strip()
+        if not key:
+            return _json_error("缺少查询参数 key")
+        snapshot = await registry.snapshot(key)
+        if snapshot is None:
+            return _json_error(f"没有该聊天流的记录: {key}", status=404)
+        snapshot["display_name"] = await self._display_name(key, snapshot)
+        return _json_ok(snapshot)
+
+    # ------------------------------------------------------------------
+    # 完整提示词历史（features/spec(3) R3–R6）
+    # ------------------------------------------------------------------
+
+    def _context_recorder(self) -> Any:
+        return self._service("context_recorder")
+
+    async def chat_flow_prompts(self, request: web.Request) -> web.Response:
+        """列出最近 N 份完整提示词的**元数据**（可按 pipeline_key 过滤）。"""
+        recorder = self._context_recorder()
+        if recorder is None:
+            return _json_error(
+                "提示词历史记录器不可用（未注入 context_recorder）", status=503
+            )
+        pipeline_key = str(request.query.get("key") or "").strip()
+        try:
+            entries = recorder.list_entries(pipeline_key or None) or []
+        except Exception as exc:
+            self.logger.warning(f"提示词历史读取失败: {exc}")
+            return _json_error(f"提示词历史读取失败: {exc}", status=500)
+        items = [
+            entry.to_dict() if hasattr(entry, "to_dict") else dict(entry)
+            for entry in entries
+        ]
+        return _json_ok(
+            {
+                "items": items,
+                "pipeline_key": pipeline_key,
+                "limit": int(getattr(recorder, "max_files", 0) or 0),
+            }
+        )
+
+    async def chat_flow_prompt(self, request: web.Request) -> web.Response:
+        """按需读取**单份完整提示词全文**（不截断；默认视图不读盘）。"""
+        recorder = self._context_recorder()
+        if recorder is None:
+            return _json_error(
+                "提示词历史记录器不可用（未注入 context_recorder）", status=503
+            )
+        raw = request.query.get("seq")
+        if raw is None or str(raw).strip() == "":
+            return _json_error("缺少查询参数 seq")
+        try:
+            seq = int(str(raw))
+        except (TypeError, ValueError):
+            return _json_error("查询参数 seq 必须是整数")
+        entry = recorder.read_entry(seq)
+        if entry is None:
+            return _json_error(f"没有该份提示词历史: seq={seq}", status=404)
+        return _json_ok({"seq": seq, "entry": entry})
+
+    async def chat_flow_prompts_clear(self, request: web.Request) -> web.Response:
+        """清空完整提示词历史（磁盘上的整份文件一并删除）。"""
+        denied = self._require_manage(request, action="清空提示词历史")
+        if denied is not None:
+            return denied
+        recorder = self._context_recorder()
+        if recorder is None:
+            return _json_error(
+                "提示词历史记录器不可用（未注入 context_recorder）", status=503
+            )
+        try:
+            removed = int(recorder.clear() or 0)
+        except Exception as exc:
+            return _json_error(f"清空提示词历史失败: {exc}", status=500)
+        self.logger.info(f"面板清空完整提示词历史: removed={removed}")
+        return _json_ok({"removed": removed, "message": f"已清空 {removed} 份完整提示词历史"})
+
+    # ------------------------------------------------------------------
+    # 档案管理（features/spec(2)：把模型侧 CRUD 暴露到面板）
+    # ------------------------------------------------------------------
+
+    def _archive_service(self) -> Any:
+        return self._service("archive_memory_service")
+
+    def _archive_delete_enabled(self) -> bool:
+        """面板删除开关：**独立于** agent.memory.archive.allow_delete（spec §2.7）。"""
+        config = getattr(self.console, "runtime_config", None)
+        return bool(getattr(config, "allow_archive_delete", False))
+
+    def _archive_missing(self) -> web.Response:
+        return _json_error(
+            "档案记忆服务不可用（未注入 archive_memory_service）", status=503
+        )
+
+    async def archives(self, request: web.Request) -> web.Response:
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        from . import archives as archive_admin
+
+        try:
+            payload = await archive_admin.list_tables(service)
+        except Exception as exc:
+            self.logger.warning(f"档案表清单读取失败: {exc}")
+            return _json_error(f"档案表清单读取失败: {exc}", status=500)
+        payload["delete_enabled"] = self._archive_delete_enabled()
+        payload["can_manage"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def archives_over_limit(self, request: web.Request) -> web.Response:
+        """当前超过存储上限的档案（spec(1) A7 的可视化落点）。"""
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        from . import archives as archive_admin
+
+        table = str(request.query.get("table") or "").strip()
+        payload = await archive_admin.list_over_limit(
+            service,
+            table=table,
+            limit=self._int_arg(
+                request, "limit", 100, minimum=1, maximum=archive_admin.MAX_LIST_LIMIT
+            ),
+        )
+        return _json_ok(payload)
+
+    async def archive_items(self, request: web.Request) -> web.Response:
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        from . import archives as archive_admin
+
+        table = str(request.query.get("table") or "").strip()
+        if not table:
+            return _json_error("缺少查询参数 table")
+        over_limit_only = str(request.query.get("over_limit") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        payload = await archive_admin.list_items(
+            service,
+            table=table,
+            key_query=str(request.query.get("key_query") or "").strip(),
+            value_query=str(request.query.get("value_query") or "").strip(),
+            tags=archive_admin.normalize_tags(request.query.get("tags")),
+            limit=self._int_arg(
+                request, "limit", 50, minimum=1, maximum=archive_admin.MAX_LIST_LIMIT
+            ),
+            offset=self._int_arg(request, "offset", 0, minimum=0, maximum=1_000_000),
+            over_limit_only=over_limit_only,
+        )
+        payload["max_total_chars"] = int(getattr(service, "max_total_chars", 0) or 0)
+        payload["delete_enabled"] = self._archive_delete_enabled()
+        payload["can_manage"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def archive_item(self, request: web.Request) -> web.Response:
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        from . import archives as archive_admin
+
+        table = str(request.query.get("table") or "").strip()
+        key = str(request.query.get("key") or "").strip()
+        if not table or not key:
+            return _json_error("缺少查询参数 table / key")
+        payload = await archive_admin.get_item(service, table=table, key=key)
+        if payload is None:
+            return _json_error(f"没有该档案: {table}:{key}", status=404)
+        payload["delete_enabled"] = self._archive_delete_enabled()
+        payload["can_manage"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def archive_update(self, request: web.Request) -> web.Response:
+        """编辑档案内容（乐观锁：version 不一致返回 409 + 当前内容）。"""
+        denied = self._require_manage(request, action="编辑档案")
+        if denied is not None:
+            return denied
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        from . import archives as archive_admin
+
+        try:
+            body = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        table = str(body.get("table") or "").strip()
+        key = str(body.get("key") or "").strip()
+        if not table or not key:
+            return _json_error("缺少 table / key")
+        if archive_admin.is_internal_table(table):
+            return _json_error(
+                f"{table} 是程序维护的内部表，禁止手工编辑（改坏会导致重复总结或漏总结）"
+            )
+        if "value" not in body or body.get("value") is None:
+            return _json_error("缺少 value")
+        value = str(body.get("value"))
+        if not value.strip():
+            return _json_error("档案内容不能为空（对齐 patch_archive 的空内容拒绝语义）")
+        try:
+            expected = int(body.get("version"))
+        except (TypeError, ValueError):
+            return _json_error("缺少或非法的 version（乐观锁要求带上读取时的版本号）")
+        tags = archive_admin.normalize_tags(body.get("tags"))
+
+        from neobot_memory.archive_service import ArchiveVersionConflictError
+
+        try:
+            item = await service.set_if_version(table, key, value, tags, expected)
+        except ArchiveVersionConflictError as exc:
+            current = await archive_admin.get_item(service, table=table, key=key)
+            return _json_error(
+                f"档案已被其它会话修改（当前 version={exc.actual_version}），请重新读取后再保存",
+                status=409,
+                current=current,
+                actual_version=int(getattr(exc, "actual_version", 0) or 0),
+            )
+        except Exception as exc:
+            return _json_error(f"档案保存失败: {exc}", status=500)
+
+        detail = archive_admin.item_detail(item)
+        self.logger.info(
+            f"面板编辑档案 table={table} key={key} chars={detail['total_chars']} "
+            f"version={detail['version']} ip={self.console.request_ip(request)}"
+        )
+        detail["message"] = "档案已保存"
+        return _json_ok(detail)
+
+    async def archive_delete(self, request: web.Request) -> web.Response:
+        """删除档案（硬删除 + 审计日志；受独立开关 allow_archive_delete 控制）。"""
+        denied = self._require_manage(request, action="删除档案")
+        if denied is not None:
+            return denied
+        if not self._archive_delete_enabled():
+            return _json_error(
+                "面板档案删除未开启：请在 dashboard 插件配置里把 allow_archive_delete 设为 true",
+                status=403,
+            )
+        service = self._archive_service()
+        if service is None:
+            return self._archive_missing()
+        try:
+            body = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+        table = str(body.get("table") or "").strip()
+        key = str(body.get("key") or "").strip()
+        if not table or not key:
+            return _json_error("缺少 table / key")
+
+        current = await service.get(table, key)
+        if current is None:
+            return _json_error(f"没有该档案: {table}:{key}", status=404)
+        if body.get("version") is not None:
+            try:
+                expected = int(body.get("version"))
+            except (TypeError, ValueError):
+                return _json_error("version 必须是整数")
+            actual = int(getattr(current, "version", 0) or 0)
+            if expected != actual:
+                return _json_error(
+                    f"档案已被其它会话修改（当前 version={actual}），请重新读取后再删除",
+                    status=409,
+                    actual_version=actual,
+                )
+        value = str(getattr(current, "value", "") or "")
+        version = int(getattr(current, "version", 0) or 0)
+        deleted = await service.delete(table, key)
+        # 硬删除不可恢复：把被删内容写进审计日志（只留前 500 字符，避免日志被大档案撑爆）
+        self.logger.info(
+            f"面板删除档案 table={table} key={key} chars={len(value)} version={version} "
+            f"deleted={deleted} ip={self.console.request_ip(request)} "
+            f"preview={value[:500]!r}"
+        )
+        return _json_ok(
+            {
+                "deleted": bool(deleted),
+                "table": table,
+                "key": key,
+                "message": "档案已删除（可在 neobot.log 中追溯被删内容）",
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 定时任务（读走管理器投影，写走 reminder skill）
+    # ------------------------------------------------------------------
+
+    def _scheduled_task_manager(self) -> Any:
+        return self._service("scheduled_task_manager")
+
+    async def scheduled_tasks(self, request: web.Request) -> web.Response:
+        from . import scheduled_admin
+
+        include_disabled = str(request.query.get("include_disabled") or "") not in {
+            "0",
+            "false",
+            "",
+        }
+        limit = self._int_arg(request, "limit", 200, minimum=1, maximum=2000)
+        payload = await scheduled_admin.read_managed_tasks(
+            self._scheduled_task_manager(),
+            include_disabled=include_disabled,
+            limit=limit,
+        )
+        payload["editable"] = self._can_manage(request)
+        return _json_ok(payload)
+
+    async def scheduled_tasks_action(self, request: web.Request) -> web.Response:
+        """新建/编辑/启停/删除定时任务。"""
+        from . import scheduled_admin
+
+        denied = self._require_manage(request, action="管理定时任务")
+        if denied is not None:
+            return denied
+        body = await self._read_json(request)
+        action = str(body.get("action") or "").strip()
+        try:
+            result = await scheduled_admin.execute_action(
+                self._service("skill_manager"), action, body
+            )
+        except ValueError as exc:
+            return _json_error(str(exc))
+        except RuntimeError as exc:
+            return _json_error(str(exc), status=503)
+        if not result.get("ok"):
+            return _json_error(str(result.get("error") or "操作失败"))
+        message = _SCHEDULED_ACTION_MESSAGES.get(action, "操作完成")
+        self.logger.info(
+            f"面板管理定时任务 ip={self.console.request_ip(request)} action={action}"
+        )
+        return _json_ok({"message": message, "action": action, "result": result})
+
     # ------------------------------------------------------------------
     # 运行状态（待机 / 软重启运行）
     # ------------------------------------------------------------------
@@ -1522,6 +2208,30 @@ class DashboardApi:
             if item.name == name:
                 return item
         return None
+
+
+#: 定时任务写操作成功后的提示文案
+_SCHEDULED_ACTION_MESSAGES = {
+    "create": "定时任务已创建",
+    "update": "定时任务已更新",
+    "set_state": "定时任务状态已更新",
+    "set_notification_policy": "通知策略已更新",
+    "delete": "定时任务已删除",
+}
+
+
+def _prompt_value(store: Any, section: str, path: str) -> str | None:
+    """按「分区.键」或「分区.子表.键」读取提示词当前取值。"""
+    if not section:
+        return None
+    parts = [part for part in str(path or "").split(".") if part]
+    if len(parts) == 1:
+        return store.get(section, parts[0], default="") or None
+    if len(parts) == 2:
+        sub = store.sub_section(section, parts[0])
+        value = sub.get(parts[1])
+        return value if isinstance(value, str) and value.strip() else None
+    return None
 
 
 def _status_text(snapshot: Any) -> str:

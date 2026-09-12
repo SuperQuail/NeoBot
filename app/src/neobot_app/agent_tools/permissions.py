@@ -25,6 +25,8 @@ class ToolPermissions:
         raise AgentToolError(
             "CREDENTIAL_REQUIRED",
             f"需要当前聊天的管理员凭据：先调用 credential__request(action='{action}')，"
-            "由管理员发送返回的确认文本，签发后重试。凭据不等于操作系统沙箱。",
+            "由管理员发送返回的确认文本，签发后重试。凭据不等于操作系统沙箱。"
+            "注意：拿到凭据之前重复调用本工具每次都会以同样的原因失败，不要重试；"
+            "若只是读写文件，改用 sandbox_manager__* 工具。",
             details=details,
         )

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from neobot_app.emoji.service import EmojiDuplicateError
 from neobot_app.image.source import ImageSourceResolver
 from neobot_app.skills.base import SkillModule
 
@@ -27,7 +28,7 @@ class EmojiManagementSkill(SkillModule):
     def instructions(self) -> str:
         return (
             "表情包管理 Skill 提供以下能力：\n\n"
-            "  emoji_list — 列出表情包（编号与提示词列表一致）\n"
+            "  emoji_list — 列出表情包（编号与主 Agent 的 list_emojis / send_emoji 一致）\n"
             "  emoji_search — 按关键词搜索表情包\n"
             "  emoji_add — 添加表情包，图片来源与图片解析工具一致"
             "（支持消息编号 msg_number、聊天流 chat_flow_id、消息 ID message_id、"
@@ -58,7 +59,7 @@ class EmojiManagementSkill(SkillModule):
         return [
             self._tool_def(
                 "emoji_list",
-                "列出表情包库中的表情包。",
+                "列出表情包库中的表情包（主 Agent 日常查看用 list_emojis，本工具用于管理场景）。",
                 {
                     "properties": {
                         "page": {"type": "integer", "description": "页码，从1开始", "default": 1},
@@ -211,10 +212,21 @@ async def _handle_emoji_add(self: EmojiManagementSkill, args: dict) -> str:
             "file_name": result.entry.file_name,
             "description": result.entry.analysis_text,
         })
+    except EmojiDuplicateError as e:
+        # 幂等：重复加入不是失败。返回已有编号，模型才不会跨事件反复重试同一个
+        # 必然失败的调用（实测同一张图在 4 个不同事件里各失败 2–3 次）。
+        return _json({
+            "ok": True,
+            "duplicate": True,
+            "number": e.number,
+            "file_name": e.file_name,
+            "description": e.analysis_text,
+            "message": "该图片已在表情包中（内容哈希相同），已返回现有编号，无需重复添加。",
+        })
     except ValueError as e:
         return _json({"ok": False, "error": str(e)})
     except Exception as e:
-        return _json({"ok": False, "error": f"添加失败: {e}"})
+        return _json({"ok": False, "error": f"添加失败: {type(e).__name__}: {e}"})
 
 async def _handle_emoji_update(self: EmojiManagementSkill, args: dict) -> str:
     if self._emoji_service is None:

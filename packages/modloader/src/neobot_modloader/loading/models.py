@@ -86,6 +86,13 @@ class DiscoveredPlugin:
     tags: tuple[str, ...] = ()
     hot_reload: bool = True
     config_hot_reload: bool = True
+    #: 依赖未满足时自动禁用的原因（None 表示依赖正常）
+    disabled_reason: str | None = None
+    #: 自动禁用的类别：dependency-missing / dependency-version /
+    #: dependency-disabled / dependency-cycle / dependency-invalid
+    disabled_code: str = ""
+    #: 是否因依赖未满足而被自动禁用（与用户手动停用区分）
+    auto_disabled: bool = False
 
     @property
     def official(self) -> bool:
@@ -96,5 +103,34 @@ class DiscoveredPlugin:
         return not self.official
 
 
-PluginLoadResult = LoadedPlugin | PluginLoadError
+@dataclass(frozen=True, slots=True)
+class DisabledPlugin:
+    """因前置插件未满足而被自动禁用的插件。
+
+    这不是错误：程序照常启动，插件只是不参与注册与加载；前置插件满足后
+    （例如被重新启用）运行时会自动把它重新拉起来。
+    """
+
+    name: str
+    plugin_dir: Path
+    reason: str
+    code: str = "dependency-missing"
+    version: str = "0.1.0"
+    description: str = ""
+    author: str = ""
+    dependencies: tuple[str, ...] = ()
+    source_path: Path | None = None
+    source: str = THIRD_PARTY_SOURCE
+    module_names: tuple[str, ...] = ()
+
+    @property
+    def official(self) -> bool:
+        return self.source == OFFICIAL_SOURCE
+
+    @property
+    def manageable(self) -> bool:
+        return not self.official
+
+
+PluginLoadResult = LoadedPlugin | PluginLoadError | DisabledPlugin
 PluginDiscoveryResult = DiscoveredPlugin | PluginLoadError

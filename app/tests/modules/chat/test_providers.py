@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from neobot_chat.providers.anthropic import AnthropicProvider
 from neobot_chat.providers.deepseek_offical import DeepSeekOfficalProvider
 from neobot_chat.providers.openai import OpenAIProvider
 from neobot_chat.schema.exceptions import ProviderError
@@ -415,5 +416,134 @@ async def test_deepseek_stream_4xx_raises_provider_error_without_retry():
         assert "401" in str(exc_info.value)
         assert "bad key" in str(exc_info.value)
         assert client.calls == 1
+    finally:
+        await provider.close()
+
+
+# ── finish_reason 透出 ──────────────────────────────────────────
+# 编排器只能靠这个字段区分「模型主动沉默」与「输出被长度上限截断」；
+# provider 一旦丢掉它，空输出就变成了不可观测的静默丢回复。
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_cls", [OpenAIProvider, DeepSeekOfficalProvider])
+async def test_chat_surfaces_finish_reason(provider_cls):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "length",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 10000},
+        })
+
+    provider = provider_cls(api_key="k", model="m")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        message = await provider.chat([{"role": "user", "content": "hello"}])
+        assert message["extensions"]["finish_reason"] == "length"
+        assert message["extensions"]["usage"]["output_tokens"] == 10000
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_cls", [OpenAIProvider, DeepSeekOfficalProvider])
+async def test_chat_omits_finish_reason_when_absent(provider_cls):
+    """缺失/空值不得写入空字符串这种伪信号。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": ""}],
+        })
+
+    provider = provider_cls(api_key="k", model="m")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        message = await provider.chat([{"role": "user", "content": "hello"}])
+        assert "finish_reason" not in (message.get("extensions") or {})
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_cls", [OpenAIProvider, DeepSeekOfficalProvider])
+async def test_stream_surfaces_finish_reason(provider_cls):
+    body = (
+        'data: {"choices": [{"delta": {"content": "hi"}, "finish_reason": null}]}\n'
+        'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n'
+        "data: [DONE]\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=body.encode(), headers={"Content-Type": "text/event-stream"},
+        )
+
+    provider = provider_cls(api_key="k", model="m")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        final = None
+        async for chunk in provider.stream([{"role": "user", "content": "hi"}]):
+            if chunk.message is not None:
+                final = chunk.message
+        assert final is not None
+        assert final["extensions"]["finish_reason"] == "length"
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_maps_max_tokens_to_length():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": ""}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 5, "output_tokens": 4096},
+        })
+
+    provider = AnthropicProvider(api_key="k", model="claude")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        message = await provider.chat([{"role": "user", "content": "hello"}])
+        assert message["extensions"]["finish_reason"] == "length"
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_surfaces_stop_reason_from_message_delta():
+    body = (
+        "event: content_block_delta\n"
+        'data: {"delta": {"type": "text_delta", "text": "hi"}}\n'
+        "event: message_delta\n"
+        'data: {"delta": {"stop_reason": "max_tokens"}}\n'
+        "event: message_stop\n"
+        'data: {"type": "message_stop"}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=body.encode(), headers={"Content-Type": "text/event-stream"},
+        )
+
+    provider = AnthropicProvider(api_key="k", model="claude")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        final = None
+        async for chunk in provider.stream([{"role": "user", "content": "hi"}]):
+            if chunk.message is not None:
+                final = chunk.message
+        assert final is not None
+        assert final["extensions"]["finish_reason"] == "length"
     finally:
         await provider.close()

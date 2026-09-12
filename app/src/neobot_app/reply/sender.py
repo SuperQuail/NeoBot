@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from neobot_contracts.models import ConversationRef
+from neobot_contracts.models import ConversationRef, IncomingMessage
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
+from neobot_contracts.time_context import now_utc
 
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyState
@@ -18,6 +20,45 @@ from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
 _MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
+
+#: Bot 自身消息落盘用的默认 UoW 工厂（惰性创建；见 _default_self_sent_uow_factory）。
+_DEFAULT_SELF_SENT_UOW_FACTORY: Any = None
+_DEFAULT_SELF_SENT_UOW_FACTORY_RESOLVED = False
+
+
+def self_sent_event_id(synthetic_msg_id: int) -> str:
+    """Bot 自身消息落库用的 event_id。
+
+    合成消息 id 取负的微秒时间戳（见 push_self_sent_message），天然唯一，
+    且与后端返回的真实 message_id 不在同一套标识空间里，因此不会与
+    用户消息的 event_id 冲突。
+    """
+    return f"self:{synthetic_msg_id}"
+
+
+def _default_self_sent_uow_factory() -> Any:
+    """惰性创建写入 Bot 自身消息用的 UoW 工厂。
+
+    ReplySender 由 orchestrator 构建，拿不到 bootstrap 的共享 uow_factory；
+    这里按需打开同一份 SQLite 文件（WAL + busy_timeout，与主库同源），
+    复用既有 MessageData 表与仓库，不新建表、不引入新依赖。
+    解析结果（含失败）只结算一次：失败后不再重试，避免每条回复都付出
+    建引擎/建连接的异常成本。
+    """
+    global _DEFAULT_SELF_SENT_UOW_FACTORY, _DEFAULT_SELF_SENT_UOW_FACTORY_RESOLVED
+    if _DEFAULT_SELF_SENT_UOW_FACTORY_RESOLVED:
+        return _DEFAULT_SELF_SENT_UOW_FACTORY
+    _DEFAULT_SELF_SENT_UOW_FACTORY_RESOLVED = True
+    try:
+        from neobot_app.assembly.storage import build_storage
+        from neobot_app.core import DATA_DIR
+
+        _engine, factory = build_storage(db_path=DATA_DIR / "neobot.db")
+    except Exception:
+        _DEFAULT_SELF_SENT_UOW_FACTORY = None
+        return None
+    _DEFAULT_SELF_SENT_UOW_FACTORY = factory
+    return factory
 
 
 class ReplySender:
@@ -48,6 +89,7 @@ class ReplySender:
         provider: Any = None,
         balance_checker: Any = None,
         logger: Logger | None = None,
+        self_sent_uow_factory: Any = None,
     ) -> None:
         self._adapter = adapter
         self._file_server = file_server
@@ -68,6 +110,42 @@ class ReplySender:
         self._balance_checker = balance_checker
         self._logger = logger or NullLogger()
         self._last_sentence_time: dict[str, float] = {}
+        #: Bot 自身消息落盘用的 UoW 工厂；None 时惰性回退到默认存储（见模块顶部）。
+        self._self_sent_uow_factory = self_sent_uow_factory
+        #: 持有未完成的落盘任务引用，避免 asyncio 任务被 GC 提前回收。
+        self._self_sent_persist_tasks: set[asyncio.Task[None]] = set()
+
+    # ── 状态流转 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _enter_sending(event: Any) -> None:
+        """进入发送态；群聊已 COMPLETED 时允许再次发送。
+
+        模型经常在同一轮里连续调用多次 send_reply。群聊首次发送后事件已经是
+        终态 COMPLETED，第二次再 transition(SENDING) 会抛「非法状态转换」，
+        结果是第二条消息被吞掉、模型还被告知工具失败，并为了补救再多跑一轮。
+
+        只对 COMPLETED 放开：其它非法前置状态（PENDING/BUILDING_PROMPT）以及
+        FAILED/CANCELLED 仍照旧抛错，避免把真正的状态机缺陷一起吞掉。
+        """
+        if event.state is ReplyState.COMPLETED:
+            return
+        event.transition(ReplyState.SENDING)
+
+    @staticmethod
+    def _leave_sending(event: Any, conversation_kind: str) -> None:
+        """发送完成后回到群聊终态 / 私聊继续生成；非 SENDING 时保持不变。"""
+        if event.state is not ReplyState.SENDING:
+            return
+        target = (
+            ReplyState.GENERATING
+            if conversation_kind == "private"
+            else ReplyState.COMPLETED
+        )
+        try:
+            event.transition(target)
+        except RuntimeError:
+            pass
 
     # ── public API (also used by engine) ────────────────────────
 
@@ -86,8 +164,10 @@ class ReplySender:
         if envelope.consumed:
             return envelope.result
         send_payload = envelope.payload.get("message", payload)
+        # 不等 echo 回执：请求写上线即视为发送成功。等待回执会把 agent 循环
+        # 卡在上游往返上，而实测发送几乎不会失败（失败由连接状态与心跳发现）。
         result = await asyncio.wait_for(
-            self._adapter.send(conversation_ref, send_payload),
+            self._adapter.send(conversation_ref, send_payload, wait_response=False),
             timeout=self._io_timeout_seconds,
         )
         after = RuntimeEnvelope(
@@ -158,7 +238,7 @@ class ReplySender:
         reply_to_message_id = before_send.payload.get("reply_to_message_id", reply_to_message_id)
         mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
 
-        event.transition(ReplyState.SENDING)
+        self._enter_sending(event)
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
@@ -184,14 +264,14 @@ class ReplySender:
                     await self._emoji_service.record_usage(images[0])
                 for i, entry in enumerate(image_entries[1:], start=1):
                     formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                    send_results.append(await send_image(self._file_server, self._adapter, conv_ref, entry.file_path))
+                    send_results.append(await send_image(
+                        self._file_server, self._adapter, conv_ref, entry.file_path,
+                        wait_response=False,
+                    ))
                     if self._emoji_service:
                         await self._emoji_service.record_usage(images[i])
             event.send_response = send_results[0] if len(send_results) == 1 else send_results
-            if conv_ref.kind == "private":
-                event.transition(ReplyState.GENERATING)
-            else:
-                event.transition(ReplyState.COMPLETED)
+            self._leave_sending(event, conv_ref.kind)
             self._debug_helper.record(
                 "reply_sent",
                 event,
@@ -209,7 +289,10 @@ class ReplySender:
                 if entry is None:
                     continue
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                send_results.append(await send_image(self._file_server, self._adapter, conv_ref, entry.file_path))
+                send_results.append(await send_image(
+                    self._file_server, self._adapter, conv_ref, entry.file_path,
+                    wait_response=False,
+                ))
                 await self._emoji_service.record_usage(image_number)
 
         # long reply → markdown image
@@ -223,10 +306,7 @@ class ReplySender:
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
                     send_results.append(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
                     event.send_response = send_results[0]
-                    if conv_ref.kind == "private":
-                        event.transition(ReplyState.GENERATING)
-                    else:
-                        event.transition(ReplyState.COMPLETED)
+                    self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
                     return
                 except Exception as exc:
@@ -269,10 +349,7 @@ class ReplySender:
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
-        if conv_ref.kind == "private":
-            event.transition(ReplyState.GENERATING)
-        else:
-            event.transition(ReplyState.COMPLETED)
+        self._leave_sending(event, conv_ref.kind)
         self._debug_helper.record(
             "reply_sent",
             event,
@@ -296,7 +373,13 @@ class ReplySender:
         queue_key: str,
         conv_ref: ConversationRef,
         text: str,
-    ) -> None:
+    ) -> asyncio.Task[None] | None:
+        """把 Bot 自己发出的消息推入内存队列，并异步落盘一份。
+
+        落盘是为了软重启：内存队列会被重建（bootstrap 里队列不走 _reuse_or），
+        而后端历史又拉不到 Bot 自己的消息，assistant 块就丢了。返回创建的落盘
+        任务便于等待结果；没有运行中的事件循环时返回 None（仅跳过落盘）。
+        """
         from neobot_adapter.model.basic import PostMessageMessagesender
         from neobot_adapter.model.message import (
             GroupMessage,
@@ -305,13 +388,7 @@ class ReplySender:
             PrivateMessage,
         )
 
-        bot_qq = 0
-        if self._config is not None:
-            bot_cfg = getattr(self._config, "bot", None)
-            if bot_cfg is not None:
-                account = getattr(bot_cfg, "account", 0)
-                if account:
-                    bot_qq = int(account)
+        bot_qq = self._resolve_bot_account()
 
         synthetic_msg_id = -int(time.time() * 1_000_000)
         message_segments = [MessageSegment(type="text", data={"text": text})]
@@ -339,6 +416,74 @@ class ReplySender:
 
         queue.push(queue_key, msg)
         queue_copy.push(queue_key, msg)
+        return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id)
+
+    def _resolve_bot_account(self) -> int:
+        """读取配置里的机器人 QQ 号（缺失时返回 0）。"""
+        if self._config is None:
+            return 0
+        bot_cfg = getattr(self._config, "bot", None)
+        if bot_cfg is None:
+            return 0
+        account = getattr(bot_cfg, "account", 0)
+        return int(account) if account else 0
+
+    def _schedule_self_sent_persist(
+        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int
+    ) -> asyncio.Task[None] | None:
+        """把落盘调度成后台任务：发送路径绝不等数据库。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(
+            self.persist_self_sent_message(
+                conv_ref, text, synthetic_msg_id=synthetic_msg_id
+            )
+        )
+        self._self_sent_persist_tasks.add(task)
+        task.add_done_callback(self._self_sent_persist_tasks.discard)
+        return task
+
+    async def persist_self_sent_message(
+        self,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        synthetic_msg_id: int | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """把 Bot 自己发出的消息写入 MessageData（软重启后据此补齐 assistant 块）。
+
+        复用既有 MessageData 表与仓库，不新建表；event_id 形如 self:<合成消息id>，
+        与后端真实 message_id 不冲突。本方法永不抛异常：任何失败（无 UoW、
+        无表、写冲突）都只记日志，绝不能反噬发送路径。
+        """
+        if not text or not text.strip():
+            return
+        try:
+            factory = self._self_sent_uow_factory or _default_self_sent_uow_factory()
+            if factory is None:
+                return
+            message_id = (
+                synthetic_msg_id
+                if synthetic_msg_id is not None
+                else -int(time.time() * 1_000_000)
+            )
+            async with factory() as uow:
+                await uow.messages.save_message(
+                    IncomingMessage(
+                        event_id=self_sent_event_id(message_id),
+                        conversation=conv_ref,
+                        sender_id=str(self._resolve_bot_account()),
+                        sender_name=self._bot_name,
+                        text=text,
+                        occurred_at=occurred_at or now_utc(),
+                    )
+                )
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning("Bot 自身消息落盘失败（已忽略）", error=str(exc))
 
     # ── message building ────────────────────────────────────────
 

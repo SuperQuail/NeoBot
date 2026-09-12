@@ -45,7 +45,7 @@ class StickerSkill(SkillModule):
                 "从表情包库中选择并发送一个表情包图片到指定会话。",
                 {
                     "properties": {
-                        "number": {"type": "integer", "description": "表情包编号，从可用表情包列表中选取。"},
+                        "number": {"type": "integer", "description": "表情包编号，用 list_emojis / search_custom_emoji 获取。"},
                         "text": {"type": "string", "description": "可选，随表情包一起发送的文字。"},
                         "group_id": {"type": "string", "description": "目标群号，群聊场景使用。"},
                         "user_id": {"type": "string", "description": "目标QQ号，私聊场景使用。"},

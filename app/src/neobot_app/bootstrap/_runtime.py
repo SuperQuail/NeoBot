@@ -414,6 +414,19 @@ def build_self_heal_agent_wiring(
         build_self_heal_agent,
     )
     from neobot_app.assembly.agents import build_peer_descriptions
+    from neobot_app.bootstrap._providers import build_optional_agent_provider
+
+    # 自修复走 agent_model.self_heal 指定的模型（默认 1：推理强度 max 的强模型；
+    # 自修复要读日志、定位缺陷并改代码），而不是
+    # 直接复用主回复 provider —— 复用会带来两个后果：配置的自修复模型编号被忽略，
+    # 且 build_self_heal_agent 里的 provider.max_tokens 覆盖会写进共享实例
+    # （原生视觉包装器不接受该赋值，启动即崩；真写进去则会压低主模型预算）。
+    self_heal_provider = build_optional_agent_provider(
+        config=config,
+        agent_name="self_heal",
+        fallback_provider=provider,
+        logger=logger_factory.get_logger("app.provider"),
+    )
 
     schema_cfg = getattr(config.agent, "self_healing", None)
     cfg = (
@@ -423,7 +436,7 @@ def build_self_heal_agent_wiring(
     )
     peer_descriptions = build_peer_descriptions("self_heal")
     agent = build_self_heal_agent(
-        provider,
+        self_heal_provider,
         config=cfg,
         logger=logger_factory.get_logger("app.self_heal"),
         manager=manager,

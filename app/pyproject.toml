@@ -65,5 +65,9 @@ requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-# 网页面板前端源码与 node_modules 不随包分发；插件目录内的构建产物 web/ 会保留。
-source-exclude = ["src/neobot_app/builtin_plugins/dashboard/frontend/**"]
+# 插件前端源码与 node_modules 不随包分发；插件目录内的构建产物 web/ 会保留，
+# 因此部署方不需要 Node/前端工具链。
+source-exclude = [
+    "src/neobot_app/builtin_plugins/dashboard/frontend/**",
+    "src/neobot_app/builtin_plugins/starship/frontend/**",
+]

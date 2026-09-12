@@ -41,6 +41,14 @@ class PluginSnapshot:
     hot_reload: bool = True
     #: 插件配置改动是否支持不重启进程生效
     config_hot_reload: bool = True
+    #: 依赖未满足时自动禁用的原因（None 表示依赖正常）
+    disabled_reason: str | None = None
+    #: 是否因前置插件未满足而被自动禁用（区别于用户在面板里手动停用）
+    auto_disabled: bool = False
+    #: 当前未满足的依赖说明（缺失 / 未就绪 / 版本不符）
+    dependency_issues: tuple[str, ...] = ()
+    #: 依赖本插件的其他插件（停用 / 卸载时会被联动处理）
+    dependents: tuple[str, ...] = ()
     #: 插件配置校验告警：非空表示部分已存值非法、已回落默认值运行
     config_error: str | None = None
 
@@ -141,6 +149,13 @@ class PluginControlFacade:
     def installer_available(self) -> bool:
         return getattr(self._runtime, "installer", None) is not None
 
+    def dependencies(self, name: str) -> dict[str, Any]:
+        """插件依赖现状：声明、未满足项、反向依赖、自动禁用原因。"""
+        reporter = getattr(self._runtime, "dependency_report", None)
+        if not callable(reporter):
+            return {}
+        return dict(reporter(name))
+
     def config_model(self, name: str) -> Any | None:
         """插件声明的配置模型（pydantic BaseModel），未声明时返回 None。"""
         getter = getattr(self._runtime, "plugin_config_model", None)
@@ -159,6 +174,13 @@ class PluginControlFacade:
             return getter(name)
         return None
 
+    def plugin_manifest_path(self, name: str) -> Path | None:
+        """插件自带 plugin.toml 的路径（不存在时为 None）。"""
+        getter = getattr(self._runtime, "plugin_manifest_path", None)
+        if callable(getter):
+            return getter(name)
+        return None
+
     def plugin_config_defaults(self, name: str) -> dict[str, Any]:
         """插件打包默认值（plugin.toml 的 [config]）。"""
         getter = getattr(self._runtime, "plugin_config_defaults", None)
@@ -172,6 +194,35 @@ class PluginControlFacade:
         if callable(getter):
             return dict(getter(name))
         return {}
+
+    # ------------------------------------------------------------------
+    # 插件配置「原地生效」通道
+    # ------------------------------------------------------------------
+
+    def register_config_consumer(self, name: str, consumer: Any) -> bool:
+        """声明「本插件的配置可以在运行期原地生效」。
+
+        插件在 load() 里调用一次即可；此后面板保存该插件配置时，会把运行期安全的
+        改动直接喂给 consumer.apply_config()，不必重载插件本体。
+        未声明的插件行为完全不变（仍提示「需要重启 NeoBoot 才能生效」）。
+        """
+        registrar = getattr(self._runtime, "register_plugin_config_consumer", None)
+        if not callable(registrar):
+            return False
+        return bool(registrar(name, consumer))
+
+    def unregister_config_consumer(self, name: str) -> bool:
+        unregister = getattr(self._runtime, "unregister_plugin_config_consumer", None)
+        if not callable(unregister):
+            return False
+        return bool(unregister(name))
+
+    def config_consumer(self, name: str) -> Any | None:
+        """该插件登记的配置消费者；未登记时返回 None。"""
+        getter = getattr(self._runtime, "plugin_config_consumer", None)
+        if not callable(getter):
+            return None
+        return getter(name)
 
     def installer_proxy(self) -> dict[str, Any]:
         """当前插件下载代理设置。"""

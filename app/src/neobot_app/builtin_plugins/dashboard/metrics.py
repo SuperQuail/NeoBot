@@ -20,6 +20,25 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 _API_ACTION_RE = re.compile(r"action['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_]+)")
 
+#: 延迟样本至少要能覆盖的时长（秒），用于按采样间隔推导 deque 容量
+_LATENCY_COVERAGE_SECONDS = 3600.0
+_LATENCY_MIN_SAMPLES = 60
+
+
+def latency_sample_capacity(interval_seconds: float) -> int:
+    """按采样间隔推导延迟样本容量（默认覆盖最近 60 分钟，至少 60 个样本）。
+
+    采样间隔越大，同样容量能覆盖的时间就越长；这里反过来固定覆盖时长，
+    避免「采得极勤、留得极短」（旧实现固定 60 个样本 × 15s = 仅 15 分钟）。
+    """
+    try:
+        interval = float(interval_seconds or 0)
+    except (TypeError, ValueError):
+        interval = 0.0
+    if interval <= 0:
+        return _LATENCY_MIN_SAMPLES
+    return max(_LATENCY_MIN_SAMPLES, int(_LATENCY_COVERAGE_SECONDS / interval))
+
 
 class Metrics:
     """面板运行指标聚合器。"""
@@ -41,6 +60,8 @@ class Metrics:
         self._log_buffer: deque[dict[str, Any]] = deque(maxlen=max(1, int(log_buffer_size)))
         self._log_seq = 0
         self._latency: deque[tuple[float, float | None]] = deque(maxlen=max(2, int(latency_samples)))
+        #: 超过该秒数的旧样本视为「陈旧」；0 表示不做陈旧判定（保持既有行为）
+        self._latency_stale_after = 0.0
         self._latency_ok = 0
         self._latency_total = 0
         self._api_calls: dict[str, int] = {}
@@ -73,6 +94,23 @@ class Metrics:
             self._stats["history"] = history[-self._history_max_days :]
         self._stats["today_date"] = today
         self._stats["today"] = 0
+
+    def set_log_buffer_capacity(self, size: int) -> None:
+        """按新配置重建日志缓冲（保留最近的条目，不清空历史）。"""
+        capacity = max(1, int(size))
+        if self._log_buffer.maxlen == capacity:
+            return
+        self._log_buffer = deque(self._log_buffer, maxlen=capacity)
+
+    def set_history_max_days(self, days: int) -> None:
+        """按新配置调整指标历史保留天数（立即裁剪超期历史）。"""
+        value = max(1, int(days))
+        if value == self._history_max_days:
+            return
+        self._history_max_days = value
+        history = list(self._stats.get("history") or [])
+        if len(history) > value:
+            self._stats["history"] = history[-value:]
 
     async def record_message(self, event: dict[str, Any]) -> None:
         async with self._lock:
@@ -198,6 +236,32 @@ class Metrics:
             self._latency_ok += 1
         self._latency.append((time.time(), milliseconds))
 
+    def set_latency_stale_after(self, seconds: float) -> None:
+        """设置「样本陈旧」阈值（秒）；0 表示不做陈旧判定。
+
+        探针在空闲期完全停止后，deque 里会一直留着几小时前的样本，
+        若直接当作 current_ms 返回，面板会把旧值显示成"实时延迟"。
+        """
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            value = 0.0
+        self._latency_stale_after = max(0.0, value)
+
+    def set_latency_capacity(self, samples: int) -> None:
+        """按当前采样间隔调整延迟样本容量（保留最新的样本，不清空历史）。"""
+        capacity = max(2, int(samples))
+        if self._latency.maxlen == capacity:
+            return
+        self._latency = deque(self._latency, maxlen=capacity)
+
+    def latency_is_stale(self) -> bool:
+        """最近一次样本是否已过期（探针被门控停止后即为 True）。"""
+        if self._latency_stale_after <= 0 or not self._latency:
+            return False
+        last_ts = float(self._latency[-1][0])
+        return (time.time() - last_ts) > self._latency_stale_after
+
     def latency_series(self) -> dict[str, Any]:
         series = [
             {"ts": ts, "ms": (None if ms is None else round(float(ms), 1))}
@@ -209,9 +273,12 @@ class Metrics:
             if self._latency_total
             else None
         )
+        stale = self.latency_is_stale()
         return {
             "series": series,
-            "current_ms": series[-1]["ms"] if series else None,
+            # 陈旧样本不作为「实时延迟」返回：前端应显示「—」而不是几小时前的旧值
+            "current_ms": (series[-1]["ms"] if series and not stale else None),
+            "stale": stale,
             "avg_ms": round(sum(values) / len(values), 1) if values else None,
             "min_ms": min(values) if values else None,
             "max_ms": max(values) if values else None,
