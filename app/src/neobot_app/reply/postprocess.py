@@ -1,4 +1,9 @@
-"""发送前对 LLM 回复进行后处理。"""
+"""发送前对 LLM 回复进行后处理。
+
+除文本清洗与切分外，本模块还提供「回复超限被替换成默认回复」时给模型的
+**处理指引**（`build_over_limit_guidance` / `build_over_limit_reject_hint`）——
+指引文案与 `process_reply_text` 的判定口径同源，避免两处各写一份而口径漂移。
+"""
 
 from __future__ import annotations
 
@@ -68,6 +73,36 @@ def process_reply_text(
         original_text=original,
         cleaned_text=recover_kaomoji([cleaned_text], kaomoji_mapping)[0],
         messages=split_messages or [original.strip()],
+    )
+
+
+def build_over_limit_guidance(*, max_length: int, max_sentence_count: int) -> list[str]:
+    """回复超限被替换成默认回复后，告诉模型「接下来可以怎么办」。
+
+    为什么需要这段指引：`long_reply_max_sentence_count` 默认只有个位数条，
+    稍长一点的回复就会被整段替换成默认回复文本。此时若只提示「重新生成更短的
+    版本」，模型要么把内容压成残句，要么反复重试同一段超长文本；而实际上有两条
+    更好的出路——**长/需排版的内容直接走 send_long_reply（Markdown 转图片，
+    不受字符与分句上限约束）**，或者**把纯文本拆成几段分多次 send_reply 发送**。
+    """
+    return [
+        "默认回复不是你的原意。以下三种方式任选其一：",
+        "1. 内容较长或需要排版（代码块 / 表格 / 公式 / 多段列表）时，"
+        "直接用 send_long_reply 发送 Markdown 原文——它会被渲染成图片，"
+        "不受字符上限与分句上限约束；",
+        f"2. 纯文本内容可以拆成几段，分多次调用 send_reply 逐段发送，"
+        f"每次都在上限内（不超过 {max_length} 字符、不超过 {max_sentence_count} 条）；",
+        f"3. 也可以重新生成一个更简短的版本（不超过 {max_length} 字符、"
+        f"不超过 {max_sentence_count} 条），然后直接调用 send_reply。",
+    ]
+
+
+def build_over_limit_reject_hint(*, max_length: int, max_sentence_count: int) -> str:
+    """单行版超限指引，用于「回复被拦截」这类短回执。"""
+    return (
+        f"（字符上限 {max_length}，分句上限 {max_sentence_count}）。"
+        "可改用 send_long_reply 直接发送 Markdown（不受上限约束），"
+        "或拆成多次 send_reply 分批发送，或精简后重新调用 send_reply。"
     )
 
 

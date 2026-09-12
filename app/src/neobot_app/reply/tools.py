@@ -22,7 +22,12 @@ from neobot_chat.schema.types import (
 )
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
-from neobot_app.reply.postprocess import ReplyPostProcessResult, process_reply_text
+from neobot_app.reply.postprocess import (
+    ReplyPostProcessResult,
+    build_over_limit_guidance,
+    build_over_limit_reject_hint,
+    process_reply_text,
+)
 from neobot_app.skills.activation import SkillToolActivation
 from neobot_app.time_context import monotonic_seconds
 
@@ -1597,9 +1602,10 @@ class ReplyToolExecutor(ToolExecutor):
             if pre_check.fallback_used:
                 return (
                     f"回复被拦截：{pre_check.reason}"
-                    f"（字符上限 {self._long_reply_max_length}，"
-                    f"分句上限 {self._long_reply_max_sentence_count}）。"
-                    f"请精简为更短的版本后重新调用 send_reply。"
+                    + build_over_limit_reject_hint(
+                        max_length=self._long_reply_max_length,
+                        max_sentence_count=self._long_reply_max_sentence_count,
+                    )
                 )
 
         if (
@@ -1611,9 +1617,11 @@ class ReplyToolExecutor(ToolExecutor):
             if pre_check.fallback_used:
                 return (
                     f"回复被拦截：{pre_check.reason}"
-                    f"（字符上限 {self._long_reply_max_length}，"
-                    f"分句上限 {self._long_reply_max_sentence_count}）。"
-                    f"当前切分结果为默认回复，并非你的原意，请精简为更短的版本后重新调用 send_reply。"
+                    "当前切分结果为默认回复，并非你的原意。"
+                    + build_over_limit_reject_hint(
+                        max_length=self._long_reply_max_length,
+                        max_sentence_count=self._long_reply_max_sentence_count,
+                    )
                 )
 
         await self._send_reply(
@@ -2385,19 +2393,18 @@ class ReplyToolExecutor(ToolExecutor):
             lines.append(
                 f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。"
             )
-            if self._enable_ai_reply_regenerate:
-                lines.append(
-                    "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
-                    f"{self._long_reply_max_length}字符、不超过"
-                    f"{self._long_reply_max_sentence_count}条），"
-                    "然后直接调用 send_reply 发送新文本，无需设置 ai_check_approved。"
+            # 明确给出出路：Markdown 直发 / 分批发送 / 精简重发，三选一。
+            lines.extend(
+                build_over_limit_guidance(
+                    max_length=self._long_reply_max_length,
+                    max_sentence_count=self._long_reply_max_sentence_count,
                 )
-            else:
-                lines.append(
-                    "如确认使用当前默认回复，请再次调用 send_reply，传入原 text、"
-                    "segments 为上述切分结果、ai_check_approved=true。"
-                    "如不应发送任何回复，请调用 cancel。"
-                )
+            )
+            lines.append(
+                "若仍要发送上面这段默认回复，请再次调用 send_reply，传入原 text、"
+                "segments 为上述切分结果、ai_check_approved=true。"
+                "如不应发送任何回复，请调用 cancel。"
+            )
         else:
             lines.append(
                 "如果没有严重问题或歧义，请再次调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"

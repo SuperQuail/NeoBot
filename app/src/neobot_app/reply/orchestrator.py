@@ -20,7 +20,10 @@ from neobot_app.prompt.store import get_template_value
 from neobot_app.reply._utils import entry_fingerprint
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
-from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.reply.postprocess import (
+    build_over_limit_guidance,
+    process_reply_text,
+)
 from neobot_app.reply.sender import ReplySender
 from neobot_app.reply.vision_context import (
     ReplyVisionContext,
@@ -4440,19 +4443,18 @@ class ReplyOrchestrator:
             lines.append(
                 f"注意：因 {result.reason or '未知原因'}，已触发默认回复替换，当前切分结果为默认回复文本。"
             )
-            if self._get_enable_ai_reply_regenerate():
-                lines.append(
-                    "默认回复不是你的原意，请重新生成一个更简短的版本（不超过"
-                    f"{self._get_long_reply_max_length()}字符、不超过"
-                    f"{self._get_long_reply_max_sentence_count()}条），"
-                    "然后直接调用 send_reply 发送新文本，无需设置 ai_check_approved。"
+            # 明确给出出路：Markdown 直发 / 分批发送 / 精简重发，三选一。
+            lines.extend(
+                build_over_limit_guidance(
+                    max_length=self._get_long_reply_max_length(),
+                    max_sentence_count=self._get_long_reply_max_sentence_count(),
                 )
-            else:
-                lines.append(
-                    "如确认使用当前默认回复，请调用 send_reply，传入原 text、"
-                    "segments 为上述切分结果、ai_check_approved=true。"
-                    "如不应发送任何回复，请调用 cancel。"
-                )
+            )
+            lines.append(
+                "若仍要发送上面这段默认回复，请调用 send_reply，传入原 text、"
+                "segments 为上述切分结果、ai_check_approved=true。"
+                "如不应发送任何回复，请调用 cancel。"
+            )
         else:
             lines.append(
                 "如果没有严重问题或歧义，请调用 send_reply，传入原 text、segments 为上述切分结果、ai_check_approved=true。"
