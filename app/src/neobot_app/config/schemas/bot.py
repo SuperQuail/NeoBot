@@ -645,8 +645,11 @@ class AgentModelRouting:
         metadata={"description": "档案自动总结使用的模型编号，0-3"},
     )
     self_heal: int = field(
-        default=3,
-        metadata={"description": "自修复 Agent 使用的模型编号，0-3；默认 3（低成本非推理模型）"},
+        default=1,
+        metadata={
+            "description": "自修复 Agent 使用的模型编号，0-3；默认 1（强推理模型）——"
+            "自修复要读日志、定位缺陷并改代码，弱模型会反复试错"
+        },
     )
 
 

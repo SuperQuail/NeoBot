@@ -125,9 +125,9 @@ def test_build_self_heal_agent_wiring_uses_configured_agent_model(monkeypatch) -
     monkeypatch.setattr(providers_mod, "create_provider", _fake_create)
 
     config = SimpleNamespace(
-        agent_model=SimpleNamespace(self_heal=3),
+        agent_model=SimpleNamespace(self_heal=1),
         models=SimpleNamespace(
-            assignments=SimpleNamespace(agent_model_3="self-heal-model"),
+            assignments=SimpleNamespace(agent_model_1="self-heal-model"),
             get=lambda key: object() if key == "self-heal-model" else None,
         ),
         agent=SimpleNamespace(self_healing=None),

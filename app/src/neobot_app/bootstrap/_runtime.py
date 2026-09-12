@@ -416,7 +416,8 @@ def build_self_heal_agent_wiring(
     from neobot_app.assembly.agents import build_peer_descriptions
     from neobot_app.bootstrap._providers import build_optional_agent_provider
 
-    # 自修复走 agent_model.self_heal 指定的模型（默认 3：低成本非推理模型），而不是
+    # 自修复走 agent_model.self_heal 指定的模型（默认 1：推理强度 max 的强模型；
+    # 自修复要读日志、定位缺陷并改代码），而不是
     # 直接复用主回复 provider —— 复用会带来两个后果：配置的自修复模型编号被忽略，
     # 且 build_self_heal_agent 里的 provider.max_tokens 覆盖会写进共享实例
     # （原生视觉包装器不接受该赋值，启动即崩；真写进去则会压低主模型预算）。

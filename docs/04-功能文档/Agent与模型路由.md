@@ -41,7 +41,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `willingness` | 回复意愿 Agent | 1 |
 | `scheduled_task` | 定时任务 Agent | 1 |
 | `archive_summary` | 档案自动总结 | 1 |
-| `self_heal` | 自修复 Agent | 3（低成本非推理） |
+| `self_heal` | 自修复 Agent | 1（强推理，需读日志/定位缺陷） |
 
 ## 共享工具与 PTC
 
