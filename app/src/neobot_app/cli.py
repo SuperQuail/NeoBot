@@ -29,7 +29,7 @@ from neobot_app.bootstrap import (
 )
 from neobot_app.bootstrap._standby_runtime import StandbyController
 from neobot_app.config.loader.manager import ConfigLoadError
-from neobot_app.core import DATA_DIR
+from neobot_app.core import APP_VERSION, DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
 from neobot_app.utils.http import sanitize_no_proxy_environment
 
@@ -856,8 +856,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
     parser.add_argument(
+        # 版本号动态取自包元数据（neobot_app.core.APP_VERSION → importlib.metadata），
+        # 不再硬编码：升级版本时只需改 pyproject.toml，CLI 自动跟随。
         "--version", action="version",
-        version="%(prog)s 1.0.0",
+        version=f"%(prog)s {APP_VERSION}",
     )
 
     sub = parser.add_subparsers(title="子命令", dest="command")
