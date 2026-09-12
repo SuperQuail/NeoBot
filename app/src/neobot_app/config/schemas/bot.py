@@ -277,7 +277,8 @@ class ModelDefinition:
     native_vision: bool = field(
         default=False,
         metadata={
-            "description": "该模型可直接接收图片块；主推理模型开启后，不可用或无法处理图片时"
+            "description": "该模型可直接接收图片块；model_type=vision 的图像识别模型无需配置"
+            "（一律视为原生视觉）。主推理模型开启后，不可用或无法处理图片时"
             "自动回退到 vision_model（无需手选回退模型）"
         },
     )
@@ -299,6 +300,10 @@ class ModelDefinition:
     def __post_init__(self) -> None:
         self.key = normalize_model_key(self.key)
         self.model_type = normalize_model_type(self.model_type)
+        # 图像识别模型天然具备视觉能力（原生视觉回退路由本就按"图片原样发送"处理），
+        # 因此 model_type=vision 的模型无需用户手工配置 native_vision。
+        if self.model_type == "vision":
+            self.native_vision = True
         if not str(self.description or "").strip():
             self.description = MODEL_TYPE_LABELS.get(self.model_type, "模型")
 
@@ -321,10 +326,11 @@ def _default_primary_chat_model() -> "ModelDefinition":
         model_type="chat",
         description="主对话模型（Agent模型编号0）",
         provider="DeepSeek",
-        model_name="deepseek-v4-pro",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=2048,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -344,12 +350,13 @@ def _default_agent_model_1() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-max",
         model_type="chat",
-        description="Agent模型编号1：deepseek-v4-flash max 推理模式",
+        description="Agent模型编号1：deepseek-flash max 推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -369,12 +376,13 @@ def _default_agent_model_2() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-high",
         model_type="chat",
-        description="Agent模型编号2：deepseek-v4-flash high 推理模式",
+        description="Agent模型编号2：deepseek-flash high 推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -394,12 +402,13 @@ def _default_agent_model_3() -> "ModelDefinition":
     return ModelDefinition(
         key="deepseek-v4-flash-off",
         model_type="chat",
-        description="Agent模型编号3：deepseek-v4-flash 非推理模式",
+        description="Agent模型编号3：deepseek-flash 非推理模式",
         provider="DeepSeek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
+        native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
-            max_output_tokens=20480,
+            max_output_tokens=200000,
             timeout_seconds=120.0,
             top_p=1.0,
             frequency_penalty=0.0,
@@ -422,6 +431,7 @@ def _default_vision_model() -> "ModelDefinition":
         description="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
+        # native_vision 无需显式配置：vision 类型在 __post_init__ 中自动视为原生视觉
         settings=ModelSettings(
             temperature=0.7,
             max_output_tokens=2048,
@@ -1548,7 +1558,7 @@ class EnhancedChat(Chat):
         metadata={"description": "Agent 模式单轮回复最大工具调用迭代次数"},
     )
     group_agent_silent_timeout_seconds: Optional[float] = field(
-        default=60.0,
+        default=120.0,
         metadata={
             "description": "群聊 agent 回复管线最长静默时间；超过后强制关闭管线。wait 工具等待时间不计入静默时间，0 表示禁用"
         },

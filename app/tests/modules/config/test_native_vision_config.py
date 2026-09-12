@@ -36,10 +36,14 @@ def _library_entry(config: BotConfig, key: str):
     return definition
 
 
-def test_native_vision_defaults_are_backwards_compatible():
+def test_native_vision_defaults():
     config = BotConfig()
+    # 数据类层面的默认值保持 False：旧配置与外部脚本不受影响
     assert ModelRegistration().native_vision is False
-    assert _library_entry(config, PRIMARY_KEY).native_vision is False
+    # 但默认模型库里的对话模型已声明原生视觉（deepseek-flash）
+    assert _library_entry(config, PRIMARY_KEY).native_vision is True
+    # 图像识别模型无需配置 native_vision：按 model_type=vision 自动视为原生视觉
+    assert _library_entry(config, VISION_KEY).native_vision is True
     assert config.models.assignments.primary_chat_model == PRIMARY_KEY
     assert config.models.assignments.vision_model == VISION_KEY
     assert config.chat.native_vision_default_image_count == 4
@@ -56,6 +60,8 @@ def test_config_registration_passes_native_vision(monkeypatch):
     primary = _library_entry(config, PRIMARY_KEY)
     primary.native_vision = True
     primary.model_name = "deepseek-v4-flash-vision-exp"
+    # 默认全部为原生视觉，这里显式关掉一个以验证 False 也能正确透传
+    _library_entry(config, "deepseek-v4-flash-max").native_vision = False
     registry = get_model_registry()
     saved = registry.items()
     try:
@@ -120,6 +126,8 @@ async def test_unavailable_primary_falls_back_to_vision_model(monkeypatch, failu
 
 def test_nonvision_main_does_not_create_fallback(monkeypatch):
     config = BotConfig()
+    # 默认主模型已声明原生视觉；这里显式关掉以覆盖"非视觉主模型"分支
+    _library_entry(config, PRIMARY_KEY).native_vision = False
     create = Mock(return_value=FakeProvider())
     monkeypatch.setattr(_providers, "create_provider", create)
     provider, error = _providers.build_main_provider(config=config, logger=Mock())
@@ -142,6 +150,7 @@ def test_unavailable_vision_fallback_is_startup_error(monkeypatch):
 async def test_unavailable_nonvision_main_falls_back_to_vision_model(monkeypatch):
     """非视觉主模型创建失败时，自动回退到视觉模型而不是报错停机。"""
     config = BotConfig()
+    _library_entry(config, PRIMARY_KEY).native_vision = False
 
     def create(name):
         if name == PRIMARY_KEY:

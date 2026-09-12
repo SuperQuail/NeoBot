@@ -12,7 +12,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - `model_name`：模型名
 - `pricing`：计费（每百万 Token 输入/输出/缓存命中价格，`billing_metric` 用于非 Token 计费平台）
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
-- `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式
+- `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式。`model_type = "vision"` 的图像识别模型**无需配置** `native_vision`，一律按原生视觉处理（原生视觉回退路由本就按「图片原样发送」处理）
 
 调用方在 `[models.assignments]` 中只保存 key，因此同一个模型可以被多个调用方复用：
 
@@ -87,7 +87,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 - `agent_wait_max_seconds`：wait 工具单次最大等待（默认 60s）
 - `agent_max_iterations`：单轮回复最大工具迭代次数
-- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 60s），wait 等待不计入
+- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 120s），wait 等待不计入
 
 ## 委托（delegate）与多轮协作
 
