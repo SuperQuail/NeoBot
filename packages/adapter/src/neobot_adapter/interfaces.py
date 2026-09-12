@@ -63,6 +63,7 @@ class RuntimeAdapter(Protocol):
         action: str,
         params: dict[str, Any],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> dict[str, Any] | None: ...
 
     async def send(
@@ -70,6 +71,7 @@ class RuntimeAdapter(Protocol):
         conversation: ConversationRef,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> SendMsgResponse: ...
 
 

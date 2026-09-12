@@ -104,7 +104,9 @@ class LocalAdapter:
         action: str,
         params: Dict[str, Any],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> Optional[Dict[str, Any]]:
+        # 本地适配器没有 echo 往返，参数只为与 OneBot 适配器保持同一份契约。
         return await self._core.call_api(action, params, timeout)
 
     def subscribe(
@@ -255,6 +257,7 @@ class LocalAdapter:
         user_id: int,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
         if isinstance(message, str):
             payload = {
@@ -271,6 +274,7 @@ class LocalAdapter:
         group_id: int,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
         if isinstance(message, str):
             payload = {
@@ -287,7 +291,9 @@ class LocalAdapter:
         conversation: ConversationRef,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
+        wait_response: bool = True,
     ) -> response.SendMsgResponse:
+        # 本地适配器直接落库，天然没有 echo 等待。
         stored = await self._core.send(conversation, message)
         return safe_parse_model(
             self._core._ok({"message_id": stored.message_id}),

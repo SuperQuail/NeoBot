@@ -73,9 +73,18 @@ class _RecordingCore:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict, float]] = []
+        self.wait_responses: list[bool] = []
 
-    async def call_api(self, action: str, params: dict, timeout: float = 5.0, websocket=None):
+    async def call_api(
+        self,
+        action: str,
+        params: dict,
+        timeout: float = 5.0,
+        websocket=None,
+        wait_response: bool = True,
+    ):
         self.calls.append((action, params, timeout))
+        self.wait_responses.append(wait_response)
         return {"status": "ok", "retcode": 0, "message": "", "wording": "", "data": {"message_id": 7}}
 
     def call_api_sync(self, action: str, params: dict, timeout: float = 5.0, websocket=None):
@@ -232,6 +241,51 @@ async def test_adapter_core_call_action_timeout_returns_none_and_cleans_pending(
     assert result is None
     assert core._pending == {}
     assert core._echo_to_conn == {}
+
+
+@pytest.mark.asyncio
+async def test_call_action_without_wait_response_returns_right_after_write() -> None:
+    """wait_response=False：请求写上线后立即返回，不注册 echo future、不等回执。"""
+    core = AdapterCore()
+    websocket = AsyncMock()
+
+    result = await core._call_action(
+        websocket, "send_group_msg", {"group_id": 1}, wait_response=False
+    )
+
+    websocket.send.assert_awaited_once()
+    assert result is not None and result["status"] == "ok"
+    # 不注册 echo：不会有悬空 future，也不会有迟到回执被回填。
+    assert core._pending == {}
+    assert core._echo_to_conn == {}
+
+
+@pytest.mark.asyncio
+async def test_call_action_without_wait_response_returns_none_when_write_fails() -> None:
+    """不等回执也要暴露写失败：写不上线时返回 None 并留 WARNING。"""
+    core = AdapterCore()
+    websocket = AsyncMock()
+    websocket.send.side_effect = RuntimeError("closed")
+
+    result = await core._call_action(
+        websocket, "send_group_msg", {}, wait_response=False
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_onebot_adapter_send_forwards_wait_response() -> None:
+    """send(..., wait_response=False) 必须原样下传给 core.call_api。"""
+    fake = _RecordingCore()
+    adapter = OneBotAdapter()
+    adapter._core = fake
+
+    await adapter.send(
+        ConversationRef(kind="group", id="456"), "yo", wait_response=False
+    )
+
+    assert fake.wait_responses == [False]
 
 
 # ─────────────────────────────── 原始发送 / API 路由 ───────────────────────────────
