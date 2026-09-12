@@ -57,6 +57,21 @@ def test_guidance_tells_agent_to_send_markdown_or_split() -> None:
     assert "300" in text and "4" in text
 
 
+def test_module_defaults_match_config_schema() -> None:
+    """模块默认值必须与配置 schema 一致，避免「代码里两套默认值」再次漂移。
+
+    历史问题：postprocess 里是 200 / 8，而 schema（以及 tools 构造函数）是 300 / 12，
+    调用方一旦省略参数就会拿到更激进的阈值。
+    """
+    from neobot_app.config.schemas.bot import Chat
+    from neobot_app.reply import postprocess
+
+    defaults = Chat()
+
+    assert postprocess.DEFAULT_MAX_REPLY_LENGTH == defaults.long_reply_max_length
+    assert postprocess.DEFAULT_MAX_SENTENCE_COUNT == defaults.long_reply_max_sentence_count
+
+
 def test_reject_hint_is_single_line_and_actionable() -> None:
     hint = build_over_limit_reject_hint(max_length=300, max_sentence_count=4)
 

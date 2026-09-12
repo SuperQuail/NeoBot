@@ -15,8 +15,10 @@ from typing import Any
 
 
 DEFAULT_LONG_REPLY_FALLBACK_TEMPLATE = "{bot_name}懒得和你说道理，你不配听"
-DEFAULT_MAX_REPLY_LENGTH = 200
-DEFAULT_MAX_SENTENCE_COUNT = 8
+#: 与配置 schema（`chat.long_reply_max_length` / `chat.long_reply_max_sentence_count`）保持一致，
+#: 避免"代码里两套默认值"：调用方未显式传参时，口径应与本体默认配置完全相同。
+DEFAULT_MAX_REPLY_LENGTH = 300
+DEFAULT_MAX_SENTENCE_COUNT = 12
 
 
 @dataclass(frozen=True, slots=True)
