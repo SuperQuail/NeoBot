@@ -47,12 +47,18 @@ export default function Prompts() {
     return section?.keys.find((item) => item.path === selection.path) || null;
   }, [sections, selection]);
 
-  // 切换键时把编辑器重置为当前生效值
+  // 把编辑器同步为「当前生效值」。
+  //
+  // 依赖必须是**键 + 值**，不能是 current 对象本身：列表刷新时 current 换的是
+  // 引用而不是内容，以对象作依赖会让用户在刷新瞬间输入的内容被同值的新对象覆盖
+  // 回旧值（表现为「防抖预览拿到的还是旧模板」的竞态，CI 上偶发失败）。
+  // 用值作依赖后：同键同值 → 不打扰草稿；切换键或值真的变了（如「恢复默认」）→ 正常同步。
+  const currentValue = current?.value ?? '';
   useEffect(() => {
-    setDraft(current?.value ?? '');
+    setDraft(currentValue);
     setPreview(null);
     setPreviewError('');
-  }, [current]);
+  }, [selection?.section, selection?.path, currentValue]);
 
   // 实时预览：纯文本键不渲染模板
   useEffect(() => {

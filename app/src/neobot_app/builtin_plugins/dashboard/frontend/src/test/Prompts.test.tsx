@@ -107,6 +107,44 @@ describe('Prompts', () => {
     );
   });
 
+  it('刷新拿到「同键同值的新对象」时不会冲掉正在编辑的草稿', async () => {
+    // 回归：草稿重置原先以 current 对象为依赖，后端刷新（同值、新引用）会
+    // 把用户刚输入的内容覆盖回旧值，防抖预览因此永远拿到旧模板。
+    prompts.mockResolvedValueOnce({ ok: true, data: PAYLOAD, error: null, status: 200 });
+    render(<Prompts />);
+    await screen.findByText('group_chat');
+
+    const editor = await screen.findByLabelText('提示词内容');
+    await waitFor(() =>
+      expect(editor).toHaveValue('<你是谁>\n你的名字是{bot_name}'),
+    );
+
+    fireEvent.change(editor, { target: { value: '你好{bot_name}' } });
+    expect(editor).toHaveValue('你好{bot_name}');
+
+    // 模拟刷新：内容一致，但对象引用全部是新的（真实场景：重新拉取列表）
+    prompts.mockResolvedValue({
+      ok: true,
+      data: {
+        ...PAYLOAD,
+        sections: (PAYLOAD.sections || []).map((section) => ({
+          ...section,
+          keys: section.keys.map((key) => ({ ...key })),
+        })),
+      },
+      error: null,
+      status: 200,
+    });
+    fireEvent.click(screen.getByRole('button', { name: /刷新/ }));
+
+    await waitFor(() => expect(prompts).toHaveBeenCalledTimes(2));
+    // 关键断言：刷新不得覆盖用户输入
+    expect(editor).toHaveValue('你好{bot_name}');
+    await waitFor(() =>
+      expect(promptsPreview).toHaveBeenCalledWith({ template: '你好{bot_name}' }),
+    );
+  });
+
   it('未覆盖的键不能点恢复默认，覆盖过的键可以', async () => {
     prompts.mockResolvedValue({
       ok: true,
