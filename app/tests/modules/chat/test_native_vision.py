@@ -390,6 +390,28 @@ def test_wrapper_proxies_effective_max_tokens():
     assert degraded.max_tokens == 4096
 
 
+def test_wrapper_max_tokens_assignment_is_ignored_not_crashing():
+    """对包装器赋值 max_tokens 不得崩溃，也不得改写被代理的共享 provider 预算。
+
+    线上事故：self-heal / 解题 agent 用 `provider.max_tokens = cfg.max_tokens` 覆盖预算，
+    包装器一旦变成只读属性，启动即 AttributeError；而真的写下去又会把主回复模型的预算
+    一起压到 8192 一类的小值（那正是丢回复的根因），所以只告警、不改写。
+    """
+    primary = TextProvider()
+    primary.max_tokens = 200000
+    fallback = TextProvider()
+    fallback.max_tokens = 4096
+    logger = Mock()
+    provider = NativeVisionFallbackProvider(primary, fallback, logger=logger)
+
+    provider.max_tokens = 8192
+
+    assert provider.max_tokens == 200000
+    assert primary.max_tokens == 200000
+    assert fallback.max_tokens == 4096
+    assert logger.warning.called
+
+
 def test_wrapper_max_tokens_is_none_when_route_has_no_budget():
     """底层没声明上限时如实返回 None，不要凭空编造数字。"""
     provider = NativeVisionFallbackProvider(TextProvider(), TextProvider(), logger=Mock())

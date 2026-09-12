@@ -1611,7 +1611,14 @@ def build_problem_solver_agent(
         return None
     # 解题 agent 的 max_tokens 覆盖 agent 模型的默认值，
     # 否则 agent 模型的 max_output_tokens 会限制解题输出长度。
-    provider.max_tokens = cfg.max_tokens
+    # provider 为只读/共享实例时（原生视觉包装器）不能让装配崩溃：降级为沿用其自身预算。
+    try:
+        provider.max_tokens = cfg.max_tokens
+    except AttributeError:
+        (logger or NullLogger()).warning(
+            "provider.max_tokens 只读，已跳过解题 Agent 的输出预算覆盖",
+            requested_max_tokens=cfg.max_tokens,
+        )
     agent = ProblemSolverAgent(
         provider=provider,
         config=cfg,

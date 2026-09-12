@@ -85,6 +85,25 @@ class NativeVisionFallbackProvider:
         value = getattr(active, "max_tokens", None)
         return value if isinstance(value, int) else None
 
+    @max_tokens.setter
+    def max_tokens(self, value: int | None) -> None:
+        """兼容既有调用方对 provider.max_tokens 的赋值（只告警，不改写）。
+
+        self-heal / 解题 agent 会用 ``provider.max_tokens = ...`` 覆盖自己的输出预算。
+        但本包装器代理的是**共享** provider（主回复管线用的就是同一个实例），真的写下去
+        会把主对话模型的预算一起压到 8192 一类的值 —— 那正是丢回复的根因，比启动崩溃更糟。
+
+        所以这里只告警：需要独立预算的 Agent 必须拿到自己的 provider 实例
+        （见 bootstrap 的 build_optional_agent_provider）。
+        """
+        self._logger.warning(
+            "忽略对原生视觉包装器 max_tokens 的赋值：该 provider 是主回复管线共享实例，"
+            "改写会连带压低主模型输出预算；请为该 Agent 配置独立模型（agent_model.*）",
+            requested_max_tokens=value,
+            active_model=self.model,
+            effective_max_tokens=self.max_tokens,
+        )
+
     @property
     def vision_degradation(self) -> dict[str, Any] | None:
         return dict(self._degradation) if self._degradation else None
