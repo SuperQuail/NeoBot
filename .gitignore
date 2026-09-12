@@ -142,3 +142,6 @@ node_modules/
 
 # local bug tracker tool
 /bug_tracker/
+
+# 本地 bug 修复工作区(描述文档 + 日志分析工具, 不提交)
+/bugfixes/
