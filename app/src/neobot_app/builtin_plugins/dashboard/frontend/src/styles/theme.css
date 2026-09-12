@@ -156,6 +156,7 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 .tag.warn { background: rgba(241, 196, 15, 0.15); color: #b7950b; }
 .tag.err { background: rgba(231, 76, 60, 0.15); color: var(--err); }
 .tag.info { background: var(--brand-soft); color: var(--brand); }
+.tag.debug { background: var(--panel-2); color: var(--muted); }
 
 /* ---- 日志 ---- */
 .log-list { display: flex; flex-direction: column; }
@@ -269,6 +270,7 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 .level-pill { height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 600;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); opacity: .55; }
 .level-pill.active { opacity: 1; }
+.level-pill.debug.active { color: var(--muted); border-color: var(--muted); }
 .level-pill.info.active { color: var(--info); border-color: var(--info); }
 .level-pill.ok.active { color: var(--ok); border-color: var(--ok); }
 .level-pill.warn.active { color: #b7950b; border-color: var(--warn); }
@@ -281,6 +283,7 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 .lv-row:hover { background: var(--bg); }
 .lv-time { color: var(--muted); flex-shrink: 0; }
 .lv-level { flex-shrink: 0; width: 64px; font-weight: 700; text-transform: uppercase; font-size: 11px; }
+.lv-level.debug { color: var(--muted); }
 .lv-level.info { color: var(--info); }
 .lv-level.ok { color: var(--ok); }
 .lv-level.warn { color: #b7950b; }

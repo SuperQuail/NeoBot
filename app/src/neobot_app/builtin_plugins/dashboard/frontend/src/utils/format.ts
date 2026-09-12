@@ -21,11 +21,14 @@ export function fmt1(n?: number | null, suf = ''): string {
 }
 
 /** 日志级别 → tag 样式 */
-export function mapTag(level?: string | null): 'ok' | 'warn' | 'err' | 'info' {
+export function mapTag(level?: string | null): 'ok' | 'warn' | 'err' | 'info' | 'debug' {
   const normalized = String(level || '').toLowerCase();
   if (normalized === 'success') return 'ok';
   if (normalized === 'warning') return 'warn';
   if (normalized === 'error' || normalized === 'critical') return 'err';
+  // DEBUG 必须是独立级别：旧实现把它归到 info，控制台里两者外观与筛选完全一致，
+  // 于是没有任何办法单独过滤掉 DEBUG 噪音。
+  if (normalized === 'debug' || normalized === 'trace') return 'debug';
   return 'info';
 }
 

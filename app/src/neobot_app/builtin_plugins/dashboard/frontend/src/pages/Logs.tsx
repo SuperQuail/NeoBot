@@ -11,6 +11,7 @@ const POLL_MS = 1500;
 const NEAR_BOTTOM = 12;
 
 const LEVELS = [
+  { key: 'debug', label: 'DEBUG' },
   { key: 'info', label: 'INFO' },
   { key: 'ok', label: 'SUCCESS' },
   { key: 'warn', label: 'WARNING' },
@@ -42,7 +43,8 @@ function highlight(text?: string, kw?: string): ReactNode {
 
 export default function Logs() {
   const [logs, setLogs] = useState<LogItem[]>([]);
-  const [levelOn, setLevelOn] = useState<Record<string, boolean>>({ info: true, ok: true, warn: true, err: true });
+  // DEBUG 默认开启（保持与旧行为一致的可视范围），需要降噪时点掉这个 pill 即可。
+  const [levelOn, setLevelOn] = useState<Record<string, boolean>>({ debug: true, info: true, ok: true, warn: true, err: true });
   const [moduleFilter, setModuleFilter] = useState('');
   const [textFilter, setTextFilter] = useState('');
   const [tail, setTail] = useState(true);
