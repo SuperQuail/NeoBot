@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.providers.base import BaseHTTPProvider, set_finish_reason
 from neobot_chat.schema.exceptions import NativeVisionUnsupportedError, ProviderError
 from neobot_chat.providers.vision import contains_images, raise_if_image_unsupported, to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
@@ -303,7 +303,9 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             check_status=self._raise_for_status_with_body,
         )
         data = resp.json()
-        result = self._parse_message(data["choices"][0]["message"])
+        choice = data["choices"][0]
+        result = self._parse_message(choice["message"])
+        set_finish_reason(result, choice.get("finish_reason"))
 
         usage = data.get("usage")
         if isinstance(usage, dict):
@@ -328,6 +330,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         reasoning_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}
         stream_usage: dict[str, Any] | None = None
+        finish_reason: str | None = None
 
         async for line in self._stream_with_retry(
             "POST",
@@ -360,6 +363,9 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                     stream_usage["completion_tokens_details"] = completion_tokens_details
             if not choices:
                 continue
+            chunk_finish_reason = choices[0].get("finish_reason")
+            if isinstance(chunk_finish_reason, str) and chunk_finish_reason:
+                finish_reason = chunk_finish_reason
             delta = choices[0].get("delta", {})
             reasoning_content = delta.get("reasoning_content")
             if isinstance(reasoning_content, str) and reasoning_content:
@@ -397,6 +403,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             "role": "assistant",
             "content": "".join(content_parts) or None,
         }
+        set_finish_reason(message, finish_reason)
         if reasoning_parts:
             self._set_reasoning_content(message, "".join(reasoning_parts))
         if tool_calls_map:

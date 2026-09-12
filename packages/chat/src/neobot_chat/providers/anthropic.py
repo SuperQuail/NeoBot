@@ -4,7 +4,11 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.providers.base import (
+    BaseHTTPProvider,
+    normalize_anthropic_stop_reason,
+    set_finish_reason,
+)
 from neobot_chat.providers.vision import contains_images, to_anthropic_content
 from neobot_chat.schema.exceptions import NativeVisionUnsupportedError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
@@ -145,6 +149,7 @@ class AnthropicProvider(BaseHTTPProvider):
         resp = await self._request_with_retry("POST", "/v1/messages", json=payload)
         data = resp.json()
         result = self._parse_response(data)
+        set_finish_reason(result, normalize_anthropic_stop_reason(data.get("stop_reason")))
 
         usage = data.get("usage")
         if isinstance(usage, dict):
@@ -225,6 +230,7 @@ class AnthropicProvider(BaseHTTPProvider):
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         current_tool: ToolCall | None = None
+        finish_reason: str | None = None
 
         event_type = ""
         async for line in self._stream_with_retry(
@@ -270,6 +276,13 @@ class AnthropicProvider(BaseHTTPProvider):
                         tool_calls.append(current_tool)
                         current_tool = None
 
+                case "message_delta":
+                    # stop_reason 只在 message_delta 里下发（content_block_* 里没有）。
+                    stop_reason = data.get("delta", {}).get("stop_reason")
+                    normalized = normalize_anthropic_stop_reason(stop_reason)
+                    if normalized is not None:
+                        finish_reason = normalized
+
                 case "message_stop":
                     break
 
@@ -277,6 +290,7 @@ class AnthropicProvider(BaseHTTPProvider):
             "role": "assistant",
             "content": "".join(content_parts) or None,
         }
+        set_finish_reason(message, finish_reason)
         if tool_calls:
             message["tool_calls"] = tool_calls
         yield ChatChunk(message=message)

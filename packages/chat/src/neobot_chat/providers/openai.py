@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from neobot_chat.providers.base import BaseHTTPProvider
+from neobot_chat.providers.base import BaseHTTPProvider, set_finish_reason
 from neobot_chat.providers.vision import to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
@@ -113,7 +113,8 @@ class OpenAIProvider(BaseHTTPProvider):
         )
         data = resp.json()
 
-        choice = data["choices"][0]["message"]
+        raw_choice = data["choices"][0]
+        choice = raw_choice["message"]
         content = choice.get("content")
         result: Message = {
             "role": "assistant",
@@ -135,6 +136,8 @@ class OpenAIProvider(BaseHTTPProvider):
         if tool_calls:
             result["tool_calls"] = tool_calls
 
+        set_finish_reason(result, raw_choice.get("finish_reason"))
+
         usage = data.get("usage")
         if isinstance(usage, dict):
             extensions = dict(result.get("extensions") or {})
@@ -155,6 +158,7 @@ class OpenAIProvider(BaseHTTPProvider):
 
         content_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}
+        finish_reason: str | None = None
 
         async for line in self._stream_with_retry(
             "POST", "/chat/completions", json=payload
@@ -173,6 +177,9 @@ class OpenAIProvider(BaseHTTPProvider):
             choices = data.get("choices", [])
             if not choices:
                 continue
+            chunk_finish_reason = choices[0].get("finish_reason")
+            if isinstance(chunk_finish_reason, str) and chunk_finish_reason:
+                finish_reason = chunk_finish_reason
             delta = choices[0].get("delta", {})
 
             content = delta.get("content")
@@ -206,6 +213,7 @@ class OpenAIProvider(BaseHTTPProvider):
             "role": "assistant",
             "content": "".join(content_parts) or None,
         }
+        set_finish_reason(message, finish_reason)
         if tool_calls_map:
             message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
         yield ChatChunk(message=message)

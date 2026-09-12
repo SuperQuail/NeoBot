@@ -75,6 +75,17 @@ class NativeVisionFallbackProvider:
         return getattr(self._fallback if self._degradation else self._primary, "model", "")
 
     @property
+    def max_tokens(self) -> int | None:
+        """当前生效路由的输出上限。
+
+        包装器不代理这个属性时，编排器读到的是 None，于是「被输出上限截断」这件事
+        在原生视觉开启的模型上完全无法观测 —— 而截断正是丢回复的主因。
+        """
+        active = self._fallback if self._degradation else self._primary
+        value = getattr(active, "max_tokens", None)
+        return value if isinstance(value, int) else None
+
+    @property
     def vision_degradation(self) -> dict[str, Any] | None:
         return dict(self._degradation) if self._degradation else None
 
