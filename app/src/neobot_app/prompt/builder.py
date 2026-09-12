@@ -126,6 +126,20 @@ class PromptBuilder:
             return None
         return {"role": "user", "content": text}
 
+    def build_short_time_message(self) -> dict[str, str] | None:
+        """渲染短时间戳 user 块(仅 YYYY-MM-DD HH:MM:SS);分区关闭或为空时返回 None。
+
+        同一轮管线激活里的第一次模型调用用完整 [current_time],之后的调用由调用方
+        改用本方法,避免长管线反复渲染整段时间描述。
+        """
+        if not self._section_enabled("current_time_short"):
+            return None
+        template = self._template("current_time_short")
+        text = render_template(template, self._time_values())
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
     # ── 群聊 ──
 
     async def _group_context_values(
@@ -236,6 +250,15 @@ class PromptBuilder:
             if block:
                 context_blocks.append({"role": "user", "content": block})
 
+        # 长任务过程可见性:追加型分区,追加逻辑在代码里而不在模板里,
+        # 即使部署方把整个 [group_chat] 复制进 custom/prompts.toml 也仍生效。
+        if self._section_enabled("long_task_progress"):
+            long_task_progress = render_template(
+                self._template("long_task_progress"), values
+            )
+            if long_task_progress:
+                prompt = _merge_prompt_fragments(prompt, long_task_progress)
+
         return self._append_adaptive(prompt)
 
     def _context_values(
@@ -339,6 +362,15 @@ class PromptBuilder:
             hint = render_template(self._template("friend_chat_hint"), values)
             if hint:
                 prompt = _merge_prompt_fragments(prompt, hint)
+
+        # 长任务过程可见性:追加型分区,追加逻辑在代码里而不在模板里,
+        # 即使部署方把整个 [friend_chat] 复制进 custom/prompts.toml 也仍生效。
+        if self._section_enabled("long_task_progress"):
+            long_task_progress = render_template(
+                self._template("long_task_progress"), values
+            )
+            if long_task_progress:
+                prompt = _merge_prompt_fragments(prompt, long_task_progress)
 
         return self._append_adaptive(prompt)
 

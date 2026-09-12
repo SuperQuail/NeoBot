@@ -6,6 +6,7 @@
 //   - 不要新增手写内联 <svg>（图表类 LineChart / Sparkline 例外）。
 import type { ReactNode, SVGProps } from 'react';
 import {
+  Archive,
   ArrowLeft,
   BarChart3,
   Bot,
@@ -64,6 +65,7 @@ const registry = {
   edit: Pencil,
   message: MessagesSquare,
   clock: Clock,
+  archive: Archive,
 } as const;
 
 export type IconName = keyof typeof registry;

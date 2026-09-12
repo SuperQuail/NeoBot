@@ -119,6 +119,11 @@ class PluginRuntime:
         )
         #: 插件配置校验告警（插件名 -> 文本），随 snapshot/面板暴露。
         self._config_errors: dict[str, str] = {}
+        #: 插件配置「原地生效」消费者（插件名 -> consumer）。
+        #: 插件在 load() 里声明自己关心哪些配置项、以及每一项是「运行期安全」还是
+        #: 「需要重启」；面板保存插件配置后据此把运行期安全的改动直接喂给插件，
+        #: 无需重载插件本体（不中断服务、不丢内存指标）。未注册消费者的插件行为完全不变。
+        self._plugin_config_consumers: dict[str, Any] = {}
         self._file_server = file_server
         self._media_sender = media_sender
         self._app_commands = app_commands
@@ -596,6 +601,8 @@ class PluginRuntime:
     async def unload_plugin(self, name: str, *, force: bool = False) -> PluginOperationResult:
         # 前置插件卸载后依赖它的插件必然失效：先联动停掉，避免留下半死状态
         await self._cascade_stop_dependents(name, reason=f"前置插件已卸载: {name}")
+        # 卸载即失效：配置消费者持有的是插件侧对象，留着会被喂给已释放的实例
+        self.unregister_plugin_config_consumer(name)
         try:
             async with self._named_operation(name):
                 result = await self._unload_plugin_locked(name, force=force)
@@ -1998,6 +2005,37 @@ class PluginRuntime:
     def plugin_config_error(self, name: str) -> str | None:
         """插件配置校验告警：非空表示部分已存值非法、运行时已回落默认值。"""
         return self._config_errors.get(name)
+
+    # ------------------------------------------------------------------
+    # 插件配置「原地生效」通道
+    # ------------------------------------------------------------------
+
+    def register_plugin_config_consumer(self, name: str, consumer: Any) -> bool:
+        """登记插件的配置消费者（幂等，后登记覆盖先登记）。
+
+        消费者只需满足两个约定：
+        - config_paths：关心的配置键前缀元组（用于判断该插件是否参与本次改动）；
+        - apply_config(config)：可 await，用新的**生效配置**让自己生效；失败必须抛出，
+          由调用方保留旧配置并向用户报错。
+        可选的 hot_reload_policies 用于声明每项配置「运行期安全 / 需要重启」。
+        """
+        key = str(name or "").strip()
+        if not key or consumer is None:
+            return False
+        if not callable(getattr(consumer, "apply_config", None)):
+            raise TypeError(
+                f"插件配置消费者必须实现 apply_config(config): {consumer!r}"
+            )
+        self._plugin_config_consumers[key] = consumer
+        return True
+
+    def unregister_plugin_config_consumer(self, name: str) -> bool:
+        """移除插件的配置消费者（插件卸载 / 软重启重建时必须调用，避免喂给已释放对象）。"""
+        return self._plugin_config_consumers.pop(str(name or "").strip(), None) is not None
+
+    def plugin_config_consumer(self, name: str) -> Any | None:
+        """该插件登记的配置消费者；未登记时返回 None（调用方应维持旧的「需要重启」语义）。"""
+        return self._plugin_config_consumers.get(str(name or "").strip())
 
     def _manifest_config(self, name: str) -> dict[str, Any]:
         """plugin.toml 的 [config]：插件打包默认值（插件未加载时回落到磁盘读取）。"""

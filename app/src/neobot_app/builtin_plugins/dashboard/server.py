@@ -23,7 +23,7 @@ from . import system as system_module
 from .api import DashboardApi, _json_error
 from .config import DashboardConfig
 from .config_manager import BotConfigManager, EnvFileManager
-from .metrics import Metrics
+from .metrics import Metrics, latency_sample_capacity
 from .security import (
     LoginLimiter,
     SessionStore,
@@ -125,10 +125,15 @@ class DashboardServer:
         )
         self.passwords = get_panel_password_store(self.data_dir / "auth.json")
 
+        # 延迟样本容量按实际采样间隔推导（间隔可在运行期热更新，探针循环会同步刷新）
+        probe_interval = float(config.latency_probe_interval_seconds or 0)
+        if probe_interval <= 0:
+            probe_interval = float(config.latency_probe_idle_seconds or 0)
         self.metrics = Metrics(
             data_dir=self.data_dir,
             history_max_days=config.history_max_days,
             log_buffer_size=config.log_buffer_size,
+            latency_samples=latency_sample_capacity(probe_interval),
             logger=logger,
         )
         self.config_manager = BotConfigManager(
@@ -144,6 +149,8 @@ class DashboardServer:
         self._started_at = time.time()
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
+        #: 运行期安全字段的最新配置快照（由插件配置消费者原地刷新；绑定期/安全类字段仍看 self.config）
+        self.runtime_config: DashboardConfig = config
         self._bot_cache: dict[str, Any] = {}
         self._bot_cache_at = 0.0
         self._bot_lock = asyncio.Lock()
@@ -367,6 +374,18 @@ class DashboardServer:
         self._route(app, "POST", "/api/prompts/reset", self.api.prompts_reset)
         self._route(app, "GET", "/api/chat-flows", self.api.chat_flows)
         self._route(app, "GET", "/api/chat-flows/detail", self.api.chat_flow_detail)
+        self._route(app, "GET", "/api/chat-flows/prompts", self.api.chat_flow_prompts)
+        self._route(app, "GET", "/api/chat-flows/prompt", self.api.chat_flow_prompt)
+        self._route(
+            app, "POST", "/api/chat-flows/prompts/clear", self.api.chat_flow_prompts_clear
+        )
+        # ── 档案管理（features/spec(2)）──
+        self._route(app, "GET", "/api/archives", self.api.archives)
+        self._route(app, "GET", "/api/archives/over-limit", self.api.archives_over_limit)
+        self._route(app, "GET", "/api/archives/items", self.api.archive_items)
+        self._route(app, "GET", "/api/archives/item", self.api.archive_item)
+        self._route(app, "PUT", "/api/archives/item", self.api.archive_update)
+        self._route(app, "DELETE", "/api/archives/item", self.api.archive_delete)
         self._route(app, "GET", "/api/scheduled-tasks", self.api.scheduled_tasks)
         self._route(app, "POST", "/api/scheduled-tasks/action", self.api.scheduled_tasks_action)
         self._route(app, "GET", "/api/admin/power", self.api.power_status)
@@ -610,7 +629,7 @@ class DashboardServer:
 
     async def bot_info(self) -> dict[str, Any]:
         """获取机器人信息（带缓存）。"""
-        ttl = float(self.config.bot_info_cache_ttl)
+        ttl = float(self.runtime_config.bot_info_cache_ttl)
         now = time.time()
         if ttl > 0 and self._bot_cache and now - self._bot_cache_at < ttl:
             return self._bot_cache
@@ -658,6 +677,20 @@ class DashboardServer:
         if info["user_id"]:
             info["avatar_url"] = f"https://q1.qlogo.cn/g?b=qq&nk={info['user_id']}&s=640"
         return info
+
+    def apply_runtime_config(self, config: DashboardConfig) -> None:
+        """让「运行期安全」的插件配置字段原地生效。
+
+        只刷新不涉及监听端口 / 会话 / 安全开关的部分：
+        - log_buffer_size / history_max_days：立刻重建内存缓冲与历史裁剪；
+        - bot_info_cache_ttl、延迟探针四项：由读取方按 runtime_config 按需取用。
+
+        绑定期字段（host / port / base_path）与安全类字段**不在这里处理** —— 它们仍以
+        启动快照 self.config 为准，面板继续提示「需要重启 NeoBot」。
+        """
+        self.runtime_config = config
+        self.metrics.set_log_buffer_capacity(config.log_buffer_size)
+        self.metrics.set_history_max_days(config.history_max_days)
 
     async def probe_latency(self) -> float | None:
         """测量一次 API 往返延迟并写入指标。"""

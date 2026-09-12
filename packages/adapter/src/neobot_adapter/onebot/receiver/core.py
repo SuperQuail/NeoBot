@@ -514,10 +514,12 @@ class AdapterCore:
             self._conn_to_echo[websocket].add(echo)
         try:
             request = {"action": action, "params": params, "echo": echo}
-            logger.info(f"发送API请求: {request}")
+            # 高频恒定日志：降为 DEBUG。DEBUG 仍会落盘与进入面板缓冲（sink 等级为 DEBUG），
+            # 但不再污染 INFO 级别的业务日志；失败/超时分支保留 WARNING 作为诊断主线。
+            logger.debug(f"发送API请求: {request}")
             await websocket.send(json.dumps(request))
             response = await asyncio.wait_for(fut, timeout)
-            logger.info(f"收到API响应: {response.get('status')}")
+            logger.debug(f"收到API响应: {response.get('status')}")
             # 根据 OneBot 协议规范，响应有 status 字段
             if response.get("status") == "ok":
                 return response

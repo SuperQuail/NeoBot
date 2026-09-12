@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useLayoutEffect, useRef } from 'react';
-import { Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code, Rocket, Pencil, MessagesSquare, Clock } from 'lucide-react';
+import { Archive, Home, LogOut, Package, Moon, ScrollText, Settings, BarChart3, Bot, Cpu, Code, Rocket, Pencil, MessagesSquare, Clock } from 'lucide-react';
 import { useQuery } from '../data/useQuery';
 import { QK, POLL } from '../data/queryKeys';
 import { api } from '../api/endpoints';
@@ -30,6 +30,7 @@ const NAV: NavEntry[] = [
   { to: '/prompts', label: '提示词', name: '提示词模板', icon: 'edit' },
   { to: '/chat-flows', label: '聊天流', name: '聊天流', icon: 'message' },
   { to: '/scheduled-tasks', label: '定时', name: '定时任务', icon: 'clock' },
+  { to: '/archives', label: '档案', name: '档案管理', icon: 'archive' },
   { to: '/bots', label: '机器人', name: '机器人', icon: 'bot' },
   { to: '/logs', label: '日志', name: '日志', icon: 'log' },
 ];
@@ -48,6 +49,7 @@ const SIDEBAR_GLYPHS: Record<string, typeof Home> = {
   edit: Pencil,
   message: MessagesSquare,
   clock: Clock,
+  archive: Archive,
 };
 
 /** 面板 HTTP 扩展（例如官方星舰游戏插件）的侧栏入口；扩展不存在时不渲染任何东西 */

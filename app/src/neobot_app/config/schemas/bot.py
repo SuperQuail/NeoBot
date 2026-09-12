@@ -1103,6 +1103,18 @@ class AgentMemoryArchive:
         default=1500,
         metadata={"description": "群聊记忆渲染进提示词时的展示长度上限(截取开头部分)；超出部分由模型用 archive_crud 分页查阅；group_summary 条目也以此为准"},
     )
+    max_total_chars: Optional[int] = field(
+        default=10000,
+        metadata={"description": "单条档案的存储硬上限(字符)；超过后按 overflow_action 处理；0表示禁用(不限制)。与渲染上限 max_chars 无关"},
+    )
+    overflow_action: Optional[str] = field(
+        default="summarize",
+        metadata={"description": "档案超过 max_total_chars 时的动作：summarize(异步自动压缩)或reject(拒绝写入并返回错误)"},
+    )
+    overflow_summary_cooldown_seconds: Optional[int] = field(
+        default=600,
+        metadata={"description": "同一档案两次自动压缩之间的最小间隔(秒)，用于防抖"},
+    )
 
 
 @dataclass
@@ -1565,6 +1577,38 @@ class EnhancedChat(Chat):
         metadata={
             "description": "群聊 agent 回复管线最长静默时间；超过后强制关闭管线。wait 工具等待时间不计入静默时间，0 表示禁用"
         },
+    )
+    silent_nudge_enabled: Optional[bool] = field(
+        default=True,
+        metadata={"description": "长任务沉默提醒：模型长时间只调用工具不回复时注入一条系统提醒；关闭后回到原行为"},
+    )
+    silent_nudge_first_rounds: Optional[int] = field(
+        default=5,
+        metadata={"description": "首次沉默提醒需要的连续工具调用轮数；0表示关闭轮次触发"},
+    )
+    silent_nudge_repeat_rounds: Optional[int] = field(
+        default=10,
+        metadata={"description": "首次提醒之后，每次再累积多少轮工具调用才再次提醒"},
+    )
+    silent_nudge_seconds: Optional[float] = field(
+        default=45.0,
+        metadata={"description": "自本轮开始(或上次提醒)起超过此秒数仍未使用回复工具即提醒；0表示关闭时间触发"},
+    )
+    silent_nudge_max: Optional[int] = field(
+        default=3,
+        metadata={"description": "单次回复事件内最多注入的沉默提醒次数"},
+    )
+    chat_flow_prompt_history_enabled: Optional[bool] = field(
+        default=True,
+        metadata={"description": "是否把完整提示词写入本地磁盘(全局保留最近N份)；开启意味着完整聊天内容(含私聊与图片引用)会被持久化"},
+    )
+    chat_flow_prompt_history_limit: Optional[int] = field(
+        default=100,
+        metadata={"description": "完整提示词历史的全局保留份数；直接决定磁盘占用(总量约该值×单份体积0.5~1.2MB，100份约50~120MB)"},
+    )
+    chat_flow_latest_in_memory: Optional[bool] = field(
+        default=False,
+        metadata={"description": "是否把最新一份完整提示词常驻内存；false(默认)全部读盘，常驻内存仅约15KB索引；true则最新一份留在内存(约0.5~1.2MB)"},
     )
     random_sticker_probability: Optional[float] = field(
         default=0.1,

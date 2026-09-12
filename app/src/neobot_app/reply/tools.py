@@ -434,7 +434,8 @@ class ReplyToolExecutor(ToolExecutor):
                 "send_reply",
                 "向当前会话发送回复，可附带表情包图片。发送图片时先逐一发送图片再发送切分后的文字；"
                 "若设置 merge_text_with_image=true 则文字与第一张图片合并且不切分。"
-                "调用后本轮回复视为完成。",
+                "调用后本轮回复视为完成。"
+                "允许在同一轮内多次发送，用于长任务的开工与进度。",
                 {
                     "properties": {
                         "text": {

@@ -20,6 +20,13 @@ export const QK = {
   chatFlows: 'chat-flows',
   scheduledTasks: 'scheduled-tasks',
   chatFlowDetail: (key: string) => `chat-flow:${key}`,
+  /** 完整提示词历史（元数据列表 + 最新一份全文）；key 为空串表示不按聊天流过滤 */
+  chatFlowPrompts: (key: string) => `chat-flow-prompts:${key || 'all'}`,
+  chatFlowPrompt: (seq: number | string) => `chat-flow-prompt:${seq}`,
+  /** 档案管理（spec(2)） */
+  archives: 'archives',
+  archiveItems: (query: string) => `archive-items:${query}`,
+  archiveItem: (table: string, key: string) => `archive-item:${table}:${key}`,
   plugins: 'plugins',
   /** 面板 HTTP 扩展（子插件页面入口） */
   extensions: 'extensions',
@@ -60,6 +67,11 @@ export const POLL = {
   scheduledTasks: 15_000,
   /** 插件列表：20s */
   plugins: 20_000,
+  /**
+   * 档案页：**不轮询**（0 = 只在挂载/依赖变化时取一次，其余靠手动刷新）。
+   * 档案查的是数据库且列表可能很大；更要紧的是编辑态不能被自动刷新覆盖。
+   */
+  archives: 0,
   /** 运行状态：5s（待机状态变化要能马上看到） */
   power: 5_000,
   /** 配置类：不轮询（由用户主动刷新） */

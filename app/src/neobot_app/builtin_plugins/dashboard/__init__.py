@@ -15,6 +15,7 @@ from typing import Any
 from neobot_modloader import Plugin
 
 from .config import DashboardConfig
+from .metrics import latency_sample_capacity
 from .server import DashboardServer
 
 plugin = Plugin(
@@ -28,7 +29,8 @@ plugin = Plugin(
     config_hot_reload=False,
 )
 
-LATENCY_INTERVAL_SECONDS = 15.0
+#: 探针启动前的预热时间（秒）：避开启动高峰，等插件与适配器就绪
+PROBE_WARMUP_SECONDS = 3.0
 
 
 class DashboardPlugin:
@@ -39,11 +41,17 @@ class DashboardPlugin:
         self.config: DashboardConfig | None = None
         self.server: DashboardServer | None = None
         self._latency_task: asyncio.Task[None] | None = None
+        #: 探针状态迁移去重（"" / "probing" / "idle" / "disabled"）
+        self._probe_state: str = ""
+        self._logger: Any = None
+        #: 插件配置的「原地生效」消费者（bugfixes/feat(2) §6）
+        self._config_consumer: Any = None
 
     # ------------------------------------------------------------------
 
     async def load(self, ctx: Any) -> None:
         self.ctx = ctx
+        self._logger = getattr(ctx, "logger", None)
         self.config = ctx.config if isinstance(ctx.config, DashboardConfig) else DashboardConfig.model_validate(dict(ctx.config or {}))
         config = self.config
 
@@ -86,16 +94,71 @@ class DashboardPlugin:
             if subscription is not None:
                 ctx.record_subscription(subscription)
 
+        self._register_config_consumer(ctx)
+        await self._start_latency_task()
+
+    def _register_config_consumer(self, ctx: Any) -> None:
+        """把自己登记成 modloader 的「插件配置消费者」。
+
+        登记后，面板里保存 latency_probe_* / bot_info_cache_ttl / log_buffer_size 等
+        运行期安全字段会**立即生效**，不再提示「需要重启 NeoBot」；
+        host / port / base_path 与安全类字段仍按需要重启处理。
+        未登记（宿主机旧版本）时行为完全不变。
+        """
+        control = getattr(ctx, "plugin_control", None)
+        register = getattr(control, "register_config_consumer", None)
+        if not callable(register):
+            return
+        try:
+            from .hot_reload import DashboardConfigConsumer
+
+            self._config_consumer = DashboardConfigConsumer(self)
+            register(ctx.plugin_name, self._config_consumer)
+        except Exception as exc:  # 登记失败不能影响面板启动
+            self._config_consumer = None
+            if self._logger is not None:
+                self._logger.warning(f"面板配置热重载通道登记失败: {exc}")
+
+    def apply_runtime_config(self, config: DashboardConfig) -> None:
+        """把运行期安全的配置字段原地生效（供配置消费者调用）。
+
+        失败时向上抛出，让调用方保留旧配置并把错误报给面板。
+        """
+        server = self.server
+        if server is not None:
+            server.apply_runtime_config(config)
+        self.config = config
+
+    async def _start_latency_task(self) -> None:
+        """（重新）启动探针任务：先取消旧的，保证同一时刻只有一个在跑。"""
+        await self._cancel_latency_task()
+        self._probe_state = ""
         self._latency_task = asyncio.create_task(self._latency_loop())
 
+    async def _cancel_latency_task(self) -> None:
+        """取消并回收当前的探针任务（幂等，可在 load()/unload() 里安全调用）。"""
+        task = self._latency_task
+        self._latency_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     async def unload(self) -> None:
-        if self._latency_task is not None:
-            self._latency_task.cancel()
+        # 先注销配置消费者：它持有本实例的引用，留着会被喂给已释放的对象
+        control = getattr(self.ctx, "plugin_control", None)
+        unregister = getattr(control, "unregister_config_consumer", None)
+        if self._config_consumer is not None and callable(unregister):
             try:
-                await self._latency_task
-            except (asyncio.CancelledError, Exception):
+                unregister(getattr(self.ctx, "plugin_name", "dashboard"))
+            except Exception:
                 pass
-            self._latency_task = None
+        self._config_consumer = None
+
+        await self._cancel_latency_task()
         if self.server is not None:
             await self.server.stop()
             self.server = None
@@ -112,22 +175,88 @@ class DashboardPlugin:
             pass
         return envelope
 
+    def _log_probe_state(self, state: str, **fields: Any) -> None:
+        """探针状态迁移日志：同一状态只记一次（启动 / 恢复探测 / 进入空闲停止 / 关闭）。"""
+        if state == self._probe_state:
+            return
+        self._probe_state = state
+        logger = self._logger
+        if logger is None:
+            return
+        detail = " ".join(f"{key}={value}" for key, value in fields.items())
+        try:
+            if state == "probing":
+                logger.info(f"面板延迟探针已启动/恢复探测: {detail}")
+            elif state == "idle":
+                logger.info(f"面板延迟探针进入空闲停止（窗口内无活跃会话）: {detail}")
+            elif state == "disabled":
+                logger.info(f"面板延迟探针已关闭（latency_probe_interval_seconds=0）: {detail}")
+        except Exception:
+            pass
+
     async def _latency_loop(self) -> None:
-        await asyncio.sleep(3.0)
+        """面板延迟探针（带会话门控 + 空闲完全停止）。
+
+        实现前请先读完这三条约束：
+
+        1. **只有「配置明确关闭（interval <= 0）」或「插件卸载（server is None）」才退出循环。**
+        2. **空闲期（idle=0）必须继续存活**，只做一次廉价的门控复检（不产生 API 调用）。
+           若照搬"空闲即 return"，由于本任务只在 load() 创建一次、而 dashboard 声明
+           hot_reload=False 导致 load() 不会重跑，探针会**永久停摆**、再也无法恢复。
+        3. 门控只读会话的 last_seen_at（SessionStore.has_recent_activity），
+           绝不能走 SessionStore.get() —— 那会 touch() 会话造成自我续期。
+        """
+        await asyncio.sleep(PROBE_WARMUP_SECONDS)
         while True:
             server = self.server
-            if server is None:
+            config = self.config
+            if server is None or config is None:
                 return
+
+            active_interval = float(config.latency_probe_interval_seconds or 0)
+            if active_interval <= 0:
+                self._log_probe_state("disabled", interval=active_interval)
+                return  # 用户明确关闭探针
+
+            idle_interval = float(config.latency_probe_idle_seconds or 0)
+            # 下限取 0.05s：真实配置项本身有 ge=1 约束，这里只是为了让单测可以快速驱动循环
+            gate_interval = max(0.05, float(config.latency_probe_gate_check_seconds or 30))
+            window = float(config.latency_probe_active_window_seconds or 120)
+
+            sessions = getattr(server, "sessions", None)
+            active = bool(
+                sessions is not None
+                and sessions.has_recent_activity(window)
+            )
+            delay = active_interval if active else idle_interval
+            # 让面板按「实际采样间隔」判断样本是否陈旧，并据此刷新样本容量（配置可热更新）
+            effective_interval = delay if delay > 0 else active_interval
             try:
-                await server.probe_latency()
+                server.metrics.set_latency_stale_after(effective_interval * 5.0)
+                server.metrics.set_latency_capacity(
+                    latency_sample_capacity(effective_interval)
+                )
+            except Exception:
+                pass
+
+            try:
+                if delay > 0:
+                    self._log_probe_state(
+                        "probing", interval=delay, active=active, window=window
+                    )
+                    await server.probe_latency()
+                    await asyncio.sleep(delay)
+                else:
+                    # 空闲且 idle=0：不探测、不写指标，只做一次廉价的门控复检
+                    self._log_probe_state(
+                        "idle", gate_check=gate_interval, window=window
+                    )
+                    await asyncio.sleep(gate_interval)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
-            try:
-                await asyncio.sleep(LATENCY_INTERVAL_SECONDS)
-            except asyncio.CancelledError:
-                raise
+                # 单次探测异常不应终止循环；退避一个周期后继续
+                await asyncio.sleep(max(0.05, delay if delay > 0 else gate_interval))
 
 
 _instance = DashboardPlugin()

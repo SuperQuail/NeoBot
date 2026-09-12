@@ -31,6 +31,7 @@ from neobot_app.bootstrap._standby_runtime import StandbyController
 from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
+from neobot_app.utils.http import sanitize_no_proxy_environment
 
 
 async def run() -> bool:
@@ -842,6 +843,17 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # 启动期加固（先于任何 httpx 客户端构造）：把 NO_PROXY 里 "[::1]" 这类带方括号的
+    # IPv6 字面量还原成 "::1"。httpx 只识别不带方括号的形态，带方括号的会被当成域名
+    # 通配条目并生成非法的 URLPattern，导致装配阶段直接抛 httpx.InvalidURL 而整体启动失败。
+    renormalized = sanitize_no_proxy_environment()
+    if renormalized:
+        print(
+            "[启动] 已规范化 NO_PROXY 中的 IPv6 字面量（去掉方括号）: "
+            + ", ".join(renormalized),
+            file=sys.stderr,
+        )
+
     parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
     parser.add_argument(
         "--version", action="version",

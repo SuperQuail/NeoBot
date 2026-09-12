@@ -56,6 +56,34 @@ class DashboardConfig(BaseModel):
         le=86400,
         description="机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询。",
     )
+    latency_probe_interval_seconds: int = Field(
+        default=60,
+        ge=0,
+        le=86400,
+        description="有人查看面板时的延迟探测间隔（秒）。探测会真实调用一次 get_status；0 表示彻底关闭探针。",
+    )
+    latency_probe_idle_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=86400,
+        description="无人在线时的延迟探测间隔（秒）。0（默认）表示完全停止探测，不产生任何 API 调用。",
+    )
+    latency_probe_active_window_seconds: int = Field(
+        default=120,
+        ge=1,
+        le=86400,
+        description="面板会话视为「有人在线」的活跃窗口（秒）；最后一次请求在此窗口内才认为有人在看面板。",
+    )
+    latency_probe_gate_check_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=86400,
+        description="空闲/未探测时复检门控条件的间隔（秒）。该间隔不产生 API 调用，只用于及时发现有人重新打开面板。",
+    )
+    allow_archive_delete: bool = Field(
+        default=False,
+        description="是否允许在「档案」页删除档案记录。默认关闭（防止误删长期记忆）；与模型侧 agent.memory.archive.allow_delete 完全独立。",
+    )
     history_max_days: int = Field(
         default=30,
         ge=1,

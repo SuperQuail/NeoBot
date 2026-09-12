@@ -1,19 +1,31 @@
 """聊天流管理模块"""
 
+from __future__ import annotations
+
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional, Set
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
+from neobot_contracts.models import ConversationRef
+
 from neobot_adapter import OneBotAdapter
+from neobot_adapter.model.basic import PostMessageMessagesender
 from neobot_adapter.model.response import (
     FriendData,
     GroupData,
 )
-from neobot_adapter.model.message import GroupMessage
+from neobot_adapter.model.message import (
+    GroupMessage,
+    MessageSegment,
+    MessageTypeEnum,
+    PrivateMessage,
+)
 
-from neobot_app.message.queue import MessageQueue
+from neobot_app.message.queue import MessageQueue, QueueEntryType
+from neobot_app.time_context import epoch_seconds_int
 from neobot_app.user_profiles import UserProfileService
 
 logger = logging.getLogger(__name__)
@@ -23,6 +35,45 @@ DEFAULT_CONCURRENT_LIMIT = 20  # 默认并发限制
 DEFAULT_MAX_RETRIES = 3        # 默认最大重试次数
 DEFAULT_RETRY_DELAY = 1.0      # 默认重试延迟（秒）
 DEFAULT_TIMEOUT = 10           # 默认请求超时时间（秒）
+
+#: 启动补齐时每个会话最多取回多少条 Bot 自身消息。
+#: 量级与启动历史灌入的观察上限相当：Bot 自身的发言数远少于用户消息，20 条
+#: 足以覆盖一次软重启/冷启动后模型需要看到的 assistant 块，又不会让补齐逻辑
+#: 显著撑大队列（入队时仍按 max_size 驱逐最旧条目）。
+SELF_SENT_HISTORY_LIMIT = 20
+
+#: 与后端历史比对去重的时间窗（秒）。本地 occurred_at 与后端 message.time
+#: 分别来自本地落库与 OneBot 上报，允许 <=30s 偏差仍视为同一条（验收 S5）。
+SELF_SENT_DEDUP_WINDOW_SECONDS = 30
+
+
+def _to_epoch_seconds(value: Any) -> Optional[int]:
+    """把落库读回的 datetime 转成 unix 秒；无法解析时返回 None。
+
+    MessageData.occurred_at 是 naive 的 DateTime 列，写入时用的是 UTC，
+    因此 naive 值按 UTC 解释。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _self_sent_message_id(event_id: str) -> Optional[int]:
+    """从 self:<合成消息id> 还原出队列用的消息 id；格式不符时返回 None。"""
+    prefix = "self:"
+    text = str(event_id or "")
+    if not text.startswith(prefix):
+        return None
+    try:
+        return int(text[len(prefix):])
+    except ValueError:
+        return None
 
 @dataclass
 class ChatStreamConfig:
@@ -298,6 +349,7 @@ class ChatStreamManager:
 
     async def _process_friend_history(self, friend: FriendData, max_observations: int) -> None:
         """处理单个好友的历史消息"""
+        queue_key = str(friend.user_id)
         try:
             # 获取好友历史消息
             history_response = await self._retry_api_call(
@@ -307,31 +359,43 @@ class ChatStreamManager:
                 reverse_order=False  # 从最新开始
             )
 
-            if not history_response.data or not history_response.data.messages:
+            messages = list(getattr(getattr(history_response, "data", None), "messages", None) or [])
+            if not messages:
                 logger.debug(f"好友 {friend.user_id} 无历史消息")
-                return
 
             # 将消息推入队列
-            for msg_data in history_response.data.messages:
+            pushed_messages: list[Any] = []
+            for msg_data in messages:
                 logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
                     logger.warning(f"消息数据是元组而不是对象: {msg_data}")
                     continue
 
                 try:
-                    self._friend_queue.push_history(str(friend.user_id), msg_data)
+                    self._friend_queue.push_history(queue_key, msg_data)
+                    pushed_messages.append(msg_data)
                 except Exception as e:
                     logger.error(f"推送好友 {friend.user_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            processed_count = len(history_response.data.messages) - sum(1 for msg in history_response.data.messages if isinstance(msg, tuple))
-            logger.debug(f"已处理好友 {friend.user_id} 的 {processed_count} 条历史消息（跳过 {len(history_response.data.messages) - processed_count} 条元组消息）")
+            processed_count = len(messages) - sum(1 for msg in messages if isinstance(msg, tuple))
+            logger.debug(f"已处理好友 {friend.user_id} 的 {processed_count} 条历史消息（跳过 {len(messages) - processed_count} 条元组消息）")
+
+            # 灌入之后补齐 Bot 自身发言：软重启丢 assistant 块会导致重复回复。
+            await self._merge_self_sent_history(
+                queue=self._friend_queue,
+                queue_key=queue_key,
+                conversation=ConversationRef(kind="private", id=queue_key),
+                backend_messages=pushed_messages,
+                bot_account=self._queue_bot_account(self._friend_queue),
+            )
 
         except Exception as e:
             logger.error(f"处理好友 {friend.user_id} 历史消息时出错: {e}", exc_info=True)
 
     async def _process_group_history(self, group: GroupData, max_observations: int) -> None:
         """处理单个群的历史消息"""
+        queue_key = str(group.group_id)
         try:
             # 获取群历史消息
             history_response = await self._retry_api_call(
@@ -341,28 +405,222 @@ class ChatStreamManager:
                 reverse_order=False  # 从最新开始
             )
 
-            if not history_response.data or not history_response.data.messages:
+            messages = list(getattr(getattr(history_response, "data", None), "messages", None) or [])
+            if not messages:
                 logger.debug(f"群 {group.group_id} 无历史消息")
-                return
 
             # 将消息推入队列
-            for msg_data in history_response.data.messages:
+            pushed_messages: list[Any] = []
+            for msg_data in messages:
                 logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
                     logger.warning(f"消息数据是元组而不是对象: {msg_data}")
                     continue
 
                 try:
-                    self._group_queue.push_history(str(group.group_id), msg_data)
+                    self._group_queue.push_history(queue_key, msg_data)
+                    pushed_messages.append(msg_data)
                 except Exception as e:
                     logger.error(f"推送群 {group.group_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            processed_count = len(history_response.data.messages) - sum(1 for msg in history_response.data.messages if isinstance(msg, tuple))
-            logger.debug(f"已处理群 {group.group_id} 的 {processed_count} 条历史消息（跳过 {len(history_response.data.messages) - processed_count} 条元组消息）")
+            processed_count = len(messages) - sum(1 for msg in messages if isinstance(msg, tuple))
+            logger.debug(f"已处理群 {group.group_id} 的 {processed_count} 条历史消息（跳过 {len(messages) - processed_count} 条元组消息）")
+
+            # 灌入之后补齐 Bot 自身发言：软重启丢 assistant 块会导致重复回复。
+            await self._merge_self_sent_history(
+                queue=self._group_queue,
+                queue_key=queue_key,
+                conversation=ConversationRef(kind="group", id=queue_key),
+                backend_messages=pushed_messages,
+                bot_account=self._queue_bot_account(self._group_queue),
+            )
 
         except Exception as e:
             logger.error(f"处理群 {group.group_id} 历史消息时出错: {e}", exc_info=True)
+
+    # ── Bot 自身消息补齐（软重启后 assistant 块）─────────────────
+
+    @staticmethod
+    def _queue_bot_account(queue: Optional[MessageQueue]) -> int:
+        """取队列上记录的机器人 QQ；取不到时返回 0（补齐逻辑随即跳过）。"""
+        account = getattr(queue, "bot_account", None)
+        try:
+            return int(account) if account else 0
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        """取消息的纯文本，用于与本地记录做去重比对。"""
+        raw = getattr(message, "raw_message", None)
+        if raw:
+            return str(raw)
+        parts: list[str] = []
+        for segment in getattr(message, "message", None) or []:
+            data = getattr(segment, "data", None)
+            if isinstance(data, dict):
+                text = data.get("text")
+            else:
+                # 后端历史模型（GetSignalMsgData.message[].data 是对象而非 dict）
+                text = getattr(data, "text", None)
+            if text is not None:
+                parts.append(str(text))
+        return "".join(parts)
+
+    async def _load_recent_self_messages(
+        self, conversation: ConversationRef, bot_sender_id: str
+    ) -> list[Any]:
+        """读取该会话本地落盘的 Bot 自身消息；失败返回空列表，不抛异常。"""
+        try:
+            async with self._uow_factory() as uow:
+                return await uow.messages.get_recent_by_sender(
+                    conversation, bot_sender_id, SELF_SENT_HISTORY_LIMIT
+                )
+        except Exception as e:
+            logger.warning(
+                f"读取会话 {conversation.kind}:{conversation.id} 的本地 Bot 自身消息失败: {e}"
+            )
+            return []
+
+    @classmethod
+    def _is_duplicate_of_backend(
+        cls, record: Any, backend_messages: list[Any], bot_account: int
+    ) -> bool:
+        """本地记录是否已存在于后端历史里（对应验收 S5）。
+
+        判定三重口径：同一会话（调用方已限定）、发送者都是 Bot 自己、文本相同
+        且时间相差 <= SELF_SENT_DEDUP_WINDOW_SECONDS。只在 sender_id == bot_qq
+        范围内比对，绝不会因此丢掉他人的消息。
+        """
+        text = str(getattr(record, "text", "") or "").strip()
+        if not text:
+            return True
+        record_time = _to_epoch_seconds(getattr(record, "occurred_at", None))
+        for message in backend_messages:
+            if getattr(message, "user_id", None) != bot_account:
+                continue
+            if cls._message_text(message).strip() != text:
+                continue
+            message_time = getattr(message, "time", None)
+            if record_time is None or not isinstance(message_time, int):
+                # 时间不可比时不判重：多一条 assistant 块只是多一段上下文，
+                # 漏一条才会让模型以为「还没回过」而重复回复。
+                continue
+            if abs(message_time - record_time) <= SELF_SENT_DEDUP_WINDOW_SECONDS:
+                return True
+        return False
+
+    def _self_sent_entry(
+        self, record: Any, conversation: ConversationRef, bot_account: int
+    ) -> tuple[int, Any]:
+        """把一条本地 Bot 记录还原成可入队的消息对象与时间戳。"""
+        occurred_at = _to_epoch_seconds(getattr(record, "occurred_at", None))
+        if occurred_at is None:
+            occurred_at = epoch_seconds_int()
+        text = str(getattr(record, "text", "") or "")
+        message_id = _self_sent_message_id(getattr(record, "event_id", ""))
+        if message_id is None:
+            # 没有 self: 前缀的记录用负的落库时间当 id，仍落在负数空间，
+            # 不会与后端真实 message_id 撞号。
+            message_id = -occurred_at
+        sender = PostMessageMessagesender(
+            user_id=bot_account,
+            nickname=str(getattr(record, "sender_name", "") or ""),
+        )
+        segments = [MessageSegment(type="text", data={"text": text})]
+        if conversation.kind == "group":
+            try:
+                group_id = int(conversation.id)
+            except (TypeError, ValueError):
+                group_id = 0
+            message: Any = GroupMessage(
+                message_type=MessageTypeEnum.group,
+                message_id=message_id,
+                user_id=bot_account,
+                message=segments,
+                raw_message=text,
+                group_id=group_id,
+                sender=sender,
+                time=occurred_at,
+            )
+        else:
+            message = PrivateMessage(
+                message_type=MessageTypeEnum.private,
+                message_id=message_id,
+                user_id=bot_account,
+                message=segments,
+                raw_message=text,
+                sender=sender,
+                time=occurred_at,
+            )
+        return occurred_at, message
+
+    async def _merge_self_sent_history(
+        self,
+        *,
+        queue: MessageQueue,
+        queue_key: str,
+        conversation: ConversationRef,
+        backend_messages: list[Any],
+        bot_account: int,
+    ) -> None:
+        """把本地落盘的 Bot 自身发言补齐进队列（在 push_history 之后调用）。
+
+        ① 按 sender_id == bot_qq 取最近 SELF_SENT_HISTORY_LIMIT 条本地记录；
+        ② 跳过后端历史里已有的记录（同文本、时间相差 <=30s）；
+        ③ 与已在队列里的条目一起按 occurred_at 排序后重建该会话队列——
+           push_history 只能追加，直接 append 会把较早的 assistant 块排到较新
+           的 user 消息之后，模型看到的顺序就错了。
+
+        全流程不抛异常：失败只记日志，既不影响启动流程，也不动既有灌入结果。
+        """
+        if not bot_account or queue is None:
+            return
+        try:
+            records = await self._load_recent_self_messages(conversation, str(bot_account))
+            if not records:
+                return
+            deduped = [
+                record
+                for record in records
+                if not self._is_duplicate_of_backend(record, backend_messages, bot_account)
+            ]
+            if not deduped:
+                return
+
+            existing = queue.entries(queue_key)
+            if any(
+                entry.kind not in (QueueEntryType.MESSAGE, QueueEntryType.TIMESTAMP)
+                for entry in existing
+            ):
+                # 队列里已有撤回/表情回应/戳一戳等位置敏感条目（启动灌入阶段不会
+                # 出现）：重建会打乱它们，退化为只追加——宁可顺序不完美也不丢事件。
+                logger.debug(f"会话 {queue_key} 存在非消息条目，Bot 自身消息改为追加入队")
+                for record in deduped:
+                    occurred_at, message = self._self_sent_entry(
+                        record, conversation, bot_account
+                    )
+                    queue.push_history(queue_key, message, occurred_at=occurred_at)
+                return
+
+            merged: list[tuple[int, Any]] = [
+                (int(entry.occurred_at or 0), entry.message)
+                for entry in existing
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
+            ]
+            for record in deduped:
+                merged.append(self._self_sent_entry(record, conversation, bot_account))
+            merged.sort(key=lambda item: item[0])
+
+            queue.clear(queue_key)
+            for occurred_at, message in merged:
+                queue.push_history(queue_key, message, occurred_at=occurred_at)
+            logger.info(
+                f"会话 {queue_key} 已从本地记录补齐 {len(deduped)} 条 Bot 自身消息"
+            )
+        except Exception as e:
+            logger.warning(f"补齐会话 {queue_key} 的 Bot 自身消息失败（已忽略）: {e}")
 
     async def _collect_user_ids_from_messages(self) -> Set[str]:
         """从所有消息队列中收集用户ID"""

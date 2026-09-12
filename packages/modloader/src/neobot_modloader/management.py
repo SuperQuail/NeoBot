@@ -195,6 +195,35 @@ class PluginControlFacade:
             return dict(getter(name))
         return {}
 
+    # ------------------------------------------------------------------
+    # 插件配置「原地生效」通道
+    # ------------------------------------------------------------------
+
+    def register_config_consumer(self, name: str, consumer: Any) -> bool:
+        """声明「本插件的配置可以在运行期原地生效」。
+
+        插件在 load() 里调用一次即可；此后面板保存该插件配置时，会把运行期安全的
+        改动直接喂给 consumer.apply_config()，不必重载插件本体。
+        未声明的插件行为完全不变（仍提示「需要重启 NeoBoot 才能生效」）。
+        """
+        registrar = getattr(self._runtime, "register_plugin_config_consumer", None)
+        if not callable(registrar):
+            return False
+        return bool(registrar(name, consumer))
+
+    def unregister_config_consumer(self, name: str) -> bool:
+        unregister = getattr(self._runtime, "unregister_plugin_config_consumer", None)
+        if not callable(unregister):
+            return False
+        return bool(unregister(name))
+
+    def config_consumer(self, name: str) -> Any | None:
+        """该插件登记的配置消费者；未登记时返回 None。"""
+        getter = getattr(self._runtime, "plugin_config_consumer", None)
+        if not callable(getter):
+            return None
+        return getter(name)
+
     def installer_proxy(self) -> dict[str, Any]:
         """当前插件下载代理设置。"""
         getter = getattr(self._runtime, "installer_proxy", None)

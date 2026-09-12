@@ -29,6 +29,7 @@ vi.mock('../pages/ChatFlows.jsx', () => ({ default: () => <div data-testid="page
 vi.mock('../pages/ScheduledTasks.jsx', () => ({
   default: () => <div data-testid="page-scheduled-tasks" />,
 }));
+vi.mock('../pages/Archives.jsx', () => ({ default: () => <div data-testid="page-archives" /> }));
 
 const NAV_LABELS = [
   '主页',
@@ -40,6 +41,7 @@ const NAV_LABELS = [
   '提示词',
   '聊天流',
   '定时',
+  '档案',
   '机器人',
   '日志',
 ];

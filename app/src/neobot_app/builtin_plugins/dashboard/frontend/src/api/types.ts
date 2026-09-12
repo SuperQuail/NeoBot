@@ -470,6 +470,8 @@ export interface PromptPreviewPayload {
 /** 聊天流 /api/chat-flows */
 export interface ChatFlowItem {
   pipeline_key: string;
+  /** 可读名称（群名 / 昵称）；后端解析失败时回落 pipeline_key，前端不要自己拼 */
+  display_name?: string;
   conversation_kind?: string;
   conversation_id?: string;
   model?: string;
@@ -555,3 +557,160 @@ export interface ScheduledTaskActionBody {
   state?: 'active' | 'disabled';
 }
 
+/** ── 完整提示词历史 /api/chat-flows/prompts(|/prompt)（features/spec(3)） ── */
+
+/** 一份落盘提示词的元数据（列表接口只给这个，不含正文） */
+export interface ChatFlowPromptMeta {
+  seq: number;
+  /** 落盘文件的绝对路径（<DATA_DIR>/chat_flows/prompts/ctx_*.json） */
+  path?: string;
+  pipeline_key?: string;
+  iteration?: number;
+  model?: string;
+  total_messages?: number;
+  bytes?: number;
+  recorded_at?: string;
+}
+
+export interface ChatFlowPromptsPayload {
+  ok?: boolean;
+  items?: ChatFlowPromptMeta[];
+  /** 本次请求的过滤条件（空串 = 全部聊天流） */
+  pipeline_key?: string;
+  /** 全局保留份数（= ContextRecorder.max_files，默认 100） */
+  limit?: number;
+  error?: string;
+}
+
+/** 一份**完整的模型请求**：messages / response / usage 原样返回，前端不得截断 */
+export interface ChatFlowPromptEntry {
+  recorded_at?: string;
+  stage?: string;
+  event_id?: string;
+  mode?: string;
+  conversation_kind?: string;
+  conversation_id?: string;
+  pipeline_key?: string;
+  /** 本次请求使用的模型名 */
+  model?: string;
+  iteration?: number;
+  messages_count?: number;
+  total_chars?: number;
+  estimated_tokens?: number;
+  output_chars?: number;
+  usage?: Record<string, unknown> | null;
+  messages?: Array<Record<string, unknown>>;
+  response?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export interface ChatFlowPromptPayload {
+  ok?: boolean;
+  seq?: number;
+  entry?: ChatFlowPromptEntry | null;
+  error?: string;
+}
+
+/** endpoints.chatFlowPromptLatest 的组合结果：元数据列表 + 最新一份全文 */
+export interface ChatFlowLatestPrompt {
+  items: ChatFlowPromptMeta[];
+  /** 全局保留份数 */
+  limit: number;
+  /** 最新一份的 seq；没有任何历史时为 null */
+  seq: number | null;
+  entry: ChatFlowPromptEntry | null;
+}
+
+/** ── 档案管理 /api/archives*（features/spec(2)） ── */
+
+/** 左栏表清单的一项 */
+export interface ArchiveTable {
+  table_name: string;
+  count?: number;
+  max_value_chars?: number;
+  /** 超过存储上限（max_total_chars）的条目数 */
+  over_limit_count?: number;
+  /** 程序维护的内部表：禁止编辑，删除有额外风险 */
+  internal?: boolean;
+  /** 后端给该表的一句人话警告（内部表优先） */
+  note?: string;
+}
+
+export interface ArchivesPayload {
+  ok?: boolean;
+  items?: ArchiveTable[];
+  /** spec(1) 的单条档案存储上限（0 = 不限制） */
+  max_total_chars?: number;
+  /** 面板删除开关（dashboard 插件配置 allow_archive_delete） */
+  delete_enabled?: boolean;
+  readonly_reason?: string;
+  /** 当前会话是否有管理权限（决定能否编辑 / 删除） */
+  can_manage?: boolean;
+  error?: string;
+}
+
+/** 列表条目摘要：**不含完整 value**（只有 preview 与 total_chars） */
+export interface ArchiveItemSummary {
+  table_name: string;
+  key: string;
+  preview?: string;
+  preview_truncated?: boolean;
+  total_chars?: number;
+  tags?: string[];
+  version?: number;
+  created_at?: string;
+  updated_at?: string;
+  internal?: boolean;
+}
+
+export interface ArchiveItemsPayload {
+  ok?: boolean;
+  items?: ArchiveItemSummary[];
+  table?: string;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
+  max_total_chars?: number;
+  delete_enabled?: boolean;
+  can_manage?: boolean;
+  error?: string;
+}
+
+/** 单条档案详情：返回全文（不截断）+ 可编辑性与警告 */
+export interface ArchiveItemDetail extends ArchiveItemSummary {
+  value?: string;
+  /** 内部表为 false：面板禁止编辑（后端也会拒绝） */
+  editable?: boolean;
+  note?: string;
+  message?: string;
+  /** 409 冲突（PUT）时后端带回的**当前**内容，前端据此提示「已被他人修改」 */
+  current?: ArchiveItemDetail | null;
+  actual_version?: number;
+  error?: string;
+}
+
+/** 档案列表查询参数（GET /api/archives/items） */
+export interface ArchiveItemQuery {
+  table: string;
+  keyQuery?: string;
+  valueQuery?: string;
+  tags?: string;
+  limit?: number;
+  offset?: number;
+  overLimitOnly?: boolean;
+}
+
+export interface ArchiveUpdateBody {
+  table: string;
+  key: string;
+  value: string;
+  tags?: string[];
+  /** 乐观锁：必须带上读取时的版本号 */
+  version: number;
+}
+
+export interface ArchiveDeleteBody {
+  table: string;
+  key: string;
+  version?: number;
+}

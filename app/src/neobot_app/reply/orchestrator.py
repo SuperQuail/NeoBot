@@ -298,6 +298,12 @@ EMPTY_TURN_TRUNCATED = "truncated"
 #: 空轮次成因：模型没给正文也没调工具，且不是长度截断。
 EMPTY_TURN_NO_OUTPUT = "empty"
 
+#: [silent_nudge] 分区缺失时的内置兜底文本（与 templates/prompts.toml 的定稿逐字一致）。
+_SILENT_NUDGE_TEXT = (
+    "[系统提示] 请检查是否有必要使用回复工具告知其他人你的工作进度."
+    "不使用send_reply的情况下他们不知道你做了什么."
+)
+
 
 def _extract_finish_reason(response: object) -> str:
     """读取 provider 透出的结束原因（缺失时返回空串）。"""
@@ -382,6 +388,7 @@ class ReplyOrchestrator:
         provider_error_message: str | None = None,
         debug_recorder: DebugRecorder | None = None,
         context_recorder: Any = None,
+        self_sent_uow_factory: Any = None,
         logger: Logger | None = None,
         drawing_manager: Any = None,
         scheduled_task_manager: Any = None,
@@ -461,6 +468,8 @@ class ReplyOrchestrator:
             adapter=adapter,
             file_server=file_server,
             config=config,
+            # Bot 自身发言的落盘复用宿主共享的 storage 引擎（缺省时 sender 自己惰性打开同一份库）
+            self_sent_uow_factory=self_sent_uow_factory,
             bot_name=self._get_bot_name(),
             emoji_service=emoji_service,
             markdown_image_converter=markdown_image_converter,
@@ -1038,6 +1047,32 @@ class ReplyOrchestrator:
                 return max(0.0, float(val))
         return 120.0
 
+    def _get_silent_nudge_settings(self) -> tuple[bool, int, int, float, int]:
+        """读取沉默提醒(nudge)配置,容忍缺省与 None:返回 (开关, 首次轮数, 后续轮数, 秒数, 上限)。"""
+        enabled = True
+        first_rounds = 5
+        repeat_rounds = 10
+        seconds = 45.0
+        max_emitted = 3
+        if self._config is not None:
+            chat = getattr(self._config, "chat", None)
+            val = getattr(chat, "silent_nudge_enabled", None)
+            if isinstance(val, bool):
+                enabled = val
+            val = getattr(chat, "silent_nudge_first_rounds", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                first_rounds = max(0, val)
+            val = getattr(chat, "silent_nudge_repeat_rounds", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                repeat_rounds = max(0, val)
+            val = getattr(chat, "silent_nudge_seconds", None)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                seconds = max(0.0, float(val))
+            val = getattr(chat, "silent_nudge_max", None)
+            if isinstance(val, int) and not isinstance(val, bool):
+                max_emitted = max(0, val)
+        return enabled, first_rounds, repeat_rounds, seconds, max_emitted
+
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
 
@@ -1383,6 +1418,86 @@ class ReplyOrchestrator:
             return None
         return {"role": "user", "content": text}
 
+    def _build_short_time_message(self) -> dict[str, str] | None:
+        """渲染同一轮管线激活内第 2 次起的短时间戳 user 块;关闭或为空时返回 None。"""
+        builder = self._prompt_builder
+        render = getattr(builder, "build_short_time_message", None)
+        if callable(render):
+            return render()
+        if not self._prompt_section_enabled("current_time_short"):
+            return None
+        text = render_template(
+            self._prompt_template("current_time_short"), get_current_time_values()
+        )
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    def _build_avoid_repeat_message(self) -> dict[str, str] | None:
+        """渲染防重复提醒 user 块（每次管线激活追加一次）;分区关闭或为空时返回 None。"""
+        if not self._prompt_section_enabled("avoid_repeat"):
+            return None
+        text = self._prompt_template("avoid_repeat")
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
+    # ── 沉默提醒(nudge) ──
+
+    def _nudge_text(self) -> str:
+        """沉默提醒文本;[silent_nudge] 分区优先,分区缺失时用内置兜底文本。"""
+        text = self._prompt_template("silent_nudge")
+        return text or _SILENT_NUDGE_TEXT
+
+    def _nudge_reason(
+        self,
+        *,
+        reply_sent: bool,
+        rounds: int,
+        next_at: int,
+        emitted: int,
+        deadline: float,
+    ) -> str | None:
+        """判断此刻是否需要注入沉默提醒。
+
+        满足轮次或时间任一触发条件时返回原因("rounds" / "seconds"),否则返回 None。
+        时间用 monotonic_seconds(),与 120s 活动看门狗语义不同(后者测"两次活动之间的空档")。
+        """
+        enabled, first_rounds, _repeat_rounds, seconds, max_emitted = (
+            self._get_silent_nudge_settings()
+        )
+        if not enabled or emitted >= max_emitted or reply_sent:
+            return None
+        if not self._prompt_section_enabled("silent_nudge"):
+            # 分区被关闭时既不注入也不刷新记录器,行为回到现状
+            return None
+        if first_rounds > 0 and rounds >= next_at:
+            return "rounds"
+        if seconds > 0 and monotonic_seconds() >= deadline:
+            return "seconds"
+        return None
+
+    def _should_nudge(
+        self,
+        *,
+        reply_sent: bool,
+        rounds: int,
+        next_at: int,
+        emitted: int,
+        deadline: float,
+    ) -> bool:
+        """是否需要注入沉默提醒(_nudge_reason 的布尔形式)。"""
+        return (
+            self._nudge_reason(
+                reply_sent=reply_sent,
+                rounds=rounds,
+                next_at=next_at,
+                emitted=emitted,
+                deadline=deadline,
+            )
+            is not None
+        )
+
     # ── 工具输出压缩 ──
 
     def _get_tool_result_full_keep(self) -> int:
@@ -1568,13 +1683,17 @@ class ReplyOrchestrator:
             conv_ref = event.conversation_ref
             from datetime import datetime, timezone
 
+            conv_kind = getattr(conv_ref, "kind", "") if conv_ref else ""
+            conv_id = getattr(conv_ref, "id", "") if conv_ref else ""
+            # pipeline_key 让面板能把「完整提示词历史」按聊天流过滤（spec(3) §4.2）
             payload = {
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "stage": stage,
                 "event_id": event.event_id,
                 "mode": event.mode,
-                "conversation_kind": getattr(conv_ref, "kind", "") if conv_ref else "",
-                "conversation_id": getattr(conv_ref, "id", "") if conv_ref else "",
+                "conversation_kind": conv_kind,
+                "conversation_id": conv_id,
+                "pipeline_key": f"{conv_kind}:{conv_id}" if conv_kind else "",
                 "iteration": iteration,
                 "messages_count": len(messages),
                 "total_chars": total_chars,
@@ -2506,8 +2625,21 @@ class ReplyOrchestrator:
 
         # 回复前追加的 <当前时间> user 块:每次调用模型前追加一条最新时间,
         # 已追加的时间块保留在对话历史里(不清理),让模型能看到时间推进。
+        # 分级注入:每次管线激活的第一次模型调用用完整 [current_time],
+        # 同一激活内的后续调用只追加 [current_time_short](短时间戳)。
+        time_block_full_sent = False
+
         def append_current_time_block() -> None:
-            block = self._build_current_time_message()
+            nonlocal time_block_full_sent
+            if time_block_full_sent:
+                block = self._build_short_time_message()
+                if block is None:
+                    # 短时间戳分区关闭/缺失时回退完整块,保证时间仍在推进
+                    block = self._build_current_time_message()
+            else:
+                block = self._build_current_time_message()
+                if block is not None:
+                    time_block_full_sent = True
             if block is not None:
                 messages.append(block)
 
@@ -2528,6 +2660,22 @@ class ReplyOrchestrator:
             reply_sent = False
             cancelled = False
             ai_check_prompted = False
+            # 时间块分级:每轮(每次管线激活)重置为"尚未注入完整时间块"
+            time_block_full_sent = False
+            # 防重复提醒:每次管线激活只追加一次
+            avoid_repeat_sent = False
+            # 沉默提醒记录器:轮次归零、阶梯阈值取首次值、时间基准从本轮开始
+            (
+                _nudge_enabled,
+                nudge_first_rounds,
+                nudge_repeat_rounds,
+                nudge_seconds,
+                _nudge_max,
+            ) = self._get_silent_nudge_settings()
+            nudge_rounds = 0
+            nudge_emitted = 0
+            nudge_next_at = nudge_first_rounds
+            nudge_deadline = monotonic_seconds() + nudge_seconds
 
             vision_fallback_bonus = False
             for iteration in range(max_iterations + 1):
@@ -2576,6 +2724,40 @@ class ReplyOrchestrator:
                         notification=notification_text[:200],
                     )
 
+                # 沉默提醒:读完后台通知之后、发起模型调用之前判定。
+                # 模型长时间只调用工具、对用户一条消息都不发时注入一条 user 提醒;
+                # 提醒后刷新记录器(轮次归零、时间基准重置、阶梯阈值切到 repeat_rounds),
+                # 于是之后可再次提醒;提醒次数上限 silent_nudge_max。
+                nudge_reason = self._nudge_reason(
+                    reply_sent=reply_sent,
+                    rounds=nudge_rounds,
+                    next_at=nudge_next_at,
+                    emitted=nudge_emitted,
+                    deadline=nudge_deadline,
+                )
+                if nudge_reason is not None:
+                    messages.append({"role": "user", "content": self._nudge_text()})
+                    nudge_rounds = 0
+                    nudge_deadline = monotonic_seconds() + nudge_seconds
+                    nudge_next_at = nudge_repeat_rounds
+                    nudge_emitted += 1
+                    self._logger.info(
+                        "长任务沉默提醒已注入",
+                        event_id=event.event_id,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        emitted=nudge_emitted,
+                        reason=nudge_reason,
+                    )
+                    self._record_debug(
+                        "silent_nudge",
+                        event,
+                        queue_key=queue_key,
+                        iteration=iteration + 1,
+                        emitted=nudge_emitted,
+                        reason=nudge_reason,
+                    )
+
                 if native_vision_active:
                     try:
                         await asyncio.wait_for(
@@ -2590,6 +2772,12 @@ class ReplyOrchestrator:
                         self._logger.warning("默认原生视觉图片加载超时", queue_key=queue_key)
                 # 回复前:追加独立的 <当前时间> user 块(始终是最后一条消息)
                 append_current_time_block()
+                # 防重复提醒:每次管线激活只追加一次,节奏独立于时间块
+                if not avoid_repeat_sent:
+                    avoid_repeat_sent = True
+                    avoid_repeat_message = self._build_avoid_repeat_message()
+                    if avoid_repeat_message is not None:
+                        messages.append(avoid_repeat_message)
                 request_messages = (
                     vision_context.request_messages(messages) if native_vision_active else list(messages)
                 )
@@ -2771,6 +2959,9 @@ class ReplyOrchestrator:
                                 iteration=iteration + 1,
                             )
                     break
+
+                # 只有本轮确实产生了 tool_calls 才计入"埋头干"轮数
+                nudge_rounds += 1
 
                 image_parts: list[dict] = []
                 for tc in tool_calls:
@@ -3031,6 +3222,11 @@ class ReplyOrchestrator:
                 vision_context.manual_parts.extend(image_parts)
                 if vision_just_disabled:
                     messages.append({"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"})
+
+                # 已经回复过:清零轮次与时间基准,本次管线激活不再提醒
+                if reply_sent:
+                    nudge_rounds = 0
+                    nudge_deadline = monotonic_seconds() + nudge_seconds
 
                 if reply_sent or cancelled:
                     break
@@ -4156,6 +4352,10 @@ class ReplyOrchestrator:
         time_block = self._build_current_time_message()
         if time_block is not None:
             messages.append(time_block)
+        # 防重复提醒:common 路径只有一次模型调用,追加一次即可(独立于时间块开关)
+        avoid_repeat_message = self._build_avoid_repeat_message()
+        if avoid_repeat_message is not None:
+            messages.append(avoid_repeat_message)
         append_image_context(messages, common_image_parts)
         self._record_flow_request(event, self._flow_queue_key(event), messages)
         timeout = self._get_model_response_timeout_seconds(event)

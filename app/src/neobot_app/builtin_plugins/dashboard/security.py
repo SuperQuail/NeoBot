@@ -243,6 +243,21 @@ class SessionStore:
         ]:
             self._sessions.pop(token, None)
 
+    def has_recent_activity(self, window_seconds: float) -> bool:
+        """是否存在「最近 window_seconds 秒内活动过」的会话（面板延迟探针的门控条件）。
+
+        必须是**只读**的：绝不能走 get()，否则 touch() 会把会话自我续期，
+        于是只要探针在跑，会话就永远不会过期，门控形同虚设。
+        """
+        try:
+            window = float(window_seconds)
+        except (TypeError, ValueError):
+            return False
+        if window <= 0:
+            return False
+        now = time.time()
+        return any(now - session.last_seen_at <= window for session in self._sessions.values())
+
     def describe(self) -> list[dict[str, Any]]:
         self.prune()
         return [

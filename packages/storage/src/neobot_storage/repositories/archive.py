@@ -4,17 +4,41 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from neobot_contracts.errors import NeoBotError
 from neobot_contracts.models.memory import ArchiveMemory
 from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
 from neobot_contracts.time_context import now_utc, to_utc
 
 from neobot_storage.models import ArchiveMemoryData
+
+
+class ArchiveVersionConflictError(NeoBotError, ValueError):
+    """归档记忆乐观锁冲突：期望的 version 与库内不一致。
+
+    面板的编辑/删除接口据此返回 409，并附带当前版本供前端提示「已被他人修改」。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        table_name: str = "",
+        key: str = "",
+        expected_version: int = 0,
+        actual_version: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.table_name = table_name
+        self.key = key
+        self.expected_version = expected_version
+        self.actual_version = actual_version
 
 
 class SqlAlchemyArchiveMemoryAccess:
@@ -133,6 +157,197 @@ class SqlAlchemyArchiveMemoryAccess:
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         return [self._to_domain(row) for row in rows]
+
+    async def list_table_names(self) -> list[str]:
+        """列出库内实际存在的所有档案表名。
+
+        面板的表清单必须来自真实数据（SELECT DISTINCT table_name），而不是配置或
+        代码里的静态常量：新增档案表时静态清单会静默漂移。注意与
+        agent.memory.archive.allowed_tables 无关——那个是「限制模型能访问哪些表」，
+        不是「系统里有哪些表」。
+        """
+        stmt = (
+            select(ArchiveMemoryData.table_name)
+            .distinct()
+            .order_by(ArchiveMemoryData.table_name)
+        )
+        result = await self._session.execute(stmt)
+        return [str(name) for name in result.scalars().all()]
+
+    async def table_stats(self) -> list[dict[str, Any]]:
+        """每张档案表的条目数与最大 value 字符数（面板表清单 + 超限可视化共用）。"""
+        value_chars = func.length(ArchiveMemoryData.value)
+        stmt = (
+            select(
+                ArchiveMemoryData.table_name,
+                func.count(ArchiveMemoryData.id),
+                func.max(value_chars),
+            )
+            .group_by(ArchiveMemoryData.table_name)
+            .order_by(ArchiveMemoryData.table_name)
+        )
+        result = await self._session.execute(stmt)
+        return [
+            {
+                "table_name": str(table_name),
+                "count": int(count or 0),
+                "max_value_chars": int(max_chars or 0),
+            }
+            for table_name, count, max_chars in result.all()
+        ]
+
+    async def count_over_limit(
+        self,
+        max_chars: int,
+        *,
+        table_name: Optional[str] = None,
+        exclude_tables: tuple[str, ...] = (),
+    ) -> int:
+        """统计 value 字符数超过 max_chars 的条目数。"""
+        stmt = select(func.count(ArchiveMemoryData.id)).where(
+            func.length(ArchiveMemoryData.value) > int(max_chars)
+        )
+        if table_name:
+            stmt = stmt.where(ArchiveMemoryData.table_name == table_name)
+        if exclude_tables:
+            stmt = stmt.where(ArchiveMemoryData.table_name.notin_(list(exclude_tables)))
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+    async def list_over_limit(
+        self,
+        max_chars: int,
+        *,
+        table_name: Optional[str] = None,
+        exclude_tables: tuple[str, ...] = (),
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ArchiveMemory]:
+        """列出 value 字符数超过 max_chars 的条目（按更新时间倒序）。"""
+        stmt = select(ArchiveMemoryData).where(
+            func.length(ArchiveMemoryData.value) > int(max_chars)
+        )
+        if table_name:
+            stmt = stmt.where(ArchiveMemoryData.table_name == table_name)
+        if exclude_tables:
+            stmt = stmt.where(ArchiveMemoryData.table_name.notin_(list(exclude_tables)))
+        stmt = (
+            stmt.order_by(ArchiveMemoryData.updated_at.desc(), ArchiveMemoryData.id.desc())
+            .offset(max(offset, 0))
+            .limit(max(limit, 0))
+        )
+        result = await self._session.execute(stmt)
+        return [self._to_domain(row) for row in result.scalars().all()]
+
+    async def set_if_version(
+        self,
+        table_name: str,
+        key: str,
+        value: str,
+        tags: list[str],
+        expected_version: int,
+    ) -> ArchiveMemory:
+        """乐观锁写入：仅当库内 version 等于 expected_version 时才落库。
+
+        - 版本不一致 → ArchiveVersionConflictError（面板据此返回 409）；
+        - 条目不存在时只有 expected_version == 0 才视为「新建」，否则同样冲突；
+        - 更新走单语句 UPDATE ... WHERE version = ?，避免「先查后写」的
+          TOCTOU 窗口（两个标签页同时保存时不至于互相覆盖）。
+        """
+        try:
+            expected = int(expected_version)
+        except (TypeError, ValueError):
+            expected = 0
+        if expected < 0:
+            expected = 0
+
+        now = now_utc()
+        serialized_tags = self._tags_to_string(tags)
+        result = await self._session.execute(
+            update(ArchiveMemoryData)
+            .where(
+                ArchiveMemoryData.table_name == table_name,
+                ArchiveMemoryData.key == key,
+                ArchiveMemoryData.version == expected,
+            )
+            .values(
+                value=value,
+                tags=serialized_tags,
+                updated_at=now,
+                version=ArchiveMemoryData.version + 1,
+            )
+        )
+        await self._session.flush()
+        if result.rowcount:
+            return self._to_domain(await self._get_row(table_name, key))
+
+        existing = await self._get_optional_row(table_name, key)
+        if existing is not None:
+            raise ArchiveVersionConflictError(
+                f"档案已被其他写入修改: {table_name}:{key}",
+                table_name=table_name,
+                key=key,
+                expected_version=expected,
+                actual_version=int(existing.version),
+            )
+        if expected != 0:
+            raise ArchiveVersionConflictError(
+                f"档案不存在，无法按 version={expected} 更新: {table_name}:{key}",
+                table_name=table_name,
+                key=key,
+                expected_version=expected,
+                actual_version=0,
+            )
+
+        # 新建（expected_version == 0）。并发新建用 on_conflict_do_nothing 兜住：
+        # 谁先插入谁生效，后到者拿到冲突而不是静默覆盖。
+        try:
+            if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
+                insert_stmt = (
+                    sqlite_insert(ArchiveMemoryData)
+                    .values(
+                        table_name=table_name,
+                        key=key,
+                        value=value,
+                        tags=serialized_tags,
+                        created_at=now,
+                        updated_at=now,
+                        version=1,
+                    )
+                    .on_conflict_do_nothing(index_elements=["table_name", "key"])
+                )
+                inserted = await self._session.execute(insert_stmt)
+                await self._session.flush()
+                if not inserted.rowcount:
+                    raise ArchiveVersionConflictError(
+                        f"档案已被并发创建: {table_name}:{key}",
+                        table_name=table_name,
+                        key=key,
+                        expected_version=expected,
+                        actual_version=1,
+                    )
+            else:
+                self._session.add(
+                    ArchiveMemoryData(
+                        table_name=table_name,
+                        key=key,
+                        value=value,
+                        tags=serialized_tags,
+                        created_at=now,
+                        updated_at=now,
+                        version=1,
+                    )
+                )
+                await self._session.flush()
+        except IntegrityError as exc:
+            raise ArchiveVersionConflictError(
+                f"档案已被并发创建: {table_name}:{key}",
+                table_name=table_name,
+                key=key,
+                expected_version=expected,
+                actual_version=1,
+            ) from exc
+        return self._to_domain(await self._get_row(table_name, key))
 
     async def _get_optional_row(self, table_name: str, key: str) -> Optional[ArchiveMemoryData]:
         stmt = select(ArchiveMemoryData).where(

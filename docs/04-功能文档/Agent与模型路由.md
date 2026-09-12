@@ -87,7 +87,12 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 - `agent_wait_max_seconds`：wait 工具单次最大等待（默认 60s）
 - `agent_max_iterations`：单轮回复最大工具迭代次数
-- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 120s），wait 等待不计入
+- `group_agent_silent_timeout_seconds`：群聊回复管线最长静默时间（默认 120s），wait 等待不计入。
+  这是**活动间隔**看门狗：模型/工具每次返回都会重置，超时后果是**强杀管线**
+- `silent_nudge_*`：**沉默提醒**。测的是「对用户可见的回复缺失」——连续工具调用轮数
+  （首次 5 轮、之后每 10 轮）或超过 `silent_nudge_seconds`（默认 45s）仍未调用过回复工具时，
+  注入一条 `[silent_nudge]` user 提醒（**不中断**管线，单事件最多 3 次）。
+  10 轮快速工具调用（每轮都 <120s）能躲过上面的看门狗，但躲不过 nudge。详见 [提示词系统](./提示词系统.md)
 
 ## 委托（delegate）与多轮协作
 

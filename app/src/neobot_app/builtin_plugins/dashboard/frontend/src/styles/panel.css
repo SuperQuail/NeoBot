@@ -339,3 +339,91 @@
   flex: 0 0 110px;
 }
 
+/* ── 危险按钮（删除 / 清空）：theme.css 只有 :disabled 规则，这里补正常态 ── */
+.btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--err) 10%, transparent); border-color: var(--err); }
+
+/* ── 档案管理页（features/spec(2)）：左中右三栏 ───────────────────── */
+.archives-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 250px) minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1280px) {
+  .archives-layout { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); }
+  .archives-detail { grid-column: 1 / -1; }
+}
+@media (max-width: 900px) {
+  .archives-layout { grid-template-columns: minmax(0, 1fr); }
+  .archives-detail { grid-column: auto; }
+}
+.archives-tables { max-height: calc(100vh - 260px); overflow: auto; }
+.archives-table-list { list-style: none; margin: 0; padding: 0; }
+.archives-table-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.archives-note { margin: 2px 0 8px; line-height: 1.5; }
+.archives-filters {
+  display: grid;
+  grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.archives-filters .cfg-label { font-size: 12px; color: var(--muted); }
+.archives-filters .input { width: 100%; }
+.archives-filter-actions { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.inline-check { display: inline-flex; align-items: center; gap: 6px; }
+.archives-table tr.archives-row { cursor: pointer; }
+.archives-table tr.archives-row.active { background: var(--brand-soft); }
+.archives-item-key { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; text-align: left; }
+.archives-preview { max-width: 420px; white-space: pre-wrap; word-break: break-word; }
+.archives-pager { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+.archives-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0; }
+.archives-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+.archives-value-head { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 4px; }
+.archives-full { max-height: 46vh; }
+.archives-conflict-body { margin-top: 8px; max-height: 200px; }
+.archives-textarea { min-height: 240px; font-size: 12px; }
+.archives-delete { display: flex; flex-direction: column; gap: 10px; }
+.archives-delete .modal-actions { margin-top: 4px; }
+.archives-delete-body { max-height: 160px; }
+
+/* ── 聊天流页（features/spec(3)）：名称 / 完整提示词历史 ─────────── */
+.chat-flow-name { display: flex; align-items: center; gap: 6px; }
+.chat-flow-key,
+.chat-flow-subtitle { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 0; }
+.chat-flow-tabs { margin: 10px 0 12px; }
+.chat-prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .chat-prompt-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.chat-prompt-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-right: 1px solid var(--border-soft);
+  padding-right: 10px;
+}
+@media (max-width: 1000px) {
+  .chat-prompt-history { border-right: none; padding-right: 0; }
+}
+.chat-prompt-history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chat-history-list { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow: auto; }
+.chat-history-key { align-items: flex-start; }
+.chat-history-meta { display: flex; flex-direction: column; gap: 2px; }
+.chat-entry-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.chat-collapse {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.chat-collapse > summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.chat-collapse[open] > summary { margin-bottom: 8px; }
+.chat-raw > summary { cursor: pointer; }
+.chat-raw-body { max-height: 260px; margin-top: 6px; }

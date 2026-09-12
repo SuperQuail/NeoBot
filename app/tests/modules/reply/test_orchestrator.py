@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,6 +17,7 @@ from neobot_adapter.model.message import (
     PrivateMessage,
 )
 from neobot_app.message.queue import MessageQueue, QueueEntry, QueueEntryType
+from neobot_app.prompt.store import TEMPLATES_DIR, PromptStore
 from neobot_app.reply.orchestrator import (
     EMPTY_TURN_NO_OUTPUT,
     EMPTY_TURN_TRUNCATED,
@@ -135,6 +137,7 @@ def _make_orchestrator(
     config=None,
     group_queue=None,
     friend_queue=None,
+    prompt_store=None,
 ) -> ReplyOrchestrator:
     return ReplyOrchestrator(
         adapter=_FakeAdapter(),
@@ -144,6 +147,7 @@ def _make_orchestrator(
         friend_message_queue=friend_queue,
         config=config or _FakeConfig(),
         logger=None,
+        prompt_store=prompt_store,
     )
 
 
@@ -2377,3 +2381,492 @@ async def test_agent_default_images_are_labelled_only_at_prompt_end(monkeypatch,
     else:
         assert all(isinstance(m["content"], str) for m in request)
     await orch.shutdown()
+
+
+# ── §12–§15:防重复提醒 / 时间块分级 / 长任务沉默提醒(nudge) ──────────────────
+
+
+class _DisabledPromptStore:
+    """只读提示词 store 包装:把指定分区报为 enabled = false(模拟 custom 覆盖)。"""
+
+    def __init__(self, inner, disabled) -> None:
+        self._inner = inner
+        self._disabled = set(disabled)
+
+    def enabled(self, key: str, default: bool = True) -> bool:
+        if key in self._disabled:
+            return False
+        return self._inner.enabled(key, default=default)
+
+    def get(self, key: str, sub: str = "template", default: str = "") -> str:
+        return self._inner.get(key, sub, default=default)
+
+    def template(self, key: str, default: str = "") -> str:
+        return self._inner.template(key, default)
+
+
+def _builtin_prompts(*disabled: str):
+    """直接读内置 templates/prompts.toml 的只读 store(不写任何文件)。"""
+    store = PromptStore(TEMPLATES_DIR)
+    if disabled:
+        return _DisabledPromptStore(store, disabled)
+    return store
+
+
+def _section_text(key: str) -> str:
+    """读取内置提示词分区的定稿文本。"""
+    return PromptStore(TEMPLATES_DIR).template(key)
+
+
+class _NudgeChat(_FakeChat):
+    """轮次触发开、时间触发关(保证测试确定性),其余属性沿用默认分支。"""
+
+    silent_nudge_enabled = True
+    silent_nudge_first_rounds = 5
+    silent_nudge_repeat_rounds = 10
+    silent_nudge_seconds = 0.0
+    silent_nudge_max = 3
+    random_sticker_probability = 0.0
+
+
+class _NudgeConfig(_FakeConfig):
+    chat = _NudgeChat()
+
+
+class _GroupNudgeChat(_NudgeChat):
+    group_chat_reply_lifespan = 2
+    group_agent_silent_timeout_seconds = 120.0
+
+
+class _GroupNudgeConfig(_FakeConfig):
+    chat = _GroupNudgeChat()
+
+
+def _tool_round_responses(count: int, *, final: str = "好了") -> list[dict]:
+    """count 轮工具调用 + 一条最终回复的脚本。"""
+    return [
+        {"content": "", "tool_calls": [_poke_call(f"p{index}")]}
+        for index in range(count)
+    ] + [{"content": final, "tool_calls": []}]
+
+
+def _texts(messages: list) -> list[str]:
+    return [
+        message.get("content")
+        for message in messages
+        if isinstance(message.get("content"), str)
+    ]
+
+
+def _count_content(messages: list, text: str) -> int:
+    return sum(1 for content in _texts(messages) if content == text)
+
+
+def _nudge_injection_indexes(provider, text: str) -> list[int]:
+    """返回提醒累计条数发生增加的模型请求下标。"""
+    counts = [_count_content(messages, text) for messages, _tools in provider.calls]
+    return [index for index in range(1, len(counts)) if counts[index] > counts[index - 1]]
+
+
+def _time_block_texts(messages: list) -> list[str]:
+    return [content for content in _texts(messages) if "<当前时间>" in content]
+
+
+def _uses_full_time_block(content: str) -> bool:
+    return "现在的时间是" in content
+
+
+async def _run_agent_pipeline(
+    monkeypatch,
+    provider,
+    *,
+    config=None,
+    prompt_store=None,
+    message=None,
+    queue_key: str = "123456",
+    suspend_attr: str = "_suspend_private_chat",
+    suspend_result=None,
+):
+    """跑一次 agent 管线(默认私聊),返回 (orch, event, stages)。"""
+    if suspend_result is None:
+        suspend_result = ([], None)
+    orch = _make_orchestrator(
+        provider=provider, config=config, prompt_store=prompt_store
+    )
+    queue = MessageQueue()
+    queue.push(queue_key, _make_private_message(message_id=1, text="帮我做点事"))
+    monkeypatch.setattr(orch, suspend_attr, AsyncMock(return_value=suspend_result))
+    stages: list[tuple[str, dict]] = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+    event = orch.start_reply(
+        message=message or _make_private_message(message_id=2),
+        queue=queue,
+        queue_key=queue_key,
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+    await orch.shutdown()
+    return orch, event, stages
+
+
+# ── 沉默提醒(nudge) ──
+
+
+async def test_silent_nudge_fires_after_five_tool_rounds(monkeypatch):
+    """连续 5 轮工具调用未回复 → 第 6 次请求里出现提醒,并留下 silent_nudge 记录。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(7))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert [index for index in _nudge_injection_indexes(provider, text)] == [5]
+    assert _count_content(provider.calls[4][0], text) == 0
+    assert _count_content(provider.calls[5][0], text) == 1
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert len(nudges) == 1
+    assert nudges[0]["reason"] == "rounds"
+    assert nudges[0]["emitted"] == 1
+    assert nudges[0]["iteration"] == 6
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_refreshes_and_fires_again_on_ladder(monkeypatch):
+    """提醒后刷新记录器:30 轮内提醒点落在累计第 5/15/25 轮(共 3 次,恰好触达上限)。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(30))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _nudge_injection_indexes(provider, text) == [5, 15, 25]
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert [extra["emitted"] for extra in nudges] == [1, 2, 3]
+    assert {extra["reason"] for extra in nudges} == {"rounds"}
+    assert _count_content(provider.calls[-1][0], text) == 3
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_disabled_keeps_current_behavior(monkeypatch):
+    """silent_nudge_enabled = false → 不再注入任何提醒。"""
+
+    class _OffChat(_NudgeChat):
+        silent_nudge_enabled = False
+
+    class _OffConfig(_FakeConfig):
+        chat = _OffChat()
+
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(8))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_OffConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _count_content(provider.calls[-1][0], text) == 0
+    assert [stage for stage, _extra in stages if stage == "silent_nudge"] == []
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_skipped_for_short_task(monkeypatch):
+    """短任务(3 轮工具调用)不受影响:0 次提醒。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(3))
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    assert _count_content(provider.calls[-1][0], text) == 0
+
+
+async def test_silent_nudge_time_trigger(monkeypatch):
+    """时间触发独立生效:即使不足 5 轮,超过阈值秒数也提醒一次。"""
+    from neobot_app.reply import orchestrator as orchestrator_module
+
+    clock = {"now": 1000.0}
+
+    def _fake_monotonic() -> float:
+        return clock["now"]
+
+    monkeypatch.setattr(orchestrator_module, "monotonic_seconds", _fake_monotonic)
+
+    class _TimeOnlyChat(_FakeChat):
+        silent_nudge_enabled = True
+        silent_nudge_first_rounds = 0
+        silent_nudge_repeat_rounds = 10
+        silent_nudge_seconds = 45.0
+        silent_nudge_max = 3
+        random_sticker_probability = 0.0
+
+    class _TimeOnlyConfig(_FakeConfig):
+        chat = _TimeOnlyChat()
+
+    class _ClockProvider(_ScriptedProvider):
+        async def chat(self, messages, tools=None):
+            response = await super().chat(messages, tools=tools)
+            clock["now"] += 61.0
+            return response
+
+    text = _section_text("silent_nudge")
+    provider = _ClockProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_TimeOnlyConfig(),
+        prompt_store=_builtin_prompts(),
+    )
+
+    assert _nudge_injection_indexes(provider, text) == [1]
+    nudges = [extra for stage, extra in stages if stage == "silent_nudge"]
+    assert len(nudges) == 1
+    assert nudges[0]["reason"] == "seconds"
+    assert event.state.name == "COMPLETED"
+
+
+async def test_silent_nudge_does_not_trigger_group_silence_watchdog(monkeypatch):
+    """提醒不改变既有 120s 活动看门狗语义:群聊管线不得被强杀。"""
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(_tool_round_responses(6))
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_GroupNudgeConfig(),
+        prompt_store=_builtin_prompts(),
+        message=_make_group_message(),
+        queue_key="888888",
+        suspend_attr="_suspend_group_chat",
+        suspend_result=([], None, None),
+    )
+
+    assert [stage for stage, _extra in stages if stage == "group_agent_silent_timeout"] == []
+    assert _nudge_injection_indexes(provider, text) == [5]
+    assert event.state.name == "COMPLETED"
+
+
+def test_should_nudge_respects_reply_sent_limits_and_threshold():
+    """提醒判定的三条硬约束:已回复不提醒、未达阈值不提醒、达到上限不提醒。"""
+    orch = _make_orchestrator(config=_NudgeConfig())
+
+    assert (
+        orch._should_nudge(reply_sent=True, rounds=99, next_at=5, emitted=0, deadline=0.0)
+        is False
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=4, next_at=5, emitted=0, deadline=0.0)
+        is False
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=5, next_at=5, emitted=0, deadline=0.0)
+        is True
+    )
+    assert (
+        orch._should_nudge(reply_sent=False, rounds=99, next_at=5, emitted=3, deadline=0.0)
+        is False
+    )
+
+
+async def test_reply_sent_clears_nudge_counter(monkeypatch):
+    """send_reply 之后计数清零:同一激活内剩余轮次不再触发提醒。"""
+
+    class _ReplyChat(_NudgeChat):
+        silent_nudge_first_rounds = 3
+
+    class _ReplyConfig(_FakeConfig):
+        chat = _ReplyChat()
+
+    text = _section_text("silent_nudge")
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "reply",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps({"text": "我先说一句"}),
+                        },
+                    }
+                ],
+            },
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    _, event, stages = await _run_agent_pipeline(
+        monkeypatch, provider, config=_ReplyConfig(), prompt_store=_builtin_prompts()
+    )
+
+    # send_reply 会让本轮收尾,因此只可能有一轮"未回复"的提醒机会
+    assert _count_content(provider.calls[-1][0], text) == 0
+    assert [stage for stage, _extra in stages if stage == "silent_nudge"] == []
+    assert event.state.name == "COMPLETED"
+
+
+# ── 时间块分级注入 ──
+
+
+async def test_time_block_full_then_short_within_activation(monkeypatch):
+    """同一激活内:第一次完整时间块,后续只注入 YYYY-MM-DD HH:MM:SS 短时间戳。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "", "tool_calls": [_poke_call("p1")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    blocks = [_time_block_texts(messages) for messages, _tools in provider.calls]
+    assert [[_uses_full_time_block(text) for text in block] for block in blocks] == [
+        [True],
+        [True, False],
+        [True, False, False],
+    ]
+    short = blocks[1][1]
+    assert re.fullmatch(
+        r"<当前时间>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</当前时间>", short
+    ), short
+    # 时间随轮次推进:短时间戳不早于完整块里的时间戳
+    full_stamp = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", blocks[0][0])
+    short_stamp = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", short)
+    assert full_stamp is not None and short_stamp is not None
+    assert short_stamp.group(0) >= full_stamp.group(0)
+
+
+async def test_time_block_full_injected_again_in_new_activation(monkeypatch):
+    """新一轮管线激活(挂起恢复)时重新注入完整时间块。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "回复1", "tool_calls": []},
+            {"content": "回复2", "tool_calls": []},
+        ]
+    )
+
+    _, event, _stages = await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_GroupNudgeConfig(),
+        prompt_store=_builtin_prompts(),
+        message=_make_group_message(),
+        queue_key="888888",
+        suspend_attr="_suspend_group_chat",
+        suspend_result=([], "resume", None),
+    )
+
+    assert len(provider.calls) == 3
+    blocks = [_time_block_texts(messages) for messages, _tools in provider.calls]
+    assert [len(block) for block in blocks] == [1, 2, 3]
+    assert [_uses_full_time_block(block[-1]) for block in blocks] == [True, False, True]
+    assert event.state.name == "COMPLETED"
+
+
+async def test_time_blocks_are_absent_when_current_time_disabled(monkeypatch):
+    """[current_time] 关闭后不再有任何时间注入(短时间戳也不会单独出现)。"""
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_NudgeConfig(),
+        prompt_store=_builtin_prompts("current_time"),
+    )
+
+    for messages, _tools in provider.calls:
+        assert _time_block_texts(messages) == []
+
+
+# ── 防重复提醒([avoid_repeat]) ──
+
+
+async def test_avoid_repeat_appended_once_per_activation_verbatim(monkeypatch):
+    """每次管线激活只追加一次;紧随时间块之后,文本与分区逐字一致。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider(
+        [
+            {"content": "", "tool_calls": [_poke_call("p0")]},
+            {"content": "好了", "tool_calls": []},
+        ]
+    )
+
+    await _run_agent_pipeline(
+        monkeypatch, provider, config=_NudgeConfig(), prompt_store=_builtin_prompts()
+    )
+
+    first = provider.calls[0][0]
+    second = provider.calls[1][0]
+    assert first[-1] == {"role": "user", "content": text}
+    assert "<当前时间>" in first[-2]["content"]
+    assert _count_content(first, text) == 1
+    assert _count_content(second, text) == 1
+
+
+async def test_avoid_repeat_can_be_disabled_without_touching_time_block(monkeypatch):
+    """[avoid_repeat] enabled = false → 不再追加,时间块行为不变。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider([{"content": "好了", "tool_calls": []}])
+
+    await _run_agent_pipeline(
+        monkeypatch,
+        provider,
+        config=_NudgeConfig(),
+        prompt_store=_builtin_prompts("avoid_repeat"),
+    )
+
+    messages = provider.calls[0][0]
+    assert _count_content(messages, text) == 0
+    assert _time_block_texts(messages) != []
+
+
+async def test_common_path_appends_avoid_repeat_once(monkeypatch):
+    """common 单次路径同样追加一次防重复提醒(时间块之后)。"""
+    text = _section_text("avoid_repeat")
+    provider = _ScriptedProvider([{"content": "hello", "tool_calls": []}])
+    orch = _make_orchestrator(
+        provider=provider, config=_CommonConfig(), prompt_store=_builtin_prompts()
+    )
+    queue = MessageQueue()
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+
+    messages = provider.calls[0][0]
+    assert messages[-1] == {"role": "user", "content": text}
+    assert "<当前时间>" in messages[-2]["content"]
+    assert _count_content(messages, text) == 1
+    await orch.shutdown()
+

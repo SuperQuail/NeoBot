@@ -662,7 +662,9 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         ),
     )
 
-    # 聊天上下文记录器(debug 模式):每次模型调用的完整上下文,保留最近 100 轮
+    # 完整提示词历史记录器:每次模型调用的完整上下文,落盘保留最近 N 份(默认 100)。
+    # 由 [chat].chat_flow_prompt_history_enabled 控制,与 debug 开关解耦 —— 面板的
+    # 「聊天流 → 完整提示词」不依赖 debug.enabled。
     context_recorder = build_context_recorder(
         config=config, logger=logger_factory.get_logger("app.context")
     )
@@ -1032,6 +1034,8 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         provider_error_message=provider_error_message,
         debug_recorder=debug_recorder,
         context_recorder=context_recorder,
+        # Bot 自身发言落盘复用同一份 storage 引擎（软重启/冷启动补齐 assistant 块，见 feat(2) §11）
+        self_sent_uow_factory=uow_factory,
         logger=logger_factory.get_logger("app.reply"),
         drawing_manager=drawing_manager,
         scheduled_task_manager=scheduled_task_manager,
@@ -1382,6 +1386,10 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "sandbox_service": (sandbox["sandbox_service"], "沙箱服务"),
             "prompt_store": (prompt_store, "提示词存储"),
             "chat_flow_registry": (chat_flow_registry, "聊天流快照登记处（面板只读）"),
+            "context_recorder": (
+                context_recorder,
+                "完整提示词历史记录器（面板按需读取，落盘保留最近 N 份）",
+            ),
             "plugin_runtime": (plugin_runtime, "插件运行时"),
         },
     )

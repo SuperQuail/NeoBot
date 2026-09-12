@@ -127,6 +127,19 @@ class UserProfileService:
             return str(group.group_name)
         return f"群聊{group_id}"
 
+    async def get_user_name(self, user_id: str | int) -> str:
+        """用户可读昵称：nick_name → long_nick → QQ:{id}。
+
+        与 get_group_name 对齐：**纯 DB 查询，不走任何 OneBot API**。
+        （adapter 侧的 get_group_name 会在缓存未命中时调 get_group_list/get_group_info，
+        面板每 5s 轮询一次，用它就会造出新的周期性 API 调用 —— 见 features/spec(3) §2.6。）
+        """
+        user = await self.get_user(user_id)
+        name = str(getattr(user, "nick_name", "") or "").strip()
+        if not name:
+            name = str(getattr(user, "long_nick", "") or "").strip()
+        return name or f"QQ:{user_id}"
+
     async def render_group_owner_text(
         self,
         group_id: str | int,

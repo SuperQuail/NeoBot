@@ -1,12 +1,14 @@
 """prompt/builder 模块（模板构建、上下文 user 块、占位符容错、关键词快照、自适应提示词）测试。"""
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.prompt.builder import PromptBuilder
+from neobot_app.prompt.render import template_placeholders
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 
 
@@ -545,3 +547,119 @@ async def test_get_template_value_falls_back_to_builtin_templates():
     assert "已压缩" in get_template_value(None, "tool_result_compressed")
     assert get_template_value(None, "tool_result_compressed_detail")
     assert "tool_name" in get_template_value(None, "tool_result_compressed_detail")
+
+
+# ── §12–§15:新增提示词分区与基础提示词引导 ────────────────────────────────────
+
+LONG_TASK_MARKER = "<长任务回复>"
+#: [avoid_repeat] / [silent_nudge] 的定稿文本(与 description.md §14.2 逐字一致)
+AVOID_REPEAT_TEXT = (
+    "不要重复执行已经完成过的工作,不要反复回答已经回答过的话,"
+    "已经开始做但没有做完的,在没有人询问的情况下不需要再次告知已经开始工作."
+)
+SILENT_NUDGE_TEXT = (
+    "[系统提示] 请检查是否有必要使用回复工具告知其他人你的工作进度."
+    "不使用send_reply的情况下他们不知道你做了什么."
+)
+#: 基础 <回复要求> 里新增的「适时回话」原则
+TIMELY_REPLY_PRINCIPLE = "需要时间的事情要适时回话"
+
+
+def _default_store(tmp: Path) -> PromptStore:
+    """同步内置默认提示词后的 store(只读断言用)。"""
+    sync_default_prompts(tmp)
+    return PromptStore(tmp)
+
+
+async def test_long_task_progress_appended_to_group_and_friend_prompts():
+    """群聊与私聊 system 都要追加 <长任务回复>:追加逻辑在 builder 层。"""
+    builder = _make_builder("你好{bot_name}")
+
+    group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+    friend_prompt = await builder.build_friend_chat_prompt(10086, _FakeQueue())
+
+    assert LONG_TASK_MARKER in group_prompt
+    assert "先用 send_reply 简短说一句你要开始做" in group_prompt
+    assert LONG_TASK_MARKER in friend_prompt
+    assert friend_prompt.index(LONG_TASK_MARKER) > friend_prompt.index("你好小测试")
+
+
+async def test_long_task_progress_can_be_disabled(tmp_path):
+    """[long_task_progress] enabled = false 后群聊/私聊都不再追加。"""
+    sync_default_prompts(tmp_path)
+    store = _write_custom(tmp_path, "[long_task_progress]\nenabled = false\n")
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=store)
+
+    group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+    friend_prompt = await builder.build_friend_chat_prompt(10086, _FakeQueue())
+
+    assert LONG_TASK_MARKER not in group_prompt
+    assert LONG_TASK_MARKER not in friend_prompt
+
+
+async def test_long_task_progress_survives_custom_group_chat_override(tmp_path):
+    """部署方整段覆盖 [group_chat] 后 <长任务回复> 仍生效(守住 DL1-1 的核心优势)。"""
+    sync_default_prompts(tmp_path)
+    store = _write_custom(
+        tmp_path, '[group_chat]\ntemplate = """自定义群聊模板{bot_name}"""\n'
+    )
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=store)
+
+    prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+
+    assert "自定义群聊模板" in prompt
+    assert LONG_TASK_MARKER in prompt
+
+
+def test_new_prompt_sections_match_finalized_text(tmp_path):
+    """新增分区必须存在、默认启用、文本与定稿逐字一致且无占位符。"""
+    store = _default_store(tmp_path)
+
+    assert store.template("avoid_repeat") == AVOID_REPEAT_TEXT
+    assert store.template("silent_nudge") == SILENT_NUDGE_TEXT
+    assert template_placeholders(store.template("avoid_repeat")) == set()
+    assert template_placeholders(store.template("silent_nudge")) == set()
+    assert template_placeholders(store.template("long_task_progress")) == set()
+    assert "{current_datetime}" in store.template("current_time_short")
+
+    for key in ("long_task_progress", "avoid_repeat", "silent_nudge", "current_time_short"):
+        assert store.enabled(key) is True
+
+
+def test_reply_requirements_get_timely_reply_principle(tmp_path):
+    """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话」,并把成功通知限定为收尾后。"""
+    store = _default_store(tmp_path)
+
+    for section in ("group_chat", "friend_chat"):
+        template = store.template(section)
+        assert TIMELY_REPLY_PRINCIPLE in template
+        assert "任务收尾后" in template
+        assert "这类开工与进度的回复不算多余回复" in template
+
+
+def test_build_short_time_message_renders_timestamp_only():
+    """build_short_time_message 只渲染 YYYY-MM-DD HH:MM:SS,不带完整时间描述。"""
+    builder = _make_builder("你好{bot_name}")
+
+    block = builder.build_short_time_message()
+
+    assert block is not None
+    assert block["role"] == "user"
+    assert re.fullmatch(
+        r"<当前时间>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</当前时间>",
+        block["content"],
+    ), block["content"]
+    assert "现在的时间是" not in block["content"]
+    assert "农历" not in block["content"]
+
+
+def test_build_short_time_message_can_be_disabled(tmp_path):
+    """[current_time_short] enabled = false 时不再产生短时间戳块。"""
+    sync_default_prompts(tmp_path)
+    store = _write_custom(tmp_path, "[current_time_short]\nenabled = false\n")
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=store)
+
+    assert builder.build_short_time_message() is None
+    # 完整时间块不受影响
+    assert builder.build_current_time_message() is not None
+

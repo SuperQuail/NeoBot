@@ -28,6 +28,16 @@ session_timeout_minutes = 720
 log_buffer_size = 500
 # 机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询。
 bot_info_cache_ttl = 300
+# 有人查看面板时的延迟探测间隔（秒）。探测会真实调用一次 get_status；0 表示彻底关闭探针。
+latency_probe_interval_seconds = 60
+# 无人在线时的延迟探测间隔（秒）。0（默认）表示完全停止探测，不产生任何 API 调用。
+latency_probe_idle_seconds = 0
+# 面板会话视为「有人在线」的活跃窗口（秒）；最后一次请求在此窗口内才认为有人在看面板。
+latency_probe_active_window_seconds = 120
+# 空闲/未探测时复检门控条件的间隔（秒）。该间隔不产生 API 调用，只用于及时发现有人重新打开面板。
+latency_probe_gate_check_seconds = 30
+# 是否允许在「档案」页删除档案记录。默认关闭（防止误删长期记忆）；与模型侧 agent.memory.archive.allow_delete 完全独立。
+allow_archive_delete = false
 # 面板指标历史（消息量、延迟、用量）的保留天数。
 history_max_days = 30
 # 同一来源在统计窗口内允许的登录失败次数，超过后暂时封禁。
