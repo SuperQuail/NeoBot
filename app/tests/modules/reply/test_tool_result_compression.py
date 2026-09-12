@@ -108,7 +108,7 @@ class _ScriptedProvider:
 
 
 class _FakeAdapter:
-    async def send(self, conversation_ref, payload):
+    async def send(self, conversation_ref, payload, wait_response: bool = True):
         return {"status": "ok", "message_id": 2001}
 
     async def call_api(self, action, params):

@@ -21,9 +21,13 @@ class FakeAdapter:
     def __init__(self) -> None:
         self.sent: list = []
         self.api_calls: list = []
+        self.wait_responses: list[bool] = []
 
-    async def send(self, conversation_ref: ConversationRef, payload: object) -> dict:
+    async def send(
+        self, conversation_ref: ConversationRef, payload: object, wait_response: bool = True
+    ) -> dict:
         self.sent.append(payload)
+        self.wait_responses.append(wait_response)
         return {"status": "ok", "message_id": 1001}
 
     async def call_api(self, action: str, params: dict) -> dict:
@@ -115,7 +119,7 @@ async def test_send_with_timeout_calls_adapter_send_when_not_consumed():
 async def test_send_with_timeout_raises_when_adapter_hangs():
     """adapter.send 挂起超过 io_timeout_seconds 时必须抛 asyncio.TimeoutError。"""
     class _HangingAdapter(FakeAdapter):
-        async def send(self, conversation_ref, payload):
+        async def send(self, conversation_ref, payload, wait_response: bool = True):
             await asyncio.sleep(60)
             return {}
 
@@ -251,6 +255,52 @@ async def test_send_reply_plain_short_text_single_send():
     assert len(adapter.sent) == 1
     assert event.send_response == {"status": "ok", "message_id": 1001}
     assert event.state == ReplyState.COMPLETED
+
+
+async def test_send_reply_does_not_wait_for_send_echo():
+    """回复发送必须 wait_response=False：等 echo 只会白白阻塞 agent 循环。
+
+    实测发送几乎不会失败，等待上游回执的收益远小于它带来的延迟。
+    """
+    sender, adapter = _make_sender()
+    event = _make_group_event()
+
+    await sender.send_reply(event, "简单的回复")
+
+    assert adapter.wait_responses == [False]
+
+
+async def test_second_group_send_reply_after_completed_still_delivers():
+    """群聊同轮第二次 send_reply：事件已终态，不得抛「非法状态转换」，消息仍须送达。
+
+    旧实现在 sender 里无条件 transition(SENDING)：COMPLETED 是终态，第二条
+    send_reply 直接抛 RuntimeError，被编排器记成 tool_failed —— 第二条消息被吞，
+    模型还被告知工具失败。终态下不再改状态，但仍把发送执行完。
+    """
+    sender, adapter = _make_sender()
+    event = _make_group_event()
+
+    await sender.send_reply(event, "第一条")
+    assert event.state == ReplyState.COMPLETED
+
+    await sender.send_reply(event, "第二条")
+
+    assert len(adapter.sent) == 2
+    assert event.state == ReplyState.COMPLETED
+
+
+async def test_second_private_send_reply_keeps_event_generating():
+    """私聊连续发送仍回到 GENERATING，管线可以继续下一轮。"""
+    sender, adapter = _make_sender()
+    event = _make_private_event()
+
+    await sender.send_reply(event, "第一条")
+    assert event.state == ReplyState.GENERATING
+
+    await sender.send_reply(event, "第二条")
+
+    assert len(adapter.sent) == 2
+    assert event.state == ReplyState.GENERATING
 
 
 async def test_send_reply_raises_when_conversation_ref_missing():

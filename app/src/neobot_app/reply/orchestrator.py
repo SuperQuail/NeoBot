@@ -56,6 +56,11 @@ def _safe_int(value: object) -> int:
         return 0
 
 
+#: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
+#: 刻意只提示、不短路：部署者修好环境（例如换对 QQ 版本）之后继续调用必须
+#: 真实执行，否则工具会永久不可用。
+_TOOL_FAILURE_HINT_AFTER = 3
+
 _MAX_TOOL_TEXT_CHARS = 16 * 1024
 _MAX_TOOL_LOG_CHARS = 2 * 1024
 _MAX_TOOL_REDACTION_CHARS = 1024 * 1024
@@ -286,6 +291,51 @@ def _parse_tool_args(value: object) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+#: 空轮次成因：输出预算被思维链吃光（finish_reason=length）。
+EMPTY_TURN_TRUNCATED = "truncated"
+#: 空轮次成因：模型没给正文也没调工具，且不是长度截断。
+EMPTY_TURN_NO_OUTPUT = "empty"
+
+
+def _extract_finish_reason(response: object) -> str:
+    """读取 provider 透出的结束原因（缺失时返回空串）。"""
+    if not isinstance(response, dict):
+        return ""
+    extensions = response.get("extensions")
+    if not isinstance(extensions, dict):
+        return ""
+    value = extensions.get("finish_reason")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _extract_usage_summary(response: object) -> dict[str, object]:
+    """取出这一轮的 output / reasoning token 数（缺失时为 None）。
+
+    空轮次判定与日志观测共用同一套取值，避免两处口径漂移。
+    """
+    extensions = response.get("extensions") if isinstance(response, dict) else None
+    usage = extensions.get("usage") if isinstance(extensions, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    return {
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens"),
+    }
+
+
+def _classify_empty_turn(response: object) -> str:
+    """给「正文为空且没有工具调用」的一轮定性。
+
+    两种情况都会导致回复丢失，必须区分记录：
+    - EMPTY_TURN_TRUNCATED：finish_reason=length，输出预算被思维链吃光；
+    - EMPTY_TURN_NO_OUTPUT：其它原因的空输出。
+    """
+    if _extract_finish_reason(response).casefold() == "length":
+        return EMPTY_TURN_TRUNCATED
+    return EMPTY_TURN_NO_OUTPUT
 
 
 if TYPE_CHECKING:
@@ -986,7 +1036,7 @@ class ReplyOrchestrator:
             val = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
             if isinstance(val, (int, float)):
                 return max(0.0, float(val))
-        return 60.0
+        return 120.0
 
     def _get_io_timeout_seconds(self) -> float:
         return 30.0
@@ -1603,6 +1653,20 @@ class ReplyOrchestrator:
                     "reply.cancel", event, queue_key=queue_key
                 )
                 return
+            if event.state == ReplyState.FAILED:
+                # 管线内部判定失败（例如模型空轮次）。必须走失败收尾：旧实现
+                # 一路记成 completed，日志里看不出「这条消息根本没回复」。
+                self._logger.warning(
+                    "回复事件失败（管线内部判定）",
+                    event_id=event.event_id,
+                    mode=event.mode,
+                    error=event.error,
+                )
+                self._record_debug("failed", event, queue_key=queue_key)
+                await self._emit_runtime_event(
+                    "reply.fail", event, queue_key=queue_key, error=event.error
+                )
+                return
             # 记录完成时间用于冷却
             if event.conversation_ref is not None:
                 pipeline_key = f"{event.conversation_ref.kind}:{queue_key}"
@@ -1756,6 +1820,7 @@ class ReplyOrchestrator:
                 self._adapter,
                 event.conversation_ref,
                 entry.file_path,
+                wait_response=False,
             )
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
@@ -2306,7 +2371,8 @@ class ReplyOrchestrator:
                 await self._send_with_timeout(conv_ref, caption_segs)
             # 发送图片（不附带引用，图片单独发送）
             await send_image(
-                self._file_server, self._adapter, conv_ref, Path(image_path)
+                self._file_server, self._adapter, conv_ref, Path(image_path),
+                wait_response=False,
             )
             # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
             if markdown.strip():
@@ -2435,6 +2501,8 @@ class ReplyOrchestrator:
         # 不动消息顺序,assistant.tool_calls 与结果消息始终配对)
         compressed_tool_call_ids: set[str] = set()
         tool_name_by_call_id: dict[str, str] = {}
+        #: 工具失败指纹 -> 连续失败次数；成功一次即清零。
+        tool_failure_streak: dict[str, int] = {}
 
         # 回复前追加的 <当前时间> user 块:每次调用模型前追加一条最新时间,
         # 已追加的时间块保留在对话历史里(不清理),让模型能看到时间推进。
@@ -2614,12 +2682,19 @@ class ReplyOrchestrator:
                     except Exception:
                         pass
 
+                # 规范化：把「这一轮为什么结束」与「预算用在哪」提升为一级字段，
+                # 排查截断时不必再挖 response.extensions 的嵌套结构。
+                iteration_counters = _extract_usage_summary(response)
                 self._record_debug(
                     "agent_iteration",
                     event,
                     queue_key=queue_key,
                     iteration=iteration + 1,
                     response=response,
+                    finish_reason=_extract_finish_reason(response) or None,
+                    max_tokens=getattr(self._provider, "max_tokens", None),
+                    output_tokens=iteration_counters["output_tokens"],
+                    reasoning_tokens=iteration_counters["reasoning_tokens"],
                 )
                 messages.append(response)
 
@@ -2685,6 +2760,16 @@ class ReplyOrchestrator:
                             )
                             await self._send_reply(event, text)
                             reply_sent = True
+                        else:
+                            # 空轮次：正文为空且没有工具调用。旧实现在这里直接
+                            # break，事件以 COMPLETED/err=None 收尾，回复丢失且
+                            # 完全不可观测；现在必须显式记录并置为 FAILED。
+                            self._handle_empty_turn(
+                                event,
+                                response,
+                                queue_key=queue_key,
+                                iteration=iteration + 1,
+                            )
                     break
 
                 image_parts: list[dict] = []
@@ -2724,6 +2809,7 @@ class ReplyOrchestrator:
                     safe_result: str | None = None
                     tool_error: str | None = None
                     remaining: float | None = None
+                    tool_failure_key = self._tool_failure_key(name, args)
                     try:
                         remaining = silent_remaining()
                         tool_timeout = (
@@ -2783,6 +2869,7 @@ class ReplyOrchestrator:
                                     + self._get_dependency_timeout_seconds(),
                                 )
                             )
+                            tool_failure_key = self._tool_failure_key(name, args)
                             if not reply_toolset.executor.is_tool_authorized(name):
                                 result = reply_toolset.executor.authorization_error(
                                     name
@@ -2861,11 +2948,37 @@ class ReplyOrchestrator:
                     if tool_call_id:
                         tool_name_by_call_id[tool_call_id] = name
                     if tool_error is not None:
+                        tool_failure_streak[tool_failure_key] = (
+                            tool_failure_streak.get(tool_failure_key, 0) + 1
+                        )
+                        failures = tool_failure_streak[tool_failure_key]
+                        hint = ""
+                        if failures >= _TOOL_FAILURE_HINT_AFTER:
+                            # 软限制：只提示不短路。同工具同参数连续失败说明大概率是
+                            # 环境/权限问题，再重试只会把推理链拖长（截断的放大器）；
+                            # 但调用依旧真实执行，修复环境后立刻就能继续用。
+                            hint = "\n" + self._tool_repeat_failure_hint(name, failures)
+                            self._logger.warning(
+                                f"工具连续失败，已附加软提示: {name}",
+                                event_id=event.event_id,
+                                tool=name,
+                                failures=failures,
+                            )
+                            self._record_debug(
+                                "tool_repeat_failure_hint",
+                                event,
+                                queue_key=queue_key,
+                                iteration=iteration + 1,
+                                tool_name=name,
+                                tool_args=safe_args,
+                                failures=failures,
+                                tool_error=tool_error,
+                            )
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
-                                "content": f"工具调用失败：{tool_error}",
+                                "content": f"工具调用失败：{tool_error}{hint}",
                             }
                         )
                         self._record_debug(
@@ -2878,6 +2991,7 @@ class ReplyOrchestrator:
                             tool_error=tool_error,
                         )
                     else:
+                        tool_failure_streak.pop(tool_failure_key, None)
                         self._logger.info(
                             f"工具返回: {name}",
                             event_id=event.event_id,
@@ -3177,6 +3291,103 @@ class ReplyOrchestrator:
                 event.transition(ReplyState.COMPLETED)
             except RuntimeError:
                 pass
+
+    # ── 空轮次(模型没给正文也没调工具) ──
+
+    @staticmethod
+    def _tool_failure_key(name: str, args: object) -> str:
+        """同工具 + 同参数的失败指纹（参数不可序列化时退化为 repr）。"""
+        try:
+            payload = json.dumps(
+                args, ensure_ascii=False, sort_keys=True, default=str
+            )
+        except (TypeError, ValueError, RecursionError):
+            payload = repr(args)
+        return f"{name}|{payload}"
+
+    @staticmethod
+    def _tool_repeat_failure_hint(name: str, failures: int) -> str:
+        """软提示：说明重复失败，但仍允许继续调用（工具不会被永久摘除）。"""
+        return (
+            f"注意：{name} 用相同参数已连续失败 {failures} 次。"
+            "若判断是环境或权限问题，请不要再重复尝试，改用其它工具或直接向用户说明；"
+            "如果确认问题已经修复，可以继续调用。"
+        )
+
+    @staticmethod
+    def _build_empty_turn_error(
+        reason: str, finish_reason: str, output_tokens: object
+    ) -> str:
+        if reason == EMPTY_TURN_TRUNCATED:
+            return (
+                "模型输出被输出上限截断：本轮没有正文也没有工具调用"
+                f"（finish_reason=length, output_tokens={output_tokens}）"
+            )
+        return (
+            "模型返回空输出：本轮没有正文也没有工具调用"
+            f"（finish_reason={finish_reason or '未提供'}）"
+        )
+
+    def _handle_empty_turn(
+        self,
+        event: ReplyEvent,
+        response: object,
+        *,
+        queue_key: str,
+        iteration: int,
+    ) -> None:
+        """空轮次不再静默结束：区分成因、留痕，并把事件置为 FAILED。
+
+        这里刻意不做重试：实测重试大概率拿不到有效输出，只会再多烧一轮
+        input token。也不发兜底回复（避免群聊刷屏）。要保证的只有一件事——
+        「模型没产出导致回复丢失」一定留下可检索的记录，而不是 COMPLETED。
+        """
+        finish_reason = _extract_finish_reason(response)
+        reason = _classify_empty_turn(response)
+        counters = _extract_usage_summary(response)
+        output_tokens = counters["output_tokens"]
+        reasoning_tokens = counters["reasoning_tokens"]
+
+        event.error = self._build_empty_turn_error(
+            reason, finish_reason, output_tokens
+        )
+        if not event.is_terminal:
+            try:
+                event.transition(ReplyState.FAILED)
+            except RuntimeError:
+                pass
+
+        self._logger.warning(
+            "模型空轮次：该轮没有正文也没有工具调用，回复未发出",
+            event_id=event.event_id,
+            queue_key=queue_key,
+            iteration=iteration,
+            reason=reason,
+            finish_reason=finish_reason or None,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        self._record_debug(
+            "empty_turn_detected",
+            event,
+            queue_key=queue_key,
+            iteration=iteration,
+            reason=reason,
+            finish_reason=finish_reason or None,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        if reason == EMPTY_TURN_TRUNCATED:
+            # 超限截断是成本问题，单独留一条便于直接检索/统计。
+            self._record_debug(
+                "empty_turn_truncated",
+                event,
+                queue_key=queue_key,
+                iteration=iteration,
+                finish_reason=finish_reason,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
 
     # ── 待机熔断(只保留核心服务,已启动管线立即停火) ──
 

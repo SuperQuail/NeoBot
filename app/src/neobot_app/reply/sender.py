@@ -69,6 +69,38 @@ class ReplySender:
         self._logger = logger or NullLogger()
         self._last_sentence_time: dict[str, float] = {}
 
+    # ── 状态流转 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _enter_sending(event: Any) -> None:
+        """进入发送态；群聊已 COMPLETED 时允许再次发送。
+
+        模型经常在同一轮里连续调用多次 send_reply。群聊首次发送后事件已经是
+        终态 COMPLETED，第二次再 transition(SENDING) 会抛「非法状态转换」，
+        结果是第二条消息被吞掉、模型还被告知工具失败，并为了补救再多跑一轮。
+
+        只对 COMPLETED 放开：其它非法前置状态（PENDING/BUILDING_PROMPT）以及
+        FAILED/CANCELLED 仍照旧抛错，避免把真正的状态机缺陷一起吞掉。
+        """
+        if event.state is ReplyState.COMPLETED:
+            return
+        event.transition(ReplyState.SENDING)
+
+    @staticmethod
+    def _leave_sending(event: Any, conversation_kind: str) -> None:
+        """发送完成后回到群聊终态 / 私聊继续生成；非 SENDING 时保持不变。"""
+        if event.state is not ReplyState.SENDING:
+            return
+        target = (
+            ReplyState.GENERATING
+            if conversation_kind == "private"
+            else ReplyState.COMPLETED
+        )
+        try:
+            event.transition(target)
+        except RuntimeError:
+            pass
+
     # ── public API (also used by engine) ────────────────────────
 
     async def send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
@@ -86,8 +118,10 @@ class ReplySender:
         if envelope.consumed:
             return envelope.result
         send_payload = envelope.payload.get("message", payload)
+        # 不等 echo 回执：请求写上线即视为发送成功。等待回执会把 agent 循环
+        # 卡在上游往返上，而实测发送几乎不会失败（失败由连接状态与心跳发现）。
         result = await asyncio.wait_for(
-            self._adapter.send(conversation_ref, send_payload),
+            self._adapter.send(conversation_ref, send_payload, wait_response=False),
             timeout=self._io_timeout_seconds,
         )
         after = RuntimeEnvelope(
@@ -158,7 +192,7 @@ class ReplySender:
         reply_to_message_id = before_send.payload.get("reply_to_message_id", reply_to_message_id)
         mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
 
-        event.transition(ReplyState.SENDING)
+        self._enter_sending(event)
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
@@ -184,14 +218,14 @@ class ReplySender:
                     await self._emoji_service.record_usage(images[0])
                 for i, entry in enumerate(image_entries[1:], start=1):
                     formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                    send_results.append(await send_image(self._file_server, self._adapter, conv_ref, entry.file_path))
+                    send_results.append(await send_image(
+                        self._file_server, self._adapter, conv_ref, entry.file_path,
+                        wait_response=False,
+                    ))
                     if self._emoji_service:
                         await self._emoji_service.record_usage(images[i])
             event.send_response = send_results[0] if len(send_results) == 1 else send_results
-            if conv_ref.kind == "private":
-                event.transition(ReplyState.GENERATING)
-            else:
-                event.transition(ReplyState.COMPLETED)
+            self._leave_sending(event, conv_ref.kind)
             self._debug_helper.record(
                 "reply_sent",
                 event,
@@ -209,7 +243,10 @@ class ReplySender:
                 if entry is None:
                     continue
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                send_results.append(await send_image(self._file_server, self._adapter, conv_ref, entry.file_path))
+                send_results.append(await send_image(
+                    self._file_server, self._adapter, conv_ref, entry.file_path,
+                    wait_response=False,
+                ))
                 await self._emoji_service.record_usage(image_number)
 
         # long reply → markdown image
@@ -223,10 +260,7 @@ class ReplySender:
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
                     send_results.append(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
                     event.send_response = send_results[0]
-                    if conv_ref.kind == "private":
-                        event.transition(ReplyState.GENERATING)
-                    else:
-                        event.transition(ReplyState.COMPLETED)
+                    self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
                     return
                 except Exception as exc:
@@ -269,10 +303,7 @@ class ReplySender:
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
-        if conv_ref.kind == "private":
-            event.transition(ReplyState.GENERATING)
-        else:
-            event.transition(ReplyState.COMPLETED)
+        self._leave_sending(event, conv_ref.kind)
         self._debug_helper.record(
             "reply_sent",
             event,

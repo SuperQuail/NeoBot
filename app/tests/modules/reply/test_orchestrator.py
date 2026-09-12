@@ -17,7 +17,10 @@ from neobot_adapter.model.message import (
 )
 from neobot_app.message.queue import MessageQueue, QueueEntry, QueueEntryType
 from neobot_app.reply.orchestrator import (
+    EMPTY_TURN_NO_OUTPUT,
+    EMPTY_TURN_TRUNCATED,
     ReplyOrchestrator,
+    _classify_empty_turn,
     _parse_tool_args,
     _redacted_tool_text,
     _safe_tool_args,
@@ -70,6 +73,9 @@ class _HangingProvider:
 class _ScriptedProvider:
     """按脚本依次返回响应，用于最小 agent 循环。"""
 
+    #: 输出预算：与 provider 契约一致，用于验证 agent_iteration 能观测到上限。
+    max_tokens = 10000
+
     def __init__(self, responses: list[dict]) -> None:
         self._responses = list(responses)
         self.calls: list[tuple[list, object]] = []
@@ -83,7 +89,7 @@ class _ScriptedProvider:
 
 
 class _FakeAdapter:
-    async def send(self, conversation_ref, payload):
+    async def send(self, conversation_ref, payload, wait_response: bool = True):
         return {"status": "ok", "message_id": 2001}
 
     async def call_api(self, action, params):
@@ -302,6 +308,259 @@ async def test_private_pipeline_event_reaches_completed_state(monkeypatch):
 
     assert event.state.name == "COMPLETED"
     assert event.completed_at is not None
+    await orch.shutdown()
+
+
+# ── 工具加固：poke 文案与同参失败熔断 ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,args,expected",
+    [
+        ("poke_user", {"user_id": 1}, "poke_user|{\"user_id\": 1}"),
+        ("t", {"b": 1, "a": 2}, "t|{\"a\": 2, \"b\": 1}"),
+    ],
+)
+def test_tool_failure_key_is_stable_for_same_args(name, args, expected):
+    """同工具 + 同参数的指纹必须与键序无关，否则熔断形同虚设。"""
+    assert ReplyOrchestrator._tool_failure_key(name, args) == expected
+
+
+def test_tool_failure_key_survives_unserializable_args():
+    assert "t|" in ReplyOrchestrator._tool_failure_key("t", object())
+
+
+def test_tool_repeat_failure_hint_advises_but_allows_retry():
+    """软限制：提示重复失败，但明确说明修复后可以继续调用。"""
+    message = ReplyOrchestrator._tool_repeat_failure_hint("agent_tools__pwsh", 3)
+
+    assert "agent_tools__pwsh" in message
+    assert "已连续失败 3 次" in message
+    assert "可以继续调用" in message
+
+
+async def _run_agent_once(monkeypatch, provider, adapter_patch=None):
+    orch = _make_orchestrator(provider=provider)
+    if adapter_patch is not None:
+        monkeypatch.setattr(orch._adapter, "call_api", adapter_patch)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+    await orch.shutdown()
+    return orch, event, stages
+
+
+def _poke_call(call_id: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "poke_user", "arguments": json.dumps({"user_id": 10002})},
+    }
+
+
+async def test_poke_failure_keeps_raw_error_for_model(monkeypatch):
+    """戳一戳失败保留原始错误原文：模型要据此判断真正的问题出在哪。"""
+    raw_error = (
+        "packetBackend 发包能力不可用，请参照文档检查 packetBackend 状态；"
+        "PacketBackend 不支持当前QQ版本架构：9.9.32-51246-x64"
+    )
+    provider = _ScriptedProvider([
+        {"content": "", "tool_calls": [_poke_call("p1")]},
+        {"content": "知道了", "tool_calls": []},
+    ])
+
+    async def _failed(action, params):
+        return {"status": "failed", "retcode": 1400, "message": raw_error}
+
+    _, event, _stages = await _run_agent_once(monkeypatch, provider, _failed)
+
+    tool_messages = [m for m in provider.calls[1][0] if m.get("role") == "tool"]
+    content = "\n".join(m["content"] for m in tool_messages)
+    assert "戳一戳失败" in content
+    assert "PacketBackend 不支持当前QQ版本架构" in content
+    assert event.error is None
+
+
+async def test_identical_failing_tool_calls_get_soft_hint_but_still_execute(monkeypatch):
+    """软限制：连续失败后只加提示，后续调用依旧真实执行（修复后必须立刻可用）。"""
+    provider = _ScriptedProvider([
+        {"content": "", "tool_calls": [_poke_call("p1")]},
+        {"content": "", "tool_calls": [_poke_call("p2")]},
+        {"content": "", "tool_calls": [_poke_call("p3")]},
+        {"content": "", "tool_calls": [_poke_call("p4")]},
+        {"content": "算了", "tool_calls": []},
+    ])
+    executed: list = []
+
+    async def _boom(action, params):
+        executed.append((action, params))
+        raise RuntimeError("packetBackend 不可用")
+
+    _, event, stages = await _run_agent_once(monkeypatch, provider, _boom)
+
+    assert len(executed) == 4, "软限制不得短路：每次调用都必须真实执行"
+    hints = [extra for stage, extra in stages if stage == "tool_repeat_failure_hint"]
+    assert [h["failures"] for h in hints] == [3, 4]
+    assert hints[0]["tool_name"] == "poke_user"
+    last_messages = provider.calls[-1][0]
+    tool_content = "\n".join(
+        str(m.get("content", "")) for m in last_messages if m.get("role") == "tool"
+    )
+    assert "已连续失败 3 次" in tool_content
+    assert event.error is None
+
+
+# ── 空轮次：不再静默结束 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        ({"extensions": {"finish_reason": "length"}}, EMPTY_TURN_TRUNCATED),
+        ({"extensions": {"finish_reason": "LENGTH"}}, EMPTY_TURN_TRUNCATED),
+        ({"extensions": {"finish_reason": "stop"}}, EMPTY_TURN_NO_OUTPUT),
+        ({"extensions": {}}, EMPTY_TURN_NO_OUTPUT),
+        ({}, EMPTY_TURN_NO_OUTPUT),
+        (None, EMPTY_TURN_NO_OUTPUT),
+    ],
+)
+def test_classify_empty_turn_distinguishes_truncation(response, expected):
+    """超限截断与其它空输出必须区分：只有前者要额外记录原因。"""
+    assert _classify_empty_turn(response) == expected
+
+
+async def test_empty_turn_marks_event_failed_and_records_reason(monkeypatch):
+    """空轮次不得静默收尾：必须置 FAILED、写 error、留 empty_turn_* 记录，且不重试。"""
+    provider = _ScriptedProvider(
+        [
+            {
+                "content": "",
+                "tool_calls": [],
+                "extensions": {
+                    "finish_reason": "length",
+                    "usage": {
+                        "input_tokens": 23718,
+                        "output_tokens": 10000,
+                        "completion_tokens_details": {"reasoning_tokens": 10000},
+                    },
+                },
+            }
+        ]
+    )
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+
+    # 决策：不做重试（实测大概率拿不到有效输出，只会白烧 input token）。
+    assert len(provider.calls) == 1
+    assert event.state.name == "FAILED"
+    assert event.error and "截断" in event.error
+    assert event.generated_text == ""
+
+    detected = [extra for stage, extra in stages if stage == "empty_turn_detected"]
+    assert len(detected) == 1
+    assert detected[0]["reason"] == EMPTY_TURN_TRUNCATED
+    assert detected[0]["finish_reason"] == "length"
+    assert detected[0]["output_tokens"] == 10000
+    assert detected[0]["reasoning_tokens"] == 10000
+    assert any(stage == "empty_turn_truncated" for stage, _ in stages)
+    assert any(stage == "failed" for stage, _ in stages)
+
+    # 规范化：agent_iteration 必须把结束原因与预算提升为一级字段，
+    # 否则排查截断只能去挖 response.extensions 的嵌套结构。
+    iterations = [extra for stage, extra in stages if stage == "agent_iteration"]
+    assert len(iterations) == 1
+    assert iterations[0]["finish_reason"] == "length"
+    assert iterations[0]["max_tokens"] == 10000
+    assert iterations[0]["output_tokens"] == 10000
+    assert iterations[0]["reasoning_tokens"] == 10000
+    await orch.shutdown()
+
+
+async def test_empty_turn_without_finish_reason_is_recorded_as_empty(monkeypatch):
+    """没有 finish_reason 的空输出同样必须留痕，且不得被当成截断。"""
+    provider = _ScriptedProvider([{"content": "", "tool_calls": []}])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    stages: list = []
+    original = orch._record_debug
+
+    def _capture(stage, event, **extra):
+        stages.append((stage, extra))
+        return original(stage, event, **extra)
+
+    monkeypatch.setattr(orch, "_record_debug", _capture)
+
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+
+    assert event.state.name == "FAILED"
+    assert event.error and "空输出" in event.error
+    detected = [extra for stage, extra in stages if stage == "empty_turn_detected"]
+    assert len(detected) == 1
+    assert detected[0]["reason"] == EMPTY_TURN_NO_OUTPUT
+    assert not any(stage == "empty_turn_truncated" for stage, _ in stages)
     await orch.shutdown()
 
 
