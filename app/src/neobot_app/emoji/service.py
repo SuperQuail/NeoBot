@@ -40,6 +40,28 @@ class EmojiImportResult:
     entry: EmojiEntry
 
 
+class EmojiDuplicateError(ValueError):
+    """内容哈希已存在。
+
+    重复加入不是错误：调用方应当把它当成幂等成功处理（返回已有编号），
+    否则模型会在不同事件里反复重试同一个必然失败的调用。
+    继承 ValueError 以保持既有 except ValueError 调用方的行为不变。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        number: int | None = None,
+        file_name: str = "",
+        analysis_text: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.number = number
+        self.file_name = file_name
+        self.analysis_text = analysis_text
+
+
 class EmojiService:
     """管理表情包的扫描、解析、编号与提示词生成"""
 
@@ -97,6 +119,14 @@ class EmojiService:
     def get_entry(self, number: int) -> EmojiEntry | None:
         self._notify_disk_changed()
         return self._entries.get(number)
+
+    def find_number_by_hash(self, file_hash: str) -> int | None:
+        """按内容哈希反查表情包编号（重复加入时用它做幂等返回）。"""
+        self._notify_disk_changed()
+        for number, entry in self._entries.items():
+            if entry.file_hash == file_hash:
+                return number
+        return None
 
     def list_entries(self) -> list[tuple[int, EmojiEntry]]:
         """返回所有表情包，按使用次数从少到多排列。"""
@@ -286,9 +316,13 @@ class EmojiService:
         async with self._uow_factory() as uow:
             existing = await uow.emojis.get_by_hash(file_hash)
             if existing is not None:
-                raise ValueError(
+                number = self.find_number_by_hash(file_hash)
+                raise EmojiDuplicateError(
                     f"该图片与已有表情包重复（哈希 {file_hash[:12]}…），"
-                    f"已有文件: {existing.file_name}，不允许重复加入"
+                    f"已有文件: {existing.file_name}，编号 {number}",
+                    number=number,
+                    file_name=existing.file_name,
+                    analysis_text=existing.analysis_text or "",
                 )
 
         suffix = _detect_image_suffix(image_bytes)

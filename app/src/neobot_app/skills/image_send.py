@@ -122,7 +122,8 @@ async def _handle_send_image(self: ImageSendSkill, args: dict) -> str:
             path = candidates[0]
 
         segment = prepare_image_segment(self._file_server, path)
-        resp = await self._adapter.send(conv_ref, [segment])
+        # 不等 echo：发送几乎不会失败，等待回执只会阻塞 agent 继续执行。
+        resp = await self._adapter.send(conv_ref, [segment], wait_response=False)
 
         # 检查 go-cqhttp API 响应状态
         if resp is None:

@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from neobot_app.emoji.service import EmojiDuplicateError
 from neobot_app.skills.emoji_management import EmojiManagementSkill
 
 
@@ -201,6 +202,32 @@ async def test_emoji_add_value_error_passthrough(tmp_path):
     assert result["ok"] is False
     assert "图片超过 5MB 限制" in result["error"]
     assert "添加失败" not in result["error"]
+
+
+async def test_emoji_add_duplicate_is_idempotent_success(tmp_path):
+    """重复加入必须当成功处理并返回已有编号。
+
+    旧实现返回 ok=false，模型于是在不同事件里反复重试同一个必然失败的调用
+    （实测同一张图在 4 个事件里各失败 2–3 次），把推理链拖长。
+    """
+    img = tmp_path / "dup.png"
+    img.write_bytes(b"png-bytes")
+    service = FakeEmojiService()
+    service.add_error = EmojiDuplicateError(
+        "该图片与已有表情包重复（哈希 abc123…），已有文件: a.png，编号 3",
+        number=3,
+        file_name="a.png",
+        analysis_text="猫猫",
+    )
+    skill = _make_skill(service)
+
+    result = _parse(await skill.execute("emoji_add", {"image_path": str(img)}))
+
+    assert result["ok"] is True
+    assert result["duplicate"] is True
+    assert result["number"] == 3
+    assert result["file_name"] == "a.png"
+    assert "无需重复添加" in result["message"]
 
 
 async def test_emoji_update_description():
