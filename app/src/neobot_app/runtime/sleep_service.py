@@ -28,7 +28,58 @@ MAX_SLEEP_SECONDS = 12 * 3600
 # 唤醒提示词默认值(可由自定义提示词系统的 [wake_up] 分区覆盖)
 DEFAULT_WAKE_PROMPT = "你刚刚正在睡觉,现在被叫醒了,还有点困."
 
+# /sleep 命令的提示词默认值(提示词分区 [sleep_cmd]，spec(5) §4.1 / R2)
+DEFAULT_SLEEP_CMD_PROMPT = (
+    "你刚刚答应去睡觉（睡眠 {duration}，预计 {wake_at} 醒来）。"
+    "请用你自己的语气自然回应一句，不要复述本条状态说明。"
+)
+
+# /awake 命令的提示词默认值(提示词分区 [awake_cmd])。
+# 与 [wake_up] 分工不同：wake_up 是「群聊被@叫醒」的状态注入，
+# awake_cmd 是「用户执行 /awake」的回复提示，两者不合并。
+DEFAULT_AWAKE_CMD_PROMPT = (
+    "你刚被叫醒了（睡了 {elapsed}）。"
+    "请用你自己的语气自然回应一句，不要复述本条状态说明。"
+)
+
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
+# 占位符只认「标识符形态」的花括号：未知占位符原样保留，畸形花括号不报错
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+#: 双花括号（提示词系统的字面量转义约定）的临时哨兵。
+#: 哨兵本身不含花括号，因此不会被第二轮占位符替换命中。
+_NUL = chr(0)
+_ESCAPED_OPEN = _NUL + "O" + _NUL
+_ESCAPED_CLOSE = _NUL + "C" + _NUL
+
+
+def safe_format(template: str, **values: Any) -> str:
+    """安全地把模板里的占位符替换为给定值。
+
+    与提示词系统的约定一致：
+    - 未知占位符**原样保留**（便于发现拼错的占位符）；
+    - 模板里缺少某个占位符**不报错**；
+    - 畸形花括号（嵌套、落单）不报错，只替换能识别的部分；
+    - 双层花括号渲染成字面量单层花括号；
+    - 值里的花括号不会被二次替换。
+    """
+    text = "" if template is None else str(template)
+    text = (
+        text.replace(chr(123) * 2, _ESCAPED_OPEN)
+        .replace(chr(125) * 2, _ESCAPED_CLOSE)
+    )
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in values:
+            return match.group(0)
+        value = values[key]
+        return "" if value is None else str(value)
+
+    text = _PLACEHOLDER_RE.sub(_replace, text)
+    return text.replace(_ESCAPED_OPEN, chr(123)).replace(_ESCAPED_CLOSE, chr(125))
+
+
 _UNIT_SECONDS = {"": 60, "s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -208,10 +259,49 @@ class SleepService:
 
     def wake_prompt(self) -> str:
         """读取唤醒提示词:[wake_up].template,支持自定义提示词文件覆盖。"""
+        return self._template("wake_up", DEFAULT_WAKE_PROMPT)
+
+    def sleep_prompt(self, seconds: float | None = None) -> str:
+        """读取 /sleep 命令的提示词:[sleep_cmd].template。
+
+        占位符 {duration} / {wake_at} 用安全替换填充：未知占位符原样保留，
+        模板里缺少占位符也不报错（spec(5) §4.1 / R2 / A4）。
+        """
+        duration = format_sleep_duration(seconds) if seconds else ""
+        wake_at = self.wake_up_time_text() if seconds is not None else ""
+        return safe_format(
+            self._template("sleep_cmd", DEFAULT_SLEEP_CMD_PROMPT),
+            duration=duration,
+            wake_at=wake_at,
+        )
+
+    def awake_prompt(self, elapsed_seconds: float | None = None) -> str:
+        """读取 /awake 命令的提示词:[awake_cmd].template。
+
+        占位符 {elapsed} 用安全替换填充。**不**复用 [wake_up]：被@叫醒与
+        命令叫醒是两种语义（spec(5) §4.1）。
+        """
+        if elapsed_seconds is None:
+            elapsed = self._sleep_elapsed_text()
+        else:
+            elapsed = format_sleep_duration(max(0.0, float(elapsed_seconds)))
+        return safe_format(
+            self._template("awake_cmd", DEFAULT_AWAKE_CMD_PROMPT),
+            elapsed=elapsed,
+        )
+
+    def elapsed_seconds(self) -> float | None:
+        """本次睡眠已持续的秒数；未在睡眠时返回 None（供 /awake 取占位符值）。"""
+        if not self.is_sleeping() or self._sleep_started_monotonic is None:
+            return None
+        return max(0.0, monotonic_seconds() - self._sleep_started_monotonic)
+
+    def _template(self, key: str, default: str) -> str:
+        """读取提示词分区:自定义文件覆盖默认,缺失时回退内置兜底。"""
         if self._prompt_store is not None:
-            value = self._prompt_store.template("wake_up", default=DEFAULT_WAKE_PROMPT)
+            value = self._prompt_store.template(key, default=default)
             if value and value.strip():
                 return value
         from neobot_app.prompt.store import fallback_template
 
-        return fallback_template("wake_up", default=DEFAULT_WAKE_PROMPT)
+        return fallback_template(key, default=default)

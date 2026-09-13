@@ -60,6 +60,8 @@ KNOWN_SECTIONS = (
     "self_heal",
     "maintenance",
     "wake_up",
+    "sleep_cmd",
+    "awake_cmd",
 )
 
 # TOML 多行字符串定界符(在 Python 字符串里直接写会被误解析,单独拼出来)
@@ -139,6 +141,19 @@ _FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
     },
     "long_reply_fallback": {"template": "{bot_name}懒得和你说道理，你不配听"},
     "wake_up": {"template": "你刚刚正在睡觉,现在被叫醒了,还有点困."},
+    # /sleep /awake 命令的回复提示词(spec(5) §4.1):与 [wake_up] 分工不同
+    "sleep_cmd": {
+        "template": (
+            "你刚刚答应去睡觉（睡眠 {duration}，预计 {wake_at} 醒来）。"
+            "请用你自己的语气自然回应一句，不要复述本条状态说明。"
+        )
+    },
+    "awake_cmd": {
+        "template": (
+            "你刚被叫醒了（睡了 {elapsed}）。"
+            "请用你自己的语气自然回应一句，不要复述本条状态说明。"
+        )
+    },
 }
 
 _CUSTOM_SKELETON = (
@@ -153,6 +168,7 @@ _CUSTOM_SKELETON = (
     "#   current_time / group_chat_resume / new_member_profiles\n"
     "#   tool_result_compressed / tool_result_compressed_detail\n"
     "#   long_reply_fallback / problem_solver / self_heal / maintenance / wake_up\n"
+    "#   sleep_cmd / awake_cmd\n"
     "#\n"
     "# 占位符写作花括号包住的名字,渲染时替换;需要输出字面量花括号时写成双层花括号。\n"
     "# 只含空白的区块(如群友信息标签之间只有换行)会在渲染后被自动删除。\n"
