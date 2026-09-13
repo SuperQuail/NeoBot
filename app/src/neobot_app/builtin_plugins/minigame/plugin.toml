@@ -24,7 +24,9 @@ enabled_games = ["bottle", "chengyu", "checkin", "fortune"]
 bottle_pool_max = 1000
 # 漂流瓶正文长度上限（去空白后 1 到该值）。
 bottle_content_max_chars = 500
-# 普通（非匿名）发瓶卡片是否显示发送者 QQ 号。
+# [WIP · 尚未接线] 普通（非匿名）发瓶卡片是否显示发送者 QQ 号。
+# 当前**不生效**：普通瓶一律显示 QQ 号（匿名瓶本就不显示）。
+# 后续开发计划见 TODO/待办事项.md「WIP 与后续计划」；接线前请勿依赖本项。
 bottle_show_sender_id = true
 # 漂流瓶头像的本体缓存天数（仅作展示提示；头像统一取自本体 AvatarStore）。
 bottle_avatar_cache_days = 7

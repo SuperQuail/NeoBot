@@ -35,7 +35,9 @@ class MinigameConfig(BaseModel):
     )
     bottle_show_sender_id: bool = Field(
         default=True,
-        description="普通（非匿名）发瓶卡片是否显示发送者 QQ 号。",
+        # [WIP · 尚未接线] 目前普通瓶一律显示 QQ 号，本项读得到但不生效；
+        # 后续开发计划见 TODO/待办事项.md「WIP 与后续计划」。
+        description="[WIP · 尚未接线] 普通（非匿名）发瓶卡片是否显示发送者 QQ 号；当前不生效。",
     )
     bottle_avatar_cache_days: int = Field(
         default=7,
