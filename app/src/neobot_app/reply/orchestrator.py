@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -575,6 +575,7 @@ class ReplyOrchestrator:
         on_reply_done: Callable[[], Awaitable[None]] | None = None,
         skip_cooldown: bool = False,
         background_content: str | None = None,
+        preactivate: Sequence[str] = (),
     ) -> ReplyEvent | None:
         if self._closed:
             self._logger.warning("ReplyOrchestrator 已关闭，拒绝创建回复管线")
@@ -590,6 +591,7 @@ class ReplyOrchestrator:
             conversation_ref=conversation_ref,
             pre_reply_message_id=pre_reply_message_id,
             background_content=background_content,
+            preactivate=tuple(str(item) for item in (preactivate or ()) if str(item)),
         )
 
         # 按 kind:queue_key 组合键去重，避免群号与 QQ 号相同时互相阻塞
@@ -2588,6 +2590,23 @@ class ReplyOrchestrator:
             native_vision_provider=self._provider,
         )
         self._tool_executors[event.event_id] = reply_toolset.executor
+        # 本轮预激活（插件消息意图入口）：在构建工具表**之前**加载指定技能包，
+        # 使这些 {plugin}__{tool} 在本轮模型调用里即可直接调用。
+        if event.preactivate and self._skill_manager is not None:
+            try:
+                loaded = reply_toolset.executor.preactivate_skills(event.preactivate)
+                self._logger.info(
+                    "本轮预激活技能包",
+                    event_id=event.event_id,
+                    requested=list(event.preactivate),
+                    loaded=loaded,
+                )
+            except Exception as exc:  # 预激活失败不能影响回复
+                self._logger.warning(
+                    "预激活技能包失败，已忽略",
+                    event_id=event.event_id,
+                    error=str(exc),
+                )
         if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext

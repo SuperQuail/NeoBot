@@ -1,0 +1,50 @@
+name = "minigame"
+version = "1.0.0"
+description = "NeoBot 官方小游戏：漂流瓶 / 成语接龙 / 签到与积分 / 抽签（AI 交互型）"
+author = "NeoBot"
+homepage = "https://github.com/SuperQuail/NeoBot"
+license = "MIT"
+tags = ["official", "game"]
+
+# 依赖留空：命令型玩法不需要网页面板，本体缺少 dashboard 时本插件照常可用。
+dependencies = []
+
+# 插件本体可热重载（重新注册命令 / 工具 / 关键词处理器）；配置改动同样即时生效。
+hot_reload = true
+config_hot_reload = true
+
+# 小游戏配置保存在插件数据目录 plugins_data/minigame/config.toml（与本体 config.toml 解耦），
+# 可在面板「插件 → minigame → 配置」在线编辑；这里是打包默认值。
+# 每行上方的注释会作为面板表单里的字段说明，并写进生成的 config.toml。
+
+[config]
+# 启用的玩法 id 列表（bottle / chengyu / checkin / fortune）；去掉某项即整体下线该玩法。
+enabled_games = ["bottle", "chengyu", "checkin", "fortune"]
+# 漂流瓶池上限：池满时随机挑一条既有待捞瓶转 expired 归档（不按时间、不删除）。
+bottle_pool_max = 1000
+# 漂流瓶正文长度上限（去空白后 1 到该值）。
+bottle_content_max_chars = 500
+# 普通（非匿名）发瓶卡片是否显示发送者 QQ 号。
+bottle_show_sender_id = true
+# 漂流瓶头像的本体缓存天数（仅作展示提示；头像统一取自本体 AvatarStore）。
+bottle_avatar_cache_days = 7
+# 每日签到随机积分的下限。
+checkin_score_min = 1
+# 每日签到随机积分的上限。
+checkin_score_max = 10
+# 连续签到每天的附加积分。
+checkin_streak_bonus = 1
+# 连续签到附加积分的上限。
+checkin_streak_bonus_cap = 5
+# 成语接龙目标条数下限（胜利条件 N）。
+chengyu_target_min = 3
+# 成语接龙目标条数上限。
+chengyu_target_max = 10
+# 单局成语接龙最多步数（用满即结束本局）。
+chengyu_max_steps = 10
+# 成语接龙每条提交的时限（秒）。
+chengyu_step_timeout_seconds = 60
+# 抽签是否包含凶兆档位（小凶 / 凶）。
+fortune_include_bad_luck = false
+# 战绩流水（mg_record）保留天数。
+record_keep_days = 30

@@ -324,6 +324,21 @@ class ReplyToolExecutor(ToolExecutor):
             self._activation_manager = manager
         return self._activation_cache
 
+    def preactivate_skills(self, names: Any) -> list[str]:
+        """本轮预激活技能包（插件消息意图入口用）；返回实际已激活的技能名。
+
+        在构建本轮工具表之前调用即可让这些技能的工具 schema 立刻生效；
+        未知 / 已常驻 / 不可见的技能名会被 SkillToolActivation 自行忽略。
+        """
+        activation = self._activation
+        if activation is None:
+            return []
+        requested = [str(item) for item in (names or ()) if str(item)]
+        if not requested:
+            return []
+        activation.load({"skills": requested})
+        return activation.activated_names()
+
     async def __aenter__(self) -> ReplyToolExecutor:
         if self._closed:
             raise RuntimeError("ReplyToolExecutor is closed")

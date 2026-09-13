@@ -52,6 +52,8 @@ class ReplyEvent:
     error: str | None = None
     background_content: str | None = None
     human_request: bool = False
+    #: 本轮要预先激活的技能包（插件消息意图入口用；在本轮工具表构建前生效）
+    preactivate: tuple[str, ...] = ()
 
     def transition(self, new_state: ReplyState) -> None:
         allowed = _VALID_TRANSITIONS.get(self.state, set())

@@ -92,6 +92,9 @@ class EventGateway:
         except Exception as exc:
             self._logger.exception(f"插件事件入口处理失败: {exc}")
 
+        # 插件消息处理器可能请求「交主管线」（一次性意图）：取出后随管线传递
+        agent_intent = ctx.take_agent_reply_intent()
+
         if ctx.consumed:
             self._logger.debug(
                 "事件已被插件消费",
@@ -103,13 +106,15 @@ class EventGateway:
             )
             return
 
-        await self._route(ctx)
+        await self._route(ctx, agent_intent=agent_intent)
 
     # ── routing (ex-EventRouter) ─────────────────────────────
 
-    async def _route(self, ctx: EventContext) -> None:
+    async def _route(
+        self, ctx: EventContext, *, agent_intent: dict[str, Any] | None = None
+    ) -> None:
         if ctx.post_type == "message":
-            await self._handle_message(ctx)
+            await self._handle_message(ctx, agent_intent=agent_intent)
         elif ctx.post_type == "notice":
             await self._notice_handler.handle(ctx)
         elif ctx.post_type == "request":
@@ -121,17 +126,25 @@ class EventGateway:
 
     # ── message dispatch (ex-MessagePipeline) ────────────────
 
-    async def _handle_message(self, ctx: EventContext) -> None:
+    async def _handle_message(
+        self, ctx: EventContext, *, agent_intent: dict[str, Any] | None = None
+    ) -> None:
         message_type = ctx.raw_event.get("message_type")
+        # 没有意图时保持与历史完全一致的调用签名（旧实现 / 测试替身无需改动）
+        extra: dict[str, Any] = (
+            {"agent_intent": agent_intent} if agent_intent else {}
+        )
         if message_type == "private":
             await self._legacy.handle_private_message_event(
                 ctx.raw_event,
                 skip_ai_reply=ctx.skip_ai_reply,
+                **extra,
             )
         elif message_type == "group":
             await self._legacy.handle_group_message_event(
                 ctx.raw_event,
                 skip_ai_reply=ctx.skip_ai_reply,
+                **extra,
             )
         else:
             self._logger.debug("忽略未知消息类型", message_type=message_type)
