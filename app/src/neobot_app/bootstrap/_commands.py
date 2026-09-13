@@ -18,10 +18,12 @@ def build_command_service(
     sleep_service: Any = None,
     standby_service: Any = None,
     config_reload_callback: Any = None,
+    screenshots: Any = None,
 ) -> Any:
     """构建命令服务(内置命令注册 + 配置保存/热重载回调)。
 
     markdown_image_converter/file_server 用于 /help 渲染图片(缺失时降级文本)。
+    screenshots 供 /help 渲染自包含 HTML 卡片(不可用时走降级链)。
     sleep_service 供 /sleep /awake 命令使用。
     standby_service 供 /standby /reboot /standby_status 命令使用。
     config_reload_callback 供 /reload 命令触发不重启进程的配置热重载。
@@ -38,6 +40,7 @@ def build_command_service(
         sleep_service=sleep_service,
         standby_service=standby_service,
         config_reload_callback=config_reload_callback,
+        screenshots=screenshots,
     )
     return service
 

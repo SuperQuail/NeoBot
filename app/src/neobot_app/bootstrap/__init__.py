@@ -926,8 +926,12 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         sleep_service=sleep_service,
         standby_service=standby_service,
         config_reload_callback=_reload_config_from_command,
+        screenshots=browser["screenshots"],
     ),
     )
+    if command_service is not None:
+        # 软重启会重建浏览器实例：截图端口必须跟着换，否则 /help 会打到旧实例
+        command_service.set_screenshots(browser["screenshots"])
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
     credential_manager = build_credential_manager(
@@ -1135,6 +1139,19 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     maintenance_coros = []
     # 睡眠剩余时间播报：睡眠期间每分钟打印剩余时间（仅日志，不回复）
     maintenance_coros.append(sleep_service.ticker())
+    # /help 预渲染缓存（spec(5) §4.2 / R9）：后台异步、不阻塞启动；
+    # 软重启时运行时工厂会重新执行本函数，因此同样会再跑一次。
+    # commands 传可调用对象：协程真正运行时才读命令表，插件命令此时已注册。
+    if command_service is not None:
+        from neobot_app.runtime import help_cache
+
+        maintenance_coros.append(
+            help_cache.make_prerender_coro(
+                commands=command_service.registry.commands,
+                screenshots=browser["screenshots"],
+                log=logger_factory.get_logger("app.commands"),
+            )
+        )
     if (
         sandbox["sandbox_service"] is not None
         and admin_accounts

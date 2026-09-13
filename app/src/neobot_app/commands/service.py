@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from neobot_app.commands.builtin import build_builtin_commands
@@ -40,6 +42,9 @@ class CommandService:
         sleep_service: Any = None,
         standby_service: Any = None,
         config_reload_callback: ConfigReloadCallback | None = None,
+        screenshots: Any = None,
+        image_output_dir: Any = None,
+        help_cache_dir: Any = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -54,6 +59,9 @@ class CommandService:
         self._sleep_service = sleep_service
         self._standby_service = standby_service
         self._config_reload_callback = config_reload_callback
+        self._screenshots = screenshots
+        self._image_output_dir = image_output_dir
+        self._help_cache_dir = help_cache_dir
         if register_builtins:
             for command in build_builtin_commands(self):
                 self._registry.register(command)
@@ -101,6 +109,31 @@ class CommandService:
     def standby_service(self) -> Any:
         """待机服务(/standby /reboot 命令使用;未注入时为 None)。"""
         return self._standby_service
+
+    @property
+    def screenshots(self) -> Any:
+        """HTML 卡片截图端口（/help 等图片命令使用）。
+
+        未显式注入时回落到 html_card 的模块级默认（组合根用 set_screenshots 注入）；
+        两者都没有时返回 None，调用方走降级链。
+        """
+        if self._screenshots is not None:
+            return self._screenshots
+        try:
+            from neobot_app.runtime.html_card import get_screenshots
+
+            return get_screenshots()
+        except Exception:  # pragma: no cover - 导入失败等同不可用
+            return None
+
+    def set_screenshots(self, port: Any) -> None:
+        """注入/替换截图端口（软重启后浏览器实例被重建时刷新）。"""
+        self._screenshots = port
+
+    @property
+    def help_cache_dir(self) -> Any:
+        """/help 缓存目录覆盖（测试注入）；None 表示 <DATA_DIR>/cache/help。"""
+        return self._help_cache_dir
 
     # ── 消息入口 ──
 
@@ -165,8 +198,9 @@ class CommandService:
             self._log(f"命令 /{command.name} 执行失败: {exc}")
             result_text = f"命令执行失败: {exc}"
 
-        if command.sync_reply:
+        if command.sync_reply or context.sync_reply:
             # 同步触发回复管线:结果作为背景内容交给主 Agent 处理
+            # context.sync_reply 为 handler 的按次覆盖（spec(5) §4.1 / D1）
             background = f"命令 /{command.name} 执行结果:\n{result_text}"
             return CommandHandleResult(consumed=True, background=background)
 
@@ -270,6 +304,63 @@ class CommandService:
             self._log(f"markdown 渲染失败,降级文本发送: {exc}")
             return False
 
+        return await self._send_image_path(
+            kind, conv_id, image_path, at_user_id=at_user_id
+        )
+
+    async def send_image_bytes(
+        self,
+        kind: str,
+        conv_id: str,
+        data: bytes,
+        *,
+        at_user_id: int | None = None,
+        filename: str | None = None,
+    ) -> bool:
+        """把 PNG 字节落盘后作为图片发送;成功返回 True,失败返回 False(调用方降级)。
+
+        与 send_markdown_image 同源：同样依赖 file_server 与 adapter,任一缺失即 False。
+        """
+        if not data or self._file_server is None or self._adapter is None:
+            return False
+        try:
+            image_path = self._write_image_bytes(data, filename)
+        except Exception as exc:
+            self._log(f"卡片图片落盘失败,降级文本发送: {exc}")
+            return False
+        return await self._send_image_path(
+            kind, conv_id, image_path, at_user_id=at_user_id
+        )
+
+    def _card_image_dir(self) -> Path:
+        """卡片图片的输出目录：显式注入 > markdown 图片目录 > DATA_DIR/card_images。"""
+        if self._image_output_dir is not None:
+            return Path(self._image_output_dir)
+        converter_dir = getattr(self._markdown_image_converter, "_output_dir", None)
+        if converter_dir:
+            return Path(converter_dir)
+        from neobot_app.core import DATA_DIR
+
+        return Path(DATA_DIR) / "card_images"
+
+    def _write_image_bytes(self, data: bytes, filename: str | None) -> Path:
+        directory = self._card_image_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        name = filename or f"card_{hashlib.sha256(data).hexdigest()[:16]}.png"
+        target = directory / name
+        try:
+            if target.is_file() and target.read_bytes() == data:
+                return target
+        except OSError:  # pragma: no cover - 读失败按需要重写处理
+            pass
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(target)
+        return target
+
+    async def _send_image_path(
+        self, kind: str, conv_id: str, image_path: Any, *, at_user_id: int | None
+    ) -> bool:
         from neobot_app.utils.media_sender import prepare_image_segment
 
         from neobot_contracts.models import ConversationRef
@@ -277,7 +368,11 @@ class CommandService:
         segments: list[dict[str, Any]] = []
         if kind == "group" and at_user_id is not None:
             segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
-        segments.append(prepare_image_segment(self._file_server, image_path))
+        try:
+            segments.append(prepare_image_segment(self._file_server, Path(image_path)))
+        except Exception as exc:
+            self._log(f"命令图片注册失败: {exc}")
+            return False
         conv_ref = ConversationRef(
             kind="group" if kind == "group" else "private", id=str(conv_id)
         )

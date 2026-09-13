@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neobot_app.commands.model import (
     PERM_EVERYONE,
@@ -20,7 +21,10 @@ from neobot_app.panel_auth import (
     generate_password,
     get_panel_password_store,
 )
-from neobot_app.runtime.sleep_service import parse_sleep_duration
+from neobot_app.runtime.sleep_service import (
+    format_sleep_duration,
+    parse_sleep_duration,
+)
 
 if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
@@ -32,11 +36,19 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
     return [
         Command(
             name="help",
-            description="查看可用命令列表;/help <命令名> 查看单个命令的详细说明与参数",
+            description=(
+                "查看可用命令列表(图片卡片,每页 30 条);"
+                "/help <命令名> 查看单个命令的详细说明,/help <页码> 翻页"
+            ),
             permission=PERM_EVERYONE,
-            usage="[命令名]",
+            usage="[命令名] [页码] [--refresh]",
             params=(
                 ("命令名", "可选。查看指定命令的详细说明、参数与权限要求"),
+                ("页码", "可选。纯数字视为页码(越界会提示并显示最接近的合法页)"),
+                (
+                    "--refresh",
+                    "可选。次级管理员及以上：重算命令指纹并重建 /help 预渲染缓存",
+                ),
             ),
             handler=_handle_help,
         ),
@@ -221,9 +233,12 @@ def _render_command_detail_markdown(command: Command) -> str:
 async def _handle_help(ctx: CommandContext) -> str | None:
     """列出当前用户可见的命令;带参数时显示指定命令的详情。
 
-    使用 markdown 渲染器输出为图片发送;渲染失败时降级为纯文本。
+    首选自包含 HTML 卡片(命中预渲染缓存时直接发图),依次降级到
+    markdown→图片与纯文本;任一级成功即视为已回复(spec(5) §4.2 / R5-R9)。
     返回 None 表示已自行发送回复。
     """
+    from neobot_app.runtime import help_cache, help_card
+
     visible = [
         command
         for command in ctx.service.registry.commands()
@@ -231,43 +246,198 @@ async def _handle_help(ctx: CommandContext) -> str | None:
     ]
     visible.sort(key=lambda command: command.name)
 
-    target = None
-    if ctx.args:
-        target = ctx.args[0].lstrip("/")
+    args, refresh = _split_refresh_args(ctx.args)
+    target, requested_page = help_card.parse_help_args(args)
+    cache = help_cache.HelpCache(directory=_help_cache_dir(ctx))
+
+    if refresh:
+        if not ctx.service.permissions.can(ctx.user_id, PERM_SUB_ADMIN):
+            return "你没有权限刷新 /help 缓存(需要权限:次级管理员)。"
+        # 重算指纹、重渲染列表并清理旧文件(--refresh 语义)
+        await help_cache.prerender_help_menu(
+            commands=ctx.service.registry.commands(),
+            screenshots=getattr(ctx.service, "screenshots", None),
+            directory=cache.directory,
+        )
+
+    fingerprint = help_cache.command_fingerprint(ctx.service.registry.commands())
+    perm = _permission_level(ctx.service.permissions, ctx.user_id)
 
     if target:
-        command = ctx.service.registry.get(target)
-        if command is None:
-            text = (
-                f"未找到命令 `/{target}`。\n\n"
-                "可用命令:\n" + "\n".join(f"  {item.help_line}" for item in visible)
-            )
-        elif command not in visible:
-            text = f"命令 `/{target}` 存在,但你没有权限查看其详情(需要权限:{permission_name(command.permission)})。"
-        else:
-            markdown = _render_command_detail_markdown(command)
-            if await ctx.service.send_markdown_image(
-                ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
-            ):
-                return None
-            text = (
-                f"{command.help_line}\n"
-                + ("参数:\n" + "\n".join(f"  {name} — {desc}" for name, desc in command.params))
-            )
-        if await ctx.service.send_markdown_image(ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id):
-            return None
-        return text
+        return await _send_help_detail(
+            ctx, target, visible, cache, fingerprint=fingerprint, perm=perm
+        )
 
-    markdown = _render_command_list_markdown(visible)
+    payload = help_card.build_list_payload(
+        visible, page=requested_page, requested_page=requested_page
+    )
+    # 越界请求要带卡片顶部标注，因此不能命中「没有标注」的缓存图
+    allow_cache = requested_page is None or int(requested_page) == int(payload["page"])
+    return await _send_help_card(
+        ctx,
+        payload,
+        cache,
+        fingerprint=fingerprint,
+        perm=perm,
+        page=int(payload["page"]),
+        pages=int(payload["pages"]),
+        allow_cache=allow_cache,
+    )
+
+
+#: 单张卡片的渲染超时（秒）
+_HELP_CARD_TIMEOUT_SECONDS = 20.0
+#: 命令内兜底超时（秒，在截图超时之上）
+_HELP_COMMAND_TIMEOUT_SECONDS = 25.0
+
+
+def _split_refresh_args(args: Any) -> tuple[list[str], bool]:
+    """剥离 --refresh 标记，返回 (其余参数, 是否请求刷新)。"""
+    tokens = [str(token) for token in (args or ())]
+    refresh = "--refresh" in tokens
+    return [token for token in tokens if token != "--refresh"], refresh
+
+
+def _permission_level(permissions: Any, user_id: int) -> int:
+    """当前用户的权限维度（缓存按维度分份，低权限用户拿不到高权限图）。
+
+    只用 can() 判定：权限管理器与测试替身都实现该方法（不假设更多接口）。
+    """
+    if permissions.can(user_id, PERM_SUPER_ADMIN):
+        return PERM_SUPER_ADMIN
+    if permissions.can(user_id, PERM_SUB_ADMIN):
+        return PERM_SUB_ADMIN
+    return PERM_EVERYONE
+
+
+def _help_cache_dir(ctx: CommandContext) -> Any:
+    """帮助缓存目录覆盖（测试注入）；None 表示用 <DATA_DIR>/cache/help。"""
+    return getattr(ctx.service, "help_cache_dir", None)
+
+
+async def _send_text_with_optional_image(ctx: CommandContext, text: str) -> str | None:
+    """提示类文案：先试既有 markdown→图片，失败则交回命令服务发纯文本。"""
+    if await ctx.service.send_markdown_image(
+        ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id
+    ):
+        return None
+    return text
+
+
+async def _send_help_detail(
+    ctx: CommandContext,
+    target: str,
+    visible: list[Command],
+    cache: Any,
+    *,
+    fingerprint: str,
+    perm: int,
+) -> str | None:
+    """单命令详情卡片（不分页）；未注册 / 无权限时沿用既有提示文案。"""
+    from neobot_app.runtime import help_card
+
+    command = ctx.service.registry.get(target)
+    if command is None:
+        text = (
+            f"未找到命令 `/{target}`。\n\n"
+            "可用命令:\n" + "\n".join(f"  {item.help_line}" for item in visible)
+        )
+        return await _send_text_with_optional_image(ctx, text)
+    if not any(item is command for item in visible):
+        text = (
+            f"命令 `/{target}` 存在,但你没有权限查看其详情"
+            f"(需要权限:{permission_name(command.permission)})。"
+        )
+        return await _send_text_with_optional_image(ctx, text)
+    payload = help_card.build_detail_payload(command)
+    return await _send_help_card(
+        ctx, payload, cache, fingerprint=fingerprint, perm=perm, allow_cache=True
+    )
+
+
+async def _send_help_card(
+    ctx: CommandContext,
+    payload: dict[str, Any],
+    cache: Any,
+    *,
+    fingerprint: str,
+    perm: int,
+    page: int | None = None,
+    pages: int = 1,
+    allow_cache: bool = True,
+) -> str | None:
+    """三级降级发送 /help 卡片：HTML 卡片 → markdown 图片 → 纯文本。
+
+    任一级成功即返回 None（已回复）；全部失败才把纯文本交回命令服务发送，
+    保证用户一定有反馈（spec(5) R8 / A13）。
+    """
+    from neobot_app.runtime import help_card
+    from neobot_app.runtime.html_card import render_card_image
+
+    is_list = payload.get("kind") == "list"
+    png: bytes | None = None
+    if allow_cache:
+        if is_list and page is not None:
+            png = cache.load_list_image(
+                ctx.service.registry.commands(), perm=perm, page=page
+            )
+        elif not is_list:
+            png = cache.load_detail_image(
+                payload.get("command"), perm=perm, fingerprint=fingerprint
+            )
+
+    if png is None:
+        html = help_card.render_payload_html(payload)
+        try:
+            rendered = await asyncio.wait_for(
+                render_card_image(
+                    html,
+                    timeout=_HELP_CARD_TIMEOUT_SECONDS,
+                    screenshots=getattr(ctx.service, "screenshots", None),
+                ),
+                timeout=_HELP_COMMAND_TIMEOUT_SECONDS,
+            )
+            png = rendered if rendered else None
+        except Exception:
+            # 渲染不可用 / 超时：走下一级降级，绝不让命令报错
+            png = None
+        if png:
+            if allow_cache and is_list and page is not None:
+                cache.store_list_image(
+                    png, fingerprint=fingerprint, perm=perm, page=page, pages=pages
+                )
+            elif allow_cache and not is_list:
+                cache.store_detail_image(
+                    png,
+                    command=payload.get("command"),
+                    perm=perm,
+                    fingerprint=fingerprint,
+                )
+
+    send_image_bytes = getattr(ctx.service, "send_image_bytes", None)
+    if (
+        png
+        and callable(send_image_bytes)
+        and await send_image_bytes(
+            ctx.kind,
+            ctx.conv_id,
+            png,
+            at_user_id=ctx.user_id,
+            filename=f"help-{int(perm)}-{page or 'detail'}.png",
+        )
+    ):
+        return None
+
+    markdown = help_card.render_payload_markdown(payload)
     if await ctx.service.send_markdown_image(
         ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
     ):
         return None
-    lines = ["可用命令:"]
-    for command in visible:
-        lines.append(f"  {command.help_line}")
-    lines.append("命令以 / 开头,群聊中需先 @bot。")
-    return "\n".join(lines)
+
+    text = help_card.render_payload_text(payload)
+    if help_card.FALLBACK_HINT not in text:
+        text = f"{text}\n{help_card.FALLBACK_HINT}"
+    return text
 
 
 async def _handle_standby(ctx: CommandContext) -> str:
@@ -319,7 +489,12 @@ def _looks_like_duration(token: str) -> bool:
 
 
 async def _handle_sleep(ctx: CommandContext) -> str:
-    """让 Bot 进入睡眠:睡眠期间群聊消息只接收不回复,被@会唤醒;私聊不受影响。"""
+    """让 Bot 进入睡眠:状态确实变更时交 AI 生成回复,否则直接回文本。
+
+    分支严格按 spec(5) §4.1:无状态变更(缺参数 / 时长非法 / 超上限 /
+    服务缺失)→ 直接回文本、零模型调用;状态已变更 → 探测管线可用性,
+    可用则按次覆盖 ctx.sync_reply 走 AI,不可用则回固定文案(用户一定有反馈)。
+    """
     sleep_service = getattr(ctx.service, "sleep_service", None)
     if sleep_service is None:
         return "睡眠功能不可用(未注入睡眠服务)"
@@ -331,18 +506,66 @@ async def _handle_sleep(ctx: CommandContext) -> str:
     seconds, error = parse_sleep_duration(ctx.args[0])
     if error is not None:
         return error
-    _ok, message = sleep_service.sleep(seconds)
-    return message
+
+    was_sleeping = sleep_service.is_sleeping()
+    remaining_before = sleep_service.remaining_seconds() if was_sleeping else 0
+    ok, message = sleep_service.sleep(seconds)
+    if not ok:
+        # 服务侧校验失败同样视为「无状态变更」:直接回文本,零模型调用
+        return message
+
+    notice = ""
+    if was_sleeping:
+        # R4:重复 /sleep 保留重置语义,但必须明确提示剩余时长与「已重置」
+        notice = (
+            f"已在睡眠中（剩余 {format_sleep_duration(remaining_before)}）；"
+            "已按新时长重置。"
+        )
+    if not _ai_reply_available(ctx):
+        return f"{notice}\n{message}" if notice else message
+
+    ctx.sync_reply = True
+    prompt = sleep_service.sleep_prompt(seconds)
+    return f"{notice}\n{prompt}" if notice else prompt
 
 
 async def _handle_awake(ctx: CommandContext) -> str:
-    """叫醒睡眠中的 Bot。"""
+    """叫醒睡眠中的 Bot:确实唤醒时交 AI 生成回复。"""
     sleep_service = getattr(ctx.service, "sleep_service", None)
     if sleep_service is None:
         return "睡眠功能不可用(未注入睡眠服务)"
-    if sleep_service.wake(reason="awake_command"):
+    if not sleep_service.is_sleeping():
+        # 无状态变更:零模型调用
+        return "我没有在睡觉呀。"
+
+    elapsed = sleep_service.elapsed_seconds()
+    sleep_service.wake(reason="awake_command")
+    if not _ai_reply_available(ctx):
         return "我被叫醒了。"
-    return "我没有在睡觉呀。"
+    ctx.sync_reply = True
+    return sleep_service.awake_prompt(elapsed)
+
+
+def _ai_reply_available(ctx: CommandContext) -> bool:
+    """管线可用性探测:非待机 且 主模型已注册(spec(5) §4.1 / D2)。
+
+    走管线的分支不会再发任何文本(命令服务提前 return),因此必须在
+    「发车前」探测:两个条件都现成可查,避免消息被消费却什么都没说。
+    """
+    standby_service = getattr(ctx.service, "standby_service", None)
+    if standby_service is None:
+        return False
+    try:
+        if standby_service.is_standby():
+            return False
+    except Exception:
+        return False
+    try:
+        from neobot_chat import get_model_registry
+
+        return bool(get_model_registry().names)
+    except Exception:
+        return False
 
 
 async def _handle_add_admin(ctx: CommandContext) -> str:

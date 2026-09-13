@@ -27,6 +27,10 @@ DATA_DIR = get_data_dir()
 ENV_FILE = get_env_file()
 CONFIG_FILE = DATA_DIR / "config.toml"
 CONFIG_BACKUP_DIR = DATA_DIR / "config_backup"
+# 缓存目录：可再生的渲染产物（/help 预渲染卡片等），删掉即回退到即时渲染
+CACHE_DIR = DATA_DIR / "cache"
+# /help 预渲染卡片的缓存目录（spec(5) §4.2 / R9）
+HELP_CACHE_DIR = CACHE_DIR / "help"
 # 插件数据目录：插件配置（config.toml）、独立数据库与鉴权数据都放在各自子目录
 PLUGINS_DATA_DIR = DATA_DIR / "plugins_data"
 # 插件启停记录：与插件配置解耦的独立状态文件
