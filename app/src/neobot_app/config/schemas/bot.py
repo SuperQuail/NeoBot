@@ -165,13 +165,16 @@ class ModelSettings:
         default=1.0,
         metadata={"description": "Top P 采样参数"},
     )
+    # ── 可选参数（spec(4) Part B）：只有列入 enabled_params 才会下发到请求体 ──
+    # 值一律原地保留：未列入 enabled_params 只是不下发，重新加入即恢复。
+    # hidden=True：不出现在通用表单里，改由模型参数区（kind=model_params）按需增删。
     frequency_penalty: float = field(
         default=0.0,
-        metadata={"description": "频率惩罚"},
+        metadata={"description": "频率惩罚", "hidden": True},
     )
     presence_penalty: float = field(
         default=0.0,
-        metadata={"description": "存在惩罚"},
+        metadata={"description": "存在惩罚", "hidden": True},
     )
     image_api: str = field(
         default="auto",
@@ -181,13 +184,32 @@ class ModelSettings:
             "/images/generations（参考图作为 JSON 字段传递）",
             "options": ["auto", "edits", "generations"],
             "options_strict": True,
+            "hidden": True,
         },
     )
     image_reference_param: str = field(
         default="image",
         metadata={
             "description": "generations 模式下参考图的 JSON 字段名（不同中转站可能是 image / images / "
-            "image_url / image_urls / input_image）"
+            "image_url / image_urls / input_image）",
+            "hidden": True,
+        },
+    )
+    enabled_params: List[str] = field(
+        default_factory=list,
+        metadata={
+            "description": "本模型启用的可选参数名清单（spec(4) Part B）：只有列在这里的可选参数才会"
+            "进入请求体；未列入的参数值原样保留在配置里，重新加入即恢复。可用名字见参数目录"
+            "（频率惩罚 / 存在惩罚 / 生图接口形态 / 参考图字段名 / DeepSeek 思考参数）",
+            "hidden": True,
+        },
+    )
+    extra_body: Dict[str, Any] = field(
+        default_factory=dict,
+        metadata={
+            "description": "自定义请求体参数（key = 参数名，value 原样并入请求体）：聊天模型并入聊天"
+            "请求体，生图模型并入生图 payload。键名不得以双下划线（__）开头（内部命名空间）",
+            "hidden": True,
         },
     )
 
@@ -204,6 +226,7 @@ class DeepSeekModelSettings(ModelSettings):
             "description": "思考模式开关（OpenAI 样式）：enabled 开启（默认），disabled 关闭，random 按概率随机开启",
             "options": ["enabled", "disabled", "random"],
             "options_strict": True,
+            "hidden": True,
         },
     )
     deepseek_reasoning_effort: str = field(
@@ -212,12 +235,14 @@ class DeepSeekModelSettings(ModelSettings):
             "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max",
             "options": ["high", "max"],
             "options_strict": True,
+            "hidden": True,
         },
     )
     deepseek_random_thinking_probability: float = field(
         default=0.6,
         metadata={
-            "description": "随机思考开启概率，范围 0.0 到 1.0，仅在思考模式为 random 时生效"
+            "description": "随机思考开启概率，范围 0.0 到 1.0，仅在思考模式为 random 时生效",
+            "hidden": True,
         },
     )
 

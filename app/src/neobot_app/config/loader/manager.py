@@ -42,8 +42,20 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def _build_provider_extra_body(
     provider_name: str,
     settings_config: Any,
+    *,
+    model_type: str = "",
 ) -> dict[str, Any]:
+    """合成 provider 私有键（DeepSeek 思考参数）。
+
+    生图模型一律不注入：这些私有键会在 drawing/service.py 的
+    payload.update(extra_body) 里被无过滤地塞进生图请求体（spec(4) 2.5 的既有缺陷）。
+    """
     if settings_config is None:
+        return {}
+
+    from neobot_app.config.schemas.bot import normalize_model_type
+
+    if normalize_model_type(model_type) == "image":
         return {}
 
     provider_kind = provider_name.strip().casefold().replace("-", "_")
@@ -81,6 +93,101 @@ def _normalize_deepseek_thinking_mode(value: Any) -> str:
     if normalized in {"random"}:
         return "random"
     return "false"
+
+
+def _resolve_enabled_params(
+    settings_config: Any,
+    *,
+    key: str,
+    provider_name: str,
+    model_type: str,
+) -> set[str]:
+    """按 enabled_params + scope 求出真正生效的可选参数名（其余记 warning 后忽略）。
+
+    未知名（不在目录里）与不适用名（scope 不匹配）都必须显式告警：
+    “配了却不生效”是最难排查的黑洞（spec(4) 4.7）。
+    """
+    from neobot_app.config.model_params import resolve_enabled_params
+
+    enabled = list(getattr(settings_config, "enabled_params", None) or [])
+    applied, unknown, inapplicable = resolve_enabled_params(
+        enabled, provider=provider_name, model_type=model_type
+    )
+    for name in unknown:
+        logger.warning(
+            f"模型 {key} 的可选参数 {name} 不在参数目录中，已忽略"
+            "（未知参数请改用 extra_body 自定义参数）"
+        )
+    for name in inapplicable:
+        logger.warning(
+            f"模型 {key} 的可选参数 {name} 不适用于 "
+            f"provider={provider_name or '?'} / model_type={model_type or '?'}，已忽略"
+        )
+    return set(applied)
+
+
+def _build_runtime_extra_body(
+    settings_config: Any,
+    *,
+    key: str,
+    provider_name: str,
+    model_type: str,
+) -> dict[str, Any]:
+    """运行时 extra_body = 用户自定义参数 ∪ provider 内部键（内部键在后，不可覆盖）。"""
+    from neobot_app.config.model_params import extra_body_reserved_keys
+
+    user_extra_body = dict(getattr(settings_config, "extra_body", None) or {})
+    reserved = extra_body_reserved_keys(user_extra_body)
+    if reserved:
+        logger.warning(
+            f"模型 {key} 的自定义参数使用了保留键（__ 前缀，属内部命名空间），已忽略: "
+            + "、".join(reserved)
+        )
+        user_extra_body = {
+            name: value
+            for name, value in user_extra_body.items()
+            if name not in set(reserved)
+        }
+    internal = _build_provider_extra_body(
+        provider_name, settings_config, model_type=model_type
+    )
+    return {**user_extra_body, **internal}
+
+
+def _infer_missing_model_params(existing_data: dict[Any, Any]) -> list[str]:
+    """R12：旧配置缺 enabled_params 时按“值 ≠ schema 默认值”推断一次并写回。
+
+    只在配置文件里**没有** enabled_params 的模型条目上执行；推断结果直接写进待落盘的
+    原始数据（随后由 dataclass_to_toml 补全并原子写回），并登记模型 key 供面板提示
+    「已按旧配置推断，请复核」。
+    """
+    from neobot_app.config.model_params import infer_enabled_params, mark_inferred
+
+    models_raw = existing_data.get("models")
+    if not isinstance(models_raw, dict):
+        return []
+    registry = models_raw.get("registry")
+    if not isinstance(registry, list):
+        return []
+    inferred_keys: list[str] = []
+    for entry in registry:
+        if not isinstance(entry, dict):
+            continue
+        settings_raw = entry.get("settings")
+        if not isinstance(settings_raw, dict) or "enabled_params" in settings_raw:
+            continue
+        inferred = infer_enabled_params(settings_raw)
+        settings_raw["enabled_params"] = inferred
+        key = str(entry.get("key") or "").strip()
+        if key:
+            inferred_keys.append(key)
+        logger.info(
+            f"模型 {key or '?'} 的配置缺少 enabled_params，已按旧配置推断: "
+            + (", ".join(inferred) if inferred else "（无可选参数需要启用）")
+        )
+    if inferred_keys:
+        mark_inferred(inferred_keys)
+    return inferred_keys
 
 
 def _check_placeholders(obj: Any, path: str = "") -> list[str]:
@@ -318,19 +425,40 @@ class Config:
                 ),
                 billing_metric=getattr(pricing_config, "billing_metric", ""),
             )
+            from neobot_app.config.schemas.bot import normalize_model_type
+
+            model_type_value = normalize_model_type(
+                getattr(model_config, "model_type", "chat")
+            )
+            # 只下发 enabled_params 里、且 scope 匹配的可选参数；其余值原地保留在配置里
+            enabled_params = _resolve_enabled_params(
+                settings_config,
+                key=key,
+                provider_name=provider_name,
+                model_type=model_type_value,
+            )
+
+            def _optional(name: str, default: Any) -> Any:
+                if name not in enabled_params:
+                    return default
+                return getattr(settings_config, name, default)
+
             settings = ModelSettings(
                 temperature=getattr(settings_config, "temperature", None),
                 max_output_tokens=getattr(settings_config, "max_output_tokens", None),
                 timeout_seconds=getattr(settings_config, "timeout_seconds", 120.0),
                 top_p=getattr(settings_config, "top_p", None),
-                frequency_penalty=getattr(
-                    settings_config, "frequency_penalty", None
+                frequency_penalty=_optional("frequency_penalty", None),
+                presence_penalty=_optional("presence_penalty", None),
+                extra_body=_build_runtime_extra_body(
+                    settings_config,
+                    key=key,
+                    provider_name=provider_name,
+                    model_type=model_type_value,
                 ),
-                presence_penalty=getattr(settings_config, "presence_penalty", None),
-                extra_body=_build_provider_extra_body(provider_name, settings_config),
-                image_api=str(getattr(settings_config, "image_api", "auto") or "auto"),
+                image_api=str(_optional("image_api", "auto") or "auto"),
                 image_reference_param=str(
-                    getattr(settings_config, "image_reference_param", "image") or "image"
+                    _optional("image_reference_param", "image") or "image"
                 ),
             )
             pending.append(
@@ -344,7 +472,7 @@ class Config:
                     settings,
                     bool(getattr(model_config, "native_vision", False)),
                     bool(getattr(model_config, "use_system_proxy", False)),
-                    str(getattr(model_config, "model_type", "chat") or "chat"),
+                    model_type_value,
                     str(getattr(model_config, "billing_script", "") or "").strip(),
                     dict(getattr(model_config, "billing_config", None) or {}),
                 )
@@ -465,6 +593,10 @@ class Config:
                 f"原因: {load_error}\n"
                 "请修复该文件（或先移走它重新生成）后重试。"
             )
+
+        if file_exists and existing_data:
+            # R12：旧 config.toml 缺 enabled_params 时推断一次并写回（不丢值、不改行为）
+            _infer_missing_model_params(existing_data)
 
         toml_doc, missing_required, missing_optional = dataclass_to_toml(
             schema, existing_data if file_exists else None, is_root=True

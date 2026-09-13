@@ -14,6 +14,39 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
 - `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式。`model_type = "vision"` 的图像识别模型**无需配置** `native_vision`，一律按原生视觉处理（原生视觉回退路由本就按「图片原样发送」处理）
 
+### `settings` 的语义：基础参数 vs 可选参数（spec(4) Part B）
+
+`settings` 里的参数分三类，**「是否下发到请求体」由 `enabled_params` 决定**：
+
+| 类别 | 参数 | 行为 |
+|---|---|---|
+| **基础参数**（常显） | `temperature` / `max_output_tokens` / `timeout_seconds` / `top_p` | 始终下发 |
+| **可选参数** | `frequency_penalty` / `presence_penalty` / `image_api` / `image_reference_param` / DeepSeek 思考三项（`deepseek_thinking_mode`：enabled/disabled/random、`deepseek_reasoning_effort`：high/max、`deepseek_random_thinking_probability`） | **列在 `settings.enabled_params` 里才下发**；未列入的值原地保留，只是不下发（DeepSeek 思考三项例外，见下条） |
+| **自定义参数** | `[models.registry.settings.extra_body]` 下的任意键值 | 始终原样并入请求体（聊天进聊天请求体、生图进生图 payload）；键名不得以 `__` 开头（内部命名空间） |
+
+- **为什么不把未用的参数删掉**：参数值保留在配置里，面板「移除参数」只从 `enabled_params` 删名，
+  重新添加即恢复，因此迁移与回退都不会丢值。
+- **scope（适用范围）按归一化值判断**，不做原始字符串白名单：
+  - `provider` 归一为 `deepseek` / `openai` / `anthropic`（其它名字按 OpenAI 兼容处理）；
+    `DeepSeek`、`deepseek-offical`、`deepseek_official` 命中同一条 DeepSeek 规则。
+  - `model_type` 小写归一（未知值原样保留）。
+  - `frequency_penalty` / `presence_penalty` 只适用于 `openai` / `deepseek`
+    （Anthropic provider 不接受这两项）；`image_api` / `image_reference_param` 只适用于
+    `model_type = "image"`；DeepSeek 思考三项只适用于 `deepseek` provider 且**非生图 / 非 TTS** 模型。
+- 注册时会校验：`enabled_params` 里**不在目录**（拼写错误 / 手改 TOML）或**与当前模型 scope 不匹配**
+  的名字一律记 warning 后忽略，面板把这两类渲染成警告行——「配了却不生效」不允许静默。
+- **provider 私有键与生图 payload**：DeepSeek 思考参数在注册时合成 `__deepseek_*__` 私有键，
+  生图模型（`model_type = "image"`）一律不注入，避免私有键被无过滤地并入生图请求体。
+- ⚠️ **DeepSeek 思考三项的例外（有意保留，勿当 bug）**：这三项在运行时是**由 provider 私有键合成**、
+  按配置值**始终生效**，不受 `enabled_params` 门控——只有这样才不会让既有配置
+  （尤其是连 `[models.registry.settings]` 段都没有的条目，其思考参数取 schema 默认值）
+  在升级后突然丢掉思考模式。它们在 `enabled_params` 里的唯一作用是**面板展示口径与旧配置推断**：
+  列进去就出现在「已添加参数」区（可编辑值、可移除），移除不会改变请求体内容。
+  真正**严格受 `enabled_params` 门控**的是四个真实请求体参数
+  （`frequency_penalty` / `presence_penalty` / `image_api` / `image_reference_param`）。
+- 旧配置（没有 `enabled_params`）首次加载时按「值 ≠ 默认值 ⇒ 视为已启用」推断一次并写回配置，
+  面板会提示「已按旧配置推断，请复核」。
+
 调用方在 `[models.assignments]` 中只保存 key，因此同一个模型可以被多个调用方复用：
 
 | 调用方字段 | 默认 key | 用途 |
