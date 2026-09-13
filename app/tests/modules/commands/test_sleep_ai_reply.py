@@ -143,14 +143,14 @@ async def test_awake_with_change_goes_to_pipeline(registry: ModelRegistrySpy) ->
     assert not sleep_service.is_sleeping()
 
 
-# ── A5：无状态变更 → 零模型调用 ──
+# ── 无状态变更也交 agent（用户 2026-09-13 要求：除纯工具命令外都以 agent 互动为主）──
 
 
 @pytest.mark.parametrize("text", ["/sleep 2x", "/sleep 99h", "/sleep", "/awake"])
-async def test_no_state_change_never_probes_model(
+async def test_no_state_change_also_goes_to_agent(
     registry: ModelRegistrySpy, text: str
 ) -> None:
-    """A5：无状态变更 → 回明确文本，且连模型注册表都不探测（零模型调用）。"""
+    """时长非法 / 缺参数 / 未睡眠时 awake 也要交主 Agent 组织回复，而不是回固定提示。"""
     sleep_service = SleepService()
     sent: list[str] = []
     service = _service(
@@ -162,14 +162,40 @@ async def test_no_state_change_never_probes_model(
     )
 
     assert result.consumed is True
-    assert result.background is None  # 未交管线 == 未发生任何模型调用
-    assert sent, "无状态变更也必须给用户明确反馈"
-    assert registry.reads == 0
+    assert result.background is not None, "能调模型就必须交管线，不得直接回固定提示"
+    assert sent == [], "走管线的分支不再自行发文本"
+    assert registry.reads >= 1, "必须先探测管线可用性"
+    assert "不要复述本条状态说明" in result.background
     assert not sleep_service.is_sleeping()
 
 
-async def test_sleep_without_service_is_plain_text(registry: ModelRegistrySpy) -> None:
-    """A5/A6：睡眠服务缺失 → 直接回文本，零模型调用。"""
+async def test_no_state_change_still_explains_the_facts(
+    registry: ModelRegistrySpy,
+) -> None:
+    """交给 agent 的内容必须带**事实**，否则模型无从回答（时长非法 / 缺参数 / 未睡眠）。"""
+    sleep_service = SleepService()
+    service = _service(
+        sleep_service=sleep_service, standby=StandbyStub(False), sent=[]
+    )
+
+    bad = await service.handle_message(
+        _message("/sleep 2x"), kind="group", queue_key="42"
+    )
+    assert bad.background is not None and "时长不合法" in bad.background
+
+    missing = await service.handle_message(
+        _message("/sleep"), kind="group", queue_key="42"
+    )
+    assert missing.background is not None and "没有给出时长" in missing.background
+
+    awake = await service.handle_message(
+        _message("/awake"), kind="group", queue_key="42"
+    )
+    assert awake.background is not None and "并没有在睡觉" in awake.background
+
+
+async def test_sleep_without_service_goes_to_agent(registry: ModelRegistrySpy) -> None:
+    """睡眠服务缺失：同样交 agent 自然告知，而不是直接回固定文案。"""
     sent: list[str] = []
     service = _service(sleep_service=None, standby=StandbyStub(False), sent=sent)
 
@@ -177,9 +203,30 @@ async def test_sleep_without_service_is_plain_text(registry: ModelRegistrySpy) -
         _message("/sleep 1h"), kind="group", queue_key="42"
     )
 
-    assert result.background is None
-    assert sent and "睡眠功能不可用" in sent[0]
-    assert registry.reads == 0
+    assert result.background is not None
+    assert "睡眠功能当前不可用" in result.background
+    assert sent == []
+
+
+async def test_no_state_change_degrades_to_fixed_text_without_pipeline() -> None:
+    """管线不可用时（待机中）无状态变更的分支仍必须回固定文案，保证用户有反馈。"""
+    sleep_service = SleepService()
+    sent: list[str] = []
+    service = _service(
+        sleep_service=sleep_service, standby=StandbyStub(True), sent=sent
+    )
+
+    no_args = await service.handle_message(
+        _message("/sleep"), kind="group", queue_key="42"
+    )
+    assert no_args.background is None
+    assert sent and "请提供睡眠时长" in sent[0]
+
+    not_sleeping = await service.handle_message(
+        _message("/awake"), kind="group", queue_key="42"
+    )
+    assert not_sleeping.background is None
+    assert sent[-1] == "我没有在睡觉呀。"
 
 
 # ── A6：管线不可用 → 固定文案 ──

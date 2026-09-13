@@ -488,31 +488,68 @@ def _looks_like_duration(token: str) -> bool:
     return bool(re.fullmatch(r"\s*\d+(?:\.\d+)?\s*[A-Za-z]{0,2}\s*", token or ""))
 
 
-async def _handle_sleep(ctx: CommandContext) -> str:
-    """让 Bot 进入睡眠:状态确实变更时交 AI 生成回复,否则直接回文本。
+#: 交主管线组织回复时附在「事实」后面的固定要求（与提示词分区措辞一致）。
+_AGENT_REPLY_TAIL = "请用你自己的语气自然回应一句，不要复述本条状态说明。"
 
-    分支严格按 spec(5) §4.1:无状态变更(缺参数 / 时长非法 / 超上限 /
-    服务缺失)→ 直接回文本、零模型调用;状态已变更 → 探测管线可用性,
-    可用则按次覆盖 ctx.sync_reply 走 AI,不可用则回固定文案(用户一定有反馈)。
+
+def _agent_or_fixed(ctx: CommandContext, fact: str, *, fixed: str) -> str:
+    """命令回复策略:凡是能调模型,就交主 Agent 组织回复;固定文案只作兜底。
+
+    设计原则(用户 2026-09-13 明确要求):**除了语义明确的纯工具命令(如 /help、
+    /status、纯查库的 /mg 积分),所有命令都以 agent 互动为主**——包括「时长非法」
+    「未在睡眠」这类无状态变更的分支,也应由模型自然地回应,而不是回一句固定提示。
+
+    走管线时命令服务会把返回值包成「命令 /x 执行结果:\n<这里的内容>」交给主管线,
+    因此这里给的是**事实 + 自然回应要求**,不是可直接展示的成品文案;
+    只有在管线确实不可用(待机中 / 主模型未注册)时才回 ``fixed`` 保证用户一定有反馈。
+    """
+    if _ai_reply_available(ctx):
+        ctx.sync_reply = True
+        return f"{fact}\n{_AGENT_REPLY_TAIL}"
+    return fixed
+
+
+async def _handle_sleep(ctx: CommandContext) -> str:
+    """让 Bot 进入睡眠:一律交主 Agent 组织回复,固定文案只作兜底。
+
+    分支覆盖:服务缺失 / 缺参数 / 时长非法 / 超上限 / 重复执行 / 正常进入睡眠——
+    能调模型的分支都走 ``ctx.sync_reply`` 交给主管线,只在管线不可用时回固定文案。
     """
     sleep_service = getattr(ctx.service, "sleep_service", None)
     if sleep_service is None:
-        return "睡眠功能不可用(未注入睡眠服务)"
+        return _agent_or_fixed(
+            ctx,
+            "用户执行了 /sleep，但睡眠功能当前不可用(未注入睡眠服务)。",
+            fixed="睡眠功能不可用(未注入睡眠服务)",
+        )
     if not ctx.args:
-        return (
-            "请提供睡眠时长,例如: /sleep 2h"
-            "(支持 30s / 10m / 2h / 1d,裸数字按分钟,最多 12 小时)"
+        return _agent_or_fixed(
+            ctx,
+            "用户想让你去睡觉，但没有给出时长。正确用法:/sleep <时长>,"
+            "例如 30m / 2h / 1d(裸数字按分钟,最多 12 小时)。",
+            fixed=(
+                "请提供睡眠时长,例如: /sleep 2h"
+                "(支持 30s / 10m / 2h / 1d,裸数字按分钟,最多 12 小时)"
+            ),
         )
     seconds, error = parse_sleep_duration(ctx.args[0])
     if error is not None:
-        return error
+        return _agent_or_fixed(
+            ctx,
+            f"用户想让你去睡觉，但时长不合法:{error}",
+            fixed=error,
+        )
 
     was_sleeping = sleep_service.is_sleeping()
     remaining_before = sleep_service.remaining_seconds() if was_sleeping else 0
     ok, message = sleep_service.sleep(seconds)
     if not ok:
-        # 服务侧校验失败同样视为「无状态变更」:直接回文本,零模型调用
-        return message
+        # 服务侧校验失败(超上限等)同样交给 agent 自然回应
+        return _agent_or_fixed(
+            ctx,
+            f"用户想让你去睡觉，但没能进入睡眠:{message}",
+            fixed=message,
+        )
 
     notice = ""
     if was_sleeping:
@@ -530,13 +567,20 @@ async def _handle_sleep(ctx: CommandContext) -> str:
 
 
 async def _handle_awake(ctx: CommandContext) -> str:
-    """叫醒睡眠中的 Bot:确实唤醒时交 AI 生成回复。"""
+    """叫醒 Bot:一律交主 Agent 组织回复,固定文案只作兜底。"""
     sleep_service = getattr(ctx.service, "sleep_service", None)
     if sleep_service is None:
-        return "睡眠功能不可用(未注入睡眠服务)"
+        return _agent_or_fixed(
+            ctx,
+            "用户执行了 /awake，但睡眠功能当前不可用(未注入睡眠服务)。",
+            fixed="睡眠功能不可用(未注入睡眠服务)",
+        )
     if not sleep_service.is_sleeping():
-        # 无状态变更:零模型调用
-        return "我没有在睡觉呀。"
+        return _agent_or_fixed(
+            ctx,
+            "用户执行了 /awake，但你当前并没有在睡觉。",
+            fixed="我没有在睡觉呀。",
+        )
 
     elapsed = sleep_service.elapsed_seconds()
     sleep_service.wake(reason="awake_command")
