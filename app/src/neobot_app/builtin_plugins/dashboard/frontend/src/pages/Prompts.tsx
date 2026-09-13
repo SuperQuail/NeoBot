@@ -28,7 +28,9 @@ export default function Prompts() {
   const editable = payload?.editable !== false;
 
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [draft, setDraft] = useState('');
+  // 本地「未保存的编辑」。编辑器内容由它和服务器值**派生**（见下方 draft），
+  // 不再用 useEffect 把服务器值写回 state —— 那种写回是异步的，见下方注释。
+  const [edit, setEdit] = useState<Selection & { value: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<{ rendered: string; unresolved: string[] } | null>(null);
   const [previewError, setPreviewError] = useState('');
@@ -47,18 +49,26 @@ export default function Prompts() {
     return section?.keys.find((item) => item.path === selection.path) || null;
   }, [sections, selection]);
 
-  // 把编辑器同步为「当前生效值」。
+  // 编辑器内容 = 本地覆盖（如果有）优先，否则跟随服务器当前值。
   //
-  // 依赖必须是**键 + 值**，不能是 current 对象本身：列表刷新时 current 换的是
-  // 引用而不是内容，以对象作依赖会让用户在刷新瞬间输入的内容被同值的新对象覆盖
-  // 回旧值（表现为「防抖预览拿到的还是旧模板」的竞态，CI 上偶发失败）。
-  // 用值作依赖后：同键同值 → 不打扰草稿；切换键或值真的变了（如「恢复默认」）→ 正常同步。
+  // 这里必须是**纯派生**，不能再用 useEffect 去 setDraft(服务器值)：被动副作用是
+  // 异步冲刷的（commit 之后才跑，测试环境里还会跨一个宏任务），一旦这次写入排在用户
+  // 输入之后落地，就会把刚敲进去的草稿冲回编辑前的旧值 —— 防抖预览和保存于是都拿到
+  // 旧模板（CI 上偶发失败就是这个顺序问题，仅靠「依赖写成键+值」治不了根）。
+  // 派生之后不存在任何会覆盖用户输入的写入，谁先谁后都不再影响结果；
+  // 刷新拿到「同键同值的新对象」同样不打扰草稿（值没变，派生结果就不变）。
   const currentValue = current?.value ?? '';
+  const override =
+    edit && selection && edit.section === selection.section && edit.path === selection.path
+      ? edit.value
+      : null;
+  const draft = override ?? currentValue;
+
+  // 切换键时丢掉上一个键的预览（纯展示状态，不碰草稿）
   useEffect(() => {
-    setDraft(currentValue);
     setPreview(null);
     setPreviewError('');
-  }, [selection?.section, selection?.path, currentValue]);
+  }, [selection?.section, selection?.path]);
 
   // 实时预览：纯文本键不渲染模板
   useEffect(() => {
@@ -88,14 +98,21 @@ export default function Prompts() {
 
   const dirty = !!current && draft !== current.value;
 
+  /** 丢掉「正好是这一份值」的本地覆盖；若期间用户又改了则保留 */
+  const dropOverride = (target: Selection, value: string) => {
+    setEdit((prev) =>
+      prev && prev.section === target.section && prev.path === target.path && prev.value === value
+        ? null
+        : prev,
+    );
+  };
+
   const save = async () => {
     if (!current || !selection) return;
+    const target = { section: selection.section, path: selection.path };
+    const value = draft;
     setSaving(true);
-    const result = await api.promptsSave({
-      section: selection.section,
-      path: selection.path,
-      value: draft,
-    });
+    const result = await api.promptsSave({ ...target, value });
     setSaving(false);
     if (!result.ok) {
       toast(result.error || '保存失败', 'err');
@@ -103,16 +120,18 @@ export default function Prompts() {
     }
     toast(result.data?.message || '已保存', 'ok');
     await query.refetch();
+    // 存盘成功后丢掉本地覆盖，跟随服务器值（后端可能做了归一化）。
+    // 用函数式更新比对「当时保存的那一份」：请求期间用户又改了就保留新输入。
+    dropOverride(target, value);
   };
 
   const reset = async () => {
     if (!current || !selection) return;
     if (!window.confirm('恢复该键的内置默认提示词？自定义内容会被删除。')) return;
+    const target = { section: selection.section, path: selection.path };
+    const value = draft;
     setSaving(true);
-    const result = await api.promptsReset({
-      section: selection.section,
-      path: selection.path,
-    });
+    const result = await api.promptsReset(target);
     setSaving(false);
     if (!result.ok) {
       toast(result.error || '恢复失败', 'err');
@@ -120,6 +139,8 @@ export default function Prompts() {
     }
     toast(result.data?.message || '已恢复默认', 'ok');
     await query.refetch();
+    // 恢复默认后编辑器要显示新的默认值：丢掉当时那一份本地覆盖
+    dropOverride(target, value);
   };
 
   const unavailable = !query.loading && sections.length === 0;
@@ -173,7 +194,13 @@ export default function Prompts() {
                           type="button"
                           className={'prompt-key' + (active ? ' active' : '')}
                           aria-current={active}
-                          onClick={() => setSelection({ section: section.name, path: item.path })}
+                          onClick={() => {
+                            // 重复点当前键保持无副作用（原先就如此）
+                            if (active) return;
+                            // 与 selection 同一批处理，顺序确定；切键即丢弃未保存的草稿
+                            setSelection({ section: section.name, path: item.path });
+                            setEdit(null);
+                          }}
                         >
                           <span>{keyLabel(item)}</span>
                           {item.overridden && <span className="tag warn">已覆盖</span>}
@@ -218,7 +245,14 @@ export default function Prompts() {
                   aria-label="提示词内容"
                   spellCheck={false}
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    if (!selection) return;
+                    setEdit({
+                      section: selection.section,
+                      path: selection.path,
+                      value: event.target.value,
+                    });
+                  }}
                 />
 
                 {current.placeholders.length > 0 && (
