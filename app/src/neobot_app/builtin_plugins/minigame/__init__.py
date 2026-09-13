@@ -37,6 +37,11 @@ from .games.checkin import format_points_text
 from .migrations import DATABASE_FILENAME, build_migrations
 from .models import Base
 from .service import MinigameService
+from .themes import (
+    register_minigame_themes,
+    resolve_theme,
+    unregister_minigame_themes,
+)
 
 #: 最终工具名的前缀：框架按 {plugin}__{tool} 生成（插件名 = minigame）
 TOOL_PREFIX = "minigame"
@@ -186,6 +191,9 @@ class MinigamePlugin:
         self._closed_sessions: list[dict[str, Any]] = []
         self._keyword_hits: list[str] = []
         self._rng = random.Random()
+        # 卡片主题用独立的随机源：不消耗玩法本身的随机数（签到分数 / 抽签档位 / 接龙目标）
+        self._theme_rng = random.Random()
+        self._theme_memo: dict[str, str] = {}
         self._monotonic = time.monotonic
         self._logger: Any = None
 
@@ -202,6 +210,8 @@ class MinigamePlugin:
     ) -> None:
         self.ctx = ctx
         self._logger = getattr(ctx, "logger", None)
+        # 卡片主题随插件一起注册 / 注销（内置主题由渲染器自己注册，这里只加本插件的）
+        register_minigame_themes()
         raw = getattr(ctx, "config", None) or {}
         self.config = (
             raw
@@ -230,6 +240,8 @@ class MinigamePlugin:
     async def unload(self) -> None:
         self.chengyu_sessions.clear()
         self._latest = None
+        self._theme_memo.clear()
+        unregister_minigame_themes()
         ctx = self.ctx
         registrar = getattr(ctx, "app_commands", None)
         if registrar is not None:
@@ -250,6 +262,42 @@ class MinigamePlugin:
 
     def game_by_id(self, game_id: str) -> Game | None:
         return self._games_by_id.get(str(game_id))
+
+    # ── 卡片主题 ─────────────────────────────────────────────────
+
+    def pick_card_theme(self, game_id: str, *, cache_key: str = "") -> str:
+        """选出本次卡片的主题并记日志。
+
+        - random（默认）：从该玩法的候选主题池随机；
+        - fixed：固定用配置 theme，留空则用该玩法的默认主题；
+        - cache_key 非空时结果会被记住（同一结果的卡片重发用同一主题，
+          例如当天重复请求抽签仍然是同一张图）。
+        """
+        config = self.config
+        mode = str(getattr(config, "theme_mode", "random") or "random")
+        configured = str(getattr(config, "theme", "") or "")
+        memo_key = f"{game_id}|{cache_key}" if cache_key else ""
+        if memo_key:
+            cached = self._theme_memo.get(memo_key)
+            if cached:
+                return cached
+        theme = resolve_theme(
+            game_id, mode=mode, theme=configured, rng=self._theme_rng
+        )
+        if memo_key:
+            if len(self._theme_memo) >= 64:
+                self._theme_memo.pop(next(iter(self._theme_memo)))
+            self._theme_memo[memo_key] = theme
+        logger = self._logger
+        info = getattr(logger, "info", None)
+        if callable(info):
+            try:
+                info(
+                    f"小游戏卡片主题：玩法 {game_id}，模式 {mode}，本次使用 {theme}"
+                )
+            except Exception:  # pragma: no cover - 日志失败不影响出图
+                pass
+        return theme
 
     # ── 渲染与发图（命令通道）─────────────────────────────────────
 

@@ -13,7 +13,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
+from ..art import checkin_art
+from ..themes import default_theme
 from . import Game, GameRequest
 
 HELP_TOKENS = ("帮助", "help", "规则", "?")
@@ -29,22 +32,48 @@ READONLY_NOTICE = "积分本期只提供查看：不能消费、不能兑换、�
 class CheckinCard:
     title: str
     subtitle: str
-    rows: list[tuple[str, str]] = field(default_factory=list)
+    #: 有仪式感的三块指标：(标签, 值, 色调)
+    stats: list[tuple[str, str, str]] = field(default_factory=list)
+    #: 明细行（连续天数 / 明细）
+    details: list[tuple[str, str]] = field(default_factory=list)
+    #: 日历页与点阵需要的程序数据
+    day: str = ""
+    streak: int = 0
+    already: bool = False
     footer: str = READONLY_NOTICE
 
 
-def build_card_html(card: CheckinCard) -> str:
-    from neobot_app.runtime.html_card import render_card_html
+def build_card_html(card: CheckinCard, *, theme: str = "") -> str:
+    """签到卡片：日历页 + 打卡印章 + 连续天数点阵 + 三块指标。"""
+    from neobot_app.runtime.html_card import inject_slot, render_card_html
 
-    return render_card_html(
+    blocks: list[dict[str, Any]] = [
+        {"kind": "slot", "name": "checkin-art"},
+    ]
+    if card.stats:
+        blocks.append(
+            {"kind": "stats", "cols": min(3, len(card.stats)), "items": list(card.stats)}
+        )
+    if card.details:
+        blocks.append(
+            {
+                "kind": "kv",
+                "title": "连续与明细",
+                "items": [list(row) for row in card.details],
+            }
+        )
+    blocks.append({"kind": "note", "text": READONLY_NOTICE, "tone": "muted"})
+    html = render_card_html(
         title=card.title,
         subtitle=card.subtitle,
-        blocks=[
-            {"kind": "kv", "items": [list(row) for row in card.rows]},
-            {"kind": "note", "text": READONLY_NOTICE},
-        ],
+        blocks=blocks,
         footer=card.footer,
-        theme="game",
+        theme=theme or default_theme("checkin"),
+    )
+    return inject_slot(
+        html,
+        "checkin-art",
+        checkin_art(day=card.day, streak=card.streak, already=card.already),
     )
 
 
@@ -52,7 +81,9 @@ def build_card_text(card: CheckinCard) -> str:
     lines = [card.title]
     if card.subtitle:
         lines.append(card.subtitle)
-    for label, value in card.rows:
+    for label, value, _tone in card.stats:
+        lines.append(f"{label}：{value}")
+    for label, value in card.details:
         lines.append(f"{label}：{value}")
     lines.append(READONLY_NOTICE)
     return "\n".join(lines)
@@ -110,12 +141,12 @@ class CheckinGame(Game):
         total = int(result.get("total") or 0)
         if already:
             subtitle = "今天已经签过啦，重复签到不加分"
-            rows = [
-                ("今日签到", "已完成（本次未重复加分）"),
-                ("当日获得", f"{score} 分"),
-                ("连续签到", f"{streak} 天"),
-                ("当前总分", f"{total}"),
+            stats = [
+                ("当日获得", f"{score} 分", "accent"),
+                ("连续签到", f"{streak} 天", "ok"),
+                ("当前总分", f"{total}", "muted"),
             ]
+            details = [("今日签到", "已完成（本次未重复加分）")]
             situation = (
                 f"用户今天已经签过到了：当日签到获得 {score} 分，连续签到 {streak} 天，"
                 f"当前总分 {total}。**本次重复签到没有加分，也没有写库**。"
@@ -125,11 +156,14 @@ class CheckinGame(Game):
             bonus = int(result.get("bonus") or 0)
             base = int(result.get("base") or 0)
             subtitle = "签到成功"
-            rows = [
+            stats = [
+                ("本次得分", f"+{score} 分", "accent"),
+                ("连续奖励", (f"+{bonus} 分" if bonus else "已达上限"), "ok"),
+                ("当前总分", f"{total}", "warn"),
+            ]
+            details = [
                 ("本次签到", f"{base} 分" + (f" + 连续附加 {bonus} 分" if bonus else "")),
-                ("本次合计", f"+{score} 分"),
                 ("连续签到", f"{streak} 天"),
-                ("当前总分", f"{total}"),
             ]
             situation = (
                 f"签到成功：随机 {base} 分"
@@ -141,11 +175,21 @@ class CheckinGame(Game):
                 "不要复述本条说明，也不要承诺任何积分消费 / 兑换。"
             )
         card = CheckinCard(
-            title="每日签到", subtitle=subtitle, rows=rows, footer=READONLY_NOTICE
+            title="每日签到",
+            subtitle=subtitle,
+            stats=stats,
+            details=details,
+            day=str(result.get("day") or ""),
+            streak=streak,
+            already=already,
+            footer=READONLY_NOTICE,
         )
         if request.command_ctx is None:
             return build_card_text(card)
-        png = await request.runtime.render_card(build_card_html(card))
+        theme = request.runtime.pick_card_theme(
+            self.id, cache_key=f"{request.user_id}:{result.get('day') or ''}"
+        )
+        png = await request.runtime.render_card(build_card_html(card, theme=theme))
         if png:
             await request.runtime.send_card(request.command_ctx, png, filename=CARD_FILENAME)
         # §4.7：程序不发固定文案 —— 事实交主管线，由 agent 组织回复
@@ -164,3 +208,4 @@ __all__ = [
     "build_card_text",
     "format_points_text",
 ]
+

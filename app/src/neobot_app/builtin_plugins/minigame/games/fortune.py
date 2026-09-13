@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..art import fortune_art
+from ..themes import default_theme
 from . import Game, GameRequest
 
 HELP_TOKENS = ("帮助", "help", "规则", "?")
@@ -70,26 +72,69 @@ def pick_level(rng: Any, *, include_bad_luck: bool) -> FortuneLevel:
     return table[-1]
 
 
+#: 档位 -> 卡片色调（stats 的 tone）
+LEVEL_TONES: dict[str, str] = {
+    "great": "accent",
+    "good": "accent",
+    "middle": "ok",
+    "small": "ok",
+    "flat": "muted",
+    "small_bad": "warn",
+    "bad": "danger",
+}
+
+
 @dataclass
 class FortuneCard:
     title: str
     subtitle: str
     rows: list[tuple[str, str]] = field(default_factory=list)
+    #: 落库的档位 key（决定竹签配色与色调）
+    level_key: str = ""
+    #: 竹签上方的程序说明（只放日期等程序文本，绝不放用户输入）
+    caption: str = ""
     footer: str = "今日运势每天只抽一次；不附带积分"
 
 
-def build_card_html(card: FortuneCard) -> str:
-    from neobot_app.runtime.html_card import render_card_html
+def build_card_html(card: FortuneCard, *, theme: str = "") -> str:
+    """抽签卡片：真竹签（竹节 / 斜切签头 / 竖向艺术体文字）+ 签筒 + 签架。
 
-    return render_card_html(
+    竹签上的字只可能是内置档位常量（art.safe_level_label 会再过滤一次），
+    caption 也只用程序产出的日期，因此美术片段里不含任何用户输入。
+    """
+    from neobot_app.runtime.html_card import inject_slot, render_card_html
+
+    tone = LEVEL_TONES.get(str(card.level_key or "").strip(), "")
+    stats: list[list[str]] = []
+    items: list[list[str]] = []
+    for label, value in card.rows:
+        if label == "运势":
+            stats.append([label, value, tone])
+        else:
+            items.append([label, value])
+    blocks: list[dict[str, Any]] = [
+        {"kind": "slot", "name": "fortune-art"},
+    ]
+    if stats:
+        blocks.append({"kind": "stats", "cols": min(3, len(stats)), "items": stats})
+    if items:
+        blocks.append({"kind": "kv", "items": items})
+    blocks.append({"kind": "note", "text": card.footer, "tone": "muted"})
+    html = render_card_html(
         title=card.title,
         subtitle=card.subtitle,
-        blocks=[
-            {"kind": "kv", "items": [list(row) for row in card.rows]},
-            {"kind": "note", "text": card.footer},
-        ],
+        blocks=blocks,
         footer="",
-        theme="fortune",
+        theme=theme or default_theme("fortune"),
+    )
+    return inject_slot(
+        html,
+        "fortune-art",
+        fortune_art(
+            label=stats[0][1] if stats else "",
+            key=card.level_key,
+            caption=card.caption,
+        ),
     )
 
 
@@ -167,11 +212,17 @@ class FortuneGame(Game):
                 ("签文", result_text),
                 ("日期", today),
             ],
+            level_key=level.key,
+            caption="今日一签",
             footer="今日运势每天只抽一次；不附带积分",
         )
         if request.command_ctx is None:
             return build_card_text(card)
-        png = await request.runtime.render_card(build_card_html(card))
+        # 同一天同一用户重发时沿用同一主题：视觉上确实是「同一张签」
+        theme = request.runtime.pick_card_theme(
+            self.id, cache_key=f"{user_id}:{today}"
+        )
+        png = await request.runtime.render_card(build_card_html(card, theme=theme))
         if png:
             await request.runtime.send_card(
                 request.command_ctx, png, filename=CARD_FILENAME
@@ -195,6 +246,7 @@ class FortuneGame(Game):
 __all__ = [
     "BAD_LUCK_LEVELS",
     "CARD_FILENAME",
+    "LEVEL_TONES",
     "FORTUNE_LEVELS",
     "FORTUNE_TABLE",
     "FortuneCard",

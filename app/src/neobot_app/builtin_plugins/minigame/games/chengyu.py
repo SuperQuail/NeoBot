@@ -8,12 +8,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
+from ..art import chengyu_progress, chengyu_scroll
+from ..themes import default_theme
 from . import Game, GameRequest
 from .bottle import split_head
 
 #: 每条提交的积分
 CHENGYU_STEP_SCORE = 1
+
+#: 卡片文件名
+CARD_FILENAME = "chengyu.png"
+
+#: 卷轴上的程序状态文字（只可能是这几个常量之一，不含用户输入）
+STATUS_START = "开局"
+STATUS_PLAYING = "接龙中"
+STATUS_PENDING = "待判定"
+STATUS_DONE = "本局结束"
+
+#: 卡片页脚（同样是程序常量，不含用户输入）
+FOOTER_PLAYING = "是否算成语、接不接得上、是否重复由 AI 判定；达成目标额外加分"
+FOOTER_PENDING = "这一步是否算数由 AI 判定，判定通过才会记入本局"
+FOOTER_CLOSED = "本局已结束；超时或未达成不扣分"
 
 #: 达成目标 N 的额外奖励 = N
 CHENGYU_WIN_BONUS_RATIO = 1
@@ -54,6 +71,108 @@ class ChengyuSession:
     @property
     def progress(self) -> str:
         return f"第 {self.steps}/{self.target} 条"
+
+
+
+#: 档位 -> 卡片色调（stats 的 tone）
+TONE_OK = "ok"
+TONE_MUTED = "muted"
+
+
+@dataclass
+class ChengyuCard:
+    """成语接龙卡片所需的全部数据（HTML 与纯文本共用同一份）。"""
+
+    title: str
+    subtitle: str
+    target: int
+    steps: int
+    max_steps: int
+    step_timeout_seconds: float = DEFAULT_STEP_TIMEOUT_SECONDS
+    status: str = STATUS_PLAYING
+    words: list[str] = field(default_factory=list)
+    word_pending: str = ""
+    footer: str = ""
+
+
+def build_card_html(card: ChengyuCard, *, theme: str = "") -> str:
+    """渲染成语接龙卡片：卷轴 + 毛笔 + 印章 + 进度节点链。
+
+    words（用户提交的词）只进 rows 单元格，由渲染器 escape；美术片段里没有用户输入。
+    """
+    from neobot_app.runtime.html_card import inject_slot, render_card_html
+
+    target = max(1, int(card.target or 1))
+    steps = max(0, int(card.steps or 0))
+    max_steps = max(1, int(card.max_steps or 1))
+    blocks: list[dict[str, Any]] = [
+        {"kind": "slot", "name": "chengyu-art"},
+        {"kind": "slot", "name": "chengyu-progress"},
+        {
+            "kind": "stats",
+            "cols": 3,
+            "items": [
+                ["目标条数", f"{target} 条", "accent"],
+                ["已接", f"{steps} 条", TONE_OK],
+                ["剩余步数", f"{max(max_steps - steps, 0)} 步", TONE_MUTED],
+            ],
+        },
+    ]
+    if card.words:
+        recent = list(card.words)[-6:]
+        offset = len(card.words) - len(recent)
+        blocks.append(
+            {
+                "kind": "rows",
+                "title": "本局词录",
+                "columns": ["#", "词"],
+                "widths": ["48px", "auto"],
+                "rows": [
+                    [str(offset + index + 1), word] for index, word in enumerate(recent)
+                ],
+            }
+        )
+    detail: list[list[str]] = [
+        ["每条时限", f"{int(card.step_timeout_seconds)} 秒"],
+        ["单局步数", f"最多 {max_steps} 步"],
+        ["达成奖励", f"额外 +{target} 分"],
+    ]
+    if card.word_pending:
+        detail.append(["待判定", card.word_pending])
+    blocks.append({"kind": "kv", "title": "本局规则", "items": detail})
+    html = render_card_html(
+        title=card.title,
+        subtitle=card.subtitle,
+        blocks=blocks,
+        footer=card.footer,
+        theme=theme or default_theme("chengyu"),
+    )
+    html = inject_slot(html, "chengyu-art", chengyu_scroll(status=card.status))
+    html = inject_slot(
+        html,
+        "chengyu-progress",
+        chengyu_progress(steps=steps, target=target, max_steps=max_steps),
+    )
+    return html
+
+
+def build_card_text(card: ChengyuCard) -> str:
+    """与图片版信息等价的纯文本卡片（渲染不可用时的降级）。"""
+    lines = [card.title]
+    if card.subtitle:
+        lines.append(card.subtitle)
+    lines.append(f"进度：第 {int(card.steps)}/{int(card.target)} 条（{card.status}）")
+    lines.append(
+        f"单局最多 {int(card.max_steps)} 步、每条 {int(card.step_timeout_seconds)} 秒；"
+        f"达成目标额外 +{int(card.target)} 分"
+    )
+    if card.word_pending:
+        lines.append(f"待判定：{card.word_pending}")
+    if card.words:
+        lines.append("本局词录：" + " → ".join(str(word) for word in card.words[-6:]))
+    if card.footer:
+        lines.append(card.footer)
+    return "\n".join(lines)
 
 
 class ChengyuGame(Game):
@@ -116,6 +235,42 @@ class ChengyuGame(Game):
         request.runtime.note_session_closed(session, reason=reason)
         return session
 
+    # ── 卡片 ────────────────────────────────────────────────────
+
+    def session_card(
+        self,
+        session: ChengyuSession,
+        *,
+        status: str,
+        word_pending: str = "",
+        footer: str = "",
+    ) -> ChengyuCard:
+        """把一局会话整理成卡片数据（进度第 k/N 条即来自这里）。"""
+        return ChengyuCard(
+            title=self.name,
+            subtitle=f"{session.progress} · {status}",
+            target=int(session.target),
+            steps=int(session.steps),
+            max_steps=int(session.max_steps),
+            step_timeout_seconds=float(session.step_timeout_seconds),
+            status=status,
+            words=list(session.words),
+            word_pending=str(word_pending or ""),
+            footer=footer,
+        )
+
+    async def deliver_card(self, request: GameRequest, card: ChengyuCard) -> str | None:
+        """命令通道：渲染并发图；渲染不可用时回等价纯文本。"""
+        if request.command_ctx is None:
+            return build_card_text(card)
+        theme = request.runtime.pick_card_theme(self.id)
+        png = await request.runtime.render_card(build_card_html(card, theme=theme))
+        if png and await request.runtime.send_card(
+            request.command_ctx, png, filename=CARD_FILENAME
+        ):
+            return None
+        return build_card_text(card)
+
     # ── 命令入口 ────────────────────────────────────────────────
 
     async def run(self, request: GameRequest) -> str | None:
@@ -131,6 +286,15 @@ class ChengyuGame(Game):
             # 用户直接报了一个词：判定交给 AI，程序只提示它去调用工具
             if session is None:
                 session = self.start_session(request)
+            await self.deliver_card(
+                request,
+                self.session_card(
+                    session,
+                    status=STATUS_PENDING,
+                    word_pending=head,
+                    footer=FOOTER_PENDING,
+                ),
+            )
             return self.need_agent(
                 request,
                 situation=(
@@ -147,6 +311,10 @@ class ChengyuGame(Game):
             )
         if session is None:
             session = self.start_session(request)
+            await self.deliver_card(
+                request,
+                self.session_card(session, status=STATUS_START, footer=FOOTER_PLAYING),
+            )
             return self.need_agent(
                 request,
                 situation=(
@@ -160,6 +328,10 @@ class ChengyuGame(Game):
                     "用户每报一个词，你判定后调用 minigame__chengyu_submit(word=...) 记分。"
                 ),
             )
+        await self.deliver_card(
+            request,
+            self.session_card(session, status=STATUS_PLAYING, footer=FOOTER_PLAYING),
+        )
         return self.need_agent(
             request,
             situation=(
@@ -197,6 +369,10 @@ class ChengyuGame(Game):
         if not self.can_stop(request, session):
             return "只有本局发起者或次级管理员可以结束这一局。"
         self.close_session(request, session, reason="stopped")
+        await self.deliver_card(
+            request,
+            self.session_card(session, status=STATUS_DONE, footer=FOOTER_CLOSED),
+        )
         return (
             f"本局成语接龙已结束（{session.steps}/{session.target} 条，"
             f"已用 {session.steps}/{session.max_steps} 步）。"
@@ -286,11 +462,22 @@ class ChengyuGame(Game):
 
 
 __all__ = [
+    "CARD_FILENAME",
     "CHENGYU_STEP_SCORE",
     "CHENGYU_WIN_BONUS_RATIO",
+    "FOOTER_CLOSED",
+    "FOOTER_PENDING",
+    "FOOTER_PLAYING",
+    "STATUS_DONE",
+    "STATUS_PENDING",
+    "STATUS_PLAYING",
+    "STATUS_START",
+    "ChengyuCard",
     "ChengyuGame",
     "ChengyuSession",
     "GAME_ID",
     "HELP_TOKENS",
     "STOP_TOKENS",
+    "build_card_html",
+    "build_card_text",
 ]

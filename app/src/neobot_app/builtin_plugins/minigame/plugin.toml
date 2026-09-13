@@ -48,3 +48,8 @@ chengyu_step_timeout_seconds = 60
 fortune_include_bad_luck = false
 # 战绩流水（mg_record）保留天数。
 record_keep_days = 30
+# 卡片主题模式：random = 每张卡片按该玩法的候选主题池随机；fixed = 固定用下面的 theme。
+theme_mode = "random"
+# theme_mode = fixed 时使用的主题名（minecraft / bottle / fortune / chengyu / checkin / game / default）；
+# 留空表示各玩法用自己的默认主题（漂流瓶 bottle、成语接龙 chengyu、签到 checkin、抽签 fortune）。
+theme = ""

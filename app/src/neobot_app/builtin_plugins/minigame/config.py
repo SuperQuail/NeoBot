@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from .themes import KNOWN_THEME_IDS, THEME_MODES, default_theme
+
 #: 全部内置玩法 id（也是 enabled_games 的默认值）
 ALL_GAME_IDS: tuple[str, ...] = ("bottle", "chengyu", "checkin", "fortune")
 
@@ -99,6 +101,20 @@ class MinigameConfig(BaseModel):
         le=3650,
         description="战绩流水（mg_record）保留天数。",
     )
+    theme_mode: str = Field(
+        default="random",
+        description=(
+            "卡片主题模式：random = 每张卡片按该玩法的候选主题池随机；"
+            "fixed = 固定使用 theme（留空则用该玩法的默认主题）。"
+        ),
+    )
+    theme: str = Field(
+        default="",
+        description=(
+            "theme_mode = fixed 时使用的主题名（minecraft / bottle / fortune / "
+            "chengyu / checkin / game / default）；留空表示各玩法用自己的默认主题。"
+        ),
+    )
 
     @field_validator("enabled_games")
     @classmethod
@@ -110,6 +126,32 @@ class MinigameConfig(BaseModel):
             if name and name in ALL_GAME_IDS and name not in seen:
                 seen.append(name)
         return seen
+
+    @field_validator("theme_mode")
+    @classmethod
+    def _normalize_theme_mode(cls, value: str) -> str:
+        """未知模式直接报错（避免「写错了但看起来生效了」）。"""
+        mode = str(value or "random").strip().lower()
+        if mode not in THEME_MODES:
+            raise ValueError(
+                "theme_mode 只能是 random 或 fixed，收到：" + str(value)
+            )
+        return mode
+
+    @field_validator("theme")
+    @classmethod
+    def _normalize_theme(cls, value: str) -> str:
+        """未知主题名直接报错，并列出可用主题。"""
+        name = str(value or "").strip().lower()
+        if name and name not in KNOWN_THEME_IDS:
+            raise ValueError(
+                "未知的卡片主题："
+                + str(value)
+                + "（可用："
+                + " / ".join(KNOWN_THEME_IDS)
+                + "）"
+            )
+        return name
 
     @field_validator("chengyu_target_max")
     @classmethod
@@ -132,5 +174,9 @@ class MinigameConfig(BaseModel):
         """按启用顺序返回玩法 id。"""
         return tuple(self.enabled_games)
 
+    def default_theme_for(self, game_id: str) -> str:
+        """fixed 模式且 theme 留空时，该玩法使用的默认主题。"""
+        return str(self.theme or default_theme(game_id))
 
-__all__ = ["ALL_GAME_IDS", "MinigameConfig"]
+
+__all__ = ["ALL_GAME_IDS", "KNOWN_THEME_IDS", "MinigameConfig", "THEME_MODES"]

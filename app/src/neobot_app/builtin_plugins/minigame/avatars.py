@@ -6,11 +6,10 @@
 - 取不到（未就绪 / 失败 / 被清理）时回落**首字母色块**，仍然出图；
 - 发瓶时用 get_path(user_id) 把本地头像路径记进 mg_bottle.sender_avatar 留档。
 
-头像与 Markdown 正文都是**可信片段注入**：公共卡片渲染器
-（runtime/html_card.py）只支持 heading/rows/kv/note 四种块，且对全部文本做转义，
-而 spec(5) 要求该文件**只读使用**；因此本模块先用 render_card_html 渲染整张卡片，
-再把「由本模块生成、不含任何用户输入」的片段替换进占位符。用户可控文本永远
-先经 html.escape + Markdown 渲染 + URL 白名单清洗，不会带进标签或属性。
+头像与 Markdown 正文都是**可信片段注入**：本模块先用 render_card_html 渲染整张
+卡片，再把「由本模块生成、不含任何用户输入」的片段替换进渲染器提供的插槽（slot）
+与标记（marker，见 runtime/html_card.py 的 inject_slot / inject_marker）。用户可控
+文本永远先经 html.escape + Markdown 渲染 + URL 白名单清洗，不会带进标签或属性。
 """
 
 from __future__ import annotations
@@ -158,28 +157,11 @@ def with_style(card_html: str, css: str) -> str:
     return card_html.replace("</style>", css + "\n</style>", 1)
 
 
-def inject_marker(card_html: str, marker: str, fragment: str) -> str:
-    """把 marker 所在的 note 块整体替换成可信片段。
-
-    marker 是渲染器对文本做 HTML 转义后仍然原样保留的固定串（不含 <>&"'），
-    因此替换目标是确定的。
-    """
-    placeholder = f'<div class="note">{marker}</div>'
-    if placeholder in card_html:
-        return card_html.replace(placeholder, f'<div class="block">{fragment}</div>', 1)
-    return card_html.replace(
-        '<section class="card-body">',
-        '<section class="card-body">' + fragment,
-        1,
-    )
-
-
 __all__ = [
     "AVATAR_CSS",
     "AVATAR_MARKER",
     "AvatarProvider",
     "FALLBACK_COLORS",
-    "inject_marker",
     "safe_user_key",
     "with_style",
 ]

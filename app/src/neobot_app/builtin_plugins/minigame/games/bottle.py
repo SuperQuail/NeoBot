@@ -15,12 +15,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..art import bottle_avatar, bottle_note, bottle_scene
 from ..avatars import (
     AVATAR_CSS,
     AVATAR_MARKER,
-    inject_marker,
     with_style,
 )
+from ..themes import default_theme
 from ..service import (
     BOTTLE_PICK_DAILY_LIMIT,
     BOTTLE_PICK_SCORE,
@@ -92,40 +93,76 @@ def visibility_notice(*, anonymous: bool) -> str:
     )
 
 
+#: 走「指标卡片」呈现的瓶子信息标签（其余行留在键值表里）
+STAT_LABELS: tuple[str, ...] = ("模式", "今日发瓶", "今日捞瓶", "本次积分")
+
+#: 指标色调：模式 = 主题色，额度 = 弱化，积分 = 成功色，提示 = 警示色
+STAT_TONES: dict[str, str] = {
+    "模式": "accent",
+    "今日发瓶": "muted",
+    "今日捞瓶": "muted",
+    "本次积分": "ok",
+    "提示": "warn",
+}
+
+
 def build_card_html(
     card: BottleCard,
     *,
     avatars: Any,
+    theme: str = "",
 ) -> str:
-    """渲染漂流瓶卡片（自包含 HTML，主题 bottle）。"""
-    from neobot_app.runtime.html_card import render_card_html
+    """渲染漂流瓶卡片（自包含 HTML）。
+
+    美术（海面场景 / 头像舱窗 / 纸条正文）由本插件用 SVG 生成，经 slot 与 marker
+    注入；正文先 escape 再 Markdown，因此片段里永远不含用户输入。
+    """
+    from neobot_app.runtime.html_card import inject_marker, inject_slot, render_card_html
 
     blocks: list[dict[str, Any]] = [
-        {"kind": "note", "text": AVATAR_MARKER},
+        {"kind": "slot", "name": "bottle-art"},
+        {"kind": "marker", "text": AVATAR_MARKER},
         {"kind": "heading", "text": "瓶中信"},
-        {"kind": "note", "text": CONTENT_MARKER},
+        {"kind": "marker", "text": CONTENT_MARKER},
     ]
+    stats: list[list[str]] = []
+    hints: list[str] = []
     items: list[list[str]] = [["发送者", card.sender_label]]
     if card.sender_id_label:
         items.append(["QQ", card.sender_id_label])
-    items.extend([list(row) for row in card.extra_rows])
+    for label, value in card.extra_rows:
+        if label in STAT_LABELS:
+            stats.append([label, value, STAT_TONES.get(label, "")])
+        elif label == "提示":
+            hints.append(str(value))
+        else:
+            items.append([label, value])
     items.append(["可见范围", card.visibility])
+    if stats:
+        blocks.append({"kind": "stats", "cols": min(3, len(stats)), "items": stats})
     blocks.append({"kind": "kv", "title": "瓶子信息", "items": items})
+    for hint in hints:
+        blocks.append({"kind": "note", "text": hint, "tone": "warn"})
 
     html = render_card_html(
         title=card.title,
         subtitle=card.subtitle,
         blocks=blocks,
         footer=card.footer,
-        theme="bottle",
+        theme=theme or default_theme("bottle"),
     )
     html = with_style(html, AVATAR_CSS + MARKDOWN_CSS)
+    html = inject_slot(html, "bottle-art", bottle_scene(anonymous=card.anonymous))
     avatar_html = avatars.html(
         card.avatar_user_id, card.avatar_name, anonymous=card.anonymous
     )
-    html = inject_marker(html, AVATAR_MARKER, avatar_html)
     html = inject_marker(
-        html, CONTENT_MARKER, '<div class="mg-md">' + render_markdown_fragment(card.content) + "</div>"
+        html,
+        AVATAR_MARKER,
+        bottle_avatar(avatar_html, anonymous=card.anonymous, label=card.sender_label),
+    )
+    html = inject_marker(
+        html, CONTENT_MARKER, bottle_note(render_markdown_fragment(card.content))
     )
     return html
 
@@ -384,7 +421,8 @@ class BottleGame(Game):
     async def deliver_card(self, request: GameRequest, card: BottleCard) -> str | None:
         """命令通道：渲染并发图；渲染不可用时回等价纯文本。"""
         avatars = getattr(request.runtime, "avatars", None)
-        html = build_card_html(card, avatars=avatars)
+        theme = request.runtime.pick_card_theme(self.id)
+        html = build_card_html(card, avatars=avatars, theme=theme)
         png = await request.runtime.render_card(html)
         if png:
             sent = await request.runtime.send_card(
@@ -406,6 +444,8 @@ class BottleGame(Game):
 
 __all__ = [
     "ANONYMOUS_NAME",
+    "STAT_LABELS",
+    "STAT_TONES",
     "BottleCard",
     "BottleGame",
     "build_card_html",
