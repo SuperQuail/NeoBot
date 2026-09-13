@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
+from neobot_modloader.agent_intent import bind_event_context, reset_event_context
 
 Rule = Callable[[dict[str, Any]], bool | Awaitable[bool]]
 EventHandler = Callable[..., Any]
@@ -185,6 +186,19 @@ class PluginHookBus:
         return HookSubscription(_unsubscribe)
 
     async def dispatch(self, ctx: Any) -> None:
+        """分发一次入站事件。
+
+        期间把当前事件上下文绑定到 ContextVar，插件处理器即可用
+        ctx.agent_reply(background, preactivate=[...]) 把控制权交回主回复管线
+        （见 neobot_modloader.agent_intent）；结束后必定复位。
+        """
+        token = bind_event_context(ctx)
+        try:
+            await self._dispatch(ctx)
+        finally:
+            reset_event_context(token)
+
+    async def _dispatch(self, ctx: Any) -> None:
         event = getattr(ctx, "raw_event", None)
         if not isinstance(event, dict):
             return

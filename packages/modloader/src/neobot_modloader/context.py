@@ -442,6 +442,20 @@ class RuntimePluginContext:
             raise RuntimeError("插件注册表不可用")
         return self._plugins.require(name, specifier)
 
+    def agent_reply(self, background: str = "", *, preactivate: Any = ()) -> bool:
+        """把本轮交回主回复管线（插件消息处理器用）。
+
+        语义与 `CommandContext.sync_reply` 一致：不发固定文本，把「事实 + 提示词」
+        作为背景交给主回复管线，由模型组织回复；preactivate 里列出的技能名会在
+        本轮回复构建工具表时被按需激活，使对应的 {plugin}__{tool} 立即可调用。
+
+        只能在插件消息处理器（事件分发期间）里调用；其它时机调用返回 False，
+        **绝不抛异常**（消息路径上的失败只是「这次不生效」）。
+        """
+        from neobot_modloader.agent_intent import request_agent_reply
+
+        return request_agent_reply(background, preactivate=preactivate)
+
     @property
     def plugin_host(self) -> Any:
         return self._host

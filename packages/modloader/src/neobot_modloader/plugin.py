@@ -19,6 +19,7 @@ from neobot_modloader.plugins.registration import (
     AgentRegistration,
     Handler,
     HandlerRegistration,
+    ToolPackageRegistration,
     ToolRegistration,
     looks_like_context,
     validate_agent_name,
@@ -28,6 +29,9 @@ from neobot_modloader.plugins.registration import (
     validate_tool_name,
 )
 from neobot_modloader.plugins.tools import bind_tools
+
+#: 工具包名（技能名后缀）允许的字符
+_TOOL_PACKAGE_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 class Plugin:
@@ -71,6 +75,8 @@ class Plugin:
         self._shutdown_handlers: list[Handler] = []
         self._agent_registrations: list[AgentRegistration] = []
         self._tool_registrations: list[ToolRegistration] = []
+        #: 工具包名 -> 元数据（未声明时按插件自身描述兜底）
+        self._tool_packages: dict[str, ToolPackageRegistration] = {}
         #: 对外暴露的能力：名字 -> 处理器（依赖方通过插件句柄调用）
         self._capabilities: dict[str, Handler] = {}
         self._databases: dict[str, PluginDatabase] = {}
@@ -281,18 +287,28 @@ class Plugin:
         *,
         description: str = "",
         parameters: dict[str, Any] | None = None,
+        package: str | None = None,
     ) -> Callable[[Handler], Handler]:
         """注册一个可被主 Agent 调用的工具。
 
         处理器参数会从模型传入的 JSON 参数中解析（参数 schema 由签名自动生成，
-        也可通过 ``parameters=`` 显式覆盖）。类型注解优先：例如
-        ``config: dict`` 和 ``ctx: str`` 是模型参数；仅无注解的约定名称或
-        ``Config``/context/``Logger`` 等 DI 注解会由运行时注入。
+        也可通过 parameters= 显式覆盖）。类型注解优先：例如 config: dict 和
+        ctx: str 是模型参数；仅无注解的约定名称或 Config/context/Logger 等 DI
+        注解会由运行时注入。
 
-        Tool 没有入站事件。``Reply`` DI 会在绑定时被拒绝；``Message`` DI
-        只能得到空的合成消息。如需响应当前消息，请使用 command/message handler。
+        Tool 没有入站事件。Reply DI 会在绑定时被拒绝；Message DI 只能得到空的
+        合成消息。如需响应当前消息，请使用 command/message handler。
+
+        package= 可选：把工具归入一个**可独立加载**的工具包（技能名
+        {plugin}_{package}、工具最终名仍是 {plugin}__{tool}）。不传时全部工具
+        聚成一个技能，行为与历史完全一致。
         """
         validate_tool_name(name)
+        package_name = None
+        if package is not None:
+            package_name = str(package).strip()
+            if not package_name or not _TOOL_PACKAGE_RE.fullmatch(package_name):
+                raise ValueError(f"invalid tool package name: {package!r}")
 
         def decorate(handler: Handler) -> Handler:
             self._tool_registrations.append(
@@ -301,11 +317,32 @@ class Plugin:
                     description=str(description),
                     handler=handler,
                     parameters=dict(parameters) if parameters is not None else None,
+                    package=package_name,
                 )
             )
             return handler
 
         return decorate
+
+    def tool_package(
+        self, name: str, *, description: str = "", instructions: str = ""
+    ) -> ToolPackageRegistration:
+        """声明一个工具包的元数据（description / instructions 会进技能索引与说明）。
+
+        只有 @plugin.tool(package=...) 用到的包名才需要声明；未声明的包回落插件
+        自身的 description。instructions 是给模型看的玩法 / 用法说明，可用
+        skills__view_instructions 按需查看。
+        """
+        package_name = str(name or "").strip()
+        if not package_name or not _TOOL_PACKAGE_RE.fullmatch(package_name):
+            raise ValueError(f"invalid tool package name: {name!r}")
+        registration = ToolPackageRegistration(
+            name=package_name,
+            description=str(description),
+            instructions=str(instructions),
+        )
+        self._tool_packages[package_name] = registration
+        return registration
 
     def capability(self, name: str) -> Callable[[Handler], Handler]:
         """注册一个供其他插件调用的能力。

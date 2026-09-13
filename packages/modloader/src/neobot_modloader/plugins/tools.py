@@ -421,15 +421,31 @@ def _log_tool_failure(context: Any, tool_name: str, exc: Exception) -> None:
 
 
 class PluginToolModule:
-    """把插件的 `@plugin.tool` 处理器适配成 SkillModule 协议。"""
+    """把插件的 @plugin.tool 处理器适配成 SkillModule 协议。
 
-    def __init__(self, plugin: Any, context: Any) -> None:
+    一个插件可以声明多个**工具包**（@plugin.tool(package=...)）：每个包注册成
+    一个独立的技能（技能名 {plugin}_{package}），但共享同一个工具名前缀
+    {plugin}__，因此最终工具名与不拆包时完全一致，而 SkillManager 可以按包
+    「按需加载 / 预激活」（见 skills__load_tools 与事件意图预激活）。
+    package=None 时技能名与工具前缀都是插件名，行为与历史完全一致。
+    """
+
+    def __init__(
+        self,
+        plugin: Any,
+        context: Any,
+        *,
+        registrations: list[ToolRegistration] | None = None,
+        package: str | None = None,
+    ) -> None:
         self._plugin = plugin
         self._context = context
+        self._package = str(package) if package else ""
         self._tools: dict[str, ToolRegistration] = {}
         self._schemas: dict[str, dict[str, Any]] = {}
         self._model_parameters: dict[str, frozenset[str]] = {}
-        for registration in plugin._tool_registrations:
+        source = registrations if registrations is not None else plugin._tool_registrations
+        for registration in source:
             if registration.name in self._tools:
                 raise ValueError(f"工具已注册: {registration.name}")
             self._tools[registration.name] = registration
@@ -458,16 +474,38 @@ class PluginToolModule:
             self._model_parameters[registration.name] = model_parameters
 
     @property
+    def package(self) -> str:
+        """工具包名（空串表示未拆包）。"""
+        return self._package
+
+    @property
     def name(self) -> str:
+        """技能名：拆包时 {plugin}_{package}，否则就是插件名。"""
+        if self._package:
+            return f"{self._plugin.name}_{self._package}"
         return self._plugin.name
 
     @property
+    def tool_prefix(self) -> str:
+        """工具名前缀**恒为插件名**：拆包不改变最终工具名 {plugin}__{tool}。"""
+        return self._plugin.name
+
+    @property
+    def _package_registration(self) -> Any:
+        if not self._package:
+            return None
+        return getattr(self._plugin, "_tool_packages", {}).get(self._package)
+
+    @property
     def description(self) -> str:
-        return self._plugin.description
+        registration = self._package_registration
+        description = str(getattr(registration, "description", "") or "")
+        return description or self._plugin.description
 
     @property
     def instructions(self) -> str:
-        return ""
+        registration = self._package_registration
+        return str(getattr(registration, "instructions", "") or "")
 
     @property
     def session_tools(self) -> set[str]:
@@ -791,7 +829,13 @@ async def bind_tools(
     registrations: list[ToolRegistration],
     context: Any,
 ) -> None:
-    """将插件的 Tool 注册进宿主（SkillManager）。"""
+    """将插件的 Tool 注册进宿主（SkillManager）。
+
+    @plugin.tool(package=...) 的工具按包分组，每个包注册成一个独立技能
+    （技能名 {plugin}_{package}），从而支持按包按需加载 / 预激活；组内工具最终名
+    仍是 {plugin}__{tool}。未声明 package 的工具聚成以插件名命名的单个技能，
+    与历史行为完全一致。
+    """
     if not registrations:
         return
     for registration in registrations:
@@ -801,7 +845,13 @@ async def bind_tools(
             raise ValueError(f"reserved qualified tool name: {qualified!r}")
     # Validate every tool even when this host cannot register it. Invalid
     # declarations must fail during plugin binding, not surface much later.
-    module = PluginToolModule(plugin, context)
+    groups: dict[str, list[ToolRegistration]] = {}
+    for registration in registrations:
+        groups.setdefault(str(registration.package or ""), []).append(registration)
+    modules = [
+        PluginToolModule(plugin, context, registrations=group, package=package or None)
+        for package, group in groups.items()
+    ]
     host = getattr(context, "plugin_host", None)
     if host is None or not hasattr(host, "register_skill"):
         logger = getattr(context, "logger", None)
@@ -814,4 +864,5 @@ async def bind_tools(
         else:
             _LOGGER.warning(message)
         return
-    host.register_skill(module)
+    for module in modules:
+        host.register_skill(module)

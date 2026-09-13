@@ -50,6 +50,21 @@ class ToolRegistration:
     description: str
     handler: Handler
     parameters: dict[str, Any] | None
+    #: 工具包名（可选）：同一个插件可把工具拆成多个**可独立加载**的技能包
+    package: str | None = None
+
+
+@dataclass(slots=True)
+class ToolPackageRegistration:
+    """一个工具包的元数据（技能名 = {plugin}_{package}，工具前缀 = plugin）。
+
+    拆包的目的：SkillManager 的技能可被按需加载 / 预激活，工具包因此能被
+    「按玩法」而不是「整套」激活；工具最终名仍是 {plugin}__{tool}（稳定）。
+    """
+
+    name: str
+    description: str = ""
+    instructions: str = ""
 
 
 def validate_plugin_name(name: str) -> str:
