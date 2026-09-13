@@ -19,15 +19,24 @@ from neobot_app.runtime.html_card import (
 
 
 class FakePort:
-    def __init__(self, *, data: bytes = b"\x89PNG-data", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        data: bytes = b"\x89PNG-data",
+        error: Exception | None = None,
+        first_call_error: Exception | None = None,
+    ) -> None:
         self.data = data
         self.error = error
+        self.first_call_error = first_call_error
         self.calls: list[dict[str, Any]] = []
 
     async def render(self, *, html: str, options: Any, base_url: str | None = None) -> Any:
         self.calls.append({"html": html, "options": options, "base_url": base_url})
         if self.error is not None:
             raise self.error
+        if self.first_call_error is not None and len(self.calls) == 1:
+            raise self.first_call_error
         from neobot_app.screenshot import ScreenshotResult
 
         return ScreenshotResult(self.data, "png", 720, 100, 720.0, 100.0, 1.0)
@@ -104,15 +113,30 @@ def test_theme_variables_are_css_block() -> None:
     assert "--accent" in block
 
 
-async def test_render_card_image_returns_bytes_and_uses_full_page_png() -> None:
+async def test_render_card_image_clips_to_the_card_element() -> None:
+    """裁剪到 <main class="card">：full_page 的画布下限是浏览器视口（实测约 1036x905），
+    比卡片大得多，直接出图会在右侧与下方留一大片空白，发到聊天里很难看。"""
     port = FakePort()
     data = await render_card_image("<p>x</p>", screenshots=port, timeout=12.5)
 
     assert data == b"\x89PNG-data"
     options = port.calls[0]["options"]
-    assert options.screenshot.mode == "full_page"
+    assert options.screenshot.mode == "element"
+    assert options.screenshot.selector == "main.card"
     assert options.screenshot.format == "png"
     assert options.timeout == 12.5
+    assert len(port.calls) == 1, "命中元素时不应再截一次整页"
+
+
+async def test_render_card_image_falls_back_to_full_page_without_card_element() -> None:
+    """调用方传了自定义 HTML（没有 main.card）时退回整页，保持「绝不外抛」的契约。"""
+    from neobot_contracts.ports.screenshot import ScreenshotTargetNotFound
+
+    port = FakePort(first_call_error=ScreenshotTargetNotFound("screenshot target not found"))
+    data = await render_card_image("<p>x</p>", screenshots=port)
+
+    assert data == b"\x89PNG-data"
+    assert [call["options"].screenshot.mode for call in port.calls] == ["element", "full_page"]
 
 
 async def test_render_card_image_returns_none_on_failure() -> None:

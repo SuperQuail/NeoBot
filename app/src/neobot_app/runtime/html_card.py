@@ -28,6 +28,10 @@ logger = get_module_logger("runtime.html_card")
 #: 默认卡片宽度（px）
 DEFAULT_WIDTH = 720
 
+#: 卡片外层元素选择器（render_card_html 固定输出 <main class="card">）。
+#: 截图用它裁剪到卡片本身，避免 full_page 按浏览器视口留出大片空白。
+_CARD_SELECTOR = "main.card"
+
 #: 主题 id -> CSS 变量块（--card-* / --accent / --radius）
 THEMES: dict[str, dict[str, str]] = {
     # 极简深色：/help、/status、排行榜
@@ -301,19 +305,36 @@ async def render_card_image(
     if port is None:
         logger.warning("截图端口不可用，卡片渲染降级为纯文本")
         return None
+    # 裁剪到卡片元素本身（render_card_html 固定输出 <main class="card">）：
+    # full_page 的画布下限是浏览器视口（实测约 1036x905），比卡片大得多，
+    # 直接出图会在右侧与下方留一大片空白，发到聊天里很难看。
     try:
         result = await port.render(
             html=html,
             options=RenderOptions(
-                screenshot=ScreenshotOptions(mode="full_page", format="png"),
+                screenshot=ScreenshotOptions(
+                    mode="element", selector=_CARD_SELECTOR, format="png"
+                ),
                 wait_for_fonts=False,
                 wait_for_images=False,
                 timeout=float(timeout),
             ),
         )
-    except Exception as exc:  # noqa: BLE001 - 任何失败都降级，绝不外抛
-        logger.warning(f"卡片渲染失败，已降级: {exc}")
-        return None
+    except Exception as exc:  # noqa: BLE001
+        # 调用方传了自定义 HTML（没有 main.card）时退回整页，保持「绝不外抛」的契约
+        try:
+            result = await port.render(
+                html=html,
+                options=RenderOptions(
+                    screenshot=ScreenshotOptions(mode="full_page", format="png"),
+                    wait_for_fonts=False,
+                    wait_for_images=False,
+                    timeout=float(timeout),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - 任何失败都降级，绝不外抛
+            logger.warning(f"卡片渲染失败，已降级: {exc}")
+            return None
     data = getattr(result, "data", None)
     if not data:
         logger.warning("卡片渲染未返回图片数据，已降级")
