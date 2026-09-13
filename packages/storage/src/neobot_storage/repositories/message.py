@@ -43,12 +43,15 @@ class SqlAlchemyMessageRepository:
         return [_row_to_message(r) for r in reversed(rows)]
 
     async def get_recent_by_sender(
-        self, conversation: ConversationRef, sender_id: str, limit: int = 20
+        self, conversation: ConversationRef, sender_id: str, limit: int | None = None
     ) -> list[IncomingMessage]:
         """取该会话内某个发送者最近的若干条消息（按时间正序返回）。
 
         用于软重启/冷启动后从本地记录补齐 Bot 自身发言（assistant 块）：
         只看「最近 N 条消息」不够——那 N 条可能全是用户消息，必须按发送者过滤。
+
+        limit=None 表示不限条数：调用方（启动历史补齐）改用与后端历史相同的
+        观察窗口自行约束，不再保留一套独立的「自身发言历史上限」。
         """
         stmt = (
             select(MessageData)
@@ -58,8 +61,9 @@ class SqlAlchemyMessageRepository:
                 MessageData.sender_id == sender_id,
             )
             .order_by(MessageData.occurred_at.desc())
-            .limit(limit)
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         return [_row_to_message(r) for r in reversed(rows)]

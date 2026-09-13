@@ -36,12 +36,6 @@ DEFAULT_MAX_RETRIES = 3        # 默认最大重试次数
 DEFAULT_RETRY_DELAY = 1.0      # 默认重试延迟（秒）
 DEFAULT_TIMEOUT = 10           # 默认请求超时时间（秒）
 
-#: 启动补齐时每个会话最多取回多少条 Bot 自身消息。
-#: 量级与启动历史灌入的观察上限相当：Bot 自身的发言数远少于用户消息，20 条
-#: 足以覆盖一次软重启/冷启动后模型需要看到的 assistant 块，又不会让补齐逻辑
-#: 显著撑大队列（入队时仍按 max_size 驱逐最旧条目）。
-SELF_SENT_HISTORY_LIMIT = 20
-
 #: 与后端历史比对去重的时间窗（秒）。本地 occurred_at 与后端 message.time
 #: 分别来自本地落库与 OneBot 上报，允许 <=30s 偏差仍视为同一条（验收 S5）。
 SELF_SENT_DEDUP_WINDOW_SECONDS = 30
@@ -146,6 +140,9 @@ class ChatStreamManager:
         poke_weight = getattr(bot_cfg.chat, "poke_weight", 0.2)
         reaction_weight = getattr(bot_cfg.chat, "reaction_weight", 0.2)
         forward_weight = getattr(bot_cfg.chat, "forward_message_queue_weight", 2)
+        self_sent_weight = getattr(bot_cfg.chat, "self_sent_message_weight", 0.1)
+        if self_sent_weight is None:
+            self_sent_weight = 0.1
         profile_service = UserProfileService(
             self.adapter,
             self._uow_factory,
@@ -160,6 +157,7 @@ class ChatStreamManager:
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
                 forward_weight=forward_weight,
+                self_sent_weight=self_sent_weight,
                 bot_account=bot_cfg.bot.account,
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
@@ -170,6 +168,7 @@ class ChatStreamManager:
                 poke_weight=poke_weight,
                 reaction_weight=reaction_weight,
                 forward_weight=forward_weight,
+                self_sent_weight=self_sent_weight,
                 bot_account=bot_cfg.bot.account,
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
@@ -388,6 +387,7 @@ class ChatStreamManager:
                 conversation=ConversationRef(kind="private", id=queue_key),
                 backend_messages=pushed_messages,
                 bot_account=self._queue_bot_account(self._friend_queue),
+                limit=max_observations,
             )
 
         except Exception as e:
@@ -434,6 +434,7 @@ class ChatStreamManager:
                 conversation=ConversationRef(kind="group", id=queue_key),
                 backend_messages=pushed_messages,
                 bot_account=self._queue_bot_account(self._group_queue),
+                limit=max_observations,
             )
 
         except Exception as e:
@@ -469,13 +470,17 @@ class ChatStreamManager:
         return "".join(parts)
 
     async def _load_recent_self_messages(
-        self, conversation: ConversationRef, bot_sender_id: str
+        self, conversation: ConversationRef, bot_sender_id: str, limit: int | None = None
     ) -> list[Any]:
-        """读取该会话本地落盘的 Bot 自身消息；失败返回空列表，不抛异常。"""
+        """读取该会话本地落盘的 Bot 自身消息；失败返回空列表，不抛异常。
+
+        limit=None 表示不设独立上限——与后端历史用同一个窗口（max_observations），
+        避免出现「后端历史有、本地补齐只取 20 条」的口径错位。
+        """
         try:
             async with self._uow_factory() as uow:
                 return await uow.messages.get_recent_by_sender(
-                    conversation, bot_sender_id, SELF_SENT_HISTORY_LIMIT
+                    conversation, bot_sender_id, limit
                 )
         except Exception as e:
             logger.warning(
@@ -564,10 +569,12 @@ class ChatStreamManager:
         conversation: ConversationRef,
         backend_messages: list[Any],
         bot_account: int,
+        limit: int | None = None,
     ) -> None:
         """把本地落盘的 Bot 自身发言补齐进队列（在 push_history 之后调用）。
 
-        ① 按 sender_id == bot_qq 取最近 SELF_SENT_HISTORY_LIMIT 条本地记录；
+        ① 按 sender_id == bot_qq 取最近 limit 条本地记录（None = 不限，
+           与后端历史同窗口 max_observations）；
         ② 跳过后端历史里已有的记录（同文本、时间相差 <=30s）；
         ③ 与已在队列里的条目一起按 occurred_at 排序后重建该会话队列——
            push_history 只能追加，直接 append 会把较早的 assistant 块排到较新
@@ -578,7 +585,9 @@ class ChatStreamManager:
         if not bot_account or queue is None:
             return
         try:
-            records = await self._load_recent_self_messages(conversation, str(bot_account))
+            records = await self._load_recent_self_messages(
+                conversation, str(bot_account), limit
+            )
             if not records:
                 return
             deduped = [

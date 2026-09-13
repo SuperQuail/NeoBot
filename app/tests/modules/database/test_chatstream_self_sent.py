@@ -334,3 +334,39 @@ class FakeQueueLike:
 
     def push(self, key: str, message: object, **_kwargs: object) -> None:
         pass
+
+
+async def test_local_self_history_is_not_capped_at_twenty(uow_factory):
+    """F15：本地自身发言 > 20 条时不再被独立上限截断，与后端历史同窗口补齐。
+
+    旧实现硬编码 SELF_SENT_HISTORY_LIMIT=20，于是「后端历史有、本地补齐只取 20 条」
+    出现口径错位；现在 limit 由调用方按 max_observations 传入。
+    """
+    conv = ConversationRef(kind="group", id=str(GROUP_ID))
+    for index in range(30):
+        await _save_bot_record(
+            uow_factory,
+            conv,
+            f"自身发言{index}",
+            _at(index),
+            event_id=f"self:-{1000 + index}",
+        )
+
+    manager, group_queue, _ = _make_manager(FakeAdapter(), uow_factory)
+    records = await manager._load_recent_self_messages(conv, str(BOT_QQ), None)
+    assert len(records) == 30
+
+    # 未传 limit 时必须与后端历史同窗口：全部补齐，不再只补 20 条。
+    await manager._merge_self_sent_history(
+        queue=group_queue,
+        queue_key=str(GROUP_ID),
+        conversation=conv,
+        backend_messages=[],
+        bot_account=BOT_QQ,
+        limit=50,
+    )
+    texts = _texts(group_queue, str(GROUP_ID))
+    assert len(texts) == 30
+    assert texts[0] == "自身发言0"
+    assert texts[-1] == "自身发言29"
+
