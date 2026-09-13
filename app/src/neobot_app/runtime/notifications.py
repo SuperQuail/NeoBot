@@ -89,6 +89,11 @@ class BackgroundNotificationHub:
             queue_size_before=queue_size_before,
         )
 
+        # 先镜像到消息队列：后启动的管线可能在 create_task 后立刻 clone 队列，
+        # 若镜像发生在 await 之后，通知条目就有概率错过这一轮的 transcript。
+        # 镜像写队列、投递走既有通道，两者正交（通知条目权重 0.1，不挤占窗口）。
+        self._mirror_to_message_queue(notification)
+
         if await self._try_start_background_reply(notification):
             self._logger.info(
                 "hub.publish() 已启动新管线",
@@ -122,6 +127,31 @@ class BackgroundNotificationHub:
         )
         self._sweep_idle_queues()
         return False
+
+    def _mirror_to_message_queue(self, notification: BackgroundNotification) -> None:
+        """把通知同时写进该会话的消息队列（全量、低权重）。
+
+        目的：agent 在下一轮重建提示词时能看到 `[通知:<source>] <content>`，
+        而不是只有「被单独叫起来」那一次才知道刚才发生了什么。
+        永不抛异常——入队失败绝不影响通知的既有投递。
+        """
+        recorder = getattr(self._orchestrator, "record_notification", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                kind=notification.kind,
+                conversation_id=notification.conversation_id,
+                source=notification.source,
+                content=notification.content,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "通知写入消息队列失败（已忽略）",
+                source=notification.source,
+                pipeline_key=notification.pipeline_key,
+                error=str(exc),
+            )
 
     async def poll(
         self,
