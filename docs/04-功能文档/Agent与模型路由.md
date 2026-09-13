@@ -14,7 +14,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
 - `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式。`model_type = "vision"` 的图像识别模型**无需配置** `native_vision`，一律按原生视觉处理（原生视觉回退路由本就按「图片原样发送」处理）
 
-### `settings` 的语义：基础参数 vs 可选参数（spec(4) Part B）
+### `settings` 的语义：基础参数 vs 可选参数
 
 `settings` 里的参数分三类，**「是否下发到请求体」由 `enabled_params` 决定**：
 
