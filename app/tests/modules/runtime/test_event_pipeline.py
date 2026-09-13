@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -845,3 +846,105 @@ def test_constructor_actually_wires_avatar_store() -> None:
     source = inspect.getsource(EventPipeline.__init__)
 
     assert "self._avatar_store = avatar_store" in source
+
+
+# ── @ 提及命中玩法关键词：跳过收集等待 ─────────────────────────────
+
+
+class _SleepSpy:
+    """记录 asyncio.sleep 调用的替身（其余属性透传给真实 asyncio）。"""
+
+    def __init__(self, real: Any, calls: list[float]) -> None:
+        self._real = real
+        self._calls = calls
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+    async def sleep(self, seconds: float) -> None:
+        self._calls.append(float(seconds))
+
+
+def _at_delay_config(delay: float = 5.0) -> BotConfig:
+    return BotConfig(
+        bot=Bot(account=0),
+        chat=Chat(
+            private_chat_dynamic_warmup=False,
+            at_mention_reply_delay_seconds=delay,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_at_mention_game_keyword_skips_reply_delay(monkeypatch):
+    """被@的正文命中玩法关键词 -> 跳过 @ 提及等待，直接触发回复事件。"""
+    from neobot_app.message import fast_reply_keywords
+    from neobot_app.runtime import event_pipeline as ep
+
+    fast_reply_keywords.register_reply_trigger_keywords("minigame", ("签到", "抽签"))
+    slept: list[float] = []
+    monkeypatch.setattr(ep, "asyncio", _SleepSpy(asyncio, slept))
+
+    pipeline = _pipeline_with_queue(config=_at_delay_config(5.0))
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=True)
+
+    result = await pipeline._handle_willing_decision(
+        message=_group_message(9801, text="签到"),
+        queue=MessageQueue(),
+        queue_key="42",
+    )
+
+    assert result is True
+    assert slept == [], "命中玩法关键词不应再等收集窗口"
+
+
+@pytest.mark.asyncio
+async def test_at_mention_without_keyword_still_waits(monkeypatch):
+    """回归：没命中关键词的 @ 仍然按配置等待。"""
+    from neobot_app.runtime import event_pipeline as ep
+
+    slept: list[float] = []
+    monkeypatch.setattr(ep, "asyncio", _SleepSpy(asyncio, slept))
+
+    pipeline = _pipeline_with_queue(config=_at_delay_config(5.0))
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=True)
+
+    result = await pipeline._handle_willing_decision(
+        message=_group_message(9802, text="hello"),
+        queue=MessageQueue(),
+        queue_key="42",
+    )
+
+    assert result is True
+    assert slept == [5.0]
+
+
+@pytest.mark.asyncio
+async def test_sleeping_at_mention_game_keyword_skips_wake_delay(monkeypatch):
+    """睡眠中被@唤醒时命中关键词，同样跳过唤醒后的收集等待。"""
+    from neobot_app.message import fast_reply_keywords
+    from neobot_app.runtime import event_pipeline as ep
+
+    fast_reply_keywords.register_reply_trigger_keywords("minigame", ("签到", "抽签"))
+    slept: list[float] = []
+    monkeypatch.setattr(ep, "asyncio", _SleepSpy(asyncio, slept))
+
+    pipeline = _pipeline_with_queue(config=_at_delay_config(5.0))
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline._sleep_service = sleep_service
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=True)
+
+    result = await pipeline._handle_willing_decision(
+        message=_group_message(9803, text="抽签"),
+        queue=MessageQueue(),
+        queue_key="42",
+    )
+
+    assert result is True
+    assert slept == []
+    assert not sleep_service.is_sleeping()
+

@@ -24,6 +24,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.image import ImageParseService
+from neobot_app.message.fast_reply_keywords import matches_reply_trigger
 from neobot_app.message.process import event_message__to_text
 from neobot_app.message.queue import MessageQueue
 from neobot_app.reply import ReplyOrchestrator
@@ -689,6 +690,18 @@ class EventPipeline:
                 replied_messages.append(data)
         return replied_messages
 
+    def _at_mention_instant_keyword(self, message: Any) -> str:
+        """被 @ 的正文是否命中「跳过收集等待」的插件关键词（命中返回关键词）。
+
+        关键词由插件登记（见 neobot_app.message.fast_reply_keywords）：玩法类
+        关键词（漂流瓶 / 签到 / 抽签 …）意图明确，不必再等收集窗口。
+        这里吞掉全部异常：关键词表坏掉不能影响消息管线。
+        """
+        try:
+            return matches_reply_trigger(message)
+        except Exception:  # pragma: no cover - 关键词表异常只降级
+            return ""
+
     async def _handle_willing_decision(
         self,
         *,
@@ -739,7 +752,17 @@ class EventPipeline:
                 if isinstance(val, (int, float)) and val >= 0:
                     delay = float(val)
 
-            if delay > 0:
+            # 正文命中插件登记的玩法关键词（漂流瓶 / 签到 / 抽签 …）时，
+            # 意图已经足够明确，不再等这几秒收集上下文，直接触发回复事件
+            instant_keyword = self._at_mention_instant_keyword(message)
+            if instant_keyword:
+                self._logger.info(
+                    "群聊@提及命中关键词，跳过收集等待",
+                    queue_key=queue_key,
+                    keyword=instant_keyword,
+                    delay_seconds=delay,
+                )
+            elif delay > 0:
                 self._logger.debug(
                     "群聊@提及延迟回复等待中",
                     queue_key=queue_key,
@@ -843,7 +866,16 @@ class EventPipeline:
             val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
             if isinstance(val, (int, float)) and val >= 0:
                 delay = float(val)
-        if delay > 0:
+        # 玩法关键词同样跳过唤醒后的收集等待（意图明确，没必要再拖）
+        instant_keyword = self._at_mention_instant_keyword(message)
+        if instant_keyword:
+            self._logger.info(
+                "睡眠中被@命中关键词，跳过唤醒等待",
+                queue_key=queue_key,
+                keyword=instant_keyword,
+                delay_seconds=delay,
+            )
+        elif delay > 0:
             self._logger.debug(
                 "睡眠中被@唤醒,延迟回复等待中",
                 queue_key=queue_key,

@@ -1338,6 +1338,50 @@ async def test_tool_write_rejects_invalid_content_like_command(tmp_path: Path) -
     finally:
         await harness.close()
 
+# ── 玩法关键词 -> 跳过本体的 @ 提及等待 ───────────────────────────
+
+
+async def test_load_registers_game_keywords_for_instant_reply(tmp_path: Path) -> None:
+    """load 时把启用玩法的关键词登记进本体；unload 后按 owner 注销干净。"""
+    from neobot_app.message import fast_reply_keywords
+
+    harness = await build(tmp_path, screenshots=FakeScreenshots())
+    try:
+        registered = fast_reply_keywords.reply_trigger_keywords()
+        assert "minigame" in registered
+        assert set(registered["minigame"]) == set(minigame.KEYWORDS)
+        assert fast_reply_keywords.match_reply_trigger_keyword("帮我签到一下") == "签到"
+        assert (
+            fast_reply_keywords.match_reply_trigger_keyword("想看看今日运势")
+            == "今日运势"
+        )
+
+        await harness.plugin.unload()
+
+        assert "minigame" not in fast_reply_keywords.reply_trigger_keywords()
+        assert fast_reply_keywords.match_reply_trigger_keyword("帮我签到一下") == ""
+    finally:
+        await harness.close()
+
+
+async def test_only_enabled_games_register_keywords(tmp_path: Path) -> None:
+    """玩法下线后，它的关键词不再影响本体的 @ 提及行为。"""
+    from neobot_app.message import fast_reply_keywords
+
+    harness = await build(
+        tmp_path,
+        config=MinigameConfig(enabled_games=["bottle"]),
+        screenshots=FakeScreenshots(),
+    )
+    try:
+        registered = fast_reply_keywords.reply_trigger_keywords()["minigame"]
+        assert set(registered) == {"漂流瓶", "丢瓶子", "捞瓶子"}
+        assert fast_reply_keywords.match_reply_trigger_keyword("签到") == ""
+        assert fast_reply_keywords.match_reply_trigger_keyword("丢瓶子") == "丢瓶子"
+    finally:
+        await harness.close()
+
+
 
 
 

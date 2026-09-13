@@ -51,6 +51,24 @@ def _isolate_process_state() -> Iterator[None]:
                 registry.register(model, replace=True)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reply_trigger_keywords() -> Iterator[None]:
+    """隔离「命中即跳过 @ 提及等待」的关键词表。
+
+    插件（如 minigame）在 load 时会把玩法关键词登记进本体；用例之间必须互不影响，
+    否则文件顺序一变就会出现「有时跳过 @ 等待、有时不跳过」的假象。
+    """
+    from neobot_app.message import fast_reply_keywords
+
+    snapshot = fast_reply_keywords.reply_trigger_keywords()
+    try:
+        yield
+    finally:
+        fast_reply_keywords.reset_reply_trigger_keywords()
+        for owner, keywords in snapshot.items():
+            fast_reply_keywords.register_reply_trigger_keywords(owner, keywords)
+
+
 # ── 事件循环 ──
 
 @pytest.fixture(scope="session")

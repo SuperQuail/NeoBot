@@ -1650,7 +1650,13 @@ class EnhancedChat(Chat):
     )
     at_mention_reply_delay_seconds: Optional[float] = field(
         default=5.0,
-        metadata={"description": "@ 提及时的回复延迟秒数；在此期间收集后续群消息后再生成回复"},
+        metadata={
+            "description": (
+                "@ 提及时的回复延迟秒数；在此期间收集后续群消息后再生成回复。"
+                "正文命中插件登记的玩法关键词（漂流瓶 / 签到 / 抽签 等）时跳过该等待，"
+                "直接触发回复事件"
+            )
+        },
     )
     willing_global_coefficient: Optional[float] = field(
         default=1.0,

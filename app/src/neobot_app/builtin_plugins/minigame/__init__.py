@@ -27,6 +27,10 @@ import re
 import time
 from typing import Any
 
+from neobot_app.message.fast_reply_keywords import (
+    register_reply_trigger_keywords,
+    unregister_reply_trigger_keywords,
+)
 from neobot_modloader import Plugin, PluginDatabase
 from neobot_modloader.message import Message
 
@@ -235,12 +239,30 @@ class MinigamePlugin:
         )
         self.games = [game for game in build_games() if game.id in self.config.enabled_game_ids]
         self._games_by_id = {game.id: game for game in self.games}
+        # 玩法关键词：被 @ 命中即跳过本体的「收集上下文」等待，直接触发回复事件
+        register_reply_trigger_keywords(plugin.name, self.reply_trigger_keywords())
         self.register_commands(ctx)
+
+    def reply_trigger_keywords(self) -> tuple[str, ...]:
+        """当前启用玩法的关键词（供「@ 命中即跳过等待」使用）。
+
+        只登记已启用玩法的关键词：玩法下线后，它的关键词不该再影响本体的
+        @ 提及行为。
+        """
+        enabled = (
+            set(self.config.enabled_game_ids)
+            if self.config is not None
+            else set(ALL_GAME_IDS)
+        )
+        return tuple(
+            keyword for keyword, game_id in KEYWORDS.items() if game_id in enabled
+        )
 
     async def unload(self) -> None:
         self.chengyu_sessions.clear()
         self._latest = None
         self._theme_memo.clear()
+        unregister_reply_trigger_keywords(plugin.name)
         unregister_minigame_themes()
         ctx = self.ctx
         registrar = getattr(ctx, "app_commands", None)

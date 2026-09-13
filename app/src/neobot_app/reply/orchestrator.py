@@ -3981,6 +3981,7 @@ class ReplyOrchestrator:
         返回 (新消息条目列表, 通知文本或None, 唤醒提示词或None)；
         返回空列表且无通知表示超时。
         """
+        from neobot_app.message.fast_reply_keywords import matches_reply_trigger
         from neobot_app.message.queue import QueueEntryType as _QET
 
         suspend_secs = self._get_group_chat_suspend_wait_seconds()
@@ -4010,6 +4011,27 @@ class ReplyOrchestrator:
                 if self._willing_service.is_at_mentioned(entry.message):
                     return True
             return False
+
+        def _at_mention_instant_keyword(entries: list) -> str:
+            """被 @ 的条目里是否出现「跳过收集等待」的玩法关键词。
+
+            关键词由插件登记（见 neobot_app.message.fast_reply_keywords）；
+            命中即表示意图已经明确，不必再等收集窗口。异常一律降级为空串。
+            """
+            if self._willing_service is None:
+                return ""
+            for entry in entries:
+                if entry.kind != _QET.MESSAGE or entry.message is None:
+                    continue
+                try:
+                    if not self._willing_service.is_at_mentioned(entry.message):
+                        continue
+                    keyword = matches_reply_trigger(entry.message)
+                except Exception:  # pragma: no cover - 关键词表异常只降级
+                    continue
+                if keyword:
+                    return keyword
+            return ""
 
         def _check_willing(entries: list) -> bool:
             """检查条目列表中是否有任何消息通过回复意愿判断。
@@ -4061,6 +4083,14 @@ class ReplyOrchestrator:
                     )
                     all_new_entries.extend(current_new)
                     has_willing = True
+                    instant_keyword = _at_mention_instant_keyword(current_new)
+                    if instant_keyword:
+                        self._logger.info(
+                            "睡眠中挂起被@命中关键词，跳过收集窗口",
+                            queue_key=queue_key,
+                            keyword=instant_keyword,
+                        )
+                        break
                     at_mention_deadline = monotonic_seconds() + at_delay
                     continue
                 all_new_entries.extend(current_new)
@@ -4068,6 +4098,15 @@ class ReplyOrchestrator:
                     if _check_willing(current_new):
                         has_willing = True
                         if _has_at_mention(current_new):
+                            instant_keyword = _at_mention_instant_keyword(current_new)
+                            if instant_keyword:
+                                # 玩法关键词：意图已经明确，立即结束挂起
+                                self._logger.info(
+                                    "群聊挂起@提及命中关键词，立即结束挂起",
+                                    queue_key=queue_key,
+                                    keyword=instant_keyword,
+                                )
+                                break
                             # @提及：启动延迟收集窗口，不立即break
                             at_mention_deadline = monotonic_seconds() + at_delay
                         else:

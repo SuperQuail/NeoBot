@@ -217,3 +217,107 @@ async def test_wait_during_sleep_checks_at_block_reason(monkeypatch, blocked):
         assert sleep_service.is_sleeping() is blocked
     finally:
         await pipeline.shutdown()
+
+
+# ── @ 提及命中玩法关键词：跳过收集窗口 ─────────────────────────────
+
+
+class _SleepSpy:
+    """记录 asyncio.sleep 调用的替身（其余属性透传给真实 asyncio）。"""
+
+    def __init__(self, real, calls) -> None:
+        self._real = real
+        self._calls = calls
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def sleep(self, seconds) -> None:
+        self._calls.append(float(seconds))
+
+
+def _fake_clock(start: float = 0.0, step: float = 0.25):
+    """假单调时钟：每次读取前进 step 秒，让挂起循环无需真实等待。"""
+    state = {"now": start - step}
+
+    def _now() -> float:
+        state["now"] += step
+        return state["now"]
+
+    return _now
+
+
+def _register_keywords(monkeypatch, *keywords: str) -> None:
+    from neobot_app.message import fast_reply_keywords
+    from neobot_app.reply import orchestrator as orchestrator_module
+
+    fast_reply_keywords.register_reply_trigger_keywords("minigame", keywords)
+    slept: list[float] = []
+    monkeypatch.setattr(orchestrator_module, "asyncio", _SleepSpy(asyncio, slept))
+    monkeypatch.setattr(orchestrator_module, "monotonic_seconds", _fake_clock())
+    return slept
+
+
+@pytest.mark.asyncio
+async def test_suspend_at_mention_keyword_ends_immediately(monkeypatch):
+    """被@且正文命中玩法关键词：不进收集窗口，一轮就结束挂起。"""
+    slept = _register_keywords(monkeypatch, "签到", "抽签")
+
+    pipeline = _orchestrator(SleepService())
+    pipeline._config = _config(suspend_seconds=3, at_delay=30)
+    source = MessageQueue()
+    snapshot = MessageQueue()
+    source.push("42", _group_message(11, "签到", at_bot=True))
+
+    new_entries, notification_text, wake_prompt = await pipeline._suspend_group_chat(
+        source, snapshot, "42"
+    )
+
+    assert [entry.message.message_id for entry in new_entries] == [11]
+    assert notification_text is None
+    assert wake_prompt is None
+    assert len(slept) == 1, "命中玩法关键词应立即结束挂起（只做首次轮询）"
+
+
+@pytest.mark.asyncio
+async def test_suspend_at_mention_without_keyword_keeps_window(monkeypatch):
+    """回归：没命中关键词时仍然走收集窗口（多轮轮询后才结束）。"""
+    slept = _register_keywords(monkeypatch)
+
+    pipeline = _orchestrator(SleepService())
+    pipeline._config = _config(suspend_seconds=3, at_delay=30)
+    source = MessageQueue()
+    snapshot = MessageQueue()
+    source.push("42", _group_message(12, "hello", at_bot=True))
+
+    new_entries, _notification_text, _wake_prompt = await pipeline._suspend_group_chat(
+        source, snapshot, "42"
+    )
+
+    assert [entry.message.message_id for entry in new_entries] == [12]
+    assert len(slept) > 1, "未命中关键词应继续等收集窗口"
+
+
+@pytest.mark.asyncio
+async def test_suspend_sleeping_at_mention_keyword_skips_window(monkeypatch):
+    """睡眠中的挂起循环：@ 命中关键词时唤醒后立即结束，不等收集窗口。"""
+    slept = _register_keywords(monkeypatch, "签到")
+
+    sleep_service = SleepService()
+    sleep_service.sleep(3600)
+    pipeline = _orchestrator(sleep_service)
+    pipeline._config = _config(suspend_seconds=3, at_delay=30)
+    source = MessageQueue()
+    snapshot = MessageQueue()
+    source.push("42", _group_message(13, "帮我签到", at_bot=True))
+
+    new_entries, notification_text, wake_prompt = await pipeline._suspend_group_chat(
+        source, snapshot, "42"
+    )
+
+    assert [entry.message.message_id for entry in new_entries] == [13]
+    assert notification_text is None
+    assert wake_prompt == DEFAULT_WAKE_PROMPT
+    assert not sleep_service.is_sleeping()
+    assert len(slept) == 1
+
