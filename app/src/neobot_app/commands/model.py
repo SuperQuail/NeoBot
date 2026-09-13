@@ -90,15 +90,26 @@ class Command:
     params: tuple[tuple[str, str], ...] = ()  # (参数名, 说明),用于 /help <命令> 详情
     sync_reply: bool = False
     aliases: tuple[str, ...] = ()
+    #: 提供者：空 = 本体内置命令；非空 = 插件名（/help 追加 [来源: <plugin>]）
+    source: str = ""
 
     @property
     def display_name(self) -> str:
         return f"/{self.name}"
 
     @property
+    def source_label(self) -> str:
+        """插件来源标记；本体命令返回空串（spec(4) R26 / A65）。"""
+        return f"[来源: {self.source}]" if self.source else ""
+
+    @property
     def help_line(self) -> str:
         usage = f" {self.usage}" if self.usage else ""
-        return f"{self.display_name}{usage} — {self.description} [权限:{permission_name(self.permission)}]"
+        source = f" {self.source_label}" if self.source_label else ""
+        return (
+            f"{self.display_name}{usage} — {self.description}"
+            f" [权限:{permission_name(self.permission)}]{source}"
+        )
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.strip():

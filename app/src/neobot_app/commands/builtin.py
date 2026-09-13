@@ -179,7 +179,8 @@ def _render_command_list_markdown(commands: list[Command]) -> str:
         name_part = command.display_name
         if command.usage:
             name_part += f" {command.usage}"
-        lines.append(f"- `{name_part}` — {command.description}")
+        suffix = f" {command.source_label}" if command.source_label else ""
+        lines.append(f"- `{name_part}` — {command.description}{suffix}")
         lines.append(f"  - 权限: **{permission_name(command.permission)}**")
     lines.append("")
     lines.append("> 命令以 `/` 开头,群聊中需先 @bot。")
@@ -198,6 +199,8 @@ def _render_command_detail_markdown(command: Command) -> str:
         f"| 权限 | {permission_name(command.permission)} |",
         f"| 用法 | `{command.display_name}{' ' + command.usage if command.usage else ''}` |",
     ]
+    if command.source:
+        lines.append(f"| 来源 | {command.source} |")
     if command.aliases:
         lines.append(f"| 别名 | `{'`、`'.join('/' + alias for alias in command.aliases)}` |")
     if command.params:

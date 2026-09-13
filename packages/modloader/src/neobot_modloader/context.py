@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
@@ -93,8 +94,56 @@ class MarkdownSkillRegistrar:
         self._registrations.clear()
 
 
+_PERMISSION_NAMES = {
+    0: "所有人",
+    1: "次级管理员",
+    2: "超级管理员",
+}
+
+
+def _permission_name(level: int) -> str:
+    return _PERMISSION_NAMES.get(int(level), f"等级{level}")
+
+
+@dataclass
+class PluginCommand:
+    """注册桥的命令对象:字段与本体 Command 对齐,并自带 help 渲染属性。
+
+    装饰器用法需要构造命令对象，而 modloader 不能依赖 neobot_app；因此这里
+    保持同形字段（display_name / help_line / source），使命令服务与 /help
+    无需区分命令来自本体还是插件。
+    """
+
+    name: str
+    description: str = ""
+    handler: Any = None
+    permission: int = 0
+    usage: str = ""
+    params: tuple[tuple[str, str], ...] = ()
+    sync_reply: bool = False
+    aliases: tuple[str, ...] = ()
+    source: str = ""
+
+    @property
+    def display_name(self) -> str:
+        return f"/{self.name}"
+
+    @property
+    def source_label(self) -> str:
+        return f"[来源: {self.source}]" if self.source else ""
+
+    @property
+    def help_line(self) -> str:
+        usage = f" {self.usage}" if self.usage else ""
+        source = f" {self.source_label}" if self.source_label else ""
+        return (
+            f"{self.display_name}{usage} — {self.description}"
+            f" [权限:{_permission_name(self.permission)}]{source}"
+        )
+
+
 class PluginCommandRegistrar:
-    """插件命令注册器:自动加插件名前缀,卸载时清理。
+    """插件命令注册器:先试原名、重名才追加插件名前缀,卸载时清理。
 
     用法::
 
@@ -107,6 +156,16 @@ class PluginCommandRegistrar:
         ctx.app_commands.register(
             Command(name="ping", description="响应测试", handler=_ping)
         )
+
+    命名语义（spec(4) R26 / D21，**破坏性变更**）:
+
+    * 默认 prefixed=False:先试原名;只有原名(或其别名)与既有命令冲突时,
+      才回退为 {plugin}__{name};两者都被占用则只记 warning 并跳过,
+      **不抛异常、不阻断插件加载**;
+    * prefixed=True:保留改造前的旧语义,**一律**加 {plugin}__ 前缀,
+      既有第三方插件可用该开关保持原有命令名;
+    * 成功注册后把插件名写入 command.source,/help 据此追加 [来源: <plugin>]
+      标记(本体命令不带标记)。
     """
 
     def __init__(
@@ -115,11 +174,15 @@ class PluginCommandRegistrar:
         plugin_name: str,
         registry: Any | None,
         record_cleanup: Any | None,
+        logger: Any | None = None,
     ) -> None:
         self._plugin_name = plugin_name
         self._registry = registry
         self._record_cleanup = record_cleanup
+        self._logger = logger
         self._registered: set[str] = set()
+        #: 因重名被改名的命令:((请求名, 实际名), ...),面板「插件 → 详情」展示
+        self._renames: list[tuple[str, str]] = []
 
     @property
     def available(self) -> bool:
@@ -128,35 +191,97 @@ class PluginCommandRegistrar:
     def _command_name(self, name: str) -> str:
         return f"{self._plugin_name}__{name}"
 
-    def register(self, command: Any) -> None:
-        """注册命令(自动加 {plugin_name}__ 前缀)。"""
-        if self._registry is None:
-            raise RuntimeError("命令注册表不可用(未注入 app_commands)")
-        command.name = self._command_name(command.name)
-        self._registry.register(command)
-        self._registered.add(command.name)
-        if self._record_cleanup is not None:
-            self._record_cleanup(self.unregister_all)
+    def renames(self) -> list[tuple[str, str]]:
+        """因重名被自动改名的命令(请求名 -> 实际名)。"""
+        return list(self._renames)
 
-    def __call__(self, name: str, **kwargs: Any):
-        """装饰器用法:@ctx.app_commands.register("ping", description=...)。"""
-        from types import SimpleNamespace
+    def _warn(self, message: str) -> None:
+        logger = self._logger
+        if logger is None:
+            return
+        try:
+            logger.warning(message)
+        except Exception:  # pragma: no cover - 日志失败不影响注册
+            pass
 
+    def register(self, command: Any = None, *, prefixed: bool = False, **kwargs: Any):
+        """注册命令。
+
+        * register(command) / register(command, prefixed=True):直接注册;
+        * register("ping", description=..., permission=...):装饰器用法,
+          返回一个装饰器,把被装饰函数作为 handler。
+
+        默认 prefixed=False:先试原名,冲突才加 {plugin}__ 前缀。
+        """
+        if command is None or isinstance(command, str):
+            requested = command if isinstance(command, str) else str(kwargs.pop("name", ""))
+            return self._decorator(requested, prefixed=prefixed, kwargs=kwargs)
+        self._register_command(command, prefixed=prefixed)
+        return None
+
+    def _decorator(self, name: str, *, prefixed: bool, kwargs: dict[str, Any]):
         def _decorate(handler: Any) -> Any:
-            self.register(
-                SimpleNamespace(
+            self._register_command(
+                PluginCommand(
                     name=name,
                     description=str(kwargs.get("description") or ""),
                     usage=str(kwargs.get("usage") or ""),
                     permission=int(kwargs.get("permission", 0)),
                     sync_reply=bool(kwargs.get("sync_reply", False)),
                     aliases=tuple(kwargs.get("aliases") or ()),
+                    params=tuple(kwargs.get("params") or ()),
                     handler=handler,
-                )
+                ),
+                prefixed=prefixed,
             )
             return handler
 
         return _decorate
+
+    def _register_command(self, command: Any, *, prefixed: bool) -> str | None:
+        """按 spec(4) 4.11.2 的语义注册;全部失败时返回 None(不抛异常)。"""
+        if self._registry is None:
+            raise RuntimeError("命令注册表不可用(未注入 app_commands)")
+        requested = str(getattr(command, "name", "") or "")
+        if not requested:
+            self._warn(f"命令名为空,跳过注册: plugin={self._plugin_name}")
+            return None
+        if prefixed:
+            candidates = [self._command_name(requested)]
+        else:
+            candidates = [requested, self._command_name(requested)]
+        for actual in candidates:
+            command.name = actual
+            try:
+                self._registry.register(command)
+            except ValueError:
+                continue
+            except Exception as exc:  # 注册表异常同样不得阻断插件加载
+                self._warn(
+                    f"命令注册失败,跳过: plugin={self._plugin_name} "
+                    f"requested={requested} actual={actual} error={exc}"
+                )
+                return None
+            self._registered.add(actual)
+            try:
+                command.source = self._plugin_name
+            except Exception:  # pragma: no cover - 只读对象时忽略来源标记
+                pass
+            if self._record_cleanup is not None:
+                self._record_cleanup(self.unregister_all)
+            if not prefixed and actual != requested:
+                # 只有「因冲突回退」才算重命名；prefixed=True 是旧语义的常规前缀化
+                self._renames.append((requested, actual))
+                self._warn(
+                    f"命令因重名被重命名: plugin={self._plugin_name} "
+                    f"requested=/{requested} actual=/{actual}"
+                )
+            return actual
+        self._warn(
+            f"原名与来源前缀名均被占用,跳过注册: plugin={self._plugin_name} "
+            f"requested=/{requested} fallback=/{candidates[-1]}"
+        )
+        return None
 
     def unregister_all(self) -> None:
         if self._registry is None:
@@ -164,6 +289,7 @@ class PluginCommandRegistrar:
         for name in list(self._registered):
             self._registry.unregister(name)
         self._registered.clear()
+        self._renames.clear()
 
 
 class RuntimePluginContext:
@@ -239,6 +365,7 @@ class RuntimePluginContext:
             plugin_name=plugin_name,
             registry=app_commands,
             record_cleanup=record_skill_cleanup,
+            logger=self._logger,
         )
 
     @property
