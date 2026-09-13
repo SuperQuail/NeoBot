@@ -13,6 +13,7 @@ from neobot_memory import ArchiveMemoryService
 
 from neobot_app.time_context import (
     epoch_seconds,
+    epoch_seconds_int,
     get_current_time_and_lunar_date,
     monotonic_seconds,
 )
@@ -69,6 +70,21 @@ MAX_OVERFLOW_PROMPT_CHARS = 60_000
 _ARCHIVE_PROMPT_OMITTED = "\n...[档案中间部分已省略，仅保留首尾用于压缩]...\n"
 #: 失败退避表最多保留的条目数（防止长时间运行后无界增长）。
 MAX_OVERFLOW_BACKOFF_ENTRIES = 512
+
+# ── 面板触发的手动 / 批量压缩（spec(4) Part C）──
+#: 手动压缩目标字符数下限：低于它必然丢关键事实（R15 / §4.10.2）。
+MIN_MANUAL_TARGET_CHARS = 200
+#: max_total_chars=0（容量治理关闭）时手动压缩目标的兜底上限。
+MANUAL_TARGET_FALLBACK_MAX_CHARS = 100_000
+#: 一次批量压缩请求最多处理多少条超限档案（R20；逐条串行）。
+MAX_BATCH_COMPRESS_ITEMS = 20
+#: 手动压缩状态表的 FIFO 上限（进程内，重启即清空）。
+MAX_MANUAL_TASKS = 50
+#: 已结束的手动压缩记录保留多久（秒）：超过后下次访问时清理。
+MANUAL_TASK_TTL_SECONDS = 1800.0
+#: 用量统计里手动压缩的 conversation_kind（与自动的 archive_overflow 单列区分）。
+MANUAL_COMPRESSION_USAGE_KIND = "archive_manual"
+AUTO_COMPRESSION_USAGE_KIND = "archive_overflow"
 #: 配置缺省时使用的超限压缩冷却秒数（与 AgentMemoryArchive 默认值一致）。
 DEFAULT_OVERFLOW_COOLDOWN_SECONDS = 600.0
 _TOOL_TRUNCATED_MARKER = "\n...[工具返回已截断，需要更多内容请缩小查询范围后重试]"
@@ -155,6 +171,11 @@ class ArchiveMemoryAutoSummaryService:
         self._overflow_retry_after: dict[str, float] = {}
         #: 在途的「档案超限」压缩任务（单飞占位复用 self._active_summaries）。
         self._overflow_tasks: set[asyncio.Task] = set()
+        # ── 面板手动 / 批量压缩的状态表（spec(4) Part C / §4.10.4）──
+        #: task_id -> 任务状态字典。**进程内**：进程重启即清空，面板只当
+        #: 「最近一次操作结果」，不当历史（历史在 archive_snapshots 表里）。
+        self._manual_tasks: dict[str, dict[str, Any]] = {}
+        self._manual_task_seq = 0
         self._configure_archive_overflow_policy(archive_memory_service, archive_cfg)
 
     def install_provider(self, provider: "Provider | None") -> "Provider | None":
@@ -880,7 +901,13 @@ class ArchiveMemoryAutoSummaryService:
             return False
         try:
             task = asyncio.create_task(
-                self._run_overflow_compression(table_name, key, task_key)
+                self._run_compression_job(
+                    table_name,
+                    key,
+                    task_key,
+                    target_chars=self._overflow_max_total_chars,
+                    source="auto",
+                )
             )
         except RuntimeError as exc:
             self._end_summary(task_key)
@@ -900,71 +927,168 @@ class ArchiveMemoryAutoSummaryService:
         )
         return True
 
-    async def _run_overflow_compression(
-        self, table_name: str, key: str, task_key: str
+    async def _run_compression_job(
+        self,
+        table_name: str,
+        key: str,
+        task_key: str,
+        *,
+        target_chars: int,
+        source: str,
+        operator_ip: str | None = None,
+        task_state: dict[str, Any] | None = None,
     ) -> bool:
-        """后台压缩任务入口：异常一律转成「保留原文 + 失败退避」，绝不影响写入方。"""
+        """后台压缩任务入口：异常一律转成「保留原文 + 失败退避」，绝不影响写入方。
+
+        自动路径（写超限）与手动路径（面板）共用本入口：差别只有 target_chars /
+        source，以及手动路径会回填 ``task_state``（面板状态表）。单飞键由调用方
+        ``_begin_summary`` 持有，这里只负责 ``_end_summary`` 释放。
+        """
+        state: dict[str, Any] = {}
         try:
-            return await self._compress_overflow_archive(table_name, key, task_key)
+            ok = await self.compress_archive(
+                table_name,
+                key,
+                target_chars=target_chars,
+                source=source,
+                operator_ip=operator_ip,
+                state=state,
+            )
         except Exception as exc:
             failures = self._record_overflow_failure(task_key)
             # 异常同样算失败：清掉服务侧冷却，重试节奏交给这里的失败退避，
             # 否则一次异常会把「下次写入再试」压成 600 秒的静默。
             self._clear_overflow_cooldown(table_name, key)
+            error = str(exc) or type(exc).__name__
             self._logger.warning(
                 "档案超限压缩失败，保留原内容等待下次写入重试",
                 table_name=table_name,
                 key=key,
-                error=str(exc) or type(exc).__name__,
+                source=source,
+                error=error,
                 consecutive_failures=failures,
             )
+            self._finalize_manual_task(task_state, status="failed", error=error, state=state)
             return False
         finally:
             self._end_summary(task_key)
+        if task_state is not None:
+            self._finalize_manual_task(
+                task_state,
+                status="done" if ok else "failed",
+                error="" if ok else str(state.get("error") or "压缩未达到目标"),
+                state=state,
+            )
+        return ok
 
-    async def _compress_overflow_archive(
-        self, table_name: str, key: str, task_key: str
+    async def compress_archive(
+        self,
+        table_name: str,
+        key: str,
+        *,
+        target_chars: int,
+        source: str,
+        operator_ip: str | None = None,
+        state: dict[str, Any] | None = None,
     ) -> bool:
-        """对单条超限档案跑一轮「压缩」工具循环，并把结果落库。
+        """对单条档案跑一轮「压缩」工具循环，并把结果落库。
 
-        复用总结的预算与保护：max_tool_rounds / max_summary_seconds / 单次调用超时 /
-        用量统计 / 工具连续失败熔断 / 失败指数退避。
+        ``target_chars`` 是**本次压缩**的目标，不再直接读全局字段（spec(4) §4.10.3）：
+        自动路径传 ``self._overflow_max_total_chars``（source="auto"），手动路径传
+        面板输入（source="manual"）。复用总结的预算与保护：max_tool_rounds /
+        max_summary_seconds / 单次调用超时 / 用量统计 / 工具连续失败熔断 / 失败指数退避。
+
+        可选的 ``state`` 是调用方的出参字典，回填 chars_before / chars_after /
+        snapshot_id / error，供面板状态表使用（保持本方法返回 bool）。
         """
-        limit = self._overflow_max_total_chars
+        limit = _positive_int_or_zero(target_chars)
         if limit <= 0:
             return True
         item = await self._archive.get(table_name, key)
         value = (item.value or "") if item is not None else ""
         if not value:
             return False
-        if len(value) <= limit:
+        chars_before = len(value)
+        if state is not None:
+            state["chars_before"] = chars_before
+        if chars_before <= limit:
             # 已被别的路径压缩过（例如同一批写入共享一次压缩），无需再跑模型。
+            if state is not None:
+                state["chars_after"] = chars_before
             return True
+
+        # 压缩**开始前**留痕：此刻的原文就是快照内容（D15）。失败 / 未达标时删除。
+        snapshot_id = await self._save_compression_snapshot(
+            table_name,
+            key,
+            value=value,
+            item=item,
+            source=source,
+            operator_ip=operator_ip,
+        )
+        if state is not None:
+            state["snapshot_id"] = snapshot_id
 
         prompt = self._build_overflow_compression_prompt(
             table_name=table_name,
             key=key,
             value=value,
             limit=limit,
+            trigger=source,
+            target_chars=limit,
         )
-        tool_successes, tool_failures = await self._run_overflow_tool_loop(
-            prompt, table_name=table_name, key=key
-        )
+        try:
+            tool_successes, tool_failures = await self._run_overflow_tool_loop(
+                prompt,
+                table_name=table_name,
+                key=key,
+                usage_kind=_compression_usage_kind(source),
+            )
+        except Exception:
+            # 工具循环异常中止：模型可能已经写了一半，先回滚原文再抛给上层记失败。
+            restored = await self._restore_compression_original(table_name, key, value)
+            if restored:
+                await self._drop_compression_snapshot(snapshot_id)
+            if state is not None:
+                state["snapshot_id"] = None if restored else snapshot_id
+            raise
 
         after = await self._archive.get(table_name, key)
         remaining = len((after.value if after is not None else "") or "")
+        if state is not None:
+            state["chars_after"] = remaining
+        task_key = self._overflow_task_key(table_name, key)
         if tool_successes <= 0 or remaining > limit:
             failures = self._record_overflow_failure(task_key)
             # 压缩没成功 → 清掉服务侧冷却，让「下次写入再试」不被 600 秒冷却掩盖；
             # 真正的重试节奏由这里的失败退避控制。
             self._clear_overflow_cooldown(table_name, key)
+            error = (
+                f"压缩未达到目标（{remaining} 字 > 目标 {limit} 字）"
+                if tool_successes > 0
+                else "压缩没有产生有效写入，已保留原文"
+            )
+            # 失败 / 未达标 → 回滚原文（R19「宁可不压，不静默丢数据」）。
+            # 回滚走 set_if_version（面板路径），因此**不会**再次触发自动压缩；
+            # 只有确认「库内内容已等于原文」时才删除本次快照，避免回滚失败时丢失唯一副本。
+            restored = await self._restore_compression_original(table_name, key, value)
+            if restored:
+                await self._drop_compression_snapshot(snapshot_id)
+            if state is not None:
+                state["error"] = error
+                state["snapshot_id"] = None if restored else snapshot_id
+                if restored:
+                    state["chars_after"] = chars_before
+            remaining = chars_before if restored else remaining
             self._logger.warning(
                 "档案超限压缩未压到上限内，保留原内容等待下次写入重试",
                 table_name=table_name,
                 key=key,
-                chars_before=len(value),
+                source=source,
+                chars_before=chars_before,
                 chars_after=remaining,
-                max_total_chars=limit,
+                target_chars=limit,
+                max_total_chars=self._overflow_max_total_chars,
                 tool_calls_succeeded=tool_successes,
                 tool_failures=tool_failures,
                 consecutive_failures=failures,
@@ -977,14 +1101,550 @@ class ArchiveMemoryAutoSummaryService:
             "档案超限压缩完成",
             table_name=table_name,
             key=key,
-            chars_before=len(value),
+            source=source,
+            chars_before=chars_before,
             chars_after=remaining,
-            max_total_chars=limit,
+            target_chars=limit,
+            snapshot_id=snapshot_id,
         )
         return True
 
+    async def _save_compression_snapshot(
+        self,
+        table_name: str,
+        key: str,
+        *,
+        value: str,
+        item: Any,
+        source: str,
+        operator_ip: str | None,
+    ) -> int | None:
+        """压缩前留痕（写失败只告警，不阻断压缩本身）。"""
+        saver = getattr(self._archive, "save_snapshot", None)
+        if not callable(saver):
+            return None
+        try:
+            snapshot_id = await saver(
+                table_name,
+                key,
+                value,
+                total_chars=len(value),
+                version=int(getattr(item, "version", 0) or 0),
+                reason=str(source or "auto"),
+                operator_ip=operator_ip,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "压缩前快照写入失败，本次压缩继续（不影响原文）",
+                table_name=table_name,
+                key=key,
+                error=str(exc) or type(exc).__name__,
+            )
+            return None
+        return int(snapshot_id) if snapshot_id else None
+
+    async def _restore_compression_original(
+        self, table_name: str, key: str, original: str
+    ) -> bool:
+        """压缩失败 / 未达标时把档案内容回滚成压缩前的原文，返回是否已还原。
+
+        走 ``set_if_version``（面板路径）：一是不触发容量治理，避免「回滚 → 再次超限
+        → 再压缩」的循环；二是带乐观锁，不会覆盖并发的人工编辑（冲突时保留快照）。
+        内容本来就等于原文（模型根本没写）时直接算还原成功。
+        """
+        try:
+            current = await self._archive.get(table_name, key)
+        except Exception as exc:
+            self._logger.warning(
+                "压缩失败后读取档案以回滚原文失败（保留快照）",
+                table_name=table_name,
+                key=key,
+                error=str(exc) or type(exc).__name__,
+            )
+            return False
+        if current is None:
+            # 条目已被并发删除：不敢凭空重建，保留快照以便人工恢复。
+            return False
+        if str(getattr(current, "value", "") or "") == original:
+            return True
+        setter = getattr(self._archive, "set_if_version", None)
+        if not callable(setter):
+            return False
+        try:
+            await setter(
+                table_name,
+                key,
+                original,
+                list(getattr(current, "tags", None) or []),
+                int(getattr(current, "version", 0) or 0),
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "压缩失败后回滚原文失败（保留快照供人工恢复）",
+                table_name=table_name,
+                key=key,
+                error=str(exc) or type(exc).__name__,
+            )
+            return False
+        self._logger.info(
+            "档案压缩未达标，已回滚为压缩前原文",
+            table_name=table_name,
+            key=key,
+            chars=len(original),
+        )
+        return True
+
+    async def _drop_compression_snapshot(self, snapshot_id: int | None) -> None:
+        """压缩失败 / 未达标时删除本次快照（R19 / §4.10.4）。"""
+        if not snapshot_id:
+            return
+        deleter = getattr(self._archive, "delete_snapshot", None)
+        if not callable(deleter):
+            return
+        try:
+            await deleter(int(snapshot_id))
+        except Exception as exc:
+            self._logger.warning(
+                "压缩失败后删除快照失败（不影响原文）",
+                snapshot_id=int(snapshot_id),
+                error=str(exc) or type(exc).__name__,
+            )
+
+    # ── 面板手动 / 批量压缩（spec(4) Part C / §4.10.1–§4.10.4）──
+
+    def manual_target_bounds(self) -> tuple[int, int]:
+        """手动压缩目标的 ``(下限, 上限)``。
+
+        下限固定 ``MIN_MANUAL_TARGET_CHARS``；上限取全局 ``max_total_chars``，
+        为 0（容量治理关闭）时取兜底常量（A44：此时手动压缩仍可用）。
+        """
+        upper = self._overflow_max_total_chars
+        if upper <= 0:
+            upper = MANUAL_TARGET_FALLBACK_MAX_CHARS
+        return MIN_MANUAL_TARGET_CHARS, int(upper)
+
+    def normalize_manual_target(self, target_chars: Any) -> int:
+        """校验并归一化手动压缩目标；非法值抛 ``ValueError``（面板据此 400）。"""
+        lower, upper = self.manual_target_bounds()
+        try:
+            target = int(target_chars)
+        except (TypeError, ValueError):
+            raise ValueError(f"目标字符数必须是整数（{lower}–{upper}）") from None
+        if target < lower:
+            raise ValueError(f"目标字符数不能小于 {lower}（低于此值必然丢关键事实）")
+        if target > upper:
+            raise ValueError(
+                f"目标字符数不能大于 {upper}（当前单条档案存储上限；"
+                "手动压缩不改写全局配置）"
+            )
+        return target
+
+    async def start_manual_compression(
+        self,
+        table_name: str,
+        key: str,
+        *,
+        target_chars: Any,
+        operator_ip: str = "",
+    ) -> dict[str, Any]:
+        """面板「AI 压缩」入口：校验目标 → 判 no-op → 起后台任务并立即返回状态。
+
+        单飞键与自动压缩**共用** ``overflow:{table}:{key}``（D16）：
+        同一 (table, key) 已经有一个压缩在跑时不再排第二个模型循环，
+        而是如实回「进行中」。
+        """
+        table_name = str(table_name or "").strip()
+        key = str(key or "").strip()
+        if not table_name or not key:
+            raise ValueError("缺少 table / key")
+        target = self.normalize_manual_target(target_chars)
+
+        running = self._find_running_manual_task(table_name, key)
+        if running is not None:
+            return self._task_payload(running, message="该档案正在压缩中，请稍后查看结果")
+
+        item = await self._archive.get(table_name, key)
+        if item is None:
+            raise ValueError(f"没有该档案: {table_name}:{key}")
+        current = len(item.value or "")
+        if current <= target:
+            # A32：目标不小于当前字数 → 零 token no-op，绝不调用模型。
+            return {
+                "ok": True,
+                "status": "noop",
+                "task_id": None,
+                "kind": "single",
+                "table": table_name,
+                "key": key,
+                "target_chars": target,
+                "chars_before": current,
+                "chars_after": current,
+                "snapshot_id": None,
+                "error": "",
+                "operator_ip": str(operator_ip or ""),
+                "noop": True,
+                "message": (
+                    f"当前 {current} 字已不大于目标 {target} 字，无需压缩（未调用模型）"
+                ),
+            }
+        if self._provider is None:
+            raise RuntimeError("档案总结模型不可用（未装配 archive_summary provider），无法压缩")
+
+        task = self._new_manual_task(table_name, key, target, operator_ip)
+        task["chars_before"] = current
+        task_key = self._overflow_task_key(table_name, key)
+        if not self._begin_summary(task_key):
+            # 预检之后自动压缩刚好启动：撤回本任务，如实回「进行中」（D16 / A40）。
+            self._manual_tasks.pop(str(task["task_id"]), None)
+            return {
+                "ok": True,
+                "status": "running",
+                "task_id": None,
+                "kind": "single",
+                "table": table_name,
+                "key": key,
+                "target_chars": target,
+                "chars_before": current,
+                "chars_after": None,
+                "snapshot_id": None,
+                "error": "",
+                "operator_ip": str(operator_ip or ""),
+                "message": "该档案正在压缩中（自动或手动），本次未重复触发",
+            }
+        try:
+            pending = asyncio.create_task(
+                self._run_compression_job(
+                    table_name,
+                    key,
+                    task_key,
+                    target_chars=target,
+                    source="manual",
+                    operator_ip=str(operator_ip or ""),
+                    task_state=task,
+                )
+            )
+        except RuntimeError as exc:
+            self._end_summary(task_key)
+            self._manual_tasks.pop(str(task["task_id"]), None)
+            raise RuntimeError(f"无法调度压缩任务（没有运行中的事件循环）: {exc}") from exc
+        self._overflow_tasks.add(pending)
+        pending.add_done_callback(self._overflow_tasks.discard)
+        self._logger.info(
+            "面板触发档案压缩",
+            table_name=table_name,
+            key=key,
+            target_chars=target,
+            chars_before=current,
+            operator_ip=str(operator_ip or ""),
+            task_id=task["task_id"],
+        )
+        return self._task_payload(
+            task,
+            message=f"已开始压缩（{current} → 目标 {target} 字）",
+        )
+
+    async def start_batch_compression(
+        self,
+        *,
+        target_chars: Any,
+        operator_ip: str = "",
+        table_name: str | None = None,
+    ) -> dict[str, Any]:
+        """面板「批量压缩超限档案」入口：一次最多 MAX_BATCH_COMPRESS_ITEMS 条，**逐条串行**。
+
+        统一一个目标；只对 ``chars > target`` 的条目执行，其余标 ``skipped``。
+        返回被截断条数与 skipped 明细（A45 / §4.10.1）。
+        """
+        target = self.normalize_manual_target(target_chars)
+        if self._provider is None:
+            raise RuntimeError("档案总结模型不可用（未装配 archive_summary provider），无法压缩")
+        scope = str(table_name or "").strip() or None
+        rows = await self._archive.list_over_limit(
+            scope, limit=MAX_BATCH_COMPRESS_ITEMS
+        )
+        total_over = await self._archive.count_over_limit(scope)
+        truncated = max(0, int(total_over or 0) - len(rows or []))
+
+        task = self._new_manual_task(scope or "", "", target, operator_ip, kind="batch")
+        items: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        selected_chars = 0
+        for row in rows or []:
+            row_table = str(row.get("table_name") or "")
+            row_key = str(row.get("key") or "")
+            chars = int(row.get("chars") or 0)
+            entry: dict[str, Any] = {
+                "table": row_table,
+                "key": row_key,
+                "chars_before": chars,
+                "chars_after": None,
+                "status": "pending",
+                "error": "",
+                "snapshot_id": None,
+            }
+            if chars <= target:
+                entry["status"] = "skipped"
+                entry["error"] = f"当前 {chars} 字不大于目标 {target} 字"
+                skipped.append({"table": row_table, "key": row_key, "reason": entry["error"]})
+            else:
+                selected_chars += chars
+            items.append(entry)
+        task["items"] = items
+        task["skipped"] = skipped
+        task["truncated"] = truncated
+        task["chars_before"] = selected_chars
+        pending_items = [entry for entry in items if entry["status"] == "pending"]
+        if not pending_items:
+            task["status"] = "done"
+            task["finished_at"] = epoch_seconds()
+            task["message"] = (
+                f"没有需要压缩的条目（超限 {len(items)} 条，全部不大于目标 {target} 字）"
+            )
+            return self._task_payload(task)
+
+        try:
+            pending = asyncio.create_task(
+                self._run_batch_compression(task, target_chars=target, operator_ip=operator_ip)
+            )
+        except RuntimeError as exc:
+            self._manual_tasks.pop(str(task["task_id"]), None)
+            raise RuntimeError(f"无法调度批量压缩任务（没有运行中的事件循环）: {exc}") from exc
+        self._overflow_tasks.add(pending)
+        pending.add_done_callback(self._overflow_tasks.discard)
+        self._logger.info(
+            "面板触发批量档案压缩",
+            target_chars=target,
+            count=len(pending_items),
+            truncated=truncated,
+            operator_ip=str(operator_ip or ""),
+            task_id=task["task_id"],
+        )
+        return self._task_payload(
+            task,
+            message=(f"已开始逐条压缩 {len(pending_items)} 条超限档案（目标 {target} 字）"),
+        )
+
+    async def _run_batch_compression(
+        self, task: dict[str, Any], *, target_chars: int, operator_ip: str
+    ) -> None:
+        """批量压缩主循环：**逐条串行**（任意时刻至多 1 条在跑，A45）。"""
+        succeeded = 0
+        failed = 0
+        try:
+            for entry in list(task.get("items") or []):
+                if entry.get("status") != "pending":
+                    continue
+                row_table = str(entry.get("table") or "")
+                row_key = str(entry.get("key") or "")
+                task_key = self._overflow_task_key(row_table, row_key)
+                if not self._begin_summary(task_key):
+                    # 同一条正在被自动 / 其它手动任务压缩：跳过而不是排队。
+                    entry["status"] = "skipped"
+                    entry["error"] = "该档案正在压缩中"
+                    task.setdefault("skipped", []).append(
+                        {"table": row_table, "key": row_key, "reason": entry["error"]}
+                    )
+                    continue
+                # 面板据此禁用同一条档案的编辑 / 删除（R18 / §4.10.1）。
+                entry["status"] = "running"
+                state: dict[str, Any] = {}
+                try:
+                    ok = await self.compress_archive(
+                        row_table,
+                        row_key,
+                        target_chars=target_chars,
+                        source="manual",
+                        operator_ip=operator_ip,
+                        state=state,
+                    )
+                except Exception as exc:
+                    ok = False
+                    error = str(exc) or type(exc).__name__
+                    state["error"] = error
+                    self._record_overflow_failure(task_key)
+                    self._clear_overflow_cooldown(row_table, row_key)
+                    self._logger.warning(
+                        "批量压缩单条失败，保留原内容",
+                        table_name=row_table,
+                        key=row_key,
+                        error=error,
+                    )
+                finally:
+                    self._end_summary(task_key)
+                entry["chars_before"] = int(
+                    state.get("chars_before") or entry.get("chars_before") or 0
+                )
+                if state.get("chars_after") is not None:
+                    entry["chars_after"] = int(state["chars_after"])
+                entry["snapshot_id"] = state.get("snapshot_id")
+                entry["error"] = "" if ok else str(state.get("error") or "压缩失败")
+                entry["status"] = "done" if ok else "failed"
+                succeeded += 1 if ok else 0
+                failed += 0 if ok else 1
+        except Exception as exc:  # 兜底：批量任务自身异常不影响已完成的条目
+            task["error"] = str(exc) or type(exc).__name__
+            self._logger.warning("批量档案压缩异常中止", error=task["error"])
+        finally:
+            done_items = [
+                entry for entry in task.get("items") or [] if entry.get("status") == "done"
+            ]
+            task["chars_after"] = sum(
+                int(entry.get("chars_after") or 0) for entry in done_items
+            )
+            task["snapshot_id"] = None
+            task["status"] = "failed" if failed else "done"
+            task["finished_at"] = epoch_seconds()
+            task["message"] = (
+                f"批量压缩完成：成功 {succeeded} 条，失败 {failed} 条，"
+                f"跳过 {len(task.get('skipped') or [])} 条"
+            )
+
+    def get_manual_task(self, task_id: str) -> dict[str, Any] | None:
+        """按 task_id 取手动 / 批量压缩状态（顺手清理过期与超量记录）。"""
+        self._prune_manual_tasks()
+        task = self._manual_tasks.get(str(task_id or "").strip())
+        if task is None:
+            return None
+        return self._task_payload(task)
+
+    def _new_manual_task(
+        self,
+        table_name: str,
+        key: str,
+        target_chars: int,
+        operator_ip: str,
+        *,
+        kind: str = "single",
+    ) -> dict[str, Any]:
+        """登记一条手动压缩任务（FIFO 上限 MAX_MANUAL_TASKS）。"""
+        self._prune_manual_tasks()
+        self._manual_task_seq += 1
+        task_id = f"{epoch_seconds_int()}-{self._manual_task_seq}"
+        task: dict[str, Any] = {
+            "task_id": task_id,
+            "kind": kind,
+            "table": str(table_name or ""),
+            "key": str(key or ""),
+            "target_chars": int(target_chars),
+            "status": "running",
+            "chars_before": 0,
+            "chars_after": None,
+            "error": "",
+            "operator_ip": str(operator_ip or ""),
+            "started_at": epoch_seconds(),
+            "finished_at": None,
+            "snapshot_id": None,
+            "message": "",
+        }
+        if kind == "batch":
+            task["items"] = []
+            task["skipped"] = []
+            task["truncated"] = 0
+        self._manual_tasks[task_id] = task
+        self._prune_manual_tasks()
+        return task
+
+    def _find_running_manual_task(self, table_name: str, key: str) -> dict[str, Any] | None:
+        """同一 (table, key) 是否已有在跑的手动压缩（面板去重提示）。"""
+        self._prune_manual_tasks()
+        for task in self._manual_tasks.values():
+            if task.get("status") != "running":
+                continue
+            if str(task.get("table") or "") == table_name and str(task.get("key") or "") == key:
+                return task
+        return None
+
+    def _prune_manual_tasks(self) -> None:
+        """清理已结束且超过 30 分钟的记录，并按 FIFO 只保留最近 MAX_MANUAL_TASKS 条。
+
+        只清理**已结束**的记录：正在跑的任务永远不淘汰（否则面板轮询会丢状态）。
+        """
+        now = epoch_seconds()
+        for task_id, task in list(self._manual_tasks.items()):
+            if task.get("status") == "running":
+                continue
+            finished = task.get("finished_at")
+            if finished and now - float(finished) > MANUAL_TASK_TTL_SECONDS:
+                self._manual_tasks.pop(task_id, None)
+        if len(self._manual_tasks) <= MAX_MANUAL_TASKS:
+            return
+        for task_id, task in list(self._manual_tasks.items()):
+            if len(self._manual_tasks) <= MAX_MANUAL_TASKS:
+                break
+            if task.get("status") == "running":
+                continue
+            self._manual_tasks.pop(task_id, None)
+
+    def _finalize_manual_task(
+        self,
+        task: dict[str, Any] | None,
+        *,
+        status: str,
+        error: str,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        """压缩结束后回填状态表（成功 / 失败都在这里收口）。"""
+        if not isinstance(task, dict):
+            return
+        state = state or {}
+        if state.get("chars_before") is not None:
+            task["chars_before"] = int(state["chars_before"])
+        if state.get("chars_after") is not None:
+            task["chars_after"] = int(state["chars_after"])
+        task["snapshot_id"] = state.get("snapshot_id")
+        task["status"] = status
+        task["error"] = str(error or "")
+        task["finished_at"] = epoch_seconds()
+        if status == "done":
+            task["message"] = (
+                f"{task.get('chars_before', 0)} → {task.get('chars_after', 0)} 字"
+                f"（目标 {task.get('target_chars', 0)}）"
+            )
+        else:
+            task["message"] = str(error or "压缩失败，已保留原文")
+
+    @staticmethod
+    def _task_payload(task: dict[str, Any], *, message: str | None = None) -> dict[str, Any]:
+        """把内部任务字典投影成面板 / 测试可直接消费的响应体。"""
+        def _int_or_none(value: Any) -> int | None:
+            return None if value is None else int(value)
+
+        payload: dict[str, Any] = {
+            "ok": True,
+            "task_id": task.get("task_id"),
+            "kind": str(task.get("kind") or "single"),
+            "status": str(task.get("status") or "running"),
+            "table": str(task.get("table") or ""),
+            "key": str(task.get("key") or ""),
+            "target_chars": int(task.get("target_chars") or 0),
+            "chars_before": int(task.get("chars_before") or 0),
+            "chars_after": _int_or_none(task.get("chars_after")),
+            "snapshot_id": _int_or_none(task.get("snapshot_id")),
+            "error": str(task.get("error") or ""),
+            "operator_ip": str(task.get("operator_ip") or ""),
+            "started_at": task.get("started_at"),
+            "finished_at": task.get("finished_at"),
+            "message": message if message is not None else str(task.get("message") or ""),
+        }
+        if "items" in task:
+            payload["items"] = [dict(item) for item in task.get("items") or []]
+            payload["skipped"] = [dict(item) for item in task.get("skipped") or []]
+            payload["truncated"] = int(task.get("truncated") or 0)
+            payload["succeeded"] = sum(
+                1 for item in task.get("items") or [] if item.get("status") == "done"
+            )
+            payload["failed"] = sum(
+                1 for item in task.get("items") or [] if item.get("status") == "failed"
+            )
+        return payload
+
     async def _run_overflow_tool_loop(
-        self, prompt: str, *, table_name: str, key: str
+        self,
+        prompt: str,
+        *,
+        table_name: str,
+        key: str,
+        usage_kind: str = AUTO_COMPRESSION_USAGE_KIND,
     ) -> tuple[int, int]:
         """压缩专用的模型工具循环，返回 (成功工具调用数, 失败工具调用数)。"""
         chat_messages: list[dict] = [
@@ -993,7 +1653,11 @@ class ArchiveMemoryAutoSummaryService:
                 "content": (
                     "You compress a single chat archive record that exceeded its storage "
                     "limit. Rewrite it with the archive tools: keep every durable fact, "
-                    "drop redundancy. When you are done, respond without tool calls."
+                    "drop redundancy. If only part of the record was injected, read the "
+                    "rest with read_archive(offset=...) before writing anything back. "
+                    "After saving, verify the returned total_chars against the target; "
+                    "never claim success while it is still over the target. When you are "
+                    "done, respond without tool calls."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -1031,7 +1695,9 @@ class ArchiveMemoryAutoSummaryService:
                 break
             await self._record_usage(
                 response,
-                conversation_kind="archive_overflow",
+                # 手动（archive_manual）与自动（archive_overflow）单列，
+                # 便于在「用量统计」里区分运维成本（spec(4) §4.10.3 / A42）。
+                conversation_kind=usage_kind,
                 conversation_id=f"{table_name}:{key}",
             )
             chat_messages.append(response)
@@ -1071,25 +1737,60 @@ class ArchiveMemoryAutoSummaryService:
         return tool_successes, tool_failures
 
     def _build_overflow_compression_prompt(
-        self, *, table_name: str, key: str, value: str, limit: int
+        self,
+        *,
+        table_name: str,
+        key: str,
+        value: str,
+        limit: int,
+        trigger: str = "auto",
+        target_chars: int | None = None,
     ) -> str:
-        """构造「压缩单条超限档案」的提示词（要求保留事实、只丢冗余）。"""
+        """构造「压缩单条超限档案」的提示词（要求保留事实、只丢冗余）。
+
+        ``trigger`` 区分两条触发路径（spec(4) §4.10.3）：
+        - ``"auto"``：写路径超限自动压缩，目标 = 全局 ``max_total_chars``；
+        - ``"manual"``：面板 / 批量手动触发，目标 = 本次请求的目标，必须写明这是
+          「运维主动要求的目标」，且要求压缩后自证 ``total_chars <= target``。
+        """
         current_time = get_current_time_and_lunar_date()
+        target = limit if target_chars is None else int(target_chars)
+        manual = str(trigger or "auto") == "manual"
+        manual_note = (
+            "This compression was explicitly requested by the operator from the management "
+            "panel. The target below is a hard requirement for THIS run: the rewritten "
+            f"record MUST be <= {target} characters.\n"
+            if manual
+            else ""
+        )
         return (
             f"Current time: {current_time}\n"
+            f"trigger: {trigger}\n"
             f"The archive record below exceeded its storage limit and must be compressed now.\n"
             f"table_name: {table_name}\n"
             f"key: {key}\n"
             f"current_chars: {len(value)}\n"
+            f"target_chars: {target}\n"
             f"hard_limit: {limit}\n"
+            f"{manual_note}"
             f"Compression rules:\n"
             f"- Call archive_crud__save_archive with table_name='{table_name}', "
             f"key='{key}' and the FULL compressed record.\n"
+            f"- Base the rewrite on the FULL record, never on a partial view. If the record "
+            f"below contains the marker {_ARCHIVE_PROMPT_OMITTED.strip()!r} (only head and tail "
+            f"were injected), you MUST first read the whole record page by page with "
+            f"read_archive(offset=...) before writing anything back: offset=0 is the first "
+            f"page, positive offsets move forward, negative offsets read from the tail "
+            f"(-1 is the newest page, 500 characters per page).\n"
             f"- Keep every durable fact (names, dates, numbers, preferences, decisions, "
             f"unresolved items); merge duplicates and drop repetition/verbose wording.\n"
             f"- Never invent facts that are not in the original record.\n"
-            f"- The compressed record MUST be <= {limit} characters; "
-            f"aim for roughly {max(limit // 2, 1)} characters.\n"
+            f"- The compressed record MUST be <= {target} characters; "
+            f"aim for roughly {max(target // 2, 1)} characters.\n"
+            f"- After saving, check the total_chars returned by save_archive: it MUST be "
+            f"<= {target}. If it is still larger, keep compressing and save again; if you "
+            f"cannot reach it, say so honestly in your final answer. Never claim the record "
+            f"is compressed while total_chars > {target}.\n"
             f"- Do not touch any other archive record.\n"
             f"\nRecord to compress:\n{_bounded_archive_text(value)}"
         )
@@ -1316,6 +2017,15 @@ class ArchiveMemoryAutoSummaryService:
             f"{truncation_note}"
             f"\nRecent messages (each line is '[index] sender: text'):\n{recent}"
         )
+
+def _compression_usage_kind(source: str) -> str:
+    """把压缩来源翻译成用量统计的 conversation_kind（手动与自动单列）。"""
+    return (
+        MANUAL_COMPRESSION_USAGE_KIND
+        if str(source or "").strip() == "manual"
+        else AUTO_COMPRESSION_USAGE_KIND
+    )
+
 
 def _positive_int_or_zero(value: Any) -> int:
     """配置读取：非负整数上限；None/非法值/负数一律视为 0（禁用）。"""

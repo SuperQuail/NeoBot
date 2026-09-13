@@ -11,6 +11,7 @@ from neobot_storage.repositories.memory import SqlAlchemyMemoryRepository
 from neobot_storage.repositories.message import SqlAlchemyMessageRepository
 from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
 from neobot_storage.repositories.archive import SqlAlchemyArchiveMemoryAccess
+from neobot_storage.repositories.archive_snapshot import SqlAlchemyArchiveSnapshotAccess
 from neobot_storage.repositories.creator_image import SqlAlchemyCreatorImageAccess
 from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
 from neobot_storage.repositories.emoji import SqlAlchemyEmojiAccess
@@ -29,6 +30,7 @@ class SqlAlchemyUnitOfWork:
         self.memories = SqlAlchemyMemoryRepository(self._session)
         self.profiles = SqlAlchemyProfileRepository(self._session)
         self.archive = SqlAlchemyArchiveMemoryAccess(self._session)
+        self.archive_snapshots = SqlAlchemyArchiveSnapshotAccess(self._session)
         self.images = SqlAlchemyImageAnalysisAccess(self._session)
         self.emojis = SqlAlchemyEmojiAccess(self._session)
         self.creator_images = SqlAlchemyCreatorImageAccess(self._session)

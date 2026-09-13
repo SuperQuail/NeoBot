@@ -25,6 +25,10 @@ DEFAULT_OVERFLOW_COOLDOWN_SECONDS = 600.0
 _MAX_OVER_LIMIT_PAGE_SIZE = 500
 #: 超限清单里的内容预览字符数。
 _OVER_LIMIT_PREVIEW_CHARS = 200
+#: 同一 (table_name, key) 只保留最近多少份「压缩前快照」（spec(4) §4.10.4 / D15）。
+MAX_ARCHIVE_SNAPSHOTS_PER_KEY = 10
+#: 压缩前快照的全局兜底上限（防止大量不同 key 无限累积）。
+MAX_ARCHIVE_SNAPSHOTS = 2000
 
 #: 不参与容量治理的内部表（默认豁免名单）。
 #: ⚠️ 与 agent.memory.archive.allowed_tables 语义完全不同：那个是「限制模型能访问
@@ -519,6 +523,150 @@ class ArchiveMemoryService:
             "max_total_chars": max_chars,
             "preview": value[:_OVER_LIMIT_PREVIEW_CHARS],
         }
+
+    # ── 压缩前快照（spec(4) Part C / D15） ──────────────────────────
+
+    @staticmethod
+    def _snapshot_access(uow: Any) -> Any:
+        """取快照访问层；旧实现 / 测试替身没有它时返回 None（快照降级为不落盘）。"""
+        return getattr(uow, "archive_snapshots", None)
+
+    async def save_snapshot(
+        self,
+        table_name: str,
+        key: str,
+        value: str,
+        *,
+        total_chars: Optional[int] = None,
+        version: int = 0,
+        reason: str = "manual",
+        operator_ip: Optional[str] = None,
+    ) -> Optional[int]:
+        """写入一份压缩前快照并执行保留策略，返回快照 id（存储不支持时为 None）。
+
+        写入时机由调用方保证：**压缩开始前**、拿到 chars_before 之后。
+        失败 / 未达标时调用方必须用 ``delete_snapshot`` 删掉本次快照。
+        """
+        text = str(value or "")
+        chars = int(total_chars) if total_chars is not None else len(text)
+        async with self._uow_factory() as uow:
+            access = self._snapshot_access(uow)
+            if access is None:
+                self._logger.warning(
+                    "当前档案存储实现不支持压缩快照，本次压缩不留痕",
+                    table_name=table_name,
+                    key=key,
+                )
+                return None
+            row = await access.add(
+                table_name,
+                key,
+                text,
+                total_chars=chars,
+                version=int(version or 0),
+                reason=str(reason or "manual"),
+                operator_ip=operator_ip,
+            )
+            pruned = await access.prune(
+                table_name,
+                key,
+                keep=MAX_ARCHIVE_SNAPSHOTS_PER_KEY,
+                max_total=MAX_ARCHIVE_SNAPSHOTS,
+            )
+            await uow.commit()
+        snapshot_id = int(row.get("id") or 0)
+        self._logger.debug(
+            "压缩前快照已保存",
+            table_name=table_name,
+            key=key,
+            total_chars=chars,
+            reason=str(reason or "manual"),
+            snapshot_id=snapshot_id,
+            pruned=int(pruned or 0),
+        )
+        return snapshot_id or None
+
+    async def list_snapshots(
+        self,
+        table_name: str,
+        key: str,
+        *,
+        limit: int = MAX_ARCHIVE_SNAPSHOTS_PER_KEY,
+        include_value: bool = False,
+    ) -> list[dict[str, Any]]:
+        """列出某条档案最近若干份快照（默认不含全文，避免大档案塞爆响应）。"""
+        page = max(0, min(int(limit), MAX_ARCHIVE_SNAPSHOTS_PER_KEY))
+        async with self._uow_factory() as uow:
+            access = self._snapshot_access(uow)
+            if access is None:
+                return []
+            rows = await access.list(
+                table_name, key, limit=page, include_value=include_value
+            )
+        return [self._snapshot_entry(row) for row in rows]
+
+    async def get_snapshot(self, snapshot_id: int) -> Optional[dict[str, Any]]:
+        """读取某一份快照全文（面板「查看某份快照」）。"""
+        async with self._uow_factory() as uow:
+            access = self._snapshot_access(uow)
+            if access is None:
+                return None
+            row = await access.get(int(snapshot_id))
+        if row is None:
+            return None
+        entry = self._snapshot_entry(row, include_value=True)
+        entry["value"] = str(row.get("value") or "")
+        return entry
+
+    async def delete_snapshot(self, snapshot_id: Optional[int]) -> bool:
+        """删除一份快照（压缩失败 / 未达标时回滚本次留痕）。"""
+        if not snapshot_id:
+            return False
+        async with self._uow_factory() as uow:
+            access = self._snapshot_access(uow)
+            if access is None:
+                return False
+            deleted = await access.delete(int(snapshot_id))
+            if deleted:
+                await uow.commit()
+        return bool(deleted)
+
+    async def prune_snapshots(
+        self, table_name: Optional[str] = None, key: Optional[str] = None
+    ) -> int:
+        """按保留策略清理快照：给了 (table_name, key) 时同时做单键与全局两级。"""
+        async with self._uow_factory() as uow:
+            access = self._snapshot_access(uow)
+            if access is None:
+                return 0
+            removed = await access.prune(
+                table_name,
+                key,
+                keep=MAX_ARCHIVE_SNAPSHOTS_PER_KEY,
+                max_total=MAX_ARCHIVE_SNAPSHOTS,
+            )
+            if removed:
+                await uow.commit()
+        return int(removed or 0)
+
+    @staticmethod
+    def _snapshot_entry(row: dict[str, Any], *, include_value: bool = False) -> dict[str, Any]:
+        """把仓库行投影成面板 / 工具可序列化的字典（时间转 ISO8601）。"""
+        created_at = row.get("created_at")
+        isoformat = getattr(created_at, "isoformat", None)
+        entry: dict[str, Any] = {
+            "id": int(row.get("id") or 0),
+            "table_name": str(row.get("table_name") or ""),
+            "key": str(row.get("key") or ""),
+            "total_chars": int(row.get("total_chars") or 0),
+            "version": int(row.get("version") or 0),
+            "reason": str(row.get("reason") or ""),
+            "operator_ip": row.get("operator_ip"),
+            "created_at": str(isoformat()) if callable(isoformat) else "",
+        }
+        if include_value:
+            entry["value"] = str(row.get("value") or "")
+        return entry
 
     # ── 超限压缩调度 ────────────────────────────────────────────────
 

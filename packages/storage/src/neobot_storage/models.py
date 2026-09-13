@@ -93,6 +93,45 @@ class ArchiveMemoryData(Base):
     )
 
 
+class ArchiveSnapshotData(Base):
+    """压缩前档案快照（spec(4) Part C / D15）。
+
+    每次 AI 压缩在**改写之前**把原文原样存一份，用于「不可逆覆盖留痕」：
+    面板只提供只读列表与查看全文，**不提供一键恢复**（恢复属独立工作项）。
+
+    保留策略由 `ArchiveMemoryService.save_snapshot` 执行：同一
+    `(table_name, key)` 只保留最近 `MAX_ARCHIVE_SNAPSHOTS_PER_KEY` 份，
+    另有全局兜底上限 `MAX_ARCHIVE_SNAPSHOTS`。
+    """
+
+    __tablename__ = "archive_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    table_name: Mapped[str] = mapped_column(String, nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 压缩前该条档案的字符数（len(value)，与面板 total_chars 同口径）。
+    total_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 压缩前的乐观锁版本号（人工恢复时用于 set_if_version）。
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 压缩来源：manual（面板手动 / 批量）| auto（写超限自动压缩）。
+    reason: Mapped[str] = mapped_column(String, nullable=False, default="manual")
+    #: 触发者请求 IP（自动压缩为 NULL）。
+    operator_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        # 面板「压缩历史」按 (table, key) 倒序取最近 N 份；全局清理走 created_at。
+        Index(
+            "ix_archive_snapshots_table_name_key_created_at",
+            "table_name",
+            "key",
+            "created_at",
+        ),
+        Index("ix_archive_snapshots_created_at", "created_at"),
+    )
+
+
 class ImageAnalysisData(Base):
     __tablename__ = "images"
 

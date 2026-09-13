@@ -25,7 +25,11 @@ class ArchiveCRUDSkill(SkillModule):
     def description(self) -> str:
         # 与工具表保持一致：allow_delete=false 时 delete_archive 不注入给模型，
         # 摘要里再宣称「删除」会让模型调用一个不存在的工具。
-        suffix = "增量编辑/读取/列出/删除档案条目" if self._allow_delete else "增量编辑/读取/列出档案条目"
+        suffix = (
+            "增量编辑/读取/列出/统计/删除档案条目"
+            if self._allow_delete
+            else "增量编辑/读取/列出/统计档案条目"
+        )
         return f"长期记忆档案管理：{suffix}"
 
     @property
@@ -62,7 +66,9 @@ class ArchiveCRUDSkill(SkillModule):
             "  save_archive — 整条覆盖写入档案（只在必须整体压缩/重写时使用，如定长摘要表）\n"
             "  read_archive — 读取档案记忆；mode='outline' 只看目录/大纲，offset 分页读正文\n"
             "  read_pending_messages — 读取待总结的实时消息全文（总结提示词里被截断时用）\n"
-            "  list_archive — 列出档案条目，支持按内容/标签筛选\n"
+            "  list_archive — 列出档案条目，每条只给开头 500 字符预览 + 总字数，不返回全文；\n"
+            "    完整内容用 read_archive 读取：先 mode=\"outline\" 定位，再用 offset 分页读正文\n"
+            "  archive_stats — 统计档案字符数：每张表的条目数 / 最长字数 / 超限条目数，以及超限清单\n"
             f"{delete_line}\n"
             f"{allowed_note}"
             f"{delete_note}"
@@ -202,17 +208,32 @@ class ArchiveCRUDSkill(SkillModule):
             ),
             self._tool_def(
                 "list_archive",
-                "列出档案记忆条目。默认一次返回10条。",
+                "列出档案记忆条目：每条只返回开头 500 字符的 preview 与 total_chars，不返回全文。"
+                "需要完整内容时用 read_archive：先 mode='outline' 定位，再用 offset 分页读正文（每页 500 字符，负数从尾部读）。"
+                "默认一次返回 5 条，最多 20 条。",
                 {
                     "properties": {
                         "table_name": {"type": "string", "description": "档案表名"},
                         "key_query": {"type": "string", "description": "可选的键筛选条件"},
                         "value_query": {"type": "string", "description": "可选的内容筛选条件"},
                         "tags": {"type": "array", "items": {"type": "string"}, "description": "可选的标签筛选条件"},
-                        "limit": {"type": "integer", "description": "本次返回条数，默认10"},
+                        "limit": {"type": "integer", "description": "本次返回条数，默认 5，最大 20"},
                         "offset": {"type": "integer", "description": "分页偏移量"},
                     },
                     "required": ["table_name"],
+                },
+            ),
+            self._tool_def(
+                "archive_stats",
+                "统计档案字符数（只读）：每张表的条目数 / 最长字数 / 超限条目数，以及全库或某表的超限清单（含各自字数）。"
+                "内部表只在 tables[] 里列出并标 internal=true，不会出现在 items[]。"
+                "超限条目用 read_archive 的 outline + offset 分页读全文后即可压缩。",
+                {
+                    "properties": {
+                        "table_name": {"type": "string", "description": "可选：只看这一张表；省略则统计全库"},
+                        "over_limit_only": {"type": "boolean", "description": "可选：只列超过存储上限的条目，默认 false"},
+                        "limit": {"type": "integer", "description": "items 最多返回多少条，默认 50，最大 200"},
+                    },
                 },
             ),
             self._tool_def(
@@ -249,6 +270,24 @@ _ARCHIVE_PAGE_SIZE = 500
 _OUTLINE_MAX_LINES = 80
 _OUTLINE_LINE_CHARS = 80
 _MAX_PATCH_OPERATIONS = 20
+
+# ── list_archive / archive_stats（spec(4) Part C / §4.10.5）──
+#: list_archive 每条只给开头多少字符：与 read_archive 的一页对齐（预览 = 第 0 页）。
+_LIST_ARCHIVE_PREVIEW_CHARS = 500
+#: list_archive 默认条数：5 × 500 字 ≈ 2.9 KB，能完整落在总结工具返回的 4000 字符内。
+_LIST_ARCHIVE_DEFAULT_LIMIT = 5
+#: list_archive 上限：10 条 ≈ 5.7 KB 会被 _bounded_tool_result 截成半截 JSON。
+_LIST_ARCHIVE_MAX_LIMIT = 20
+_ARCHIVE_STATS_DEFAULT_LIMIT = 50
+_ARCHIVE_STATS_MAX_LIMIT = 200
+#: 统计超限条目时的单次取数上限（与面板超限清单同量级）。
+_ARCHIVE_STATS_OVER_LIMIT_PAGE = 500
+_ARCHIVE_STATS_ITEM_PREVIEW_CHARS = 200
+_LIST_ARCHIVE_HINT = (
+    "每条只给档案开头 500 字符（preview）。需要完整内容时用 read_archive："
+    "先用 mode=\"outline\" 看目录定位，再用 offset 分页读正文（每页 500 字符；"
+    "offset=0 是头部第一页，正数向后翻页，负数从尾部向前翻页，-1 是最新一页）。"
+)
 
 
 def _table_guard(self: ArchiveCRUDSkill, table_name: str) -> str | None:
@@ -671,17 +710,132 @@ async def _handle_read_pending_messages(self: ArchiveCRUDSkill, args: dict) -> s
         return _json({"ok": False, "error": str(e)})
 
 async def _handle_list_archive(self: ArchiveCRUDSkill, args: dict) -> str:
+    """列出档案条目：**每条只给开头 500 字符预览**，不再返回整条 value（spec(4) D17）。
+
+    返回体：``{ok, count, has_more, hint, items}``，每条 item 带 preview /
+    preview_chars / preview_truncated / total_chars。默认 limit=5（5 × 500 字 ≈ 2.9 KB，
+    能完整落在总结工具返回的 4000 字符预算内，不会被 _bounded_tool_result 截断），
+    模型仍可显式传 limit（上限 20）。更多内容由 hint 引导 read_archive 的 outline + offset。
+    """
     if self._archive_service is None:
         return _json({"ok": False, "error": "archive_service 未配置"})
     table_name = str(args.get("table_name", "")).strip()
     blocked = _table_guard(self, table_name)
     if blocked is not None:
         return blocked
+    limit = _bounded_int(
+        args.get("limit"), _LIST_ARCHIVE_DEFAULT_LIMIT, 1, _LIST_ARCHIVE_MAX_LIMIT
+    )
+    offset = _bounded_int(args.get("offset"), 0, 0, 1_000_000)
     try:
-        items = await self._archive_service.list(table_name, limit=args.get("limit", 10), offset=args.get("offset", 0))
-        return _json({"ok": True, "items": [{"table_name": i.table_name, "key": i.key, "value": i.value} for i in items]})
+        # 多取一条来判断 has_more：服务层没有单独的 count，避免多写一条 SQL。
+        rows = await self._archive_service.list(
+            table_name,
+            tags=_normalize_tag_arg(args.get("tags")),
+            key_query=str(args.get("key_query") or "").strip() or None,
+            value_query=str(args.get("value_query") or "").strip() or None,
+            limit=limit + 1,
+            offset=offset,
+        )
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
+    has_more = len(rows) > limit
+    items = [_list_archive_item(item) for item in list(rows)[:limit]]
+    return _json(
+        {
+            "ok": True,
+            "count": len(items),
+            "has_more": has_more,
+            "hint": _LIST_ARCHIVE_HINT,
+            "items": items,
+        }
+    )
+
+
+async def _handle_archive_stats(self: ArchiveCRUDSkill, args: dict) -> str:
+    """字符数统计工具（spec(4) R16 / §4.10.5）。
+
+    复用 ArchiveMemoryService 的 ``table_stats()`` / ``count_over_limit()`` /
+    ``list_over_limit()``——与面板「档案」页**同一真相源**，不新写 SQL，
+    从而保证「Agent 看到的数字」= 「面板看到的数字」（A35 / A36）。
+
+    豁免表（memory_counter 等）的口径与面板一致：``items[]`` 排除它们，
+    ``tables[]`` 仍列出它们并带 ``internal: true``。
+    """
+    service = self._archive_service
+    if service is None:
+        return _json({"ok": False, "error": "archive_service 未配置"})
+    table_name = str(args.get("table_name") or "").strip() or None
+    if table_name is not None:
+        blocked = _table_guard(self, table_name)
+        if blocked is not None:
+            return blocked
+    over_limit_only = _truthy(args.get("over_limit_only"))
+    limit = _bounded_int(
+        args.get("limit"), _ARCHIVE_STATS_DEFAULT_LIMIT, 1, _ARCHIVE_STATS_MAX_LIMIT
+    )
+    try:
+        max_total_chars = int(getattr(service, "max_total_chars", 0) or 0)
+        stats_rows = await _service_rows(service, "table_stats")
+        over_rows = await _service_list_over_limit(
+            service, table_name, limit=_ARCHIVE_STATS_OVER_LIMIT_PAGE
+        )
+        over_limit_count = await _service_count_over_limit(service, table_name)
+        items = await _archive_stats_items(
+            service,
+            table_name=table_name,
+            over_limit_only=over_limit_only,
+            over_rows=over_rows,
+            limit=limit,
+        )
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)})
+
+    exempt = _exempt_tables(service)
+    over_by_table: dict[str, int] = {}
+    for row in over_rows:
+        name = str(row.get("table_name") or "")
+        if name:
+            over_by_table[name] = over_by_table.get(name, 0) + 1
+    names = {str(row.get("table_name") or "") for row in stats_rows}
+    names.update(over_by_table)
+    if table_name is not None:
+        names = {name for name in names if name == table_name}
+    stats_by_name = {str(row.get("table_name") or ""): row for row in stats_rows}
+    tables = [
+        {
+            "table_name": name,
+            "count": int((stats_by_name.get(name) or {}).get("count") or 0),
+            "max_value_chars": int(
+                (stats_by_name.get(name) or {}).get("max_value_chars") or 0
+            ),
+            "over_limit_count": int(over_by_table.get(name, 0) or 0),
+            "internal": name in exempt,
+        }
+        for name in sorted(name for name in names if name)
+    ]
+    # items[] 与面板同口径排除豁免表：内部表天然超限，列出来只会淹没真正的超标档案。
+    items = [item for item in items if str(item.get("table_name") or "") not in exempt]
+    return _json(
+        {
+            "ok": True,
+            "table_name": table_name,
+            "over_limit_only": over_limit_only,
+            "limit": limit,
+            "max_total_chars": max_total_chars,
+            "count": len(items),
+            "total_chars": sum(int(item.get("total_chars") or 0) for item in items),
+            "over_limit_count": int(over_limit_count),
+            "tables": tables,
+            "items": items,
+            "internal_tables": [row["table_name"] for row in tables if row["internal"]],
+            "hint": (
+                "只读统计，不会修改档案。tables[] 含内部表（internal=true）；"
+                "items[] 已排除豁免表。需要压缩某条超限档案时，先用 read_archive 的 "
+                "outline + offset 分页读全文，再 save_archive 写回压缩结果。"
+            ),
+        }
+    )
 
 async def _handle_delete_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     if self._archive_service is None:
@@ -699,11 +853,138 @@ async def _handle_delete_archive(self: ArchiveCRUDSkill, args: dict) -> str:
     except Exception as e:
         return _json({"ok": False, "error": str(e)})
 
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    """把工具入参读成 [minimum, maximum] 内的整数；非法值回落默认值。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _truthy(value: Any) -> bool:
+    """工具布尔入参：接受真布尔与常见字符串写法。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_tag_arg(value: Any) -> list[str] | None:
+    """标签筛选参数：字符串按逗号切分，列表逐项转字符串；空值返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(item).strip() for item in value]
+    else:
+        parts = [str(value).strip()]
+    tags = [part for part in parts if part]
+    return tags or None
+
+
+def _list_archive_item(item: Any) -> dict[str, Any]:
+    """list_archive 的单条投影：开头 500 字符 + 总字数，**不含 value**。"""
+    value = str(getattr(item, "value", "") or "")
+    total_chars = len(value)
+    return {
+        "table_name": str(getattr(item, "table_name", "") or ""),
+        "key": str(getattr(item, "key", "") or ""),
+        "preview": value[:_LIST_ARCHIVE_PREVIEW_CHARS],
+        "preview_chars": _LIST_ARCHIVE_PREVIEW_CHARS,
+        "preview_truncated": total_chars > _LIST_ARCHIVE_PREVIEW_CHARS,
+        "total_chars": total_chars,
+    }
+
+
+def _exempt_tables(service: Any) -> frozenset[str]:
+    """豁免表（不参与容量治理的内部表）口径：以服务层为准，缺省只有计数器表。"""
+    raw = getattr(service, "exempt_tables", None)
+    if raw is None:
+        return frozenset({PENDING_MESSAGES_TABLE})
+    try:
+        return frozenset(str(name) for name in raw)
+    except TypeError:
+        return frozenset({PENDING_MESSAGES_TABLE})
+
+
+async def _service_rows(service: Any, method_name: str) -> list[dict[str, Any]]:
+    """调用可选的服务层统计方法；实现缺失时返回空清单（旧实现兼容）。"""
+    method = getattr(service, method_name, None)
+    if not callable(method):
+        return []
+    rows = await method()
+    return [dict(row) for row in (rows or []) if isinstance(row, dict)]
+
+
+async def _service_list_over_limit(
+    service: Any, table_name: str | None, *, limit: int
+) -> list[dict[str, Any]]:
+    """复用服务层 list_over_limit（与面板同一真相源）。"""
+    method = getattr(service, "list_over_limit", None)
+    if not callable(method):
+        return []
+    rows = await method(table_name, limit=limit)
+    return [dict(row) for row in (rows or []) if isinstance(row, dict)]
+
+
+async def _service_count_over_limit(service: Any, table_name: str | None) -> int:
+    """复用服务层 count_over_limit；实现缺失时回 0。"""
+    method = getattr(service, "count_over_limit", None)
+    if not callable(method):
+        return 0
+    return int(await method(table_name) or 0)
+
+
+async def _archive_stats_items(
+    service: Any,
+    *,
+    table_name: str | None,
+    over_limit_only: bool,
+    over_rows: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """archive_stats 的 items[]：指定表且不限定超限时列该表条目，否则列超限清单。"""
+    max_total = int(getattr(service, "max_total_chars", 0) or 0)
+    if table_name and not over_limit_only:
+        lister = getattr(service, "list", None)
+        if callable(lister):
+            rows = await lister(table_name, limit=limit)
+            items: list[dict[str, Any]] = []
+            for item in rows or []:
+                value = str(getattr(item, "value", "") or "")
+                chars = len(value)
+                items.append(
+                    {
+                        "table_name": str(getattr(item, "table_name", "") or ""),
+                        "key": str(getattr(item, "key", "") or ""),
+                        "total_chars": chars,
+                        "over_limit": bool(max_total > 0 and chars > max_total),
+                        "preview": value[:_ARCHIVE_STATS_ITEM_PREVIEW_CHARS],
+                    }
+                )
+            return items
+    return [
+        {
+            "table_name": str(row.get("table_name") or ""),
+            "key": str(row.get("key") or ""),
+            "total_chars": int(row.get("chars") or 0),
+            "over_limit": True,
+            "updated_at": str(row.get("updated_at") or ""),
+            "preview": str(row.get("preview") or "")[:_ARCHIVE_STATS_ITEM_PREVIEW_CHARS],
+        }
+        for row in list(over_rows)[:limit]
+    ]
+
+
 _HANDLERS = {
     "save_archive": _handle_save_archive,
     "patch_archive": _handle_patch_archive,
     "read_archive": _handle_read_archive,
     "read_pending_messages": _handle_read_pending_messages,
     "list_archive": _handle_list_archive,
+    "archive_stats": _handle_archive_stats,
     "delete_archive": _handle_delete_archive,
 }

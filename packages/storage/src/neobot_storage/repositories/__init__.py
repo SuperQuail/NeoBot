@@ -1,6 +1,7 @@
 """repositories 子包。"""
 
 from neobot_storage.repositories.archive import SqlAlchemyArchiveMemoryAccess
+from neobot_storage.repositories.archive_snapshot import SqlAlchemyArchiveSnapshotAccess
 from neobot_storage.repositories.creator_image import SqlAlchemyCreatorImageAccess
 from neobot_storage.repositories.emoji import SqlAlchemyEmojiAccess
 from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
@@ -13,6 +14,7 @@ from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
 
 __all__ = [
     "SqlAlchemyArchiveMemoryAccess",
+    "SqlAlchemyArchiveSnapshotAccess",
     "SqlAlchemyCreatorImageAccess",
     "SqlAlchemyEmojiAccess",
     "SqlAlchemyImageAnalysisAccess",
