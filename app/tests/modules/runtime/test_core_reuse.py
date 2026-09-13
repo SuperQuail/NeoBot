@@ -92,6 +92,7 @@ def test_core_keys_documented() -> None:
         "prompt_store",
         "sleep_service",
         "standby_service",
+        "avatar_store",
         "debug_recorder",
         "storage",
         "usage",

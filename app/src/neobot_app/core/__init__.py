@@ -3,6 +3,7 @@
 from neobot_app.core.constants import (
     APP_NAME,
     APP_VERSION,
+    AVATAR_DIR,
     CONFIG_BACKUP_DIR,
     CONFIG_FILE,
     CONFIG_VERSION,
@@ -16,6 +17,7 @@ from neobot_app.core.constants import (
 
 __all__ = [
     "DATA_DIR",
+    "AVATAR_DIR",
     "ENV_FILE",
     "CONFIG_FILE",
     "CONFIG_BACKUP_DIR",

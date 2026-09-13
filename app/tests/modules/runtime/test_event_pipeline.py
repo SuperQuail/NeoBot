@@ -774,3 +774,74 @@ async def test_private_command_consumed_blocks_reply_and_marks_message():
     assert queue.size("8") == 1
     assert queue.is_command_consumed("8", 9601)
     pipeline._command_service.handle_message.assert_awaited_once()
+
+# ── 头像惰性刷新接线（spec(5) §4.9 / R34 / A36）────────────────
+
+
+class _RecordingAvatarStore:
+    """记录 maybe_refresh 调用的假 AvatarStore。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.raise_on_call = False
+
+    async def maybe_refresh(self, user_id: str) -> bool:
+        if self.raise_on_call:
+            raise RuntimeError("avatar store exploded")
+        self.calls.append(user_id)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_message_entry_triggers_avatar_refresh_judgement():
+    """用户再次出现在聊天流时必须做一次头像过期判定（不阻塞、不改入队结果）。"""
+    # Arrange
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(
+        group_queue=queue, friend_queue=queue, config=_fast_private_config()
+    )
+    store = _RecordingAvatarStore()
+    pipeline._avatar_store = store
+
+    # Act
+    await pipeline.handle_group_message_event(_group_event(9701))
+    await pipeline.handle_private_message_event(_private_event(9702))
+
+    # Assert
+    assert store.calls == ["7", "8"]
+    assert queue.size("42") == 1
+    assert queue.size("8") == 1
+
+
+@pytest.mark.asyncio
+async def test_avatar_refresh_failure_does_not_break_message_path():
+    """头像判定抛异常时只记日志，消息处理照常。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue)
+    store = _RecordingAvatarStore()
+    store.raise_on_call = True
+    pipeline._avatar_store = store
+
+    await pipeline.handle_group_message_event(_group_event(9703))
+
+    assert queue.size("42") == 1
+
+
+@pytest.mark.asyncio
+async def test_avatar_refresh_skipped_without_host_service():
+    """未接线（无 avatar_store）时不得报错：既有手工构造管线的用例依赖这一点。"""
+    queue = MessageQueue()
+    pipeline = _pipeline_with_queue(group_queue=queue)
+
+    await pipeline.handle_group_message_event(_group_event(9704))
+
+    assert queue.size("42") == 1
+
+
+def test_constructor_actually_wires_avatar_store() -> None:
+    """回归：__init__ 必须真的保存 avatar_store（照 standby_service 的教训）。"""
+    import inspect
+
+    source = inspect.getsource(EventPipeline.__init__)
+
+    assert "self._avatar_store = avatar_store" in source

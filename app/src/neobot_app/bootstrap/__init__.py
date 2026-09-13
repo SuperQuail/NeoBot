@@ -720,6 +720,21 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         ),
     )
 
+    # ── 本体级头像存储（spec(5) §4.9 / R33–R37）──
+    # 复用同一份 storage 引擎：头像三列就在 user_data 上，所以「有 user_data 行
+    # = 认识该用户」自动覆盖「聊过天的人」。软重启时复用实例（内存缓存与在途
+    # 下载不重建），配置项在构造期读取。
+    from neobot_app.runtime.avatar_store import AvatarStore
+
+    avatar_store = _reuse_or(
+        "avatar_store",
+        lambda: AvatarStore(
+            uow_factory=uow_factory,
+            config=config,
+            logger=logger_factory.get_logger("app.avatar_store"),
+        ),
+    )
+
     # 计费脚本按需加载：登记热重载规则，面板/文件变更后无需重启进程（spec(4) §4.4 / Q13）。
     # 放在 _reuse_or 之外，保证软重启复用组件时规则依然登记在案。
     _register_billing_hot_reload_rule()
@@ -1422,6 +1437,10 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "command_service": (command_service, "命令服务"),
             "credential_manager": (credential_manager, "凭据管理器"),
             "sleep_service": (sleep_service, "睡眠服务"),
+            "avatar_store": (
+                avatar_store,
+                "用户头像本地存储与惰性刷新（spec(5) §4.9）",
+            ),
             "standby_service": (standby_service, "待机服务（只保留核心服务 / 软重启运行）"),
             "prompt_analyzer": (prompt_analyzer, "提示词分析（面板分析页）"),
             "cache_calculator": (cache_calculator, "缓存命中计算器"),
@@ -1500,6 +1519,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         credential_manager=credential_manager,
         sleep_service=sleep_service,
         standby_service=standby_service,
+        avatar_store=avatar_store,
         owns_plugins=owns_plugins,
     )
 

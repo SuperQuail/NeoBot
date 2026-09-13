@@ -31,6 +31,18 @@ class UserData(Base):
     long_nick: Mapped[str | None] = mapped_column(Text)
     favorability: Mapped[int] = mapped_column(Integer, default=0)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ── 本体级头像存储（spec(5) §4.9 / R33–R37）──
+    # 头像与用户资料同表：**有 user_data 行 = 认识该用户**，天然覆盖「聊过天的人」，
+    # 不必再建一张用户表，也就不存在两处数据（资料有行、头像没行）不一致的问题。
+    #: 头像文件路径（<DATA_DIR>/avatars/<user_id>.png）；NULL = 尚无本地头像。
+    avatar_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: 上次成功获取头像的 UTC 时间；获取失败时**原样保留**（宁可旧头像，不要空头像）。
+    avatar_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 连续获取失败次数；成功一次即清零。失败冷却与诊断用。
+    #: server_default 与迁移 0027 保持一致：既有行 / 不显式赋值的新行都拿到 0。
+    avatar_fail_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
 
 
 class GroupData(Base):

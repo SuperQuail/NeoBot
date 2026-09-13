@@ -2,6 +2,7 @@
 
 from neobot_app.config.schemas.bot import (
     AgentProblemSolver,
+    AvatarsConfig,
     Bot,
     BotConfig,
     Chat,
@@ -26,6 +27,7 @@ from neobot_app.config.schemas.env import ApiPlatformConfig, EnvConfig
 
 __all__ = [
     "AgentProblemSolver",
+    "AvatarsConfig",
     "Bot",
     "BotConfig",
     "Chat",

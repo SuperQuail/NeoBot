@@ -31,6 +31,10 @@ CONFIG_BACKUP_DIR = DATA_DIR / "config_backup"
 CACHE_DIR = DATA_DIR / "cache"
 # /help 预渲染卡片的缓存目录（spec(5) §4.2 / R9）
 HELP_CACHE_DIR = CACHE_DIR / "help"
+# 用户头像目录（spec(5) §4.9 / R33–R37）：本体级 AvatarStore 的本地落盘位置
+# <DATA_DIR>/avatars/<user_id>.png。目录由 AvatarStore 按需创建（删掉即回到
+# 「无本地头像」，下次该用户出现时自动重新获取），因此不在这里预建。
+AVATAR_DIR = DATA_DIR / "avatars"
 # 插件数据目录：插件配置（config.toml）、独立数据库与鉴权数据都放在各自子目录
 PLUGINS_DATA_DIR = DATA_DIR / "plugins_data"
 # 插件启停记录：与插件配置解耦的独立状态文件

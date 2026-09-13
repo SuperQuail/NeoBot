@@ -93,6 +93,7 @@ class EventPipeline:
         credential_manager: Any | None = None,
         sleep_service: Any | None = None,
         standby_service: Any | None = None,
+        avatar_store: Any | None = None,
     ) -> None:
         self.adapter = adapter
         self._group_queue = group_message_queue
@@ -112,6 +113,8 @@ class EventPipeline:
         self._standby_service = standby_service
         self._credential_manager = credential_manager
         self._sleep_service = sleep_service
+        # 本体级头像存储（spec(5) §4.9 / R34）：消息路径只做过期判定并触发后台下载。
+        self._avatar_store = avatar_store
         self._warmed_up_friends: set[str] = set()
         self._warmup_lock = asyncio.Lock()
         self._replying_queues: set[str] = set()
@@ -348,6 +351,7 @@ class EventPipeline:
             )
 
         await self._refresh_profile_for_message(message)
+        await self._maybe_refresh_avatar(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
@@ -533,6 +537,7 @@ class EventPipeline:
             )
 
         await self._refresh_profile_for_message(message)
+        await self._maybe_refresh_avatar(message)
         if self._image_parse_service is not None:
             await self._image_parse_service.parse_message_images(message, queue_key)
         text = await event_message__to_text(message)
@@ -1015,6 +1020,24 @@ class EventPipeline:
                 await self._handle_willing_decision(
                     message=msg, queue=self._group_queue, queue_key=queue_key
                 )
+
+    async def _maybe_refresh_avatar(self, message: PrivateMessage | GroupMessage) -> None:
+        """用户再次出现在聊天流 → 头像惰性刷新判定（spec(5) §4.9 / R34）。
+
+        本方法只做「一次 DB 读 + 一次时间比较」：下载由 AvatarStore 自己派生
+        后台任务，因此消息路径不会等网络。AvatarStore.maybe_refresh 内部已吞掉
+        全部异常，这里的 try 只是防御（宿主服务换成第三方实现时也不该影响收消息）。
+        """
+        store = getattr(self, "_avatar_store", None)
+        user_id = getattr(message, "user_id", None)
+        if store is None or user_id is None:
+            return
+        try:
+            await store.maybe_refresh(str(user_id))
+        except Exception as exc:
+            self._logger.debug(
+                "头像刷新判定失败", user_id=str(user_id), error=str(exc)
+            )
 
     async def _refresh_profile_for_message(
         self,

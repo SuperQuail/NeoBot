@@ -1531,6 +1531,51 @@ class Agent:
 
 
 @dataclass
+class AvatarsConfig:
+    """本体级用户头像存储（spec(5) §4.9 / R33–R37）。"""
+
+    enabled: bool = field(
+        default=True,
+        metadata={
+            "description": "是否启用用户头像的本地存储与惰性刷新；关闭后不做过期判定、"
+            "不发起下载，已有头像仍可被卡片读取",
+        },
+    )
+    refresh_days: int = field(
+        default=7,
+        metadata={
+            "description": "头像过期天数：用户再次出现在聊天流且距上次获取超过该天数"
+            "才重新获取；未过期零网络开销",
+        },
+    )
+    fail_cooldown_seconds: int = field(
+        default=600,
+        metadata={
+            "description": "下载失败后的冷却秒数：冷却期内该用户再次发言不重试，"
+            "避免把一次失败放大成网络风暴",
+        },
+    )
+    max_concurrent: int = field(
+        default=2,
+        metadata={
+            "description": "头像下载的全局并发上限；超限的触发直接丢弃，该用户下次出现时自然重试",
+        },
+    )
+    max_bytes: int = field(
+        default=524288,
+        metadata={
+            "description": "单张头像的字节上限（默认 512 KiB）；超出不落盘并按获取失败处理",
+        },
+    )
+    keep_days: int = field(
+        default=90,
+        metadata={
+            "description": "长期未活跃用户的头像保留天数；超期清理文件并清空对应表字段",
+        },
+    )
+
+
+@dataclass
 class WebSearchConfig:
     """联网搜索工具包配置。"""
 
@@ -1576,6 +1621,7 @@ class BotConfig:
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     billing: Billing = field(default_factory=Billing)
+    avatars: AvatarsConfig = field(default_factory=AvatarsConfig)
 
 
 @dataclass
