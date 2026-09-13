@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -129,6 +129,10 @@ class PluginInstallResult:
     message: str = ""
     error: str | None = None
     backup_path: Path | None = None
+    #: 结构化冲突（spec(4) R27/D24）:两类来源与版本 + 只能二选一的说明
+    conflict: dict[str, Any] | None = None
+    #: 本次是否只探测未写盘（dry_run）
+    dry_run: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +197,7 @@ class PluginInstaller:
         max_archive_entries: int = MAX_ARCHIVE_ENTRIES,
         fetcher: Callable[[str], Awaitable[bytes]] | None = None,
         proxy: ProxySettings | None = None,
+        official_plugin_dirs: Sequence[Path] | None = None,
     ) -> None:
         self.plugin_dir = Path(plugin_dir).resolve()
         self._logger = logger or NullLogger()
@@ -203,6 +208,10 @@ class PluginInstaller:
         self._max_archive_entries = int(max_archive_entries)
         self._fetcher = fetcher
         self._proxy = proxy or ProxySettings()
+        #: 官方插件目录（ID 为保留字：随本体更新，不能在面板内安装 / 更新）
+        self._official_dirs = tuple(
+            Path(path).resolve() for path in (official_plugin_dirs or ())
+        )
 
     # ------------------------------------------------------------------
     # 代理
@@ -326,6 +335,122 @@ class PluginInstaller:
     # 安装 / 更新 / 卸载
     # ------------------------------------------------------------------
 
+    def official_names(self) -> set[str]:
+        """官方插件 ID 集合（保留字：随本体更新，不能在面板内安装 / 更新）。"""
+        names: set[str] = set()
+        for root in self._official_dirs:
+            if not root.is_dir():
+                continue
+            for child in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+                if child.name.startswith("_") or child.name == "__pycache__":
+                    continue
+                if child.is_dir() or child.suffix == ".py":
+                    names.add(child.stem if child.is_file() else child.name)
+        return names
+
+    def is_reserved(self, name: str) -> bool:
+        """目标 ID 是否命中官方插件目录（保留字）。"""
+        return str(name or "").strip() in self.official_names()
+
+    def _official_path(self, name: str) -> Path | None:
+        for root in self._official_dirs:
+            candidate = root / str(name)
+            if candidate.is_dir() or candidate.with_suffix(".py").is_file():
+                return candidate
+        return None
+
+    def _installed_meta(self, target: Path) -> dict[str, Any]:
+        """已安装插件的来源信息（面板冲突提示的两侧之一）。"""
+        name = target.name
+        version = ""
+        repo = ""
+        manifest: dict[str, Any] = {}
+        try:
+            if target.is_dir():
+                manifest = read_manifest(target / "plugin.toml")
+        except Exception:
+            manifest = {}
+        if manifest:
+            name = str(manifest.get("name") or name)
+            version = str(manifest.get("version") or "")
+            repo = str(manifest.get("repo") or "")
+        return {
+            "name": name,
+            "version": version,
+            "repo": repo,
+            "path": str(target),
+            "official": self.is_reserved(target.name),
+        }
+
+    def _conflict_payload(
+        self, kind: str, requested: dict[str, Any], existing: dict[str, Any]
+    ) -> dict[str, Any]:
+        if kind == "official":
+            message = (
+                f"插件 ID {existing.get('name') or requested.get('name')} 是官方插件保留字："
+                "官方插件随本体更新，不能在面板内更新"
+            )
+        else:
+            message = (
+                f"已存在同名插件 {existing.get('name')}"
+                f"（来源 {existing.get('repo') or '未知'}，"
+                f"版本 {existing.get('version') or '未声明'}）；"
+                "只能二选一：保留现有插件（取消），或显式选择替换（替换前自动备份）"
+            )
+        return {
+            "kind": kind,
+            "requested": dict(requested),
+            "existing": dict(existing),
+            "message": message,
+            "reserved": kind == "official",
+        }
+
+    def probe(self, name: str) -> dict[str, Any]:
+        """探测插件 ID 是否已被占用（spec(4) R27 / D24）。
+
+        返回 {"conflict": bool, "existing": {...} | None, "official": bool}；
+        只读，不改动磁盘。官方插件 ID 视为保留字冲突。
+        """
+        try:
+            target = self._plugin_path(name)
+        except PluginInstallError as exc:
+            return {"conflict": False, "existing": None, "official": False, "error": str(exc)}
+        if self.is_reserved(name):
+            official_path = self._official_path(name)
+            existing = (
+                self._installed_meta(official_path)
+                if official_path is not None
+                else {
+                    "name": str(name),
+                    "version": "",
+                    "repo": "",
+                    "path": "",
+                    "official": True,
+                }
+            )
+            existing["official"] = True
+            requested = {"name": str(name), "version": "", "repo": "", "branch": ""}
+            conflict = self._conflict_payload("official", requested, existing)
+            return {
+                "conflict": True,
+                "existing": existing,
+                "official": True,
+                "message": conflict["message"],
+                "detail": conflict,
+            }
+        if not target.exists():
+            return {"conflict": False, "existing": None, "official": False}
+        existing = self._installed_meta(target)
+        requested = {"name": str(name), "version": "", "repo": "", "branch": ""}
+        conflict = self._conflict_payload("existing_plugin", requested, existing)
+        return {
+            "conflict": True,
+            "existing": existing,
+            "official": False,
+            "message": conflict["message"],
+            "detail": conflict,
+        }
+
     async def install(
         self,
         spec: str | RepoSpec,
@@ -333,15 +458,24 @@ class PluginInstaller:
         branch: str | None = None,
         expected_name: str | None = None,
         replace: bool = False,
+        dry_run: bool = False,
     ) -> PluginInstallResult:
+        """安装 / 更新 / 仅探测。
+
+        * replace=False 且已存在同名 ID：**拒绝**并返回结构化冲突，磁盘零变化
+          （不删、不覆盖、不产生备份）；
+        * replace=True：显式选择替换，走既有备份路径并回显 backup_path；
+        * dry_run=True：只探测不写盘；
+        * 目标 ID 命中官方插件目录：直接拒绝（保留字）。
+        """
         try:
             repo = spec if isinstance(spec, RepoSpec) else self.parse_spec(spec, branch)
         except PluginInstallError as exc:
-            return PluginInstallResult(ok=False, error=str(exc))
+            return PluginInstallResult(ok=False, error=str(exc), dry_run=dry_run)
         try:
             archive = await self._fetch_bytes(repo.archive_url)
         except Exception as exc:
-            return PluginInstallResult(ok=False, error=str(exc))
+            return PluginInstallResult(ok=False, error=str(exc), dry_run=dry_run)
 
         staging_root: Path | None = None
         try:
@@ -358,10 +492,64 @@ class PluginInstaller:
                 raise PluginInstallError(f"插件名不匹配: 期望 {expected_name!r}，实际 {name!r}")
             version = str(manifest.get("version") or "0.1.0")
             target = self._plugin_path(name)
+            requested = {
+                "name": name,
+                "version": version,
+                "repo": repo.slug,
+                "branch": repo.branch,
+            }
+            # ① 官方插件 ID 为保留字：直接拒绝（磁盘零变化）
+            if self.is_reserved(name):
+                official_path = self._official_path(name)
+                existing = (
+                    self._installed_meta(official_path)
+                    if official_path is not None
+                    else {"name": name, "version": "", "repo": "", "path": "", "official": True}
+                )
+                existing["official"] = True
+                reserved_conflict = self._conflict_payload("official", requested, existing)
+                return PluginInstallResult(
+                    ok=False,
+                    name=name,
+                    version=version,
+                    path=target,
+                    error=reserved_conflict["message"],
+                    conflict=reserved_conflict,
+                    dry_run=dry_run,
+                )
             backup_path: Path | None = None
-            if target.exists():
-                if not replace:
-                    raise PluginInstallError(f"插件已安装: {name}")
+            existing_install = target.exists()
+            conflict: dict[str, Any] | None = (
+                self._conflict_payload(
+                    "existing_plugin", requested, self._installed_meta(target)
+                )
+                if existing_install
+                else None
+            )
+            # ② 只探测不写盘：探测本身成功，冲突以 conflict 字段回传
+            if dry_run:
+                return PluginInstallResult(
+                    ok=True,
+                    name=name,
+                    version=version,
+                    path=target,
+                    message=(f"探测完成：{name} {version}（存在同名插件）" if existing_install else f"探测完成：{name} {version}（无冲突）"),
+                    conflict=conflict,
+                    dry_run=True,
+                )
+            # ③ ID 已存在且未确认替换 -> 拒绝（磁盘零变化）
+            if existing_install and not replace:
+                return PluginInstallResult(
+                    ok=False,
+                    name=name,
+                    version=version,
+                    path=target,
+                    error=str((conflict or {}).get("message") or f"插件已安装: {name}"),
+                    conflict=conflict,
+                    dry_run=dry_run,
+                )
+            # ④ 显式替换：走既有备份路径
+            if existing_install:
                 backup_path = self._backup(target, name)
                 try:
                     shutil.rmtree(target)
@@ -383,10 +571,10 @@ class PluginInstaller:
                 backup_path=backup_path,
             )
         except PluginInstallError as exc:
-            return PluginInstallResult(ok=False, error=str(exc))
+            return PluginInstallResult(ok=False, error=str(exc), dry_run=dry_run)
         except Exception as exc:
             self._logger.exception(f"插件安装失败: {exc}")
-            return PluginInstallResult(ok=False, error=f"插件安装失败: {exc}")
+            return PluginInstallResult(ok=False, error=f"插件安装失败: {exc}", dry_run=dry_run)
         finally:
             if staging_root is not None:
                 shutil.rmtree(staging_root, ignore_errors=True)

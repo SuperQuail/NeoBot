@@ -157,6 +157,8 @@ def build_plugin_runtime(
     installer = PluginInstaller(
         plugin_dir=plugin_dir,
         logger=logger_factory.get_logger("modloader.installer"),
+        # 官方插件 ID 为保留字（spec(4) R27/D24）：随本体更新，不能在面板内安装/更新
+        official_plugin_dirs=builtin_plugin_dirs(),
         proxy=ProxySettings(
             mode=str(getattr(plugins_config, "proxy_mode", "system") or "system"),
             host=str(getattr(plugins_config, "proxy_host", "127.0.0.1") or "127.0.0.1"),

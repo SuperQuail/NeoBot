@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from neobot_modloader import Plugin
@@ -94,8 +95,91 @@ class DashboardPlugin:
             if subscription is not None:
                 ctx.record_subscription(subscription)
 
+        self._register_status_command(ctx)
         self._register_config_consumer(ctx)
         await self._start_latency_task()
+
+    # ------------------------------------------------------------------
+    # /status 命令（spec(4) Part D / R23、R24）
+    # ------------------------------------------------------------------
+
+    def _register_status_command(self, ctx: Any) -> None:
+        """注册 /status（次级管理员；权限判定由 CommandService 统一完成）。
+
+        插件**不写任何权限代码**：permission=PERM_SUB_ADMIN 交给命令服务，
+        越权时自动回「需要权限:次级管理员」且在 handler 之前拦截。
+        插件停用 / 卸载时随 ctx.app_commands.unregister_all() 摘除。
+        """
+        registrar = getattr(ctx, "app_commands", None)
+        if registrar is None or not getattr(registrar, "available", False):
+            return
+        from neobot_app.commands.model import PERM_SUB_ADMIN
+
+        plugin = self
+
+        @registrar.register(
+            "status",
+            description="查看 NeoBot 运行状态：概况 / 用量 / 插件 / 错误（图片卡片）",
+            usage="[概况 用量 插件 错误]",
+            permission=PERM_SUB_ADMIN,
+        )
+        async def _status_command(command_ctx: Any) -> str | None:
+            return await plugin.run_status_command(ctx, command_ctx)
+
+    async def run_status_command(self, ctx: Any, command_ctx: Any) -> str | None:
+        """执行 /status：出图；渲染不可用或失败则回等价纯文本（绝不报错）。
+
+        返回 None 表示已自行发送回复（图片）；返回字符串则由命令服务发送文本。
+        """
+        from . import status_card
+
+        args = list(getattr(command_ctx, "args", None) or [])
+        unknown = status_card.unknown_blocks(args)
+        if unknown:
+            available = "、".join(status_card.BLOCK_NAMES)
+            return (
+                f"未知的块名：{'、'.join(unknown)}。"
+                f"可用块名：{available}（例如 /status 用量 插件）"
+            )
+        blocks = await status_card.collect_status_blocks(ctx, args, console=self.server)
+        payload = status_card.build_status_payload(
+            blocks,
+            subtitle=self._status_subtitle(),
+            footer="数据来自进程内服务；不含账号、配置与日志正文",
+        )
+        png, text = await status_card.render_status_with_fallback(
+            payload, screenshots=getattr(ctx, "screenshots", None)
+        )
+        if png is None:
+            return text
+        try:
+            await self._send_status_image(ctx, command_ctx, png)
+        except Exception as exc:
+            logger = self._logger
+            if logger is not None:
+                logger.warning(f"/status 图片发送失败，降级为文本: {exc}")
+            return status_card.build_status_text(
+                payload, hint=status_card.FALLBACK_HINT
+            )
+        return None
+
+    def _status_subtitle(self) -> str:
+        from neobot_app.core import APP_VERSION
+
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"NeoBot {APP_VERSION} · {stamp}"
+
+    async def _send_status_image(self, ctx: Any, command_ctx: Any, png: bytes) -> None:
+        """按 Reply.image(data=..., filename=...) 的能力发送 PNG。"""
+        from neobot_modloader.reply import Reply
+
+        kind = str(getattr(command_ctx, "kind", "") or "")
+        conv_id = getattr(command_ctx, "conv_id", None)
+        if kind == "group":
+            event = {"message_type": "group", "group_id": conv_id}
+        else:
+            event = {"message_type": "private", "user_id": conv_id}
+        await Reply(ctx, event).image(data=png, filename="status.png")
 
     def _register_config_consumer(self, ctx: Any) -> None:
         """把自己登记成 modloader 的「插件配置消费者」。

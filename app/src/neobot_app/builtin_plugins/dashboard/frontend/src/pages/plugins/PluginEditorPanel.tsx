@@ -73,6 +73,11 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                 {selected.config_hot_reload === false ? '配置需重启' : '配置可热重载'}
               </span>
               {selected.author && <span className="meta-chip">{selected.author}</span>}
+              {(selected.command_renames || []).map((item) => (
+                <span className="meta-chip" key={item.actual} title="命令重名时自动追加插件来源前缀（spec(4) R26）">
+                  {item.message || `原 ${item.requested} → 实际 ${item.actual}（重名）`}
+                </span>
+              ))}
               {selected.repo && /^https?:\/\//i.test(selected.repo) && <a className="meta-chip" href={selected.repo} target="_blank" rel="noopener noreferrer">插件仓库 <Icon name="external" /></a>}
               {selected.homepage && !selected.repo && /^https?:\/\//i.test(selected.homepage) && <a className="meta-chip" href={selected.homepage} target="_blank" rel="noopener noreferrer">主页 <Icon name="external" /></a>}
               {(selected.tags || []).map((tag) => <span className="meta-chip" key={tag}>{tag}</span>)}

@@ -351,6 +351,7 @@ class DashboardServer:
 
         self._route(app, "GET", "/api/plugins", self.api.plugins)
         self._route(app, "POST", "/api/plugins/install", self.api.plugins_install)
+        self._route(app, "GET", "/api/plugins/probe", self.api.plugins_probe)
         self._route(app, "POST", "/api/plugins/proxy", self.api.plugins_proxy_save)
         self._route(app, "GET", "/api/plugins/check-updates", self.api.plugins_check_updates)
         self._route(app, "POST", "/api/plugins/{name}/toggle", self.api.plugin_toggle)

@@ -312,7 +312,11 @@ async def test_installer_installs_from_archive(tmp_path: Path) -> None:
 
     duplicate = await installer.install("owner/demo")
     assert duplicate.ok is False
-    assert "已安装" in (duplicate.error or "")
+    # spec(4) R27：ID 冲突时不再是裸字符串，而是结构化冲突（只能二选一）
+    assert duplicate.conflict is not None
+    assert duplicate.conflict["kind"] == "existing_plugin"
+    assert duplicate.conflict["existing"]["version"] == "1.2.3"
+    assert "只能二选一" in (duplicate.error or "")
 
     updated = build_zip(
         {

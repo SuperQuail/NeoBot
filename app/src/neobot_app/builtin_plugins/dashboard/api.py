@@ -857,6 +857,17 @@ class DashboardApi:
             "auto_disabled": bool(getattr(snapshot, "auto_disabled", False)),
             # 配置校验告警：非空表示已存值非法、运行时已回落默认值
             "config_error": getattr(snapshot, "config_error", None),
+            # 命令重名导致的自动改名：原 /x -> 实际 /plugin__x（spec(4) R26）
+            "command_renames": [
+                {
+                    "requested": f"/{requested}",
+                    "actual": f"/{actual}",
+                    "message": f"原 /{requested} → 实际 /{actual}（重名）",
+                }
+                for requested, actual in (
+                    getattr(snapshot, "command_renames", ()) or ()
+                )
+            ],
         }
 
     async def extensions(self, request: web.Request) -> web.Response:
@@ -1106,6 +1117,13 @@ class DashboardApi:
         return _operation_response(result, f"{name} 已卸载")
 
     async def plugins_install(self, request: web.Request) -> web.Response:
+        """安装第三方插件；dry_run=true 只探测不写盘（spec(4) R27/D24）。
+
+        * 目标 ID 已存在且未显式 replace -> **拒绝**并回结构化冲突（409，磁盘零变化）；
+        * 目标 ID 命中官方插件目录 -> 直接拒绝（保留字，400）；
+        * replace=true -> 走既有备份路径，响应回显 backup_path；
+        * dry_run=true -> 只探测：不删、不覆盖、不产生备份。
+        """
         denied = self._require_manage(request)
         if denied is not None:
             return denied
@@ -1118,10 +1136,52 @@ class DashboardApi:
             return _json_error(str(exc))
         repo = str(payload.get("repo") or "").strip()
         branch = str(payload.get("branch") or "").strip() or None
+        dry_run = bool(payload.get("dry_run"))
+        replace = bool(payload.get("replace"))
         if not repo:
             return _json_error("请填写 GitHub 仓库地址")
-        result = await control.install(repo, branch=branch, replace=bool(payload.get("replace")))
-        return _operation_response(result, f"已安装 {result.name}")
+        result = await control.install(
+            repo, branch=branch, replace=replace, dry_run=dry_run
+        )
+        conflict = getattr(result, "conflict", None)
+        if dry_run:
+            if not getattr(result, "ok", False):
+                return _json_error(
+                    str(getattr(result, "error", "") or "探测失败"),
+                    status=400,
+                    conflict=conflict,
+                )
+            name = str(getattr(result, "name", "") or "")
+            return _json_ok(
+                {
+                    "dry_run": True,
+                    "name": name,
+                    "version": getattr(result, "version", ""),
+                    "conflict": conflict,
+                    "message": (
+                        str(conflict.get("message"))
+                        if isinstance(conflict, dict) and conflict.get("message")
+                        else f"探测完成：{name} 可安装"
+                    ),
+                }
+            )
+        return _operation_response(result, f"已安装 {installed_name(result)}")
+
+    async def plugins_probe(self, request: web.Request) -> web.Response:
+        """按插件 ID 探测冲突（只读）：面板安装前的冲突态查询。"""
+        control = self._plugin_control()
+        if control is None:
+            return _json_error("插件运行时不可用", status=503)
+        name = str(request.query.get("name") or "").strip()
+        if not name:
+            return _json_error("缺少 name 参数")
+        prober = getattr(control, "probe", None)
+        if not callable(prober):
+            return _json_ok({"conflict": False, "existing": None, "official": False})
+        try:
+            return _json_ok(dict(prober(name)))
+        except Exception as exc:
+            return _json_error(f"冲突探测失败: {exc}", status=500)
 
     async def plugins_check_updates(self, request: web.Request) -> web.Response:
         control = self._plugin_control()
@@ -2679,19 +2739,34 @@ def _status_text(snapshot: Any) -> str:
     return state or "unloaded"
 
 
+def installed_name(result: Any) -> str:
+    return str(getattr(result, "name", "") or "")
+
+
 def _operation_response(result: Any, success_message: str) -> web.Response:
+    conflict = getattr(result, "conflict", None)
     if getattr(result, "ok", False):
-        return _json_ok(
-            {
-                "message": success_message,
-                "name": getattr(result, "name", ""),
-                "state": getattr(result, "state", None),
-                "requires_restart": bool(getattr(result, "requires_restart", False)),
-            }
-        )
+        payload: dict[str, Any] = {
+            "message": success_message,
+            "name": getattr(result, "name", ""),
+            "state": getattr(result, "state", None),
+            "requires_restart": bool(getattr(result, "requires_restart", False)),
+        }
+        version = getattr(result, "version", "")
+        if version:
+            payload["version"] = version
+        backup_path = getattr(result, "backup_path", None)
+        if backup_path is not None:
+            payload["backup_path"] = str(backup_path)
+            payload["message"] = f"{success_message}（旧版本已备份到 {backup_path}）"
+        if conflict:
+            payload["conflict"] = conflict
+        return _json_ok(payload)
+    # 冲突是「可二选一」的显式状态，用 409 区分于普通参数错误
     return _json_error(
         str(getattr(result, "error", "") or "操作失败"),
-        status=400,
+        status=409 if conflict else 400,
         name=getattr(result, "name", ""),
         state=getattr(result, "state", None),
+        conflict=conflict,
     )

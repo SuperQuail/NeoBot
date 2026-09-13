@@ -1374,6 +1374,7 @@ class PluginRuntime:
                     ),
                     dependents=tuple(registry.dependents_of(result.name)),
                     config_error=self._config_errors.get(result.name),
+                    command_renames=self.command_renames(result.name),
                 )
             )
             seen_names.add(result.name)
@@ -1480,6 +1481,12 @@ class PluginRuntime:
             await self._cascade_restore_dependents(name)
         return outcome
 
+    def probe_plugin(self, name: str) -> dict[str, Any]:
+        """插件 ID 冲突探测（只读）:交给安装器，未配置时返回无冲突。"""
+        if self.installer is None:
+            return {"conflict": False, "existing": None, "official": False}
+        return dict(self.installer.probe(name))
+
     async def install_plugin(
         self,
         repo: str,
@@ -1487,17 +1494,37 @@ class PluginRuntime:
         branch: str | None = None,
         replace: bool = False,
         start: bool = True,
+        dry_run: bool = False,
     ) -> PluginOperationResult:
         if self.installer is None:
             return PluginOperationResult(ok=False, name="", error="插件安装器未配置")
-        result = await self.installer.install(repo, branch=branch, replace=replace)
+        result = await self.installer.install(
+            repo, branch=branch, replace=replace, dry_run=dry_run
+        )
         if not result.ok:
             return PluginOperationResult(
-                ok=False, name=result.name, error=result.error, path=result.path
+                ok=False,
+                name=result.name,
+                error=result.error,
+                path=result.path,
+                version=result.version,
+                conflict=result.conflict,
+                dry_run=result.dry_run,
+            )
+        if result.dry_run:
+            return PluginOperationResult(
+                ok=True,
+                name=result.name,
+                path=result.path,
+                version=result.version,
+                conflict=result.conflict,
+                dry_run=True,
             )
         self._persist_enabled_state(result.name, True)
         if result.path is None:
-            return PluginOperationResult(ok=True, name=result.name)
+            return PluginOperationResult(
+                ok=True, name=result.name, version=result.version
+            )
         outcome = await self.load_plugin_path(result.path, start=start)
         if outcome.ok:
             return PluginOperationResult(
@@ -1505,6 +1532,8 @@ class PluginRuntime:
                 name=outcome.name,
                 state=outcome.state,
                 path=outcome.path,
+                version=result.version,
+                backup_path=result.backup_path,
             )
         return PluginOperationResult(
             ok=False,
@@ -1512,6 +1541,8 @@ class PluginRuntime:
             state=outcome.state,
             error=f"{result.message}，但加载失败: {outcome.error or outcome.state}",
             path=result.path,
+            version=result.version,
+            backup_path=result.backup_path,
         )
 
     async def uninstall_plugin(self, name: str) -> PluginOperationResult:
@@ -1875,6 +1906,21 @@ class PluginRuntime:
 
     def is_official(self, name: str) -> bool:
         return self.plugin_source(name) == OFFICIAL_SOURCE
+
+    def command_renames(self, name: str) -> tuple[tuple[str, str], ...]:
+        """该插件因命令重名被自动改名的命令：((请求名, 实际名), ...)。
+
+        注册器不在（插件未加载 / 用的是旧宿主）时返回空元组，不影响快照。
+        """
+        record = self.manager.get_record(name)
+        registrar = getattr(getattr(record, "context", None), "app_commands", None)
+        getter = getattr(registrar, "renames", None)
+        if not callable(getter):
+            return ()
+        try:
+            return tuple((str(requested), str(actual)) for requested, actual in getter())
+        except Exception:
+            return ()
 
     def _kind_for_path(self, path: Path | None) -> str:
         if path is None:

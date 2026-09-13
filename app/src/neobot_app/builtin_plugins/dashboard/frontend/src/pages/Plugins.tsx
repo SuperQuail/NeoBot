@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { api } from '../api/endpoints';
 import type { PluginConfigSaveBody } from '../api/endpoints';
-import type { ConfigDocument, Plugin, ProxyInfo, Result } from '../api/types';
+import type { ConfigDocument, Plugin, PluginConflict, ProxyInfo, Result } from '../api/types';
 import { toast } from '../components/Toast';
 import Modal from '../components/Modal';
 import Icon from '../components/Icon';
@@ -61,6 +61,8 @@ export default function Plugins() {
   const [installOpen, setInstallOpen] = useState(false);
   const [installRepo, setInstallRepo] = useState('');
   const [installBranch, setInstallBranch] = useState('main');
+  /** 安装冲突（spec(4) R27）：非空时弹窗进入三选一冲突态 */
+  const [installConflict, setInstallConflict] = useState<PluginConflict | null>(null);
   const [proxy, setProxy] = useState<ProxyInfo>({});
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyDraft, setProxyDraft] = useState<{ mode: string; host: string; port: number }>({
@@ -215,6 +217,52 @@ export default function Plugins() {
     }
   }
 
+  function closeInstall() {
+    if (operation) return;
+    setInstallOpen(false);
+    setInstallConflict(null);
+  }
+
+  /**
+   * 安装流程（spec(4) R27/D24）：
+   *   ① 先 dry_run 探测（不写盘）→ 有冲突就停在弹窗里三选一；
+   *   ② 用户在冲突态点「替换现有插件」时才会带 replace=true 再次提交。
+   * 未确认替换时后端直接拒绝，磁盘零变化。
+   */
+  async function submitInstall(replace: boolean) {
+    if (busyRef.current) return;
+    const repo = installRepo.trim();
+    if (!repo) return;
+    busyRef.current = true;
+    setOperation(replace ? 'install' : 'probe');
+    try {
+      if (!replace) {
+        const probe = await api.pluginInstall(repo, installBranch.trim() || 'main', false, true);
+        if (!probe.ok) {
+          toast(probe.error || '探测失败', 'err');
+          if (probe.data?.conflict) setInstallConflict(probe.data.conflict);
+          return;
+        }
+        const conflict = probe.data?.conflict || null;
+        if (conflict) { setInstallConflict(conflict); return; }
+      }
+      const result = await api.pluginInstall(repo, installBranch.trim() || 'main', replace, false);
+      const message = result.data?.message || result.error || (result.ok ? '安装完成' : '安装失败');
+      toast(message, result.ok ? 'ok' : 'err');
+      if (result.ok) {
+        setInstallOpen(false);
+        setInstallConflict(null);
+        setInstallRepo('');
+        await load();
+        return;
+      }
+      if (result.data?.conflict) setInstallConflict(result.data.conflict);
+    } finally {
+      setOperation('');
+      busyRef.current = false;
+    }
+  }
+
   async function save(reload: boolean) {
     if (!configDocument) return;
     const body: PluginConfigSaveBody = { revision: configDocument.revision, mode, reload,
@@ -281,7 +329,7 @@ export default function Plugins() {
         permissions={permissions}
         proxy={proxy}
         onSelect={select}
-        onOpenInstall={() => setInstallOpen(true)}
+        onOpenInstall={() => { setInstallConflict(null); setInstallOpen(true); }}
         onOpenProxy={() => setProxyOpen(true)}
         onReload={load}
       />}
@@ -322,21 +370,41 @@ export default function Plugins() {
       />}
     />
     {/* 弹窗仍由页面持有：安装第三方插件 / 插件下载代理 */}
-    <Modal open={installOpen} title="安装第三方插件" onClose={() => { if (!operation) setInstallOpen(false); }}>
+    <Modal open={installOpen} title="安装第三方插件" onClose={() => { if (!operation) closeInstall(); }}>
       <form className="install-form" onSubmit={async (event) => {
         event.preventDefault();
-        const result = await act('install', () => api.pluginInstall(installRepo.trim(), installBranch.trim() || 'main'), '安装完成');
-        if (result?.ok) { setInstallOpen(false); setInstallRepo(''); }
+        await submitInstall(false);
       }}>
         <label className="field"><span>GitHub 仓库</span><input className="input" placeholder="https://github.com/user/plugin" required
           value={installRepo} disabled={!!operation} onChange={(event) => setInstallRepo(event.target.value)} data-autofocus /></label>
         <label className="field"><span>分支</span><input className="input" value={installBranch} disabled={!!operation} onChange={(event) => setInstallBranch(event.target.value)} /></label>
-        <p className="muted small">只允许从 GitHub 下载；安装后自动启用并加载，官方插件不可被覆盖。</p>
+        {installConflict && <div className="workspace-error" role="alert">
+          <strong>插件 ID 冲突：只能二选一</strong>
+          <div className="muted small">{installConflict.message || '已存在同名插件，请选择保留现有或替换。'}</div>
+          <div className="muted small">
+            待安装：{installConflict.requested?.name || '—'}
+            {installConflict.requested?.version ? ` v${installConflict.requested.version}` : ''}
+            {installConflict.requested?.repo ? ` · 来源 ${installConflict.requested.repo}` : ''}
+          </div>
+          <div className="muted small">
+            已存在：{installConflict.existing?.name || '—'}
+            {installConflict.existing?.version ? ` v${installConflict.existing.version}` : '（未声明版本）'}
+            {installConflict.existing?.repo ? ` · 来源 ${installConflict.existing.repo}` : ' · 来源未知'}
+            {installConflict.existing?.official ? ' · 官方插件（保留字）' : ''}
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>保留现有</button>
+            <button type="button" className="btn primary" disabled={!!operation || installConflict.reserved}
+              onClick={async () => { await submitInstall(true); }}>{operation === 'install' ? '替换中…' : '替换现有插件'}</button>
+            <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>取消</button>
+          </div>
+        </div>}
+        <p className="muted small">只允许从 GitHub 下载；安装后自动启用并加载。官方插件 ID 为保留字，随本体更新，不能在面板内安装或更新。</p>
         <p className="muted small">当前下载代理：{proxy.description || '跟随系统'}。网络受限时可在此切换代理模式或端口。</p>
         <div className="modal-actions">
           <button type="button" className="btn" disabled={!!operation} onClick={() => setProxyOpen(true)}><Icon name="settings" />代理设置</button>
-          <button type="button" className="btn" disabled={!!operation} onClick={() => setInstallOpen(false)}>取消</button>
-          <button className="btn primary" disabled={!!operation || !installRepo.trim()}>{operation === 'install' ? '安装中…' : '下载并安装'}</button></div>
+          <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>取消</button>
+          <button className="btn primary" disabled={!!operation || !installRepo.trim() || !!installConflict}>{operation === 'probe' ? '探测中…' : operation === 'install' ? '安装中…' : '下载并安装'}</button></div>
       </form>
     </Modal>
     <Modal open={proxyOpen} title="插件下载代理" onClose={() => { if (!operation) setProxyOpen(false); }}>

@@ -2,6 +2,7 @@
 import { deleteJSON, getJSON, getResult, postJSON, putJSON } from './client';
 import type {
   ActiveUser,
+  PluginConflict,
   ArchiveDeleteBody,
   ArchiveItemDetail,
   ArchiveItemQuery,
@@ -28,6 +29,7 @@ import type {
   LogPayload,
   ModelsPayload,
   Overview,
+  PluginConflictSide,
   PluginListPayload,
   PromptAnalysisPayload,
   PromptPreviewPayload,
@@ -64,6 +66,14 @@ export interface SimpleMessage {
   status?: number;
   detail?: string;
   models?: string[];
+  /** 显式替换时的备份路径（spec(4) R27） */
+  backup_path?: string;
+  /** 安装/更新解析出的版本 */
+  version?: string;
+  /** 安装冲突（HTTP 409）：两侧来源与版本 + 只能二选一 */
+  conflict?: PluginConflict | null;
+  /** 仅探测未写盘 */
+  dry_run?: boolean;
   [key: string]: unknown;
 }
 
@@ -248,8 +258,15 @@ export const api = {
   pluginUpdate: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/update'),
   pluginUninstall: (name: string) =>
     postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/uninstall'),
-  pluginInstall: (repo: string, branch = 'main', replace = false) =>
-    postJSON<SimpleMessage>('/api/plugins/install', { repo, branch, replace }),
+  /**
+   * 安装第三方插件。dryRun=true 只探测不写盘：返回体带 conflict（若有）。
+   * 冲突确认替换时必须显式传 replace=true（spec(4) R27/D24）。
+   */
+  pluginInstall: (repo: string, branch = 'main', replace = false, dryRun = false) =>
+    postJSON<SimpleMessage>('/api/plugins/install', { repo, branch, replace, dry_run: dryRun }),
+  pluginsProbe: (name: string) =>
+    getJSON<{ conflict?: boolean; existing?: PluginConflictSide | null; official?: boolean; message?: string }>(
+      '/api/plugins/probe?name=' + encodeURIComponent(name)),
   pluginsCheckUpdates: () => getResult<SimpleMessage>('/api/plugins/check-updates'),
   pluginsProxySave: (body: ProxyInfo) => postJSON<{ proxy?: ProxyInfo }>('/api/plugins/proxy', body),
   pluginConfig: (name: string) => getResult<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config'),

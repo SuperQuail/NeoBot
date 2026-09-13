@@ -15,6 +15,14 @@ class PluginOperationResult:
     error: str | None = None
     requires_restart: bool = False
     path: Path | None = None
+    #: 安装 / 更新解析出的版本（仅探测时也回填，供面板确认弹窗展示）
+    version: str = ""
+    #: 结构化冲突（spec(4) R27）：两侧来源与版本 + 只能二选一的说明
+    conflict: dict[str, Any] | None = None
+    #: 显式替换时的备份路径（回显给用户）
+    backup_path: Path | None = None
+    #: 本次只探测未写盘
+    dry_run: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +59,8 @@ class PluginSnapshot:
     dependents: tuple[str, ...] = ()
     #: 插件配置校验告警：非空表示部分已存值非法、已回落默认值运行
     config_error: str | None = None
+    #: 因命令重名被自动改名：((请求名, 实际名), ...)，面板插件详情展示
+    command_renames: tuple[tuple[str, str], ...] = ()
 
     @property
     def official(self) -> bool:
@@ -119,10 +129,18 @@ class PluginControlFacade:
         branch: str | None = None,
         replace: bool = False,
         start: bool = True,
+        dry_run: bool = False,
     ) -> PluginOperationResult:
         return await self._runtime.install_plugin(
-            repo, branch=branch, replace=replace, start=start
+            repo, branch=branch, replace=replace, start=start, dry_run=dry_run
         )
+
+    def probe(self, name: str) -> dict[str, Any]:
+        """探测插件 ID 是否已被占用（面板安装前的冲突探测）。"""
+        prober = getattr(self._runtime, "probe_plugin", None)
+        if not callable(prober):
+            return {"conflict": False, "existing": None, "official": False}
+        return dict(prober(name))
 
     async def uninstall(self, name: str) -> PluginOperationResult:
         return await self._runtime.uninstall_plugin(name)

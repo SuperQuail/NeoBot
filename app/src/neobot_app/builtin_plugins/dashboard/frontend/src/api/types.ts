@@ -128,6 +128,34 @@ export interface Plugin {
   disabled_reason?: string | null;
   /** 是否属于依赖自动禁用（区别于用户手动停用） */
   auto_disabled?: boolean;
+  /** 命令因重名被自动改名：原 /x -> 实际 /plugin__x（spec(4) R26） */
+  command_renames?: PluginCommandRename[];
+}
+
+/** 命令重名导致的自动改名（后端 snapshot.command_renames） */
+export interface PluginCommandRename {
+  requested: string;
+  actual: string;
+  message: string;
+}
+
+/** 插件 ID 冲突的一侧（请求方 / 已存在方） */
+export interface PluginConflictSide {
+  name?: string;
+  version?: string;
+  repo?: string;
+  branch?: string;
+  path?: string;
+  official?: boolean;
+}
+
+/** 插件安装冲突（spec(4) R27/D24）：两侧来源与版本 + 只能二选一 */
+export interface PluginConflict {
+  kind?: 'existing_plugin' | 'official' | string;
+  requested?: PluginConflictSide;
+  existing?: PluginConflictSide;
+  message?: string;
+  reserved?: boolean;
 }
 
 /** 面板 HTTP 扩展 /api/extensions：依赖面板的插件挂在同一端口上的页面 */
@@ -156,6 +184,8 @@ export interface PluginListPayload {
   manage_enabled?: boolean;
   hot_reload?: boolean;
   proxy?: ProxyInfo;
+  /** 插件安装器是否可用 */
+  installer?: boolean;
 }
 
 /** schema 字段描述（由后端 config_manager.describe_dataclass 生成） */
