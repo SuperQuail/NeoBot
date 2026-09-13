@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from neobot_app.runtime.html_card import render_card_html, render_card_image
@@ -355,29 +355,126 @@ def build_status_payload(
     }
 
 
+#: 插件状态 -> 单元格色调（运行中绿、异常红、已停用灰、未加载黄）
+_PLUGIN_STATE_TONES = {
+    "运行中": "ok",
+    "异常": "danger",
+    "已停用": "muted",
+    "未加载": "warn",
+}
+
+#: 值 -> 指标卡片色调（在线绿、离线/异常红、未知灰）
+_VALUE_TONES = {
+    "在线": "ok",
+    "运行中": "ok",
+    "正常": "ok",
+    "离线": "danger",
+    "异常": "danger",
+    "不可用": "danger",
+    "未知": "muted",
+    "无样本": "muted",
+    "无": "muted",
+    "—": "muted",
+}
+
+
+def value_tone(value: Any) -> str:
+    """按取值给出色调（不认识的值不加色，保持中性）。"""
+    return _VALUE_TONES.get(str(value or "").strip(), "")
+
+
+def _state_cell(label: str) -> dict[str, Any]:
+    return {"text": label, "tone": _PLUGIN_STATE_TONES.get(label.strip(), "")}
+
+
+def _kv_items(part: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    items: list[tuple[str, Any]] = []
+    for row in part.get("rows") or ():
+        if isinstance(row, Sequence) and not isinstance(row, (str, bytes)) and len(row) >= 2:
+            items.append((str(row[0]), row[1]))
+    return items
+
+
+def _stat_items(part: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    """概况块的键值 -> 指标卡片（值带状态色）。"""
+    tiles: list[tuple[str, str, str]] = []
+    for label, value in _kv_items(part):
+        text = str(value)
+        tiles.append((label, text, value_tone(text)))
+    return tiles
+
+
+def _part_block(part: Mapping[str, Any], *, tone: str = "") -> dict[str, Any]:
+    """把采集到的单个部分转成卡片块（表格 / 键值面板）。"""
+    if part.get("kind") == "table":
+        columns = [str(column) for column in (part.get("columns") or ())]
+        is_plugin_table = bool(columns) and columns[0] == "名称"
+        rows: list[list[Any]] = []
+        for row in part.get("rows") or ():
+            cells = list(row) if isinstance(row, Sequence) and not isinstance(row, (str, bytes)) else []
+            if is_plugin_table and len(cells) == len(columns):
+                cells = [*cells[:-1], _state_cell(str(cells[-1]))]
+            rows.append(cells)
+        block: dict[str, Any] = {
+            "kind": "rows",
+            "title": part.get("title") or "",
+            "columns": columns,
+            "rows": rows,
+        }
+    else:
+        block = {"kind": "kv", "title": part.get("title") or "", "items": _kv_items(part)}
+    if tone:
+        block["tone"] = tone
+    return block
+
+
+def _error_part_tone(part: Mapping[str, Any]) -> str:
+    """错误块：近 24 小时 ERROR 条数 > 0 时整块用告警色强调。"""
+    for label, value in _kv_items(part):
+        if label.endswith("ERROR"):
+            try:
+                return "danger" if int(str(value).strip()) > 0 else ""
+            except (TypeError, ValueError):
+                return ""
+    return ""
+
+
 def build_status_html(payload: dict[str, Any]) -> str:
-    """用公共卡片渲染器生成自包含 HTML（内联 CSS、无 JS、无外链）。"""
+    """用公共卡片渲染器生成自包含 HTML（内联 CSS、无 JS、无外链）。
+
+    呈现上做了分块卡片化：概况用指标卡片墙、用量多窗口并排成两栏、
+    错误块在有条目时整体转成告警配色，块间距收紧以免整张图过高。
+    """
     card_blocks: list[dict[str, Any]] = []
     for block in payload.get("blocks") or ():
-        card_blocks.append({"kind": "heading", "text": block.get("name") or ""})
-        for part in block.get("parts") or ():
-            if part.get("kind") == "table":
-                card_blocks.append(
-                    {
-                        "kind": "rows",
-                        "title": part.get("title") or "",
-                        "columns": part.get("columns") or (),
-                        "rows": part.get("rows") or (),
-                    }
-                )
-            else:
-                card_blocks.append(
-                    {
-                        "kind": "kv",
-                        "title": part.get("title") or "",
-                        "items": part.get("rows") or (),
-                    }
-                )
+        name = str(block.get("name") or "")
+        parts = [part for part in (block.get("parts") or ()) if isinstance(part, Mapping)]
+        tone = ""
+        if name == "错误":
+            tone = "danger" if any(_error_part_tone(part) == "danger" for part in parts) else ""
+        card_blocks.append({"kind": "heading", "text": name, "tone": tone})
+
+        # 概况：单个无标题键值块 -> 指标卡片墙（值带状态色）
+        if (
+            name == "概况"
+            and len(parts) == 1
+            and parts[0].get("kind") != "table"
+            and not parts[0].get("title")
+        ):
+            card_blocks.append({"kind": "stats", "cols": 3, "items": _stat_items(parts[0])})
+            continue
+
+        panels = [_part_block(part, tone=tone) for part in parts]
+        if len(panels) == 2 and all(
+            panel["kind"] == "kv" and panel.get("title") for panel in panels
+        ):
+            # 用量：近 24 小时 / 近 7 天并排成两栏，省一半高度
+            card_blocks.append(
+                {"kind": "grid", "cols": 2, "cells": [[panel] for panel in panels]}
+            )
+        else:
+            card_blocks.extend(panels)
+
     return render_card_html(
         title=str(payload.get("title") or CARD_TITLE),
         subtitle=str(payload.get("subtitle") or ""),

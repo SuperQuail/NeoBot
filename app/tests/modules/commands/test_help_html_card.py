@@ -604,3 +604,104 @@ async def test_out_of_range_page_is_not_cached(tmp_path: Path) -> None:
     assert len(screenshots.calls) == before + 1
     assert "超出范围" not in screenshots.calls[-1]
     assert list((tmp_path / "help_cache").glob("help-0-p2-s30-*.png"))
+
+
+# ── 卡片美化：三列布局 / 翻页条 / 详情卡标签（本轮新增） ──
+
+
+def _fake_card_commands(count: int = 35) -> list[Command]:
+    base = [
+        ("help", "查看命令列表或某个命令的详细用法", "[命令名] [页码]", PERM_EVERYONE, ""),
+        ("ping", "连通性测试", "", PERM_EVERYONE, ""),
+        ("status", "把控制台运行概况渲染成一张图片", "[概况 用量 插件 错误]", PERM_SUB_ADMIN, "dashboard"),
+        ("mg", "小游戏：漂流瓶 / 成语接龙 / 签到 / 抽签", "<游戏> [参数]", PERM_EVERYONE, "minigame"),
+    ]
+    out: list[Command] = []
+    for index in range(count):
+        name, desc, usage, permission, source = base[index % len(base)]
+        if index >= len(base):
+            name = f"{name}_{index // len(base) + 1}"
+        out.append(
+            _command(name, description=desc, usage=usage, permission=permission, source=source)
+        )
+    return out
+
+
+def test_list_card_uses_three_column_command_table() -> None:
+    """命令 / 说明 / 权限与来源 三列固定布局：命令列与来源都不再被挤到折行。"""
+    from neobot_app.runtime import help_card
+
+    payload = help_card.build_list_payload(_fake_card_commands(), page=1)
+    block = payload["blocks"][0]
+    assert block["kind"] == "rows"
+    assert block["columns"] == ["命令", "说明", "权限 / 来源"]
+    assert block["widths"] == ["36%", "42%", "22%"]
+    assert block["variant"] == "commands"
+    # 权限与来源各成一行（元信息列内堆叠），命令列只有用法文本
+    first = block["rows"][0]
+    assert first[2][0].startswith("[权限: ")
+    assert all(isinstance(line, str) for line in first[2])
+
+    html = help_card.render_payload_html(payload)
+    assert 'class="rows rows--commands"' in html
+    assert '<col style="width: 36%">' in html and '<col style="width: 22%">' in html
+    assert '<span class="cell-line">[权限: ' in html
+    assert "[命令名] [页码]" in html  # 用法整体出现在同一列
+    assert "来源: minigame" in html
+
+
+def test_list_card_pager_and_footer_are_not_redundant() -> None:
+    """翻页条给页码 + 圆点进度；页脚只留总量与翻页提示（单页不出翻页条）。"""
+    from neobot_app.runtime import help_card
+
+    multi = help_card.build_list_payload(_fake_card_commands(35), page=1)
+    assert multi["footer"] == "共 35 条 · 用 /help <页码> 翻页"
+    assert multi["blocks"][-1] == {"kind": "pager", "page": 1, "pages": 2}
+
+    html = help_card.render_payload_html(multi)
+    assert "第 1/2 页" in html
+    assert html.count('class="pager-dot is-current"') == 1
+    assert html.count("pager-dot") >= 3  # CSS + 2 个圆点
+
+    single = help_card.build_list_payload(_fake_card_commands(4), page=1)
+    assert single["footer"] == "共 4 条"
+    assert all(block["kind"] != "pager" for block in single["blocks"])
+    single_html = help_card.render_payload_html(single)
+    assert "第 1/1 页" not in single_html
+    assert "翻页" not in single_html
+
+
+def test_detail_card_uses_mono_usage_and_chip_labels() -> None:
+    """详情卡：用法用等宽字体，权限 / 来源用胶囊标签（只影响 HTML 呈现）。"""
+    from neobot_app.runtime import help_card
+
+    command = _command("ping", usage="[目标]", source="demo", description="响应测试")
+    payload = help_card.build_detail_payload(command)
+
+    # payload 保持纯文本友好的形态，markdown / 纯文本降级不受影响
+    kv = payload["blocks"][0]
+    assert all(not isinstance(item[1], dict) for item in kv["items"])
+
+    html = help_card.render_payload_html(payload)
+    assert "cell--mono" in html and "/ping [目标]" in html
+    assert "cell--chip" in html
+    assert "| 用法 |" in help_card.render_payload_markdown(payload)
+
+
+def test_help_cards_are_self_contained_with_theme_art() -> None:
+    """美化后仍自包含：主题装饰是内联 SVG，没有外链 / 脚本 / @import。"""
+    from neobot_app.runtime import help_card
+
+    list_html = help_card.render_payload_html(
+        help_card.build_list_payload(_fake_card_commands(35), page=1)
+    )
+    detail_html = help_card.render_payload_html(
+        help_card.build_detail_payload(_fake_card_commands(1)[0])
+    )
+
+    for html in (list_html, detail_html):
+        assert html.startswith("<!DOCTYPE html>")
+        assert "http://" not in html and "https://" not in html
+        assert "<script" not in html.lower() and "<link" not in html.lower()
+        assert "@import" not in html
+        assert 'class="card-emblem"' in html

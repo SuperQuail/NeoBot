@@ -45,8 +45,10 @@ HELP_CACHE_DIR_NAME = "help"
 #: 索引文件名
 INDEX_FILE_NAME = "index.json"
 
-#: 渲染器版本：布局 / 主题 / 字段变化时递增，旧缓存整体失效
-RENDERER_VERSION = "1"
+#: 渲染器版本：布局 / 主题 / 字段变化时递增，旧缓存整体失效。
+#: "2"：卡片渲染器重写（多主题美术 / 三列命令表 / 翻页条 / 指标卡片），
+#: 旧指纹命中的缓存必须整体失效，否则 /help 会继续发美化前的图。
+RENDERER_VERSION = "2"
 
 #: 预渲染的权限维度（所有人 / 次级管理员 / 超级管理员）
 PERMISSION_DIMENSIONS: tuple[int, ...] = (0, 1, 2)

@@ -620,6 +620,98 @@ async def test_collect_status_blocks_uses_in_process_services() -> None:
     assert "不可用" in text  # usage_session_factory 缺失时如实标注
 
 
+# ---------------------------------------------------------------------------
+# 卡片美化：分块卡片化 / 状态色 / 表格条带（本轮新增）
+# ---------------------------------------------------------------------------
+
+
+def _styled_payload(*, errors: int = 2) -> dict[str, Any]:
+    blocks = {
+        "概况": [
+            status_card._kv(
+                "",
+                [
+                    ("在线状态", "在线"),
+                    ("延迟", "38 ms"),
+                    ("运行时长", "3 天 4 小时 5 分"),
+                    ("今日消息", "412"),
+                    ("累计消息", "18,904"),
+                    ("协议端", "NapCat 4.8.2"),
+                ],
+            )
+        ],
+        "用量": [
+            status_card._kv("近 24 小时", [("金额", "¥1.2840"), ("调用次数", "137")]),
+            status_card._kv("近 7 天", [("金额", "¥12.9050"), ("调用次数", "1,284")]),
+        ],
+        "插件": [
+            status_card._table(
+                "",
+                ("名称", "版本", "状态"),
+                [("dashboard", "0.1.0", "运行中"), ("legacy", "0.0.9", "已停用")],
+            )
+        ],
+        "错误": [status_card._kv("", [("近 24 小时 ERROR", str(errors)), ("最近一次异常", "无")])],
+    }
+    return status_card.build_status_payload(blocks, subtitle="QQ · 次级管理员", footer="页脚")
+
+
+def test_overview_is_rendered_as_metric_tiles() -> None:
+    """概况块用指标卡片墙（值带状态色），不再是六行键值表。"""
+    html = status_card.build_status_html(_styled_payload())
+
+    assert 'class="stat-label">在线状态<' in html
+    assert 'class="stat-label">协议端<' in html
+    assert "stat--ok" in html  # 在线 -> 绿
+    assert "--stat-cols: 3" in html
+    assert "在线状态" in html and "NapCat 4.8.2" in html
+
+
+def test_usage_windows_are_laid_out_side_by_side() -> None:
+    """用量两个窗口（近 24 小时 / 近 7 天）并排成两栏，省一半高度。"""
+    html = status_card.build_status_html(_styled_payload())
+
+    assert 'class="grid"' in html
+    assert "--grid-cols: 2" in html
+    assert html.count('class="grid-cell"') == 2
+    assert "近 24 小时" in html and "近 7 天" in html
+
+
+def test_error_block_uses_danger_tone_only_when_errors_exist() -> None:
+    """错误块有条目时整块转告警配色（headings + 面板 + 左侧色条）。"""
+    with_errors = status_card.build_status_html(_styled_payload(errors=2))
+    without = status_card.build_status_html(_styled_payload(errors=0))
+
+    assert 'class="block block--heading tone-danger"' in with_errors
+    assert 'class="block block--kv tone-danger"' in with_errors
+    assert 'class="block block--heading tone-danger"' not in without
+    assert "近 24 小时 ERROR" in with_errors
+
+
+def test_plugin_state_and_overview_values_are_toned() -> None:
+    """插件状态与概况取值按语义着色（运行中绿 / 已停用灰）。"""
+    html = status_card.build_status_html(_styled_payload())
+
+    assert "cell--ok" in html and "运行中" in html
+    assert "cell--muted" in html and "已停用" in html
+    assert status_card.value_tone("在线") == "ok"
+    assert status_card.value_tone("离线") == "danger"
+    assert status_card.value_tone("未知") == "muted"
+    assert status_card.value_tone("38 ms") == ""
+
+
+def test_status_card_blocks_keep_self_contained_theme_art() -> None:
+    """美化后仍是自包含卡片（无外链 / 脚本），且四块标题仍在。"""
+    html = status_card.build_status_html(_styled_payload())
+
+    for name in status_card.BLOCK_NAMES:
+        assert f">{name}<" in html
+    assert "http://" not in html and "https://" not in html
+    assert "<script" not in html.lower() and "<link" not in html.lower()
+    assert "@import" not in html
+    assert 'class="card-emblem"' in html  # 主题徽章（内联 SVG）
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

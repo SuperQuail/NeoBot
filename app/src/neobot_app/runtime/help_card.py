@@ -84,13 +84,28 @@ def command_row_left(command: Any) -> str:
     return command_usage_text(command)
 
 
-def command_row_right(command: Any) -> str:
-    """列表行右侧：一句话描述 + [权限: xxx] + [来源: plugin]。"""
-    parts = [str(getattr(command, "description", "") or "")]
-    parts.append(f"[权限: {permission_name(int(getattr(command, 'permission', 0) or 0))}]")
+def command_description(command: Any) -> str:
+    """命令的一句话描述。"""
+    return str(getattr(command, "description", "") or "")
+
+
+def command_permission_label(command: Any) -> str:
+    """权限标签：[权限: xxx]。"""
+    return f"[权限: {permission_name(int(getattr(command, 'permission', 0) or 0))}]"
+
+
+def command_meta_lines(command: Any) -> list[str]:
+    """列表行右侧的元信息行（权限 + 来源），逐行渲染，避免窄列里折行。"""
+    lines = [command_permission_label(command)]
     source_label = str(getattr(command, "source_label", "") or "")
     if source_label:
-        parts.append(source_label)
+        lines.append(source_label)
+    return lines
+
+
+def command_row_right(command: Any) -> str:
+    """列表行右侧（markdown / 纯文本降级用）：描述 + [权限: xxx] + [来源: plugin]。"""
+    parts = [command_description(command), *command_meta_lines(command)]
     return " ".join(part for part in parts if part)
 
 
@@ -110,7 +125,8 @@ def build_list_payload(
     items = paginate(ordered, current, step)
 
     if total > step:
-        footer = f"第 {current}/{pages} 页 · 共 {total} 条 · 用 /help <页码> 翻页"
+        # 页码信息交给翻页条（第 X/Y 页 + 圆点进度），页脚只留总量与翻页提示
+        footer = f"共 {total} 条 · 用 /help <页码> 翻页"
     else:
         footer = f"共 {total} 条"
 
@@ -120,13 +136,21 @@ def build_list_payload(
         subtitle = f"页码 {requested} 超出范围（共 {pages} 页），已显示第 {current} 页"
 
     if items:
+        # 三列固定布局：命令列不再被挤到折行，权限 / 来源各自成行且不折行
         blocks: list[dict[str, Any]] = [
             {
                 "kind": "rows",
-                "columns": ["命令", "说明"],
-                "rows": [[command_row_left(item), command_row_right(item)] for item in items],
+                "columns": ["命令", "说明", "权限 / 来源"],
+                "widths": ["36%", "42%", "22%"],
+                "variant": "commands",
+                "rows": [
+                    [command_row_left(item), command_description(item), command_meta_lines(item)]
+                    for item in items
+                ],
             }
         ]
+        if total > step:
+            blocks.append({"kind": "pager", "page": current, "pages": pages})
     else:
         blocks = [{"kind": "note", "text": EMPTY_TEXT}]
 
@@ -177,14 +201,49 @@ def build_detail_payload(command: Any) -> dict[str, Any]:
     }
 
 
+#: 详情卡里用等宽字体展示的字段（命令 / 用法这类要逐字符读的内容）
+_MONO_LABELS = frozenset({"用法"})
+
+#: 详情卡里用胶囊标签展示的字段（权限 / 来源这类短标签）
+_CHIP_LABELS = frozenset({"权限", "来源"})
+
+
+def _detail_blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """详情卡的呈现微调：用法用等宽、权限 / 来源用胶囊标签（仅影响 HTML）。"""
+    blocks: list[dict[str, Any]] = []
+    for block in payload.get("blocks") or ():
+        if not isinstance(block, dict) or block.get("kind") != "kv":
+            blocks.append(block)
+            continue
+        items: list[tuple[Any, Any]] = []
+        for item in block.get("items") or ():
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                label, value = item[0], item[1]
+            else:
+                items.append(item)
+                continue
+            key = str(label)
+            if key in _MONO_LABELS:
+                items.append((label, {"text": value, "mono": True}))
+            elif key in _CHIP_LABELS:
+                items.append((label, {"text": value, "chip": True}))
+            else:
+                items.append((label, value))
+        blocks.append({"kind": "kv", "items": items})
+    return blocks
+
+
 def render_payload_html(
     payload: dict[str, Any], *, theme: str = "default", width: int = 720
 ) -> str:
     """把 payload 渲染为自包含 HTML 卡片（复用 runtime/html_card.py）。"""
+    blocks = payload.get("blocks") or ()
+    if payload.get("kind") != "list":
+        blocks = _detail_blocks(payload)
     return render_card_html(
         title=str(payload.get("title") or ""),
         subtitle=str(payload.get("subtitle") or ""),
-        blocks=payload.get("blocks") or (),
+        blocks=blocks,
         footer=str(payload.get("footer") or ""),
         theme=theme,
         width=width,
@@ -266,6 +325,9 @@ __all__ = [
     "build_detail_payload",
     "build_list_payload",
     "clamp_page",
+    "command_description",
+    "command_meta_lines",
+    "command_permission_label",
     "command_row_left",
     "command_row_right",
     "command_usage_text",
