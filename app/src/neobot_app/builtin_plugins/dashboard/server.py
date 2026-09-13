@@ -339,7 +339,12 @@ class DashboardServer:
         self._route(app, "GET", "/api/stats/api-calls", self.api.stats_api_calls)
         self._route(app, "GET", "/api/stats/active-users", self.api.stats_active_users)
         self._route(app, "GET", "/api/stats/usage", self.api.stats_usage)
+        self._route(app, "GET", "/api/stats/usage/records", self.api.stats_usage_records)
         self._route(app, "GET", "/api/series/usage", self.api.series_usage)
+        # spec(4) Part A：可脚本化的消耗计费
+        self._route(app, "GET", "/api/config/billing", self.api.config_billing)
+        self._route(app, "POST", "/api/config/billing/reload", self.api.config_billing_reload)
+        self._route(app, "POST", "/api/config/billing/preview", self.api.config_billing_preview)
         self._route(app, "GET", "/api/logs", self.api.logs)
         self._route(app, "GET", "/api/tasks", self.api.tasks)
         self._route(app, "GET", "/api/services", self.api.services)

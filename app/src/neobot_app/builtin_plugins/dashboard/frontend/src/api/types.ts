@@ -316,6 +316,96 @@ export interface EnvPayload {
   [key: string]: unknown;
 }
 
+/** 计费（spec(4) Part A）：/api/config/billing */
+export interface BillingScriptBinding {
+  model_key: string;
+  billing_script?: string;
+  billing_config?: Record<string, unknown>;
+  source?: string;
+  available?: boolean;
+  error?: string;
+  loaded_at?: string;
+  last_eval_ms?: number;
+  eval_count?: number;
+  [k: string]: unknown;
+}
+
+export interface BillingScriptStatus {
+  name?: string;
+  path?: string;
+  ok?: boolean;
+  error?: string;
+  loaded_at?: string;
+  elapsed_ms?: number;
+  reload_count?: number;
+  last_eval_ms?: number;
+  last_source?: string;
+  eval_count?: number;
+  fallback_count?: number;
+  [k: string]: unknown;
+}
+
+export interface BillingPayload {
+  available?: boolean;
+  enabled?: boolean;
+  timeout_ms?: number;
+  reload_on_change?: boolean;
+  record_detail?: boolean;
+  directory?: string;
+  scripts?: string[];
+  templates?: string[];
+  policies?: Record<string, BillingScriptStatus>;
+  bindings?: BillingScriptBinding[];
+  errors?: Record<string, string>;
+  reloaded?: string[];
+  results?: Record<string, { ok?: boolean; error?: string; path?: string }>;
+  [k: string]: unknown;
+}
+
+export interface BillingPreviewResult {
+  ok?: boolean;
+  cost_cny?: number;
+  builtin_cost_cny?: number;
+  source?: string;
+  components?: Record<string, number>;
+  note?: string;
+  elapsed_ms?: number;
+  error?: string;
+  model_key?: string;
+  billing_script?: string;
+  billing_config?: Record<string, unknown>;
+  enabled?: boolean;
+  occurred_at?: string;
+  local_time?: string;
+  tzname?: string;
+  message?: string;
+  [k: string]: unknown;
+}
+
+/** 最近调用明细 /api/stats/usage/records（来源列与分项） */
+export interface UsageRecordItem {
+  at?: string;
+  module?: string;
+  model_name?: string;
+  provider_name?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_hit_tokens?: number;
+  cache_miss_tokens?: number;
+  cost_cny?: number;
+  cost_source?: string;
+  cost_source_kind?: 'builtin' | 'script' | 'fallback' | string;
+  negative?: boolean;
+  cost_detail?: { components?: Record<string, number>; note?: string; error?: string; raw?: string } | null;
+}
+
+export interface UsageRecordsPayload {
+  available?: boolean;
+  hours?: number;
+  items?: UsageRecordItem[];
+  error?: string;
+}
+
 /** 用量 /api/stats/usage 与 /api/series/usage */
 export interface UsageTotals {
   calls?: number;

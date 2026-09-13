@@ -8,6 +8,8 @@ import type {
   ArchiveItemsPayload,
   ArchiveUpdateBody,
   ArchivesPayload,
+  BillingPayload,
+  BillingPreviewResult,
   BotSummary,
   ChatFlowDetailPayload,
   ChatFlowLatestPrompt,
@@ -38,6 +40,7 @@ import type {
   SystemInfo,
   TasksPayload,
   UsagePayload,
+  UsageRecordsPayload,
 } from './types';
 
 export interface SimpleMessage {
@@ -132,6 +135,23 @@ export const api = {
   statsUsage: (hours = 24) => getJSON<UsagePayload>('/api/stats/usage?hours=' + hours),
   seriesUsage: (hours = 24, bucket = 'hour') =>
     getResult<UsagePayload>('/api/series/usage?hours=' + hours + '&bucket=' + bucket),
+  /** 最近调用明细：来源列（内建 / 脚本 / 兜底）+ 按需分项（spec(4) Part A） */
+  usageRecords: (hours = 24, limit = 20, detail = false) =>
+    getResult<UsageRecordsPayload>(
+      '/api/stats/usage/records?hours=' + hours + '&limit=' + limit + '&detail=' + (detail ? '1' : '0'),
+    ),
+
+  // 计费脚本（spec(4) Part A）
+  configBilling: () => getResult<BillingPayload>('/api/config/billing'),
+  configBillingReload: (scripts?: string[]) =>
+    postJSON<BillingPayload>('/api/config/billing/reload', scripts ? { scripts } : {}),
+  configBillingPreview: (body: {
+    model_key?: string;
+    billing_script?: string;
+    billing_config?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
+    occurred_at?: string;
+  }) => postJSON<BillingPreviewResult>('/api/config/billing/preview', body),
 
   // 提示词分析
   analysisPrompts: () => getJSON<PromptAnalysisPayload>('/api/analysis/prompts'),

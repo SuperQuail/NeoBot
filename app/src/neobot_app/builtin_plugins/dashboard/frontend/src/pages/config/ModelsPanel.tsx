@@ -7,7 +7,15 @@ import Icon from '../../components/Icon';
 import Modal from '../../components/Modal';
 import SchemaForm, { defaultsFromFields } from '../../components/SchemaForm';
 import { setPath } from '../../utils/paths';
+import { BillingSection } from './BillingSection';
 import { bindValues } from './shared';
+
+/** 列表行上的计费标签：从完整条目里取 billing_script（留空 = 固定计费）。 */
+function billingScriptOf(item: ModelItem): string {
+  const entry = item.entry as { billing_script?: string } | undefined;
+  return String(entry?.billing_script || '').trim();
+}
+
 function ModelsPanel() {
   const [data, setData] = useState<ModelsPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -137,11 +145,19 @@ function ModelsPanel() {
     return [...new Set(names)].sort((a, b) => a.localeCompare(b));
   }, [pulledProvider, providerModels, currentProvider, library]);
 
-  // 引用名（key）不进表单：新建时按模型名自动生成，已有条目只读展示
+  // 引用名（key）不进表单：新建时按模型名自动生成，已有条目只读展示。
+  // billing_script / billing_config 也不进通用表单：它们由下面的「计费」区专用控件编辑
+  // （脚本是下拉而不是自由文本，且带试算按钮）。
   const fields = useMemo(() => {
     if (!editing) return [];
     return bindValues(schema, editing.draft)
-      .filter((field) => field.name !== 'key' && !field.hidden)
+      .filter(
+        (field) =>
+          field.name !== 'key' &&
+          field.name !== 'billing_script' &&
+          field.name !== 'billing_config' &&
+          !field.hidden,
+      )
       .map((field) => {
         if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
         if (field.name === 'model_name') return { ...field, options: modelNameOptions };
@@ -216,6 +232,13 @@ function ModelsPanel() {
                   {item.assigned && <span className="tag info">已引用</span>}
                   {item.native_vision && <span className="tag info">原生视觉</span>}
                   {item.use_system_proxy && <span className="tag info">系统代理</span>}
+                  {billingScriptOf(item) ? (
+                    <span className="tag info" title={'计价脚本 ' + billingScriptOf(item)}>
+                      脚本: {billingScriptOf(item)}
+                    </span>
+                  ) : (
+                    <span className="tag" title="未绑定计价脚本：按模型价格表固定计费">固定计费</span>
+                  )}
                 </td>
                 <td>
                   <button className="btn-sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</button>
@@ -249,6 +272,22 @@ function ModelsPanel() {
               onChange={(path, value) =>
                 setEditing((previous) =>
                   previous ? { ...previous, draft: setPath(previous.draft, path, value) } : previous,
+                )
+              }
+            />
+            <BillingSection
+              modelKey={editing.draft?.key}
+              script={String(editing.draft?.billing_script || '')}
+              config={(editing.draft?.billing_config || {}) as Record<string, unknown>}
+              disabled={!!busy}
+              onChangeScript={(value) =>
+                setEditing((previous) =>
+                  previous ? { ...previous, draft: { ...previous.draft, billing_script: value } } : previous,
+                )
+              }
+              onChangeConfig={(value) =>
+                setEditing((previous) =>
+                  previous ? { ...previous, draft: { ...previous.draft, billing_config: value } } : previous,
                 )
               }
             />
