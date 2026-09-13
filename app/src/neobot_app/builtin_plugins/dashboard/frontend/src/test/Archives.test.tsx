@@ -5,7 +5,14 @@ import userEvent from '@testing-library/user-event';
 import Archives from '../pages/Archives';
 import { api } from '../api/endpoints';
 import { clearQueries } from '../data/queryCore';
-import type { ArchiveItemDetail, ArchiveItemsPayload, ArchivesPayload, Result } from '../api/types';
+import type {
+  ArchiveItemDetail,
+  ArchiveItemsPayload,
+  ArchiveSnapshot,
+  ArchiveSummarizeTask,
+  ArchivesPayload,
+  Result,
+} from '../api/types';
 
 vi.mock('../api/endpoints.js', () => ({
   api: {
@@ -14,6 +21,11 @@ vi.mock('../api/endpoints.js', () => ({
     archiveItem: vi.fn(),
     archiveUpdate: vi.fn(),
     archiveDelete: vi.fn(),
+    archiveSummarize: vi.fn(),
+    archiveSummarizeStatus: vi.fn(),
+    archiveSummarizeOverLimit: vi.fn(),
+    archiveSnapshots: vi.fn(),
+    archiveSnapshot: vi.fn(),
   },
 }));
 
@@ -22,6 +34,10 @@ const archiveItems = vi.mocked(api.archiveItems);
 const archiveItem = vi.mocked(api.archiveItem);
 const archiveUpdate = vi.mocked(api.archiveUpdate);
 const archiveDelete = vi.mocked(api.archiveDelete);
+const archiveSummarize = vi.mocked(api.archiveSummarize);
+const archiveSummarizeStatus = vi.mocked(api.archiveSummarizeStatus);
+const archiveSnapshots = vi.mocked(api.archiveSnapshots);
+const archiveSnapshot = vi.mocked(api.archiveSnapshot);
 
 function ok<T>(data: T): Result<T> {
   return { ok: true, data, error: null, status: 200 };
@@ -34,6 +50,9 @@ function fail<T>(error: string, status: number, data: T | null = null): Result<T
 const TABLES: ArchivesPayload = {
   ok: true,
   max_total_chars: 5000,
+  min_target_chars: 200,
+  max_target_chars: 5000,
+  summarize_available: true,
   delete_enabled: false,
   can_manage: true,
   items: [
@@ -101,6 +120,22 @@ beforeEach(() => {
   archiveItem.mockResolvedValue(ok(DETAIL));
   archiveUpdate.mockResolvedValue(ok({ ...DETAIL, version: 4, message: '档案已保存' }));
   archiveDelete.mockResolvedValue(ok({ message: '档案已删除（可在 neobot.log 中追溯被删内容）' }));
+  archiveSummarize.mockResolvedValue(
+    ok<ArchiveSummarizeTask>({
+      ok: true,
+      status: 'running',
+      task_id: 'task-1',
+      kind: 'single',
+      table: 'user_profile',
+      key: 'u-1',
+      target_chars: 5000,
+      chars_before: 12000,
+      message: '已开始压缩（12000 → 目标 5000 字）',
+    }),
+  );
+  archiveSummarizeStatus.mockResolvedValue(null);
+  archiveSnapshots.mockResolvedValue({ ok: true, items: [] });
+  archiveSnapshot.mockResolvedValue({ ok: false, error: '没有该快照' });
 });
 
 describe('Archives 档案页', () => {
@@ -242,6 +277,123 @@ describe('Archives 档案页', () => {
     await waitFor(() =>
       expect(archiveItems).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
     );
+  });
+
+  it('A46：目标字符数输入框默认取 max_total_chars，并记住上次输入（不写回配置）', async () => {
+    const user = userEvent.setup();
+    render(<Archives />);
+    await user.click(await screen.findByRole('button', { name: 'u-1' }));
+    await screen.findByText('完整档案正文');
+
+    const detailTarget = screen.getByLabelText('目标字符数') as HTMLInputElement;
+    expect(detailTarget.value).toBe('5000');
+    expect(detailTarget.min).toBe('200');
+    expect(detailTarget.max).toBe('5000');
+
+    // jsdom 下 user.clear() 对 <input type="number"> 不生效（不会派发清空后的 change），
+    // 用「全选 + 覆写」表达同样的用户意图。
+    await user.tripleClick(detailTarget);
+    await user.keyboard('3000');
+    await waitFor(() =>
+      expect(localStorage.getItem('neobot-archives-target-chars')).toBe('3000'),
+    );
+  });
+
+  it('A28/A31：点「AI 压缩」提交目标并轮询到 done，running 期间禁用编辑', async () => {
+    archiveSummarizeStatus.mockResolvedValue({
+      ok: true,
+      status: 'done',
+      task_id: 'task-1',
+      kind: 'single',
+      table: 'user_profile',
+      key: 'u-1',
+      target_chars: 5000,
+      chars_before: 12000,
+      chars_after: 3000,
+      snapshot_id: 7,
+    });
+    const user = userEvent.setup();
+    render(<Archives />);
+    await user.click(await screen.findByRole('button', { name: 'u-1' }));
+    await screen.findByText('完整档案正文');
+
+    await user.click(screen.getByRole('button', { name: /AI 压缩/ }));
+
+    await waitFor(() =>
+      expect(archiveSummarize).toHaveBeenCalledWith({
+        table: 'user_profile',
+        key: 'u-1',
+        target_chars: 5000,
+      }),
+    );
+    // 压缩进行中：同一条目的编辑被禁用（避免人工写入与模型写入互相覆盖）
+    expect(screen.getByRole('button', { name: /编辑/ })).toBeDisabled();
+    expect(screen.getByText(/该条目正在压缩/)).toBeInTheDocument();
+
+    // 轮询到终态后展示前后字数与快照 id
+    await waitFor(
+      () =>
+        expect(screen.getAllByText(/12000 → 3000 字/).length).toBeGreaterThan(0),
+      { timeout: 5000 },
+    );
+    expect(screen.getAllByText(/快照 id 7/).length).toBeGreaterThan(0);
+  });
+
+  it('A32：目标不小于当前字数时提示 no-op（零 token，不进入轮询）', async () => {
+    archiveSummarize.mockResolvedValue(
+      ok<ArchiveSummarizeTask>({
+        ok: true,
+        status: 'noop',
+        task_id: null,
+        chars_before: 6,
+        chars_after: 6,
+        target_chars: 5000,
+        message: '当前 6 字已不大于目标 5000 字，无需压缩（未调用模型）',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<Archives />);
+    await user.click(await screen.findByRole('button', { name: 'u-1' }));
+    await screen.findByText('完整档案正文');
+
+    await user.click(screen.getByRole('button', { name: /AI 压缩/ }));
+
+    await waitFor(() => expect(archiveSummarize).toHaveBeenCalledTimes(1));
+    expect(archiveSummarizeStatus).not.toHaveBeenCalled();
+  });
+
+  it('A47：压缩历史只读列出快照（时间/前后字数/来源/操作者）并可查看全文，没有恢复入口', async () => {
+    const snapshots: ArchiveSnapshot[] = [
+      {
+        id: 7,
+        table_name: 'user_profile',
+        key: 'u-1',
+        total_chars: 12000,
+        chars_before: 12000,
+        chars_after: 6,
+        chars_after_source: 'current',
+        reason: 'manual',
+        operator_ip: '127.0.0.1',
+        created_at: '2026-09-12T10:00:00',
+      },
+    ];
+    archiveSnapshots.mockResolvedValue({ ok: true, items: snapshots, current_chars: 6 });
+    archiveSnapshot.mockResolvedValue({
+      ok: true,
+      snapshot: { ...snapshots[0], value: '压缩前的完整原文' },
+    });
+    const user = userEvent.setup();
+    render(<Archives />);
+    await user.click(await screen.findByRole('button', { name: 'u-1' }));
+    await screen.findByText('完整档案正文');
+
+    expect(await screen.findByText('压缩历史')).toBeInTheDocument();
+    expect(screen.getByText('手动压缩')).toBeInTheDocument();
+    expect(screen.getByText('127.0.0.1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /恢复到此快照/ })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /查看全文/ }));
+    expect(await screen.findByText('压缩前的完整原文')).toBeInTheDocument();
   });
 
   it('档案服务不可用时给出空态', async () => {

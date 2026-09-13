@@ -6,6 +6,9 @@ import type {
   ArchiveItemDetail,
   ArchiveItemQuery,
   ArchiveItemsPayload,
+  ArchiveSnapshotDetail,
+  ArchiveSnapshotsPayload,
+  ArchiveSummarizeTask,
   ArchiveUpdateBody,
   ArchivesPayload,
   BillingPayload,
@@ -211,6 +214,21 @@ export const api = {
   archiveUpdate: (body: ArchiveUpdateBody) => putJSON<ArchiveItemDetail>('/api/archives/item', body),
   /** 删除档案（硬删除；需要 X-CSRF-Token 与面板开关 allow_archive_delete） */
   archiveDelete: (body: ArchiveDeleteBody) => deleteJSON<SimpleMessage>('/api/archives/item', body),
+
+  // AI 压缩（spec(4) Part C）：手动触发一条 / 轮询状态 / 批量超限 / 压缩历史
+  archiveSummarize: (body: { table: string; key: string; target_chars: number }) =>
+    postJSON<ArchiveSummarizeTask>('/api/archives/summarize', body),
+  archiveSummarizeStatus: (taskId: string) =>
+    getJSON<ArchiveSummarizeTask>('/api/archives/summarize?task_id=' + encodeURIComponent(taskId)),
+  archiveSummarizeOverLimit: (body: { target_chars: number; table?: string }) =>
+    postJSON<ArchiveSummarizeTask>('/api/archives/summarize/over-limit', body),
+  /** 压缩历史（只读快照列表，不含全文；不提供一键恢复） */
+  archiveSnapshots: (table: string, key: string) =>
+    getJSON<ArchiveSnapshotsPayload>(
+      '/api/archives/snapshots?table=' + encodeURIComponent(table) + '&key=' + encodeURIComponent(key),
+    ),
+  archiveSnapshot: (id: number) =>
+    getJSON<ArchiveSnapshotDetail>('/api/archives/snapshot?id=' + encodeURIComponent(String(id))),
 
   // 定时任务管理
   scheduledTasks: (includeDisabled = true, limit = 200) =>

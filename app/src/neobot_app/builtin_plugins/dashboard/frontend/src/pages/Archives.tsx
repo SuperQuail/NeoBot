@@ -17,13 +17,37 @@ import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
 import { QK, POLL } from '../data/queryKeys';
 import { api } from '../api/endpoints';
-import type { ArchiveItemDetail } from '../api/types';
+import type { ArchiveItemDetail, ArchiveSnapshot, ArchiveSummarizeTask } from '../api/types';
 
 /** 每页条目数（后端上限 200） */
 const PAGE_SIZE = 50;
 
 /** 面板删除开关名（与模型侧的 agent.memory.archive.allow_delete 完全独立） */
 const DELETE_SWITCH = 'allow_archive_delete';
+
+/** localStorage 键：记住上次输入的目标字符数（R15 要求**不写回**全局配置） */
+const TARGET_KEY = 'neobot-archives-target-chars';
+
+/** 压缩任务轮询间隔（毫秒） */
+const TASK_POLL_MS = 2000;
+
+/** 批量条目状态 → 中文（与后端 ArchiveSummarizeBatchItem.status 对齐） */
+const BATCH_STATUS_TEXT: Record<string, string> = {
+  pending: '等待中',
+  running: '压缩中',
+  done: '已完成',
+  failed: '失败（已保留原文）',
+  skipped: '已跳过',
+};
+
+/** 读取上次输入的目标字符数（localStorage 不可用时返回空串） */
+function readStoredTarget(): string {
+  try {
+    return localStorage.getItem(TARGET_KEY) || '';
+  } catch {
+    return '';
+  }
+}
 
 interface ArchiveFilters {
   keyQuery: string;
@@ -80,6 +104,22 @@ export default function Archives() {
   const [saving, setSaving] = useState(false);
   /** 409 冲突时服务端带回的当前内容（用于提示「已被他人修改」） */
   const [conflict, setConflict] = useState<ArchiveItemDetail | null>(null);
+
+  // ── AI 压缩（spec(4) Part C）──
+  const summarizeAvailable = payload?.summarize_available !== false;
+  const minTarget = Number(payload?.min_target_chars || 200);
+  const maxTarget = Number(payload?.max_target_chars || maxTotalChars || 100000);
+
+  /** 本次压缩的目标字符数（默认 = 全局上限；localStorage 记住上次输入） */
+  const [targetChars, setTargetChars] = useState(readStoredTarget);
+  /** 当前压缩任务（单条或批量；后台任务，轮询到终态） */
+  const [task, setTask] = useState<ArchiveSummarizeTask | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [snapshots, setSnapshots] = useState<ArchiveSnapshot[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotDetail, setSnapshotDetail] = useState<(ArchiveSnapshot & { value?: string }) | null>(null);
+  const [snapshotError, setSnapshotError] = useState('');
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteText, setDeleteText] = useState('');
@@ -138,6 +178,137 @@ export default function Archives() {
     await Promise.all([refetchTables(), refetchItems()]);
     if (key) await refetchDetail();
   }, [refetchTables, refetchItems, refetchDetail, key]);
+
+  // ── AI 压缩：压缩历史 / 目标默认值 / 任务轮询 ──────────────────
+
+  /** 当前条目的压缩历史（只读快照；不提供恢复入口） */
+  const loadSnapshots = useCallback(async () => {
+    if (!table || !key) {
+      setSnapshots([]);
+      return;
+    }
+    setSnapshotsLoading(true);
+    const data = await api.archiveSnapshots(table, key);
+    setSnapshotsLoading(false);
+    setSnapshots(data?.items || []);
+  }, [table, key]);
+
+  useEffect(() => {
+    void loadSnapshots();
+  }, [loadSnapshots]);
+
+  // A46：目标输入框默认值 = GET /api/archives 的 max_total_chars
+  useEffect(() => {
+    if (targetChars) return;
+    if (maxTotalChars > 0) setTargetChars(String(maxTotalChars));
+  }, [maxTotalChars, targetChars]);
+
+  useEffect(() => {
+    try {
+      if (targetChars) localStorage.setItem(TARGET_KEY, targetChars);
+    } catch {
+      /* localStorage 不可用时忽略：默认值仍会回落到全局上限 */
+    }
+  }, [targetChars]);
+
+  // 压缩是后台任务（D13）：轮询到终态后刷新详情 / 列表并提示前后字数。
+  useEffect(() => {
+    if (!task || task.status !== 'running' || !task.task_id) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const next = await api.archiveSummarizeStatus(String(task.task_id));
+        if (cancelled || !next) return;
+        setTask(next);
+        if (next.status !== 'done' && next.status !== 'failed') return;
+        if (next.kind === 'batch') {
+          toast(
+            next.message ||
+              '批量压缩完成：成功 ' + (next.succeeded ?? 0) + ' 条 / 失败 ' + (next.failed ?? 0) + ' 条',
+            (next.failed ?? 0) > 0 ? 'warn' : 'ok',
+          );
+        } else if (next.status === 'done') {
+          toast(
+            '压缩完成：' +
+              (next.chars_before ?? 0) +
+              ' → ' +
+              (next.chars_after ?? 0) +
+              ' 字（目标 ' +
+              (next.target_chars ?? 0) +
+              '）',
+            'ok',
+          );
+        } else {
+          toast(next.error || '压缩失败，已保留原文', 'err');
+        }
+        await Promise.all([refetchDetail(), refetchItems(), refetchTables()]);
+        await loadSnapshots();
+      })();
+    }, TASK_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [task, refetchDetail, refetchItems, refetchTables, loadSnapshots]);
+
+  /** 读取并校验目标输入框；非法时提示并返回 null */
+  function targetValue(): number | null {
+    const value = Number(targetChars);
+    if (!Number.isFinite(value) || value <= 0) {
+      toast('请先填写目标字符数', 'err');
+      return null;
+    }
+    return Math.trunc(value);
+  }
+
+  async function startSummarize() {
+    if (!item) return;
+    const target = targetValue();
+    if (target === null) return;
+    setStarting(true);
+    const result = await api.archiveSummarize({
+      table: item.table_name,
+      key: item.key,
+      target_chars: target,
+    });
+    setStarting(false);
+    if (!result.ok || !result.data) {
+      toast(result.error || '触发压缩失败', 'err');
+      return;
+    }
+    setTask(result.data);
+    if (result.data.status === 'noop') {
+      toast(result.data.message || '当前字数已不大于目标，无需压缩', 'info');
+      return;
+    }
+    toast(result.data.message || '已开始压缩', 'ok');
+  }
+
+  async function startBatchSummarize() {
+    const target = targetValue();
+    if (target === null) return;
+    setStarting(true);
+    const result = await api.archiveSummarizeOverLimit({ target_chars: target });
+    setStarting(false);
+    if (!result.ok || !result.data) {
+      toast(result.error || '批量触发失败', 'err');
+      return;
+    }
+    setTask(result.data);
+    toast(result.data.message || '已开始批量压缩', 'ok');
+  }
+
+  async function viewSnapshot(snapshot: ArchiveSnapshot) {
+    setSnapshotOpen(true);
+    setSnapshotDetail(null);
+    setSnapshotError('');
+    const data = await api.archiveSnapshot(snapshot.id);
+    if (!data || data.ok === false || !data.snapshot) {
+      setSnapshotError(data?.error || '读取快照失败');
+      return;
+    }
+    setSnapshotDetail(data.snapshot);
+  }
 
   function pickTable(name: string) {
     if (name === table) return;
@@ -252,6 +423,19 @@ export default function Archives() {
     setDeleteError(result.error || '删除失败');
   }
 
+  const taskRunning = task?.status === 'running';
+  /** 当前条目是否正在被压缩：running 期间禁用同一条目的编辑 / 删除（§4.10.1） */
+  const itemRunning =
+    taskRunning === true &&
+    (task?.kind === 'batch'
+      ? (task?.items || []).some(
+          (entry) =>
+            entry.status === 'running' &&
+            entry.table === item?.table_name &&
+            entry.key === item?.key,
+        )
+      : task?.table === item?.table_name && task?.key === item?.key);
+
   const unavailable = payload === null && !tablesQuery.loading;
   const loadError = !unavailable && payload?.ok === false ? payload.error || '档案表清单读取失败' : '';
 
@@ -287,6 +471,85 @@ export default function Archives() {
           </InlineAlert>
         )}
       </section>
+
+      {canManage && summarizeAvailable && (
+        <section className="card">
+          <div className="card-head">
+            <h3>AI 压缩（超限档案）</h3>
+            <div className="spacer" />
+            <label className="cfg-label" htmlFor="archive-batch-target">
+              批量目标字符数
+            </label>
+            <input
+              id="archive-batch-target"
+              className="input archives-target-input"
+              type="number"
+              min={minTarget}
+              max={maxTarget}
+              value={targetChars}
+              onChange={(event) => setTargetChars(event.target.value)}
+            />
+            <button
+              className="btn"
+              type="button"
+              disabled={starting || taskRunning}
+              onClick={() => void startBatchSummarize()}
+            >
+              <Icon name="archive" />
+              批量压缩超限档案
+            </button>
+          </div>
+          <p className="muted small">
+            逐条串行压缩当前超限档案，一次最多 20 条，统一使用上面的目标字符数（{minTarget}–{maxTarget}）。
+            目标只对本次压缩生效，<b>不会改写</b>全局配置 agent.memory.archive.max_total_chars。
+          </p>
+          {task && task.kind === 'batch' && (
+            <div className="archives-batch">
+              <InlineAlert
+                tone={task.status === 'failed' ? 'error' : task.status === 'running' ? 'info' : 'success'}
+                title={task.message || '批量压缩进行中…'}
+              >
+                成功 {task.succeeded ?? 0} 条 / 失败 {task.failed ?? 0} 条 / 跳过 {(task.skipped || []).length} 条
+                {task.truncated ? '；本次还有 ' + task.truncated + ' 条超出上限未处理' : ''}
+              </InlineAlert>
+              {(task.items || []).length > 0 && (
+                <table className="model-table archives-table">
+                  <thead>
+                    <tr>
+                      <th>档案</th>
+                      <th>状态</th>
+                      <th>字数</th>
+                      <th>说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(task.items || []).map((entry) => (
+                      <tr key={entry.table + ':' + entry.key}>
+                        <td>
+                          <code>
+                            {entry.table}:{entry.key}
+                          </code>
+                        </td>
+                        <td>{BATCH_STATUS_TEXT[entry.status || 'pending']}</td>
+                        <td>
+                          {entry.chars_before ?? 0} → {entry.chars_after ?? '…'}
+                        </td>
+                        <td className="muted small">{entry.error || ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {(task.skipped || []).length > 0 && (
+                <p className="muted small">
+                  跳过明细：
+                  {(task.skipped || []).map((row) => row.table + ':' + row.key).join('、')}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {loadError && <InlineAlert tone="error" title={loadError} />}
 
@@ -526,7 +789,7 @@ export default function Archives() {
                   <button
                     className="btn-sm primary"
                     type="button"
-                    disabled={editing || item.editable === false || !canManage}
+                    disabled={editing || item.editable === false || !canManage || itemRunning}
                     onClick={startEdit}
                   >
                     <Icon name="edit" />编辑
@@ -534,11 +797,40 @@ export default function Archives() {
                   <button
                     className="btn-sm danger"
                     type="button"
-                    disabled={editing || !deleteEnabled || !canManage}
+                    disabled={editing || !deleteEnabled || !canManage || itemRunning}
                     onClick={openDelete}
                   >
                     <Icon name="trash" />删除
                   </button>
+                  <label className="cfg-label" htmlFor="archive-target">
+                    目标字符数
+                  </label>
+                  <input
+                    id="archive-target"
+                    className="input archives-target-input"
+                    type="number"
+                    min={minTarget}
+                    max={maxTarget}
+                    value={targetChars}
+                    disabled={itemRunning}
+                    onChange={(event) => setTargetChars(event.target.value)}
+                  />
+                  <button
+                    className="btn-sm primary"
+                    type="button"
+                    disabled={
+                      editing || itemRunning || !canManage || !summarizeAvailable || starting
+                    }
+                    onClick={() => void startSummarize()}
+                  >
+                    <Icon name="bot" />
+                    {itemRunning ? '压缩中…' : 'AI 压缩'}
+                  </button>
+                  {itemRunning && (
+                    <span className="muted small">
+                      该条目正在压缩：期间禁止编辑 / 删除（避免人工写入与模型写入互相覆盖）
+                    </span>
+                  )}
                   {item.editable === false && (
                     <span className="muted small">
                       内部表禁止手工编辑（改坏会导致重复总结或漏总结），后端也会拒绝
@@ -577,6 +869,38 @@ export default function Archives() {
                     <pre className="prompt-preview-body archives-conflict-body">{conflict.value || '（空）'}</pre>
                   </InlineAlert>
                 )}
+
+                {task &&
+                  task.kind !== 'batch' &&
+                  task.table === item.table_name &&
+                  task.key === item.key && (
+                    <InlineAlert
+                      tone={task.status === 'failed' ? 'error' : task.status === 'running' ? 'info' : 'success'}
+                      title={
+                        task.status === 'running'
+                          ? 'AI 压缩进行中…'
+                          : task.status === 'failed'
+                            ? '压缩失败，已保留原文'
+                            : '压缩完成'
+                      }
+                    >
+                      {task.status === 'running'
+                        ? (task.chars_before ?? 0) +
+                          ' 字 → 目标 ' +
+                          (task.target_chars ?? 0) +
+                          ' 字（后台任务，完成后自动刷新）'
+                        : task.status === 'failed'
+                          ? task.error || '模型未压到目标字数，原文未被修改'
+                          : (task.chars_before ?? 0) +
+                            ' → ' +
+                            (task.chars_after ?? 0) +
+                            ' 字（目标 ' +
+                            (task.target_chars ?? 0) +
+                            '，快照 id ' +
+                            (task.snapshot_id ?? '无') +
+                            '）'}
+                    </InlineAlert>
+                  )}
 
                 {editing ? (
                   <>
@@ -630,6 +954,55 @@ export default function Archives() {
                     <pre className="prompt-preview-body archives-full">{item.value || '（空）'}</pre>
                   </>
                 )}
+
+                <div className="archives-history">
+                  <div className="archives-value-head">
+                    <strong>压缩历史</strong>
+                    <span className="muted small">
+                      只读快照（每条档案最多保留最近 10 份）。本期<b>不提供</b>「恢复到此快照」：
+                      需要恢复时请查看全文后人工走编辑接口写回。
+                    </span>
+                  </div>
+                  {snapshotsLoading && snapshots.length === 0 ? (
+                    <p className="muted small">读取中…</p>
+                  ) : snapshots.length === 0 ? (
+                    <p className="muted small">还没有压缩快照</p>
+                  ) : (
+                    <table className="model-table archives-table">
+                      <thead>
+                        <tr>
+                          <th>时间</th>
+                          <th>压缩前</th>
+                          <th>压缩后</th>
+                          <th>来源</th>
+                          <th>操作者</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {snapshots.map((row) => (
+                          <tr key={row.id}>
+                            <td className="muted small">{formatTime(row.created_at)}</td>
+                            <td>{row.chars_before ?? row.total_chars ?? 0}</td>
+                            <td>{row.chars_after ?? '—'}</td>
+                            <td>{row.reason === 'auto' ? '自动压缩' : '手动压缩'}</td>
+                            <td className="muted small">{row.operator_ip || '—'}</td>
+                            <td>
+                              <button
+                                className="btn-sm"
+                                type="button"
+                                onClick={() => void viewSnapshot(row)}
+                              >
+                                <Icon name="eye" />
+                                查看全文
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </>
             )}
           </section>
@@ -687,6 +1060,29 @@ export default function Archives() {
             </div>
           </div>
         )}
+      </Modal>
+      <Modal
+        open={snapshotOpen}
+        title={'压缩快照 #' + (snapshotDetail?.id ?? '')}
+        onClose={() => setSnapshotOpen(false)}
+      >
+        <div className="archives-snapshot">
+          <InlineAlert tone="info" title="只读快照（压缩前原文）">
+            面板不提供「恢复到此快照」；确需恢复时请复制下面的内容，走编辑接口人工写回。
+          </InlineAlert>
+          {snapshotDetail && (
+            <p className="muted small">
+              {snapshotDetail.table_name}:{snapshotDetail.key} · {formatTime(snapshotDetail.created_at)} · 
+              {snapshotDetail.total_chars ?? 0} 字符 · 
+              {snapshotDetail.reason === 'auto' ? '自动压缩' : '手动压缩'} · 
+              {snapshotDetail.operator_ip || '系统'}
+            </p>
+          )}
+          {snapshotError && <InlineAlert tone="error" title={snapshotError} />}
+          <pre className="prompt-preview-body archives-full">
+            {snapshotDetail?.value || (snapshotError ? '（无法读取）' : '读取中…')}
+          </pre>
+        </div>
       </Modal>
     </div>
   );

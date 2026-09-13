@@ -233,10 +233,73 @@ def normalize_tags(value: Any) -> list[str]:
     return [str(value).strip()]
 
 
+#: 「压缩历史」一次最多展示多少份快照（与 ArchiveMemoryService 的单键保留份数一致）。
+SNAPSHOT_HISTORY_LIMIT = 10
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def snapshot_history(
+    service: Any,
+    *,
+    table: str,
+    key: str,
+    current_chars: int | None = None,
+    limit: int = SNAPSHOT_HISTORY_LIMIT,
+) -> dict[str, Any]:
+    """某条档案的压缩历史（只读，**不提供一键恢复**，spec(4) §4.9 / A47）。
+
+    快照表只存「压缩前」的字数，因此「压缩后」由后一份（更晚创建的）快照的
+    total_chars 推得；最新一份快照的「压缩后」= 该档案当前字数。
+    中间若有人工编辑，这个推算是近似值——面板据此只做展示，不做恢复。
+    """
+    lister = getattr(service, "list_snapshots", None)
+    rows: list[dict[str, Any]] = []
+    if callable(lister):
+        try:
+            raw = await lister(table, key, limit=int(limit), include_value=False)
+        except Exception:
+            raw = []
+        rows = [dict(row) for row in (raw or [])]
+    items: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        before = _int_or_none(row.get("total_chars"))
+        if index == 0:
+            after = current_chars
+            source = "current"
+        else:
+            after = _int_or_none(rows[index - 1].get("total_chars"))
+            source = "next_snapshot"
+        items.append(
+            {
+                **row,
+                "chars_before": before,
+                "chars_after": after,
+                "chars_after_source": source,
+            }
+        )
+    return {
+        "items": items,
+        "table": table,
+        "key": key,
+        "current_chars": current_chars,
+        "keep_per_key": SNAPSHOT_HISTORY_LIMIT,
+        "restore_supported": False,
+    }
+
+
 __all__ = [
     "INTERNAL_TABLES",
     "MAX_LIST_LIMIT",
     "PREVIEW_CHARS",
+    "SNAPSHOT_HISTORY_LIMIT",
     "get_item",
     "is_internal_table",
     "item_detail",

@@ -391,6 +391,17 @@ class DashboardServer:
         self._route(app, "GET", "/api/archives/item", self.api.archive_item)
         self._route(app, "PUT", "/api/archives/item", self.api.archive_update)
         self._route(app, "DELETE", "/api/archives/item", self.api.archive_delete)
+        # ── AI 压缩（features/spec(4) Part C）──
+        self._route(app, "POST", "/api/archives/summarize", self.api.archives_summarize_start)
+        self._route(app, "GET", "/api/archives/summarize", self.api.archives_summarize_status)
+        self._route(
+            app,
+            "POST",
+            "/api/archives/summarize/over-limit",
+            self.api.archives_summarize_over_limit,
+        )
+        self._route(app, "GET", "/api/archives/snapshots", self.api.archives_snapshots)
+        self._route(app, "GET", "/api/archives/snapshot", self.api.archives_snapshot)
         self._route(app, "GET", "/api/scheduled-tasks", self.api.scheduled_tasks)
         self._route(app, "POST", "/api/scheduled-tasks/action", self.api.scheduled_tasks_action)
         self._route(app, "GET", "/api/admin/power", self.api.power_status)

@@ -736,6 +736,11 @@ export interface ArchivesPayload {
   readonly_reason?: string;
   /** 当前会话是否有管理权限（决定能否编辑 / 删除） */
   can_manage?: boolean;
+  /** 档案总结服务是否可用（false 时禁用「AI 压缩」入口） */
+  summarize_available?: boolean;
+  /** 手动压缩目标的下限 / 上限（上限 = max_total_chars，0 时取后端兜底值） */
+  min_target_chars?: number;
+  max_target_chars?: number;
   error?: string;
 }
 
@@ -788,6 +793,80 @@ export interface ArchiveItemQuery {
   limit?: number;
   offset?: number;
   overLimitOnly?: boolean;
+}
+
+/** 一次 AI 压缩任务 / 批量的状态（spec(4) Part C） */
+export interface ArchiveSummarizeBatchItem {
+  table: string;
+  key: string;
+  chars_before?: number;
+  chars_after?: number | null;
+  status?: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+  error?: string;
+  snapshot_id?: number | null;
+}
+
+export interface ArchiveSummarizeTask {
+  ok?: boolean;
+  task_id?: string | null;
+  kind?: 'single' | 'batch';
+  /** running / done / failed；noop = 目标不小于当前字数（零 token，不调用模型） */
+  status?: 'running' | 'done' | 'failed' | 'noop';
+  table?: string;
+  key?: string;
+  target_chars?: number;
+  chars_before?: number;
+  chars_after?: number | null;
+  snapshot_id?: number | null;
+  error?: string;
+  operator_ip?: string;
+  started_at?: number | null;
+  finished_at?: number | null;
+  message?: string;
+  noop?: boolean;
+  /** 批量：超出 MAX_BATCH_COMPRESS_ITEMS 而未处理的条数 */
+  truncated?: number;
+  /** 批量：逐条结果 */
+  items?: ArchiveSummarizeBatchItem[];
+  /** 批量：被跳过的条目（chars <= target 或正在被压缩） */
+  skipped?: { table: string; key: string; reason?: string }[];
+  succeeded?: number;
+  failed?: number;
+}
+
+/** 压缩历史里的一份快照（列表不含全文） */
+export interface ArchiveSnapshot {
+  id: number;
+  table_name: string;
+  key: string;
+  total_chars?: number;
+  version?: number;
+  /** manual（面板 / 批量）| auto（写超限自动压缩） */
+  reason?: string;
+  operator_ip?: string | null;
+  created_at?: string;
+  chars_before?: number | null;
+  chars_after?: number | null;
+  /** 压缩后字数的来源：该档案当前字数 / 后一份快照的压缩前字数 */
+  chars_after_source?: 'current' | 'next_snapshot';
+}
+
+export interface ArchiveSnapshotsPayload {
+  ok?: boolean;
+  items?: ArchiveSnapshot[];
+  table?: string;
+  key?: string;
+  current_chars?: number | null;
+  keep_per_key?: number;
+  /** 恒为 false：本期不提供「恢复到此快照」 */
+  restore_supported?: boolean;
+  error?: string;
+}
+
+export interface ArchiveSnapshotDetail {
+  ok?: boolean;
+  snapshot?: ArchiveSnapshot & { value?: string };
+  error?: string;
 }
 
 export interface ArchiveUpdateBody {
