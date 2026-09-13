@@ -7,6 +7,7 @@ import type { FieldDescriptor } from '../../api/types';
 import ComboboxField from './ComboboxField';
 import JsonField from './JsonField';
 import ModelList from './ModelList';
+import ModelParamsField from './ModelParamsField';
 import ScalarField from './ScalarField';
 import type { FieldCallbacks } from './fieldTypes';
 
@@ -15,6 +16,8 @@ type FieldComponent = ComponentType<{ descriptor: FieldDescriptor } & FieldCallb
 export const fieldRegistry: Record<string, FieldComponent> = {
   scalar: ScalarField,
   model_list: ModelList,
+  // 模型参数目录（spec(4) Part B）：三段式可选参数增删 + 自定义参数
+  model_params: ModelParamsField,
   list: JsonField,
   dict: JsonField,
   // 下拉候选型标量：由 ScalarField 内部再次分流到 ComboboxField

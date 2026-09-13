@@ -15,8 +15,13 @@ export default function Field(props: FieldProps) {
 
   // 分组不是「一种控件」，而是递归容器，因此不放进注册表
   if (descriptor.kind === 'group') {
+    // 含参数目录伪字段的分组（settings）：被标记 hidden 的可选字段由伪字段接管
+    // （在「已添加参数」区按 enabled_params 呈现），这里不再单独渲染，避免重复。
+    const paramCatalog = (descriptor.fields || []).some((field) => field.kind === 'model_params');
     const visible = (descriptor.fields || []).filter(
-      (field) => !filter || field.kind !== 'scalar' || matchPath(field.path, filter)
+      (field) =>
+        (!filter || field.kind !== 'scalar' || matchPath(field.path, filter)) &&
+        !(paramCatalog && field.hidden),
     );
     if (filter && visible.length === 0) return null;
     const collapsed = collapse?.[key] ?? false;

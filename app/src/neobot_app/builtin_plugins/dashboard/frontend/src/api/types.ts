@@ -159,7 +159,7 @@ export interface PluginListPayload {
 }
 
 /** schema 字段描述（由后端 config_manager.describe_dataclass 生成） */
-export type FieldKind = 'scalar' | 'group' | 'list' | 'dict' | 'model_list';
+export type FieldKind = 'scalar' | 'group' | 'list' | 'dict' | 'model_list' | 'model_params';
 
 export interface FieldDescriptor {
   name: string;

@@ -22,6 +22,13 @@ import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
 from neobot_app.config.loader.converter import dict_to_dataclass
+from neobot_app.config.model_params import (
+    apply_model_param_catalog,
+    extra_body_reserved_keys,
+    fold_model_params_in_config,
+    fold_params_into_settings,
+    is_inferred,
+)
 from neobot_app.config.schemas.bot import (
     MODEL_TYPE_LABELS,
     BotConfig,
@@ -215,6 +222,17 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
         field_type = field_obj.type
         if raw is None and _is_optional(field_type):
             continue
+        if field_obj.name == "extra_body" and isinstance(raw, dict):
+            # spec(4) Part B：__ 前缀是内部键命名空间，用户自定义参数不得占用
+            reserved = extra_body_reserved_keys(raw)
+            if reserved:
+                errors.append(
+                    {
+                        "path": field_path,
+                        "message": "自定义参数不得使用 __ 开头（内部命名空间）: "
+                        + "、".join(reserved),
+                    }
+                )
         inner = _inner_types(field_type)
         if not inner:
             continue
@@ -415,7 +433,9 @@ class BotConfigManager:
         secret_state: dict[str, bool] = {}
         config_payload = _mask_sensitive_leaves(_jsonable(instance), secret_state)
         raw_payload = _mask_sensitive_leaves(_jsonable(parsed), None)
-        schema_payload = describe_dataclass(BotConfig, instance)
+        # spec(4) Part B：两条渲染路径共用同一个后处理器（本体配置页里的
+        # models.registry 是 kind=model_list，条目字段同样来自 describe_dataclass）
+        schema_payload = apply_model_param_catalog(describe_dataclass(BotConfig, instance))
         for item in schema_payload:
             _mask_schema_defaults(item, secret_state, (str(item.get("name") or ""),))
         return {
@@ -438,7 +458,8 @@ class BotConfigManager:
             except Exception as exc:
                 return [{"path": "config.toml", "message": f"TOML 解析失败: {exc}"}]
         else:
-            parsed = config
+            # 面板伪字段（settings.params）先折叠回 enabled_params / extra_body / 参数值
+            parsed = fold_model_params_in_config(config)
         errors: list[dict[str, str]] = []
         _validate_payload(BotConfig, parsed or {}, "", errors)
         return errors
@@ -456,6 +477,8 @@ class BotConfigManager:
             source = _restore_masked_source(
                 self.config_path.read_text(encoding="utf-8-sig"), source
             )
+        if source is None and config is not None:
+            config = fold_model_params_in_config(config)
         errors = self.validate(source=source, config=config)
         if errors:
             raise ConfigValidationError(errors)
@@ -608,6 +631,12 @@ class BotConfigManager:
             library = [dict(item) for item in library_raw if isinstance(item, dict)]
         else:
             library = [_jsonable(item) for item in defaults.models.registry]
+        library = [
+            {**item, "settings": fold_params_into_settings(item["settings"])}
+            if isinstance(item.get("settings"), dict)
+            else item
+            for item in library
+        ]
         assignments_raw = models_raw.get("assignments")
         if isinstance(assignments_raw, dict):
             assignments = {str(key): value for key, value in assignments_raw.items()}
@@ -668,6 +697,9 @@ class BotConfigManager:
             library = [item for item in library if str(item.get("key") or "") != target]
         elif upsert is not None:
             entry = {str(key): value for key, value in dict(upsert).items()}
+            if isinstance(entry.get("settings"), dict):
+                # 面板伪字段（settings.params）折叠回 enabled_params / extra_body / 参数值
+                entry["settings"] = fold_params_into_settings(entry["settings"])
             entry["key"] = normalize_model_key(str(entry.get("key") or ""))
             if not entry["key"]:
                 # 面板不暴露引用名：按「模型名」自动生成（重名时追加序号）
@@ -1457,6 +1489,8 @@ def models_view(config: Any = None) -> dict[str, Any]:
                     "key_configured": bool(platform.get("has_key")),
                     # 完整条目（供面板编辑；模型条目不含密钥）
                     "entry": _jsonable(definition),
+                    # spec(4) Part B R12：本次启动按旧配置推断过 enabled_params
+                    "params_inferred": is_inferred(key),
                 }
             )
         assignments = {
@@ -1575,7 +1609,7 @@ def models_view(config: Any = None) -> dict[str, Any]:
         "roles": roles,
         "roles_meta": roles_meta,
         "role_labels": ROLE_LABELS,
-        "entry_schema": describe_dataclass(ModelDefinition, None),
+        "entry_schema": apply_model_param_catalog(describe_dataclass(ModelDefinition, None)),
         "provider_options": sorted(provider_names, key=str.casefold),
         "model_name_options": model_name_options,
         "model_type_labels": dict(MODEL_TYPE_LABELS),

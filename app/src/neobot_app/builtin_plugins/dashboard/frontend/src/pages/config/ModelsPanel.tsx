@@ -16,6 +16,47 @@ function billingScriptOf(item: ModelItem): string {
   return String(entry?.billing_script || '').trim();
 }
 
+/** 参数目录伪字段（settings.params）里携带的可编辑载荷（spec(4) Part B）。 */
+interface ModelParamsPayload {
+  enabled_params?: unknown;
+  extra_body?: unknown;
+  values?: unknown;
+}
+
+/**
+ * 保存前把伪字段同步回真实配置键：
+ * settings.params -> enabled_params / extra_body / 各可选参数值，并删除 params。
+ * 未列入目录的参数名不落盘（后端只记 warning 忽略），避免写成未知配置项。
+ */
+function syncModelParams(
+  entry: Record<string, any>,
+  catalogNames: Set<string>,
+): Record<string, any> {
+  const settings = entry?.settings;
+  if (!settings || typeof settings !== 'object' || !('params' in settings)) return entry;
+  const params = (settings as Record<string, any>).params as ModelParamsPayload | undefined;
+  const nextSettings: Record<string, any> = { ...(settings as Record<string, any>) };
+  delete nextSettings.params;
+  if (params && typeof params === 'object') {
+    if (Array.isArray(params.enabled_params)) {
+      nextSettings.enabled_params = (params.enabled_params as unknown[])
+        .map((name) => String(name))
+        .filter(Boolean);
+    }
+    if (params.extra_body && typeof params.extra_body === 'object') {
+      nextSettings.extra_body = params.extra_body;
+    }
+    const values = params.values;
+    if (values && typeof values === 'object' && !Array.isArray(values)) {
+      for (const [name, value] of Object.entries(values as Record<string, unknown>)) {
+        if (value === undefined) continue;
+        if (catalogNames.has(name)) nextSettings[name] = value;
+      }
+    }
+  }
+  return { ...entry, settings: nextSettings };
+}
+
 function ModelsPanel() {
   const [data, setData] = useState<ModelsPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,6 +86,25 @@ function ModelsPanel() {
   const library = data?.library || [];
   const schema = data?.entry_schema || [];
 
+  // 参数目录里的可选参数名（保存时只把目录内的值写回 settings.<name>）
+  const catalogNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const field of schema) {
+      if (field.kind !== 'group' || field.name !== 'settings') continue;
+      for (const child of field.fields || []) {
+        if (child.kind !== 'model_params') continue;
+        for (const item of (child.catalog as Array<{ name?: unknown }>) || []) {
+          if (item?.name) names.add(String(item.name));
+        }
+      }
+    }
+    return names;
+  }, [schema]);
+
+  const editingLibraryItem = editing
+    ? library.find((item) => item.key && item.key === editing.draft?.key)
+    : undefined;
+
   const startNew = () => setEditing({ isNew: true, draft: defaultsFromFields(schema) });
 
   const startEdit = (item: any) => setEditing({ isNew: false, draft: structuredClone(item.entry || {}) });
@@ -54,7 +114,7 @@ function ModelsPanel() {
     setBusy('save');
     const result = await api.modelsLibrarySave({
       action: 'upsert',
-      entry: editing.draft,
+      entry: syncModelParams(editing.draft, catalogNames),
       revision: data?.revision,
       reload,
     });
@@ -266,6 +326,12 @@ function ModelsPanel() {
               <code>{editing.draft?.key || '保存时按模型名自动生成'}</code>
               <span className="muted"> · 调用方通过它引用该模型，无需手动填写</span>
             </p>
+            {editingLibraryItem?.params_inferred && (
+              <p className="config-notice warning" role="status">
+                <Icon name="more" />
+                已按旧配置推断本模型启用的可选参数（值 ≠ 默认值视为已启用），请复核参数区后保存。
+              </p>
+            )}
             <SchemaForm
               fields={fields}
               disabled={!!busy}
