@@ -82,6 +82,8 @@ class MessageNumbering:
             elif entry.kind.value == "poke" and entry.poke is not None:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
+            elif entry.kind.value == "notification" and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
                 lines.append("<以上是上次对话回复过的内容>")
                 new_section_opened = True
@@ -154,6 +156,8 @@ class MessageNumbering:
             elif entry.kind == QueueEntryType.POKE and entry.poke is not None:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
+            elif entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
         return "\n".join(lines)
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:

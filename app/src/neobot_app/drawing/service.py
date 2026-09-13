@@ -1181,6 +1181,42 @@ class CreatorImageService:
             "description": entry.analysis_text,
         }
 
+    async def register_local_image(
+        self,
+        file_path: Path | str,
+        *,
+        image_source: str | None = None,
+        max_bytes: int = 20 * 1024 * 1024,
+    ) -> CreatorImageRecord | None:
+        """把一个本地图片文件登记进 temp 图库，返回记录（失败返回 None）。
+
+        Bot 自己发出去的图片用这条最小入口落进与「其他人发的图片」完全相同的
+        tmp_xxx 存储与加载入口（image_context__add_image(image_id="tmp_xxx")），
+        因此队列里只留索引即可被 agent 再次取回查看。
+
+        不新增表、不新增存储层：复用既有的 _save_image_bytes(TMP_SOURCE)。
+        """
+        path = Path(file_path)
+        try:
+            if not path.is_file():
+                return None
+            size = path.stat().st_size
+            if size <= 0 or size > max_bytes:
+                return None
+            data = path.read_bytes()
+        except OSError as exc:
+            self._logger.warning(
+                "登记本地图片失败（读取失败）", file=str(file_path), error=str(exc)
+            )
+            return None
+        return await self._save_image_bytes(
+            data,
+            source=TMP_SOURCE,
+            prompt=None,
+            description=None,
+            image_source=image_source or "Bot 自发图片",
+        )
+
     async def _save_image_bytes(
         self,
         image_bytes: bytes,

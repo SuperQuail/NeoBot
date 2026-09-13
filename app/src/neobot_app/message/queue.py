@@ -43,6 +43,7 @@ class QueueEntryType(Enum):
     RECALL = "recall"
     REACTION = "reaction"
     POKE = "poke"
+    NOTIFICATION = "notification"
 
 
 @dataclass
@@ -80,6 +81,18 @@ class PokeEntry:
 
 
 @dataclass
+class NotificationEntry:
+    """后台通知事件的队列快照（对应通知中枢的一次 publish）。
+
+    入队目的是让 agent 在下一轮 transcript 里看到「刚才发生了什么」
+    （余额预警、定时任务完成、绘图完成等），而不是只有被单独叫起来时才知道。
+    """
+
+    source: str
+    content: str
+
+
+@dataclass
 class QueueEntry:
     """单条队列事件。"""
 
@@ -90,6 +103,7 @@ class QueueEntry:
     recalled_message: Optional[QueueMessage] = None
     reaction: Optional[ReactionEntry] = None
     poke: Optional[PokeEntry] = None
+    notification: Optional[NotificationEntry] = None
     replied_messages: List[QueueMessage] = field(default_factory=list)
     #: 该条目占用的容量权重（入队时固化）。
     #: 驱逐与「按权重取最近消息」必须读同一个值：此前驱逐按 kind 重算
@@ -110,6 +124,7 @@ class MessageQueue:
         poke_weight: float = 0.2,
         reaction_weight: float = 0.2,
         forward_weight: int = 2,
+        self_sent_weight: float = 0.1,
         bot_account: int | None = None,
         reply_blacklist: set[int] | None = None,
     ) -> None:
@@ -126,6 +141,10 @@ class MessageQueue:
         self.poke_weight = max(0.0, min(1.0, poke_weight))
         self.reaction_weight = max(0.0, min(1.0, reaction_weight))
         self.forward_weight = max(1, min(10, forward_weight))
+        #: Bot 自身发言（含历史灌入与实时入队两个来源）在队列中的容量权重。
+        #: 与 poke/reaction 同档：自身发言几乎不挤占用户消息的观测窗口，
+        #: 也不撑大上下文窗口；两个来源共用同一权重，避免口径分裂。
+        self.self_sent_weight = max(0.0, min(1.0, self_sent_weight))
         self.bot_account = bot_account
         self._reply_blacklist = reply_blacklist or set()
         self._queues: Dict[str, Deque[QueueEntry]] = {}
@@ -232,6 +251,10 @@ class MessageQueue:
         )
 
     def _compute_message_weight(self, message: QueueMessage) -> float:
+        # Bot 自身发言（无论来自实时入队还是后端/本地历史灌入）统一按
+        # self_sent_weight 计权：既不挤占用户消息的观测窗口，也不撑大上下文窗口。
+        if self.bot_account and message.user_id == self.bot_account:
+            return float(self.self_sent_weight)
         if message.message:
             for segment in message.message:
                 seg_type = getattr(segment, "type", None)
@@ -419,6 +442,33 @@ class MessageQueue:
         self._message_counts[key] += 1
         self._weighted_counts[key] += entry_weight
 
+    def push_notification(
+        self, key: str, notification: NotificationEntry, *, occurred_at: Optional[int] = None
+    ) -> None:
+        """写入一条后台通知条目（低权重；下一轮 transcript 能看到）。
+
+        通知入队只是「让 agent 知道刚才发生了什么」，不承担投递职责——
+        投递仍由 BackgroundNotificationHub 完成。因此本方法永不抛异常。
+        """
+        resolved_time = self._resolve_occurred_at(occurred_at, notification)
+        self._get_or_create_queue(key)
+        stats = self._get_or_create_stats(key)
+
+        entry_weight = self.self_sent_weight
+        self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight)
+        self._queues[key].append(
+            QueueEntry(
+                kind=QueueEntryType.NOTIFICATION,
+                occurred_at=resolved_time,
+                notification=notification,
+                weight=entry_weight,
+            )
+        )
+        self._message_counts[key] += 1
+        self._weighted_counts[key] += entry_weight
+        stats.total_messages += 1
+        self._refresh_oldest_message_id(key)
+
     def _message_entries(self, key: str) -> List[QueueEntry]:
         return [
             entry
@@ -553,6 +603,7 @@ class MessageQueue:
             poke_weight=self.poke_weight,
             reaction_weight=self.reaction_weight,
             forward_weight=self.forward_weight,
+            self_sent_weight=self.self_sent_weight,
             bot_account=self.bot_account,
             reply_blacklist=self._reply_blacklist,
         )
@@ -779,6 +830,11 @@ class MessageQueue:
             return f"reaction:{entry.reaction.target_message_id}:{entry.reaction.emoji_id}:{entry.reaction.operator_user_id}"
         if entry.kind == QueueEntryType.POKE and entry.poke is not None:
             return f"poke:{entry.poke.sender_id}:{entry.poke.target_id}:{entry.poke.sub_type}:{entry.occurred_at or 0}"
+        if entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+            return (
+                f"notification:{entry.notification.source}:"
+                f"{entry.notification.content}:{entry.occurred_at or 0}"
+            )
         return f"{entry.kind.value}:{entry.occurred_at or 0}"
 
     @staticmethod
@@ -866,6 +922,8 @@ class MessageQueue:
             return self._reaction_to_text(entry.reaction)
         if entry.kind == QueueEntryType.POKE and entry.poke is not None:
             return self._poke_to_text(entry.poke)
+        if entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+            return self._notification_to_text(entry.notification)
         return ""
 
     @staticmethod
@@ -923,6 +981,13 @@ class MessageQueue:
         return (
             f"{reaction.operator_name} 回应了消息[msg_id={reaction.target_message_id}]:{emoji_name}"
         )
+
+    @staticmethod
+    def _notification_to_text(notification: NotificationEntry) -> str:
+        """通知条目的统一渲染形态：`[通知:<source>] <content>`。"""
+        source = str(notification.source or "unknown")
+        content = " ".join(str(notification.content or "").split())
+        return f"[通知:{source}] {content}" if content else f"[通知:{source}]"
 
     @staticmethod
     def _poke_to_text(poke: PokeEntry, *, poke_index: int = 0) -> str:
@@ -1327,6 +1392,7 @@ def create_message_queue(
     poke_weight: float = 0.2,
     reaction_weight: float = 0.2,
     forward_weight: int = 2,
+    self_sent_weight: float = 0.1,
 ) -> MessageQueue:
     """创建消息队列实例的快捷函数"""
     return MessageQueue(
@@ -1336,6 +1402,7 @@ def create_message_queue(
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
         forward_weight=forward_weight,
+        self_sent_weight=self_sent_weight,
     )
 
 

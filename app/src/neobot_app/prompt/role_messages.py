@@ -196,6 +196,12 @@ def _build_from_entries(
             text = queue._poke_to_text(entry.poke, poke_index=poke_count)
             if text:
                 messages.append(_user_message(text))
+        elif entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+            # 后台通知（余额预警、定时任务完成、绘图完成…）以独立 user 块进入
+            # transcript，让 agent 在下一轮知道「刚才发生了什么」。
+            text = queue._entry_to_text(entry, sender_labels=sender_labels)
+            if text:
+                messages.append(_user_message(text))
 
         if (
             last_reply_message_id is not None

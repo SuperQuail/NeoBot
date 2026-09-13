@@ -1684,6 +1684,13 @@ class EnhancedChat(Chat):
         default=0.2,
         metadata={"description": "表情回应事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个表情回应等同1条消息）"},
     )
+    self_sent_message_weight: Optional[float] = field(
+        default=0.1,
+        metadata={
+            "description": "Bot 自身发言（含实时入队与历史灌入两个来源）与后台通知在消息队列中的权重；"
+            "0.1 表示 10 条自身发言才等同 1 条用户消息，基本不挤占观测窗口与上下文窗口"
+        },
+    )
     official_bot_reply_coefficient: Optional[float] = field(
         default=0.05,
         metadata={"description": "官方Bot回复概率系数，识别到消息发送者为官方Bot时，基础概率乘以此系数"},

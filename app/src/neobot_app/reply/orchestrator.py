@@ -24,7 +24,7 @@ from neobot_app.reply.postprocess import (
     build_over_limit_guidance,
     process_reply_text,
 )
-from neobot_app.reply.sender import ReplySender
+from neobot_app.reply.sender import ReplySender, SelfSentSink
 from neobot_app.reply.vision_context import (
     ReplyVisionContext,
     append_image_context,
@@ -467,12 +467,15 @@ class ReplyOrchestrator:
             runtime_events=runtime_events,
             logger=self._logger,
         )
+        image_registrar = self._resolve_image_registrar(drawing_manager)
         self._sender = ReplySender(
             adapter=adapter,
             file_server=file_server,
             config=config,
             # Bot 自身发言的落盘复用宿主共享的 storage 引擎（缺省时 sender 自己惰性打开同一份库）
             self_sent_uow_factory=self_sent_uow_factory,
+            # Bot 自发图片登记进 temp 图库（tmp_xxx），供 agent 之后再次取回查看
+            image_registrar=image_registrar,
             bot_name=self._get_bot_name(),
             emoji_service=emoji_service,
             markdown_image_converter=markdown_image_converter,
@@ -1895,7 +1898,9 @@ class ReplyOrchestrator:
             "reply_generated", event, queue_key=queue_key, reply_text=reply_text
         )
 
-        await self._send_reply(event, reply_text)
+        await self._send_reply(
+            event, reply_text, self_sent=self._self_sent_sink(queue, queue, queue_key)
+        )
 
     async def _maybe_trigger_sticker(
         self,
@@ -2262,6 +2267,7 @@ class ReplyOrchestrator:
             nonlocal reply_sent
             reply_sent = True
             event.generated_text = text
+            sink = self._self_sent_sink(queue, queue_copy, queue_key)
             if reply_to is not None:
                 event.reply_to_number = reply_to
                 msg_id = numbering.get_message_id(reply_to)
@@ -2274,6 +2280,7 @@ class ReplyOrchestrator:
                     send_original=send_original,
                     images=images,
                     merge_text_with_image=merge_text_with_image,
+                    self_sent=sink,
                 )
             else:
                 await self._send_reply(
@@ -2284,6 +2291,7 @@ class ReplyOrchestrator:
                     send_original=send_original,
                     images=images,
                     merge_text_with_image=merge_text_with_image,
+                    self_sent=sink,
                 )
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
@@ -2297,7 +2305,18 @@ class ReplyOrchestrator:
             if text.strip():
                 segments.append({"type": "text", "data": {"text": text.strip()}})
             segments.append(prepare_image_segment(self._file_server, entry.file_path))
-            await self._send_with_timeout(event.conversation_ref, segments)
+            emoji_conv = event.conversation_ref
+            await self._send_with_timeout(emoji_conv, segments)
+            # 表情包也是「真实发出去了」的图片：文本与图片各按真实形态入队
+            if emoji_conv is not None:
+                emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
+                if text.strip():
+                    self._sender.record_self_sent_text(
+                        emoji_sink, emoji_conv, text.strip()
+                    )
+                await self._sender.record_self_sent_image(
+                    emoji_sink, emoji_conv, entry.file_path
+                )
             # 记录表情包使用次数
             await self._emoji_service.record_usage(number)
 
@@ -2430,15 +2449,17 @@ class ReplyOrchestrator:
                 self._tts_service.synthesize_segment(text),
                 timeout=self._get_io_timeout_seconds(),
             )
-            await self._send_with_timeout(event.conversation_ref, [segment])
-            # 记录 bot 自身发送的语音消息到队列
-            self._push_self_sent_message(
-                queue=queue,
-                queue_copy=queue_copy,
-                queue_key=queue_key,
-                conv_ref=event.conversation_ref,
-                text=f"[语音消息:{text}]",
-            )
+            speak_conv = event.conversation_ref
+            await self._send_with_timeout(speak_conv, [segment])
+            # 语音入队：保留发送时的原始文本 + 音频文件索引
+            # （暂无语音解析能力，文本原样留着；文件索引供将来取用）
+            if speak_conv is not None:
+                await self._sender.record_self_sent_voice(
+                    self._self_sent_sink(queue, queue_copy, queue_key),
+                    speak_conv,
+                    text,
+                    file_hint=_segment_file_hint(segment),
+                )
             return f"已发送语音消息，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
         async def poke_user_handler(user_id: int) -> str:
@@ -2482,6 +2503,11 @@ class ReplyOrchestrator:
             reply_to_message_id = None
             if reply_to is not None:
                 reply_to_message_id = numbering.get_message_id(reply_to)
+            long_reply_sink = (
+                self._self_sent_sink(queue, queue_copy, queue_key)
+                if conv_ref is not None
+                else None
+            )
             # 发送说明文字（如果有）
             if caption.strip():
                 caption_segs = self._build_reply_segments(
@@ -2491,19 +2517,24 @@ class ReplyOrchestrator:
                     mention_user_ids=mention,
                 )
                 await self._send_with_timeout(conv_ref, caption_segs)
+                if conv_ref is not None:
+                    self._sender.record_self_sent_text(
+                        long_reply_sink, conv_ref, caption.strip()
+                    )
             # 发送图片（不附带引用，图片单独发送）
             await send_image(
                 self._file_server, self._adapter, conv_ref, Path(image_path),
                 wait_response=False,
             )
-            # 记录 bot 自身发送的 Markdown 图片消息到队列（仅记录 md 文本，不调用视觉模型）
-            if markdown.strip():
-                self._push_self_sent_message(
-                    queue=queue,
-                    queue_copy=queue_copy,
-                    queue_key=queue_key,
-                    conv_ref=conv_ref,
-                    text=f"[图片信息:md内容{markdown.strip()}]",
+            # 图片入队为「索引」：产物登记进 temp 图库（tmp_xxx）+ file 路径兜底，
+            # Markdown 原文只留前 N 字来源标注（全文不再重复注入上下文）。
+            if conv_ref is not None:
+                await self._sender.record_self_sent_image(
+                    long_reply_sink,
+                    conv_ref,
+                    Path(image_path),
+                    kind="markdown",
+                    source_note=markdown,
                 )
 
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
@@ -2616,7 +2647,11 @@ class ReplyOrchestrator:
             self._record_debug(
                 "reply_generated", event, queue_key=queue_key, reply_text=pre_hook_text
             )
-            await self._send_reply(event, pre_hook_text)
+            await self._send_reply(
+                event,
+                pre_hook_text,
+                self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
+            )
             return
 
         # 工具输出压缩状态:已压缩的 tool_call_id 与调用名映射(压缩只改内容,
@@ -2949,7 +2984,11 @@ class ReplyOrchestrator:
                                 queue_key=queue_key,
                                 reply_text=text,
                             )
-                            await self._send_reply(event, text)
+                            await self._send_reply(
+                                event,
+                                text,
+                                self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
+                            )
                             reply_sent = True
                         else:
                             # 空轮次：正文为空且没有工具调用。旧实现在这里直接
@@ -4476,6 +4515,7 @@ class ReplyOrchestrator:
         send_original: bool = False,
         images: list[int] | None = None,
         merge_text_with_image: bool = False,
+        self_sent: SelfSentSink | None = None,
     ) -> None:
         # post-reply hooks：可对回复文本做后处理
         text = await self._apply_post_reply_hooks(event, text) or text
@@ -4488,19 +4528,59 @@ class ReplyOrchestrator:
             send_original=send_original,
             images=images,
             merge_text_with_image=merge_text_with_image,
+            self_sent=self_sent,
         )
 
-    def _push_self_sent_message(
+    # ── Bot 自身发言入队（fix(2) 统一通道）────────────────────────
+
+    @staticmethod
+    def _self_sent_sink(
+        queue: Any, snapshot: Any, queue_key: str
+    ) -> SelfSentSink:
+        return SelfSentSink(queue=queue, snapshot=snapshot, queue_key=queue_key)
+
+    @staticmethod
+    def _resolve_image_registrar(drawing_manager: Any) -> Any:
+        """取「本地文件 → temp 图库(tmp_xxx)」的最小登记入口。
+
+        复用生图服务的既有落盘链路（不新增表、不新增存储层）；不可用时返回 None，
+        此时索引退化为 file: 路径。
+        """
+        if drawing_manager is None:
+            return None
+        service = getattr(drawing_manager, "image_service", None)
+        if service is None:
+            service = getattr(drawing_manager, "_service", None)
+        registrar = getattr(service, "register_local_image", None)
+        return registrar if callable(registrar) else None
+
+    def record_notification(
         self,
-        queue: Any,
-        queue_copy: Any,
-        queue_key: str,
-        conv_ref: ConversationRef,
-        text: str,
-    ) -> None:
-        self._sender.push_self_sent_message(
-            queue, queue_copy, queue_key, conv_ref, text
-        )
+        *,
+        kind: str,
+        conversation_id: str,
+        source: str,
+        content: str,
+    ) -> bool:
+        """把一条后台通知写进对应会话的消息队列（低权重，供下一轮 transcript 读取）。
+
+        与通知中枢的既有投递正交：投递照旧（起管线 / 进 hub 队列），这里只是让
+        agent 在下一轮「知道刚才发生了什么」。永不抛异常。
+        """
+        from neobot_app.message.queue import NotificationEntry
+
+        queue = self._group_queue if str(kind) == "group" else self._friend_queue
+        if queue is None or not str(conversation_id or ""):
+            return False
+        try:
+            queue.push_notification(
+                str(conversation_id),
+                NotificationEntry(source=str(source or ""), content=str(content or "")),
+            )
+        except Exception as exc:
+            self._logger.warning("后台通知入队失败（已忽略）", source=source, error=str(exc))
+            return False
+        return True
 
     def _can_use_markdown_image(self, text: str) -> bool:
         return self._sender._can_use_markdown_image(text)
@@ -4604,3 +4684,23 @@ class ReplyOrchestrator:
         elif sender_id:
             lines.append(f"聊天对象QQ：{sender_id}")
         return "\n".join(lines)
+
+def _segment_file_hint(segment: Any) -> str:
+    """从消息段里取出可供将来取用的文件引用（语音段用）。
+
+    TTS 的 `synthesize_segment` 只返回消息段、不返回本地路径，因此这里就地从
+    段数据里取 file/url 引用作为「音频文件索引」；取不到时返回空串。
+    """
+    data: Any = None
+    if isinstance(segment, dict):
+        data = segment.get("data")
+    else:
+        data = getattr(segment, "data", None)
+    if not isinstance(data, dict):
+        return ""
+    for key in ("file", "url", "path"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    return ""
+

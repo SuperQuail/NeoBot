@@ -94,6 +94,9 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     poke_weight = getattr(config.chat, "poke_weight", 0.2)
     reaction_weight = getattr(config.chat, "reaction_weight", 0.2)
     forward_weight = getattr(config.chat, "forward_message_queue_weight", 2)
+    self_sent_weight = getattr(config.chat, "self_sent_message_weight", 0.1)
+    if self_sent_weight is None:
+        self_sent_weight = 0.1
     bot_account = config.bot.account
     reply_blacklist = set(config.chat.reply_blacklist or [])
 
@@ -103,6 +106,7 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
         forward_weight=forward_weight,
+        self_sent_weight=self_sent_weight,
         bot_account=bot_account,
         reply_blacklist=reply_blacklist,
     )
@@ -112,6 +116,7 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
         poke_weight=poke_weight,
         reaction_weight=reaction_weight,
         forward_weight=forward_weight,
+        self_sent_weight=self_sent_weight,
         bot_account=bot_account,
         reply_blacklist=reply_blacklist,
     )

@@ -46,6 +46,11 @@ class BackgroundDrawingManager:
     def set_image_service(self, service: "CreatorImageService") -> None:
         self._service = service
 
+    @property
+    def image_service(self) -> "CreatorImageService | None":
+        """底层生图服务（供回复管线登记 Bot 自发图片到 temp 图库）。"""
+        return self._service
+
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
         if self._notification_hub is not None:

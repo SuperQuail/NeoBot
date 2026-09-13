@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,28 @@ from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
 _MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
+
+#: Markdown 转图片的队列索引里附带的来源标注长度（字符）。
+_MARKDOWN_INDEX_SOURCE_CHARS = 40
+
+
+@dataclass
+class SelfSentSink:
+    """Bot 自身发言的入队去处（源队列 + 管线快照 + 队列键）。
+
+    `ReplySender` 的所有真实发送点都用它把「刚才真发出去的东西」写回队列，
+    这样回复管线因寿命耗尽 / 挂起恢复 / 软重启而重新组装提示词时，
+    assistant 块不会凭空消失（fix(2) 的统一入队通道）。
+    """
+
+    queue: Any = None
+    snapshot: Any = None
+    queue_key: str = ""
+
+    @property
+    def usable(self) -> bool:
+        return self.queue is not None and bool(self.queue_key)
+
 
 #: Bot 自身消息落盘用的默认 UoW 工厂（惰性创建；见 _default_self_sent_uow_factory）。
 _DEFAULT_SELF_SENT_UOW_FACTORY: Any = None
@@ -90,6 +114,7 @@ class ReplySender:
         balance_checker: Any = None,
         logger: Logger | None = None,
         self_sent_uow_factory: Any = None,
+        image_registrar: Any = None,
     ) -> None:
         self._adapter = adapter
         self._file_server = file_server
@@ -114,6 +139,11 @@ class ReplySender:
         self._self_sent_uow_factory = self_sent_uow_factory
         #: 持有未完成的落盘任务引用，避免 asyncio 任务被 GC 提前回收。
         self._self_sent_persist_tasks: set[asyncio.Task[None]] = set()
+        #: 把「本地文件 → temp 图库(tmp_xxx)」的最小登记入口（
+        #: CreatorImageService.register_local_image）。缺失时索引退化为 file: 路径。
+        self._image_registrar = image_registrar
+        #: 自身发言合成消息 id 的高水位（严格递减，避免同一微秒内多条撞号）。
+        self._last_self_sent_id = 0
 
     # ── 状态流转 ────────────────────────────────────────────────
 
@@ -201,6 +231,7 @@ class ReplySender:
         send_original: bool = False,
         images: list[int] | None = None,
         merge_text_with_image: bool = False,
+        self_sent: SelfSentSink | None = None,
     ) -> None:
         before_postprocess = await self._debug_helper.emit_runtime_event(
             "reply.postprocess.before",
@@ -260,6 +291,9 @@ class ReplySender:
                 merged.append(prepare_image_segment(self._file_server, first_img.file_path))
                 formatted_messages.append(merged)
                 send_results.append(await self.send_with_timeout(conv_ref, merged))
+                # 真实发送结果入队：文本与图片分别按真实形态记录（图片为索引）
+                self._emit_self_sent_text(self_sent, conv_ref, text)
+                await self._emit_self_sent_image(self_sent, conv_ref, first_img.file_path)
                 if self._emoji_service:
                     await self._emoji_service.record_usage(images[0])
                 for i, entry in enumerate(image_entries[1:], start=1):
@@ -268,6 +302,7 @@ class ReplySender:
                         self._file_server, self._adapter, conv_ref, entry.file_path,
                         wait_response=False,
                     ))
+                    await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
                     if self._emoji_service:
                         await self._emoji_service.record_usage(images[i])
             event.send_response = send_results[0] if len(send_results) == 1 else send_results
@@ -293,6 +328,7 @@ class ReplySender:
                     self._file_server, self._adapter, conv_ref, entry.file_path,
                     wait_response=False,
                 ))
+                await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
                 await self._emoji_service.record_usage(image_number)
 
         # long reply → markdown image
@@ -305,6 +341,11 @@ class ReplySender:
                     )
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
                     send_results.append(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
+                    await self._emit_self_sent_image(
+                        self_sent, conv_ref, image_path,
+                        kind="markdown",
+                        source_note=text,
+                    )
                     event.send_response = send_results[0]
                     self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
@@ -346,6 +387,8 @@ class ReplySender:
             )
             formatted_messages.append(formatted)
             send_results.append(await self.send_with_timeout(conv_ref, formatted))
+            # 逐条按「真正发到 QQ 的那句文本」入队：重建后模型知道自己分几句说了什么
+            self._emit_self_sent_text(self_sent, conv_ref, message_text)
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
@@ -365,6 +408,9 @@ class ReplySender:
         )
 
     # ── self-sent message tracking ──────────────────────────────
+    #
+    # 统一入队通道：所有「真实发出去了」的发送类型都经 _emit_self_sent* 写回队列，
+    # 不再由各工具 handler 手工补记（手工补记必然会漏，且拿不到真实发送结果）。
 
     def push_self_sent_message(
         self,
@@ -374,12 +420,73 @@ class ReplySender:
         conv_ref: ConversationRef,
         text: str,
     ) -> asyncio.Task[None] | None:
-        """把 Bot 自己发出的消息推入内存队列，并异步落盘一份。
+        """（兼容入口）把 Bot 自身的一段文本发言入队并异步落盘。
 
-        落盘是为了软重启：内存队列会被重建（bootstrap 里队列不走 _reuse_or），
-        而后端历史又拉不到 Bot 自己的消息，assistant 块就丢了。返回创建的落盘
-        任务便于等待结果；没有运行中的事件循环时返回 None（仅跳过落盘）。
+        新代码统一走 send_reply 的 self_sent 通道；此方法保留给既有调用方与测试。
         """
+        return self._emit_self_sent(
+            SelfSentSink(queue=queue, snapshot=queue_copy, queue_key=queue_key),
+            conv_ref,
+            text,
+        )
+
+    def record_self_sent_text(
+        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+    ) -> asyncio.Task[None] | None:
+        """把一段真实发出的文本入队并落盘（供工具 handler 复用统一通道）。"""
+        return self._emit_self_sent(sink, conv_ref, text)
+
+    async def record_self_sent_image(
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        file_path: Any,
+        *,
+        kind: str = "image",
+        source_note: str = "",
+    ) -> asyncio.Task[None] | None:
+        """把一张真实发出的图片按「索引」入队（产物进 temp 图库，队列只留引用）。
+
+        索引里同时写 temp 图库 id（可被 image_context 再次取回查看）与 file: 路径
+        （图库清理后仍能定位产物），不写图片内容 ⇒ 不占上下文窗口。
+        """
+        if sink is None or not sink.usable:
+            return None
+        index_text = await self._build_image_index_text(
+            file_path, kind=kind, source_note=source_note
+        )
+        return self._emit_self_sent(sink, conv_ref, index_text)
+
+    async def record_self_sent_voice(
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        file_hint: str = "",
+    ) -> asyncio.Task[None] | None:
+        """把一条真实发出的语音入队：暂无解析能力 ⇒ 原始文本 + 音频文件索引。"""
+        if sink is None or not sink.usable:
+            return None
+        hint = str(file_hint or "").strip()
+        if hint and not hint.startswith("file:"):
+            hint = f"file:{hint}"
+        head = f"[语音:{hint}]" if hint else "[语音]"
+        spoken = str(text or "").strip()
+        return self._emit_self_sent(sink, conv_ref, f"{head} {spoken}" if spoken else head)
+
+    def _next_self_sent_message_id(self) -> int:
+        """生成严格递减的负数合成消息 id（与后端真实 id 不同源，天然不撞号）。"""
+        candidate = -int(time.time() * 1_000_000)
+        if candidate >= self._last_self_sent_id:
+            candidate = self._last_self_sent_id - 1
+        self._last_self_sent_id = candidate
+        return candidate
+
+    def _build_self_sent_message(
+        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int
+    ) -> Any:
+        """把一段 Bot 自身发言构造为可入队的消息对象。"""
         from neobot_adapter.model.basic import PostMessageMessagesender
         from neobot_adapter.model.message import (
             GroupMessage,
@@ -389,13 +496,11 @@ class ReplySender:
         )
 
         bot_qq = self._resolve_bot_account()
-
-        synthetic_msg_id = -int(time.time() * 1_000_000)
         message_segments = [MessageSegment(type="text", data={"text": text})]
         sender = PostMessageMessagesender(user_id=bot_qq, nickname=self._bot_name)
 
         if conv_ref.kind == "group":
-            msg = GroupMessage(
+            return GroupMessage(
                 message_type=MessageTypeEnum.group,
                 message_id=synthetic_msg_id,
                 user_id=bot_qq,
@@ -404,19 +509,87 @@ class ReplySender:
                 group_id=int(conv_ref.id) if conv_ref.id else 0,
                 sender=sender,
             )
-        else:
-            msg = PrivateMessage(
-                message_type=MessageTypeEnum.private,
-                message_id=synthetic_msg_id,
-                user_id=bot_qq,
-                message=message_segments,
-                raw_message=text,
-                sender=sender,
-            )
+        return PrivateMessage(
+            message_type=MessageTypeEnum.private,
+            message_id=synthetic_msg_id,
+            user_id=bot_qq,
+            message=message_segments,
+            raw_message=text,
+            sender=sender,
+        )
 
-        queue.push(queue_key, msg)
-        queue_copy.push(queue_key, msg)
+    def _emit_self_sent(
+        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+    ) -> asyncio.Task[None] | None:
+        """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。"""
+        if sink is None or not sink.usable or not str(text or "").strip():
+            return None
+        synthetic_msg_id = self._next_self_sent_message_id()
+        try:
+            message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id)
+            sink.queue.push(sink.queue_key, message)
+            if sink.snapshot is not None and sink.snapshot is not sink.queue:
+                sink.snapshot.push(sink.queue_key, message)
+        except Exception as exc:
+            # 入队失败绝不能反噬发送路径：宁可少一条上下文，也不能让回复发不出去。
+            self._logger.warning("Bot 自身发言入队失败（已忽略）", error=str(exc))
+            return None
         return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id)
+
+    def _emit_self_sent_text(
+        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+    ) -> asyncio.Task[None] | None:
+        return self._emit_self_sent(sink, conv_ref, text)
+
+    async def _emit_self_sent_image(
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        file_path: Any,
+        *,
+        kind: str = "image",
+        source_note: str = "",
+    ) -> asyncio.Task[None] | None:
+        return await self.record_self_sent_image(
+            sink, conv_ref, file_path, kind=kind, source_note=source_note
+        )
+
+    async def _build_image_index_text(
+        self, file_path: Any, *, kind: str, source_note: str
+    ) -> str:
+        label = "Markdown图片" if kind == "markdown" else "图片"
+        path = Path(str(file_path))
+        image_id = await self._register_temp_image(path)
+        ref = f"{image_id} file:{path}" if image_id else f"file:{path}"
+        text = f"[{label}:{ref}]"
+        note = " ".join(str(source_note or "").split())
+        if kind == "markdown" and note:
+            text = f"{text} {note[:_MARKDOWN_INDEX_SOURCE_CHARS]}"
+        return text
+
+    async def _register_temp_image(self, file_path: Path) -> str | None:
+        """把本地图片登记进 temp 图库（TMP_SOURCE → tmp_xxx）。
+
+        失败时返回 None，调用方退化为 file: 索引；绝不影响发送路径。
+        """
+        registrar = self._image_registrar
+        if registrar is None:
+            return None
+        try:
+            if not file_path.is_file():
+                return None
+            result = registrar(file_path)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self._logger.warning(
+                "Bot 自发图片登记 temp 图库失败（已降级为 file: 索引）", error=str(exc)
+            )
+            return None
+        image_id = getattr(result, "image_id", None)
+        if image_id is None and isinstance(result, str):
+            image_id = result
+        return str(image_id) if image_id else None
 
     def _resolve_bot_account(self) -> int:
         """读取配置里的机器人 QQ 号（缺失时返回 0）。"""
