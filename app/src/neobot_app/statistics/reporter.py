@@ -129,6 +129,22 @@ class UsageReportService:
             )
         lines.append("")
 
+        # 计费来源分布（spec(4) Part A / R6）：内建固定计费、脚本计费、兜底各多少笔。
+        # 计数之和 == 该区间的记录总数（验收 A15）；既有三张统计表的数值不受影响。
+        source_groups: dict[str, dict] = defaultdict(lambda: {"calls": 0, "cost": 0.0, "models": set()})
+        for r in records:
+            raw_source = str(getattr(r, "cost_source", "") or "builtin")
+            if raw_source.startswith("script:"):
+                label = f"脚本: {raw_source[len('script:'):] or '未命名'}"
+            elif raw_source.startswith("fallback:"):
+                label = f"兜底: {raw_source[len('fallback:'):] or 'unknown'}"
+            else:
+                label = "内建固定计费"
+            g = source_groups[label]
+            g["calls"] += 1
+            g["cost"] += r.cost_cny
+            g["models"].add(r.model_name)
+
         lines.append("## 按会话类型统计")
         lines.append("")
         lines.append("| 会话类型 | 调用次数 | 输入 Token | 输出 Token | 费用(CNY) |")
@@ -139,6 +155,20 @@ class UsageReportService:
                 f"| {kind} | {g['calls']} | {g['input']:,} | "
                 f"{g['output']:,} | ¥{g['cost']:.6f} |"
             )
+        lines.append("")
+
+        lines.append("## 计费来源分布")
+        lines.append("")
+        lines.append("| 来源 | 调用次数 | 涉及模型 | 费用(CNY) |")
+        lines.append("|------|---------|---------|----------|")
+        for label in sorted(source_groups):
+            g = source_groups[label]
+            models_text = ", ".join(sorted(str(item) for item in g["models"])) or "-"
+            lines.append(
+                f"| {label} | {g['calls']} | {models_text} | ¥{g['cost']:.6f} |"
+            )
+        lines.append("")
+        lines.append(f"计费来源合计: {sum(g['calls'] for g in source_groups.values())} 笔")
         lines.append("")
 
         return "\n".join(lines)

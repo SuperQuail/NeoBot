@@ -1712,6 +1712,7 @@ class SelfHealAgent:
             await get_usage_tracker().record(
                 module=CURRENT_USAGE_MODULE.get(""),
                 model_name=model_name,
+                registered_key=getattr(provider, "registered_key", ""),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 conversation_kind=CURRENT_CONVERSATION_KIND.get(""),

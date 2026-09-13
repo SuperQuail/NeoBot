@@ -2896,6 +2896,7 @@ class ReplyOrchestrator:
                         await get_usage_tracker().record(
                             module="reply_agent",
                             model_name=self._provider.model,
+                            registered_key=getattr(self._provider, "registered_key", ""),
                             input_tokens=usage["input_tokens"],
                             output_tokens=usage["output_tokens"],
                             cache_hit_tokens=usage.get("cache_hit_tokens", 0),
@@ -4445,6 +4446,7 @@ class ReplyOrchestrator:
                 await get_usage_tracker().record(
                     module="reply_common",
                     model_name=self._provider.model,
+                    registered_key=getattr(self._provider, "registered_key", ""),
                     input_tokens=usage["input_tokens"],
                     output_tokens=usage["output_tokens"],
                     cache_hit_tokens=usage.get("cache_hit_tokens", 0),

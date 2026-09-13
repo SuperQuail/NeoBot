@@ -571,6 +571,7 @@ class ArchiveMemoryAutoSummaryService:
             await get_usage_tracker().record(
                 module="agent:memory",
                 model_name=getattr(self._provider, "model", "") or "",
+                registered_key=getattr(self._provider, "registered_key", ""),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_hit_tokens=int(usage.get("cache_hit_tokens") or 0),

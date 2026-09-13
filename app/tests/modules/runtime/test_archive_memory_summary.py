@@ -786,10 +786,13 @@ async def test_summary_records_token_usage(monkeypatch):
         conversation_kind="group", conversation_id="555", message_text="一"
     )
 
+    # spec(4) Part A（D19）：record() 新增 registered_key，用于区分同名 model_name
+    # 的不同注册条目；该假 provider 未注入 registered_key，因此回落为空字符串。
     assert recorded == [
         {
             "module": "agent:memory",
             "model_name": "deepseek-chat",
+            "registered_key": "",
             "input_tokens": 1000,
             "output_tokens": 200,
             "cache_hit_tokens": 400,

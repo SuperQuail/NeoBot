@@ -163,6 +163,40 @@ def plan_maintenance_run(
 _MAINTENANCE_RETRY_STATUSES = frozenset({"failed", "running"})
 
 
+def _register_billing_hot_reload_rule() -> None:
+    """登记 ``billing`` 段为「运行期生效」（spec(4) Q13 / R4）。
+
+    ``[billing]`` 段由 BillingService 每次现取，改 ``enabled`` / ``timeout_ms`` 等
+    立即生效；挂在 ``models`` 段下的 ``billing_script`` / ``billing_config`` 仍按
+    「面板保存并重载」路径生效。
+    """
+    from neobot_app.config.hot_reload import HotReloadRule, register_rule
+
+    register_rule(HotReloadRule("billing", True, "计费脚本按需加载，重载后立即生效"))
+
+
+def _warmup_billing_scripts(billing: Any) -> None:
+    """启动装配期预加载「注册表里出现过的 billing_script 名字集合」（§4.2）。"""
+    if billing is None:
+        return
+    try:
+        settings = billing.settings
+        if not settings.enabled:
+            # 关闭时不加载任何脚本、不建线程池（零额外开销）
+            return
+        from neobot_chat.models import model_registry
+
+        names = {
+            str(getattr(model, "billing_script", "") or "").strip()
+            for _key, model in model_registry.items()
+        }
+        billing.warmup(sorted(name for name in names if name))
+    except Exception as exc:  # pragma: no cover - 预加载失败不影响启动
+        import logging
+
+        logging.getLogger(__name__).warning(f"计费脚本预加载失败: {exc}")
+
+
 def _build_provider_reload_consumer(
     *,
     logger_factory: Any,
@@ -679,8 +713,17 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
 
     usage = _reuse_or(
         "usage",
-        lambda: build_usage_components(_engine=_engine, logger_factory=logger_factory),
+        lambda: build_usage_components(
+            _engine=_engine,
+            logger_factory=logger_factory,
+            config=config,
+        ),
     )
+
+    # 计费脚本按需加载：登记热重载规则，面板/文件变更后无需重启进程（spec(4) §4.4 / Q13）。
+    # 放在 _reuse_or 之外，保证软重启复用组件时规则依然登记在案。
+    _register_billing_hot_reload_rule()
+    _warmup_billing_scripts(usage.get("billing"))
 
     group_queue, friend_queue = build_message_queues(config=config)
 
@@ -1374,6 +1417,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
                 "用量数据库会话工厂",
             ),
             "report_service": (usage["report_service"], "用量报告服务"),
+            "billing_service": (usage.get("billing"), "消耗计费脚本服务（spec(4) Part A）"),
             "archive_memory_service": (memory_svcs["archive_memory_service"], "档案记忆服务"),
             "archive_summary_service": (
                 archive_summary_service,

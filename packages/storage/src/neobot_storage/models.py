@@ -239,6 +239,12 @@ class ModelUsageRecord(Base):
     cache_hit_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cache_miss_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: 费用来源（闭集）：builtin / script:<name> / fallback:missing|error|timeout
+    cost_source: Mapped[str] = mapped_column(
+        String, nullable=False, default="builtin", server_default="builtin"
+    )
+    #: 脚本返回的分项 / 说明（JSON 单行；内建与无分项时为 NULL）
+    cost_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

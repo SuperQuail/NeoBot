@@ -68,20 +68,36 @@ class RegisteredModel:
     model_type: str = "chat"
     #: 是否跟随系统/环境变量代理；默认 False = 直连
     use_system_proxy: bool = False
+    #: 计价脚本名（<数据目录>/Billing/<name>.py）；留空 = 走固定计费（spec(4) Part A）
+    billing_script: str = ""
+    #: 传给计价脚本的参数表（脚本内 ctx["billing_config"]）
+    billing_config: dict[str, Any] = field(default_factory=dict)
 
     @property
     def provider_kind(self) -> str:
         return _normalize_provider_kind(self.provider_name)
 
     def create_provider(self) -> Provider:
-        """根据注册信息创建 Provider 实例。"""
+        """根据注册信息创建 Provider 实例。
+
+        返回前注入 ``registered_key``：用量记账必须能区分同一 ``model_name`` 的不同
+        注册条目（spec(4) §4.1.1 / D19）；provider 是普通类，可直接挂属性。
+        """
+        provider = self._build_provider()
+        # provider 是普通类（无 __slots__），可直接挂属性
+        setattr(provider, "registered_key", self.name)
+        return provider
+
+    def _build_provider(self) -> Provider:
+        """按供应商类型构造 Provider（不含 registered_key 注入）。"""
         if not self.base_url:
             raise ValidationError(f"Model '{self.name}' is missing base_url")
         if not self.api_key:
             raise ValidationError(f"Model '{self.name}' is missing api_key")
 
         if self.provider_kind == "anthropic":
-            return AnthropicProvider(
+            # AnthropicProvider 把 max_tokens 收窄成 int，与 Provider 基类的 int|None 不兼容
+            return AnthropicProvider(  # type: ignore[return-value]
                 api_key=self.api_key,
                 model=self.model_name,
                 native_vision=self.native_vision,

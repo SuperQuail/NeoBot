@@ -296,6 +296,21 @@ class ModelDefinition:
             "留空表示没有查询提示，余额查询 skill 不会列出该模型"
         },
     )
+    billing_script: str = field(
+        default="",
+        metadata={
+            "description": "该模型使用的计价脚本名（对应 <数据目录>/Billing/<名字>.py）。"
+            "留空 = 该模型走固定计费；多个模型可引用同一名字（脚本只加载一份）。"
+            "需配合 [billing].enabled=true 生效"
+        },
+    )
+    billing_config: Dict[str, Any] = field(
+        default_factory=dict,
+        metadata={
+            "description": "传给计价脚本的参数表（脚本内通过 ctx[\"billing_config\"] 读取），"
+            "例如按次计费脚本的 price_per_call = 0.01；同一脚本可被多个模型复用、各自定价"
+        },
+    )
 
     def __post_init__(self) -> None:
         self.key = normalize_model_key(self.key)
@@ -752,6 +767,43 @@ class Willing:
     observe_window: Optional[int] = field(
         default=5,
         metadata={"description": "意愿计算观察窗口"},
+    )
+
+
+@dataclass
+class Billing:
+    """消耗计费配置（spec(4) Part A）。
+
+    计价脚本**按模型条目绑定**（models.registry[].billing_script）；本段只放全局执行
+    策略，默认关闭 = 全部模型走既有固定计费公式。
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "description": "是否启用按模型绑定的计价脚本。关闭时全部模型走既有固定计费公式"
+            "（零额外开销、零风险）；开启后仅对填写了 billing_script 的模型生效"
+        },
+    )
+    timeout_ms: int = field(
+        default=200,
+        metadata={
+            "description": "单次脚本求值超时（毫秒）。超时即放弃脚本结果、改用固定计费并告警；"
+            "过大会直接阻塞回复管线"
+        },
+    )
+    reload_on_change: bool = field(
+        default=True,
+        metadata={
+            "description": "计费脚本文件的修改时间（纳秒）或大小变化时自动重载，无需重启进程"
+        },
+    )
+    record_detail: bool = field(
+        default=True,
+        metadata={
+            "description": "是否把脚本返回的分项（components / note）写入 cost_detail 列；"
+            "关闭只存金额，节省空间"
+        },
     )
 
 
@@ -1498,6 +1550,7 @@ class BotConfig:
     scheduled_task: ScheduledTask = field(default_factory=ScheduledTask)
     agent: Agent = field(default_factory=Agent)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
+    billing: Billing = field(default_factory=Billing)
 
 
 @dataclass
