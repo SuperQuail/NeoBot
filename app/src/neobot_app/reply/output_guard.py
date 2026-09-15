@@ -37,12 +37,23 @@ MAX_KNOWN_SENDER_NAMES = 200
 #: 单次清洗里剥前缀的迭代上限（每次迭代至少删掉一层，正常 1-3 次收敛）。
 _MAX_PREFIX_PASSES = 6
 
+#: 嵌套 `<think>` 块的最大剥离轮数（每轮至少吃掉一对标签）。
+_MAX_THINK_BLOCK_PASSES = 5
+
 # 思维链标签：本体从不读取 reasoning_content，也不剥离这些标签，模型真按
 # <cot> 那段要求写就会原样发到群里，所以这里统一剥掉。
 _THINK_TAGS = ("think", "thinking", "reasoning", "cot", "analysis")
 _TAG_ALTERNATION = "|".join(_THINK_TAGS)
 _THINK_OPEN = re.compile(r"<\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE)
 _THINK_CLOSE = re.compile(r"<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE)
+#: 行首的未闭合开标签（前面只有空白）：这种才是「思考泄漏」，正文中间的引用不是
+_THINK_LINE_OPEN = re.compile(
+    r"^[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE | re.MULTILINE
+)
+#: 行首的闭合标签（换行后顶格写）：成对块被剥离后留下的那种残渣
+_THINK_LINE_CLOSE = re.compile(
+    r"^[ \t]*<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE | re.MULTILINE
+)
 _THINK_BLOCK = re.compile(
     r"<\s*(?:" + _TAG_ALTERNATION + r")\s*>.*?<\s*/\s*(?:"
     + _TAG_ALTERNATION
@@ -234,13 +245,26 @@ def _strip_think_blocks(text: str) -> str:
         part = parts[index]
         if not part or "<" not in part:
             continue
-        cleaned = _THINK_BLOCK.sub("", part)
-        # 未闭合的 <think>：其后全部视为思考内容（模型被截断时会这样）
-        match = _THINK_OPEN.search(cleaned)
+        # 非贪婪逐个删除：嵌套时也能把整块连同内层标签一起吃掉
+        cleaned = part
+        for _ in range(_MAX_THINK_BLOCK_PASSES):
+            updated = _THINK_BLOCK.sub("", cleaned)
+            if updated == cleaned:
+                break
+            cleaned = updated
+        # 未闭合的 <think>：其后全部视为思考内容（模型被截断时会这样）。
+        # 只在**行首**才认定为泄漏：模型写草稿时标签总在行首，而正文里提到
+        # "<think> 这个标签" 属于正常聊天，不该被砍掉半句话。
+        # 只认「行首的标签」：模型写草稿时标签一定在行首，而正文里提到
+        # "<think> 这个标签" 属于正常聊天 —— 正文中间的标签一律原样保留。
+        match = _THINK_LINE_OPEN.search(cleaned)
         if match is not None and _THINK_CLOSE.search(cleaned, match.end()) is None:
+            # 行首未闭合 ⇒ 其后全是草稿
             cleaned = cleaned[: match.start()]
         else:
-            cleaned = _THINK_CLOSE.sub("", _THINK_OPEN.sub("", cleaned))
+            # 行首孤立的开标签（读到一半断了）才是残渣；文字里的标签不动
+            cleaned = _THINK_LINE_OPEN.sub("", cleaned)
+            cleaned = _THINK_LINE_CLOSE.sub("", cleaned)
         parts[index] = cleaned
     return "".join(parts)
 

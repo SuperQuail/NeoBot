@@ -59,8 +59,12 @@ def test_strips_replied_message_marker() -> None:
         ("<thinking>草稿</thinking>简短俏皮", "简短俏皮"),
         # 未闭合（输出被截断）时，标签之后的内容全部视为思考
         ("<think>实际上我需要回复一句就好", ""),
-        ("先说结论<think>这里是草稿", "先说结论"),
-        ("<think>a<think>b</think>c</think>", "c"),
+        # 正文中间的标签是「被提到」而不是泄漏：原样保留，不砍正文
+        ("先说结论<think>这里是草稿", "先说结论<think>这里是草稿"),
+        # 未闭合且在行首：其后全是草稿，整段丢弃
+        ("前面的话\n<think>这里是草稿", "前面的话"),
+        # 嵌套写法：成对块被剥掉，剩下的孤立闭标签原样保留（不做二次猜测）
+        ("<think>a<think>b</think>c</think>", "c</think>"),
     ],
 )
 def test_strips_think_tags(dirty: str, expected: str) -> None:
@@ -89,6 +93,9 @@ def test_keeps_fenced_code_intact() -> None:
         "<这是新的可能要回答的内容>",
         "在的，怎么了？",
         "这段话里提到 1: 0 的比分",
+        # 正文里提到 <think> 标签属于正常聊天：未闭合标签只在行首才当泄漏处理
+        "我在想 <think> 这种标签到底是干嘛的",
+        "这个 <thinking> 标签是你们内部用的吗",
     ],
 )
 def test_keeps_legitimate_replies(text: str) -> None:
