@@ -12,6 +12,10 @@ from neobot_app.reply.output_guard import clean_segments, clean_text, should_dro
 
 
 BOT_NAME = "AAA大肥鱼"
+#: 注意：这份集合只是「照着生产接线该长什么样」写的输入参数。
+#: 生产里的等价物是 MessageQueue.sender_labels() ∪ 配置昵称，
+#: 由 test_sender_labels_come_from_queue_not_handcrafted 锁定（审查指出：
+#: 只喂手工构造的名字集合会让用例永远绿灯，掩盖真实缺口）。
 KNOWN = [BOT_NAME, "贝拉", ".純屬虛構."]
 
 
@@ -61,14 +65,37 @@ def test_strips_replied_message_marker() -> None:
         ("<think>实际上我需要回复一句就好", ""),
         # 正文中间的标签是「被提到」而不是泄漏：原样保留，不砍正文
         ("先说结论<think>这里是草稿", "先说结论<think>这里是草稿"),
-        # 未闭合且在行首：其后全是草稿，整段丢弃
-        ("前面的话\n<think>这里是草稿", "前面的话"),
-        # 嵌套写法：成对块被剥掉，剩下的孤立闭标签原样保留（不做二次猜测）
-        ("<think>a<think>b</think>c</think>", "c</think>"),
+        # 未闭合但出现在正文本行之后：无法区分「草稿」与「在讲这个标签」，
+        # 只去掉标签本身，正文保留（示例/技术讨论优先）
+        ("前面的话\n<think>这里是草稿", "前面的话\n这里是草稿"),
+        # 畸形嵌套（开标签里还有开标签）：没有确定答案，只做最保守的处理
+        # —— 正文一个字符都不删（宁可漏一次，也不多删）。
+        ("<think>a<think>b</think>c</think>", "<think>a<think>b</think>c</think>"),
     ],
 )
 def test_strips_think_tags(dirty: str, expected: str) -> None:
     assert clean_text(dirty) == expected
+
+
+def test_keeps_inline_and_example_think_tags() -> None:
+    """示例/技术性回复里的成对标签属于正文，不得整块删除（只认行首的泄漏）。
+
+    审查员实测场景：群里让机器人写提示词模板时，示例整块消失 → 答非所问。
+    """
+    example = "模板是这样:\n<thinking>\n先分析用户意图\n</thinking>\n然后回答"
+    assert clean_text(example) == example
+    fenced = "这样写：\n" + chr(96) * 3 + "\n<think>占位</think>\n" + chr(96) * 3 + "\n结束"
+    assert clean_text(fenced) == fenced
+
+
+def test_keeps_indentation_and_blank_lines() -> None:
+    """没有标注时行首空白必须原样保留（markdown 代码块/嵌套列表靠它）。"""
+    code = "看这个：\n" + chr(96) * 3 + "python\ndef f():\n    return 1\n" + chr(96) * 3
+    assert clean_text(code) == code
+    assert clean_text("def f():\n    return 1") == "def f():\n    return 1"
+    assert clean_text("- a\n  - b") == "- a\n  - b"
+    # 有标注时才连带吃掉标注占的那段空白（用已知名字，见 KNOWN）
+    assert clean_text("12: 贝拉:     缩进后面的正文", known_sender_names=KNOWN) == "缩进后面的正文"
 
 
 def test_keeps_fenced_code_intact() -> None:
@@ -179,3 +206,73 @@ def test_clean_segments_cleans_each_item() -> None:
 
 def test_clean_segments_handles_none() -> None:
     assert clean_segments(None) == []
+
+
+# ── 生产接线：名字集合必须真的从队列里来 ─────────────────────────
+
+
+def _group_message(message_id: int, user_id: int, nickname: str, text: str):
+    from neobot_adapter.model.basic import PostMessageMessagesender
+    from neobot_adapter.model.message import GroupMessage, MessageSegment
+
+    return GroupMessage(
+        message_id=message_id,
+        user_id=user_id,
+        group_id=888888,
+        sender=PostMessageMessagesender(user_id=user_id, nickname=nickname),
+        message=[MessageSegment(type="text", data={"text": text})],
+        raw_message=text,
+    )
+
+
+def test_sender_labels_come_from_queue_not_handcrafted() -> None:
+    """审查缺口回归：前缀里的名字常常是**别人**，名字集合必须覆盖全部发送者。
+
+    原实现只收 Bot 自己（bot_sender_labels），于是报告主症状
+    `215: 贝拉: 要抱抱` 在生产接线下洗不掉，还会被按空格切成三条发出去。
+    """
+    from neobot_app.message.queue import MessageQueue
+    from neobot_app.message.numbering import MessageNumbering
+
+    BOT_QQ, USER_QQ = 10001, 20001
+    queue = MessageQueue(
+        max_size=50, timestamp_interval_seconds=10_000_000, bot_account=BOT_QQ
+    )
+    queue.push("888888", _group_message(1, USER_QQ, "贝拉", "要抱抱"))
+    queue.push("888888", _group_message(-99, BOT_QQ, BOT_NAME, "我是一条鱼"))
+
+    names = MessageNumbering(bot_account=BOT_QQ, queue=queue).known_sender_names()
+    assert "贝拉" in names and BOT_NAME in names
+
+    # 用「生产真实拿到的集合」清洗报告里的脏输出（不是手工喂的 KNOWN）
+    assert clean_text("215: 贝拉: 要抱抱", known_sender_names=names) == "要抱抱"
+    assert (
+        clean_text("193: AAA大肥鱼: 我是一条鱼", known_sender_names=names)
+        == "我是一条鱼"
+    )
+
+
+def test_clean_text_is_idempotent_on_annotation_chains() -> None:
+    """审查缺口回归：被名字层「露出来」的标注必须当趟就处理干净。
+
+    工具层只清一趟就把「已发送 X」回报给模型，若这里不幂等，
+    模型看到的文本与实际发出/写回历史的内容就会漂移。
+    """
+    cases = [
+        "AAA大肥鱼: [msg_id=909] 在的",
+        "AAA大肥鱼: 192: 我是一条鱼",
+        "166: AAA大肥鱼: AAA大肥鱼: 我是一条鱼",
+        "[msg_id=1] 12: 贝拉: [msg_id=2] 你好",
+    ]
+    for raw in cases:
+        once = clean_text(raw, known_sender_names=KNOWN)
+        assert clean_text(once, known_sender_names=KNOWN) == once, raw
+
+
+def test_punctuation_only_reply_is_never_dropped() -> None:
+    """审查缺口回归：`？？？`/`。。。` 是正常回复，带前缀也不许被吞。"""
+    for text in ["？？？", "。。。", "(^_^)", "!!!"]:
+        cleaned = clean_text("12: 贝拉: " + text, known_sender_names=KNOWN)
+        assert cleaned == text
+        assert should_drop("12: 贝拉: " + text, cleaned, known_sender_names=KNOWN) is False
+

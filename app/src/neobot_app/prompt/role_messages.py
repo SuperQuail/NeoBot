@@ -54,14 +54,17 @@ def _render_role_message(
     我是一条鱼`），脏输出再经 self-sent 通道写回历史，形成正反馈。
 
     编号/发送者名字是给模型**指代别人**用的（reply_to / msg_number），对它自己
-    的发言没有用处；唯一的效果就是把标注示范成输出格式。因此这里只保留
-    `[msg_id=...]`（工具参数的 message_id 来源）与正文。
+    的发言没有用处；唯一的效果就是把标注示范成输出格式。`[msg_id=...]` 同理：
+    它也是被禁止的行首标注，而且自身发言带的是**负数合成 id**（不是真实 OneBot
+    message_id，填进 reply_to 也解析不出东西）。因此 assistant 行只留正文。
     """
     if role == "assistant":
+        # 不渲染任何标注（含 [msg_id=...]）：msg_id 参数保留只是为了让两种角色
+        # 共用同一个签名，这里刻意不用它。
         body = content
         if replied:
             body = f"[被回复消息] {content}"
-        return {"role": role, "content": f"[msg_id={msg_id}] {body}" if msg_id is not None else body}
+        return {"role": role, "content": body}
     prefix = f"{number}: " if number is not None else ""
     marker = "[被回复消息] " if replied else ""
     return {"role": role, "content": f"[msg_id={msg_id}] {prefix}{marker}{sender}: {content}"}

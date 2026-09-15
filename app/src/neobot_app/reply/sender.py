@@ -378,6 +378,20 @@ class ReplySender:
                     self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
 
         # Phase C: send text (segmented, with cooldown)
+        # 已经发过图片、且清洗后没有任何文字可发时，直接收尾：
+        # 不要为了「走完流程」再发一条空文本消息（审查实测：空 data.text 会真的上线）。
+        if images and not str(text or "").strip() and not segments:
+            event.send_response = (
+                send_results[0] if len(send_results) == 1 else send_results
+            )
+            self._leave_sending(event, conv_ref.kind)
+            self._debug_helper.record(
+                "reply_sent",
+                event,
+                formatted=formatted_messages,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return True
         reply_messages = self._build_reply_messages(
             text,
             segments=segments,
@@ -392,6 +406,18 @@ class ReplySender:
             send_original=send_original,
         )
         reply_messages = list(after_postprocess.payload.get("reply_messages", reply_messages))
+        # 插件也能在 reply.postprocess.after 改写逐条内容，而这一步在清洗之后：
+        # 再清一遍，保证「最后一道兜底」不被插件绕过（清洗幂等，重复调用无副作用）。
+        reply_messages = clean_segments(
+            reply_messages, known_sender_names=self._sender_names(sender_names)
+        )
+        if not reply_messages and not images:
+            self._logger.warning(
+                "回复清洗后为空，已丢弃发送",
+                conversation=f"{conv_ref.kind}:{conv_ref.id}",
+            )
+            self._leave_sending(event, conv_ref.kind)
+            return False
         is_group = conv_ref.kind == "group"
         pipeline_key = f"{conv_ref.kind}:{conv_ref.id}"
 
@@ -726,15 +752,18 @@ class ReplySender:
         绝不把一段空消息当作「已回复」发出去。
         """
         names = self._sender_names(sender_names)
+        # text 与 segments 一律都清洗：segments 存活时 text 也不能放过 ——
+        # send_original=true 会让 _build_reply_messages 选中 text，脏 text 会直通线上。
+        cleaned_text = self._clean_text_only(text, names)
         if segments:
             kept = clean_segments(segments, known_sender_names=names)
             if kept:
-                return text, kept
-            if str(text or "").strip():
+                return cleaned_text, kept
+            if cleaned_text:
                 # segments 全是残渣时只保留 text（已清洗），而不是发出空消息
-                return self._clean_text_only(text, names), None
+                return cleaned_text, None
             return "", None
-        return self._clean_text_only(text, names), segments
+        return cleaned_text, segments
 
     @staticmethod
     def _clean_text_only(text: str, sender_names: list[str]) -> str:
@@ -763,7 +792,14 @@ class ReplySender:
         send_original: bool = False,
     ) -> list[str]:
         if send_original:
-            return [text.strip()]
+            # text 被清洗成空时不要返回 [""]（那会发出一条空消息），
+            # 退回 segments / 交由调用方判空跳过（见 send_reply 的空判）。
+            stripped = text.strip()
+            if stripped:
+                return [stripped]
+            if segments:
+                return [s.strip() for s in segments if s.strip()]
+            return []
         if segments:
             cleaned = [s.strip() for s in segments if s.strip()]
             if cleaned:

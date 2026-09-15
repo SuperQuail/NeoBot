@@ -40,6 +40,9 @@ _MAX_PREFIX_PASSES = 6
 #: 嵌套 `<think>` 块的最大剥离轮数（每轮至少吃掉一对标签）。
 _MAX_THINK_BLOCK_PASSES = 5
 
+#: `clean_text` 迭代到不动点的最大轮数（每轮至少削掉一层标注）。
+_MAX_CLEAN_PASSES = 5
+
 # 思维链标签：本体从不读取 reasoning_content，也不剥离这些标签，模型真按
 # <cot> 那段要求写就会原样发到群里，所以这里统一剥掉。
 _THINK_TAGS = ("think", "thinking", "reasoning", "cot", "analysis")
@@ -54,10 +57,19 @@ _THINK_LINE_OPEN = re.compile(
 _THINK_LINE_CLOSE = re.compile(
     r"^[ \t]*<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE | re.MULTILINE
 )
-_THINK_BLOCK = re.compile(
-    r"<\s*(?:" + _TAG_ALTERNATION + r")\s*>.*?<\s*/\s*(?:"
+#: 消息开头的成对标签块（`<think>…</think>`），可跨行。用 match/切片消费，
+#: 不用 sub —— 只剥开头那一处，正文中间的标签（示例、技术讨论）一律不动。
+_THINK_LEADING_BLOCK = re.compile(
+    r"\A[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>"
+    r"(?:(?!<\s*(?:" + _TAG_ALTERNATION + r")\s*>).)*?"
+    r"<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>[ \t]*\n?",
+    re.IGNORECASE | re.DOTALL,
+)
+#: 整条消息就是 `<think>...</think>`（用于「只剩残渣」判定）
+_THINK_WHOLE_LINE = re.compile(
+    r"\A[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>.*<\s*/\s*(?:"
     + _TAG_ALTERNATION
-    + r")\s*>",
+    + r")\s*>[ \t]*\Z",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -167,17 +179,21 @@ class _PrefixStripper:
         return self._ref.sub("", text)
 
     def is_annotation_only(self, text: str) -> bool:
-        """判断（已剥过前缀的）文本是否只剩标注残渣。"""
+        """判断（已剥过前缀的）文本是否只剩标注本身。
+
+        刻意**不**把「只剩标点」当残渣：`？？？`、`。。。`、`(^_^)` 都是正常回复，
+        带不带前缀都该照发。判定只认确证是标注的形态：空、裸编号、方括号标注、
+        孤立的发送者名字、以及行首一整块被剥离的思维链。
+        """
         candidate = text.strip()
         if not candidate:
-            return True
-        if _PUNCT_ONLY.match(candidate):
             return True
         if _NUMBER_ONLY.fullmatch(candidate) or _MARKER_ONLY.fullmatch(candidate):
             return True
         if self._name_only is not None and self._name_only.fullmatch(candidate):
             return True
-        return False
+        # 整条就是一行 <think>...</think>（剥完只剩空/空白）
+        return bool(_THINK_WHOLE_LINE.fullmatch(candidate))
 
     def has_annotation(self, text: str) -> bool:
         """判断文本里是否真的出现过可确认的系统标注（用于区分「残渣」与「短回复」）。"""
@@ -194,7 +210,13 @@ class _PrefixStripper:
         )
 
     def _strip_line(self, line: str) -> str:
-        current = line.lstrip()
+        """剥掉行首的系统标注；**没有标注时原样返回该行**（含缩进）。
+
+        注意不能无条件 lstrip：正文里的 markdown 代码块、嵌套列表、缩进引用
+        都靠行首空白，压平了等于毁内容（send_long_reply 的存在意义就是代码块/
+        表格）。只有确实削掉了标注，才连带吃掉标注占据的那段空白。
+        """
+        current = line
         for _ in range(_MAX_PREFIX_PASSES):
             before = current
             started_with_number = _NUMBER_PREFIX.match(current) is not None
@@ -209,9 +231,10 @@ class _PrefixStripper:
                 # 削掉名字后可能露出「182: 」这类编号残渣
                 if candidate != current:
                     candidate = self._strip_bare_number(candidate)
-            current = candidate.lstrip()
-            if current == before:
+            if candidate == before:
                 break
+            # 只有真的削掉了东西，才把标注留下的行首空白一并去掉
+            current = candidate.lstrip(" \t")
         return current
 
     def _strip_bare_number(self, text: str) -> str:
@@ -237,7 +260,19 @@ class _PrefixStripper:
 
 
 def _strip_think_blocks(text: str) -> str:
-    """剥离 `<think>` 类标签内容；代码围栏内原样保留。"""
+    """剥离**整条消息开头**的 `<think>` 块；其余位置的标签一律不动。
+
+    只认「消息开头的标签」这一种形态，理由（有实测支撑）：
+
+    * 模型漏草稿时，标签必然写在最前面（`<think>他想问我在不在</think>在的`），
+      这条能拦住真正的泄漏；
+    * 而群里让机器人写提示词/XML 示例时，标签出现在正文中间
+      （`模板是这样:\n<thinking>\n先分析意图\n</thinking>\n然后回答`），
+      整块删掉会答非所问 —— 那是正文，不是泄漏；
+    * 写成整条只有一行标签（`<think>草稿被截断`）时，按未闭合处理，其后全丢。
+
+    代码围栏内原样保留（技术讨论里贴的标签示例不动）。
+    """
     if "<" not in text:
         return text
     parts = _FENCE_SPLIT.split(text)
@@ -245,26 +280,24 @@ def _strip_think_blocks(text: str) -> str:
         part = parts[index]
         if not part or "<" not in part:
             continue
-        # 非贪婪逐个删除：嵌套时也能把整块连同内层标签一起吃掉
         cleaned = part
         for _ in range(_MAX_THINK_BLOCK_PASSES):
-            updated = _THINK_BLOCK.sub("", cleaned)
-            if updated == cleaned:
+            match = _THINK_LEADING_BLOCK.match(cleaned)
+            if match is None:
                 break
-            cleaned = updated
-        # 未闭合的 <think>：其后全部视为思考内容（模型被截断时会这样）。
-        # 只在**行首**才认定为泄漏：模型写草稿时标签总在行首，而正文里提到
-        # "<think> 这个标签" 属于正常聊天，不该被砍掉半句话。
-        # 只认「行首的标签」：模型写草稿时标签一定在行首，而正文里提到
-        # "<think> 这个标签" 属于正常聊天 —— 正文中间的标签一律原样保留。
-        match = _THINK_LINE_OPEN.search(cleaned)
-        if match is not None and _THINK_CLOSE.search(cleaned, match.end()) is None:
-            # 行首未闭合 ⇒ 其后全是草稿
-            cleaned = cleaned[: match.start()]
-        else:
-            # 行首孤立的开标签（读到一半断了）才是残渣；文字里的标签不动
-            cleaned = _THINK_LINE_OPEN.sub("", cleaned)
-            cleaned = _THINK_LINE_CLOSE.sub("", cleaned)
+            cleaned = cleaned[match.end():]
+        # 行首开标签（整行只有标签）的两种处理：
+        # 1) 它在消息最开头且后面没有闭标签 ⇒ 泄漏，其后全是草稿，整段丢弃；
+        # 2) 它在正文本行之后且后面没有闭标签 ⇒ 无法判断是泄漏还是「在讲这个标签」，
+        #    只去掉标签本身，正文一律保留（示例/技术讨论优先）。
+        for match in list(_THINK_LINE_OPEN.finditer(cleaned)):
+            if _THINK_CLOSE.search(cleaned, match.end()) is not None:
+                continue
+            if not cleaned[: match.start()].strip():
+                cleaned = ""
+            else:
+                cleaned = cleaned[: match.start()] + cleaned[match.end():]
+            break
         parts[index] = cleaned
     return "".join(parts)
 
@@ -276,17 +309,27 @@ def clean_text(
 ) -> str:
     """清洗待发送文本：剥离思维链标签与行首系统标注。
 
-    幂等：对已清洗过的文本再调用不会继续变化。
+    幂等：迭代到不动点为止，因此「工具层清一趟给模型看的文本」与「发送层清的
+    文本」必然一致（否则模型看到的「已发送 X」和真正发出去的内容会漂移）。
     """
     stripper = _PrefixStripper(known_sender_names)
-    current = _strip_think_blocks(str(text or ""))
-    current = _MSG_ID.sub("", current)
-    current = _REPLIED_MARK.sub("", current)
-    if stripper.usable:
-        current = stripper.strip_name_prefixes(current)
-    current = stripper.strip_prefixes(current)
-    lines = [line.rstrip() for line in current.split("\n")]
-    return "\n".join(lines).strip()
+    # 只在最外层吃掉首尾空白：首行缩进对正文没有意义（消息没有"缩进语义"），
+    # 而**后续行**的缩进必须原样保留（markdown 代码块/嵌套列表靠它）。
+    current = str(text or "").strip()
+    for _ in range(_MAX_CLEAN_PASSES):
+        before = current
+        current = _strip_think_blocks(current)
+        current = _MSG_ID.sub("", current)
+        current = _REPLIED_MARK.sub("", current)
+        if stripper.usable:
+            current = stripper.strip_name_prefixes(current)
+        current = stripper.strip_prefixes(current)
+        if current == before:
+            break
+    # 只去掉整段首尾的空白，**绝不动行内与行首缩进**：send_reply 的正文可能是
+    # markdown（代码块缩进、表格对齐都靠它），逐行 rstrip 会把 "    def f():" 压平。
+    # 空白行本身是正文的一部分，也不做压缩。
+    return current.strip()
 
 
 def should_drop(

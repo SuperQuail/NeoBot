@@ -2106,7 +2106,12 @@ class ReplyOrchestrator:
         # 随机触发表情包发送
         await self._maybe_trigger_sticker(queue, queue_key, event)
 
-        numbering = MessageNumbering()
+        # 带上 bot_account：wait/增量注入等文本渲染路径需要判断「这条是不是我自己发的」，
+        # 以免把自己的历史发言渲染成「编号: 发送者: 正文」再次示范脏格式。
+        numbering = MessageNumbering(
+            bot_account=getattr(getattr(self._config, "bot", None), "account", None),
+            queue=queue,
+        )
 
         # 1. 克隆消息队列
         queue_copy = queue.clone(queue_key)
@@ -2266,17 +2271,20 @@ class ReplyOrchestrator:
             images: list[int] | None = None,
             merge_text_with_image: bool = False,
         ) -> bool:
-            """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。"""
+            """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
+
+            只有真的发出去了才把 round 标记为「已回复」：清洗后为空时不标记，
+            这样主循环不会在模型还没说出正文时就退出（否则整轮静默结束）。
+            """
             nonlocal reply_sent
-            reply_sent = True
             event.generated_text = text
             sink = self._self_sent_sink(queue, queue_copy, queue_key)
             # 发送前清洗用的「我自己可能长什么样」：本会话队列里自身发言的显示名
-            sender_names = self._bot_display_names(queue, queue_copy)
+            sender_names = self._known_sender_names(queue, queue_copy)
             if reply_to is not None:
                 event.reply_to_number = reply_to
                 msg_id = numbering.get_message_id(reply_to)
-                return await self._send_reply(
+                delivered = await self._send_reply(
                     event,
                     text,
                     reply_to_message_id=msg_id,
@@ -2288,17 +2296,21 @@ class ReplyOrchestrator:
                     self_sent=sink,
                     sender_names=sender_names,
                 )
-            return await self._send_reply(
-                event,
-                text,
-                mention_user_ids=mention,
-                segments=segments,
-                send_original=send_original,
-                images=images,
-                merge_text_with_image=merge_text_with_image,
-                self_sent=sink,
-                sender_names=sender_names,
-            )
+            else:
+                delivered = await self._send_reply(
+                    event,
+                    text,
+                    mention_user_ids=mention,
+                    segments=segments,
+                    send_original=send_original,
+                    images=images,
+                    merge_text_with_image=merge_text_with_image,
+                    self_sent=sink,
+                    sender_names=sender_names,
+                )
+            if delivered is not False:
+                reply_sent = True
+            return delivered
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
             if self._emoji_service is None:
@@ -4570,20 +4582,22 @@ class ReplyOrchestrator:
     # ── 发送回复 ──
 
     @staticmethod
-    def _bot_display_names(*queues: Any) -> list[str]:
-        """收集 Bot 自己在队列里用过的显示名（昵称 / 群名片）。
+    def _known_sender_names(*queues: Any) -> list[str]:
+        """收集本会话出现过的全部发送者显示名（昵称 / 群名片）。
 
-        发送前清洗要认出模型从历史里学来的 `名字: ` 前缀，而历史里 Bot 的
-        显示名可能是群名片而非配置昵称，因此直接扫描队列里自身发言的 sender。
+        发送前清洗要认出模型从历史里学来的 `编号: 名字: ` 前缀，而前缀里的名字
+        **既可能是它自己，也可能是它续写出来的别人**（报告主症状
+        `215: 贝拉: 要抱抱` 就是别人），所以这里收全部发送者，不只收 Bot 自己。
+        Bot 自己的配置昵称由 sender 侧另行补齐。
         """
         names: list[str] = []
         seen: set[str] = set()
         for queue in queues:
-            labels = getattr(queue, "bot_sender_labels", None)
-            if not callable(labels):
+            getter = getattr(queue, "sender_labels", None)
+            if not callable(getter):
                 continue
             try:
-                values = labels()
+                values = getter()
             except Exception:
                 continue
             for value in values or []:
@@ -4616,7 +4630,7 @@ class ReplyOrchestrator:
             bot_name = str(getattr(bot_cfg, "nick_name", "") or "")
             if bot_name:
                 names.append(bot_name)
-            names.extend(self._bot_display_names(self._group_queue, self._friend_queue))
+            names.extend(self._known_sender_names(self._group_queue, self._friend_queue))
         return await self._sender.send_reply(
             event,
             text,

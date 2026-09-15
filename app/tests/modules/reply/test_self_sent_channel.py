@@ -221,6 +221,68 @@ async def test_segments_path_is_cleaned_like_text_path() -> None:
     assert texts == ["我吃的是token", "不是钱"]
 
 
+
+
+# ── 审查缺口：text / segments / send_original 的组合缝 ─────────────
+
+
+async def test_dirty_text_is_cleaned_even_when_segments_present() -> None:
+    """审查缺口回归：segments 存活时 text 也必须清洗。
+
+    否则 send_original=true 会让 text 胜出（_build_reply_messages 优先 text），
+    脏 text 绕过兜底直通线上并写回历史。
+    """
+    sender, adapter = _make_sender()
+    event = _event()
+
+    await sender.send_reply(
+        event,
+        "193: AAA大肥鱼: 我是一条鱼",
+        segments=["哦"],
+        send_original=True,
+        sender_names=["AAA大肥鱼"],
+    )
+
+    texts = [payload[0]["data"]["text"] for payload in adapter.sent]
+    assert texts == ["我是一条鱼"]
+
+
+async def test_send_original_with_residue_text_falls_back_to_segments() -> None:
+    """审查缺口回归：send_original 且 text 清洗后为空时，不许发出空消息。"""
+    sender, adapter = _make_sender()
+    event = _event()
+
+    await sender.send_reply(
+        event, "192:", segments=["我是一条鱼"], send_original=True, sender_names=["AAA大肥鱼"]
+    )
+
+    texts = [payload[0]["data"]["text"] for payload in adapter.sent]
+    assert texts == ["我是一条鱼"]
+
+
+async def test_residue_text_with_image_does_not_send_empty_text() -> None:
+    """审查缺口回归：text 清洗后为空 + 表情包时，表情包照发、空文本不发。"""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        image = Path(tmp) / "a.png"
+        image.write_bytes(b"a")
+        sender, adapter = _make_sender()
+        sender._emoji_service = FakeEmojiService({1: image})
+        event = _event()
+
+        await sender.send_reply(
+            event, "192: AAA大肥鱼:", images=[1], sender_names=["AAA大肥鱼"]
+        )
+
+    text_segments = [
+        seg for payload in adapter.sent for seg in payload if seg.get("type") == "text"
+    ]
+    assert text_segments == []
+    assert any(seg.get("type") == "image" for payload in adapter.sent for seg in payload)
+
+
 # ── 根因：assistant 消息不得带「编号: 发送者:」前缀 ──────────────
 
 
@@ -248,9 +310,11 @@ def test_assistant_messages_carry_no_render_prefix() -> None:
     )
     assistant = [m["content"] for m in messages if m["role"] == "assistant"]
     user = [m["content"] for m in messages if m["role"] == "user"]
-    assert assistant == ["[msg_id=-1789473219564212] 在的"]
+    # assistant 行不带任何标注：既没有「编号: 名字:」，也没有 [msg_id=...]
+    # （后者的 msg_id 是负数合成 id，规则里本就不许出现；见 role_messages 注释）
+    assert assistant == ["在的"]
     assert "AAA大肥鱼" not in assistant[0]
-    assert ": " not in assistant[0].split("] ", 1)[1]
+    assert "[msg_id=" not in assistant[0]
     # user 侧仍是「[msg_id=...] 编号: 名字: 正文」
     assert [m for m in user if m.startswith("[msg_id=")] == ["[msg_id=1] 1: 群友: 在吗"]
 
@@ -279,8 +343,9 @@ def test_assistant_quoted_reply_has_no_prefix() -> None:
     messages = build_role_messages(queue, QUEUE_KEY, bot_account=BOT_QQ)
     assistant = [m["content"] for m in messages if m["role"] == "assistant"]
     assert len(assistant) == 2
-    assert assistant[0] == "[msg_id=-99] [被回复消息] 我是一条鱼"
-    assert assistant[1] == "[msg_id=-99] 我是一条鱼"
+    assert assistant[0] == "[被回复消息] 我是一条鱼"
+    assert assistant[1] == "我是一条鱼"
+    assert all("[msg_id=" not in line for line in assistant)
 
 
 def test_queue_with_only_user_messages_has_no_assistant_block() -> None:

@@ -460,7 +460,7 @@ class ReplyToolExecutor(ToolExecutor):
                 "text/segments 只放你要说的那句话本身：不要带消息编号、发送者名字、"
                 "[msg_id=...]、[被回复消息] 这类系统标注（它们是系统给你读的，不是输出格式），"
                 "也不要把思考过程、草稿、计划或 <think> 标签写进去。"
-                "例如 text 写 \"我是一条鱼\"，不要写 \"193: AAA大肥鱼: 我是一条鱼\"；"
+                "例如要回一句「你好呀」，text 就写 \"你好呀\"，不要写 \"12: 某群友: 你好呀\"；"
                 "要引用某条消息时用 reply_to 传编号，正文里不要再写一遍编号和名字。",
                 {
                     "properties": {
@@ -482,8 +482,9 @@ class ReplyToolExecutor(ToolExecutor):
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。"
-                            "每条同样只放正文，不要带编号/发送者名字/[msg_id=...] 等系统标注，"
-                            "也不要写思考过程；只有标注的条目会被丢弃。",
+                            "**给了 segments 时 text 会被忽略（text 仍是必填字段，随便填），"
+                            "不要再把正文只写进 text。** 每条同样只放正文，不要带编号/发送者名字/"
+                            "[msg_id=...] 等系统标注，也不要写思考过程；只剩标注或只剩思考的条目会被丢弃。",
                         },
                         "images": {
                             "type": "array",
@@ -518,8 +519,8 @@ class ReplyToolExecutor(ToolExecutor):
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
                     "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
-                    "markdown/caption 只放正文本身，不要带消息编号、发送者名字、[msg_id=...] "
-                    "这类系统标注，也不要把思考过程或草稿写进去。"
+                    "markdown/caption 会**原样**发出并写回对话历史，不做任何清洗，所以必须只放正文本身："
+                    "不要带消息编号、发送者名字、[msg_id=...] 这类系统标注，也不要把思考过程或草稿写进去。"
                     "调用后本轮回复视为完成。",
                     {
                         "properties": {
@@ -654,7 +655,9 @@ class ReplyToolExecutor(ToolExecutor):
                             },
                             "text": {
                                 "type": "string",
-                                "description": "可选，随表情包一起发送的文字。",
+                                "description": "可选，随表情包一起发送的文字。只放你要说的那句话本身："
+                                "不要带编号/发送者名字/[msg_id=...] 等系统标注，也不要写思考过程"
+                                "（这里同样会原样发出并写回对话历史）。",
                             },
                         },
                         "required": ["number"],
@@ -745,12 +748,14 @@ class ReplyToolExecutor(ToolExecutor):
             tools.append(
                 _tool_def(
                     "speak",
-                    "将文本转为语音消息并发送到当前会话。适合用于需要语音回复、朗读内容等场景。",
+                    "将文本转为语音消息并发送到当前会话。适合用于需要语音回复、朗读内容等场景。"
+                    "text 只放要念出来的正文本身：不要带编号/发送者名字/[msg_id=...] 等系统标注，"
+                    "也不要写思考过程（这里同样会原样发出并写回对话历史）。",
                     {
                         "properties": {
                             "text": {
                                 "type": "string",
-                                "description": "需要转为语音的文本内容。",
+                                "description": "需要转为语音的文本内容，只放正文本身，不要带系统标注或思考过程。",
                             },
                         },
                         "required": ["text"],
@@ -2404,30 +2409,37 @@ class ReplyToolExecutor(ToolExecutor):
         )
 
     def _sender_names(self) -> list[str]:
-        """发送前清洗用的「我自己可能长什么样」名字集合。
+        """发送前清洗用的「本会话出现过的发送者名字」集合。
 
-        队列里 Bot 自身发言可能以昵称或群名片入队，两处都要带上，否则
-        `名字: ` 前缀认不出来（见 reply/output_guard.py）。
+        必须与发送层（ReplySender）拿到的是同一份集合，否则会出现
+        「工具层说已发送、发送层却清空丢弃」的静默缝（审查实测：
+        群名片≠配置昵称时 text="169: 某群友:" 会从这条缝漏过去）。
+
+        名字来源：配置昵称 + 队列里出现过的全部发送者（昵称/群名片）。
+        队列由 MessageNumbering 持有（见 numbering.MessageNumbering(queue=...)），
+        拿不到时退化为「只有配置昵称 + 本会话发送者快照」。
         """
-        names: list[str] = []
+        names = self._known_sender_names()
+        if str(self._bot_name or "").strip():
+            names.insert(0, str(self._bot_name).strip())
         seen: set[str] = set()
+        unique: list[str] = []
+        for name in names:
+            text = str(name or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                unique.append(text)
+        return unique
 
-        def add(value: object) -> None:
-            name = str(value or "").strip()
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-
-        add(self._bot_name)
-        queue = getattr(self._numbering, "_queue", None)
-        labels = getattr(queue, "bot_sender_labels", None)
-        if callable(labels):
+    def _known_sender_names(self) -> list[str]:
+        """从编号实例持有的队列里取全部发送者显示名（取不到就返回空）。"""
+        method = getattr(self._numbering, "known_sender_names", None)
+        if callable(method):
             try:
-                for label in labels():
-                    add(label)
+                return list(method())
             except Exception:
-                pass
-        return names
+                return []
+        return []
 
     def _preview_split(self, text: str) -> ReplyPostProcessResult:
         return process_reply_text(

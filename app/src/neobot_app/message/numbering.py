@@ -5,16 +5,70 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from neobot_app.message.queue import MessageQueue
+    from neobot_app.message.queue import MessageQueue  # noqa: F401  (仅类型标注用)
 
 
 class MessageNumbering:
     """管理编号与 message_id 的映射，并生成带编号的格式化文本。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        bot_account: int | None = None,
+        *,
+        queue: "MessageQueue | None" = None,
+    ) -> None:
         self._mapping: dict[int, int] = {}
         self._reverse: dict[int, int] = {}
         self._next_number: int = 1
+        #: Bot 自己的 QQ 号。用于判断某条消息是不是它自己发出的 ——
+        #: 自己的发言不渲染「编号: 发送者:」前缀（见 _render_numbered_line）。
+        self._bot_account = bot_account
+        #: 本会话消息队列（供发送前清洗取「出现过的发送者名字」，见 known_sender_names）。
+        self._queue = queue
+
+    def known_sender_names(self) -> list[str]:
+        """本会话出现过的全部发送者显示名（昵称 / 群名片，去重）。
+
+        发送前清洗（reply/output_guard.py）用它认出模型从历史里学来的
+        `编号: 名字: ` 前缀。工具层与发送层必须共用同一份集合，否则会出现
+        「工具层说已发送、发送层清空丢弃」的静默缝。
+        """
+        queue = self._queue
+        if queue is None:
+            return []
+        getter = getattr(queue, "sender_labels", None)
+        if not callable(getter):
+            return []
+        try:
+            return [str(name) for name in (getter() or []) if str(name or "").strip()]
+        except Exception:
+            return []
+
+    def _render_numbered_line(
+        self,
+        message,
+        msg_id: int,
+        number: int,
+        sender: str,
+        content: str,
+        *,
+        replied: bool = False,
+    ) -> str:
+        """渲染一条带编号的消息行。
+
+        **Bot 自己的发言不带「编号: 发送者:」前缀**（与 prompt/role_messages 的
+        assistant 分支同一口径）：历史里出现这种前缀时，模型会把它当成自己该
+        输出的格式去模仿（问题报告的根因）。wait 结果、增量注入、文本回退路径
+        都必须和聊天记录渲染保持一致，否则同一条管线里一边禁止一边示范。
+        """
+        is_self = (
+            self._bot_account is not None
+            and getattr(message, "user_id", None) == self._bot_account
+        )
+        marker = "[被回复消息] " if replied else ""
+        if is_self:
+            return f"[msg_id={msg_id}] {marker}{content}"
+        return f"[msg_id={msg_id}] {number}: {marker}{sender}: {content}"
 
     def apply(
         self,
@@ -67,7 +121,9 @@ class MessageNumbering:
                     reply_number_resolver=self._assign_number,
                     wrap_at_mention=False,
                 )
-                lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
+                lines.append(
+                    self._render_numbered_line(msg, msg_id, number, sender, content)
+                )
             elif entry.kind.value == "timestamp":
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             elif entry.kind.value == "recall":
@@ -140,7 +196,11 @@ class MessageNumbering:
                     reply_number_resolver=self._assign_number,
                     wrap_at_mention=False,
                 )
-                lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
+                lines.append(
+                    self._render_numbered_line(
+                        entry.message, msg_id, number, sender, content
+                    )
+                )
             elif entry.kind == QueueEntryType.REACTION and entry.reaction is not None:
                 reaction = entry.reaction
                 target_number = self.get_number(reaction.target_message_id)
@@ -174,7 +234,9 @@ class MessageNumbering:
             number = self._assign_number(msg_id)
             sender = queue._message_sender_label(msg, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)
             content = queue._render_message_content(msg)
-            lines.append(f"[msg_id={msg_id}] {number}: {sender}: {content}")
+            lines.append(
+                self._render_numbered_line(msg, msg_id, number, sender, content)
+            )
         return "\n".join(lines)
 
     def get_message_id(self, number: int) -> int | None:
@@ -197,6 +259,8 @@ class MessageNumbering:
             "例如：[msg_id=1425980020] 1: 小明: 你好\n"
             "- 这套标注只是系统给你阅读用的，**不是你的输出格式**：你自己发言时只发正文，"
             "不要带 [msg_id=...]、编号或发送者名字。\n"
+            "- 你自己说过的话在对话里没有编号、也没有 [msg_id=...]，**不要去引用自己的消息**"
+            "（reply_to / msg_number 只能指向别人的消息）；要指代自己的话就直接复述那句话。\n"
             "当有人回复消息时，被回复的消息会以“[被回复消息]”前缀单独显示（有自己的编号）：\n"
             "例如：[msg_id=479202588] 1: [被回复消息] 小红: [图片]\n"
             "     [msg_id=1525160030] 6: 唐天: [回复:消息ID=xxx] @bot 解析这张\n"
@@ -230,7 +294,11 @@ class MessageNumbering:
                 replied_message, sender_labels_by_user=sender_labels_by_user
             )
             content = queue._render_message_content(replied_message)
-            lines.append(f"[msg_id={msg_id}] {number}: [被回复消息] {sender}: {content}")
+            lines.append(
+                self._render_numbered_line(
+                    replied_message, msg_id, number, sender, content, replied=True
+                )
+            )
         return lines
 
     @staticmethod

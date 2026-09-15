@@ -491,7 +491,7 @@ async def test_default_templates_carry_history_consistency_rules():
         template = store.template(section)
         assert "已经回答过" in template
         assert "忽略自己之前说过的话" in template
-        assert "使用 reply 工具引用某条消息时" in template
+        assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
         assert "[msg_id=" in template
         # 无条件禁令：发出的每一条消息都不许以标注开头
         assert "任何时候都禁止把它们写进你的回复" in template
@@ -499,8 +499,9 @@ async def test_default_templates_carry_history_consistency_rules():
         assert "不是你的说话格式" in template
         # 禁止把草稿/思考写进正文
         assert "思考过程、草稿、计划或内心话" in template
-        # 工具描述里给出的输出样例（对照式）
-        assert 'text="我是一条鱼"' in template
+        # 输出样例（对照式）必须用中性占位，不得出现真实群友昵称
+        assert 'text="12: 某群友: 你好呀"' in template
+        assert "AAA大肥鱼" not in template
 
 
 async def test_current_time_section_is_renderable_and_documented():

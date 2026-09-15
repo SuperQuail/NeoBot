@@ -1005,12 +1005,15 @@ class MessageQueue:
             return f"{text} [戳一戳消息]"
         return text
 
-    def bot_sender_labels(self) -> list[str]:
-        """列出 Bot 自己在队列里用过的全部发送者名字（可能在多个会话出现过）。
+    def sender_labels(self, *, include_bot: bool = True) -> list[str]:
+        """列出队列里出现过的全部发送者显示名（昵称 / 群名片，去重）。
 
-        用途：发送前清洗要能认出「模型照抄自己历史学来的 `名字: ` 前缀」，
-        因此需要一份「我自己可能长什么样」的名字集合。只扫描已入队的消息，
-        不依赖 `bot_account`（快照/克隆队列也可能没带）。
+        用途：发送前清洗要认出模型从历史里学来的 `编号: 名字: ` 前缀。脏前缀里的
+        名字**既可能是模型自己的，也可能是它刚续写出来的别人的**（报告里的
+        `215: 贝拉: 要抱抱` 就是别人），所以这份集合必须覆盖本会话所有发送者，
+        只收 Bot 自己是拦不住主症状的。
+
+        include_bot=False 时只返回别人（Bot 自己的名字由配置昵称单独提供）。
         """
         labels: list[str] = []
         seen: set[str] = set()
@@ -1026,7 +1029,11 @@ class MessageQueue:
                 message = entry.message
                 if entry.kind != QueueEntryType.MESSAGE or message is None:
                     continue
-                if self.bot_account is None or message.user_id != self.bot_account:
+                if (
+                    not include_bot
+                    and self.bot_account is not None
+                    and message.user_id == self.bot_account
+                ):
                     continue
                 sender = getattr(message, "sender", None)
                 add(getattr(sender, "nickname", None))
