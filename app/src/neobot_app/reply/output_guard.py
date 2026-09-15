@@ -11,7 +11,7 @@
 下一轮模仿得更起劲，形成正反馈。
 
 提示词与工具描述已按根因修好（不再把标注渲染进 assistant 消息、并明确禁止
-行首标注），本模块是**最后一道兜底**：即使模型偶尔仍然吐标注，也不会发到 QQ。
+行首标注），本模块对已识别的标注提供发送前兜底；未知格式与无标签草稿仍可能漏检。
 设计上刻意保守 —— 只处理「行首的、可确证是系统标注」的形态：
 
 * `[msg_id=...]` / `[被回复消息]` 方括号标注：只可能是系统生成的，删；
@@ -37,34 +37,11 @@ MAX_KNOWN_SENDER_NAMES = 200
 #: 单次清洗里剥前缀的迭代上限（每次迭代至少删掉一层，正常 1-3 次收敛）。
 _MAX_PREFIX_PASSES = 6
 
-#: 嵌套 `<think>` 块的最大剥离轮数（每轮至少吃掉一对标签）。
-_MAX_THINK_BLOCK_PASSES = 5
-
-#: `clean_text` 迭代到不动点的最大轮数（每轮至少削掉一层标注）。
-_MAX_CLEAN_PASSES = 5
-
 # 思维链标签：本体从不读取 reasoning_content，也不剥离这些标签，模型真按
 # <cot> 那段要求写就会原样发到群里，所以这里统一剥掉。
 _THINK_TAGS = ("think", "thinking", "reasoning", "cot", "analysis")
 _TAG_ALTERNATION = "|".join(_THINK_TAGS)
 _THINK_OPEN = re.compile(r"<\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE)
-_THINK_CLOSE = re.compile(r"<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE)
-#: 行首的未闭合开标签（前面只有空白）：这种才是「思考泄漏」，正文中间的引用不是
-_THINK_LINE_OPEN = re.compile(
-    r"^[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE | re.MULTILINE
-)
-#: 行首的闭合标签（换行后顶格写）：成对块被剥离后留下的那种残渣
-_THINK_LINE_CLOSE = re.compile(
-    r"^[ \t]*<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE | re.MULTILINE
-)
-#: 消息开头的成对标签块（`<think>…</think>`），可跨行。用 match/切片消费，
-#: 不用 sub —— 只剥开头那一处，正文中间的标签（示例、技术讨论）一律不动。
-_THINK_LEADING_BLOCK = re.compile(
-    r"\A[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>"
-    r"(?:(?!<\s*(?:" + _TAG_ALTERNATION + r")\s*>).)*?"
-    r"<\s*/\s*(?:" + _TAG_ALTERNATION + r")\s*>[ \t]*\n?",
-    re.IGNORECASE | re.DOTALL,
-)
 #: 整条消息就是 `<think>...</think>`（用于「只剩残渣」判定）
 _THINK_WHOLE_LINE = re.compile(
     r"\A[ \t]*<\s*(?:" + _TAG_ALTERNATION + r")\s*>.*<\s*/\s*(?:"
@@ -92,17 +69,14 @@ _MARKER_ONLY = re.compile(
     r"^[ \t]*(?:\[msg_id\s*=\s*[-+]?\d+\s*\]|\[被回复消息\])[ \t]*[:：]?[ \t]*\Z",
     re.MULTILINE,
 )
-_PUNCT_ONLY = re.compile(
-    r'^[\s\-–—+*/\\|,，。.:：;；、!！?？~～^_=<>《》「」『』'
-    + "'"
-    + r'“”‘’()（）\[\]【】{}…#@·•]*\Z'
-)
-
 #: 行首的 `发送者名字: ` 引用（名字由调用方给出，见 clean_text）。
 _MAX_NAME_CHARS = 40
 
-#: 按代码围栏切分，奇数段是围栏内容（原样保留，不剥标签）。
-_FENCE_SPLIT = re.compile(r"(```.*?```)", re.DOTALL)
+# Fences may be unfinished, longer than three characters, or use tildes.
+_FENCE_TOKEN = re.compile(r"`{3,}|~{3,}")
+_THINK_TOKEN = re.compile(
+    r"<\s*(?P<closing>/)?\s*(?:" + _TAG_ALTERNATION + r")\s*>", re.IGNORECASE
+)
 
 
 def _known_names(known_sender_names: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -244,8 +218,8 @@ class _PrefixStripper:
         —— 「10: 30 见」「1: 你好」「1:0 这比分绝了」都不满足，因此原样保留。
 
         已知取舍：单独一句「192: 我是一条鱼」（编号后不是已知名字）不会被剥掉，
-        因为与「1: 你好」这类正常带序号正文无法区分。实测脏输出总会在编号后带上
-        发送者名字（模型模仿的正是历史里那套完整格式），漏掉的概率极低。
+        因为与「1: 你好」这类正常带序号正文无法区分。这是保留正常内容的取舍，
+        不保证覆盖所有模型输出格式。
         """
         match = _NUMBER_PREFIX.match(text)
         if match is None:
@@ -259,47 +233,119 @@ class _PrefixStripper:
         return text
 
 
-def _strip_think_blocks(text: str) -> str:
-    """剥离**整条消息开头**的 `<think>` 块；其余位置的标签一律不动。
+def _consume_leading_think(text: str, depth: int = 0) -> tuple[str, int]:
+    """Consume leading reasoning with nesting, retaining depth across segments.
 
-    只认「消息开头的标签」这一种形态，理由（有实测支撑）：
-
-    * 模型漏草稿时，标签必然写在最前面（`<think>他想问我在不在</think>在的`），
-      这条能拦住真正的泄漏；
-    * 而群里让机器人写提示词/XML 示例时，标签出现在正文中间
-      （`模板是这样:\n<thinking>\n先分析意图\n</thinking>\n然后回答`），
-      整块删掉会答非所问 —— 那是正文，不是泄漏；
-    * 写成整条只有一行标签（`<think>草稿被截断`）时，按未闭合处理，其后全丢。
-
-    代码围栏内原样保留（技术讨论里贴的标签示例不动）。
+    Only a leading tag starts a block. Tags in prose/examples are literal.
+    An unclosed leading block consumes the remainder (including later segments).
     """
-    if "<" not in text:
-        return text
-    parts = _FENCE_SPLIT.split(text)
-    for index in range(0, len(parts), 2):
-        part = parts[index]
-        if not part or "<" not in part:
-            continue
-        cleaned = part
-        for _ in range(_MAX_THINK_BLOCK_PASSES):
-            match = _THINK_LEADING_BLOCK.match(cleaned)
-            if match is None:
+    cursor = 0
+    while True:
+        if depth == 0:
+            leading = len(text[cursor:]) - len(text[cursor:].lstrip())
+            opening = _THINK_OPEN.match(text, cursor + leading)
+            if opening is None:
+                return text[cursor:], 0
+            cursor = opening.end()
+            depth = 1
+        for tag in _THINK_TOKEN.finditer(text, cursor):
+            depth += -1 if tag.group("closing") else 1
+            cursor = tag.end()
+            if depth == 0:
                 break
-            cleaned = cleaned[match.end():]
-        # 行首开标签（整行只有标签）的两种处理：
-        # 1) 它在消息最开头且后面没有闭标签 ⇒ 泄漏，其后全是草稿，整段丢弃；
-        # 2) 它在正文本行之后且后面没有闭标签 ⇒ 无法判断是泄漏还是「在讲这个标签」，
-        #    只去掉标签本身，正文一律保留（示例/技术讨论优先）。
-        for match in list(_THINK_LINE_OPEN.finditer(cleaned)):
-            if _THINK_CLOSE.search(cleaned, match.end()) is not None:
+        else:
+            return "", depth
+
+
+def _strip_prefixes_outside_fences(
+    text: str, stripper: _PrefixStripper, fence: str | None = None,
+) -> tuple[str, str | None]:
+    """Protect complete AND unfinished backtick/tilde fences from all cleanup."""
+    def clean(part: str, start: int, *, followed_by_fence: bool = False) -> str:
+        # Slicing must not invent a start/end of line around an inline fence.
+        inline = start > 0 and text[start - 1] != "\n"
+        if inline:
+            part = "\0" + part
+        if followed_by_fence:
+            part += "\0"
+        while True:
+            before = part
+            part = _MSG_ID.sub("", part)
+            part = _REPLIED_MARK.sub("", part)
+            part = stripper.strip_prefixes(part)
+            if part == before:
+                break
+        if followed_by_fence:
+            part = part[:-1]
+        return part[1:] if inline else part
+
+    parts: list[str] = []
+    cursor = 0
+    while True:
+        if fence is None:
+            opening = _FENCE_TOKEN.search(text, cursor)
+            if opening is None:
+                parts.append(clean(text[cursor:], cursor))
+                return "".join(parts), None
+            parts.append(clean(text[cursor:opening.start()], cursor, followed_by_fence=True))
+            marker = opening.group()
+            line_end = text.find("\n", opening.end())
+            if line_end < 0:
+                line_end = len(text)
+            inline_close = next((
+                token for token in _FENCE_TOKEN.finditer(text, opening.end(), line_end)
+                if token.group() == marker
+            ), None)
+            if inline_close is not None:
+                # Inline code is protected locally, never carried into later messages.
+                parts.append(text[opening.start():inline_close.end()])
+                cursor = inline_close.end()
                 continue
-            if not cleaned[: match.start()].strip():
-                cleaned = ""
-            else:
-                cleaned = cleaned[: match.start()] + cleaned[match.end():]
-            break
-        parts[index] = cleaned
-    return "".join(parts)
+            # Prefix removal may expose a real block opener ("Bot: ```text").
+            # Decide from the cleaned line, before touching any fenced content.
+            if "".join(parts).rsplit("\n", 1)[-1].strip():
+                # A run inside prose is not an unfinished Markdown block fence.
+                parts.append(marker)
+                cursor = opening.end()
+                continue
+            fence = marker
+            start, search_from = opening.start(), opening.end()
+        else:
+            start, search_from = cursor, cursor
+        closing = next((
+            token for token in _FENCE_TOKEN.finditer(text, search_from)
+            if token.group()[0] == fence[0] and len(token.group()) >= len(fence)
+            and not text[text.rfind("\n", 0, token.start()) + 1:token.start()].strip()
+            and not text[token.end():].split("\n", 1)[0].strip()
+        ), None)
+        if closing is None:
+            parts.append(text[start:])
+            return "".join(parts), fence
+        parts.append(text[start:closing.end()])
+        cursor = closing.end()
+        fence = None
+
+
+def _clean_with_state(
+    text: str, stripper: _PrefixStripper, depth: int = 0, fence: str | None = None,
+) -> tuple[str, int, str | None]:
+    current = str(text or "").strip()
+    if depth:
+        current, depth = _consume_leading_think(current, depth)
+        if depth:
+            return "", depth, None
+    # Every changing pass deletes characters, so termination is bounded by the
+    # input length, not an arbitrary cap that could leave a different second pass.
+    while True:
+        before = current
+        current, next_fence = _strip_prefixes_outside_fences(current, stripper, fence)
+        if fence is None:
+            current, depth = _consume_leading_think(current)
+        current = current.strip()
+        if depth:
+            return current, depth, None
+        if current == before:
+            return current, depth, next_fence
 
 
 def clean_text(
@@ -307,29 +353,13 @@ def clean_text(
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
 ) -> str:
-    """清洗待发送文本：剥离思维链标签与行首系统标注。
+    """Remove leading reasoning and annotations; preserve fenced/inline examples.
 
-    幂等：迭代到不动点为止，因此「工具层清一趟给模型看的文本」与「发送层清的
-    文本」必然一致（否则模型看到的「已发送 X」和真正发出去的内容会漂移）。
+    Cleanup reaches a fixed point, including whitespace exposed by deletions.
+    Untagged reasoning cannot reliably be distinguished from ordinary prose.
     """
-    stripper = _PrefixStripper(known_sender_names)
-    # 只在最外层吃掉首尾空白：首行缩进对正文没有意义（消息没有"缩进语义"），
-    # 而**后续行**的缩进必须原样保留（markdown 代码块/嵌套列表靠它）。
-    current = str(text or "").strip()
-    for _ in range(_MAX_CLEAN_PASSES):
-        before = current
-        current = _strip_think_blocks(current)
-        current = _MSG_ID.sub("", current)
-        current = _REPLIED_MARK.sub("", current)
-        if stripper.usable:
-            current = stripper.strip_name_prefixes(current)
-        current = stripper.strip_prefixes(current)
-        if current == before:
-            break
-    # 只去掉整段首尾的空白，**绝不动行内与行首缩进**：send_reply 的正文可能是
-    # markdown（代码块缩进、表格对齐都靠它），逐行 rstrip 会把 "    def f():" 压平。
-    # 空白行本身是正文的一部分，也不做压缩。
-    return current.strip()
+    cleaned, _, _ = _clean_with_state(text, _PrefixStripper(known_sender_names))
+    return cleaned
 
 
 def should_drop(
@@ -340,9 +370,8 @@ def should_drop(
 ) -> bool:
     """判断一条消息是否已被清洗成「只剩标注残渣」而不该发送。
 
-    必须同时满足两点，避免误伤 `666`、`...` 这类合法短回复：
-    1. 原文里确实存在可确认的系统标注；
-    2. 清洗后除了标点/数字/引号之类没有别的内容。
+    必须同时满足：原文中存在标注，且清洗后为空或仅剩标注。
+    标点、数字与引号本身可以是正常回复，不按残渣删除。
     """
     if str(cleaned or "").strip() == str(original or "").strip():
         return False
@@ -357,12 +386,13 @@ def clean_segments(
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
-    """逐条清洗分句结果，丢弃清洗后为空或只剩残渣的条目。"""
+    """清洗分句并跨分句保留思考块深度，避免正文段逃逸。"""
     cleaned: list[str] = []
+    stripper = _PrefixStripper(known_sender_names)
+    depth = 0
+    fence = None
     for segment in segments or []:
-        original = str(segment or "")
-        text = clean_text(original, known_sender_names=known_sender_names)
-        if not text or should_drop(original, text, known_sender_names=known_sender_names):
-            continue
-        cleaned.append(text)
+        text, depth, fence = _clean_with_state(str(segment or ""), stripper, depth, fence)
+        if text:
+            cleaned.append(text)
     return cleaned

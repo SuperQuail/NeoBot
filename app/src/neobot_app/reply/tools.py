@@ -519,7 +519,7 @@ class ReplyToolExecutor(ToolExecutor):
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
                     "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
-                    "markdown/caption 会**原样**发出并写回对话历史，不做任何清洗，所以必须只放正文本身："
+                    "markdown/caption 会先做输出安全清洗，再用于渲染、发送和对话历史；仍必须只放正文本身："
                     "不要带消息编号、发送者名字、[msg_id=...] 这类系统标注，也不要把思考过程或草稿写进去。"
                     "调用后本轮回复视为完成。",
                     {
@@ -657,7 +657,7 @@ class ReplyToolExecutor(ToolExecutor):
                                 "type": "string",
                                 "description": "可选，随表情包一起发送的文字。只放你要说的那句话本身："
                                 "不要带编号/发送者名字/[msg_id=...] 等系统标注，也不要写思考过程"
-                                "（这里同样会原样发出并写回对话历史）。",
+                                "（发送和写回对话历史前会做输出安全清洗）。",
                             },
                         },
                         "required": ["number"],
@@ -750,7 +750,7 @@ class ReplyToolExecutor(ToolExecutor):
                     "speak",
                     "将文本转为语音消息并发送到当前会话。适合用于需要语音回复、朗读内容等场景。"
                     "text 只放要念出来的正文本身：不要带编号/发送者名字/[msg_id=...] 等系统标注，"
-                    "也不要写思考过程（这里同样会原样发出并写回对话历史）。",
+                    "也不要写思考过程（发送和写回对话历史前会做输出安全清洗）。",
                     {
                         "properties": {
                             "text": {
@@ -1903,7 +1903,10 @@ class ReplyToolExecutor(ToolExecutor):
             if emoji_entry is None:
                 total = self._emoji.emoji_count
                 return f"错误：表情包编号 {number} 不存在，当前共 {total} 个表情包"
-        text = str(args.get("text") or "")
+        text = clean_text(
+            str(args.get("text") or ""), known_sender_names=self._sender_names()
+        )
+        # 附带文字可为空；清洗掉草稿后仍可单独发送表情包。
         await handler(number=number, text=text)
         entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
         return f"已发送表情包 {entry_name}"
@@ -1983,6 +1986,9 @@ class ReplyToolExecutor(ToolExecutor):
         text = str(args.get("text") or "").strip()
         if not text:
             return "错误：text 不能为空"
+        text = clean_text(text, known_sender_names=self._sender_names())
+        if not text.strip():
+            return "错误：text 清洗后为空，请只提供要朗读的正文，不要带系统标注或思考草稿"
         try:
             return await self._speak_handler(text=text)
         except Exception as exc:
@@ -2127,10 +2133,17 @@ class ReplyToolExecutor(ToolExecutor):
                 {"ok": False, "error": "Markdown 转图片功能未配置"}, ensure_ascii=False
             )
 
-        markdown = str(args.get("markdown") or "").strip()
+        raw_markdown = str(args.get("markdown") or "").strip()
+        sender_names = self._sender_names()
+        markdown = clean_text(raw_markdown, known_sender_names=sender_names)
         pre_rendered = str(args.get("image_path") or "").strip()
 
-        if not markdown and not pre_rendered:
+        if raw_markdown and not markdown.strip() and not pre_rendered:
+            return json.dumps(
+                {"ok": False, "error": "markdown 清洗后为空，请只提供正文，不要带系统标注或思考草稿"},
+                ensure_ascii=False,
+            )
+        if not markdown.strip() and not pre_rendered:
             return json.dumps(
                 {"ok": False, "error": "markdown 和 image_path 至少需要提供一个"},
                 ensure_ascii=False,
@@ -2154,7 +2167,9 @@ class ReplyToolExecutor(ToolExecutor):
                 return json.dumps(
                     {"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False
                 )
-        caption = str(args.get("caption") or "").strip()
+        caption = clean_text(
+            str(args.get("caption") or "").strip(), known_sender_names=sender_names
+        )
 
         if pre_rendered:
             image_path = pre_rendered

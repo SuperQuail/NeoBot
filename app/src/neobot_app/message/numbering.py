@@ -16,6 +16,7 @@ class MessageNumbering:
         bot_account: int | None = None,
         *,
         queue: "MessageQueue | None" = None,
+        queue_key: str | None = None,
     ) -> None:
         self._mapping: dict[int, int] = {}
         self._reverse: dict[int, int] = {}
@@ -25,6 +26,7 @@ class MessageNumbering:
         self._bot_account = bot_account
         #: 本会话消息队列（供发送前清洗取「出现过的发送者名字」，见 known_sender_names）。
         self._queue = queue
+        self._queue_key = queue_key
 
     def known_sender_names(self) -> list[str]:
         """本会话出现过的全部发送者显示名（昵称 / 群名片，去重）。
@@ -40,7 +42,8 @@ class MessageNumbering:
         if not callable(getter):
             return []
         try:
-            return [str(name) for name in (getter() or []) if str(name or "").strip()]
+            values = getter() if self._queue_key is None else getter(queue_key=self._queue_key)
+            return [str(name) for name in (values or []) if str(name or "").strip()]
         except Exception:
             return []
 
@@ -79,6 +82,9 @@ class MessageNumbering:
         all_new: bool = False,
     ) -> str:
         """为一个队列中的所有消息编号并将其渲染为文本。"""
+        if self._queue is None:
+            self._queue = queue
+        self._queue_key = queue_key
         lines: list[str] = []
         entries = queue.entries(queue_key)
         sender_labels, sender_labels_by_user = queue._build_sender_labels(entries)

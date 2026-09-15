@@ -65,12 +65,10 @@ def test_strips_replied_message_marker() -> None:
         ("<think>实际上我需要回复一句就好", ""),
         # 正文中间的标签是「被提到」而不是泄漏：原样保留，不砍正文
         ("先说结论<think>这里是草稿", "先说结论<think>这里是草稿"),
-        # 未闭合但出现在正文本行之后：无法区分「草稿」与「在讲这个标签」，
-        # 只去掉标签本身，正文保留（示例/技术讨论优先）
-        ("前面的话\n<think>这里是草稿", "前面的话\n这里是草稿"),
-        # 畸形嵌套（开标签里还有开标签）：没有确定答案，只做最保守的处理
-        # —— 正文一个字符都不删（宁可漏一次，也不多删）。
-        ("<think>a<think>b</think>c</think>", "<think>a<think>b</think>c</think>"),
+        # 正文中的标签引用（包括未闭合示例）完整保留，不剥掉示例标签。
+        ("前面的话\n<think>这里是草稿", "前面的话\n<think>这里是草稿"),
+        # 消息开头的嵌套思考应按深度完整消费，不能把漏洞锁成预期行为。
+        ("<think>a<think>b</think>c</think>", ""),
     ],
 )
 def test_strips_think_tags(dirty: str, expected: str) -> None:

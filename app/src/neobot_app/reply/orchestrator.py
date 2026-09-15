@@ -2111,6 +2111,7 @@ class ReplyOrchestrator:
         numbering = MessageNumbering(
             bot_account=getattr(getattr(self._config, "bot", None), "account", None),
             queue=queue,
+            queue_key=queue_key,
         )
 
         # 1. 克隆消息队列
@@ -2279,8 +2280,8 @@ class ReplyOrchestrator:
             nonlocal reply_sent
             event.generated_text = text
             sink = self._self_sent_sink(queue, queue_copy, queue_key)
-            # 发送前清洗用的「我自己可能长什么样」：本会话队列里自身发言的显示名
-            sender_names = self._known_sender_names(queue, queue_copy)
+            # 发送前清洗只使用当前会话的发送者标签（含快照中的历史标签）。
+            sender_names = self._known_sender_names(queue, queue_copy, queue_key=queue_key)
             if reply_to is not None:
                 event.reply_to_number = reply_to
                 msg_id = numbering.get_message_id(reply_to)
@@ -4582,7 +4583,7 @@ class ReplyOrchestrator:
     # ── 发送回复 ──
 
     @staticmethod
-    def _known_sender_names(*queues: Any) -> list[str]:
+    def _known_sender_names(*queues: Any, queue_key: str | None = None) -> list[str]:
         """收集本会话出现过的全部发送者显示名（昵称 / 群名片）。
 
         发送前清洗要认出模型从历史里学来的 `编号: 名字: ` 前缀，而前缀里的名字
@@ -4597,7 +4598,7 @@ class ReplyOrchestrator:
             if not callable(getter):
                 continue
             try:
-                values = getter()
+                values = getter() if queue_key is None else getter(queue_key=queue_key)
             except Exception:
                 continue
             for value in values or []:
@@ -4623,14 +4624,17 @@ class ReplyOrchestrator:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
         # post-reply hooks：可对回复文本做后处理
         text = await self._apply_post_reply_hooks(event, text) or text
-        # sender_names 只在缺省时兜底补一份（配置昵称 + 队列里自身发言的显示名）
+        # 缺少标签时补配置昵称及当前会话标签，不能混入其他群聊/私聊。
         names = list(sender_names or [])
         if not names:
             bot_cfg = getattr(self._config, "bot", None) if self._config else None
             bot_name = str(getattr(bot_cfg, "nick_name", "") or "")
             if bot_name:
                 names.append(bot_name)
-            names.extend(self._known_sender_names(self._group_queue, self._friend_queue))
+            ref = event.conversation_ref
+            if ref is not None and ref.kind in {"group", "private"}:
+                queue = self._group_queue if ref.kind == "group" else self._friend_queue
+                names.extend(self._known_sender_names(queue, queue_key=str(ref.id)))
         return await self._sender.send_reply(
             event,
             text,

@@ -1005,7 +1005,9 @@ class MessageQueue:
             return f"{text} [戳一戳消息]"
         return text
 
-    def sender_labels(self, *, include_bot: bool = True) -> list[str]:
+    def sender_labels(
+        self, queue_key: str | None = None, *, include_bot: bool = True
+    ) -> list[str]:
         """列出队列里出现过的全部发送者显示名（昵称 / 群名片，去重）。
 
         用途：发送前清洗要认出模型从历史里学来的 `编号: 名字: ` 前缀。脏前缀里的
@@ -1013,6 +1015,8 @@ class MessageQueue:
         `215: 贝拉: 要抱抱` 就是别人），所以这份集合必须覆盖本会话所有发送者，
         只收 Bot 自己是拦不住主症状的。
 
+        queue_key 指定当前会话；省略时保留汇总所有队列的旧接口。
+        同时收集实际渲染标签（含重名消歧后缀）及被回复消息作者。
         include_bot=False 时只返回别人（Bot 自己的名字由配置昵称单独提供）。
         """
         labels: list[str] = []
@@ -1024,20 +1028,36 @@ class MessageQueue:
                 seen.add(name)
                 labels.append(name)
 
-        for queue in self._queues.values():
-            for entry in queue:
-                message = entry.message
-                if entry.kind != QueueEntryType.MESSAGE or message is None:
-                    continue
-                if (
-                    not include_bot
-                    and self.bot_account is not None
-                    and message.user_id == self.bot_account
-                ):
-                    continue
-                sender = getattr(message, "sender", None)
-                add(getattr(sender, "nickname", None))
-                add(getattr(sender, "card", None))
+        # No key retains the legacy aggregate API; runtime callers supply their key.
+        queues = (
+            self._queues.values()
+            if queue_key is None
+            else (self._queues.get(queue_key, ()),)
+        )
+        for queue in queues:
+            entries = list(queue)
+            rendered, by_user = self._build_sender_labels(entries)
+            for entry in entries:
+                messages: list[tuple[QueueMessage, Optional[Dict[int, str]]]] = []
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                    messages.append((entry.message, rendered))
+                    # Numbered reply lines resolve independently parsed authors by user id.
+                    messages.extend((reply, None) for reply in entry.replied_messages)
+                elif entry.kind == QueueEntryType.RECALL and entry.recalled_message is not None:
+                    messages.append((entry.recalled_message, rendered))
+                for message, by_message in messages:
+                    if (
+                        not include_bot
+                        and self.bot_account is not None
+                        and message.user_id == self.bot_account
+                    ):
+                        continue
+                    sender = getattr(message, "sender", None)
+                    add(getattr(sender, "nickname", None))
+                    add(getattr(sender, "card", None))
+                    add(self._message_sender_label(
+                        message, sender_labels=by_message, sender_labels_by_user=by_user
+                    ))
         return labels
 
     @staticmethod
