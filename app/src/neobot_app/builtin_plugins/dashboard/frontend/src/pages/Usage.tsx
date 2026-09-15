@@ -14,9 +14,6 @@ const RANGES = [
 
 function fmtCost(value?: number | null): string {
   const num = Number(value || 0);
-  if (num === 0) return '¥0';
-  if (Math.abs(num) < 0.01) return '¥' + num.toFixed(6);
-  if (Math.abs(num) < 1) return '¥' + num.toFixed(4);
   return '¥' + num.toFixed(2);
 }
 
