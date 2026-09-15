@@ -97,6 +97,73 @@ async def test_send_reply_missing_handler_returns_error():
     assert "处理器未配置" in result
 
 
+async def test_send_reply_strips_learned_annotation_prefix():
+    """模型从历史里学来的「编号: 名字:」前缀必须在工具层就被削掉。
+
+    工具层清洗的意义：模型在工具返回值里看到的是「自己真正发出去的内容」，
+    而且写回历史的 self-sent 文本同样是清洗后的（见 sender）。
+    """
+    captured: dict = {}
+
+    async def handler(**kwargs):
+        captured.update(kwargs)
+
+    executor = _make_executor(send_reply_handler=handler, bot_name="AAA大肥鱼")
+    result = await executor.execute(
+        "send_reply", {"text": "193: AAA大肥鱼: 我是一条鱼"}
+    )
+
+    assert captured["text"] == "我是一条鱼"
+    assert "我是一条鱼" in result
+
+
+async def test_send_reply_cleans_segments_and_drops_residue():
+    """segments 与 text 走同一套清洗；只剩标注的条目被丢弃。"""
+    captured: dict = {}
+
+    async def handler(**kwargs):
+        captured.update(kwargs)
+
+    executor = _make_executor(send_reply_handler=handler, bot_name="AAA大肥鱼")
+    await executor.execute(
+        "send_reply",
+        {
+            "text": "ignored",
+            "segments": ["192:", "我是一条鱼", "AAA大肥鱼:", "<think>草稿</think>不是钱"],
+            "ai_check_approved": True,
+        },
+    )
+
+    assert captured["segments"] == ["我是一条鱼", "不是钱"]
+
+
+async def test_send_reply_rejects_pure_annotation_output():
+    """整条只剩标注时必须返回错误让模型重发，而不是把空消息发出去。"""
+    called: list = []
+
+    async def handler(**kwargs):
+        called.append(kwargs)
+
+    executor = _make_executor(send_reply_handler=handler, bot_name="AAA大肥鱼")
+    result = await executor.execute("send_reply", {"text": "192: AAA大肥鱼:"})
+
+    assert called == []
+    assert "清洗后为空" in result
+
+
+async def test_send_reply_keeps_short_legitimate_text():
+    """「666」「...」这类合法短回复不得被当成残渣丢弃。"""
+    captured: dict = {}
+
+    async def handler(**kwargs):
+        captured.update(kwargs)
+
+    executor = _make_executor(send_reply_handler=handler, bot_name="AAA大肥鱼")
+    await executor.execute("send_reply", {"text": "666"})
+
+    assert captured["text"] == "666"
+
+
 # ── wait 冷却与参数校验 ──────────────────────────────────────────
 
 

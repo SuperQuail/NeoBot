@@ -9,6 +9,11 @@
 消息编号(numbering)与 system 提示词中的 <消息编号说明> 共用同一个实例,
 保证工具参数(如 reply_to)引用的编号一致;每条消息行首的 [msg_id=xxx]
 即真实 OneBot message_id,工具参数需要 message_id 时直接使用。
+
+**assistant 消息不带 `编号: 发送者:` 前缀**(根因修复,见 _render_role_message):
+把系统标注渲染进模型自己的历史发言,等于用例子教它「你就该这么说话」——
+模型于是续写聊天记录(`193: AAA大肥鱼: 我是一条鱼`),脏输出再写回历史形成正反馈。
+编号与发送者名字保留在 user 消息上(模型需要用它们指代**别人**)。
 """
 
 from __future__ import annotations
@@ -29,6 +34,37 @@ def _role_for_message(message: Any, bot_account: int) -> str:
     if bot_account and getattr(message, "user_id", None) == bot_account:
         return "assistant"
     return "user"
+
+
+def _render_role_message(
+    *,
+    role: str,
+    msg_id: int | None,
+    number: int | None,
+    sender: str,
+    content: str,
+    replied: bool = False,
+) -> dict[str, str]:
+    """按角色渲染一条聊天记录。
+
+    **assistant 角色不渲染 `编号: 发送者:` 前缀**（根因修复）。
+
+    历史里 assistant 消息带着系统生成的标注，等于用例子教模型「你就该这么说话」：
+    模型被告知这些是它自己说过的话，于是照抄格式去续写聊天记录（`193: AAA大肥鱼:
+    我是一条鱼`），脏输出再经 self-sent 通道写回历史，形成正反馈。
+
+    编号/发送者名字是给模型**指代别人**用的（reply_to / msg_number），对它自己
+    的发言没有用处；唯一的效果就是把标注示范成输出格式。因此这里只保留
+    `[msg_id=...]`（工具参数的 message_id 来源）与正文。
+    """
+    if role == "assistant":
+        body = content
+        if replied:
+            body = f"[被回复消息] {content}"
+        return {"role": role, "content": f"[msg_id={msg_id}] {body}" if msg_id is not None else body}
+    prefix = f"{number}: " if number is not None else ""
+    marker = "[被回复消息] " if replied else ""
+    return {"role": role, "content": f"[msg_id={msg_id}] {prefix}{marker}{sender}: {content}"}
 
 
 def build_role_messages(
@@ -143,14 +179,15 @@ def _build_from_entries(
                 number = numbering._assign_number(replied_id) if numbering else None
                 sender = queue._message_sender_label(replied, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)
                 content = queue._render_message_content(replied)
-                prefix = f"{number}: " if number is not None else ""
                 messages.append(
-                    {
-                        "role": _role_for_message(replied, bot_account),
-                        "content": (
-                            f"[msg_id={replied_id}] {prefix}[被回复消息] {sender}: {content}"
-                        ),
-                    }
+                    _render_role_message(
+                        role=_role_for_message(replied, bot_account),
+                        msg_id=replied_id,
+                        number=number,
+                        sender=sender,
+                        content=content,
+                        replied=True,
+                    )
                 )
 
             msg_id = msg.message_id
@@ -169,12 +206,14 @@ def _build_from_entries(
                 reply_number_resolver=numbering._assign_number if numbering else None,
                 wrap_at_mention=False,
             )
-            prefix = f"{number}: " if number is not None else ""
             messages.append(
-                {
-                    "role": _role_for_message(msg, bot_account),
-                    "content": f"[msg_id={msg_id}] {prefix}{sender}: {content}",
-                }
+                _render_role_message(
+                    role=_role_for_message(msg, bot_account),
+                    msg_id=msg_id,
+                    number=number,
+                    sender=sender,
+                    content=content,
+                )
             )
         elif entry.kind == QueueEntryType.TIMESTAMP:
             text = queue._entry_to_text(entry, sender_labels=sender_labels)

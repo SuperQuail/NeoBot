@@ -206,6 +206,49 @@ async def test_chat_sources_reuse_resolver(png, args):
     assert_image(await skill.execute("add_image", args), png)
 
 
+async def test_source_args_keeps_negative_synthetic_ids():
+    """单元级回归：负数合成 id 与坏数据都不该让 _source_args 抛异常。
+
+    直接断言解析结果，避免「负数被整表丢弃」这种假通过（报告 5.1）。
+    """
+    skill = ImageContextSkill()
+    resolved, kind = await skill._source_args({
+        "msg_number": 7,
+        "pipeline_key": "group:123",
+        "_numbering_mapping": {-1789473219564212: -1789473219564212, "7": "42", "坏": None},
+    })
+    assert kind == "msg_number"
+    assert resolved["_numbering_mapping"] == {7: 42, -1789473219564212: -1789473219564212}
+
+
+@pytest.mark.parametrize("poison", [
+    # Bot 自身发言用严格递减的负数合成 id（ReplySender._next_self_sent_message_id）
+    {-1789473219564212: -1789473219564212},
+    # 脏数据：无法解析为整数的条目
+    {"坏编号": None},
+    # 负数与坏数据混在同一张表里
+    {7: 42, -1789473219564212: -1789473219564212, "x": "y"},
+])
+async def test_numbering_mapping_with_negative_synthetic_ids(png, poison):  # noqa: D401
+    """报告 5.1：Bot 说过一句话后，负数合成 id 不得让整张编号表校验失败。
+
+    原实现逐条 _integer(v, minimum=0) 校验整表，于是只要本次会话里 Bot 发过言，
+    连一条 id 为正数的普通群友消息都会加载失败（"消息ID映射 不能小于 0"）。
+    """
+    payload = image_bytes()
+    message = SimpleNamespace(
+        message_id=42,
+        message=[{"type": "image", "data": {"file": "base64://" + base64.b64encode(payload).decode()}}],
+    )
+    skill = ImageContextSkill(group_message_queue=Queue(message))
+    result = await skill.execute("add_image", {
+        "msg_number": 7,
+        "pipeline_key": "group:123",
+        "_numbering_mapping": {**poison, 7: 42},
+    })
+    assert_image(result, payload)
+
+
 async def test_chat_replied_message_number_and_api_fallback(png):
     message = SimpleNamespace(message_id=42, message=[{"type": "text", "data": {"text": "[图片：旧描述]"}}])
     adapter = SimpleNamespace(get_msg=AsyncMock(return_value=SimpleNamespace(data={"message": [{"type": "image", "data": {"file": "base64://" + base64.b64encode(png).decode()}}]})))

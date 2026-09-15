@@ -54,6 +54,27 @@ def _result(metadata: dict, parts: list[dict] | None = None) -> ImageContextResu
     return ImageContextResult(json.dumps(metadata, ensure_ascii=False), parts)
 
 
+def _numbering_mapping(raw: dict) -> dict[int, int]:
+    """把 `_numbering_mapping` 逐条转换成 int→int，坏条目直接丢弃。
+
+    这里**不能**逐条严格校验（原实现用 `_integer(v, ..., minimum=0)`）：Bot 自身
+    发言使用严格递减的**负数**合成 message_id（见
+    `ReplySender._next_self_sent_message_id`），所以只要本次会话里 Bot 讲过一句话，
+    编号表里就必然有一个负数。严格校验会让整张表抛异常，导致**本轮所有**图片引用
+    （哪怕是 id 为正数的普通群友消息）都加载失败 —— 报告 5.1 的真实故障。
+
+    按需取值即可：目标那一条取不到时，下游会给出「消息编号 N 无法映射到真实消息ID」，
+    既不误伤其它条目，也不会把负数合成 id 当成非法数据。
+    """
+    mapping: dict[int, int] = {}
+    for key, value in raw.items():
+        try:
+            mapping[int(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
 def _integer(value: Any, name: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError(f"{name} 必须是整数")
@@ -247,10 +268,9 @@ class ImageContextSkill(SkillModule):
         resolved = {key: args[key] for key in ("pipeline_key", "_numbering_mapping") if key in args}
         resolved["image_index"] = _integer(args.get("image_index", 0), "image_index")
         if isinstance(resolved.get("_numbering_mapping"), dict):
-            resolved["_numbering_mapping"] = {
-                _integer(k, "消息编号映射"): _integer(v, "消息ID映射")
-                for k, v in resolved["_numbering_mapping"].items()
-            }
+            resolved["_numbering_mapping"] = _numbering_mapping(
+                resolved["_numbering_mapping"]
+            )
         if field in ("msg_number", "message_id"):
             resolved[field] = _integer(value, field)
             return resolved, field

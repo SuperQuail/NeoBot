@@ -52,8 +52,9 @@ def sample_values(config: Any = None) -> dict[str, str]:
         "key_word_reaction_list": "<追加信息_1>对方提到妈妈,可以反问是不是叫夏亚</追加信息_1>",
         "memory_list": "小明生日是明天",
         "numbering_guide": (
-            "消息格式说明:每条消息以「[msg_id=真实message_id] 编号: 用户名: 消息内容」"
-            "的格式呈现。\n例如:[msg_id=1425980020] 1: 小明: 你好"
+            "消息格式说明:别人的消息以「[msg_id=真实message_id] 编号: 用户名: 消息内容」"
+            "的格式呈现;这套标注只是给你阅读用的,不是你的输出格式。"
+            "\n例如:[msg_id=1425980020] 1: 小明: 你好"
         ),
         "new_member_profiles": "[新出现的群友档案]\n小红:新加入的群友",
         "member_profiles": "小红:新加入的群友",

@@ -15,6 +15,7 @@ from neobot_adapter.model.basic import PostMessageMessagesender
 from neobot_adapter.model.message import GroupMessage, MessageSegment
 from neobot_contracts.models import ConversationRef
 
+from neobot_app.message.numbering import MessageNumbering
 from neobot_app.message.queue import (
     MessageQueue,
     NotificationEntry,
@@ -159,6 +160,127 @@ def _message_entries(queue: MessageQueue) -> list:
 
 
 # ── 根因锁定：只有用户消息 ⇒ 没有 assistant 块 ───────────────────
+
+
+# ── 正反馈闭环：脏输出不得写回历史并被下一轮模仿 ──────────────────
+
+
+async def test_dirty_reply_is_cleaned_before_writing_back_to_history() -> None:
+    """P4 回归：模型吐脏前缀时，写回历史的必须是清洗后的正文。
+
+    原缺陷是正反馈：模型照抄历史里的 `编号: 名字:` → 脏文本经 self-sent
+    写回历史 → 下一轮模仿得更起劲。这里锁定「写回历史的那一份是干净的」。
+    """
+    sender, adapter = _make_sender()
+    queue = _make_queue()
+    event = _event()
+
+    await sender.send_reply(
+        event,
+        "193: AAA大肥鱼: 我是一条鱼",
+        self_sent=_sink(queue),
+        sender_names=["AAA大肥鱼"],
+    )
+
+    assert adapter.sent == [[{"type": "text", "data": {"text": "我是一条鱼"}}]]
+    assistant = _assistant_texts(queue)
+    assert len(assistant) == 1
+    assert assistant[0].endswith("我是一条鱼")
+    assert "AAA大肥鱼" not in assistant[0]
+    assert not assistant[0].startswith("193:")
+
+
+async def test_pure_annotation_reply_is_not_sent() -> None:
+    """整条只剩标注时不发空消息、也不写回历史。"""
+    sender, adapter = _make_sender()
+    queue = _make_queue()
+    event = _event()
+
+    sent = await sender.send_reply(
+        event, "192: AAA大肥鱼:", self_sent=_sink(queue), sender_names=["AAA大肥鱼"]
+    )
+
+    assert sent is False
+    assert adapter.sent == []
+    assert _assistant_texts(queue) == []
+
+
+async def test_segments_path_is_cleaned_like_text_path() -> None:
+    """segments 路径与 text 路径共用同一套清洗（此前 segments 完全跳过清洗）。"""
+    sender, adapter = _make_sender()
+    event = _event()
+
+    await sender.send_reply(
+        event,
+        "ignored",
+        segments=["193: AAA大肥鱼: 我吃的是token", "<think>草稿</think>不是钱", "AAA大肥鱼:"],
+        sender_names=["AAA大肥鱼"],
+    )
+
+    texts = [payload[0]["data"]["text"] for payload in adapter.sent]
+    assert texts == ["我吃的是token", "不是钱"]
+
+
+# ── 根因：assistant 消息不得带「编号: 发送者:」前缀 ──────────────
+
+
+def test_assistant_messages_carry_no_render_prefix() -> None:
+    """P0 回归：assistant 块里不许出现 `编号: 名字:` —— 那是模型照抄的格式来源。
+
+    历史里的 assistant 消息带系统标注时，模型会把标注当成自己该输出的格式，
+    开始续写聊天记录（形如 "193: AAA大肥鱼: 我是一条鱼"），脏输出写回历史后
+    形成正反馈。user 消息的编号/名字必须保留（模型要靠它们指代别人）。
+    """
+    queue = _make_queue()
+    queue.push(QUEUE_KEY, _user_message(1, "在吗"))
+    bot_message = GroupMessage(
+        message_id=-1789473219564212,
+        user_id=BOT_QQ,
+        group_id=int(GROUP_ID),
+        sender=PostMessageMessagesender(user_id=BOT_QQ, nickname="AAA大肥鱼"),
+        message=[MessageSegment(type="text", data={"text": "在的"})],
+        raw_message="在的",
+    )
+    queue.push(QUEUE_KEY, bot_message)
+
+    messages = build_role_messages(
+        queue, QUEUE_KEY, numbering=MessageNumbering(), bot_account=BOT_QQ
+    )
+    assistant = [m["content"] for m in messages if m["role"] == "assistant"]
+    user = [m["content"] for m in messages if m["role"] == "user"]
+    assert assistant == ["[msg_id=-1789473219564212] 在的"]
+    assert "AAA大肥鱼" not in assistant[0]
+    assert ": " not in assistant[0].split("] ", 1)[1]
+    # user 侧仍是「[msg_id=...] 编号: 名字: 正文」
+    assert [m for m in user if m.startswith("[msg_id=")] == ["[msg_id=1] 1: 群友: 在吗"]
+
+
+def test_assistant_quoted_reply_has_no_prefix() -> None:
+    """被回复消息走 assistant 角色时同样不带前缀（引用原文以 [被回复消息] 标注）。"""
+    queue = _make_queue()
+    bot_message = GroupMessage(
+        message_id=-99,
+        user_id=BOT_QQ,
+        group_id=int(GROUP_ID),
+        sender=PostMessageMessagesender(user_id=BOT_QQ, nickname="AAA大肥鱼"),
+        message=[MessageSegment(type="text", data={"text": "我是一条鱼"})],
+        raw_message="我是一条鱼",
+    )
+    queue.push(QUEUE_KEY, bot_message)
+    user = _user_message(5, "啥")
+    user.message = [
+        MessageSegment(type="reply", data={"id": "-99"}),
+        MessageSegment(type="text", data={"text": "啥"}),
+    ]
+    entry = queue.entries(QUEUE_KEY)[-1]
+    entry.replied_messages = [bot_message]
+    queue.push(QUEUE_KEY, user)
+
+    messages = build_role_messages(queue, QUEUE_KEY, bot_account=BOT_QQ)
+    assistant = [m["content"] for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 2
+    assert assistant[0] == "[msg_id=-99] [被回复消息] 我是一条鱼"
+    assert assistant[1] == "[msg_id=-99] 我是一条鱼"
 
 
 def test_queue_with_only_user_messages_has_no_assistant_block() -> None:

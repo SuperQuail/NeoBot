@@ -190,11 +190,13 @@ class MessageNumbering:
     @staticmethod
     def format_example() -> str:
         return (
-            "消息格式说明：每条消息以“[msg_id=真实message_id] 编号: 用户名: 消息内容”的格式呈现。\n"
+            "消息格式说明：别人的消息以“[msg_id=真实message_id] 编号: 用户名: 消息内容”的格式呈现。\n"
             "- 行首方括号中的 msg_id= 即真实 OneBot message_id：工具参数需要 message_id 时"
             "（如 message_id、chat: 前缀等），直接使用它，不要再查映射。\n"
             "- 编号（msg_id 之后的数字）用于 reply_to / msg_number 参数指定回复目标消息。\n"
             "例如：[msg_id=1425980020] 1: 小明: 你好\n"
+            "- 这套标注只是系统给你阅读用的，**不是你的输出格式**：你自己发言时只发正文，"
+            "不要带 [msg_id=...]、编号或发送者名字。\n"
             "当有人回复消息时，被回复的消息会以“[被回复消息]”前缀单独显示（有自己的编号）：\n"
             "例如：[msg_id=479202588] 1: [被回复消息] 小红: [图片]\n"
             "     [msg_id=1525160030] 6: 唐天: [回复:消息ID=xxx] @bot 解析这张\n"

@@ -477,7 +477,12 @@ async def test_default_templates_keep_message_format_rules():
 
 
 async def test_default_templates_carry_history_consistency_rules():
-    """默认主提示词必须包含"不重复回答/不忽略自己之前的话/系统标注"三条规则。"""
+    """默认主提示词必须包含「不重复回答 / 不忽略自己之前的话 / 系统标注」三类规则。
+
+    其中系统标注这一条必须是**无条件**禁令（旧文案挂在「使用 reply 工具引用回复时」
+    之下，模型读成了「只有引用别人时不能带标注」），并显式禁止模仿自己历史里的
+    脏前缀、禁止把思考过程写进正文 —— 见问题报告 3.4 与 P1。
+    """
     tmp = Path(tempfile.mkdtemp())
     sync_default_prompts(tmp)
     store = PromptStore(tmp)
@@ -486,8 +491,16 @@ async def test_default_templates_carry_history_consistency_rules():
         template = store.template(section)
         assert "已经回答过" in template
         assert "忽略自己之前说过的话" in template
-        assert "使用 reply 工具引用回复" in template
+        assert "使用 reply 工具引用某条消息时" in template
         assert "[msg_id=" in template
+        # 无条件禁令：发出的每一条消息都不许以标注开头
+        assert "任何时候都禁止把它们写进你的回复" in template
+        # 针对正反馈：不要模仿自己历史里的脏前缀
+        assert "不是你的说话格式" in template
+        # 禁止把草稿/思考写进正文
+        assert "思考过程、草稿、计划或内心话" in template
+        # 工具描述里给出的输出样例（对照式）
+        assert 'text="我是一条鱼"' in template
 
 
 async def test_current_time_section_is_renderable_and_documented():

@@ -22,6 +22,7 @@ from neobot_chat.schema.types import (
 )
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_app.reply.output_guard import clean_segments, clean_text
 from neobot_app.reply.postprocess import (
     ReplyPostProcessResult,
     build_over_limit_guidance,
@@ -455,12 +456,18 @@ class ReplyToolExecutor(ToolExecutor):
                 "向当前会话发送回复，可附带表情包图片。发送图片时先逐一发送图片再发送切分后的文字；"
                 "若设置 merge_text_with_image=true 则文字与第一张图片合并且不切分。"
                 "调用后本轮回复视为完成。"
-                "允许在同一轮内多次发送，用于长任务的开工与进度。",
+                "允许在同一轮内多次发送，用于长任务的开工与进度。"
+                "text/segments 只放你要说的那句话本身：不要带消息编号、发送者名字、"
+                "[msg_id=...]、[被回复消息] 这类系统标注（它们是系统给你读的，不是输出格式），"
+                "也不要把思考过程、草稿、计划或 <think> 标签写进去。"
+                "例如 text 写 \"我是一条鱼\"，不要写 \"193: AAA大肥鱼: 我是一条鱼\"；"
+                "要引用某条消息时用 reply_to 传编号，正文里不要再写一遍编号和名字。",
                 {
                     "properties": {
                         "text": {
                             "type": "string",
-                            "description": "回复内容，尽量自然简洁。",
+                            "description": "回复内容，只填你要说的那句话本身，尽量自然简洁。"
+                            "不要带编号/名字/[msg_id=...] 等系统标注，也不要写思考过程。",
                         },
                         "reply_to": {
                             "type": "integer",
@@ -474,7 +481,9 @@ class ReplyToolExecutor(ToolExecutor):
                         "segments": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。",
+                            "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。"
+                            "每条同样只放正文，不要带编号/发送者名字/[msg_id=...] 等系统标注，"
+                            "也不要写思考过程；只有标注的条目会被丢弃。",
                         },
                         "images": {
                             "type": "array",
@@ -509,6 +518,8 @@ class ReplyToolExecutor(ToolExecutor):
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
                     "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
+                    "markdown/caption 只放正文本身，不要带消息编号、发送者名字、[msg_id=...] "
+                    "这类系统标注，也不要把思考过程或草稿写进去。"
                     "调用后本轮回复视为完成。",
                     {
                         "properties": {
@@ -1563,10 +1574,25 @@ class ReplyToolExecutor(ToolExecutor):
     async def _execute_send_reply(self, args: dict) -> str:
         if self._send_reply is None:
             return "错误：send_reply 处理器未配置"
-        text = str(args.get("text") or "")
-        if not text.strip():
+        raw_text = str(args.get("text") or "")
+        if not raw_text.strip():
             return "错误：回复内容不能为空"
-        segments = self._normalize_segments(args.get("segments"))
+        # 发送前清洗（根因在 role_messages：历史 assistant 消息曾被渲染成
+        # 「编号: 名字: 正文」，模型照抄了这个格式）。工具层先清一遍，模型方能
+        # 看到自己真正发出去的是什么；sender 侧还有同一套兜底，防止清洗后为空。
+        sender_names = self._sender_names()
+        text = clean_text(raw_text, known_sender_names=sender_names)
+        segments = clean_segments(
+            self._normalize_segments(args.get("segments")),
+            known_sender_names=sender_names,
+        )
+        if not text.strip() and not segments and not args.get("images"):
+            return (
+                "错误：回复内容清洗后为空。"
+                "历史消息行首的 \"[msg_id=...]\"、消息编号、发送者名字都是系统标注，"
+                "不是要你模仿的输出格式；请只发送你要说的正文，不要带这些前缀，"
+                "也不要把思考过程/草稿写进正文，然后重新调用 send_reply。"
+            )
         send_original = bool(args.get("send_original") is True)
         ai_check_approved = bool(args.get("ai_check_approved") is True)
         merge_text_with_image = bool(args.get("merge_text_with_image") is True)
@@ -1639,7 +1665,7 @@ class ReplyToolExecutor(ToolExecutor):
                     )
                 )
 
-        await self._send_reply(
+        delivered = await self._send_reply(
             text=text,
             reply_to=reply_to,
             mention=mention,
@@ -1648,6 +1674,14 @@ class ReplyToolExecutor(ToolExecutor):
             images=images,
             merge_text_with_image=merge_text_with_image,
         )
+        if delivered is False:
+            # sender 侧兜底判定「清洗后什么都不剩」：绝不能不吭声地当成发过，
+            # 那样模型会以为已经回复，整轮就此结束。
+            return (
+                "错误：回复内容清洗后为空，未发送。"
+                "不要把消息编号、发送者名字、[msg_id=...] 这类系统标注写进正文，"
+                "也不要把思考过程/草稿当成正文；请只发送你要说的那句话，然后重试。"
+            )
         if segments:
             seg_text = "\n---\n".join(segments)
             return f"已发送 {len(segments)} 条消息：\n{seg_text}"
@@ -2368,6 +2402,32 @@ class ReplyToolExecutor(ToolExecutor):
         return json.dumps(
             {"ok": True, "pipeline_key": pipeline_key, **info}, ensure_ascii=False
         )
+
+    def _sender_names(self) -> list[str]:
+        """发送前清洗用的「我自己可能长什么样」名字集合。
+
+        队列里 Bot 自身发言可能以昵称或群名片入队，两处都要带上，否则
+        `名字: ` 前缀认不出来（见 reply/output_guard.py）。
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: object) -> None:
+            name = str(value or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+
+        add(self._bot_name)
+        queue = getattr(self._numbering, "_queue", None)
+        labels = getattr(queue, "bot_sender_labels", None)
+        if callable(labels):
+            try:
+                for label in labels():
+                    add(label)
+            except Exception:
+                pass
+        return names
 
     def _preview_split(self, text: str) -> ReplyPostProcessResult:
         return process_reply_text(

@@ -2265,15 +2265,18 @@ class ReplyOrchestrator:
             send_original: bool = False,
             images: list[int] | None = None,
             merge_text_with_image: bool = False,
-        ) -> None:
+        ) -> bool:
+            """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。"""
             nonlocal reply_sent
             reply_sent = True
             event.generated_text = text
             sink = self._self_sent_sink(queue, queue_copy, queue_key)
+            # 发送前清洗用的「我自己可能长什么样」：本会话队列里自身发言的显示名
+            sender_names = self._bot_display_names(queue, queue_copy)
             if reply_to is not None:
                 event.reply_to_number = reply_to
                 msg_id = numbering.get_message_id(reply_to)
-                await self._send_reply(
+                return await self._send_reply(
                     event,
                     text,
                     reply_to_message_id=msg_id,
@@ -2283,18 +2286,19 @@ class ReplyOrchestrator:
                     images=images,
                     merge_text_with_image=merge_text_with_image,
                     self_sent=sink,
+                    sender_names=sender_names,
                 )
-            else:
-                await self._send_reply(
-                    event,
-                    text,
-                    mention_user_ids=mention,
-                    segments=segments,
-                    send_original=send_original,
-                    images=images,
-                    merge_text_with_image=merge_text_with_image,
-                    self_sent=sink,
-                )
+            return await self._send_reply(
+                event,
+                text,
+                mention_user_ids=mention,
+                segments=segments,
+                send_original=send_original,
+                images=images,
+                merge_text_with_image=merge_text_with_image,
+                self_sent=sink,
+                sender_names=sender_names,
+            )
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
             if self._emoji_service is None:
@@ -4565,6 +4569,30 @@ class ReplyOrchestrator:
 
     # ── 发送回复 ──
 
+    @staticmethod
+    def _bot_display_names(*queues: Any) -> list[str]:
+        """收集 Bot 自己在队列里用过的显示名（昵称 / 群名片）。
+
+        发送前清洗要认出模型从历史里学来的 `名字: ` 前缀，而历史里 Bot 的
+        显示名可能是群名片而非配置昵称，因此直接扫描队列里自身发言的 sender。
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+        for queue in queues:
+            labels = getattr(queue, "bot_sender_labels", None)
+            if not callable(labels):
+                continue
+            try:
+                values = labels()
+            except Exception:
+                continue
+            for value in values or []:
+                name = str(value or "").strip()
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        return names
+
     async def _send_reply(
         self,
         event: ReplyEvent,
@@ -4576,9 +4604,19 @@ class ReplyOrchestrator:
         images: list[int] | None = None,
         merge_text_with_image: bool = False,
         self_sent: SelfSentSink | None = None,
-    ) -> None:
+        sender_names: list[str] | None = None,
+    ) -> bool:
+        """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
         # post-reply hooks：可对回复文本做后处理
         text = await self._apply_post_reply_hooks(event, text) or text
+        # sender_names 只在缺省时兜底补一份（配置昵称 + 队列里自身发言的显示名）
+        names = list(sender_names or [])
+        if not names:
+            bot_cfg = getattr(self._config, "bot", None) if self._config else None
+            bot_name = str(getattr(bot_cfg, "nick_name", "") or "")
+            if bot_name:
+                names.append(bot_name)
+            names.extend(self._bot_display_names(self._group_queue, self._friend_queue))
         return await self._sender.send_reply(
             event,
             text,
@@ -4589,6 +4627,7 @@ class ReplyOrchestrator:
             images=images,
             merge_text_with_image=merge_text_with_image,
             self_sent=self_sent,
+            sender_names=names,
         )
 
     # ── Bot 自身发言入队（fix(2) 统一通道）────────────────────────
