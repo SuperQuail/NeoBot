@@ -18,7 +18,7 @@ from neobot_contracts.time_context import now_utc
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.output_guard import clean_segments, clean_text, should_drop
-from neobot_app.reply.postprocess import process_reply_text
+from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
@@ -234,12 +234,13 @@ class ReplySender:
         merge_text_with_image: bool = False,
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
+        split_preview: ReplySplitPreview | None = None,
     ) -> bool:
         """发送一段回复；返回是否真的发出了内容。
 
-        返回 False 只出现在「清洗后什么都不剩」这一种情况：整条都是系统标注残渣
-        （或未闭合的思维链），此时宁可不发，也不把空消息/脏前缀发到群里。
-        调用方（工具层）据此告诉模型重新生成正文，而不是误报「已发送」。
+        清洗后没有正文（含裸 cancel）且没有可用图片时返回 False，不发空消息。
+        send_original 只跳过分句，不跳过安全清洗；图片不因附带文字被清空而丢弃。
+        调用方（工具层）据此提示未发送，而不是误报「已发送」。
         """
         before_postprocess = await self._debug_helper.emit_runtime_event(
             "reply.postprocess.before",
@@ -256,7 +257,11 @@ class ReplySender:
         # 输出兜底清洗：不动 text/segments 之外的东西，且这里的 text 就是
         # self-sent 写回历史的文本（见下方 _emit_self_sent_text），因此正反馈
         # 的源头也在这里被切断（详见 reply/output_guard.py）。
-        text, segments = self._sanitize_outgoing(text, segments, sender_names=sender_names)
+        text, segments = self._sanitize_outgoing(
+            text, segments, sender_names=sender_names,
+            prefer_text=send_original or bool(images and merge_text_with_image),
+            split_preview=split_preview,
+        )
         before_send = await self._debug_helper.emit_runtime_event(
             "reply.send.before",
             event,
@@ -282,7 +287,11 @@ class ReplySender:
         mention_user_ids = before_send.payload.get("mention_user_ids", mention_user_ids)
         # 插件可能在 reply.send.before 里改写文本，清洗必须在改写之后再做一次，
         # 否则「最后一道兜底」会被插件绕过。清洗幂等，重复调用无副作用。
-        text, segments = self._sanitize_outgoing(text, segments, sender_names=sender_names)
+        text, segments = self._sanitize_outgoing(
+            text, segments, sender_names=sender_names,
+            prefer_text=send_original or bool(images and merge_text_with_image),
+            split_preview=split_preview,
+        )
         if not (str(text or "").strip() or segments or images):
             self._logger.warning(
                 "回复清洗后为空，已丢弃发送",
@@ -312,6 +321,8 @@ class ReplySender:
                     reply_to_message_id=reply_to_message_id,
                     mention_user_ids=mention_user_ids,
                 )
+                if not text:
+                    merged = [segment for segment in merged if segment["type"] != "text"]
                 merged.append(prepare_image_segment(self._file_server, first_img.file_path))
                 formatted_messages.append(merged)
                 send_results.append(await self.send_with_timeout(conv_ref, merged))
@@ -329,6 +340,10 @@ class ReplySender:
                     await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
                     if self._emoji_service:
                         await self._emoji_service.record_usage(images[i])
+            if not send_results:
+                if event.state is ReplyState.SENDING:
+                    event.transition(ReplyState.GENERATING)
+                return False
             event.send_response = send_results[0] if len(send_results) == 1 else send_results
             self._leave_sending(event, conv_ref.kind)
             self._debug_helper.record(
@@ -381,6 +396,10 @@ class ReplySender:
         # 已经发过图片、且清洗后没有任何文字可发时，直接收尾：
         # 不要为了「走完流程」再发一条空文本消息（审查实测：空 data.text 会真的上线）。
         if images and not str(text or "").strip() and not segments:
+            if not send_results:
+                if event.state is ReplyState.SENDING:
+                    event.transition(ReplyState.GENERATING)
+                return False
             event.send_response = (
                 send_results[0] if len(send_results) == 1 else send_results
             )
@@ -397,6 +416,11 @@ class ReplySender:
             segments=segments,
             send_original=send_original,
         )
+        # Snapshot before handing the mutable list to hooks. Unchanged automatic
+        # splits came from checked whole text; do not reinterpret an isolated word
+        # in e.g. "cancel 是什么意思" as a cancellation decision.
+        automatic_splits = not segments and not send_original
+        original_messages = list(reply_messages)
         after_postprocess = await self._debug_helper.emit_runtime_event(
             "reply.postprocess.after",
             event,
@@ -408,15 +432,23 @@ class ReplySender:
         reply_messages = list(after_postprocess.payload.get("reply_messages", reply_messages))
         # 插件也能在 reply.postprocess.after 改写逐条内容，而这一步在清洗之后：
         # 再清一遍，保证「最后一道兜底」不被插件绕过（清洗幂等，重复调用无副作用）。
-        reply_messages = clean_segments(
-            reply_messages, known_sender_names=self._sender_names(sender_names)
+        trusted_split = (
+            isinstance(split_preview, ReplySplitPreview)
+            and split_preview.matches(text, reply_messages)
         )
-        if not reply_messages and not images:
+        reply_messages = clean_segments(
+            reply_messages, known_sender_names=self._sender_names(sender_names),
+            suppress_control_tokens=not (
+                trusted_split or (automatic_splits and reply_messages == original_messages)
+            ),
+        )
+        if not reply_messages and not send_results:
             self._logger.warning(
                 "回复清洗后为空，已丢弃发送",
                 conversation=f"{conv_ref.kind}:{conv_ref.id}",
             )
-            self._leave_sending(event, conv_ref.kind)
+            if event.state is ReplyState.SENDING:
+                event.transition(ReplyState.GENERATING)
             return False
         is_group = conv_ref.kind == "group"
         pipeline_key = f"{conv_ref.kind}:{conv_ref.id}"
@@ -741,6 +773,8 @@ class ReplySender:
         segments: list[str] | None,
         *,
         sender_names: list[str] | None = None,
+        prefer_text: bool = False,
+        split_preview: ReplySplitPreview | None = None,
     ) -> tuple[str, list[str] | None]:
         """发送前的统一清洗入口（text 与 segments 两条路径共用同一套规则）。
 
@@ -756,13 +790,15 @@ class ReplySender:
         # send_original=true 会让 _build_reply_messages 选中 text，脏 text 会直通线上。
         cleaned_text = self._clean_text_only(text, names)
         if segments:
-            kept = clean_segments(segments, known_sender_names=names)
+            trusted_split = isinstance(split_preview, ReplySplitPreview) and split_preview.matches(text, segments)
+            kept = clean_segments(
+                segments, known_sender_names=names, suppress_control_tokens=not trusted_split,
+            )
             if kept:
                 return cleaned_text, kept
-            if cleaned_text:
-                # segments 全是残渣时只保留 text（已清洗），而不是发出空消息
-                return cleaned_text, None
-            return "", None
+            # Explicit segments are the selected body. If they are all rejected,
+            # do not send the ignored text placeholder/draft as a fallback.
+            return (cleaned_text if prefer_text else ""), None
         return cleaned_text, segments
 
     @staticmethod

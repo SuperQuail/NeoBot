@@ -373,6 +373,40 @@ async def test_onebot_adapter_stop_works_without_start() -> None:
     assert adapter._dispatch_task is None
 
 
+@pytest.mark.asyncio
+async def test_adapter_stop_waits_for_core_to_confirm_receiver_exit(monkeypatch) -> None:
+    """core.stop(False) 是仍在清理，不是停止成功；不提前解绑后再启动旧 core。"""
+    import neobot_adapter.onebot.adapter as adapter_module
+
+    adapter = OneBotAdapter()
+    retried = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    unbound = []
+
+    async def fake_to_thread(function, timeout):
+        assert function == adapter.core.stop
+        calls.append(timeout)
+        if len(calls) == 1:
+            return False
+        retried.set()
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(adapter_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(adapter_module, "unbind_core", lambda: unbound.append(True))
+    task = asyncio.create_task(adapter.stop())
+    try:
+        await asyncio.wait_for(retried.wait(), 1)
+        assert not task.done()
+        assert not unbound
+        assert calls == [8.0, 8.0]
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)
+    assert unbound == [True]
+
+
 def test_onebot_receiver_stop_wakes_thread_and_clears_reference(monkeypatch) -> None:
     """stop 必须唤醒接收线程，线程退出后 thread 引用被清空。"""
     monkeypatch.setenv("NEO_BOT_ADAPTER_HOST", "127.0.0.1")

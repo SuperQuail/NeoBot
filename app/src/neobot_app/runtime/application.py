@@ -80,6 +80,7 @@ class NeoBotApplication(Generic[T]):
         self._shutdown_event = asyncio.Event()
         self._restart_requested = False
         self._started = False
+        self._cleanup_complete = False
         #: 串行化 stop()：run_forever 的 finally 与外部 stop() 可能同时进入，
         #: 没有这把锁会双跑整套清理链（适配器、管理器、引擎 dispose）。
         self._stop_lock = asyncio.Lock()
@@ -135,7 +136,9 @@ class NeoBotApplication(Generic[T]):
         if self._started:
             return
         self._logger.info("NeoBot启动中")
-        self._shutdown_event.clear()
+        self._cleanup_complete = False
+        if not self._restart_requested:
+            self._shutdown_event.clear()
         started: list[str] = []
         try:
             started.append("file_server")
@@ -202,6 +205,8 @@ class NeoBotApplication(Generic[T]):
         except BaseException:
             deferred = await self._rollback_start(started)
             self._started = False
+            self._cleanup_complete = True
+            self._close_unstarted_coros()
             if deferred is not None:
                 raise deferred
             raise
@@ -362,6 +367,10 @@ class NeoBotApplication(Generic[T]):
 
     async def run_forever(self) -> None:
         """持续运行直到收到关闭信号，然后优雅停止。"""
+        # The entry loop may have queued this coroutine just before retirement.
+        # A late runner must never restart an already disposed generation.
+        if getattr(self, "_cleanup_complete", False):
+            return
         await self.start()
         try:
             await self._shutdown_event.wait()
@@ -384,6 +393,32 @@ class NeoBotApplication(Generic[T]):
         self._restart_requested = True
         self._shutdown_event.set()
 
+    def _close_unstarted_coros(self) -> None:
+        for coro in self._background_coros:
+            if inspect.iscoroutine(coro) and inspect.getcoroutinestate(coro) == inspect.CORO_CREATED:
+                coro.close()
+        self._background_coros.clear()
+
+    async def dispose(self) -> None:
+        """Release even a constructed-but-never-started runtime, exactly once.
+
+        Core-owned plugins/adapter must not be stopped by discarding an initial
+        standby generation. Startup rollback already released attempted starts.
+        """
+        if self._started:
+            await self.stop()
+            return
+        if getattr(self, "_cleanup_complete", False):
+            return
+        async with self._stop_lock:
+            if getattr(self, "_cleanup_complete", False):
+                return
+            deferred = await self._rollback_start([])
+            self._close_unstarted_coros()
+            self._cleanup_complete = True
+            if deferred is not None:
+                raise deferred
+
     async def stop(self) -> None:
         # 允许测试用 __new__ 之类的轻量构造绕过 __init__：锁按需创建
         lock = getattr(self, "_stop_lock", None)
@@ -397,6 +432,8 @@ class NeoBotApplication(Generic[T]):
                 deferred = await self._stop_components()
             finally:
                 self._started = False
+                self._cleanup_complete = True
+                self._close_unstarted_coros()
                 self._connection_state = None
                 self._logger.info("NeoBot已停止")
             if deferred is not None:
@@ -493,22 +530,23 @@ class NeoBotApplication(Generic[T]):
                         pass
 
     async def _stop_adapter_with_timeout(self) -> None:
-        """仅对适配器清理设置超时上限；核心/记忆关闭不设超时。"""
-        try:
-            await asyncio.wait_for(
-                self.adapter.stop(),
-                timeout=self._ADAPTER_STOP_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
+        """Report slow adapter cleanup without equating cancellation with stop.
+
+        The controller bounds the caller's wait. This retained task must finish
+        before the application can be considered stopped/replaced.
+        """
+        task = getattr(self, "_adapter_stop_task", None)
+        if task is None or task.done():
+            task = self._adapter_stop_task = asyncio.create_task(self.adapter.stop())
+        done, _ = await asyncio.wait((task,), timeout=self._ADAPTER_STOP_TIMEOUT_SECONDS)
+        if not done:
             self._logger.error(
-                "适配器停止超时，已触发兜底并继续关闭",
+                "适配器停止超时，仍在等待清理；不会按已停止继续重建，"
+                "若持续卡住需手动处理或显式强制重启进程",
                 timeout_seconds=self._ADAPTER_STOP_TIMEOUT_SECONDS,
             )
-        except Exception as exc:
-            self._logger.error(
-                "适配器停止异常，已触发兜底并继续关闭",
-                error=str(exc),
-            )
+        await asyncio.shield(task)
+        self._adapter_stop_task = None
 
     async def _run_report_loop(self) -> None:
         while True:

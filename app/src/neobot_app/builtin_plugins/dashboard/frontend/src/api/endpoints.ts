@@ -82,8 +82,12 @@ export interface PowerState {
   ok?: boolean;
   /** 待机服务不可用时为 false，其余字段可能缺省 */
   available?: boolean;
-  state?: 'running' | 'standby';
+  /** 包括运行/待机以及停止、启动、清理失败等生命周期阶段。 */
+  state?: string;
   standby?: boolean;
+  /** 后台生命周期操作尚未完成，此时禁止创建新运行时。 */
+  transition?: boolean;
+  phase?: string;
   reason?: string;
   operator?: string;
   /** 进入待机的时间戳与可读文本 */

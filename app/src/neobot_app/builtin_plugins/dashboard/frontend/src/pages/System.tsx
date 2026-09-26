@@ -7,7 +7,7 @@ import { POLL, QK } from '../data/queryKeys';
 import { fmtNum } from '../utils/format';
 import Icon from '../components/Icon';
 import Modal from '../components/Modal';
-import { formatDuration } from '../components/StandbyBanner';
+import { formatDuration, powerStateLabel } from '../components/StandbyBanner';
 
 /** 把 Result<T> 信封（外层 {ok,data,error,status}）转成一句提示文案 */
 function noticeFrom<T extends { message?: string }>(result: Result<T> | null, fallback: string): string {
@@ -61,7 +61,7 @@ export default function System() {
   const standby = !!powerState?.standby;
   const powerAvailable = powerState?.available !== false;
   const connectOnebot = !!powerState?.connect_onebot;
-  const controlBusy = !!doStandby.busy || !!doResume.busy || !!doReboot.busy;
+  const controlBusy = !!powerState?.transition || !!doStandby.busy || !!doResume.busy || !!doReboot.busy;
   const actionError = doStandby.error || doResume.error || doReboot.error || doOnebot.error || doRestart.error;
 
   const serviceItems = services.data?.items || [];
@@ -76,12 +76,13 @@ export default function System() {
       <section className={'card standby-card' + (standby ? ' standby' : '')}>
         <div className="card-head">
           <h3>运行状态</h3>
-          <span className={'tag ' + (standby ? 'warn' : 'ok')}>{standby ? '待机中' : '运行中'}</span>
+          <span className={'tag ' + (standby ? 'warn' : 'ok')}>{powerStateLabel(powerState)}</span>
           <div className="spacer" />
           <span className="muted small">
-            {standby
-              ? `${powerState?.operator || '未记录操作者'} · 已待机 ${formatDuration(powerState?.standby_seconds)}`
-              : '进入待机：停掉回复与记忆管线，只保留面板与命令'}
+            {powerState?.transition ? '清理完成前不能启动新实例；进程重启入口仍可用'
+              : standby
+                ? `${powerState?.operator || '未记录操作者'} · 已待机 ${formatDuration(powerState?.standby_seconds)}`
+                : '进入待机：停掉回复与记忆管线，只保留面板与命令'}
           </span>
         </div>
         <div className="standby-controls">
@@ -127,7 +128,7 @@ export default function System() {
           <input
             type="checkbox"
             checked={connectOnebot}
-            disabled={!powerAvailable || !!doOnebot.busy}
+            disabled={!powerAvailable || controlBusy || !!doOnebot.busy}
             onChange={(event) => void doOnebot.run(event.target.checked)}
           />
           <span>待机时保持 OneBot 连接</span>

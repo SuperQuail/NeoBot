@@ -165,11 +165,13 @@ class OneBotAdapter:
                 )
         self._dispatch_task = None
         try:
-            stopped = await asyncio.to_thread(self._core.stop, 8.0)
-            if not stopped:
+            while not await asyncio.to_thread(self._core.stop, 8.0):
+                # False 表示旧接收线程仍活着，不能向上层报告停止完成。
+                # 由生命周期控制器报告软超时并继续持有本任务；不自动强杀进程。
                 self._logger.error(
-                    "适配器接收器退化为强制关闭，守护线程仍存活"
+                    "适配器接收器停止尚未完成，仍在等待守护线程退出；不能启动新运行时"
                 )
+                await asyncio.sleep(0.1)
         finally:
             unbind_core()
 

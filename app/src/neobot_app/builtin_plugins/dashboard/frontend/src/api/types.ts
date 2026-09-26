@@ -332,6 +332,8 @@ export interface EnvItem {
   builtin?: boolean;
   required?: boolean;
   removed?: boolean;
+  /** 是否实际写入文件；内置占位项不提供删除入口。 */
+  in_file?: boolean;
   /** 密钥类变量：只写不读 */
   sensitive?: boolean;
   [key: string]: unknown;

@@ -1215,6 +1215,7 @@ class EnvFileManager:
                     "required": required,
                     "sensitive": sensitive,
                     "builtin": key in builtin,
+                    "in_file": True,
                     "line": index,
                 }
             )
@@ -1231,6 +1232,7 @@ class EnvFileManager:
                     "required": required,
                     "sensitive": is_sensitive_key(key),
                     "builtin": True,
+                    "in_file": False,
                     "line": 0,
                 }
             )

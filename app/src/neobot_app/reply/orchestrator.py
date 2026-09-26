@@ -21,6 +21,8 @@ from neobot_app.reply._utils import entry_fingerprint
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.postprocess import (
+    ReplyPostProcessResult,
+    ReplySplitPreview,
     build_over_limit_guidance,
     process_reply_text,
 )
@@ -2271,6 +2273,7 @@ class ReplyOrchestrator:
             send_original: bool = False,
             images: list[int] | None = None,
             merge_text_with_image: bool = False,
+            split_preview: ReplySplitPreview | None = None,
         ) -> bool:
             """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
 
@@ -2296,6 +2299,7 @@ class ReplyOrchestrator:
                     merge_text_with_image=merge_text_with_image,
                     self_sent=sink,
                     sender_names=sender_names,
+                    **({"split_preview": split_preview} if split_preview is not None else {}),
                 )
             else:
                 delivered = await self._send_reply(
@@ -2308,6 +2312,7 @@ class ReplyOrchestrator:
                     merge_text_with_image=merge_text_with_image,
                     self_sent=sink,
                     sender_names=sender_names,
+                    **({"split_preview": split_preview} if split_preview is not None else {}),
                 )
             if delivered is not False:
                 reply_sent = True
@@ -2980,6 +2985,22 @@ class ReplyOrchestrator:
                     continue
                 if not tool_calls:
                     if not reply_sent:
+                        if ai_check_prompted or getattr(reply_toolset.executor, "ai_check_pending", False):
+                            # A review response is not a send decision. Fail closed
+                            # for prose (or an empty turn), including reviews started
+                            # by send_reply itself. Never send the earlier draft.
+                            event.error = "AI回复检查未通过：缺少明确的发送或取消决定，检查正文未发送"
+                            if not event.is_terminal:
+                                event.transition(ReplyState.FAILED)
+                            self._logger.warning(
+                                "AI 回复检查后没有工具调用，回复未发送",
+                                event_id=event.event_id, queue_key=queue_key,
+                            )
+                            self._record_debug(
+                                "ai_reply_check_without_tool_call", event,
+                                queue_key=queue_key, iteration=iteration + 1,
+                            )
+                            break
                         content = response.get("content", "")
                         text = (
                             content.strip()
@@ -3001,7 +3022,9 @@ class ReplyOrchestrator:
                                 need_check = pre_check.fallback_used
                             if need_check and not ai_check_prompted:
                                 ai_check_prompted = True
-                                check_prompt = self._build_ai_reply_check_prompt(text)
+                                check_prompt = self._build_ai_reply_check_prompt(
+                                    text, record_preview=getattr(reply_toolset.executor, "remember_split_preview", None),
+                                )
                                 messages.append(
                                     {"role": "user", "content": check_prompt}
                                 )
@@ -3021,12 +3044,18 @@ class ReplyOrchestrator:
                                 queue_key=queue_key,
                                 reply_text=text,
                             )
-                            await self._send_reply(
+                            delivered = await self._send_reply(
                                 event,
                                 text,
                                 self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
                             )
-                            reply_sent = True
+                            if delivered is False:
+                                event.error = "回复内容清洗后为空，未发送"
+                                if not event.is_terminal:
+                                    event.transition(ReplyState.FAILED)
+                                self._record_debug("reply_output_dropped", event, queue_key=queue_key)
+                            else:
+                                reply_sent = True
                         else:
                             # 空轮次：正文为空且没有工具调用。旧实现在这里直接
                             # break，事件以 COMPLETED/err=None 收尾，回复丢失且
@@ -4539,7 +4568,9 @@ class ReplyOrchestrator:
         self._record_debug("reply_generated", event, reply_text=text, response=response)
         return text
 
-    def _build_ai_reply_check_prompt(self, text: str) -> str:
+    def _build_ai_reply_check_prompt(
+        self, text: str, *, record_preview: Callable[[ReplyPostProcessResult], None] | None = None,
+    ) -> str:
         result = process_reply_text(
             text,
             bot_name=self._get_bot_name(),
@@ -4547,6 +4578,8 @@ class ReplyOrchestrator:
             max_length=self._get_long_reply_max_length(),
             max_sentence_count=self._get_long_reply_max_sentence_count(),
         )
+        if record_preview is not None:
+            record_preview(result)
         lines = [
             "[AI回复检查]",
             "你刚才准备直接发送以下回复，但配置要求先检查切分后的分条回复。",
@@ -4620,6 +4653,7 @@ class ReplyOrchestrator:
         merge_text_with_image: bool = False,
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
+        split_preview: ReplySplitPreview | None = None,
     ) -> bool:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
         # post-reply hooks：可对回复文本做后处理
@@ -4646,6 +4680,7 @@ class ReplyOrchestrator:
             merge_text_with_image=merge_text_with_image,
             self_sent=self_sent,
             sender_names=names,
+            **({"split_preview": split_preview} if split_preview is not None else {}),
         )
 
     # ── Bot 自身发言入队（fix(2) 统一通道）────────────────────────
