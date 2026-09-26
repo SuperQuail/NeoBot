@@ -1,21 +1,21 @@
-"""ContextRecorder 测试:写入内容、滚动清理、参数校验与 orchestrator 集成。"""
+"""ContextRecorder 测试:写入内容、滚动淘汰、线程安全、参数校验与 orchestrator 集成。
+
+存储形态见 test_context_recorder_history（纯内存 + 逐份 diff）。
+"""
 
 from __future__ import annotations
 
-import json
-from types import SimpleNamespace
+import threading
 
 import pytest
 
 from neobot_app.observability.context_recorder import ContextRecorder
 
 
-def test_record_context_writes_full_payload(tmp_path) -> None:
-    """写入的 JSON 包含完整 messages 与统计字段。"""
-    recorder = ContextRecorder(tmp_path, max_files=10)
-    payload = {
+def _payload(index: int = 0) -> dict:
+    return {
         "recorded_at": "2025-01-01T00:00:00+00:00",
-        "event_id": "evt-1",
+        "event_id": f"evt-{index}",
         "messages_count": 2,
         "total_chars": 10,
         "estimated_tokens": 13,
@@ -25,58 +25,72 @@ def test_record_context_writes_full_payload(tmp_path) -> None:
         ],
     }
 
-    target = recorder.record_context(payload)
 
-    assert target.exists()
-    assert target.suffix == ".json"
-    data = json.loads(target.read_text(encoding="utf-8"))
-    assert data["event_id"] == "evt-1"
+def test_record_context_keeps_full_payload() -> None:
+    """写入的 payload 完整可读：messages 与统计字段都在。"""
+    recorder = ContextRecorder(limit=10)
+
+    seq = recorder.record_context(_payload())
+
+    assert seq == 1
+    data = recorder.read_entry(seq)
+    assert data is not None
+    assert data["event_id"] == "evt-0"
     assert data["messages"][0]["role"] == "system"
     assert data["messages"][1]["content"] == "你好"
     assert data["total_chars"] == 10
+    assert recorder.read_latest() == data
 
 
-def test_record_context_prunes_to_max_files(tmp_path) -> None:
-    """超过 max_files 后自动删除最旧文件,只保留最新 N 个。"""
-    recorder = ContextRecorder(tmp_path, max_files=3)
-    for i in range(5):
-        recorder.record_context({"seq": i, "messages": []})
+def test_record_context_prunes_to_limit() -> None:
+    """超过 limit 后只保留最新 N 份，最旧的被淘汰。"""
+    recorder = ContextRecorder(limit=3)
+    for index in range(5):
+        recorder.record_context(_payload(index))
 
-    files = sorted(tmp_path.glob("ctx_*.json"))
-    assert len(files) == 3
-    seqs = [json.loads(f.read_text(encoding="utf-8"))["seq"] for f in files]
-    assert seqs == [2, 3, 4]
+    assert [item.seq for item in recorder.list_entries()] == [3, 4, 5]
+    assert recorder.read_entry(1) is None
+    assert recorder.read_entry(2) is None
+    latest = recorder.read_entry(5)
+    assert latest is not None and latest["event_id"] == "evt-4"
 
 
-def test_record_context_is_thread_safe_and_unique(tmp_path) -> None:
-    """并发写入不丢文件、不重名覆盖。"""
-    recorder = ContextRecorder(tmp_path, max_files=50)
-    import threading
-
+def test_record_context_is_thread_safe_and_unique() -> None:
+    """并发写入不丢份数、seq 不重号。"""
+    recorder = ContextRecorder(limit=50)
     errors: list[Exception] = []
 
-    def worker(seq: int) -> None:
+    def worker(worker_id: int) -> None:
         try:
             for _ in range(20):
-                recorder.record_context({"seq": seq, "messages": []})
+                recorder.record_context(_payload(worker_id))
         except Exception as exc:  # pragma: no cover
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
 
     assert not errors
-    files = list(tmp_path.glob("ctx_*.json"))
-    assert len(files) == 50
-    assert len({f.name for f in files}) == len(files)
+    entries = recorder.list_entries()
+    assert len(entries) == 50
+    assert len({item.seq for item in entries}) == 50
 
 
-def test_context_recorder_rejects_bad_max_files(tmp_path) -> None:
+def test_context_recorder_rejects_bad_limit() -> None:
     with pytest.raises(ValueError):
-        ContextRecorder(tmp_path, max_files=0)
+        ContextRecorder(limit=0)
+    with pytest.raises(ValueError):
+        ContextRecorder(limit=-5)
+
+
+def test_read_entry_tolerates_bad_seq_input() -> None:
+    recorder = ContextRecorder(limit=3)
+    recorder.record_context(_payload())
+    assert recorder.read_entry("bad") is None  # type: ignore[arg-type]
+    assert recorder.read_entry(999) is None
 
 
 # ── orchestrator 集成 ────────────────────────────────────────────
@@ -85,6 +99,8 @@ def test_context_recorder_rejects_bad_max_files(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_orchestrator_record_context_skips_without_recorder() -> None:
     """未配置 context_recorder 时 _record_context 无副作用。"""
+    from types import SimpleNamespace
+
     from neobot_app.reply.orchestrator import ReplyOrchestrator
 
     orch = object.__new__(ReplyOrchestrator)
@@ -101,12 +117,15 @@ async def test_orchestrator_record_context_skips_without_recorder() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_record_context_writes_file(tmp_path) -> None:
-    """配置 context_recorder 时写入包含统计字段的上下文文件。"""
+async def test_orchestrator_record_context_keeps_message_stats() -> None:
+    """配置 context_recorder 时记录完整 messages 与统计字段。"""
+    from types import SimpleNamespace
+
     from neobot_app.reply.orchestrator import ReplyOrchestrator
 
+    recorder = ContextRecorder(limit=3)
     orch = object.__new__(ReplyOrchestrator)
-    orch._context_recorder = ContextRecorder(tmp_path, max_files=3)
+    orch._context_recorder = recorder
     orch._logger = None
     event = SimpleNamespace(
         event_id="evt-y",
@@ -120,13 +139,13 @@ async def test_orchestrator_record_context_writes_file(tmp_path) -> None:
 
     await orch._record_context(event, messages, iteration=2, stage="agent_model_call")
 
-    files = list(tmp_path.glob("ctx_*.json"))
-    assert len(files) == 1
-    data = json.loads(files[0].read_text(encoding="utf-8"))
+    data = recorder.read_latest()
+    assert data is not None
     assert data["event_id"] == "evt-y"
     assert data["mode"] == "agent"
     assert data["conversation_kind"] == "group"
     assert data["conversation_id"] == "42"
+    assert data["pipeline_key"] == "group:42"
     assert data["iteration"] == 2
     assert data["stage"] == "agent_model_call"
     assert data["messages_count"] == 2
@@ -140,12 +159,15 @@ async def test_orchestrator_record_context_writes_file(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_record_context_includes_response_and_usage(tmp_path) -> None:
+async def test_orchestrator_record_context_includes_response_and_usage() -> None:
     """传入 response 时记录完整输出与 usage/缓存命中率。"""
+    from types import SimpleNamespace
+
     from neobot_app.reply.orchestrator import ReplyOrchestrator
 
+    recorder = ContextRecorder(limit=3)
     orch = object.__new__(ReplyOrchestrator)
-    orch._context_recorder = ContextRecorder(tmp_path, max_files=3)
+    orch._context_recorder = recorder
     orch._logger = None
     event = SimpleNamespace(
         event_id="evt-z",
@@ -170,9 +192,8 @@ async def test_orchestrator_record_context_includes_response_and_usage(tmp_path)
         event, messages, iteration=1, stage="agent_model_call", response=response
     )
 
-    files = list(tmp_path.glob("ctx_*.json"))
-    assert len(files) == 1
-    data = json.loads(files[0].read_text(encoding="utf-8"))
+    data = recorder.read_latest()
+    assert data is not None
     assert data["response"]["content"] == "这是模型回复的内容"
     assert data["output_chars"] == len("这是模型回复的内容")
     assert data["output_estimated_tokens"] > 0
@@ -181,6 +202,5 @@ async def test_orchestrator_record_context_includes_response_and_usage(tmp_path)
     assert data["cache_hit_tokens"] == 70
     assert data["cache_miss_tokens"] == 30
     assert data["cache_hit_rate"] == 0.7
-    # 输入 messages 与输出 response 同时保留
     assert data["messages"][0]["role"] == "system"
     assert data["messages_count"] == 1

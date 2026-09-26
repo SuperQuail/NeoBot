@@ -1,4 +1,4 @@
-"""面板档案管理与完整提示词历史接口（features/spec(2) / spec(3)）。
+"""面板档案管理与提示词历史接口（features/spec(2) / spec(3) 建立，spec(10) 改纯内存）。
 
 覆盖：表清单与统计、分页列表（不含全文）、单条详情、乐观锁编辑、内部表保护、
 独立删除开关 + 审计日志、权限门禁、聊天流可读名称解析与回落、提示词历史读取与清空。
@@ -140,29 +140,33 @@ class _FakeArchiveService:
 class _FakePromptMeta:
     def __init__(self, seq: int, pipeline_key: str) -> None:
         self.seq = seq
-        self.path = f"ctx_{seq:04d}.json"
         self.pipeline_key = pipeline_key
         self.iteration = 1
         self.model = "test-model"
         self.total_messages = 3
         self.bytes = 1024
+        self.patch_bytes = 64
+        self.images = 0
         self.recorded_at = "2026-09-12T00:00:00+00:00"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "seq": self.seq,
-            "path": self.path,
             "pipeline_key": self.pipeline_key,
             "iteration": self.iteration,
             "model": self.model,
             "total_messages": self.total_messages,
             "bytes": self.bytes,
+            "patch_bytes": self.patch_bytes,
+            "images": self.images,
             "recorded_at": self.recorded_at,
         }
 
 
 class _FakeContextRecorder:
-    max_files = 100
+    limit = 100
+    storage_bytes = 2048
+    image_refs = 0
 
     def __init__(self) -> None:
         self.entries = [
@@ -174,7 +178,7 @@ class _FakeContextRecorder:
 
     def list_entries(self, pipeline_key: str | None = None):
         if self.fail:
-            raise RuntimeError("磁盘不可用")
+            raise RuntimeError("历史不可用")
         if pipeline_key:
             return [entry for entry in self.entries if entry.pipeline_key == pipeline_key]
         return list(self.entries)

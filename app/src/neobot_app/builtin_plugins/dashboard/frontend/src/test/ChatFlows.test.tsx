@@ -1,4 +1,5 @@
-// ChatFlows.test.tsx —— 聊天流页（spec(3)）：display_name、完整提示词（未截断）、历史切换、清空、快速预览
+// ChatFlows.test.tsx —— 聊天流页（spec(3) 建立 / spec(10) 改纯内存）：display_name、
+// 完整提示词（未截断）、逐份 diff 与图片哈希、历史切换、清空、快速预览
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -88,6 +89,8 @@ const PROMPTS = {
       model: 'deepseek-chat',
       total_messages: 2,
       bytes: 2048,
+      patch_bytes: 0,
+      images: 0,
       recorded_at: '2026-09-12T10:00:00',
     },
     {
@@ -97,10 +100,14 @@ const PROMPTS = {
       model: 'deepseek-chat',
       total_messages: 3,
       bytes: 4096,
+      patch_bytes: 512,
+      images: 1,
       recorded_at: '2026-09-12T10:05:00',
     },
   ],
   limit: 100,
+  storage_bytes: 6144,
+  image_refs: 1,
   seq: 8,
   entry: {
     recorded_at: '2026-09-12T10:05:00',
@@ -222,13 +229,23 @@ describe('ChatFlows', () => {
     await waitFor(() => expect(chatFlowPromptClear).toHaveBeenCalledTimes(1));
   });
 
-  it('文案已改写：完整提示词写入本地磁盘并提示隐私', async () => {
+  it('文案说明纯内存 + 逐份 diff + 图片哈希，并保留隐私提示', async () => {
     render(<ChatFlows />);
     await screen.findByText('完整的系统提示词');
 
-    expect(screen.getByText(/完整提示词会写入本地磁盘/)).toBeInTheDocument();
-    expect(screen.getByText(/chat_flows\/prompts\//)).toBeInTheDocument();
+    expect(screen.getByText(/完整提示词也只存在内存里/)).toBeInTheDocument();
+    expect(screen.getByText(/逐份只存相对上一份的 diff/)).toBeInTheDocument();
+    expect(screen.getByText(/图片只保留 sha256 哈希/)).toBeInTheDocument();
     expect(screen.getByText(/属隐私数据/)).toBeInTheDocument();
+  });
+
+  it('历史列表展示完整篇幅与逐份驻留成本', async () => {
+    render(<ChatFlows />);
+    await screen.findByText('完整的系统提示词');
+
+    expect(screen.getByText(/常驻 6\.0 KB/)).toBeInTheDocument();
+    expect(screen.getByText(/驻留 512 B/)).toBeInTheDocument();
+    expect(screen.getByText(/图片 1/)).toBeInTheDocument();
   });
 
   it('切换聊天流后按新 key 拉取详情与提示词历史', async () => {

@@ -187,14 +187,14 @@ export const api = {
   chatFlowDetail: (key: string) =>
     getJSON<ChatFlowDetailPayload>('/api/chat-flows/detail?key=' + encodeURIComponent(key)),
 
-  // 完整提示词历史（spec(3)：列表只给元数据，正文按需读取、不截断）
+  // 提示词历史（spec(3) 建立，spec(10) 纯内存 + 逐份 diff：列表只给元数据，正文按需读取、不截断）
   chatFlowPrompts: (key = '') => getJSON<ChatFlowPromptsPayload>(promptsPath(key)),
   chatFlowPrompt: (seq: number) =>
     getJSON<ChatFlowPromptPayload>('/api/chat-flows/prompt?seq=' + encodeURIComponent(String(seq))),
   chatFlowPromptClear: () => postJSON<SimpleMessage>('/api/chat-flows/prompts/clear'),
   /**
    * 默认视图：一次拿到元数据列表**和**最新一份全文（列表接口不返回正文）。
-   * 这样进入页面 / 切换聊天流时只读一次盘；切换到历史里的其它份才走 chatFlowPrompt。
+   * 这样进入页面 / 切换聊天流时只请求一次；切换到历史里的其它份才走 chatFlowPrompt。
    */
   chatFlowPromptLatest: async (key = ''): Promise<ChatFlowLatestPrompt | null> => {
     const list = await getJSON<ChatFlowPromptsPayload>(promptsPath(key));
@@ -202,8 +202,10 @@ export const api = {
     const items = list.items || [];
     const latest = items.length > 0 ? items[items.length - 1] : null;
     const limit = Number(list.limit || 0);
+    const storageBytes = Number(list.storage_bytes || 0);
+    const imageRefs = Number(list.image_refs || 0);
     if (!latest || latest.seq === undefined || latest.seq === null) {
-      return { items, limit, seq: null, entry: null };
+      return { items, limit, storage_bytes: storageBytes, image_refs: imageRefs, seq: null, entry: null };
     }
     const payload = await getJSON<ChatFlowPromptPayload>(
       '/api/chat-flows/prompt?seq=' + encodeURIComponent(String(latest.seq)),
@@ -211,6 +213,8 @@ export const api = {
     return {
       items,
       limit,
+      storage_bytes: storageBytes,
+      image_refs: imageRefs,
       seq: latest.seq,
       entry: (payload && payload.ok !== false ? payload.entry : null) ?? null,
     };

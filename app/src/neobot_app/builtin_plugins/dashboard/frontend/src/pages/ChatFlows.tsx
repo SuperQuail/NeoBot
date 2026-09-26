@@ -1,11 +1,12 @@
-// pages/ChatFlows.tsx —— 聊天流：内存快速预览 + 落盘的完整提示词历史（features/spec(3)）
+// pages/ChatFlows.tsx —— 聊天流：内存快速预览 + 纯内存的完整提示词历史
+// （features/spec(3) 建立，spec(10) 改为纯内存 + 逐份 diff + 图片只留哈希）
 //
 // 两个数据来源，职责不同：
 // 1) /api/chat-flows(+detail)：回复管线写入 ChatFlowRegistry 的**内存快照**（有界、只保留
-//    最近 80 条消息、单条 4000 字符），默认视图之外不读盘 —— 保留原有「快速预览」能力；
-// 2) /api/chat-flows/prompts(+prompt)：每次模型调用**完整落盘**一份的完整提示词
-//    （<DATA_DIR>/chat_flows/prompts/，全局保留最近 N 份）。列表只给元数据，
-//    正文按需读取、**完整渲染不做任何截断**，切换历史时才请求全量接口。
+//    最近 80 条消息、单条 4000 字符）—— 保留原有「快速预览」能力；
+// 2) /api/chat-flows/prompts(+prompt)：每次模型调用的完整提示词，**只存在内存里**
+//    （全局保留最近 N 份，重启即清空），逐份只存相对上一份的 diff，图片只留 sha256
+//    哈希不留 base64。列表只给元数据，正文按需读取、**完整渲染不做任何截断**。
 //
 // 名称：列表与详情标题都用后端解析好的 display_name（群名 / 昵称），
 // pipeline_key 作为副标题常驻，便于在日志 / 配置里定位。
@@ -85,7 +86,7 @@ function QuickMessageRow({ message, index }: { message: ChatFlowMessage; index: 
   );
 }
 
-/** 完整提示词里的消息：content 原样渲染，另附原始 JSON（图片部件 / tool_calls 参数不丢） */
+/** 完整提示词里的消息：content 原样渲染，另附原始 JSON（tool_calls 参数不丢；图片只留哈希） */
 function FullMessageRow({ message, index }: { message: RawMessage; index: number }) {
   const role = typeof message.role === 'string' ? message.role : '';
   const content = message.content;
@@ -105,7 +106,7 @@ function FullMessageRow({ message, index }: { message: RawMessage; index: number
         <pre className="flow-message-body chat-raw-body">{text}</pre>
       )}
       <details className="chat-raw">
-        <summary className="muted small">原始 JSON（含图片部件 / tool_calls 参数）</summary>
+        <summary className="muted small">原始 JSON（含 tool_calls 参数；图片部件只保留 sha256 哈希）</summary>
         <pre className="flow-message-body chat-raw-body">{JSON.stringify(message, null, 2)}</pre>
       </details>
     </li>
@@ -212,6 +213,8 @@ export default function ChatFlows() {
   const promptData = prompts.data;
   const promptItems = useMemo(() => promptData?.items || [], [promptData]);
   const limit = promptData?.limit || 0;
+  const storageBytes = promptData?.storage_bytes || 0;
+  const imageRefs = promptData?.image_refs || 0;
   const latestSeq = promptData?.seq ?? null;
   // 手动选中的份仍存在就用它，否则回落到最新一份（切换聊天流后自然重置）
   const activeSeq =
@@ -266,8 +269,10 @@ export default function ChatFlows() {
         </div>
         <p className="muted small">
           上方「快速预览」来自内存快照（重启后清空，只保留最近 80 条消息）；
-          <strong>完整提示词会写入本地磁盘</strong> <code>{'<DATA_DIR>/chat_flows/prompts/'}</code>
-          ，全局保留最近 {limit > 0 ? limit : '—'} 份。落盘的是完整聊天内容（含私聊与图片引用），
+          <strong>完整提示词也只存在内存里</strong>（重启即清空），全局保留最近 
+          {limit > 0 ? limit : '—'} 份，逐份只存相对上一份的 diff
+          {storageBytes > 0 ? `（当前常驻约 ${formatBytes(storageBytes)}）` : ''}
+          ，图片只保留 sha256 哈希、不保留 base64。记录的是完整聊天内容（含私聊），
           <strong>属隐私数据</strong>，请谨慎分享。
         </p>
       </section>
@@ -407,7 +412,11 @@ export default function ChatFlows() {
                     <div className="chat-prompt-history">
                       <div className="chat-prompt-history-head">
                         <strong>提示词历史</strong>
-                        <span className="muted small">最近 {limit > 0 ? limit : '—'} 份</span>
+                        <span className="muted small">
+                          最近 {limit > 0 ? limit : '—'} 份
+                          {storageBytes > 0 ? ` · 常驻 ${formatBytes(storageBytes)}` : ''}
+                          {imageRefs > 0 ? ` · 图片哈希 ${imageRefs}` : ''}
+                        </span>
                       </div>
                       <label className="inline-check muted small">
                         <input
@@ -428,7 +437,7 @@ export default function ChatFlows() {
                       </button>
                       {promptItems.length === 0 ? (
                         <div className="empty muted">
-                          {prompts.loading ? '读取中…' : '还没有落盘的完整提示词'}
+                          {prompts.loading ? '读取中…' : '还没有记录完整提示词'}
                         </div>
                       ) : (
                         <ul className="chat-history-list">
@@ -449,6 +458,9 @@ export default function ChatFlows() {
                                     <span className="muted small">
                                       {meta.pipeline_key || '—'} · 迭代 {meta.iteration ?? 0} ·{' '}
                                       {meta.total_messages ?? 0} 条 · {formatBytes(meta.bytes)}
+                                      {meta.patch_bytes !== undefined &&
+                                        ` （驻留 ${formatBytes(meta.patch_bytes)}）`}
+                                      {meta.images ? ` · 图片 ${meta.images}` : ''}
                                     </span>
                                   </span>
                                 </button>
@@ -464,12 +476,12 @@ export default function ChatFlows() {
                         <div className="empty muted">读取中…</div>
                       ) : promptData === null ? (
                         <InlineAlert tone="warning" title="完整提示词历史不可用">
-                          后端未注入 context_recorder，或聊天流提示词落盘被关闭
+                          后端未注入 context_recorder，或提示词历史记录被关闭
                           （chat.chat_flow_prompt_history_enabled = false）。
                         </InlineAlert>
                       ) : activeSeq === null ? (
                         <div className="empty muted">
-                          还没有落盘的完整提示词；Bot 下次调用模型后会在这里出现。
+                          还没有完整提示词记录；Bot 下次调用模型后会在这里出现。
                         </div>
                       ) : entryLoading && !activeEntry ? (
                         <div className="empty muted">读取中…</div>
@@ -495,10 +507,11 @@ export default function ChatFlows() {
         </div>
       )}
 
-      <Modal open={clearOpen} title="清空完整提示词历史" onClose={() => setClearOpen(false)}>
+      <Modal open={clearOpen} title="清空提示词历史" onClose={() => setClearOpen(false)}>
         <InlineAlert tone="error" title="清空后不可恢复">
-          将删除磁盘上 <code>{'<DATA_DIR>/chat_flows/prompts/'}</code> 里的全部完整提示词文件
-          （当前列表 {promptItems.length} 份，全局上限 {limit > 0 ? limit : '—'} 份）。
+          将丢弃内存里的全部提示词历史（当前 {promptItems.length} 份，全局上限 
+          {limit > 0 ? limit : '—'} 份），并顺带删除旧版本遗留的落盘文件
+          <code>{'<DATA_DIR>/chat_flows/prompts/'}</code>。
           正在进行的对话不受影响，之后的新请求会重新开始记录。
         </InlineAlert>
         <label className="inline-check">

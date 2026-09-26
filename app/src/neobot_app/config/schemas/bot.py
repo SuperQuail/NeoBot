@@ -1730,15 +1730,11 @@ class EnhancedChat(Chat):
     )
     chat_flow_prompt_history_enabled: Optional[bool] = field(
         default=True,
-        metadata={"description": "是否把完整提示词写入本地磁盘(全局保留最近N份)；开启意味着完整聊天内容(含私聊与图片引用)会被持久化"},
+        metadata={"description": "是否记录完整提示词历史供面板查看；纯内存(逐份diff)+重启清空，不落盘；图片只留sha256哈希不留base64"},
     )
     chat_flow_prompt_history_limit: Optional[int] = field(
         default=100,
-        metadata={"description": "完整提示词历史的全局保留份数；直接决定磁盘占用(总量约该值×单份体积0.5~1.2MB，100份约50~120MB)"},
-    )
-    chat_flow_latest_in_memory: Optional[bool] = field(
-        default=False,
-        metadata={"description": "是否把最新一份完整提示词常驻内存；false(默认)全部读盘，常驻内存仅约15KB索引；true则最新一份留在内存(约0.5~1.2MB)"},
+        metadata={"description": "完整提示词历史的全局保留份数；纯内存且逐份只存diff，100份常驻约1~2MB(旧落盘实现的单份体积是0.5~1.2MB)"},
     )
     random_sticker_probability: Optional[float] = field(
         default=0.1,

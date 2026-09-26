@@ -1652,11 +1652,14 @@ class ReplyOrchestrator:
         stage: str,
         response: dict | None = None,
     ) -> None:
-        """记录一轮模型调用的完整上下文与输出(debug 模式,滚动保留最近 100 轮)。
+        """记录一轮模型调用的完整上下文与输出(滚动保留最近 N 轮,默认 100)。
 
-        用于事后分析 token 构成:每轮迭代/每次模型调用一个文件,
+        用于事后分析 token 构成:每轮迭代/每次模型调用一份,
         内容为发送给模型的完整 messages(含 system prompt)、模型输出(response)
         以及数据包中的 usage/缓存命中率。
+
+        记录器是**纯内存 + 逐份 diff** 的(features/spec(10)):不再落盘,图片 base64
+        在写入侧换成 sha256 哈希,因此这仍然走线程池、不阻塞事件循环。
         """
         recorder = self._context_recorder
         if recorder is None:
@@ -1695,7 +1698,7 @@ class ReplyOrchestrator:
 
             conv_kind = getattr(conv_ref, "kind", "") if conv_ref else ""
             conv_id = getattr(conv_ref, "id", "") if conv_ref else ""
-            # pipeline_key 让面板能把「完整提示词历史」按聊天流过滤（spec(3) §4.2）
+            # pipeline_key 让面板能把「提示词历史」按聊天流过滤（spec(3) §4.2）
             payload = {
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "stage": stage,
