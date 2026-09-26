@@ -39,6 +39,28 @@ describe('StandbyBanner', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
+  it('清理未完成时展示真实阶段且禁止再次启动', async () => {
+    powerStatus.mockResolvedValue({
+      ok: true, available: true, state: 'stopping', phase: 'stopping',
+      standby: true, transition: true, reason: '停止超时：清理仍在进行',
+    });
+    render(<StandbyBanner />);
+    expect(await screen.findByText('Bot 正在停止')).toBeInTheDocument();
+    expect(screen.queryByText('Bot 处于待机状态')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '等待清理完成' })).toBeDisabled();
+    expect(screen.getByText(/停止超时：清理仍在进行/)).toBeInTheDocument();
+  });
+
+  it('失败但清理已结束时允许重试，不把失败显示成运行中', async () => {
+    powerStatus.mockResolvedValue({
+      ok: true, available: true, state: 'failed', standby: true,
+      transition: false, reason: '启动失败，已清理',
+    });
+    render(<StandbyBanner />);
+    expect(await screen.findByText('Bot 运行时操作失败')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '启动运行' })).toBeEnabled();
+  });
+
   it('待机时展示原因 / 操作者 / 时长，点击后调 resume 并隐藏', async () => {
     powerStatus
       .mockResolvedValueOnce({

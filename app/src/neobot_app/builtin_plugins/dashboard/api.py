@@ -2663,13 +2663,23 @@ class DashboardApi:
         denied = self._require_manage(request)
         if denied is not None:
             return denied
-        application = self._service("application")
-        restart = getattr(application, "request_restart", None) if application is not None else None
+        # The core signal survives standby and failed/rebuilding generations.
+        # Never capture a retiring application when a core entry point exists.
+        signal = self._service("process_restart")
+        restart = getattr(signal, "request", None)
+        if not callable(restart):
+            application = self._service("application")
+            restart = getattr(application, "request_restart", None)
         if not callable(restart):
             return _json_error("重启入口不可用，请手动重启 NeoBot", status=503)
         self.logger.warning(f"面板请求重启 NeoBot ip={self.console.request_ip(request)}")
-        asyncio.get_running_loop().call_later(0.5, restart)
-        return _json_ok({"message": "已请求优雅重启，面板将在重启期间短暂不可用"})
+        if signal is not None and callable(getattr(signal, "request", None)):
+            # Accept durably now. Repeated requests coalesce in the signal; a
+            # delayed callback must not allow another runtime to be published.
+            restart()
+        else:
+            asyncio.get_running_loop().call_later(0.5, restart)
+        return _json_ok({"message": "已请求优雅重启；须等待清理完成，若关闭卡住需手动处理或显式强制重启"})
 
     # ------------------------------------------------------------------
     # 工具

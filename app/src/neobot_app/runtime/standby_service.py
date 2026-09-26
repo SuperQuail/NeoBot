@@ -36,6 +36,8 @@ OneBotAction = Callable[[bool], Awaitable[tuple[bool, str]]]
 
 #: set_hooks 的「未传入」哨兵：与显式传入 None（清除钩子）区分开
 _UNSET: Any = object()
+DEFAULT_RESUME_TIMEOUT_SECONDS = 120.0
+DEFAULT_ENTER_TIMEOUT_SECONDS = 20.0
 
 
 class StandbyService:
@@ -51,6 +53,8 @@ class StandbyService:
         on_enter: StandbyAction | None = None,
         on_resume: StandbyAction | None = None,
         on_onebot_change: OneBotAction | None = None,
+        resume_timeout: float = DEFAULT_RESUME_TIMEOUT_SECONDS,
+        enter_timeout: float = DEFAULT_ENTER_TIMEOUT_SECONDS,
     ) -> None:
         self._logger = logger or NullLogger()
         self._state_path = Path(state_path) if state_path is not None else None
@@ -63,9 +67,69 @@ class StandbyService:
         self._on_resume = on_resume
         self._on_onebot_change = on_onebot_change
         self._lock = asyncio.Lock()
+        self._resume_timeout = float(resume_timeout)
+        self._enter_timeout = float(enter_timeout)
+        self._pending_action: asyncio.Task | None = None
+        self._lifecycle_status: Callable[[], dict[str, Any]] | None = None
+        self._abort_transition: Callable[[asyncio.Task], None] | None = None
         #: 迁移（进入待机 / 软重启）进行中：期间拒绝新的迁移请求，避免排队重建
-        self._transition = False
+        self._transition_active = False
         self._restore()
+
+    def set_lifecycle_status(
+        self,
+        getter: Callable[[], dict[str, Any]],
+        abort: Callable[[asyncio.Task], None] | None = None,
+    ) -> None:
+        """Observe cleanup and revoke an uncommitted, even already-done hook."""
+        self._lifecycle_status = getter
+        self._abort_transition = abort
+
+    def _lifecycle(self) -> dict[str, Any]:
+        return self._lifecycle_status() if self._lifecycle_status is not None else {}
+
+    @property
+    def _transition(self) -> bool:
+        return bool(
+            self._transition_active
+            or (self._pending_action is not None and not self._pending_action.done())
+            or self._lifecycle().get("pending")
+        )
+
+    def _busy_message(self) -> str:
+        status = self._lifecycle()
+        return status.get("detail") or (
+            f"运行时正在切换中（{status.get('phase') or 'cleanup_pending'}），"
+            "尚未确认清理完成；请等待后重试。进程重启仍可请求，"
+            "若优雅关闭卡住需手动处理或显式强制重启。"
+        )
+
+    async def _call_hook(self, hook: StandbyAction, timeout: float) -> tuple[bool, str]:
+        task = asyncio.create_task(hook(), name="neobot-standby-action")
+        self._pending_action = task
+
+        def finished(done: asyncio.Task) -> None:
+            # Consume abandoned results, but NEVER promote a timed-out operation
+            # to running or let a stale completion clear a later generation.
+            if not done.cancelled():
+                done.exception()
+            if self._pending_action is done:
+                self._pending_action = None
+
+        task.add_done_callback(finished)
+        try:
+            done, _ = await asyncio.wait((task,), timeout=timeout if timeout > 0 else None)
+            if done:
+                return task.result()
+            if self._abort_transition is not None:
+                self._abort_transition(task)
+            task.cancel()
+            return False, f"生命周期操作超时（{timeout:g}s）：{self._busy_message()}"
+        except asyncio.CancelledError:
+            if self._abort_transition is not None:
+                self._abort_transition(task)
+            task.cancel()
+            raise
 
     def set_hooks(
         self,
@@ -85,6 +149,14 @@ class StandbyService:
         if on_onebot_change is not _UNSET:
             self._on_onebot_change = on_onebot_change
 
+    def record_failure(self, detail: str) -> None:
+        """Failed initial startup leaves the core usable for repair/restart."""
+        self._state = STANDBY
+        self._reason = detail
+        self._since = epoch_seconds()
+        self._logger.error(detail)
+        self._persist()
+
     def set_startup_reason(self, reason: str) -> None:
         """启动即待机时补充原因（如配置缺失）。只改文案，不改变状态。"""
         if self._state != STANDBY:
@@ -98,11 +170,17 @@ class StandbyService:
 
     @property
     def state(self) -> str:
+        lifecycle = self._lifecycle()
+        if self._transition:
+            phase = lifecycle.get("phase")
+            return phase if phase and phase not in ("running", "idle") else "transitioning"
+        if lifecycle.get("phase") == "failed":
+            return "failed"
         return self._state
 
     def is_standby(self) -> bool:
         """Bot 是否处于待机状态（待机期不进入回复与记忆管线）。"""
-        return self._state == STANDBY
+        return self.state != RUNNING
 
     @property
     def connect_onebot(self) -> bool:
@@ -123,9 +201,11 @@ class StandbyService:
             except Exception:
                 since_text = ""
         return {
-            "state": self._state,
-            "standby": self._state == STANDBY,
-            "reason": self._reason,
+            "state": self.state,
+            "standby": self.is_standby(),
+            "transition": self._transition,
+            "phase": self._lifecycle().get("phase", ""),
+            "reason": self._lifecycle().get("detail") or self._reason,
             "operator": self._operator,
             "since": self._since,
             "since_text": since_text,
@@ -138,18 +218,18 @@ class StandbyService:
     async def enter(self, *, reason: str = "", operator: str = "") -> tuple[bool, str]:
         """进入待机：停掉 bot 运行时，只保留最基本的核心服务。"""
         if self._transition:
-            return False, "运行时正在切换中，请稍候。"
+            return False, self._busy_message()
         async with self._lock:
             if self._transition:
-                return False, "运行时正在切换中，请稍候。"
-            if self._state == STANDBY:
+                return False, self._busy_message()
+            if self.state == STANDBY:
                 if not reason:
                     return True, "Bot 已处于待机状态。"
                 self._reason = reason
                 self._operator = operator or self._operator
                 self._persist()
                 return True, f"已更新待机原因：{reason}"
-            self._transition = True
+            self._transition_active = True
             try:
                 # 先把状态落定再拆运行时：拆除期间事件必须被丢弃，
                 # 入口循环也据此判断「停机是进入待机，而不是退出进程」。
@@ -160,7 +240,7 @@ class StandbyService:
                 self._since = epoch_seconds()
                 if self._on_enter is not None:
                     try:
-                        ok, detail = await self._on_enter()
+                        ok, detail = await self._call_hook(self._on_enter, self._enter_timeout)
                     except asyncio.CancelledError:
                         # 拆除中途被取消：状态已落定为待机，先落盘再向上传播，
                         # 避免「内存是待机、状态文件还是运行中」的不一致。
@@ -169,17 +249,21 @@ class StandbyService:
                     except Exception as exc:
                         ok, detail = False, f"{type(exc).__name__}: {exc}"
                     if not ok:
-                        (
-                            self._state,
-                            self._reason,
-                            self._operator,
-                            self._since,
-                        ) = previous
+                        if self._lifecycle_status is None and self._pending_action is None:
+                            (
+                                self._state,
+                                self._reason,
+                                self._operator,
+                                self._since,
+                            ) = previous
+                        else:
+                            self._reason = f"进入待机未完成：{detail}"
+                            self._persist()
                         self._logger.error(f"进入待机失败: {detail}")
                         return False, detail
                 self._persist()
             finally:
-                self._transition = False
+                self._transition_active = False
             self._logger.warning(
                 "Bot 已进入待机：仅保留面板与核心服务",
                 reason=self._reason,
@@ -198,11 +282,11 @@ class StandbyService:
         「面板显示运行中、实际没有运行时」的静默哑火，也避免运行中软重启直接退出进程。
         """
         if self._transition:
-            return False, "运行时正在重建中，请稍候。"
+            return False, self._busy_message()
         async with self._lock:
             if self._transition:
-                return False, "运行时正在重建中，请稍候。"
-            self._transition = True
+                return False, self._busy_message()
+            self._transition_active = True
             try:
                 self._state = STANDBY
                 self._reason = reason or "软重启运行中"
@@ -211,7 +295,7 @@ class StandbyService:
                 self._persist()
                 if self._on_resume is not None:
                     try:
-                        ok, detail = await self._on_resume()
+                        ok, detail = await self._call_hook(self._on_resume, self._resume_timeout)
                     except asyncio.CancelledError:
                         self._persist()
                         raise
@@ -240,7 +324,7 @@ class StandbyService:
                 )
                 return True, message
             finally:
-                self._transition = False
+                self._transition_active = False
 
     async def reboot(self, *, reason: str = "", operator: str = "") -> tuple[bool, str]:
         """软重启 bot 运行时：不重启进程、不重建线程，只重建运行时对象。"""
@@ -251,15 +335,17 @@ class StandbyService:
     ) -> tuple[bool, str]:
         """设置待机期是否保持 OneBot 连接（立即生效）。"""
         if self._transition:
-            return False, "运行时正在切换中，请稍候。"
+            return False, self._busy_message()
         enabled = bool(enabled)
         async with self._lock:
             if self._transition:
-                return False, "运行时正在切换中，请稍候。"
-            if enabled == self._connect_onebot:
+                return False, self._busy_message()
+            if enabled == self._connect_onebot and self._lifecycle().get("phase") != "failed":
                 return True, "待机期连接设置未变化。"
             if self._on_onebot_change is not None:
-                ok, detail = await self._on_onebot_change(enabled)
+                ok, detail = await self._call_hook(
+                    lambda: self._on_onebot_change(enabled), self._enter_timeout
+                )
                 if not ok:
                     return False, detail
             self._connect_onebot = enabled

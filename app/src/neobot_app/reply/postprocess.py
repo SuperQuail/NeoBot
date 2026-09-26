@@ -13,6 +13,8 @@ import random
 import re
 from typing import Any
 
+from neobot_app.reply.output_guard import fence_after_segment, is_control_token_only
+
 
 DEFAULT_LONG_REPLY_FALLBACK_TEMPLATE = "{bot_name}懒得和你说道理，你不配听"
 #: 与配置 schema（`chat.long_reply_max_length` / `chat.long_reply_max_sentence_count`）保持一致，
@@ -30,6 +32,21 @@ class ReplyPostProcessResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ReplySplitPreview:
+    """Internal provenance for an exact, previously exposed automatic split.
+
+    Not a model-facing option. The executor creates this immutable snapshot only
+    after matching its own preview cache; hooks must still match text AND parts.
+    """
+
+    text: str
+    segments: tuple[str, ...]
+
+    def matches(self, text: str, segments: list[str] | tuple[str, ...] | None) -> bool:
+        return self.text == text and segments is not None and self.segments == tuple(segments)
+
+
 def process_reply_text(
     text: str,
     *,
@@ -39,10 +56,26 @@ def process_reply_text(
     max_sentence_count: int = DEFAULT_MAX_SENTENCE_COUNT,
 ) -> ReplyPostProcessResult:
     original = str(text or "")
-    protected_text, kaomoji_mapping = protect_kaomoji(original.strip())
-    cleaned_text = _remove_bracketed_notes(protected_text).strip()
-    if not cleaned_text:
-        cleaned_text = protected_text.strip()
+    noted_text, removed_shell = _remove_notes_with_provenance(original.strip())
+    if not noted_text.strip() and removed_shell:
+        return ReplyPostProcessResult(
+            original_text=original,
+            cleaned_text="",
+            messages=[],
+            reason="postprocess_empty_markup_shell",
+        )
+    if not noted_text.strip():
+        noted_text = original.strip()
+    cleaned_text, kaomoji_mapping = protect_kaomoji(noted_text.strip())
+    # Check the whole postprocessed text before splitting, never individual words
+    # isolated from ordinary prose by the sentence splitter.
+    if not cleaned_text or is_control_token_only(cleaned_text):
+        return ReplyPostProcessResult(
+            original_text=original,
+            cleaned_text="",
+            messages=[],
+            reason="empty_or_control_token",
+        )
 
     if len(cleaned_text) > max_length and not is_western_paragraph(cleaned_text):
         fallback = _fallback_text(fallback_template, bot_name)
@@ -229,6 +262,51 @@ def is_western_paragraph(paragraph: str) -> bool:
 
 def _remove_bracketed_notes(text: str) -> str:
     return re.compile(r"[\(\[（].*?[\)\]）]").sub("", text)
+
+
+_NOTE_WRAPPER = re.compile(
+    r"(?<![*_~])(?P<mark>\*{1,2}|_{1,2}|~~)[ \t]*[\(\[（].*?[\)\]）][ \t]*(?P=mark)(?![*_~])"
+)
+
+
+def _remove_notes_with_provenance(text: str) -> tuple[str, bool]:
+    """Remove notes and only their own empty emphasis wrappers before splitting.
+
+    Match source ranges, not the splitter's marker-only output. Original ** stays
+    intact, including beside removed notes. Code and quoted lines are deliberately
+    left literal; their parentheses and wrappers are examples, not stage notes.
+    """
+    removed_shell = False
+    fence = None
+    lines: list[str] = []
+
+    def remove_wrapper(match: re.Match[str]) -> str:
+        nonlocal removed_shell
+        source = match.group(0)
+        protected, mapping = protect_kaomoji(source)
+        cleaned = _remove_bracketed_notes(protected)
+        remaining = recover_kaomoji([cleaned], mapping)[0]
+        if cleaned != protected and "".join(remaining.split()) == match["mark"] * 2:
+            removed_shell = True
+            return ""
+        return source  # e.g. *(^_^)* was protected as a kaomoji, not removed
+
+    for source_line in text.split("\n"):
+        previous_fence = fence
+        fence = fence_after_segment(source_line, fence)
+        if (
+            previous_fence is not None or fence is not None
+            or "~~~" in source_line or "`" in source_line
+            or source_line.lstrip().startswith(">")
+            or source_line.startswith(("    ", "\t"))
+            or any(quote in source_line for quote in ('"', "'", "“", "”", "‘", "’", "「", "」", "『", "』"))
+        ):
+            lines.append(source_line)
+            continue
+        source_line = _NOTE_WRAPPER.sub(remove_wrapper, source_line)
+        protected, mapping = protect_kaomoji(source_line)
+        lines.append(recover_kaomoji([_remove_bracketed_notes(protected)], mapping)[0])
+    return "\n".join(lines), removed_shell
 
 
 def _fallback_text(template: str, bot_name: str) -> str:

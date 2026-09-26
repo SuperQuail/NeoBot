@@ -326,8 +326,28 @@ def _strip_prefixes_outside_fences(
         fence = None
 
 
+def fence_after_segment(text: str, fence: str | None = None) -> str | None:
+    """Advance the same fence grammar without exposing transformed text.
+
+    Postprocessing uses the ORIGINAL source for this state, before note/markup
+    removal, so a closing tilde fence cannot disappear before it is consumed.
+    """
+    return _strip_prefixes_outside_fences(text, _PrefixStripper(None), fence)[1]
+
+
+def is_control_token_only(text: str) -> bool:
+    """Only the whole bare tool name is a control token, never prose or a quote.
+
+    Do not trim punctuation/Markdown or infer Chinese cancellation intent. Callers
+    processing segments must also check the incoming fence state before dropping.
+    Suppression is not a substitute for an actual structured cancel tool call.
+    """
+    return str(text or "").strip().casefold() == "cancel"
+
+
 def _clean_with_state(
     text: str, stripper: _PrefixStripper, depth: int = 0, fence: str | None = None,
+    *, suppress_control_tokens: bool = True,
 ) -> tuple[str, int, str | None]:
     current = str(text or "").strip()
     if depth:
@@ -345,6 +365,10 @@ def _clean_with_state(
         if depth:
             return current, depth, None
         if current == before:
+            # Consume fence/think state FIRST. A literal cancel inside a fence is
+            # code, and a closing ~~~ must survive to protect the next segment.
+            if suppress_control_tokens and fence is None and is_control_token_only(current):
+                current = ""
             return current, depth, next_fence
 
 
@@ -353,7 +377,7 @@ def clean_text(
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
 ) -> str:
-    """Remove leading reasoning and annotations; preserve fenced/inline examples.
+    """Remove leading reasoning, annotations and bare cancel; preserve examples.
 
     Cleanup reaches a fixed point, including whitespace exposed by deletions.
     Untagged reasoning cannot reliably be distinguished from ordinary prose.
@@ -385,14 +409,28 @@ def clean_segments(
     segments: list[str] | tuple[str, ...] | None,
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
+    suppress_control_tokens: bool = True,
 ) -> list[str]:
-    """清洗分句并跨分句保留思考块深度，避免正文段逃逸。"""
+    """Clean segments while retaining think depth and both kinds of fence.
+
+    Only unchanged automatic splits (including an executor-verified preview
+    round-trip) may disable token suppression: splitting legitimate prose
+    ("cancel 是什么意思") must not invent intent. Other explicit segments and
+    plugin rewrites always use the default safety check.
+    """
     cleaned: list[str] = []
     stripper = _PrefixStripper(known_sender_names)
     depth = 0
     fence = None
     for segment in segments or []:
-        text, depth, fence = _clean_with_state(str(segment or ""), stripper, depth, fence)
+        text, depth, fence = _clean_with_state(
+            str(segment or ""), stripper, depth, fence,
+            suppress_control_tokens=suppress_control_tokens,
+        )
         if text:
             cleaned.append(text)
+    # Provenance preserves words in context, not an otherwise empty control-only
+    # body exposed by removing all reasoning/annotations from that context.
+    if cleaned and all(is_control_token_only(text) for text in cleaned):
+        return []
     return cleaned

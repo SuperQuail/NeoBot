@@ -179,25 +179,37 @@ def test_restart_request_is_distinct_from_normal_stop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_adapter_shutdown_has_timeout_fallback() -> None:
+async def test_adapter_shutdown_timeout_retains_cleanup_until_confirmed() -> None:
     class HangingAdapter:
         def __init__(self) -> None:
+            self.release = asyncio.Event()
+            self.stopped = False
             self.cancelled = False
 
         async def stop(self) -> None:
             try:
-                await asyncio.Event().wait()
-            finally:
+                await self.release.wait()
+                self.stopped = True
+            except asyncio.CancelledError:
                 self.cancelled = True
+                raise
 
     application = object.__new__(NeoBotApplication)
     application.adapter = HangingAdapter()
     application._logger = NullLogger()
     application._ADAPTER_STOP_TIMEOUT_SECONDS = 0.01
-
-    await application._stop_adapter_with_timeout()
-
-    assert application.adapter.cancelled is True
+    stop = asyncio.create_task(application._stop_adapter_with_timeout())
+    try:
+        done, _ = await asyncio.wait((stop,), timeout=0.03)
+        assert not done
+        assert application._adapter_stop_task is not None
+        assert not application.adapter.cancelled
+        assert not application.adapter.stopped
+    finally:
+        application.adapter.release.set()
+        await stop
+    assert application.adapter.stopped
+    assert application._adapter_stop_task is None
 
 
 @pytest.mark.asyncio

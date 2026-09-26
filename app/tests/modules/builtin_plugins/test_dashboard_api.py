@@ -573,6 +573,71 @@ def test_env_manager_keeps_secret_when_value_blank(tmp_path: Path) -> None:
     assert "DeepSeek_APIKey=sk-updated" in env_path.read_text(encoding="utf-8")
 
 
+def test_env_in_file_distinguishes_real_builtin_and_placeholder(tmp_path: Path) -> None:
+    from neobot_app.builtin_plugins.dashboard.config_manager import EnvFileManager
+
+    path = tmp_path / ".env"
+    path.write_text("DeepSeek_URL=https://example.com\nCUSTOM_VALUE=hello\n", encoding="utf-8")
+    manager = EnvFileManager(env_path=path, backup_dir=tmp_path / "backup")
+    items = {item["key"]: item for item in manager.read()["items"]}
+    assert items["DeepSeek_URL"]["builtin"] is True
+    assert items["DeepSeek_URL"]["in_file"] is True
+    assert items["CUSTOM_VALUE"]["in_file"] is True
+    placeholders = [item for item in items.values() if not item["in_file"]]
+    assert placeholders and all(item["builtin"] and item["line"] == 0 for item in placeholders)
+
+
+def test_env_delete_wins_over_edit_and_updates_process_environment(tmp_path: Path, monkeypatch) -> None:
+    import os
+    from neobot_app.builtin_plugins.dashboard.config_manager import EnvFileManager
+
+    path = tmp_path / ".env"
+    path.write_text("DeepSeek_APIKey=old-secret\nCUSTOM_VALUE=hello\n", encoding="utf-8")
+    monkeypatch.setenv("DeepSeek_APIKey", "old-secret")
+    monkeypatch.setenv("CUSTOM_VALUE", "hello")
+    manager = EnvFileManager(env_path=path, backup_dir=tmp_path / "backup")
+    result = manager.save(
+        updates={"DeepSeek_APIKey": "new-secret", "CUSTOM_VALUE": ""},
+        deletes=["DeepSeek_APIKey", "CUSTOM_VALUE"],
+    )
+    assert "DeepSeek_APIKey=" not in path.read_text(encoding="utf-8")
+    assert "CUSTOM_VALUE=" not in path.read_text(encoding="utf-8")
+    assert "DeepSeek_APIKey" not in os.environ and "CUSTOM_VALUE" not in os.environ
+    items = {item["key"]: item for item in result["items"]}
+    assert items["DeepSeek_APIKey"]["in_file"] is False
+    assert "CUSTOM_VALUE" not in items
+    assert "new-secret" not in str(result)
+
+
+async def test_env_delete_and_reload_via_api(panel, monkeypatch) -> None:
+    from neobot_app.builtin_plugins.dashboard.api import DashboardApi
+
+    server, _, base, _ = panel
+    path = server.env_manager.env_path
+    path.write_text("DeepSeek_URL=https://example.com\nCUSTOM_VALUE=hello\n", encoding="utf-8")
+    reloaded = []
+
+    async def reload_config(self):
+        reloaded.append(path.read_text(encoding="utf-8"))
+        return {"ok": True, "message": "重载成功"}
+
+    monkeypatch.setattr(DashboardApi, "_reload_config", reload_config)
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/config/env", headers={"X-Token": token})
+        response = await client.post(
+            base + "/api/config/env",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"deletes": ["DeepSeek_URL"], "revision": listed.json()["revision"], "reload": True},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    assert len(reloaded) == 1 and "DeepSeek_URL=" not in reloaded[0]
+    assert "CUSTOM_VALUE=hello" in reloaded[0]
+    items = {item["key"]: item for item in response.json()["items"]}
+    assert items["DeepSeek_URL"]["in_file"] is False
+
+
 async def test_env_add_platform_writes_url_and_key(panel) -> None:
     """一键添加 API 供应商：写入 <平台名>_URL 与 <平台名>_APIKey，响应不含明文 Key。"""
     server, _, base, _ = panel

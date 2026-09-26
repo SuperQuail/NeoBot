@@ -20,6 +20,33 @@ class SqlAlchemyProfileRepository:
         stmt = stmt.on_conflict_do_update(index_elements=["user_id"], set_=fields)
         await self._session.execute(stmt)
 
+    async def compare_and_set_user_favorability(
+        self, user_id: str, *, expected: int | None, value: int,
+    ) -> bool:
+        """只写仍与读取值一致的好感度，避免并发增量变成绝对值覆盖。
+
+        None 表示调用方读到用户不存在：并发建档时不覆盖赢家的资料。
+        False 表示快照已过期；调用方必须在新事务内重新读取、计算再提交。
+        """
+        if expected is None:
+            stmt = (
+                insert(UserData)
+                .values(user_id=user_id, favorability=value)
+                .on_conflict_do_nothing(index_elements=["user_id"])
+            )
+        else:
+            stmt = (
+                update(UserData)
+                .where(
+                    UserData.user_id == user_id,
+                    func.coalesce(UserData.favorability, 0) == expected,
+                )
+                .values(favorability=value)
+                .execution_options(synchronize_session=False)
+            )
+        result = await self._session.execute(stmt)
+        return result.rowcount == 1
+
     async def upsert_group(self, group_id: str, **fields) -> None:
         stmt = insert(GroupData).values(group_id=group_id, **fields)
         stmt = stmt.on_conflict_do_update(index_elements=["group_id"], set_=fields)

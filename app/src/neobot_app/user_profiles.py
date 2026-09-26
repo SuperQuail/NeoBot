@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.favorability import favorability_to_text
+from neobot_app.favorability import (
+    FAVORABILITY_MAX,
+    FAVORABILITY_MIN,
+    clamp_favorability,
+    favorability_to_text,
+)
 from neobot_app.time_context import now_utc, to_utc
+from neobot_storage._retry import _is_locked_error
+
+
+_FAVORABILITY_UPDATE_ATTEMPTS = 12
 
 
 def _sex_to_text(value: object) -> str | None:
@@ -109,6 +119,72 @@ class UserProfileService:
             await uow.profiles.upsert_user(user_id_str, avatar_analysis=avatar_text)
             await uow.commit()
             return await uow.profiles.get_user(user_id_str)
+
+    async def update_favorability(
+        self,
+        user_id: str | int,
+        change: int,
+        *,
+        reason: str = "",
+        max_change: int = 5,
+        min_value: int = FAVORABILITY_MIN,
+        max_value: int = FAVORABILITY_MAX,
+    ) -> dict[str, Any]:
+        """增量调整好感度；只有持久化成功才返回实际变更。
+
+        CAS 失败或 SQLite 锁冲突时重放整个事务，而不是在回滚后仅重试
+        commit。每次重读当前值，因此并发回复/摘要任务不会覆盖彼此的增量。
+        """
+        user_id_str = str(user_id).strip()
+        if not user_id_str:
+            raise ValueError("user_id 不能为空")
+        requested = int(change)
+        limit = max(0, int(max_change))
+        delta = max(-limit, min(limit, requested))
+        lo, hi = int(min_value), int(max_value)
+        last_error: Exception | None = None
+        for attempt in range(_FAVORABILITY_UPDATE_ATTEMPTS):
+            committed = False
+            try:
+                async with self._uow_factory() as uow:
+                    record = await uow.profiles.get_user(user_id_str)
+                    before = int(getattr(record, "favorability", 0) or 0)
+                    after = clamp_favorability(before + delta, min_val=lo, max_val=hi)
+                    updated = await uow.profiles.compare_and_set_user_favorability(
+                        user_id_str,
+                        expected=before if record is not None else None,
+                        value=after,
+                    )
+                    if updated:
+                        await uow.commit()
+                        committed = True
+                        break
+                    await uow.rollback()
+            except Exception as exc:
+                # 会话关闭失败不能重放已经提交的增量，即使错误文本像锁冲突。
+                if committed or not _is_locked_error(exc):
+                    raise
+                last_error = exc
+            if attempt + 1 < _FAVORABILITY_UPDATE_ATTEMPTS:
+                # 不把同一批冲突者固定唤醒到同一个时刻；重试仍有明确上限。
+                delay = min(0.01 * (2 ** attempt), 0.2)
+                await asyncio.sleep(random.uniform(delay / 2, delay))
+        else:
+            raise RuntimeError("好感度更新遇到并发冲突，请稍后重试") from last_error
+
+        effective = after - before
+        self._logger.info(
+            "好感度已调整", user_id=user_id_str, before=before, after=after,
+            change=effective, reason=reason,
+        )
+        return {
+            "user_id": user_id_str,
+            "before": before,
+            "after": after,
+            "change": effective,
+            "label": favorability_to_text(after),
+            "reason": reason,
+        }
 
     async def update_user_favorability(
         self,

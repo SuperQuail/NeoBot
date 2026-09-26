@@ -35,15 +35,18 @@ from neobot_app.utils.http import sanitize_no_proxy_environment
 
 
 async def run() -> bool:
-    """运行一轮应用，优雅关闭后将重启意图交给循环外的 CLI。"""
+    """运行一轮；只有所有旧运行时与核心清理确认完成，才允许进程重启。"""
     loop = asyncio.get_running_loop()
-    state = {"application": None, "stopping": False}
+    state: dict[str, Any] = {"application": None, "stopping": False, "controller": None}
 
     def request_stop() -> None:
+        # A normal process stop always wins, even if restart was requested first.
         state["stopping"] = True
-        application = state["application"]
-        if application is not None:
-            application.request_stop()
+        controller = state["controller"]
+        if controller is not None:
+            controller.request_shutdown()
+        elif state["application"] is not None:
+            state["application"].request_stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -59,50 +62,187 @@ async def run() -> bool:
     application = create_application(owns_plugins=False)
     standby_service = get_cached_core("standby_service")
     if standby_service is None:
-        # 装配降级（测试桩，或未启用核心复用）：按旧的单运行时流程运行
+        # Legacy standalone/test assembly has no core watcher.
         state["application"] = application
         try:
             await application.run_forever()
-            return application.restart_requested
+            return not state["stopping"] and application.restart_requested
         finally:
             state["application"] = None
+    logger_factory = get_cached_core("logger_factory")
+    logger = logger_factory.get_logger("app.standby") if logger_factory else None
+    restart_signal = get_cached_core("process_restart")
     controller = StandbyController(
         standby_service=standby_service,
         runtime_factory=lambda: create_application(owns_plugins=False),
         adapter=get_cached_core("adapter"),
         initial_application=application,
-        logger=get_cached_core("logger_factory").get_logger("app.standby"),
+        logger=logger,
+        restart_signal=restart_signal,
     )
+    state["controller"] = controller
     standby_service.set_hooks(
         on_enter=controller.enter,
         on_resume=controller.resume,
         on_onebot_change=controller.set_onebot,
     )
     plugin_runtime = get_cached_core("plugin_runtime")
-    if plugin_runtime is not None:
-        # 插件运行时归核心所有：这里启动一次；进入待机不再停它（面板常驻）
-        await plugin_runtime.load_registered()
-        await plugin_runtime.start_all()
-    await controller.start()
+
+    async def startup() -> None:
+        try:
+            if plugin_runtime is not None and not controller.exiting:
+                await plugin_runtime.load_registered()
+                if not controller.exiting:
+                    await plugin_runtime.start_all()
+            if not controller.exiting:
+                ok, detail = await controller.start()
+                if not ok:
+                    standby_service.record_failure(detail)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            standby_service.record_failure(f"启动失败：{type(exc).__name__}: {exc}")
+
+    startup_task = asyncio.create_task(startup(), name="neobot-core-startup")
     try:
-        while True:
-            runtime = controller.application
-            if runtime is None:
-                if state["stopping"]:
-                    return False
-                # 待机：进程与面板继续存活，等 /reboot 或面板「启动运行」唤醒
-                await asyncio.sleep(0.5)
-                continue
-            state["application"] = runtime
-            await runtime.run_forever()
-            state["application"] = None
-            if runtime.restart_requested:
-                return True
-            if standby_service.is_standby():
-                continue
-            return False
+        restart_requested = await run_entry_loop(
+            controller=controller,
+            standby_service=standby_service,
+            restart_signal=restart_signal,
+            state=state,
+            startup_task=startup_task,
+        )
     finally:
         state["application"] = None
+        # Do not rely on asyncio.run's cancellation drain to own core shutdown.
+        # In particular, a timeout is a report, NEVER permission to exec early.
+        if plugin_runtime is not None:
+            async def stop_core() -> None:
+                await plugin_runtime.stop_all()
+                registry = getattr(plugin_runtime, "agent_registry", None)
+                if registry is not None:
+                    await registry.close()
+
+            await _drain_shutdown_task(asyncio.create_task(stop_core()), "core plugins")
+    # SIGINT/SIGTERM can arrive during the last core cleanup await too.
+    return not state["stopping"] and restart_requested
+
+
+async def _drain_shutdown_task(task: asyncio.Task, phase: str) -> Any:
+    from neobot_app.bootstrap._standby_runtime import STOP_TIMEOUT_SECONDS
+
+    done, _ = await asyncio.wait((task,), timeout=STOP_TIMEOUT_SECONDS)
+    if not done:
+        print(
+            f"优雅关闭仍在等待 {phase}；不会启动新进程。"
+            "若持续卡住，需手动处理或显式强制重启。",
+            file=sys.stderr,
+        )
+    return await asyncio.shield(task)
+
+
+async def run_entry_loop(
+    *,
+    controller: Any,
+    standby_service: Any,
+    restart_signal: Any = None,
+    state: dict[str, Any],
+    poll_interval: float = 0.5,
+    startup_task: asyncio.Task | None = None,
+) -> bool:
+    """Monitor process intent concurrently with startup, run_forever and standby.
+
+    The restart watcher only resolves the current controller, never a captured
+    runtime. The process remains alive (with truthful diagnostics) if graceful
+    cleanup is stuck; returning True would incorrectly authorize execv.
+    """
+    async def watch_restart() -> None:
+        await restart_signal.wait()
+        controller.request_shutdown()
+
+    watcher = (
+        asyncio.create_task(watch_restart(), name="neobot-process-restart-watch")
+        if restart_signal is not None else None
+    )
+    runtime_task: asyncio.Task | None = None
+    runtime: Any = None
+    legacy_restart = False
+    last_failure = ""
+    shutdown_confirmed = False
+    try:
+        while True:
+            legacy_restart = legacy_restart or bool(
+                runtime is not None and runtime.restart_requested
+            )
+            restart = legacy_restart or bool(restart_signal is not None and restart_signal.requested)
+            if state.get("stopping") or restart:
+                controller.request_shutdown()
+                if startup_task is not None and not startup_task.done():
+                    if not startup_task.cancelling():
+                        startup_task.cancel()
+                    # Retain the task; cancellation-resistant plugin startup
+                    # must finish before core teardown begins.
+                    failure = "startup 清理仍在进行；若优雅关闭卡住需手动处理或显式强制重启。"
+                else:
+                    ok, failure = await controller.shutdown()
+                    if ok and (runtime_task is None or runtime_task.done()):
+                        if runtime_task is not None:
+                            await runtime_task
+                        shutdown_confirmed = True
+                        return not state.get("stopping", False) and restart
+                if failure != last_failure:
+                    print(failure, file=sys.stderr)
+                    last_failure = failure
+            else:
+                if runtime_task is not None and runtime_task.done():
+                    await runtime_task
+                    state["application"] = None
+                    runtime_task = None
+                    if controller.application in (None, runtime) and not standby_service.is_standby():
+                        state["stopping"] = True
+                        continue
+                if runtime_task is None:
+                    current = controller.application
+                    if current is not None:
+                        runtime = current
+                        state["application"] = current
+                        runtime_task = asyncio.create_task(current.run_forever(), name="neobot-run-forever")
+            waiting = [
+                task for task in (runtime_task, startup_task, watcher)
+                if task is not None and not task.done()
+            ]
+            if waiting:
+                await asyncio.wait(waiting, timeout=poll_interval, return_when=asyncio.FIRST_COMPLETED)
+            else:
+                await asyncio.sleep(poll_interval)
+    finally:
+        state["application"] = None
+        if not shutdown_confirmed:
+            controller.request_shutdown()
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+        if startup_task is not None:
+            if not startup_task.done():
+                startup_task.cancel()
+            try:
+                await _drain_shutdown_task(startup_task, "startup")
+            except asyncio.CancelledError:
+                if not startup_task.cancelled():
+                    raise
+        if runtime_task is not None and not runtime_task.done():
+            controller.request_shutdown()
+            await _drain_shutdown_task(runtime_task, "runtime")
+        if not shutdown_confirmed:
+            while True:
+                await _drain_shutdown_task(
+                    asyncio.create_task(controller.wait_for_idle()), "runtime transition"
+                )
+                ok, detail = await controller.shutdown()
+                if ok:
+                    break
+                if not controller.lifecycle_status()["pending"]:
+                    raise RuntimeError(detail)
 
 
 def _add_inbound_rule(program: str, port: int) -> bool:

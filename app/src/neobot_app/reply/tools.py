@@ -9,6 +9,7 @@ import math
 import os
 import re
 import stat
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_app.reply.output_guard import clean_segments, clean_text
 from neobot_app.reply.postprocess import (
     ReplyPostProcessResult,
+    ReplySplitPreview,
     build_over_limit_guidance,
     build_over_limit_reject_hint,
     process_reply_text,
@@ -284,6 +286,8 @@ class ReplyToolExecutor(ToolExecutor):
         self._agent_history = agent_history if agent_history is not None else []
         self._ai_reply_check = ai_reply_check
         self._ai_reply_check_lightweight = ai_reply_check_lightweight
+        self._ai_check_pending = False
+        self._split_previews: deque[ReplySplitPreview] = deque(maxlen=8)
         self._bot_name = bot_name
         self._long_reply_fallback_template = long_reply_fallback_template
         self._long_reply_max_length = long_reply_max_length
@@ -306,6 +310,11 @@ class ReplyToolExecutor(ToolExecutor):
         # 惰性构建：允许测试/插件在构造之后替换 skill_manager。
         self._activation_cache: SkillToolActivation | None = None
         self._activation_manager: Any = None
+
+    @property
+    def ai_check_pending(self) -> bool:
+        """A send_reply review still awaits an explicit reply/cancel decision."""
+        return self._ai_check_pending
 
     @property
     def closed(self) -> bool:
@@ -423,7 +432,8 @@ class ReplyToolExecutor(ToolExecutor):
                 _tool_def(
                     "cancel",
                     "主动结束本轮回复事件。当认为自己不适合参与当前话题、不需要回复、"
-                    "或已通过其他方式完成互动时调用。调用后本轮回复立即结束，不再发送任何消息。",
+                    "或已通过其他方式完成互动时调用。调用后本轮回复立即结束，不再发送任何消息。"
+                    "取消必须真正调用本工具，不要先发送 cancel 或取消说明；reason 不会发到聊天。",
                     {
                         "properties": {
                             "reason": {
@@ -438,7 +448,8 @@ class ReplyToolExecutor(ToolExecutor):
         tools.append(
             _tool_def(
                 "split_reply",
-                "只切分回复文本，不发送。用于在发送前查看分条结果；send_reply 实际发送时也会自动切分。",
+                "只切分回复文本，不发送。用于在发送前查看分条结果；send_reply 实际发送时也会自动切分。"
+                "确认本预览后，把原 text 和完整 messages 作为 segments 传给 send_reply；AI检查开启时可设置 ai_check_approved=true。",
                 {
                     "properties": {
                         "text": {
@@ -482,8 +493,10 @@ class ReplyToolExecutor(ToolExecutor):
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。"
-                            "**给了 segments 时 text 会被忽略（text 仍是必填字段，随便填），"
-                            "不要再把正文只写进 text。** 每条同样只放正文，不要带编号/发送者名字/"
+                            "给了 segments 时以分条为正文，不要把正文只写进 text。"
+                            "回传 split_reply 或 AI 检查的预览时，text 必须保留原文，segments 必须是完整预览；"
+                            "未匹配预览则按独立分条执行安全清洗，ai_check_approved 不会跳过清洗。"
+                            "每条同样只放正文，不要带编号/发送者名字/"
                             "[msg_id=...] 等系统标注，也不要写思考过程；只剩标注或只剩思考的条目会被丢弃。",
                         },
                         "images": {
@@ -501,7 +514,7 @@ class ReplyToolExecutor(ToolExecutor):
                         },
                         "send_original": {
                             "type": "boolean",
-                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分。对于 @ 和引用消息也适用，设置为 true 后不会切分文字。",
+                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。",
                         },
                     },
                     "required": ["text"],
@@ -1560,20 +1573,24 @@ class ReplyToolExecutor(ToolExecutor):
             return "错误：cancel 处理器未配置"
         reason = str(args.get("reason") or "").strip()
         await self._cancel(reason=reason if reason else None)
+        self._ai_check_pending = False
         return "回复已取消" if not reason else f"回复已取消：{reason}"
 
     def _execute_split_reply(self, args: dict) -> str:
         text = str(args.get("text") or "")
         if not text.strip():
             return "错误：回复内容不能为空"
-        result = self._preview_split(text)
+        result = self._preview_split(clean_text(text, known_sender_names=self._sender_names()))
+        self.remember_split_preview(result)
         payload = {
-            "ok": True,
-            "original_text": result.original_text,
+            "ok": bool(result.messages),
+            "original_text": text,
             "messages": result.messages,
             "fallback_used": result.fallback_used,
             "reason": result.reason,
         }
+        if not result.messages:
+            payload["error"] = "回复内容清洗后为空；取消本轮请直接调用 cancel 工具"
         return json.dumps(payload, ensure_ascii=False)
 
     async def _execute_send_reply(self, args: dict) -> str:
@@ -1587,20 +1604,33 @@ class ReplyToolExecutor(ToolExecutor):
         # 看到自己真正发出去的是什么；sender 侧还有同一套兜底，防止清洗后为空。
         sender_names = self._sender_names()
         text = clean_text(raw_text, known_sender_names=sender_names)
-        segments = clean_segments(
-            self._normalize_segments(args.get("segments")),
-            known_sender_names=sender_names,
+        raw_segments = self._normalize_segments(args.get("segments"))
+        ai_check_approved = bool(args.get("ai_check_approved") is True)
+        # Provenance is independent of approval: require this executor's exact
+        # exposed source AND complete split. An approval flag or model-supplied
+        # split_preview can never establish provenance by itself.
+        matched_preview = any(
+            preview.matches(text, raw_segments) for preview in self._split_previews
         )
+        segments = clean_segments(
+            raw_segments, known_sender_names=sender_names,
+            suppress_control_tokens=not matched_preview,
+        )
+        split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview else None
+        send_original = bool(args.get("send_original") is True)
+        merge_text_with_image = bool(args.get("merge_text_with_image") is True)
+        if raw_segments and not segments and not (
+            send_original or (args.get("images") and merge_text_with_image)
+        ):
+            # text is only a placeholder when explicit segments were selected.
+            text = ""
         if not text.strip() and not segments and not args.get("images"):
             return (
-                "错误：回复内容清洗后为空。"
+                "错误：回复内容清洗后为空，未发送。取消本轮请直接调用 cancel 工具。"
                 "历史消息行首的 \"[msg_id=...]\"、消息编号、发送者名字都是系统标注，"
                 "不是要你模仿的输出格式；请只发送你要说的正文，不要带这些前缀，"
                 "也不要把思考过程/草稿写进正文，然后重新调用 send_reply。"
             )
-        send_original = bool(args.get("send_original") is True)
-        ai_check_approved = bool(args.get("ai_check_approved") is True)
-        merge_text_with_image = bool(args.get("merge_text_with_image") is True)
         raw_images = args.get("images")
         images: list[int] | None = None
         if raw_images is not None:
@@ -1623,6 +1653,9 @@ class ReplyToolExecutor(ToolExecutor):
                 mention = [int(qq) for qq in raw_mention]
             except (ValueError, TypeError):
                 return f"错误：mention 必须为整数列表，收到 {raw_mention}"
+
+        if not (send_original or segments or images) and not self._preview_split(text).messages:
+            return "错误：回复内容清洗后为空，未发送。取消本轮请直接调用 cancel 工具。"
 
         if self._ai_reply_check and not (
             send_original or ai_check_approved or segments
@@ -1678,21 +1711,24 @@ class ReplyToolExecutor(ToolExecutor):
             send_original=send_original,
             images=images,
             merge_text_with_image=merge_text_with_image,
+            **({"split_preview": split_preview} if split_preview is not None else {}),
         )
         if delivered is False:
             # sender 侧兜底判定「清洗后什么都不剩」：绝不能不吭声地当成发过，
             # 那样模型会以为已经回复，整轮就此结束。
             return (
-                "错误：回复内容清洗后为空，未发送。"
+                "错误：没有可发送的正文或图片，未发送（回复内容清洗后为空时不会发送空消息）。"
+                "取消本轮请直接调用 cancel 工具。"
                 "不要把消息编号、发送者名字、[msg_id=...] 这类系统标注写进正文，"
                 "也不要把思考过程/草稿当成正文；请只发送你要说的那句话，然后重试。"
             )
+        self._ai_check_pending = False
+        if send_original and text.strip():
+            display = text.strip()
+            return f"已发送原文：{display[:300]}{'...' if len(display) > 300 else ''}"
         if segments:
             seg_text = "\n---\n".join(segments)
             return f"已发送 {len(segments)} 条消息：\n{seg_text}"
-        if send_original:
-            display = text.strip()
-            return f"已发送原文：{display[:300]}{'...' if len(display) > 300 else ''}"
         preview = self._preview_split(text)
         preview_text = "\n---\n".join(preview.messages)
         if images:
@@ -2191,6 +2227,7 @@ class ReplyToolExecutor(ToolExecutor):
                 mention=mention,
                 markdown=markdown,
             )
+            self._ai_check_pending = False
         return json.dumps(
             {
                 "ok": True,
@@ -2456,6 +2493,13 @@ class ReplyToolExecutor(ToolExecutor):
                 return []
         return []
 
+    def remember_split_preview(self, result: ReplyPostProcessResult) -> None:
+        """Record only previews actually exposed to the model, never internal checks."""
+        if result.messages and not result.fallback_used:
+            text = clean_text(result.original_text, known_sender_names=self._sender_names())
+            if text:
+                self._split_previews.append(ReplySplitPreview(text, tuple(result.messages)))
+
     def _preview_split(self, text: str) -> ReplyPostProcessResult:
         return process_reply_text(
             text,
@@ -2483,6 +2527,8 @@ class ReplyToolExecutor(ToolExecutor):
         return segments or None
 
     def _build_ai_check_prompt(self, result: ReplyPostProcessResult) -> str:
+        self.remember_split_preview(result)
+        self._ai_check_pending = True
         lines = [
             "AI回复检查已开启，暂未发送。",
             "请检查切分后的分条回复是否存在严重问题或明显歧义。",

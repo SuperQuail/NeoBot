@@ -80,7 +80,10 @@ async def _handle_update_favorability(self: FavorabilitySkill, args: dict) -> st
     if self._profile_service is None:
         return _json({"ok": False, "error": "profile_service 未配置"})
     user_id = str(args.get("user_id", "")).strip()
-    change = int(args.get("change", 0))
+    try:
+        change = int(args.get("change", 0))
+    except (TypeError, ValueError, OverflowError):
+        return _json({"ok": False, "error": "change 必须为整数"})
     reason = str(args.get("reason", "")).strip()
     if not user_id or change == 0:
         return _json({"ok": False, "error": "缺少必要参数或变更量为0"})
