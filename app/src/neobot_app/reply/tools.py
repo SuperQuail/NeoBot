@@ -23,7 +23,7 @@ from neobot_chat.schema.types import (
 )
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
-from neobot_app.reply.output_guard import clean_segments, clean_text
+from neobot_app.reply.output_guard import clean_segments, clean_text, is_control_token_only
 from neobot_app.reply.postprocess import (
     ReplyPostProcessResult,
     ReplySplitPreview,
@@ -515,6 +515,13 @@ class ReplyToolExecutor(ToolExecutor):
                         "send_original": {
                             "type": "boolean",
                             "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。",
+                        },
+                        "send_raw": {
+                            "type": "boolean",
+                            "description": "可选，默认 false。只有当你确实要把 \"cancel\" 这个词本身发给对方时才设为 true："
+                            "默认情况下「正文就是裸 cancel」会被兜底拦下，因为那通常是把该调用 cancel 工具写成了正文。"
+                            "send_raw 只放行这一种拦截，不会跳过其它安全清洗 —— 系统标注、[msg_id=...]、"
+                            "行首编号与名字、思考过程仍会被清掉。要取消本轮回复请直接调用 cancel 工具，不要用这个参数。",
                         },
                     },
                     "required": ["text"],
@@ -1576,6 +1583,32 @@ class ReplyToolExecutor(ToolExecutor):
         self._ai_check_pending = False
         return "回复已取消" if not reason else f"回复已取消：{reason}"
 
+    #: 裸 cancel 被兜底拦下时的提示：告诉模型「确实要发这个字面内容」怎么放行。
+    _CONTROL_TOKEN_RAW_HINT = (
+        "如果这不是误发、你确实要把 cancel 这个词本身发出去，"
+        "请带 send_raw=true 重新调用 send_reply 直接发送这段字面内容"
+        "（send_raw 只放行这一种拦截：系统标注、行首前缀与思考过程照旧清洗）；"
+        "如果本意是取消本轮回复，请直接调用 cancel 工具，不要发消息。"
+    )
+
+    def _empty_reply_error(self, *, bare_cancel: bool) -> str:
+        """区分「裸 cancel 被拦」与「清洗后什么都不剩」。
+
+        两者的下一步动作完全相反：前者有显式放行开关，后者要模型重写正文。
+        旧实现共用一句话，模型只能猜，所以这里分开。
+        """
+        if bare_cancel:
+            return (
+                "错误：没有可发送的正文，未发送 —— 这段内容只有 \"cancel\" 这个工具名，"
+                "被裸 cancel 兜底拦下了。" + self._CONTROL_TOKEN_RAW_HINT
+            )
+        return (
+            "错误：回复内容清洗后为空，未发送。取消本轮请直接调用 cancel 工具。"
+            "历史消息行首的 \"[msg_id=...]\"、消息编号、发送者名字都是系统标注，"
+            "不是要你模仿的输出格式；请只发送你要说的正文，不要带这些前缀，"
+            "也不要把思考过程/草稿写进正文，然后重新调用 send_reply。"
+        )
+
     def _execute_split_reply(self, args: dict) -> str:
         text = str(args.get("text") or "")
         if not text.strip():
@@ -1590,7 +1623,10 @@ class ReplyToolExecutor(ToolExecutor):
             "reason": result.reason,
         }
         if not result.messages:
-            payload["error"] = "回复内容清洗后为空；取消本轮请直接调用 cancel 工具"
+            payload["error"] = (
+                "回复内容清洗后为空；取消本轮请直接调用 cancel 工具。"
+                "如果确实要发送 \"cancel\" 这个字面内容，请调用 send_reply 并设置 send_raw=true。"
+            )
         return json.dumps(payload, ensure_ascii=False)
 
     async def _execute_send_reply(self, args: dict) -> str:
@@ -1603,8 +1639,19 @@ class ReplyToolExecutor(ToolExecutor):
         # 「编号: 名字: 正文」，模型照抄了这个格式）。工具层先清一遍，模型方能
         # 看到自己真正发出去的是什么；sender 侧还有同一套兜底，防止清洗后为空。
         sender_names = self._sender_names()
-        text = clean_text(raw_text, known_sender_names=sender_names)
+        # 模型显式声明「就是要发这段字面内容」：只放行裸 cancel 这一条兜底，
+        # 其余清洗（系统标注、行首前缀、思考过程）照旧。
+        send_raw = args.get("send_raw") is True
         raw_segments = self._normalize_segments(args.get("segments"))
+        text = clean_text(
+            raw_text, known_sender_names=sender_names,
+            suppress_control_tokens=not send_raw,
+        )
+        # 单独判一次「是不是裸 cancel 被拦」：报错要据此告诉模型 send_raw 这条路。
+        bare_cancel = not send_raw and (
+            is_control_token_only(raw_text)
+            or any(is_control_token_only(segment) for segment in raw_segments or [])
+        )
         ai_check_approved = bool(args.get("ai_check_approved") is True)
         # Provenance is independent of approval: require this executor's exact
         # exposed source AND complete split. An approval flag or model-supplied
@@ -1614,7 +1661,8 @@ class ReplyToolExecutor(ToolExecutor):
         )
         segments = clean_segments(
             raw_segments, known_sender_names=sender_names,
-            suppress_control_tokens=not matched_preview,
+            suppress_control_tokens=not (matched_preview or send_raw),
+            allow_control_token_body=send_raw,
         )
         split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview else None
         send_original = bool(args.get("send_original") is True)
@@ -1625,12 +1673,7 @@ class ReplyToolExecutor(ToolExecutor):
             # text is only a placeholder when explicit segments were selected.
             text = ""
         if not text.strip() and not segments and not args.get("images"):
-            return (
-                "错误：回复内容清洗后为空，未发送。取消本轮请直接调用 cancel 工具。"
-                "历史消息行首的 \"[msg_id=...]\"、消息编号、发送者名字都是系统标注，"
-                "不是要你模仿的输出格式；请只发送你要说的正文，不要带这些前缀，"
-                "也不要把思考过程/草稿写进正文，然后重新调用 send_reply。"
-            )
+            return self._empty_reply_error(bare_cancel=bare_cancel)
         raw_images = args.get("images")
         images: list[int] | None = None
         if raw_images is not None:
@@ -1654,30 +1697,32 @@ class ReplyToolExecutor(ToolExecutor):
             except (ValueError, TypeError):
                 return f"错误：mention 必须为整数列表，收到 {raw_mention}"
 
-        if not (send_original or segments or images) and not self._preview_split(text).messages:
-            return "错误：回复内容清洗后为空，未发送。取消本轮请直接调用 cancel 工具。"
+        if not (send_original or segments or images) and not self._preview_split(
+            text, suppress_control_tokens=not send_raw
+        ).messages:
+            return self._empty_reply_error(bare_cancel=bare_cancel)
 
         if self._ai_reply_check and not (
             send_original or ai_check_approved or segments
         ):
-            result = self._preview_split(text)
-            return self._build_ai_check_prompt(result)
+            result = self._preview_split(text, suppress_control_tokens=not send_raw)
+            return self._build_ai_check_prompt(result, send_raw=send_raw)
 
         if (
             self._ai_reply_check_lightweight
             and not self._ai_reply_check
             and not (send_original or ai_check_approved or segments)
         ):
-            result = self._preview_split(text)
+            result = self._preview_split(text, suppress_control_tokens=not send_raw)
             if result.fallback_used:
-                return self._build_ai_check_prompt(result)
+                return self._build_ai_check_prompt(result, send_raw=send_raw)
 
         if (
             self._enable_ai_reply_regenerate
             and not (send_original or merge_text_with_image)
             and not segments
         ):
-            pre_check = self._preview_split(text)
+            pre_check = self._preview_split(text, suppress_control_tokens=not send_raw)
             if pre_check.fallback_used:
                 return (
                     f"回复被拦截：{pre_check.reason}"
@@ -1692,7 +1737,7 @@ class ReplyToolExecutor(ToolExecutor):
             and not (send_original or merge_text_with_image)
             and ai_check_approved
         ):
-            pre_check = self._preview_split(text)
+            pre_check = self._preview_split(text, suppress_control_tokens=not send_raw)
             if pre_check.fallback_used:
                 return (
                     f"回复被拦截：{pre_check.reason}"
@@ -1711,6 +1756,7 @@ class ReplyToolExecutor(ToolExecutor):
             send_original=send_original,
             images=images,
             merge_text_with_image=merge_text_with_image,
+            send_raw=send_raw,
             **({"split_preview": split_preview} if split_preview is not None else {}),
         )
         if delivered is False:
@@ -1729,7 +1775,7 @@ class ReplyToolExecutor(ToolExecutor):
         if segments:
             seg_text = "\n---\n".join(segments)
             return f"已发送 {len(segments)} 条消息：\n{seg_text}"
-        preview = self._preview_split(text)
+        preview = self._preview_split(text, suppress_control_tokens=not send_raw)
         preview_text = "\n---\n".join(preview.messages)
         if images:
             return f"已发送（{len(images)} 张图片 + {len(preview.messages)} 条文字）：\n{preview_text}"
@@ -2500,13 +2546,16 @@ class ReplyToolExecutor(ToolExecutor):
             if text:
                 self._split_previews.append(ReplySplitPreview(text, tuple(result.messages)))
 
-    def _preview_split(self, text: str) -> ReplyPostProcessResult:
+    def _preview_split(
+        self, text: str, *, suppress_control_tokens: bool = True,
+    ) -> ReplyPostProcessResult:
         return process_reply_text(
             text,
             bot_name=self._bot_name,
             fallback_template=self._long_reply_fallback_template,
             max_length=self._long_reply_max_length,
             max_sentence_count=self._long_reply_max_sentence_count,
+            suppress_control_tokens=suppress_control_tokens,
         )
 
     @staticmethod
@@ -2526,7 +2575,7 @@ class ReplyToolExecutor(ToolExecutor):
                 segments.append(text)
         return segments or None
 
-    def _build_ai_check_prompt(self, result: ReplyPostProcessResult) -> str:
+    def _build_ai_check_prompt(self, result: ReplyPostProcessResult, *, send_raw: bool = False) -> str:
         self.remember_split_preview(result)
         self._ai_check_pending = True
         lines = [
@@ -2559,6 +2608,12 @@ class ReplyToolExecutor(ToolExecutor):
             )
             lines.append(
                 "如果切分有问题但仍要发送原文，请调用 send_reply 并设置 send_original=true；如果不应发送，请调用 cancel。"
+            )
+        if send_raw:
+            # 这次是模型显式声明要发这段字面内容：复核后重发必须继续带着这个声明，
+            # 否则它照抄的 "cancel" 会在第二次调用时又被兜底拦下。
+            lines.append(
+                "注意：这次的内容是你声明要发送的字面量，复核后请继续带 send_raw=true 重新调用 send_reply。"
             )
         return "\n".join(lines)
 

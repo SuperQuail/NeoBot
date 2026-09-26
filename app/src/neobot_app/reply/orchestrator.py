@@ -2274,6 +2274,7 @@ class ReplyOrchestrator:
             images: list[int] | None = None,
             merge_text_with_image: bool = False,
             split_preview: ReplySplitPreview | None = None,
+            send_raw: bool = False,
         ) -> bool:
             """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
 
@@ -2299,6 +2300,7 @@ class ReplyOrchestrator:
                     merge_text_with_image=merge_text_with_image,
                     self_sent=sink,
                     sender_names=sender_names,
+                    send_raw=send_raw,
                     **({"split_preview": split_preview} if split_preview is not None else {}),
                 )
             else:
@@ -2312,6 +2314,7 @@ class ReplyOrchestrator:
                     merge_text_with_image=merge_text_with_image,
                     self_sent=sink,
                     sender_names=sender_names,
+                    send_raw=send_raw,
                     **({"split_preview": split_preview} if split_preview is not None else {}),
                 )
             if delivered is not False:
@@ -4654,6 +4657,7 @@ class ReplyOrchestrator:
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        send_raw: bool = False,
     ) -> bool:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
         # post-reply hooks：可对回复文本做后处理
@@ -4680,6 +4684,7 @@ class ReplyOrchestrator:
             merge_text_with_image=merge_text_with_image,
             self_sent=self_sent,
             sender_names=names,
+            send_raw=send_raw,
             **({"split_preview": split_preview} if split_preview is not None else {}),
         )
 

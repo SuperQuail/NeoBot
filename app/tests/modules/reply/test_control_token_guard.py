@@ -68,7 +68,7 @@ def tool_for(sender, event, **kwargs):
         return await sender.send_reply(
             event, args["text"], segments=args["segments"], send_original=args["send_original"],
             images=args["images"], merge_text_with_image=args["merge_text_with_image"],
-            split_preview=args.get("split_preview"),
+            split_preview=args.get("split_preview"), send_raw=args.get("send_raw", False),
         )
 
     return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
@@ -440,3 +440,98 @@ async def test_required_media_control_token_stops_before_render_or_speech():
     assert (await executor.execute("speak", {"text": "cancel"})).startswith("错误：")
     converter.convert.assert_not_awaited()
     handler.assert_not_awaited()
+
+# ── send_raw：模型显式声明「就是要发这个字面内容」──────────────────────────
+
+
+def test_control_token_guard_has_two_distinct_switches():
+    """逐条抑制与「整条都是控制词」是两条规则，预览溯源不能授权后者。"""
+    assert clean_text("cancel") == ""
+    assert clean_text("cancel", suppress_control_tokens=False) == "cancel"
+    # 预览溯源只保留「上下文里的词」，不能把整条控制词正文变成可发送内容。
+    assert clean_segments(["cancel"], suppress_control_tokens=False) == []
+    # 只有模型显式声明 send_raw 才放行整条控制词正文。
+    assert clean_segments(
+        ["cancel"], suppress_control_tokens=False, allow_control_token_body=True,
+    ) == ["cancel"]
+    assert process_reply_text("cancel", bot_name="Bot").messages == []
+    assert process_reply_text(
+        "cancel", bot_name="Bot", suppress_control_tokens=False,
+    ).messages == ["cancel"]
+
+
+async def test_blocked_bare_cancel_error_offers_send_raw():
+    """兜底拦下时必须告诉模型：确实要发这个字面内容就带 send_raw。"""
+    sender, event, adapter = make_sender()
+    executor = tool_for(sender, event)
+    result = await executor.execute("send_reply", {"text": "cancel"})
+    assert result.startswith("错误：") and not adapter.sent
+    assert "send_raw=true" in result
+    # 要取消本轮仍然走 cancel 工具，而不是发消息。
+    assert "cancel 工具" in result
+
+
+async def test_cleaned_empty_error_stays_about_rewriting_not_send_raw():
+    """另一种「没正文」不能被并进 send_raw 提示，否则模型会拿它当放行开关。"""
+    sender, event, adapter = make_sender()
+    executor = tool_for(sender, event)
+    result = await executor.execute("send_reply", {"text": "<think>draft</think>"})
+    assert result.startswith("错误：") and not adapter.sent
+    assert "清洗后为空" in result
+    assert "send_raw" not in result
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("cancel", "cancel"),
+    (" CANCEL ", "CANCEL"),
+    ("Bot: cancel", "cancel"),
+    ("<think>secret</think>cancel", "cancel"),
+])
+async def test_send_raw_delivers_the_literal_word(raw, expected):
+    """send_raw 只放行裸 cancel 这一条兜底：行首前缀、思考块照旧清洗。"""
+    sender, event, adapter = make_sender()
+    executor = tool_for(sender, event)
+    result = await executor.execute("send_reply", {"text": raw, "send_raw": True})
+    assert result.startswith("已发送"), result
+    assert wire_text(adapter) == [expected]
+
+
+async def test_send_raw_covers_control_only_segments_body():
+    sender, event, adapter = make_sender()
+    executor = tool_for(sender, event)
+    result = await executor.execute(
+        "send_reply", {"text": "cancel", "segments": ["cancel"], "send_raw": True},
+    )
+    assert result.startswith("已发送"), result
+    assert wire_text(adapter) == ["cancel"]
+
+
+@pytest.mark.parametrize(
+    "stage", ["reply.postprocess.before", "reply.send.before", "reply.postprocess.after"],
+)
+async def test_send_raw_survives_plugin_rewrite_of_control_token(stage):
+    """插件在任何阶段把正文改写成 cancel，都不该把已声明的原文吞掉。"""
+    sender, event, adapter = make_sender(hook=Rewriter(stage, "cancel"))
+    assert await sender.send_reply(event, "cancel", send_raw=True) is True
+    assert wire_text(adapter) == ["cancel"]
+
+
+async def test_send_raw_still_required_after_a_plugin_rewrite():
+    """没有声明 send_raw 时，插件改写出的裸 cancel 依然必须被拦下。"""
+    sender, event, adapter = make_sender(hook=Rewriter("reply.send.before", "cancel"))
+    assert await sender.send_reply(event, "safe draft") is False
+    assert wire_text(adapter) == []
+
+
+async def test_ai_check_prompt_keeps_send_raw_declaration():
+    """AI 检查后重发必须继续带 send_raw，否则第二次调用又会被兜底拦下。"""
+    sender, event, adapter = make_sender()
+    executor = tool_for(sender, event, ai_reply_check=True)
+    prompt = await executor.execute("send_reply", {"text": "cancel", "send_raw": True})
+    assert not adapter.sent and "send_raw=true" in prompt
+    result = await executor.execute(
+        "send_reply", {"text": "cancel", "send_raw": True, "ai_check_approved": True},
+    )
+    assert result.startswith("已发送"), result
+    assert wire_text(adapter) == ["cancel"]
+

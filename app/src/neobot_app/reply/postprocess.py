@@ -54,6 +54,7 @@ def process_reply_text(
     fallback_template: str = DEFAULT_LONG_REPLY_FALLBACK_TEMPLATE,
     max_length: int = DEFAULT_MAX_REPLY_LENGTH,
     max_sentence_count: int = DEFAULT_MAX_SENTENCE_COUNT,
+    suppress_control_tokens: bool = True,
 ) -> ReplyPostProcessResult:
     original = str(text or "")
     noted_text, removed_shell = _remove_notes_with_provenance(original.strip())
@@ -68,8 +69,9 @@ def process_reply_text(
         noted_text = original.strip()
     cleaned_text, kaomoji_mapping = protect_kaomoji(noted_text.strip())
     # Check the whole postprocessed text before splitting, never individual words
-    # isolated from ordinary prose by the sentence splitter.
-    if not cleaned_text or is_control_token_only(cleaned_text):
+    # isolated from ordinary prose by the sentence splitter. suppress_control_tokens
+    # 只由 send_reply 的 send_raw 关闭：真要把 "cancel" 这个词发出去时不该在这里被吞掉。
+    if not cleaned_text or (suppress_control_tokens and is_control_token_only(cleaned_text)):
         return ReplyPostProcessResult(
             original_text=original,
             cleaned_text="",

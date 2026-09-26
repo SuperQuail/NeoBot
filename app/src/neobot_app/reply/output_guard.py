@@ -376,13 +376,21 @@ def clean_text(
     text: str,
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
+    suppress_control_tokens: bool = True,
 ) -> str:
     """Remove leading reasoning, annotations and bare cancel; preserve examples.
 
     Cleanup reaches a fixed point, including whitespace exposed by deletions.
     Untagged reasoning cannot reliably be distinguished from ordinary prose.
+
+    suppress_control_tokens=False 只给「模型显式声明要发送这段字面内容」的发送
+    路径用（见 send_reply 的 send_raw）。它只关掉裸 cancel 这一条兜底：系统标注、
+    围栏外前缀与 <think> 仍然照常清洗。
     """
-    cleaned, _, _ = _clean_with_state(text, _PrefixStripper(known_sender_names))
+    cleaned, _, _ = _clean_with_state(
+        text, _PrefixStripper(known_sender_names),
+        suppress_control_tokens=suppress_control_tokens,
+    )
     return cleaned
 
 
@@ -410,13 +418,17 @@ def clean_segments(
     *,
     known_sender_names: list[str] | tuple[str, ...] | None = None,
     suppress_control_tokens: bool = True,
+    allow_control_token_body: bool = False,
 ) -> list[str]:
     """Clean segments while retaining think depth and both kinds of fence.
 
-    Only unchanged automatic splits (including an executor-verified preview
-    round-trip) may disable token suppression: splitting legitimate prose
-    ("cancel 是什么意思") must not invent intent. Other explicit segments and
-    plugin rewrites always use the default safety check.
+    两个开关是不同的东西，别合并：
+
+    - suppress_control_tokens=False：只关掉「逐条丢弃裸 cancel」。只有未经改动的
+      自动分句（含 executor 验证过的预览往返）能用 —— 把正常句子
+      （"cancel 是什么意思"）切开时不该凭空读出取消意图。
+    - allow_control_token_body=True：整条正文就是控制词时也保留。只给模型显式声明
+      send_raw 的发送路径用；预览溯源不能授权这种正文（见 output_guard 的护栏用例）。
     """
     cleaned: list[str] = []
     stripper = _PrefixStripper(known_sender_names)
@@ -431,6 +443,7 @@ def clean_segments(
             cleaned.append(text)
     # Provenance preserves words in context, not an otherwise empty control-only
     # body exposed by removing all reasoning/annotations from that context.
-    if cleaned and all(is_control_token_only(text) for text in cleaned):
+    # 只有模型显式声明要发这个字面内容时才放行整条控制词正文。
+    if not allow_control_token_body and cleaned and all(is_control_token_only(text) for text in cleaned):
         return []
     return cleaned

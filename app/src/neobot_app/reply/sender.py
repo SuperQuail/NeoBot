@@ -235,11 +235,14 @@ class ReplySender:
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        send_raw: bool = False,
     ) -> bool:
         """发送一段回复；返回是否真的发出了内容。
 
         清洗后没有正文（含裸 cancel）且没有可用图片时返回 False，不发空消息。
         send_original 只跳过分句，不跳过安全清洗；图片不因附带文字被清空而丢弃。
+        send_raw 只放行「正文就是裸 cancel」这一条兜底（模型显式声明要发这个字面
+        内容），系统标注、围栏外前缀与 <think> 照旧清洗，插件改写后仍会再清洗一遍。
         调用方（工具层）据此提示未发送，而不是误报「已发送」。
         """
         before_postprocess = await self._debug_helper.emit_runtime_event(
@@ -261,6 +264,7 @@ class ReplySender:
             text, segments, sender_names=sender_names,
             prefer_text=send_original or bool(images and merge_text_with_image),
             split_preview=split_preview,
+            send_raw=send_raw,
         )
         before_send = await self._debug_helper.emit_runtime_event(
             "reply.send.before",
@@ -291,6 +295,7 @@ class ReplySender:
             text, segments, sender_names=sender_names,
             prefer_text=send_original or bool(images and merge_text_with_image),
             split_preview=split_preview,
+            send_raw=send_raw,
         )
         if not (str(text or "").strip() or segments or images):
             self._logger.warning(
@@ -415,6 +420,7 @@ class ReplySender:
             text,
             segments=segments,
             send_original=send_original,
+            send_raw=send_raw,
         )
         # Snapshot before handing the mutable list to hooks. Unchanged automatic
         # splits came from checked whole text; do not reinterpret an isolated word
@@ -439,8 +445,10 @@ class ReplySender:
         reply_messages = clean_segments(
             reply_messages, known_sender_names=self._sender_names(sender_names),
             suppress_control_tokens=not (
-                trusted_split or (automatic_splits and reply_messages == original_messages)
+                trusted_split or send_raw
+                or (automatic_splits and reply_messages == original_messages)
             ),
+            allow_control_token_body=send_raw,
         )
         if not reply_messages and not send_results:
             self._logger.warning(
@@ -775,6 +783,7 @@ class ReplySender:
         sender_names: list[str] | None = None,
         prefer_text: bool = False,
         split_preview: ReplySplitPreview | None = None,
+        send_raw: bool = False,
     ) -> tuple[str, list[str] | None]:
         """发送前的统一清洗入口（text 与 segments 两条路径共用同一套规则）。
 
@@ -788,11 +797,13 @@ class ReplySender:
         names = self._sender_names(sender_names)
         # text 与 segments 一律都清洗：segments 存活时 text 也不能放过 ——
         # send_original=true 会让 _build_reply_messages 选中 text，脏 text 会直通线上。
-        cleaned_text = self._clean_text_only(text, names)
+        cleaned_text = self._clean_text_only(text, names, send_raw=send_raw)
         if segments:
             trusted_split = isinstance(split_preview, ReplySplitPreview) and split_preview.matches(text, segments)
             kept = clean_segments(
-                segments, known_sender_names=names, suppress_control_tokens=not trusted_split,
+                segments, known_sender_names=names,
+                suppress_control_tokens=not (trusted_split or send_raw),
+                allow_control_token_body=send_raw,
             )
             if kept:
                 return cleaned_text, kept
@@ -802,9 +813,12 @@ class ReplySender:
         return cleaned_text, segments
 
     @staticmethod
-    def _clean_text_only(text: str, sender_names: list[str]) -> str:
+    def _clean_text_only(text: str, sender_names: list[str], *, send_raw: bool = False) -> str:
         original = str(text or "")
-        cleaned = clean_text(original, known_sender_names=sender_names)
+        cleaned = clean_text(
+            original, known_sender_names=sender_names,
+            suppress_control_tokens=not send_raw,
+        )
         if should_drop(original, cleaned, known_sender_names=sender_names):
             return ""
         return cleaned
@@ -826,6 +840,7 @@ class ReplySender:
         *,
         segments: list[str] | None = None,
         send_original: bool = False,
+        send_raw: bool = False,
     ) -> list[str]:
         if send_original:
             # text 被清洗成空时不要返回 [""]（那会发出一条空消息），
@@ -846,6 +861,7 @@ class ReplySender:
             fallback_template=self._long_reply_fallback_template,
             max_length=self._long_reply_max_length,
             max_sentence_count=self._long_reply_max_sentence_count,
+            suppress_control_tokens=not send_raw,
         )
         return result.messages
 
