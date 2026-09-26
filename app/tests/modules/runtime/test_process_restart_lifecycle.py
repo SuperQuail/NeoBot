@@ -99,11 +99,43 @@ async def finish_controller(ctrl):
     assert ok, detail
 
 
+def signal_handler_seams() -> list[type]:
+    """所有真正实现 add_signal_handler 的事件循环类。
+
+    只有 Windows 会回落到 BaseEventLoop 那套 NotImplementedError 实现；Unix 上
+    由 _UnixSelectorEventLoop 覆盖。只 patch 基类时在 Linux 上是静默失效的：
+    回调进不了测试的 handlers（KeyError），而且会真的往运行中的 loop 装
+    SIGINT/SIGTERM。这里把子类树里自己实现了该方法的类一并找出来。
+    """
+    seams: list[type] = [asyncio.BaseEventLoop]
+    pending = list(asyncio.BaseEventLoop.__subclasses__())
+    while pending:
+        candidate = pending.pop()
+        if "add_signal_handler" in vars(candidate):
+            seams.append(candidate)
+        pending.extend(candidate.__subclasses__())
+    return seams
+
+
+def capture_stop_handlers(monkeypatch) -> dict:
+    """把 cli 注册的停止回调收进字典，供测试手动触发。"""
+    handlers: dict = {}
+
+    def record(_loop, sig, callback, *args):
+        handlers[sig] = callback
+
+    for seam in signal_handler_seams():
+        monkeypatch.setattr(seam, "add_signal_handler", record)
+    return handlers
+
+
 @pytest.fixture(autouse=True)
 def no_process_operations(monkeypatch):
     monkeypatch.setattr(cli.os, "execv", Mock(side_effect=AssertionError("no execv")))
     monkeypatch.setattr(cli.signal, "signal", Mock())
-    monkeypatch.setattr(asyncio.BaseEventLoop, "add_signal_handler", Mock())
+    stub = Mock()
+    for seam in signal_handler_seams():
+        monkeypatch.setattr(seam, "add_signal_handler", stub)
 
 
 def wire_cli(monkeypatch, initial, standby, signal):
@@ -123,6 +155,18 @@ def wire_cli(monkeypatch, initial, standby, signal):
     monkeypatch.setattr(cli, "create_application", factory)
     monkeypatch.setattr(cli, "get_cached_core", lambda key: mapping.get(key))
     return plugin, factory
+
+
+async def test_signal_handler_interception_covers_the_running_loop():
+    """回归：拦截必须覆盖运行中 loop 实际解析到的那个 add_signal_handler。
+
+    Unix 上 _UnixSelectorEventLoop 覆盖了基类实现，只 patch BaseEventLoop 会静默
+    失效：回调进不了测试的 handlers（CI 上表现为 KeyError），还会真的把
+    SIGINT/SIGTERM 注册到进程上。
+    """
+    loop_class = type(asyncio.get_running_loop())
+    resolved = next(cls for cls in loop_class.__mro__ if "add_signal_handler" in vars(cls))
+    assert resolved in signal_handler_seams()
 
 
 async def test_signal_is_durable_thread_notified_and_coalesces():
@@ -196,11 +240,7 @@ async def test_normal_signal_stop_wins_during_restart_cleanup(monkeypatch):
     cleanup = BlockedCleanup()
     initial = app(cleanup=cleanup)
     signal = ProcessRestartSignal()
-    handlers = {}
-    monkeypatch.setattr(
-        asyncio.BaseEventLoop, "add_signal_handler",
-        lambda _loop, sig, callback: handlers.__setitem__(sig, callback),
-    )
+    handlers = capture_stop_handlers(monkeypatch)
     wire_cli(monkeypatch, initial, StandbyService(), signal)
     task = asyncio.create_task(cli.run())
     try:
@@ -444,12 +484,8 @@ async def test_normal_stop_during_final_core_cleanup_revokes_restart(monkeypatch
     signal.request()
     initial = app()
     plugins, _ = wire_cli(monkeypatch, initial, StandbyService(), signal)
-    handlers = {}
+    handlers = capture_stop_handlers(monkeypatch)
     entered, release = asyncio.Event(), asyncio.Event()
-    monkeypatch.setattr(
-        asyncio.BaseEventLoop, "add_signal_handler",
-        lambda _loop, sig, callback: handlers.__setitem__(sig, callback),
-    )
 
     async def stop_plugins():
         entered.set()
@@ -471,12 +507,8 @@ async def test_normal_stop_during_final_core_cleanup_revokes_restart(monkeypatch
 async def test_normal_stop_removes_unnotified_core_watcher(monkeypatch):
     initial = app()
     signal = ProcessRestartSignal()
-    handlers = {}
     wire_cli(monkeypatch, initial, StandbyService(), signal)
-    monkeypatch.setattr(
-        asyncio.BaseEventLoop, "add_signal_handler",
-        lambda _loop, sig, callback: handlers.__setitem__(sig, callback),
-    )
+    handlers = capture_stop_handlers(monkeypatch)
     task = asyncio.create_task(cli.run())
     try:
         await initial.event_ingress.ready.wait()
