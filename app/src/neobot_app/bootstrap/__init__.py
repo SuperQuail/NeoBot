@@ -1121,6 +1121,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
+    # cross_chat 的投递要拿住目标聊天的 ReplyEvent 才能取回回复：只有在编排器
+    # 可用时才走 start_background_reply，否则退化为 hub 注入（见 cross_chat_skill）。
+    _cross_chat_skill = skill_manager.get("cross_chat") if skill_manager is not None else None
+    if _cross_chat_skill is not None and callable(getattr(_cross_chat_skill, "set_orchestrator", None)):
+        _cross_chat_skill.set_orchestrator(reply_orchestrator)
     # 面板「聊天流」页的后台任务聚合:与 check_background_tasks 工具同源
     _register_flow_task_providers(
         chat_flow_registry,
