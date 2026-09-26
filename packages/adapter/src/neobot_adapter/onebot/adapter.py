@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from typing import Any, Callable, Dict, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -25,6 +26,14 @@ from neobot_adapter.utils.parse import safe_parse_model
 
 
 class OneBotAdapter:
+    #: 接收器停止的总宽限（秒）。
+    #:
+    #: core.stop 偶尔会返回 False（旧接收线程尚未退出）；这里最多重试到该宽限，
+    #: 之后**放弃继续等待并报告明确错误**，而不是无条件无限重试 —— 后者会让整个
+    #: 运行时的拆除永久卡住（现场：每 8 秒刷一次的停止日志 + 运行时再也无法重建，
+    #: 只能杀进程）。监听端口在 server.close() 时已释放，放弃等待不会占住端口。
+    _STOP_TOTAL_GRACE_SECONDS = 16.0
+
     def __init__(
         self,
         *,
@@ -165,9 +174,17 @@ class OneBotAdapter:
                 )
         self._dispatch_task = None
         try:
+            deadline = time.monotonic() + self._STOP_TOTAL_GRACE_SECONDS
             while not await asyncio.to_thread(self._core.stop, 8.0):
                 # False 表示旧接收线程仍活着，不能向上层报告停止完成。
-                # 由生命周期控制器报告软超时并继续持有本任务；不自动强杀进程。
+                # 先按现场语义重试；但**必须有尽头**：否则运行时拆除会永远卡在这里。
+                if time.monotonic() >= deadline:
+                    self._logger.error(
+                        "适配器接收器在宽限期内仍未停止，放弃继续等待；"
+                        "监听端口已由 server.close() 释放，重建若失败会显式报错",
+                        grace_seconds=self._STOP_TOTAL_GRACE_SECONDS,
+                    )
+                    break
                 self._logger.error(
                     "适配器接收器停止尚未完成，仍在等待守护线程退出；不能启动新运行时"
                 )

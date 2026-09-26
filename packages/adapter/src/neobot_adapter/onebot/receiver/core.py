@@ -111,6 +111,8 @@ class AdapterCore:
         self._lifecycle_lock = threading.Lock()
         # 最近一次实际生效的监听设置（服务未运行时为 None）。
         self._active_settings: Optional[ReverseWsSettings] = None
+        #: 是否已确认接收线程无法在限期内停止（用于后续 stop 快速失败，不再空等）。
+        self._abandoned = False
 
     def resolve_settings(self) -> ReverseWsSettings:
         """把当前字段解析为实际监听设置（构造参数 > 环境变量 > 默认值）。
@@ -194,18 +196,33 @@ class AdapterCore:
         正常路径会立即唤醒接收循环；若第三方 WebSocket 实现在清理时卡住，
         则最终兜底取消其残留的事件循环任务，让守护线程保持隔离，
         避免阻塞应用永久无法退出。
+
+        已经确认卡死过的实例（``_abandoned``）后续只做一次短促尝试就返回 False，
+        避免每次 stop 都白等满 timeout。
         """
         with self._lifecycle_lock:
             logger.info("正在停止接收器...")
             self._stop_event.set()
-            loop = self.loop
-            async_stop_event = self._async_stop_event
-            if loop is not None and loop.is_running() and async_stop_event is not None:
-                loop.call_soon_threadsafe(async_stop_event.set)
+            loop = None
+            try:
+                loop = self.loop
+                async_stop_event = self._async_stop_event
+                if (
+                    loop is not None
+                    and not loop.is_closed()
+                    and loop.is_running()
+                    and async_stop_event is not None
+                ):
+                    loop.call_soon_threadsafe(async_stop_event.set)
+            except RuntimeError:
+                # 事件循环已在关闭过程中：只置 _stop_event，由接收线程自己收尾
+                loop = None
 
             thread = self.thread
             if thread is None:
                 return True
+            if self._abandoned:
+                timeout = min(timeout, 1.0)
             thread.join(timeout=max(0.0, timeout))
             if thread.is_alive() and loop is not None and loop.is_running():
                 logger.warning("接收器正常停止超时，正在取消残留任务")
@@ -213,10 +230,15 @@ class AdapterCore:
                 thread.join(timeout=1.0)
             stopped = not thread.is_alive()
             if not stopped:
-                logger.error("接收器停止兜底超时，后台守护线程将由进程退出时回收")
+                if not self._abandoned:
+                    logger.error(
+                        "接收器停止兜底超时，后台守护线程将由进程退出时回收"
+                    )
+                self._abandoned = True
             else:
                 self.thread = None
                 self._active_settings = None
+                self._abandoned = False
             return stopped
 
     def get_message(self, block: bool = True, timeout: Optional[float] = None):
@@ -226,23 +248,137 @@ class AdapterCore:
             return None
 
     def _run_thread_target(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+        loop = asyncio.new_event_loop()
+        self.loop = loop
+        asyncio.set_event_loop(loop)
         try:
             try:
-                self.loop.run_until_complete(self._run_server())
+                loop.run_until_complete(self._run_server())
             except asyncio.CancelledError:
                 logger.warning("接收器事件循环已由停止兜底取消")
+            except Exception as exc:
+                logger.error(f"接收器事件循环异常退出: {type(exc).__name__}: {exc}")
         finally:
             self._async_stop_event = None
-            self.loop.close()
+            # 先摘掉引用再收尾：stop() 从控制面线程读 self.loop 时不会再拿到这个 loop。
             self.loop = None
+            self._shutdown_loop(loop)
 
     def _cancel_loop_tasks(self) -> None:
         current = asyncio.current_task(self.loop)
         for task in asyncio.all_tasks(self.loop):
             if task is not current and not task.done():
                 task.cancel()
+
+    def _shutdown_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """关闭事件循环前的收尾，并保证**接收线程绝不卡在 loop.close() 上**。
+
+        为什么要绕这一圈：Windows 的 Proactor 事件循环在 close() 里会**阻塞等待
+        所有 overlapped I/O 完成**（CPython asyncio/windows_events.py 的
+        IocpProactor.close：while self._cache: self._poll(...)）。只要还有
+        WebSocket 传输挂着未完成的读写（对端不回关闭帧、连接还在握手中途、
+        上一个 handler 的任务被取消但传输没关等），close() 就可能永远不返回：
+        接收线程卡死 → 现场表现就是「接收器停止兜底超时」＋ 停止重试死循环
+        ＋ 运行时再也无法重建（只能杀进程）。
+
+        收尾顺序（每一步都有界，正常路径只多花几十毫秒）：
+          ① 跑一拍事件循环，让已排队的关闭回调落地；
+          ② 取消残留任务（含 websockets 自己的 close 任务）并等它们收尾；
+          ③ 兜底 abort 仍未关闭的连接传输，再跑一拍让 overlapped 操作以错误完成；
+          ④ 关闭 asyncgen；
+          ⑤ 把 close() 交给守护线程：即使仍有异常状况卡在里面，接收线程也能正常
+             退出，上层得以继续拆除与重建（卡住的守护线程只持有已关闭的旧 loop，
+             随进程退出回收）。
+        """
+        self._settle_loop(loop, 0.01)
+        pending = self._cancel_pending_tasks(loop)
+        if pending:
+            self._await_tasks(loop, pending, timeout=0.5)
+        self._abort_connections()
+        self.active_connections.clear()
+        self._settle_loop(loop, 0.01)
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception as exc:  # noqa: BLE001 - 收尾失败不影响线程退出
+            logger.debug(f"关闭 asyncgen 失败（忽略）: {exc}")
+        self._close_loop_off_thread(loop)
+
+    @staticmethod
+    def _settle_loop(loop: asyncio.AbstractEventLoop, seconds: float) -> None:
+        """让事件循环再跑一小段，处理已排队的回调/取消（失败不抛）。"""
+        if loop.is_closed():
+            return
+        try:
+            loop.run_until_complete(asyncio.sleep(seconds))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"关闭前事件循环收尾失败（忽略）: {exc}")
+
+    @staticmethod
+    def _await_tasks(
+        loop: asyncio.AbstractEventLoop, tasks: list, timeout: float
+    ) -> bool:
+        """等一批（已取消的）任务收尾；全部结束返回 True，超时返回 False，不抛。"""
+        if loop.is_closed():
+            return False
+        try:
+            loop.run_until_complete(
+                asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=timeout
+                )
+            )
+            return True
+        except asyncio.TimeoutError:
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"等待残留任务收尾失败（忽略）: {exc}")
+            return False
+
+    @staticmethod
+    def _cancel_pending_tasks(loop: asyncio.AbstractEventLoop) -> int:
+        """取消循环里所有未完成任务，返回取消数量（同线程内调用）。"""
+        try:
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        except Exception:  # noqa: BLE001
+            return 0
+        for task in pending:
+            task.cancel()
+        return len(pending)
+
+    def _abort_connections(self) -> int:
+        """立即 abort 活跃连接的底层传输（不等关闭握手）。
+
+        优雅关闭要等对端回帧；abort 直接关 socket，能让 Proactor 里挂起的
+        overlapped 读写立刻以错误完成，从而避免 loop.close() 无限等待。
+        """
+        aborted = 0
+        for websocket in list(self.active_connections):
+            transport = getattr(websocket, "transport", None)
+            if transport is None:
+                continue
+            try:
+                transport.abort()
+                aborted += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"abort 连接失败（忽略）: {exc}")
+        if aborted:
+            logger.debug(f"已强制关闭 {aborted} 条残留连接")
+        return aborted
+
+    @staticmethod
+    def _close_loop_off_thread(loop: asyncio.AbstractEventLoop) -> threading.Thread:
+        """在守护线程里 close()，避免接收线程被 loop.close() 永久阻塞。"""
+
+        def _close() -> None:
+            try:
+                loop.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"关闭接收器事件循环失败（忽略）: {exc}")
+
+        thread = threading.Thread(
+            target=_close, name="adapter-loop-close", daemon=True
+        )
+        thread.start()
+        return thread
 
     async def _run_server(self):
         # 监听设置的解析规则（构造参数 > 环境变量 > 默认值）由 ReverseWsSettings
@@ -301,7 +437,8 @@ class AdapterCore:
                 logger.warning("服务器关闭超时，强制退出")
             except Exception as exc:
                 logger.warning(f"服务器关闭异常: {exc}")
-            self.active_connections.clear()
+            # active_connections 不在清理里清空：留给 _shutdown_loop 先 abort 残留
+            # 传输（关掉挂起的 overlapped I/O），再清空；否则 abort 阶段没有目标。
             self._connection_established.clear()
 
     async def _authorize_handshake(self, *args: Any) -> Any:

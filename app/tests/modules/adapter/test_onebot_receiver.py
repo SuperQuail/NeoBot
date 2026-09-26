@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import sys
+import threading
 import time
 from unittest.mock import AsyncMock
 
@@ -422,3 +423,142 @@ def test_onebot_receiver_stop_wakes_thread_and_clears_reference(monkeypatch) -> 
     assert core.stop(timeout=3.0) is True
     assert time.monotonic() - started < 3.0
     assert core.thread is None
+
+# ── 停止：loop.close() 卡死时接收线程仍必须退出（fix(11)） ──────────
+
+
+def test_abort_connections_closes_remaining_transports() -> None:
+    """_abort_connections 必须 abort 每条残留连接的底层传输（关掉挂起的 overlapped I/O）。"""
+
+    class _Transport:
+        def __init__(self) -> None:
+            self.aborted = 0
+
+        def abort(self) -> None:
+            self.aborted += 1
+
+    class _Connection:
+        def __init__(self, transport) -> None:
+            self.transport = transport
+
+    core = AdapterCore()
+    first = _Connection(_Transport())
+    second = _Connection(_Transport())
+    core.active_connections.update({first, second})
+
+    assert core._abort_connections() == 2
+    assert first.transport.aborted == 1
+    assert second.transport.aborted == 1
+
+
+def test_abort_connections_tolerates_missing_transport() -> None:
+    """没有 transport 属性的连接必须被跳过，不能抛异常。"""
+    class _BareConnection:
+        pass
+
+    core = AdapterCore()
+    core.active_connections.add(_BareConnection())
+    assert core._abort_connections() == 0
+
+
+def test_stop_short_circuits_when_already_abandoned(monkeypatch) -> None:
+    """已确认卡死的实例：后续 stop 只做一次短促 join 就返回 False（不再空等 8 秒）。"""
+    core = AdapterCore()
+    core._abandoned = True
+    joined: list[float] = []
+
+    class _StuckThread:
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            joined.append(float(timeout or 0))
+
+    core.thread = _StuckThread()  # type: ignore[assignment]
+
+    assert core.stop(timeout=8.0) is False
+    assert joined == [1.0]
+    assert core._abandoned is True
+
+
+def test_receiver_thread_exits_even_when_loop_close_blocks(monkeypatch) -> None:
+    """loop.close() 卡住时接收线程仍必须退出（close 交给守护线程兜底）。
+
+    现场故障：Windows Proactor 的 loop.close() 会等待所有 overlapped I/O 完成，
+    对端连接未彻底关闭时它可能永不返回，接收线程于是永远卡在 close() 里，
+    stop() 反复超时、运行时再也无法重建。这里把 close() 换成「永久阻塞」来复现。
+    """
+    import neobot_adapter.onebot.receiver.core as core_module
+
+    original_new_loop = asyncio.new_event_loop
+    release = threading.Event()
+
+    def _new_loop_with_blocking_close():
+        loop = original_new_loop()
+        real_close = loop.close
+
+        def _blocking_close() -> None:
+            # 模拟 IocpProactor.close() 卡住；由用例结束时的 release 放行
+            release.wait(30)
+            real_close()
+
+        loop.close = _blocking_close  # type: ignore[method-assign]
+        return loop
+
+    monkeypatch.setattr(core_module.asyncio, "new_event_loop", _new_loop_with_blocking_close)
+    monkeypatch.setenv("NEO_BOT_ADAPTER_HOST", "127.0.0.1")
+    monkeypatch.setenv("NEO_BOT_ADAPTER_PORT", "0")
+    core = AdapterCore()
+    core.start()
+
+    deadline = time.monotonic() + 3
+    while core._async_stop_event is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        started = time.monotonic()
+        assert core.stop(timeout=3.0) is True
+        assert time.monotonic() - started < 2.0
+        assert core.thread is None
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_adapter_stop_gives_up_after_grace(monkeypatch) -> None:
+    """宽限期内接收器始终停不下来时，stop 必须放弃等待并报错，而不是无限重试。"""
+    import neobot_adapter.onebot.adapter as adapter_module
+
+    adapter = OneBotAdapter()
+    monkeypatch.setattr(adapter_module.OneBotAdapter, "_STOP_TOTAL_GRACE_SECONDS", 0.2)
+    attempts = []
+    unbound = []
+
+    async def fake_to_thread(function, timeout):
+        attempts.append(timeout)
+        return False
+
+    monkeypatch.setattr(adapter_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(adapter_module, "unbind_core", lambda: unbound.append(True))
+
+    messages: list[str] = []
+
+    class _Logger:
+        def error(self, message, **kwargs):
+            messages.append(str(message))
+
+        def warning(self, message, **kwargs):
+            messages.append(str(message))
+
+        def info(self, message, **kwargs):
+            messages.append(str(message))
+
+        def debug(self, message, **kwargs):
+            messages.append(str(message))
+
+    adapter._logger = _Logger()
+
+    await asyncio.wait_for(adapter.stop(), 5.0)
+
+    assert len(attempts) >= 2
+    assert unbound == [True]
+    assert any("放弃继续等待" in message for message in messages)
