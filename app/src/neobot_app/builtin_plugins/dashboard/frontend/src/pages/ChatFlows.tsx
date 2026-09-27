@@ -7,10 +7,12 @@
 // 2) /api/chat-flows/prompts(+prompt)：每次模型调用的完整提示词，**只存在内存里**
 //    （全局保留最近 N 份，重启即清空），逐份只存相对上一份的 diff，图片只留 sha256
 //    哈希不留 base64。列表只给元数据，正文按需读取、**完整渲染不做任何截断**。
+//    这一份**按 5s 轮询**并默认跟随最新：一轮对话（回复发出 / 被取消）跑完后，
+//    面板上立刻是那一轮最后的一份提示词，而不是上一次调用留下的旧那份。
 //
 // 名称：列表与详情标题都用后端解析好的 display_name（群名 / 昵称），
 // pipeline_key 作为副标题常驻，便于在日志 / 配置里定位。
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../components/Icon';
 import Modal from '../components/Modal';
 import InlineAlert from '../components/ui/InlineAlert';
@@ -18,7 +20,12 @@ import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
 import { QK, POLL } from '../data/queryKeys';
 import { api } from '../api/endpoints';
-import type { ChatFlowMessage, ChatFlowPromptEntry, ChatFlowPromptMeta } from '../api/types';
+import type {
+  ChatFlowLatestPrompt,
+  ChatFlowMessage,
+  ChatFlowPromptEntry,
+  ChatFlowPromptMeta,
+} from '../api/types';
 
 type RawMessage = Record<string, unknown>;
 
@@ -113,8 +120,19 @@ function FullMessageRow({ message, index }: { message: RawMessage; index: number
   );
 }
 
-/** 一份完整提示词（= 一次模型请求的完整 messages + response + usage），全部原样展示 */
-function PromptEntryView({ seq, entry }: { seq: number; entry: ChatFlowPromptEntry }) {
+/**
+ * 一份完整提示词（= 一次模型请求的完整 messages + response + usage），全部原样展示。
+ *
+ * memo：提示词历史按轮询刷新，只要 seq 与内容没变就复用上一次的渲染结果——
+ * 一份提示词动辄上百条消息（每条还要 `JSON.stringify` 原始 JSON），无谓重渲染很贵。
+ */
+const PromptEntryView = memo(function PromptEntryView({
+  seq,
+  entry,
+}: {
+  seq: number;
+  entry: ChatFlowPromptEntry;
+}) {
   const messages = useMemo(() => (Array.isArray(entry.messages) ? entry.messages : []), [entry.messages]);
   const extra = useMemo(
     () => ({
@@ -167,6 +185,21 @@ function PromptEntryView({ seq, entry }: { seq: number; entry: ChatFlowPromptEnt
       </details>
     </div>
   );
+});
+
+/**
+ * 轮询每次都返回新对象，但只要「最新那一份 + 列表规模」没变就沿用旧对象，
+ * 让 PromptEntryView 的 memo 真正生效（否则每 5s 整份提示词重渲染一次）。
+ */
+function samePromptPayload(a: ChatFlowLatestPrompt, b: ChatFlowLatestPrompt): boolean {
+  return (
+    // seq 全局唯一（清空后也继续递增），相同即同一份记录，正文必然一致
+    a.seq === b.seq &&
+    (a.items || []).length === (b.items || []).length &&
+    a.limit === b.limit &&
+    a.storage_bytes === b.storage_bytes &&
+    a.image_refs === b.image_refs
+  );
 }
 
 export default function ChatFlows() {
@@ -205,12 +238,22 @@ export default function ChatFlows() {
     return Object.entries(tasks).filter(([, value]) => value !== null && value !== undefined);
   }, [snapshot]);
 
-  // 完整提示词历史：进页面 / 切换聊天流时取「元数据列表 + 最新一份全文」（不轮询）
+  // 完整提示词历史：「元数据列表 + 最新一份全文」，**每 5s 轮询一次**
+  // —— 一轮对话（回复发出 / 被取消）跑完后，面板上立刻就是那一轮最后一份提示词，
+  //    而不是上一次调用留下的旧那份；命中内存快照，不做逐份重建，轮询成本可忽略。
   const promptKey = onlyCurrent ? selected : '';
   const prompts = useQuery(QK.chatFlowPrompts(promptKey), () => api.chatFlowPromptLatest(promptKey), {
+    interval: POLL.chatFlowPrompts,
     deps: [promptKey],
   });
-  const promptData = prompts.data;
+  const promptCacheRef = useRef<ChatFlowLatestPrompt | null>(null);
+  const promptData = useMemo(() => {
+    const incoming = prompts.data;
+    const previous = promptCacheRef.current;
+    if (incoming && previous && samePromptPayload(previous, incoming)) return previous;
+    promptCacheRef.current = incoming;
+    return incoming;
+  }, [prompts.data]);
   const promptItems = useMemo(() => promptData?.items || [], [promptData]);
   const limit = promptData?.limit || 0;
   const storageBytes = promptData?.storage_bytes || 0;
@@ -269,6 +312,8 @@ export default function ChatFlows() {
         </div>
         <p className="muted small">
           上方「快速预览」来自内存快照（重启后清空，只保留最近 80 条消息）；
+          「完整提示词」每 5 秒自动跟随最新一份——一轮对话结束（回复发出或取消）后，
+          这里显示的就是该轮最后一次模型调用的完整提示词；
           <strong>完整提示词也只存在内存里</strong>（重启即清空），全局保留最近 
           {limit > 0 ? limit : '—'} 份，逐份只存相对上一份的 diff
           {storageBytes > 0 ? `（当前常驻约 ${formatBytes(storageBytes)}）` : ''}
@@ -426,6 +471,19 @@ export default function ChatFlows() {
                         />
                         只看当前聊天流
                       </label>
+                      <div className="chat-follow-latest">
+                        {showingLatest || latestSeq === null ? (
+                          <span className="muted small">
+                            <span className="tag ok">实时</span>
+                            已跟随最新一份{latestSeq !== null ? `（#${latestSeq}）` : ''}· 每 5 秒自动刷新
+                          </span>
+                        ) : (
+                          <button className="btn-sm" type="button" onClick={() => setPickedSeq(null)}>
+                            <Icon name="refresh" />
+                            回到最新一份（#{latestSeq}）
+                          </button>
+                        )}
+                      </div>
                       <button
                         className="btn-sm"
                         type="button"
@@ -454,6 +512,7 @@ export default function ChatFlows() {
                                   <span className="chat-history-meta">
                                     <span>
                                       <code>#{meta.seq}</code> {formatTime(meta.recorded_at)}
+                                      {meta.seq === latestSeq && <span className="tag ok">最新</span>}
                                     </span>
                                     <span className="muted small">
                                       {meta.pipeline_key || '—'} · 迭代 {meta.iteration ?? 0} ·{' '}

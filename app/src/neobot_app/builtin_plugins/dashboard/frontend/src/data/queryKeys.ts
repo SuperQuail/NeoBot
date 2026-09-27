@@ -20,7 +20,10 @@ export const QK = {
   chatFlows: 'chat-flows',
   scheduledTasks: 'scheduled-tasks',
   chatFlowDetail: (key: string) => `chat-flow:${key}`,
-  /** 完整提示词历史（元数据列表 + 最新一份全文）；key 为空串表示不按聊天流过滤 */
+  /**
+   * 完整提示词历史（元数据列表 + 最新一份全文）；key 为空串表示不按聊天流过滤。
+   * 轮询：一轮对话结束后要**立刻**看到最后那份提示词，而不是上一次调用的。
+   */
   chatFlowPrompts: (key: string) => `chat-flow-prompts:${key || 'all'}`,
   chatFlowPrompt: (seq: number | string) => `chat-flow-prompt:${seq}`,
   /** 档案管理（spec(2)） */
@@ -63,6 +66,8 @@ export const POLL = {
   analysis: 30_000,
   /** 聊天流：5s（管线状态要能实时反映） */
   chatFlows: 5_000,
+  /** 聊天流「完整提示词」：5s（跟随最新一份；命中的是内存快照，重建成本为 0） */
+  chatFlowPrompts: 5_000,
   /** 定时任务：15s */
   scheduledTasks: 15_000,
   /** 插件列表：20s */

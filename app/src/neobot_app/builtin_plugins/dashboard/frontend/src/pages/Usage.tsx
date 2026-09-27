@@ -30,6 +30,13 @@ function shortLabel(at?: string | null, bucket?: string): string {
   return at.slice(5, 13).replace('T', ' ');
 }
 
+/** 悬停提示用的完整时间（x 轴标签为省空间只留了「月-日 时」，这里给全） */
+function hoverLabel(at?: string | null, bucket?: string): string {
+  if (!at) return '';
+  if (bucket === 'day') return at.slice(0, 10);
+  return at.slice(0, 16).replace('T', ' ');
+}
+
 /** 来源口径：内建固定计费 / 脚本: xxx / 兜底: 原因（与后端 cost_source 闭集一致）。 */
 function sourceLabel(source?: string | null): string {
   const text = String(source || 'builtin');
@@ -85,13 +92,25 @@ export default function Usage() {
     readRecords();
   }, [readRecords]);
 
-  const points = data?.points || [];
+  // memo 化：points 被下面多个 useMemo 依赖，用字面量兜底会让它们每次渲染都重建
+  const points = useMemo(() => data?.points || [], [data]);
   const totals: UsageTotals = data?.totals || {};
   const bucket = data?.bucket || active.bucket;
   const costSeries = useMemo(() => points.map((item) => Number(item.cost_cny || 0)), [points]);
   const inputSeries = useMemo(() => points.map((item) => Number(item.input_tokens || 0)), [points]);
   const outputSeries = useMemo(() => points.map((item) => Number(item.output_tokens || 0)), [points]);
   const labels = useMemo(() => points.map((item) => shortLabel(item.at, bucket)), [points, bucket]);
+  const hoverLabels = useMemo(() => points.map((item) => hoverLabel(item.at, bucket)), [points, bucket]);
+  /** 同一个时间桶里的其它指标：鼠标停在任意一张图上都能看全这一档的花费 / 调用 / Token */
+  const bucketRows = useMemo(() => {
+    return points.map((item) => [
+      { label: '调用', value: fmtTokens(item.calls) },
+      { label: '输入 Token', value: fmtTokens(item.input_tokens) },
+      { label: '输出 Token', value: fmtTokens(item.output_tokens) },
+      { label: '花费', value: fmtCost(item.cost_cny) },
+    ]);
+  }, [points]);
+  const rowsOf = useCallback((index: number) => bucketRows[index] || [], [bucketRows]);
 
   // 分项按需取：默认视图不查 cost_detail，只有点「展开」才带 detail=1 再查一次
   const toggleRow = async (index: number) => {
@@ -151,19 +170,42 @@ export default function Usage() {
           <section className="card">
             <div className="card-head">
               <h3>花费趋势</h3>
-              <span className="muted small">{points.length} 个数据点</span>
+              <span className="muted small">
+                {points.length} 个数据点 · 鼠标悬停查看该点详情
+              </span>
             </div>
-            <LineChart values={costSeries} fmtTick={(v) => fmtCost(v)} />
+            <LineChart
+              values={costSeries}
+              labels={hoverLabels}
+              name="花费"
+              fmtTick={(v) => fmtCost(v)}
+              extraRows={rowsOf}
+            />
             <div className="chart-axis">{labels.map((label, index) => (
               <span key={index}>{label}</span>
             ))}</div>
           </section>
 
           <section className="card">
-            <div className="card-head"><h3>Token 趋势</h3><span className="muted small">输入 / 输出</span></div>
-            <LineChart values={inputSeries} fmtTick={(v) => fmtTokens(v)} />
+            <div className="card-head">
+              <h3>Token 趋势</h3>
+              <span className="muted small">输入 / 输出 · 鼠标悬停查看该点详情</span>
+            </div>
+            <LineChart
+              values={inputSeries}
+              labels={hoverLabels}
+              name="输入 Token"
+              fmtTick={(v) => fmtTokens(v)}
+              extraRows={rowsOf}
+            />
             <p className="muted small">输入 Token</p>
-            <LineChart values={outputSeries} fmtTick={(v) => fmtTokens(v)} />
+            <LineChart
+              values={outputSeries}
+              labels={hoverLabels}
+              name="输出 Token"
+              fmtTick={(v) => fmtTokens(v)}
+              extraRows={rowsOf}
+            />
             <p className="muted small">输出 Token</p>
           </section>
 
