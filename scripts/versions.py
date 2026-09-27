@@ -56,13 +56,15 @@ def update_version(file_path: Path, new_version: str, root: Path) -> bool:
             old_version = match.group(2)
             new_content = content[:match.start(2)] + new_version + content[match.end(2):]
             file_path.write_text(new_content, encoding="utf-8")
-            print(f"✓ {file_path.relative_to(root)}: {old_version} → {new_version}")
+            # 只用 ASCII 标记：Windows 中文控制台是 GBK，✓/✗ 会在 print 时抛
+            # UnicodeEncodeError，导致「写了一半就崩」的版本不一致。
+            print(f"[OK] {file_path.relative_to(root)}: {old_version} -> {new_version}")
             return True
         else:
-            print(f"⊘ {file_path.relative_to(root)}: 未找到 project.version")
+            print(f"[--] {file_path.relative_to(root)}: 未找到 project.version")
             return False
     except Exception as e:
-        print(f"✗ {file_path.relative_to(root)}: {e}")
+        print(f"[!!] {file_path.relative_to(root)}: {e}")
         return False
 
 
