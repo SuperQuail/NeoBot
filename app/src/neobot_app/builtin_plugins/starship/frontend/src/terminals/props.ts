@@ -62,7 +62,7 @@ export const navigationTerminal: TerminalDefinition = {
           disabled: warping,
           tone: ui.theme.accent,
         })) {
-          if (actions.triggerWarp(true)) {
+          if (actions.triggerWarp(true, (index + 1) % SYSTEM_NAMES.length)) {
             lastMessage = '跃迁引擎已点火：' + target;
             ui.scrollReset('nav');
           }
@@ -79,9 +79,9 @@ export const navigationTerminal: TerminalDefinition = {
         ui.text(680, 250, '自动规划一次跃迁。', { size: 15, color: ui.theme.textDim });
         ui.text(680, 296, '· 手动跃迁', { size: 17, color: ui.theme.accent });
         ui.text(680, 324, '在本终端选择目标星系并点火。', { size: 15, color: ui.theme.textDim });
-        ui.text(680, 370, '· 观景廊', { size: 17, color: ui.theme.accent });
+        ui.text(680, 370, '· 星穹舰桥', { size: 17, color: ui.theme.accent });
         ui.text(680, 398, '跃迁后星云配色与行星都会改变，', { size: 15, color: ui.theme.textDim });
-        ui.text(680, 420, '去观景廊看看新的星系。', { size: 15, color: ui.theme.textDim });
+        ui.text(680, 420, '透过舰桥护盾观察新的星系。', { size: 15, color: ui.theme.textDim });
         const jumpMinutes = ctx.host.jumpIntervalMinutes;
         ui.text(680, 480, jumpMinutes > 0 ? '自动跃迁间隔：约 ' + jumpMinutes + ' 分钟' : '自动跃迁已关闭', {
           size: 15,

@@ -6,15 +6,19 @@
 //   * 服务端侧本插件没有任何后台任务，只有请求到达才工作。
 
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { AudioKit } from './core/audio';
 import type { BoostKind, GameActions } from './core/actions';
 import { CollisionWorld } from './core/collision';
 import { Hud } from './core/hud';
+import { ShipRendering } from './core/rendering';
 import { Input } from './core/input';
 import { PlayerController } from './core/player';
 import {
   QUALITY_PRESETS,
   loadPlayerName,
+  loadShipName,
+  saveShipName,
   loadQuality,
   savePlayerName,
   saveQuality,
@@ -26,12 +30,15 @@ import { SpaceScene } from './space/space';
 import { ShellState, type ShipStatus } from './state';
 import { TextCapture } from './ui/textinput';
 import { Terminal, type TerminalDefinition, type TerminalHost } from './ui/terminal';
-import { buildShip, roomAt, type ShipBuild } from './world/ship';
+import { roomAt, type ShipBuild } from './world/ship';
+import { DEFAULT_VESSEL, vesselDefinition } from './world/registry';
+import { ARK_DIMENSIONS, SPACE_FAR } from './world/scale';
 import { decorateShip } from './world/props';
+import { applyAlloyFinish } from './world/materials';
 import { terminalDefinitions } from './terminals';
 import { minigameRegistry, type MinigameContext, type MinigameModule } from './minigames';
 
-export type GameMode = 'boot' | 'world' | 'terminal' | 'minigame' | 'paused';
+export type GameMode = 'boot' | 'world' | 'terminal' | 'minigame' | 'paused' | 'exterior';
 
 
 
@@ -50,7 +57,13 @@ export class Game implements GameActions, TerminalHost {
   qualityLevel: QualityLevel;
 
   private renderer: THREE.WebGLRenderer;
+  private rendering: ShipRendering;
+  private orbit: OrbitControls;
+  private decoration: THREE.Group;
+  private shipName = loadShipName();
+
   private ship: ShipBuild;
+  private exteriorLights: THREE.Object3D[] = [];
   private space: SpaceScene;
   private player: PlayerController;
   private terminals: Terminal[] = [];
@@ -81,10 +94,11 @@ export class Game implements GameActions, TerminalHost {
   private minigameScreenMode = false;
   private minigameStartedAt = 0;
   private playerName = loadPlayerName();
-  private pausedOverlay: HTMLElement | null = null;
+  private pausedOverlay = false;
   private minigameContext: MinigameContext | null = null;
   private savedView: { position: THREE.Vector3; yaw: number; pitch: number } | null = null;
   private booted = false;
+  private disposed = false;
 
   constructor(
     private readonly container: HTMLElement,
@@ -101,36 +115,77 @@ export class Game implements GameActions, TerminalHost {
       canvas,
       antialias: preset.antialias,
       powerPreference: 'high-performance',
+      logarithmicDepthBuffer: true,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.pixelRatio));
     this.renderer.setSize(container.clientWidth, Math.max(1, container.clientHeight), false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.shadowMap.enabled = this.qualityLevel !== 'low';
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.3;
+    this.renderer.toneMappingExposure = .95;
     this.renderer.setClearColor(0x03060b, 1);
 
     this.camera = new THREE.PerspectiveCamera(
-      72,
+      54,
       container.clientWidth / Math.max(1, container.clientHeight),
       0.1,
-      preset.viewDistance,
+      SPACE_FAR,
     );
 
-    this.hud = new Hud(hudRoot);
+    this.camera.layers.enable(1);
+    this.orbit = new OrbitControls(this.camera, canvas);
+    this.orbit.enabled = false;
+    this.orbit.enableDamping = true;
+    this.orbit.enablePan = false;
+    this.orbit.minDistance = 120;
+    this.orbit.maxDistance = ARK_DIMENSIONS.length * 4;
+    this.hud = new Hud(hudRoot, vesselDefinition(DEFAULT_VESSEL).instruments);
+    this.hud.setShipIdentity(this.shipName);
+    this.hud.attach(this.camera);
     this.input = new Input(canvas);
     this.audio = new AudioKit(bootstrap.enable_audio);
     this.shell.playerName = this.playerName;
 
-    this.ship = buildShip(this.scene, this.collision, (message) => this.hud.toast(message, 'info', 1200));
+    this.ship = vesselDefinition(DEFAULT_VESSEL).build(this.scene, this.collision, (message) => this.hud.toast(message, 'info', 1200));
     this.materials = this.ship.materials;
-    decorateShip(this.scene, this.collision, this.materials, this.ship.rooms);
+    this.ship.group.traverse(o=>{if(o.userData.exteriorOnly)this.exteriorLights.push(o);});
+    this.ship.setName(this.shipName);
+    this.decoration = decorateShip(this.scene, this.collision, this.materials, this.ship.rooms);
+    this.ship.group.add(this.decoration);
+    this.decoration.traverse(o => { if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; } });
     this.player = new PlayerController(this.ship.ladders);
     this.player.spawn(this.ship.spawn, this.ship.spawnYaw);
     this.space = new SpaceScene(this.scene, this.camera, { quality: preset });
+    this.rendering = new ShipRendering(this.renderer, this.scene, this.camera, this.qualityLevel);
+    this.rendering.resize(container.clientWidth, Math.max(1, container.clientHeight));
     this.systemIndex = Math.floor(Math.random() * 1000);
     this.warpCountdown = this.nextWarpDelay();
     this.buildTerminals();
-
+    for(const terminal of this.terminals) {
+      const solids=new Set(terminal.solidMeshes());
+      this.collision.addStaticMesh(terminal.group,{tag:'console',owner:terminal.anchor.spec.id,
+        filter:mesh=>solids.has(mesh)});
+    }
+    for(const terminal of this.terminals) terminal.group.traverse(object => {
+      if(object instanceof THREE.Mesh && object.material instanceof THREE.MeshStandardMaterial && !object.material.transparent) {
+        object.castShadow=true;object.receiveShadow=true;
+      }
+    });
+    const sharedMetals = new Set<THREE.Material>(Object.values(this.materials));
+    const finished = new Set<THREE.Material>();
+    this.scene.traverse(object => {
+      const mesh = object as THREE.Mesh;
+      for(const material of mesh.material ? Array.isArray(mesh.material) ? mesh.material : [mesh.material] : []) {
+        if(material instanceof THREE.MeshStandardMaterial && !sharedMetals.has(material) && !finished.has(material) && material.metalness > .35) {
+          applyAlloyFinish(material, { roughnessVariation:.035, colourVariation:.015, relief:0 });
+          material.envMapIntensity = .52; finished.add(material);
+        }
+      }
+    });
+    this.input.onNextClick(() => {
+      if (this.mode === 'world' && !this.pausedOverlay && !this.hud.hasModal) { this.audio.resume(); this.input.requestLock(); }
+    });
     this.input.onLockLost = () => {
       if (this.mode === 'world' && this.booted) this.showPauseOverlay();
     };
@@ -151,8 +206,7 @@ export class Game implements GameActions, TerminalHost {
     this.booted = true;
     this.mode = 'world';
     this.clockLast = performance.now();
-    this.audio.resume();
-    this.input.requestLock();
+    // Automatic entry renders the bridge; pointer lock/audio require the first real click.
     this.statusPoller = new Poller<ShipStatus>(
       () => gameApi.get<ShipStatus>('/api/status') as Promise<ApiResult<ShipStatus>>,
       5000,
@@ -169,18 +223,26 @@ export class Game implements GameActions, TerminalHost {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.running = false;
     cancelAnimationFrame(this.rafId);
     this.statusPoller?.stop();
+    this.stopMinigameModule();
     this.space.dispose();
-    this.ship.dispose();
     for (const terminal of this.terminals) terminal.dispose();
+    this.collision.clear();
+    this.ship.dispose();
+    this.orbit.dispose();
+    this.hud.dispose();
+    this.closePauseOverlay();
     this.input.dispose();
-    this.textCapture.close();
+    this.textCapture.dispose();
     this.audio.dispose();
     window.removeEventListener('resize', this.handleResize);
     document.removeEventListener('visibilitychange', this.handleVisibility);
     window.removeEventListener('keydown', this.handleKeyDown, true);
+    this.rendering.dispose();
     this.renderer.dispose();
   }
 
@@ -188,16 +250,39 @@ export class Game implements GameActions, TerminalHost {
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(width, height, false);
+    this.rendering.resize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   };
 
   private handleVisibility = (): void => {
     this.visible = !document.hidden;
-    if (this.visible) this.clockLast = performance.now();
+    if (this.visible) {
+      this.clockLast = performance.now();
+      this.statusPoller?.start(true);
+      this.focused?.focus();
+    } else {
+      this.statusPoller?.stop();
+      this.focused?.blur();
+      this.input.keys.clear();
+    }
   };
 
   private handleKeyDown = (event: KeyboardEvent): void => {
+    const target = event.target as HTMLElement | null;
+    if (event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], .hud-dialog-overlay') || document.querySelector('.hud-dialog-overlay, dialog[open]')) return;
+    if (this.pausedOverlay || this.hud.hasModal) return;
+    if (event.repeat) return;
+    if (this.mode === 'world' || this.mode === 'exterior') {
+      if(event.key.toLowerCase()==='h') {this.hud.group.visible=!this.hud.group.visible;return;}
+      const sectors: Record<string,string> = { '1': 'bridge', '2': 'war-forge', '3': 'robot-forge', v: 'exterior' };
+      const sector = sectors[event.key.toLowerCase()];
+      if (sector) { this.visitSector(sector); event.preventDefault(); return; }
+    }
+    if (this.mode === 'exterior') {
+      if (event.key === 'Escape' || event.key.toLowerCase() === 'm') this.showPauseOverlay();
+      return;
+    }
     if (this.mode === 'minigame' && this.activeMinigame && !this.minigameScreenMode) {
       if (event.key === 'Escape' || event.key === 'e' || event.key === 'E') {
         this.exitMinigame('已被玩家终止');
@@ -290,10 +375,10 @@ export class Game implements GameActions, TerminalHost {
     for (const terminal of this.terminals) terminal.markDirty();
   }
 
-  triggerWarp(manual: boolean): boolean {
+  triggerWarp(manual: boolean, destination?: number): boolean {
     if (this.space.warping) return false;
     const started = this.space.triggerWarp(() => {
-      this.systemIndex += 1;
+      this.systemIndex = destination === undefined ? this.systemIndex + 1 : destination;
       this.hud.toast('已抵达新星系：' + this.systemName(), 'ok', 5000);
       this.unlockAchievement('first-jump', manual ? '手动跃迁' : '自动跃迁');
     });
@@ -364,7 +449,7 @@ export class Game implements GameActions, TerminalHost {
 
   lookAtTarget(name: string): void {
     const targets: Record<string, THREE.Vector3> = {
-      主行星: new THREE.Vector3(1400, -260, -900),
+      主行星: new THREE.Vector3(-520, 220, -1700),
       伴星卫星: new THREE.Vector3(900, 180, 1200),
       小行星带: new THREE.Vector3(-600, 120, 900),
       航道上的货船: new THREE.Vector3(400, 60, -500),
@@ -379,6 +464,50 @@ export class Game implements GameActions, TerminalHost {
   zoomView(factor: number): void {
     this.camera.fov = Math.max(18, Math.min(96, this.camera.fov / factor));
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Safe, explicit transit points remain on the same walkable floor. */
+  visitSector(sector: string): void {
+    if (this.activeMinigame) { this.hud.toast('请先结束当前演练', 'warn'); return; }
+    if (this.focused) { this.focused.blur(); this.focused = null; }
+    this.closePauseOverlay();
+    this.textCapture.close();
+    this.seated = false;
+    this.input.keys.clear();
+    this.camera.fov = 60;
+    this.camera.updateProjectionMatrix();
+    if ((sector === 'exterior' && this.mode !== 'exterior') || sector === 'exterior-close' || sector === 'exterior-full') {
+      this.mode = 'exterior';
+      this.input.mode = 'menu';
+      this.input.releaseLock();
+      this.camera.near = .1; this.camera.fov = sector === 'exterior-close' ? 50 : 44; this.camera.updateProjectionMatrix();
+      if(sector==='exterior-close') {
+        this.orbit.target.set(0,0,8);this.camera.position.set(170,95,-240);
+      } else {
+        const center=this.ship.hullBounds.getCenter(new THREE.Vector3());
+        this.orbit.target.copy(center);
+        this.camera.position.copy(center).add(new THREE.Vector3(.40,.46,-.74).multiplyScalar(ARK_DIMENSIONS.length * Math.max(1, 1.35 / this.camera.aspect)));
+      }
+      this.orbit.enabled = true;
+      this.orbit.update();
+      return;
+    }
+    const points: Record<string, [number, number, number, number]> = {
+      bridge: [0, .08, -11.5, 0],
+      'war-forge': [-7, .08, 18, 2.25],
+      'robot-forge': [7, .08, 18, -2.5],
+      reactor: [0, .08, 82, Math.PI],
+      archive: [29, .08, 87, -Math.PI / 2],
+    };
+    const p = points[sector];
+    this.mode = 'world'; this.input.mode = 'world'; this.orbit.enabled = false;
+    if (p) this.player.spawn(new THREE.Vector3(p[0],p[1],p[2]),p[3]);
+    if(sector==='robot-forge')this.player.pitch=.16;
+    if(sector==='reactor')this.player.pitch=.43;
+    this.camera.near = .1; this.camera.fov = 54; this.camera.updateProjectionMatrix();
+    this.camera.position.copy(this.player.eyePosition());
+    this.camera.rotation.set(this.player.pitch,this.player.yaw,0,'YXZ');
+    this.input.requestLock();
   }
 
   private nextWarpDelay(): number {
@@ -408,8 +537,15 @@ export class Game implements GameActions, TerminalHost {
 
     this.updateBoosts(dt);
     this.space.update(dt);
+    this.ship.group.userData.update?.(dt, this.player.position, this.space.warping ? 1 : .55);
+    if (!this.pausedOverlay && !this.hud.hasModal) this.decoration.userData.update?.(dt);
+    this.hud.update(this.input.pointer, dt);
 
-    if (this.mode === 'minigame' && this.activeMinigame && !this.minigameScreenMode) {
+    if (this.pausedOverlay || this.hud.hasModal) {
+      // Keep the current view fixed while a menu or text dialog is open.
+    } else if (this.mode === 'exterior') {
+      this.orbit.update();
+    } else if (this.mode === 'minigame' && this.activeMinigame && !this.minigameScreenMode) {
       this.updateWorldMinigame(dt);
     } else if (this.focused && (this.mode === 'terminal' || this.mode === 'minigame')) {
       this.updateFocusedTerminal(dt);
@@ -424,7 +560,8 @@ export class Game implements GameActions, TerminalHost {
     this.focused?.update(dt);
 
     this.updateHud();
-    this.renderer.render(this.scene, this.camera);
+    for(const light of this.exteriorLights) light.visible=this.mode==='exterior';
+    this.rendering.render(dt);
     this.input.endFrame();
   };
 
@@ -481,14 +618,11 @@ export class Game implements GameActions, TerminalHost {
     );
     const hits = this.raycaster.intersectObject(terminal.screen.mesh, false);
     const intersection = hits.length > 0 ? hits[0] : null;
-    terminal.handlePointer(intersection, false, this.input.pointer.wheel);
+    terminal.handlePointer(intersection, this.input.pointer.clicked && !this.minigameScreenMode, this.input.pointer.wheel);
 
     if (this.input.pointer.clicked) {
       if (this.activeMinigame && this.minigameScreenMode) {
-        if (intersection) this.activeMinigame.onScreenClick?.(terminal.ui, this.ensureMinigameContext());
-      } else {
-        terminal.ui.clicked = true;
-        terminal.markDirty();
+        if (intersection?.uv) this.activeMinigame.onScreenClick?.(terminal.ui, this.ensureMinigameContext());
       }
     }
 
@@ -513,6 +647,12 @@ export class Game implements GameActions, TerminalHost {
   }
 
   private updateHud(): void {
+    if (this.mode === 'exterior') {
+      this.hud.showPrompt(null);
+      this.hud.setCrosshairVisible(false);
+      this.hud.setStatus([this.shipName + ' · 舰体总览', '实尺 74.4 km × 17.2 km × 9.1 km · 护航艇长 300 m', '拖动旋转 · 滚轮缩放 · H 显隐仪表 · V 返回 · M 操作仪']);
+      return;
+    }
     if (this.mode === 'terminal') {
       this.hud.setCrosshairVisible(false);
       const hint = this.minigameScreenMode
@@ -556,12 +696,18 @@ export class Game implements GameActions, TerminalHost {
     let best: Terminal | null = null;
     let bestScore = 0;
     for (const terminal of this.terminals) {
-      const target = terminal.screen.worldCenter(new THREE.Vector3());
+      const target = terminal.operatingSurface.getWorldPosition(new THREE.Vector3());
       const toTarget = target.clone().sub(eye);
       const distance = toTarget.length();
       if (distance > 4.2) continue;
+      const projected=target.clone().project(this.camera);
+      if(projected.z< -1||projected.z>1||Math.abs(projected.x)>1.15||Math.abs(projected.y)>1.15)continue;
       const alignment = toTarget.normalize().dot(forward);
       if (alignment < 0.45) continue;
+      const operatingSurface=terminal.operatingSurface;
+      const outward=operatingSurface.getWorldDirection(new THREE.Vector3());
+      if(outward.dot(eye.clone().sub(target).normalize())<.08)continue;
+      if (this.collision.segmentBlocked(eye, target, terminal.anchor.spec.id)) continue;
       const score = alignment * 2 - distance * 0.12;
       if (score > bestScore) {
         bestScore = score;
@@ -579,7 +725,7 @@ export class Game implements GameActions, TerminalHost {
     }
     const spec = candidate.anchor.spec;
     if (!candidate.interactable) {
-      this.hud.showPrompt(spec.label + ' · 终端已下线（' + candidate.availabilityReason + '）');
+      this.hud.showPrompt(spec.label + ' · E 查看离线状态（' + candidate.availabilityReason + '）');
       return;
     }
     this.hud.showPrompt(spec.label + ' · ' + spec.hint);
@@ -593,8 +739,8 @@ export class Game implements GameActions, TerminalHost {
     const candidate = this.candidate;
     if (!candidate) return;
     if (!candidate.interactable) {
-      this.hud.toast(candidate.availabilityReason || '该终端当前不可用', 'warn');
-      this.audio.alarm();
+      this.focusTerminal(candidate);
+      this.hud.toast('只读观察 · ' + (candidate.availabilityReason || '终端离线'), 'warn');
       return;
     }
     if (candidate.definition.kind === 'minigame') {
@@ -773,7 +919,7 @@ export class Game implements GameActions, TerminalHost {
     } else {
       this.player.spawn(this.ship.spawn, this.ship.spawnYaw);
     }
-    this.camera.fov = 72;
+    this.camera.fov = 54;
     this.camera.updateProjectionMatrix();
     this.input.requestLock();
     this.hud.toast('已返回舰内（' + reason + '）', 'info');
@@ -799,75 +945,67 @@ export class Game implements GameActions, TerminalHost {
   }
 
   showPauseOverlay(): void {
-    if (this.pausedOverlay) return;
-    const overlay = document.createElement('div');
-    overlay.className = 'game-menu-overlay';
-    overlay.innerHTML =
-      '<div class="game-menu">' +
-      '<h2>NeoBot 星舰</h2>' +
-      '<p class="menu-sub">舰长：' + escapeHtml(this.playerName) + ' · ' + escapeHtml(this.systemName()) + '</p>' +
-      '<div class="menu-rows">' +
-      row('画质', ['low', 'medium', 'high'], this.qualityLevel, 'quality') +
-      row('鼠标灵敏度', ['0.5', '1', '1.5', '2'], String(this.input.sensitivity), 'sens') +
-      row('垂直视角', ['normal', 'inverted'], this.input.invertY ? 'inverted' : 'normal', 'invert') +
-      '</div>' +
-      '<div class="menu-actions">' +
-      '<button data-action="resume" class="primary">继续游戏</button>' +
-      '<button data-action="name">修改舰长名</button>' +
-      '<button data-action="console">返回控制台</button>' +
-      '</div>' +
-      '<p class="menu-hint">提示：走近终端按 E 使用；待机状态下部分终端会离线。</p>' +
-      '</div>';
-    overlay.addEventListener('click', (event) => {
-      const target = event.target as HTMLElement;
-      const action = target.dataset.action;
-      const value = target.dataset.value;
-      if (action === 'resume') {
-        this.closePauseOverlay();
-        this.input.requestLock();
-      } else if (action === 'console') {
-        window.location.href = new URL('../', window.location.href).toString();
-      } else if (action === 'name') {
-        void this.hud.ask({ title: '舰长名', value: this.playerName }).then((name) => {
-          if (name) {
-            this.playerName = name.slice(0, 32);
-            savePlayerName(this.playerName);
-            this.shell.playerName = this.playerName;
-          }
-          this.closePauseOverlay();
-          this.showPauseOverlay();
-        });
-      } else if (action === 'quality' && value) {
-        this.applyQuality(value as QualityLevel);
-        this.closePauseOverlay();
-        this.showPauseOverlay();
-      } else if (action === 'sens' && value) {
-        this.input.sensitivity = Number(value);
-        this.closePauseOverlay();
-        this.showPauseOverlay();
-      } else if (action === 'invert' && value) {
-        this.input.invertY = value === 'inverted';
-        this.closePauseOverlay();
-        this.showPauseOverlay();
-      }
-    });
-    this.hudRoot.appendChild(overlay);
-    this.pausedOverlay = overlay;
+    if (this.pausedOverlay || this.hud.hasModal) return;
+    this.pausedOverlay = true;
+    this.input.mode = 'menu'; this.input.keys.clear(); this.orbit.enabled = false;
     this.input.releaseLock();
+    void this.hud.menu(this.shipName + ' / 舰载操作仪', [
+      {label:'继续探索',value:'resume'}, {label:'74.4km 全舰',value:'exterior-full'}, {label:'命名战舰',value:'ship-name'},
+      {label:'01 星穹舰桥',value:'bridge'}, {label:'02 战争机械',value:'war-forge'}, {label:'03 机器人',value:'robot-forge'},
+      {label:'04 太阳核心',value:'reactor'}, {label:'05 记忆资料室',value:'archive'},
+      {label:'画质 · '+QUALITY_PRESETS[this.qualityLevel].label,value:'quality'},
+      {label:'灵敏度 · '+this.input.sensitivity,value:'sens'},
+      {label:'视角 · '+(this.input.invertY?'反转':'正常'),value:'invert'},
+      {label:'舰桥外侧尺度',value:'exterior-close'}, {label:'舰长铭文',value:'name'}, {label:'返回控制台',value:'console'},
+    ], 'WASD 移动 · E 使用装置 · 1/2/3 区域 · V 舰体 · M 操作仪').then(async action => {
+      if (this.disposed) return;
+      const naming = action === 'ship-name' || action === 'name';
+      // Keep pause/orbit/pointer-lock gates closed across the asynchronous handoff.
+      if (!naming) this.closePauseOverlay();
+      if (naming) {
+        this.input.mode = 'menu'; this.pausedOverlay = true; this.orbit.enabled = false;
+        const ship = action === 'ship-name';
+        const value = await this.hud.ask({title:ship?'战舰铭文':'舰长铭文',value:ship?this.shipName:this.playerName,
+          hint:ship?'1–24 个字符 · 仅保存在当前浏览器':'舰长姓名 · 与战舰名称独立',
+          validate: v => {
+            const length=Array.from(v.trim()).length;
+            return length<1||length>(ship?24:32)?'请输入 1–'+(ship?24:32)+' 个字符':null;
+          }});
+        if (this.disposed) return;
+        if(value!==null) {
+          if(ship){this.shipName=saveShipName(value);this.ship.setName(this.shipName);this.hud.setShipIdentity(this.shipName);document.title=this.shipName+' · NeoBot 星舰';}
+          else {this.playerName=value.trim();savePlayerName(this.playerName);this.shell.playerName=this.playerName;}
+        }
+        this.closePauseOverlay(); this.showPauseOverlay();
+      } else if (action === 'quality') {
+        const levels:QualityLevel[]=['low','medium','high'];
+        this.applyQuality(levels[(levels.indexOf(this.qualityLevel)+1)%3]); this.showPauseOverlay();
+      } else if (action === 'sens') {
+        this.input.sensitivity = this.input.sensitivity>=2?.5:this.input.sensitivity+.5;this.showPauseOverlay();
+      } else if (action === 'invert') {
+        this.input.invertY=!this.input.invertY;this.showPauseOverlay();
+      } else if (action === 'console') {
+        window.location.href=new URL('../',window.location.href).toString();
+      } else if(action && action !== 'resume') this.visitSector(action);
+      else if(this.mode!=='exterior') this.hud.toast('点击舰桥接管视角 · M 再次打开操作仪','info');
+    });
   }
-
   closePauseOverlay(): void {
-    this.pausedOverlay?.remove();
-    this.pausedOverlay = null;
+    this.pausedOverlay = false;
+    this.input.mode = this.mode === 'exterior' ? 'menu' : 'world';
+    this.orbit.enabled = this.mode === 'exterior';
   }
 
   private applyQuality(level: QualityLevel): void {
     this.qualityLevel = level;
+    this.renderer.shadowMap.enabled = level !== 'low';
     saveQuality(level);
     const preset = QUALITY_PRESETS[level];
     Object.assign(this.quality, preset);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.pixelRatio));
-    this.camera.far = preset.viewDistance;
+    this.rendering.updateQuality(level);
+    this.rendering.resize(this.container.clientWidth, Math.max(1, this.container.clientHeight));
+    this.camera.far = SPACE_FAR;
     this.camera.updateProjectionMatrix();
     this.space.dispose();
     this.space = new SpaceScene(this.scene, this.camera, { quality: preset });
@@ -877,22 +1015,4 @@ export class Game implements GameActions, TerminalHost {
 
 function easeOut(value: number): number {
   return 1 - Math.pow(1 - value, 3);
-}
-
-function escapeHtml(text: string): string {
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function row(label: string, values: string[], current: string, action: string): string {
-  return (
-    '<div class="menu-row"><span>' + escapeHtml(label) + '</span><div>' +
-    values
-      .map(
-        (value) =>
-          '<button data-action="' + action + '" data-value="' + value + '" class="' +
-          (value === current ? 'active' : '') + '">' + escapeHtml(value) + '</button>',
-      )
-      .join('') +
-    '</div></div>'
-  );
 }

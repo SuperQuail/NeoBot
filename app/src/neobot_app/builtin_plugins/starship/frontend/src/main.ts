@@ -1,11 +1,8 @@
-// main.ts —— 入口：鉴权检查 → 拉取启动配置 → 引导页 → 启动游戏。
-// 未进入游戏前不做任何 3D 初始化，也不轮询接口（零额外开销）。
-
+// Authenticate first, then enter the real 3D scene without a 2D boarding menu.
 import './styles.css';
-import { GameBootstrap, consoleApiBase, consoleHomeUrl } from './config';
-import { Game } from './game';
+import { consoleApiBase, consoleHomeUrl, loadShipName, type GameBootstrap } from './config';
+import type { Game } from './game';
 import { gameApi } from './net/api';
-import './minigames';
 
 async function boot(): Promise<void> {
   const container = document.getElementById('app');
@@ -15,82 +12,89 @@ async function boot(): Promise<void> {
   const bootText = document.getElementById('starship-boot-text');
   if (!container || !canvas || !hudRoot || !bootLayer || !bootText) return;
 
-  const setBootText = (text: string): void => {
-    bootText.textContent = text;
+  let game: Game | null = null;
+  let departed = false;
+  const authRequest = new AbortController();
+  window.addEventListener('pagehide', () => {
+    departed = true;
+    authRequest.abort();
+    game?.dispose();
+    game = null;
+  }, { once: true });
+  // A restored document must not keep showing the disposed WebGL scene.
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted && departed) window.location.reload();
+  });
+
+  const fail = (message: string, login = false): void => {
+    if (departed) return;
+    bootLayer.hidden = false;
+    bootLayer.inert = false;
+    bootLayer.classList.remove('hidden');
+    bootLayer.classList.add('error');
+    bootText.setAttribute('role', 'alert');
+    bootText.textContent = message;
+    // These links exist only if startup fails, never as an ordinary game menu.
+    const fallback = document.createElement('p');
+    const retry = document.createElement('a');
+    retry.href = window.location.href;
+    retry.textContent = '重新加载';
+    const home = document.createElement('a');
+    home.href = consoleHomeUrl() + (login ? '#/login' : '');
+    home.textContent = login ? '前往面板登录' : '返回面板';
+    fallback.append(retry, document.createTextNode(' · '), home);
+    bootLayer.append(fallback);
   };
 
-  setBootText('正在校验面板会话…');
-  // /api/auth/me 由面板鉴权中间件处理：未登录返回 401，已登录返回会话信息
-  let authenticated = true;
+  bootText.textContent = '正在校验面板会话…';
+  let token = '';
+  try { token = localStorage.getItem('neobot-dashboard-token') || ''; } catch { /* Cookie authentication remains available. */ }
   try {
-    const token = localStorage.getItem('neobot-dashboard-token') || '';
     const response = await fetch(consoleApiBase() + '/api/auth/me', {
       cache: 'no-store',
+      credentials: 'same-origin',
       headers: token ? { 'X-Token': token } : undefined,
+      signal: authRequest.signal,
     });
-    authenticated = response.ok;
-  } catch {
-    authenticated = true;
-  }
-  if (!authenticated) {
-    bootLayer.classList.add('error');
-    bootText.innerHTML =
-      '需要先登录网页面板才能登舰。<br /><a href="' + consoleHomeUrl() + '#/login">前往登录</a>';
-    return;
-  }
-
-  setBootText('正在读取舰载配置…');
-  const bootstrapResult = await gameApi.get<GameBootstrap>('/api/bootstrap');
-  if (!bootstrapResult.ok || !bootstrapResult.data) {
-    bootLayer.classList.add('error');
-    bootText.textContent = '无法读取游戏配置：' + (bootstrapResult.error || '未知错误');
-    return;
-  }
-  const bootstrap = bootstrapResult.data;
-
-  setBootText('正在装配星舰…');
-  let game: Game | null = null;
-  const enter = (): void => {
-    if (game) return;
-    bootLayer.classList.add('hidden');
-    try {
-      game = new Game(container, hudRoot, bootstrap, canvas);
-      game.start();
-      const resize = () => game?.dispose();
-      void resize;
-    } catch (error) {
-      bootLayer.classList.remove('hidden');
-      bootLayer.classList.add('error');
-      bootText.textContent = '星舰装配失败：' + (error as Error).message;
+    if (departed) return;
+    if (!response.ok) {
+      const login = response.status === 401 || response.status === 403;
+      fail(login ? '需要先登录网页面板才能进入星舰。' : '会话校验失败，请重新加载。', login);
+      return;
     }
-  };
+  } catch {
+    fail('无法连接面板，请检查网络后重新加载。');
+    return;
+  }
 
-  bootLayer.innerHTML =
-    '<div class="boot-panel">' +
-    '<h1>' + escape(bootstrap.title) + '</h1>' +
-    '<p class="boot-sub">NEOBOT STARSHIP · ' + escape(bootstrap.version || '') + '</p>' +
-    '<ul class="boot-list">' +
-    '<li>WASD 移动 · 鼠标看方向 · 空格跳跃 · Shift 潜行 · Ctrl 疾跑</li>' +
-    '<li>走近全息终端按 <kbd>E</kbd> 使用（主控台、插件、配置、系统、用量、分析、通讯、日志）</li>' +
-    '<li>机库与观景廊可以进入小游戏：舱外炮塔、损管抢修</li>' +
-    '<li>舰桥的星图导航台可以手动跃迁；航行中也会自动跃迁</li>' +
-    '</ul>' +
-    '<button class="boot-enter">登舰</button>' +
-    '<p class="boot-hint">进入后浏览器会请求鼠标指针锁定；按 Esc 可释放并打开菜单。</p>' +
-    '</div>';
-  const enterButton = bootLayer.querySelector('.boot-enter');
-  enterButton?.addEventListener('click', enter);
-  document.addEventListener(
-    'keydown',
-    (event) => {
-      if (event.key === 'Enter' && !bootLayer.classList.contains('hidden')) enter();
-    },
-    { once: false },
-  );
-}
+  bootText.textContent = '正在读取舰载配置…';
+  const result = await gameApi.get<GameBootstrap>('/api/bootstrap');
+  if (departed) return;
+  if (!result.ok || !result.data) {
+    fail('无法读取舰载配置：' + (result.error || '未知错误'), result.status === 401 || result.status === 403);
+    return;
+  }
 
-function escape(text: string): string {
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  bootText.textContent = '正在加载三维星舰…';
+  try {
+    const { Game } = await import('./game');
+    if (departed) return;
+    const shipName = loadShipName();
+    game = new Game(container, hudRoot, result.data, canvas);
+    game.hud.setShipIdentity(shipName);
+    // Game.start renders immediately; pointer lock/audio wait for a scene gesture.
+    game.start();
+    document.title = shipName + ' · NeoBot 星舰';
+    bootLayer.classList.add('hidden');
+    bootLayer.hidden = true;
+    bootLayer.inert = true;
+    canvas.focus({ preventScroll: true });
+  } catch (error) {
+    game?.dispose();
+    game = null;
+    hudRoot.replaceChildren();
+    fail('星舰启动失败：' + (error instanceof Error ? error.message : String(error)));
+  }
 }
 
 void boot();

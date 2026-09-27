@@ -3,20 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NeoBot 星舰</title>
-    <script type="module" crossorigin src="./assets/index-VqRk4IYM.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BUV2rRNf.css">
+    <meta name="theme-color" content="#080c1b" />
+    <meta name="description" content="在真实三维星舰中探索舰桥、战争机械与机器人装配车间。" />
+    <title>正在加载星舰 · NeoBot</title>
+    <script type="module" crossorigin src="./assets/index-BQVcQ7rm.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-vN4UgA6a.css">
   </head>
   <body>
     <div id="app">
-      <canvas id="starship-canvas"></canvas>
+      <canvas id="starship-canvas" tabindex="-1" aria-label="星舰三维场景"></canvas>
       <div id="starship-hud"></div>
-      <div id="starship-boot">
-        <div class="boot-panel">
-          <h1>NEOBOT STARSHIP</h1>
-          <p id="starship-boot-text">正在连接舰载系统…</p>
-        </div>
-      </div>
+      <main id="starship-boot" style="display: grid; place-content: center; padding: 24px; text-align: center">
+        <p id="starship-boot-text" role="status" aria-live="polite">正在连接舰载系统…</p>
+        <noscript>进入三维星舰需要启用 JavaScript。</noscript>
+      </main>
     </div>
   </body>
 </html>

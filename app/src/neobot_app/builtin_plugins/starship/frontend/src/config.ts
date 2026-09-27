@@ -87,31 +87,77 @@ export const QUALITY_ORDER: QualityLevel[] = ['low', 'medium', 'high'];
 const QUALITY_KEY = 'neobot-starship-quality';
 const PLAYER_KEY = 'neobot-starship-player';
 const SEEN_KEY = 'neobot-starship-seen';
+const SHIP_NAME_KEY = 'neobot-starship-ship-name';
+const SHIP_NAME_CUSTOM_KEY = 'neobot-starship-ship-name-custom';
+export const DEFAULT_SHIP_NAME = '亚顿之矛';
+// A denied/quota-limited store must not prevent boarding or lose edits this session.
+const memoryStorage = new Map<string, string>();
+
+function readPreference(key: string): string | null {
+  if (memoryStorage.has(key)) return memoryStorage.get(key)!;
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writePreference(key: string, value: string): void {
+  memoryStorage.set(key, value);
+  try { localStorage.setItem(key, value); } catch { /* Session fallback above. */ }
+}
+
+/** Unicode code points, not UTF-16 units; surrounding whitespace is not part of a name. */
+export function normalizeShipName(value: string): string {
+  const name = value.trim();
+  const length = Array.from(name).length;
+  if (length < 1 || length > 24) throw new RangeError('舰名须为 1–24 个字符（不含首尾空格）。');
+  return name;
+}
+
+/** Independent of player/captain identity. Invalid persisted data falls back safely. */
+export function loadShipName(): string {
+  try {
+    const name = normalizeShipName(readPreference(SHIP_NAME_KEY) ?? DEFAULT_SHIP_NAME);
+    // Only migrate the legacy default, never another saved name. New explicit
+    // choices (even the old default itself) carry a marker and remain untouched.
+    if (name === '曙光之矛' && readPreference(SHIP_NAME_CUSTOM_KEY) !== '1') {
+      writePreference(SHIP_NAME_KEY, DEFAULT_SHIP_NAME);
+      return DEFAULT_SHIP_NAME;
+    }
+    return name;
+  }
+  catch { return DEFAULT_SHIP_NAME; }
+}
+
+/** Returns trimmed name; throws RangeError on invalid input, never on storage failure. */
+export function saveShipName(value: string): string {
+  const name = normalizeShipName(value);
+  writePreference(SHIP_NAME_KEY, name);
+  writePreference(SHIP_NAME_CUSTOM_KEY, '1');
+  return name;
+}
 
 export function loadQuality(fallback: QualityLevel): QualityLevel {
-  const stored = localStorage.getItem(QUALITY_KEY);
+  const stored = readPreference(QUALITY_KEY);
   if (stored === 'low' || stored === 'medium' || stored === 'high') return stored;
   return fallback;
 }
 
 export function saveQuality(level: QualityLevel): void {
-  localStorage.setItem(QUALITY_KEY, level);
+  writePreference(QUALITY_KEY, level);
 }
 
 export function loadPlayerName(): string {
-  return localStorage.getItem(PLAYER_KEY) || '舰长';
+  return readPreference(PLAYER_KEY) || '舰长';
 }
 
 export function savePlayerName(name: string): void {
-  localStorage.setItem(PLAYER_KEY, name.slice(0, 32));
+  writePreference(PLAYER_KEY, Array.from(name.trim()).slice(0, 32).join('') || '舰长');
 }
 
 export function hasSeenIntro(): boolean {
-  return localStorage.getItem(SEEN_KEY) === '1';
+  return readPreference(SEEN_KEY) === '1';
 }
 
 export function markIntroSeen(): void {
-  localStorage.setItem(SEEN_KEY, '1');
+  writePreference(SEEN_KEY, '1');
 }
 
 /**

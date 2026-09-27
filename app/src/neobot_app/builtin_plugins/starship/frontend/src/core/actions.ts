@@ -4,7 +4,7 @@ export type BoostKind = 'sprint' | 'jump';
 
 export interface GameActions {
   /** 触发跃迁；返回是否成功点火 */
-  triggerWarp(manual: boolean): boolean;
+  triggerWarp(manual: boolean, destination?: number): boolean;
   warping(): boolean;
   warpPhase(): string;
   systemName(): string;
