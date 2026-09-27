@@ -179,6 +179,62 @@ class MinigameService:
         )
         return await self.ensure_profile(uid)
 
+    async def apply_points(
+        self,
+        user_id: Any,
+        delta: int,
+        *,
+        allow_negative: bool = False,
+        play: bool = False,
+        win: bool = False,
+    ) -> dict[str, Any]:
+        """原子增减积分（给其它插件用的写入口，见插件能力 points.add）。
+
+        与 add_score 的差别集中在**扣分**：余额不足时必须语义明确，因此
+
+        - delta >= 0：直接加上（等价 add_score）；
+        - delta < 0 且 allow_negative=False（默认）：把 score + delta >= 0 写进
+          UPDATE 的 WHERE，**整笔生效或整笔不生效**，不做部分扣减——并发下
+          也不会扣成负数；
+        - delta < 0 且 allow_negative=True：允许扣成负数（罚分场景）。
+
+        返回 ``{"applied": int, "insufficient": bool, "profile": dict}``：
+        insufficient=True 时 applied=0，profile 是当前档案（未被改动）。
+        """
+        uid = str(user_id)
+        amount = int(delta)
+        await self.ensure_profile(uid)
+        if amount == 0:
+            return {
+                "applied": 0,
+                "insufficient": False,
+                "profile": await self.get_profile(uid),
+            }
+
+        sql = (
+            "UPDATE mg_profile "
+            "SET score = score + :delta, "
+            "best_score = MAX(best_score, score + :delta), "
+            "plays = plays + :plays, wins = wins + :wins, updated_at = :now "
+            "WHERE user_id = :uid"
+        )
+        if amount < 0 and not allow_negative:
+            sql += " AND score + :delta >= 0"
+        changed = await self._run(
+            sql,
+            {
+                "uid": uid,
+                "delta": amount,
+                "plays": 1 if play else 0,
+                "wins": 1 if win else 0,
+                "now": self.now_iso(),
+            },
+        )
+        profile = await self.get_profile(uid)
+        if changed <= 0 and amount < 0 and not allow_negative:
+            return {"applied": 0, "insufficient": True, "profile": profile}
+        return {"applied": amount, "insufficient": False, "profile": profile}
+
     # ── 每日上限（mg_daily）──────────────────────────────────────
 
     async def daily_plays(self, user_id: Any, game_id: str, day: str | None = None) -> int:

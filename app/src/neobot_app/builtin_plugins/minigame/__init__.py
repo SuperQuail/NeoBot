@@ -16,6 +16,10 @@
 「抽签」等关键词，进入 agent 交互路径（agent 主动开场），**不直接执行游戏动作**；
 未命中关键词时完全不触发。
 
+另有**对外能力**（R33）：其它插件通过
+ctx.require_plugin("minigame").call("points.add", ...) 读写本插件的统一积分账户
+（points.get / points.add / points.rank / points.describe，见文件末尾）。
+
 停用 / 卸载时命令随 ctx.app_commands.unregister_all() 摘除、工具由宿主随
 插件技能注销；与本体或其它插件重名时按 spec(4) D21 自动变 minigame__<name>。
 """
@@ -25,7 +29,7 @@ from __future__ import annotations
 import random
 import re
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from neobot_app.message.fast_reply_keywords import (
     register_reply_trigger_keywords,
@@ -69,6 +73,13 @@ INTERACTION_TTL_SECONDS = 300.0
 
 #: 排行榜每页条数
 RANK_PAGE_SIZE = 10
+
+#: 积分对外接口（其它插件调用）的接口名与版本：进 points.describe，便于调用方做兼容判断
+POINTS_API_NAME = "minigame.points"
+POINTS_API_VERSION = 1
+
+#: points.rank 单页条数上限（避免调用方一次拉太多）
+POINTS_RANK_MAX_PAGE_SIZE = 100
 
 MENU_FOOTER = (
     "其他：/mg rank [页码] 排行榜 · /mg 积分 查积分 · /mg help <游戏> 规则 · "
@@ -147,7 +158,7 @@ def _declare_tool_packages() -> None:
             "- minigame__help(game)：查看某个玩法的规则与边界"
             "（bottle / chengyu / checkin / fortune，也接受中文名）\n"
             "- minigame__points(user_id?)：查看积分与连续签到天数"
-            "（只读；本期没有任何消费 / 兑换渠道）\n"
+            "（只读，你不能加减积分；积分由玩法和其它插件产生）\n"
             "各玩法的完整说明在对应技能包里：minigame_bottle / minigame_chengyu / "
             "minigame_checkin / minigame_fortune。"
         ),
@@ -637,6 +648,171 @@ class MinigamePlugin:
         streak = await self.service.streak(user_id)
         return format_points_text(score=int(profile.get("score") or 0), streak=streak)
 
+
+    # ── 积分对外接口（其它插件经插件能力调用；见文件末尾的 @plugin.capability）──
+
+    def require_service(self) -> MinigameService:
+        """取本插件的服务层；未加载时给出可读错误（而不是 AssertionError）。"""
+        service = self.service
+        if service is None:
+            raise RuntimeError("小游戏插件尚未加载，积分接口不可用")
+        return service
+
+    async def points_snapshot(self, user_id: Any) -> dict[str, Any]:
+        """某个用户的积分档案（能力 points.get 的实现）。
+
+        score / best_score / plays / wins 来自统一积分账户 mg_profile；
+        streak 与 checked_in_today 来自今天的 mg_checkin（未签到则为 0 / False）。
+        """
+        service = self.require_service()
+        uid = str(user_id)
+        profile = await service.get_profile(uid)
+        today = await service.get_checkin(uid)
+        return {
+            "ok": True,
+            "user_id": uid,
+            "score": int(profile.get("score") or 0),
+            "best_score": int(profile.get("best_score") or 0),
+            "plays": int(profile.get("plays") or 0),
+            "wins": int(profile.get("wins") or 0),
+            "streak": int(today["streak"]) if today is not None else 0,
+            "checked_in_today": today is not None,
+            "updated_at": str(profile.get("updated_at") or ""),
+        }
+
+    async def adjust_points(
+        self,
+        *,
+        user_id: Any,
+        delta: Any,
+        source: str = "",
+        note: str = "",
+        allow_negative: bool = False,
+        play: bool = False,
+        win: bool = False,
+    ) -> dict[str, Any]:
+        """其它插件增减积分（能力 points.add 的实现）。
+
+        契约（可预期的业务结果一律用返回值表达，不抛异常）：
+
+        - 成功：ok=True、applied=delta、score=新余额；
+        - 余额不足（扣分且 allow_negative=False）：ok=False、reason=insufficient、
+          applied=0，**整笔不生效**（不做部分扣减）；
+        - 被配置关掉（points_allow_external_write=false）：ok=False、reason=disabled；
+        - 参数非法（缺 user_id / delta 非整数 / 超过 points_max_delta）：抛 ValueError。
+        """
+        service = self.require_service()
+        uid = str(user_id)
+        amount = int(delta)
+        limit = int(getattr(self.config, "points_max_delta", 100_000) or 100_000)
+        if abs(amount) > limit:
+            raise ValueError(f"单次增减幅度超过上限 {limit}（收到 {amount}）")
+        label = str(source or "").strip() or "未署名"
+        remark = str(note or "").strip()
+        if not bool(getattr(self.config, "points_allow_external_write", True)):
+            self._log_points(
+                f"小游戏积分变更被拒: user={uid} delta={amount:+d} source={label} "
+                f"note={remark or '-'} 原因=points_allow_external_write 已关闭",
+                warning=True,
+            )
+            return {
+                "ok": False,
+                "reason": "disabled",
+                "user_id": uid,
+                "delta": amount,
+                "applied": 0,
+                "score": await service.points(uid),
+            }
+        outcome = await service.apply_points(
+            uid,
+            amount,
+            allow_negative=bool(allow_negative),
+            play=bool(play),
+            win=bool(win),
+        )
+        profile = outcome["profile"]
+        applied = int(outcome["applied"])
+        insufficient = bool(outcome["insufficient"])
+        self._log_points(
+            f"小游戏积分变更: user={uid} delta={amount:+d} applied={applied} "
+            f"score={int(profile.get('score') or 0)} source={label} "
+            f"note={remark or '-'}"
+            + ("（余额不足，整笔未生效）" if insufficient else ""),
+            warning=insufficient,
+        )
+        return {
+            "ok": not insufficient,
+            "reason": "insufficient" if insufficient else "",
+            "user_id": uid,
+            "delta": amount,
+            "applied": applied,
+            "score": int(profile.get("score") or 0),
+            "best_score": int(profile.get("best_score") or 0),
+            "plays": int(profile.get("plays") or 0),
+            "wins": int(profile.get("wins") or 0),
+            "source": label,
+        }
+
+    async def points_rank(
+        self, *, page: Any = 1, page_size: Any = 10, conversation_id: str = ""
+    ) -> dict[str, Any]:
+        """积分排行榜（能力 points.rank 的实现）：给了 conversation_id 就查本群榜。"""
+        service = self.require_service()
+        size = int(page_size)
+        if size < 1 or size > POINTS_RANK_MAX_PAGE_SIZE:
+            raise ValueError(
+                f"page_size 必须在 1-{POINTS_RANK_MAX_PAGE_SIZE} 之间（收到 {size}）"
+            )
+        conv = str(conversation_id or "").strip()
+        if conv:
+            rows = await service.group_leaderboard(conv, limit=size)
+            return {
+                "ok": True,
+                "scope": "group",
+                "conversation_id": conv,
+                "total": len(rows),
+                "rows": rows,
+            }
+        index = int(page)
+        if index < 1:
+            raise ValueError(f"page 必须 >= 1（收到 {index}）")
+        data = await service.leaderboard(page=index, page_size=size)
+        return {
+            "ok": True,
+            "scope": "global",
+            "page": int(data["page"]),
+            "page_size": int(data["page_size"]),
+            "total": int(data["total"]),
+            "rows": list(data.get("rows") or []),
+        }
+
+    def describe_points_api(self) -> dict[str, Any]:
+        """积分对外接口的自描述（能力 points.describe 的实现）。"""
+        return {
+            "ok": True,
+            "api": POINTS_API_NAME,
+            "version": POINTS_API_VERSION,
+            "plugin": plugin.name,
+            "unit": "积分",
+            "capabilities": sorted(plugin.capabilities),
+            "allow_external_write": bool(
+                getattr(self.config, "points_allow_external_write", True)
+            ),
+            "max_delta": int(getattr(self.config, "points_max_delta", 100_000) or 100_000),
+            "allow_negative_default": False,
+            "reject_when_insufficient": True,
+        }
+
+    def _log_points(self, text: str, *, warning: bool = False) -> None:
+        """积分变更留痕（调用方是别的插件，出问题要能查；日志失败不影响接口）。"""
+        logger = self._logger
+        if logger is None:
+            return
+        try:
+            (logger.warning if warning else logger.info)(text)
+        except Exception:  # pragma: no cover - 日志失败不影响接口
+            pass
+
     async def rank_command(
         self, command_ctx: Any, *, rest: str, conversation_id: str
     ) -> str:
@@ -938,8 +1114,8 @@ async def _tool_fortune(user_id: str = "", user_name: str = "") -> str:
     "points",
     package=PACKAGE_BASE,
     description=(
-        "查看用户的积分与连续签到天数。积分是**只读**的：本期没有任何消费、"
-        "兑换或解锁渠道，也不影响本体功能。"
+        "查看用户的积分与连续签到天数。积分由玩小游戏（签到 / 漂流瓶 / 成语接龙）"
+        "或其它插件的功能产生；本工具**只读**，你不能用它增减积分。"
     ),
 )
 async def _tool_points(user_id: str = "", user_name: str = "") -> str:
@@ -984,6 +1160,126 @@ async def _tool_chengyu_submit(
         return runtime.NEED_IDENTITY_HINT
     result = await game.submit(request, str(word if word is not None else ""))
     return result or "已记录。"
+
+
+# ── 对外能力：其它插件通过 ctx.require_plugin("minigame").call(...) 读写积分 ──
+# 契约（四个能力的入参与返回）见 docs/07-插件开发.md「调用其它插件的功能」与
+# docs/04-功能文档/小游戏.md「对外能力」。要点：
+#   * 只在这里开放「增减积分」；**不新增模型工具**，模型无法自行给自己加分；
+#   * 参数非法抛 ValueError，可预期的业务结果（余额不足 / 总开关关闭）用返回值表达；
+#   * user_id 一律是数字 QQ 号，与玩法侧的账户口径一致。
+
+
+def _points_payload(payload: Any) -> dict[str, Any]:
+    return payload if isinstance(payload, dict) else {}
+
+
+def _points_user_id(data: Mapping[str, Any]) -> str:
+    """取出并校验 user_id（数字 QQ 号；长度与 mg_profile.user_id 对齐）。"""
+    uid = str(data.get("user_id") or "").strip()
+    if not uid:
+        raise ValueError("缺少 user_id")
+    if not uid.isdigit() or len(uid) > 32:
+        raise ValueError(f"user_id 必须是数字 QQ 号（收到 {uid!r}）")
+    return uid
+
+
+def _points_int(data: Mapping[str, Any], key: str, *, default: Any = None) -> int:
+    """整数入参：不接受 bool，也不接受带小数部分的浮点（避免 1.5 被悄悄截断成 1）。"""
+    if key not in data:
+        if default is None:
+            raise ValueError(f"缺少 {key}")
+        return int(default)
+    raw = data[key]
+    if isinstance(raw, bool):
+        raise ValueError(f"{key} 必须是整数（收到 {raw!r}）")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} 必须是整数（收到 {raw!r}）") from exc
+    if isinstance(raw, float) and not float(raw).is_integer():
+        raise ValueError(f"{key} 必须是整数（收到 {raw!r}）")
+    return value
+
+
+def _points_flag(data: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
+    """布尔入参：字符串形态也接受，但写错的字符串必须报错而不是当 True。"""
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("", "0", "false", "no", "off"):
+        return False
+    if text in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError(f"{key} 必须是布尔值（收到 {value!r}）")
+
+
+@plugin.capability("points.get")
+async def _capability_points_get(payload: Any) -> dict[str, Any]:
+    """查询某个用户的积分档案（积分 / 最高分 / 场次 / 胜场 / 连续签到 / 今日是否签到）。
+
+    用法::
+
+        handle = ctx.require_plugin("minigame", ">=1.0.0")
+        data = await handle.call("points.get", {"user_id": "2002"})
+    """
+    data = _points_payload(payload)
+    return await _runtime().points_snapshot(_points_user_id(data))
+
+
+@plugin.capability("points.add")
+async def _capability_points_add(payload: Any) -> dict[str, Any]:
+    """增减某个用户的积分（唯一写入口）。
+
+    入参：user_id（必填，数字 QQ 号）、delta（必填，整数，可负）、
+    source（哪个插件 / 功能加的，写日志用）、note（说明）、
+    allow_negative（默认 false：扣分不允许把余额扣成负数，余额不足整笔不生效）、
+    play / win（是否同时累计场次 / 胜场）。
+
+    用法::
+
+        await handle.call("points.add", {
+            "user_id": "2002", "delta": -30, "source": "shop", "note": "买道具",
+        })
+    """
+    data = _points_payload(payload)
+    return await _runtime().adjust_points(
+        user_id=_points_user_id(data),
+        delta=_points_int(data, "delta"),
+        source=str(data.get("source") or ""),
+        note=str(data.get("note") or ""),
+        allow_negative=_points_flag(data, "allow_negative"),
+        play=_points_flag(data, "play"),
+        win=_points_flag(data, "win"),
+    )
+
+
+@plugin.capability("points.rank")
+async def _capability_points_rank(payload: Any) -> dict[str, Any]:
+    """查询积分排行榜：不传 conversation_id 查全局榜，传了就查该会话的本群榜。
+
+    用法::
+
+        await handle.call("points.rank", {"page": 1, "page_size": 10})
+        await handle.call("points.rank", {"conversation_id": "888"})
+    """
+    data = _points_payload(payload)
+    return await _runtime().points_rank(
+        page=_points_int(data, "page", default=1),
+        page_size=_points_int(data, "page_size", default=RANK_PAGE_SIZE),
+        conversation_id=str(data.get("conversation_id") or ""),
+    )
+
+
+@plugin.capability("points.describe")
+async def _capability_points_describe(payload: Any) -> dict[str, Any]:
+    """积分接口自描述：接口名 / 版本 / 能力清单 / 单次上限 / 当前写开关。"""
+    return _runtime().describe_points_api()
 
 
 # ── 关键词 / 意图入口（插件消息处理器；不拦截 AI 回复）────────────
@@ -1043,6 +1339,9 @@ __all__ = [
     "KEYWORDS",
     "MENU_FOOTER",
     "MinigamePlugin",
+    "POINTS_API_NAME",
+    "POINTS_API_VERSION",
+    "POINTS_RANK_MAX_PAGE_SIZE",
     "RANK_PAGE_SIZE",
     "TOOL_PREFIX",
     "create_database",
