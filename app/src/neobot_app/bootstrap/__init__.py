@@ -164,6 +164,33 @@ def plan_maintenance_run(
 _MAINTENANCE_RETRY_STATUSES = frozenset({"failed", "running"})
 
 
+def _web_search_config_dict(config: Any) -> dict[str, Any]:
+    """把 `[web_search]` 段转成 WebSearchExecutor 需要的 dict。
+
+    此前两处调用点都硬编码 `{}`，导致 `[web_search]` 段是**死配置**（fix(9) F5）：
+    引擎顺序、浏览器兜底、预算都改不动。这里按实测默认值补全：
+    duckduckgo 作为最后兜底给 15s（部署实测它慢），浏览器通道给 8s（实测单次约 1s）。
+    """
+    section = getattr(config, "web_search", None)
+    if section is None:
+        return {}
+    engines = getattr(section, "engines", None)
+    result: dict[str, Any] = {
+        "engines": list(engines) if engines else ["bing", "duckduckgo"],
+        "max_rounds": int(getattr(section, "max_search_rounds", None) or 5),
+        "preview_pages_limit": int(getattr(section, "preview_pages_limit", None) or 30),
+        "variant_result_limit": int(getattr(section, "variant_result_limit", None) or 6),
+        "browser_fallback": bool(getattr(section, "browser_fallback", True)),
+        "browser_timeout_seconds": float(
+            getattr(section, "browser_timeout_seconds", None) or 8.0
+        ),
+    }
+    budgets = getattr(section, "engine_timeout_seconds", None)
+    if isinstance(budgets, dict) and budgets:
+        result["engine_budgets"] = {str(k): float(v) for k, v in budgets.items()}
+    return result
+
+
 def _register_billing_hot_reload_rule() -> None:
     """登记 ``billing`` 段为「运行期生效」（spec(4) Q13 / R4）。
 
@@ -1062,7 +1089,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         data_dir=DATA_DIR,
         source_roots=source_roots,
         log_file=log_file_path,
-        web_search_config={},
+        web_search_config=_web_search_config_dict(config),
         vision_provider=vision_provider,
     )
     if self_heal_manager is not None:
@@ -1078,7 +1105,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             source_roots=source_roots,
             log_file=log_file_path,
             vision_provider=vision_provider,
-            web_search_config={},
+            web_search_config=_web_search_config_dict(config),
             prompt_store=prompt_store,
         )
 

@@ -95,13 +95,33 @@ class SearchSession:
 
     _DEFAULT_MODES = ("encyclopedia", "community")
 
+    @staticmethod
+    def _build_browser_channel(timeout_seconds: float):
+        """按预算构造浏览器通道（进程级单例；不可用时通道内自行降级）。"""
+        from neobot_app.web_search.browser_channel import get_browser_channel
+
+        return get_browser_channel(timeout_seconds=timeout_seconds)
+
     def __init__(
         self,
         engines: Optional[list[str]] = None,
         max_rounds: int = 5,
         read_timeout: float = 30.0,
+        *,
+        browser_fallback: bool = True,
+        browser_timeout_seconds: float = 8.0,
+        engine_budgets: Optional[dict[str, float]] = None,
     ) -> None:
-        self._manager = SearchManager(engines=engines)
+        budgets = dict(engine_budgets or {})
+        budgets.setdefault("duckduckgo", 15.0)
+        self._manager = SearchManager(
+            engines=engines,
+            browser_fallback=browser_fallback,
+            engine_budgets=budgets,
+            browser_channel=self._build_browser_channel(browser_timeout_seconds)
+            if browser_fallback
+            else None,
+        )
         self._max_rounds = max_rounds
         self._read_timeout = read_timeout
         self._rounds: list[SearchRound] = []
