@@ -296,7 +296,8 @@ async def test_readiness_probe_does_not_report_connected_after_abandoned_stop() 
     release = threading.Event()
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}/onebot"):
+        websocket = await _connect_when_ready(port)
+        async with websocket:
             await asyncio.sleep(0.2)
             assert adapter.connected is True
         await asyncio.sleep(0.3)
