@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from typing import Optional
+from typing import Any, Optional
 
 from neobot_app.web_search.engine import BaseSearchEngine, get_engine
 from neobot_app.web_search.models import SearchResponse
@@ -38,6 +38,10 @@ class SearchManager:
         min_delay: float = 1.0,
         max_retries: int = 1,
         default_num_results: int = 10,
+        *,
+        browser_fallback: bool = True,
+        engine_budgets: Optional[dict[str, float]] = None,
+        browser_channel: Any = None,
     ) -> None:
         """
         Args:
@@ -48,13 +52,26 @@ class SearchManager:
                 查询各重试 3 次**自愈 0/21**，重试只会浪费时间并加剧风控；
                 主力必须放在"换通道/换引擎"（见 fix(9) 的 D2/D3）。
             default_num_results: 每次搜索的默认返回结果数。
+            browser_fallback: 两个 HTTP 引擎都失败时，是否再走浏览器脚本化通道
+                （fix(9) 附录 B v2 §2：内容类失败是身份/缓存问题，换浏览器才有效）。
+            engine_budgets: 每级的时间预算（秒）。默认 duckduckgo=15s（部署实测它慢，
+                因此给固定上限而不是无限等）。
+            browser_channel: 注入用（测试）；默认用进程级单例。
         """
         if engines is None:
             engines = ["bing", "duckduckgo"]
-        self._engine_names = engines
+        names = [str(name) for name in engines]
+        # DuckDuckGo 是"最后兜底"（fix(9) v2 §3）：它排在浏览器通道之后，
+        # 而不是在主循环里先试一遍。即使调用方把它写在 engines 列表里，
+        # 也统一挪到最后一级，避免"先付一次慢请求再走浏览器"。
+        self._degraded_engines = [name for name in names if name == "duckduckgo"]
+        self._engine_names = [name for name in names if name != "duckduckgo"] or list(names)
         self._min_delay = min_delay
         self._max_retries = max_retries
         self._default_num_results = default_num_results
+        self._browser_fallback = bool(browser_fallback)
+        self._engine_budgets = dict(engine_budgets or {})
+        self._browser_channel = browser_channel
 
         self._engines: dict[str, BaseSearchEngine] = {}
         self._last_request: dict[str, float] = defaultdict(float)
@@ -125,6 +142,11 @@ class SearchManager:
                     resp.attempts = attempts
                     resp.degraded = degraded or resp.degraded
                     return resp
+                if (getattr(resp, "signals", None) or {}).get("empty"):
+                    # 页面明说"没有结果"：不是故障，直接交回上层，不要重试。
+                    resp.attempts = attempts
+                    resp.degraded = True
+                    return resp
                 # 严格语义：有结果但判失败(error 非空) 也会走到这里 → 必须回退/重试，
                 # 不能因为 results 非空就当成功（fix(9) 回退条件修正）。
                 last_error = resp.error or "引擎返回空结果"
@@ -158,17 +180,85 @@ class SearchManager:
         errors: list[str] = []
         attempts = 0
         degraded = False
-        for name in self._engine_names:
-            resp = await self.search(query, num_results, engine=name)
+        stages: list[dict[str, Any]] = []
+
+        async def _try(name: str, coro_factory: Any) -> SearchResponse | None:
+            """跑一级：成功返回响应；空结果（页面明说没结果）直接收工；失败记 stages。"""
+            nonlocal attempts, degraded
+            budget = self._engine_budgets.get(name)
+            started = time.monotonic()
+            try:
+                if budget is None:
+                    resp = await coro_factory()
+                else:
+                    resp = await asyncio.wait_for(coro_factory(), timeout=budget)
+            except asyncio.TimeoutError:
+                degraded = True
+                attempts += 1
+                stages.append({"stage": name, "kind": "network", "reason": f"超过预算 {budget:g}s"})
+                errors.append(f"{name}: 超过预算 {budget:g}s")
+                return None
             attempts += max(1, int(getattr(resp, "attempts", 1) or 1))
+            kind = (resp.signals or {}).get("failure")
+            stages.append(
+                {
+                    "stage": name,
+                    "kind": kind or ("ok" if resp.success else "unknown"),
+                    "ms": round((time.monotonic() - started) * 1000),
+                    "results": len(resp.results),
+                }
+            )
             if resp.success:
                 resp.attempts = attempts
                 resp.degraded = degraded or resp.degraded
+                resp.signals = {**(resp.signals or {}), "stages": stages}
                 return resp
-            # 不再用 if resp.error 过滤：判失败的响应可能 results 非空而 error 恰好为空，
-            # 旧实现会把这种引擎静默跳过，最后只报「所有引擎均无结果」。
+            if (resp.signals or {}).get("empty"):
+                # 页面明说"没有结果"：不是故障，继续回退只是浪费（v2 §1）。
+                attempts_total = attempts
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    engine=resp.engine,
+                    total_estimated=0,
+                    error=None,
+                    search_time_ms=sum(s.get("ms", 0) for s in stages),
+                    degraded=True,
+                    attempts=max(1, attempts_total),
+                    signals={**(resp.signals or {}), "stages": stages, "empty": True},
+                )
             errors.append(f"{name}: {resp.error or '结果为空/未通过校验'}")
             degraded = True
+            return None
+
+        for name in self._engine_names:
+            done = await _try(name, lambda n=name: self.search(query, num_results, engine=n))
+            if done is not None:
+                return done
+
+        # ② 浏览器脚本化通道：内容类失败的真正补救手段（换身份而非换站点）。
+        if self._browser_fallback:
+            channel = self._browser_channel
+            if channel is None:
+                from neobot_app.web_search.browser_channel import get_browser_channel
+
+                channel = get_browser_channel()
+            try:
+                if channel.available():
+                    done = await _try("browser", lambda: channel.search(query, num_results))
+                    if done is not None:
+                        return done
+                else:
+                    stages.append({"stage": "browser", "kind": "unavailable", "reason": "未安装 Chromium"})
+            except Exception as exc:  # 本级失败不得让整次搜索抛错
+                logger.warning("浏览器检索通道异常，跳过本级: %s", exc)
+                stages.append({"stage": "browser", "kind": "error", "reason": str(exc)[:120]})
+
+        # ③ DuckDuckGo：最后兜底，带固定预算（部署实测很慢）。
+        for name in self._degraded_engines:
+            done = await _try(name, lambda n=name: self.search(query, num_results, engine=n))
+            if done is not None:
+                return done
 
         return SearchResponse(
             query=query,
@@ -177,6 +267,7 @@ class SearchManager:
             error="; ".join(errors) if errors else "所有引擎均无结果",
             degraded=True,
             attempts=max(1, attempts),
+            signals={"stages": stages},
         )
 
     async def search_all(

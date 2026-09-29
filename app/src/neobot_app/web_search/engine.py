@@ -26,7 +26,11 @@ from bs4 import BeautifulSoup
 
 from neobot_app.web_search.models import SearchResponse, SearchResult
 from neobot_app.web_search.urls import host_of, normalize_for_dedup, normalize_result_url
-from neobot_app.web_search.validate import validate_results
+from neobot_app.web_search.validate import (
+    FailureKind,
+    classify_failure,
+    validate_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +94,18 @@ class BingSearchEngine(BaseSearchEngine):
         setlang: str = "zh-Hans",
         warmup: bool = True,
         coverage_threshold: float | None = None,
+        structural_retry: bool = True,
+        structural_retry_delay: float = 0.5,
     ) -> None:
         self.timeout = timeout
         self.market = market
         self.setlang = setlang
         self.warmup = warmup
         self.coverage_threshold = coverage_threshold
+        #: 结构类失败（半包 HTML / 未解码压缩 / li.b_algo=0）才值得同通道重试一次；
+        #: 内容类失败实测重试自愈 0/21，重试只会浪费时间并加深风控（fix(9) D2/D3）。
+        self.structural_retry = bool(structural_retry)
+        self.structural_retry_delay = max(0.0, float(structural_retry_delay))
         self._client: httpx.AsyncClient | None = None
         self._warmed = False
 
@@ -162,11 +172,35 @@ class BingSearchEngine(BaseSearchEngine):
     # ── 搜索 ──────────────────────────────────────────────────────
 
     async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+        """会话化抓取 + 判据；**仅结构类失败**允许同通道重试一次。"""
         t0 = time.perf_counter()
         attempts = 0
+        last: SearchResponse | None = None
+        max_attempts = 2 if self.structural_retry else 1
+        for index in range(max_attempts):
+            attempts += 1
+            last = await self._attempt(query, num_results, t0, attempts)
+            if last.success:
+                return last
+            kind = (last.signals.get("failure") if isinstance(last.signals, dict) else None) or ""
+            if index + 1 >= max_attempts or kind != FailureKind.STRUCTURE.value:
+                break
+            logger.debug(
+                "Bing 结构类失败，同通道重试一次（attempt=%d）: %s", attempts, last.error
+            )
+            if self.structural_retry_delay:
+                import asyncio
+
+                await asyncio.sleep(self.structural_retry_delay)
+        assert last is not None
+        return last
+
+    async def _attempt(
+        self, query: str, num_results: int, t0: float, attempts: int
+    ) -> SearchResponse:
+        """单次抓取 + 判据（失败时带上分级结论，供上层决定换什么）。"""
         try:
             client = await self._get_client()
-            attempts += 1
             resp = await client.get(
                 self.base_url,
                 params=self._params(query),
@@ -175,19 +209,37 @@ class BingSearchEngine(BaseSearchEngine):
             resp.raise_for_status()
             html = resp.text or ""
             results = self._parse(html, num_results, base=str(resp.url))
-            report = validate_results(
+            failure = classify_failure(
                 query,
                 results,
                 html=html,
                 channel="html",
                 coverage_threshold=self.coverage_threshold,
             )
-            if not report.valid:
-                return self._failure(
-                    query, f"结果校验失败({report.reason})", t0, attempts, report.signals
+            if failure.kind is FailureKind.EMPTY:
+                # 页面明说"没有结果"：不是故障，不要触发回退（fix(9) v2 §1）。
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    engine=self.name,
+                    search_time_ms=(time.perf_counter() - t0) * 1000,
+                    degraded=True,
+                    attempts=attempts,
+                    signals={
+                        "validation": failure.signals,
+                        "failure": failure.kind.value,
+                        "empty": True,
+                    },
                 )
-            if not results:
-                return self._failure(query, "解析后 0 结果", t0, attempts, report.signals)
+            if not failure.ok:
+                return self._failure(
+                    query,
+                    f"结果校验失败({failure.reason})",
+                    t0,
+                    attempts,
+                    failure.signals,
+                    failure_kind=failure.kind,
+                )
             return SearchResponse(
                 query=query,
                 results=results,
@@ -195,11 +247,16 @@ class BingSearchEngine(BaseSearchEngine):
                 total_estimated=len(results),
                 search_time_ms=(time.perf_counter() - t0) * 1000,
                 attempts=attempts,
-                signals={"validation": report.signals},
+                signals={"validation": failure.signals},
             )
         except Exception as e:
             return self._failure(
-                query, f"{type(e).__name__}: {e}", t0, attempts, None
+                query,
+                f"{type(e).__name__}: {e}",
+                t0,
+                attempts,
+                None,
+                failure_kind=FailureKind.NETWORK,
             )
 
     def _failure(
@@ -209,8 +266,15 @@ class BingSearchEngine(BaseSearchEngine):
         t0: float,
         attempts: int,
         signals: dict[str, Any] | None,
+        *,
+        failure_kind: FailureKind | None = None,
     ) -> SearchResponse:
         """判失败一律不带结果：宁可丢，也不把错结果交给模型。"""
+        payload: dict[str, Any] = {}
+        if signals:
+            payload["validation"] = signals
+        if failure_kind is not None:
+            payload["failure"] = failure_kind.value
         return SearchResponse(
             query=query,
             results=[],
@@ -219,7 +283,7 @@ class BingSearchEngine(BaseSearchEngine):
             search_time_ms=(time.perf_counter() - t0) * 1000,
             degraded=True,
             attempts=max(1, attempts),
-            signals={"validation": signals} if signals else {},
+            signals=payload,
         )
 
     def _parse(self, html: str, limit: int, base: str = "") -> list[SearchResult]:

@@ -109,21 +109,54 @@ async def test_degraded_page_is_rejected_not_returned(monkeypatch: pytest.Monkey
     assert resp.validation.get("codes"), "校验判据明细应留痕到 signals.validation"
 
 
-async def test_page_without_algo_results_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """0 结果页：error 非空（旧实现会返回 error=None 的"成功"空响应）。"""
+async def test_page_without_algo_results_is_not_a_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """0 结果页：success 必须为 False，且**不得**把空结果当成成功（旧实现是 error=None）。
+
+    fix(9) v2 §1：结构类（拿到页面但 li.b_algo=0）与空结果（页面明说没有结果）要分开。
+    本夹具没有任何结果块、也没有"没有相关结果"文案 → 归结构类：error 非空、results 空。
+    """
     _install_transport(
         monkeypatch,
         _serp_handler("<html><body><ol id='b_results'></ol></body></html>"),
     )
-    engine = BingSearchEngine(warmup=False)
+    engine = BingSearchEngine(warmup=False, structural_retry=False)
     try:
         resp = await engine.search("任意查询", 10)
     finally:
         await engine.aclose()
 
     assert resp.success is False
-    assert resp.error
     assert resp.results == []
+    assert resp.signals.get("failure") == "structure"
+    assert resp.error
+
+    # 结构类失败允许同通道重试一次（默认开启）：同夹具下重试后仍失败 → attempts=2
+    engine2 = BingSearchEngine(warmup=False, structural_retry=True, structural_retry_delay=0.0)
+    try:
+        resp2 = await engine2.search("任意查询", 10)
+    finally:
+        await engine2.aclose()
+    assert resp2.attempts == 2
+
+
+async def test_empty_result_page_is_empty_not_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """页面明说"没有结果" → 空结果语义：不报 error、不触发回退（v2 §1）。"""
+    _install_transport(
+        monkeypatch,
+        _serp_handler(
+            "<html><body><ol id='b_results'><li>没有与此相关的结果</li></ol></body></html>"
+        ),
+    )
+    engine = BingSearchEngine(warmup=False)
+    try:
+        resp = await engine.search("不存在的查询 xyzzy", 10)
+    finally:
+        await engine.aclose()
+
+    assert resp.signals.get("failure") == "empty"
+    assert resp.signals.get("empty") is True
+    assert resp.results == []
+    assert resp.error is None, "空结果不是故障，不应报 error"
 
 
 async def test_accept_encoding_disables_brotli(monkeypatch: pytest.MonkeyPatch) -> None:

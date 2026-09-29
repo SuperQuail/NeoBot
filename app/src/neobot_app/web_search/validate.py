@@ -629,14 +629,20 @@ def classify_failure(
         return FailureClass(FailureKind.NONE, "ok", report.signals)
 
     codes = set(report.codes)
+    # "空结果"必须是**页面明说没有结果**（li.b_no 或「没有与此相关的结果」文案）。
+    # 所有校验失败都会带 no_results code（n=0 时），所以只凭 code 无法区分
+    # "页面说没结果"与"我们什么都没解析到" —— 后者是结构类问题，值得重试一次。
+    page_says_empty = report.valid or (
+        "no_results" in set(report.signals.get("hard_signals") or ())
+    )
     if error:
         # 抓取层失败：页面都没拿到，重试同通道通常无意义（风控/网络）。
         kind, reason = FailureKind.NETWORK, f"抓取失败: {error}"
     elif codes & _NETWORK_CODES:
         kind, reason = FailureKind.NETWORK, report.reason
-    elif "no_results" in codes:
-        # 页面明确表示"没有结果"。注意此时通常还会伴随 structure（li.b_algo=0）：
-        # 空结果页本来就该没有结果块，不能因此判成结构类去重试/回退。
+    elif page_says_empty:
+        # 空结果页通常也会伴随 structure（li.b_algo=0）：本来就该没有结果块，
+        # 不能因此判成结构类去重试/回退。
         kind, reason = FailureKind.EMPTY, report.reason
     elif codes & _STRUCTURE_CODES:
         kind, reason = FailureKind.STRUCTURE, report.reason
