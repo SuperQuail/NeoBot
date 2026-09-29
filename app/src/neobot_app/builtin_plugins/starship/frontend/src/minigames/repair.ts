@@ -1,4 +1,4 @@
-// minigames/repair.ts —— 损管抢修：在全息屏上把反应堆电力接到各个系统（限时解谜）。
+// minigames/repair.ts —— 损管抢修：在全息屏上把太阳核心电力接到各个系统（限时解谜）。
 //
 // 玩法：网格里每格是一段导线，点击旋转；从左侧堆芯（电源）出发，
 // 把电力送到右侧被标记的系统接口。接通全部接口即过关，剩余时间折算分数。
@@ -22,7 +22,7 @@ interface Cell {
 class RepairGame implements MinigameModule {
   readonly id = 'repair';
   readonly name = '损管抢修';
-  readonly description = '反应堆回路被震断，限时把电力接到各个系统。';
+  readonly description = '太阳核心回路被震断，限时把电力接到各个系统。';
   readonly icon = 'wrench';
   readonly mode = 'screen' as const;
 

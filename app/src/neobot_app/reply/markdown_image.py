@@ -1,4 +1,9 @@
-"""Markdown 转图片转换器 —— 优先浏览器渲染，失败时回退到 pillowmd。"""
+"""Markdown 转图片转换器 —— 优先浏览器渲染，失败时回退到 pillowmd。
+
+浏览器渲染的画布按**内容元素（article.markdown-body）自身高度**裁剪：
+直接取 documentElement.scrollHeight 会被当前视口高度托底，短内容也会出成
+「整屏高、下方大片空白」的图（同类缺陷与修法见 runtime/html_card.py 的卡片裁剪）。
+"""
 
 from __future__ import annotations
 
@@ -38,6 +43,7 @@ _MD_HTML_TEMPLATE = """\
 </html>"""
 
 _MD_CSS = """\
+html, body { margin: 0; padding: 0; background: #ffffff; }
 .markdown-body {
   max-width: 800px;
   margin: 0 auto;
@@ -99,6 +105,36 @@ _MD_CSS = """\
 .markdown-body a { color: #0969da; text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
 """
+
+
+#: 内容容器选择器：_MD_HTML_TEMPLATE 固定输出 <article class="markdown-body">
+_CONTENT_SELECTOR = "article.markdown-body"
+#: 量内容高度前先用的「探针视口高度」。
+#:
+#: 不能直接读 document.documentElement.scrollHeight：按 CSS 语义它**不会小于视口高度**
+#: （scrollHeight ≥ clientHeight），浏览器窗口是 1280x800 时短内容也会量出 ~800px，
+#: 出图于是变成「上面几行正文 + 下面一大片空白」，且文件体积翻倍
+#: （同类缺陷见 commit a333286「卡片截图裁剪到元素盒」）。
+#: 先把视口压到一个小高度再量内容元素自身，就绕开了这层托底。
+_PROBE_VIEWPORT_HEIGHT = 320
+#: 输出画布高度下限（保证极短内容也有正常留白）
+_MIN_CANVAS_HEIGHT = 200
+#: 输出画布高度上限（防止异常内容造出超大图）
+_MAX_CANVAS_HEIGHT = 8192
+#: 视口宽度相对内容宽度的余量（沿用既有 40px 语义）
+_VIEWPORT_WIDTH_PADDING = 40
+#: 量「内容元素自身高度」的 JS（量不到返回 0，交给整页口径兜底）
+_ELEMENT_HEIGHT_JS = (
+    "const el = document.querySelector('" + _CONTENT_SELECTOR + "');"
+    "if (el) { const rect = el.getBoundingClientRect();"
+    " return Math.ceil(rect.bottom + window.scrollY); }"
+    "return 0;"
+)
+#: 量「整页高度」的 JS（仅在探针视口下使用才是内容高度）
+_PAGE_HEIGHT_JS = (
+    "return Math.max(document.documentElement.scrollHeight,"
+    " document.body ? document.body.scrollHeight : 0, 0);"
+)
 
 
 class MarkdownImageError(Exception):
@@ -206,25 +242,17 @@ class MarkdownImageConverter:
             await browser.navigate(f"file:///{html_path.as_posix()}")
             await asyncio.sleep(0.3)
 
-            # 获取页面内容高度，设置 viewport 以截取完整内容
-            js_result = await browser.execute_js(
-                "return Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, 200)"
+            width = self._width + _VIEWPORT_WIDTH_PADDING
+            # 先按目标宽度 + 探针高度布局，再量**内容元素自身**的高度。
+            # 直接量 documentElement.scrollHeight 会被窗口高度托底（见探针常量注释），
+            # 短内容也会得到整屏高的画布 → 下方大片空白。
+            await browser.set_viewport(width=width, height=_PROBE_VIEWPORT_HEIGHT)
+            await asyncio.sleep(0.1)
+            height = min(
+                max(await self._measure_content_height(browser), _MIN_CANVAS_HEIGHT),
+                _MAX_CANVAS_HEIGHT,
             )
-            height = 200
-            if isinstance(js_result, dict):
-                raw = js_result.get("result", js_result.get("data", 800))
-                try:
-                    height = int(float(str(raw)))
-                except (ValueError, TypeError):
-                    height = 800
-            else:
-                try:
-                    height = int(float(str(js_result)))
-                except (ValueError, TypeError):
-                    height = 800
-
-            height = min(max(height, 200), 8192)
-            await browser.set_viewport(width=self._width + 40, height=height)
+            await browser.set_viewport(width=width, height=height)
 
             result = await browser.screenshot()
             if not isinstance(result, dict) or not result.get("success"):
@@ -251,6 +279,23 @@ class MarkdownImageConverter:
 
             self._logger.info("Markdown 浏览器渲染完成", path=str(target), height=height)
             return target
+
+    async def _measure_content_height(self, browser: Any) -> int:
+        """量内容容器（article.markdown-body）自身高度，量不到时退回整页高度。
+
+        调用前必须已经把视口压到探针高度：只有视口足够小的时候，整页 scrollHeight
+        才等于内容高度。返回 0 表示两条路径都量不到（调用方用下限兜底）。
+        """
+        for script in (_ELEMENT_HEIGHT_JS, _PAGE_HEIGHT_JS):
+            try:
+                result = await browser.execute_js(script)
+            except Exception as exc:
+                self._logger.debug("量 Markdown 内容高度失败", error=str(exc))
+                continue
+            value = _js_int(result)
+            if value > 0:
+                return value
+        return 0
 
     # ── pillowmd 渲染 ──
 
@@ -338,3 +383,18 @@ class MarkdownImageConverter:
                 pass
         if deleted:
             self._logger.info("Markdown 图片全部清理完成", deleted=deleted)
+
+
+def _js_int(result: Any) -> int:
+    """把 execute_js 的返回值（可能是 {"result": "800"} 或裸值）解析成 int；失败返回 0。"""
+    raw: Any = result
+    if isinstance(result, dict):
+        raw = result.get("result", result.get("data", 0))
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0

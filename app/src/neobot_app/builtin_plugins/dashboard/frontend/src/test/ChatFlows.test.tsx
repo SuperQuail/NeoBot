@@ -1,10 +1,12 @@
-// ChatFlows.test.tsx —— 聊天流页（spec(3)）：display_name、完整提示词（未截断）、历史切换、清空、快速预览
+// ChatFlows.test.tsx —— 聊天流页（spec(3) 建立 / spec(10) 改纯内存）：display_name、
+// 完整提示词（未截断）、逐份 diff 与图片哈希、历史切换、清空、快速预览
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatFlows from '../pages/ChatFlows';
 import { api } from '../api/endpoints';
 import { clearQueries } from '../data/queryCore';
+import { POLL } from '../data/queryKeys';
 
 vi.mock('../api/endpoints.js', () => ({
   api: {
@@ -24,6 +26,20 @@ const chatFlowPromptClear = vi.mocked(api.chatFlowPromptClear);
 
 /** 单条消息超过内存快照的 4000 字符上限，用于断言完整视图不截断 */
 const LONG_TEXT = 'y'.repeat(4500);
+
+/** 假定时器下把已排队的微任务链冲干净（组合请求是 await 两次） */
+async function flushPromises(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+}
+
+/** 假定时器下等待 React 把「取数 → 状态更新 → effect（含新 key 的取数）」跑完 */
+async function settle(rounds = 4): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await act(async () => {
+      await flushPromises();
+    });
+  }
+}
 
 const LIST = {
   ok: true,
@@ -88,6 +104,8 @@ const PROMPTS = {
       model: 'deepseek-chat',
       total_messages: 2,
       bytes: 2048,
+      patch_bytes: 0,
+      images: 0,
       recorded_at: '2026-09-12T10:00:00',
     },
     {
@@ -97,10 +115,14 @@ const PROMPTS = {
       model: 'deepseek-chat',
       total_messages: 3,
       bytes: 4096,
+      patch_bytes: 512,
+      images: 1,
       recorded_at: '2026-09-12T10:05:00',
     },
   ],
   limit: 100,
+  storage_bytes: 6144,
+  image_refs: 1,
   seq: 8,
   entry: {
     recorded_at: '2026-09-12T10:05:00',
@@ -181,6 +203,55 @@ describe('ChatFlows', () => {
     expect(screen.getByRole('button', { name: /#8/ })).toHaveAttribute('aria-current', 'true');
   });
 
+  it('每 5 秒自动跟随最新一份：一轮结束后换成该轮最后一份提示词（无需手动刷新）', async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ChatFlows />);
+      await settle();
+      expect(screen.getByText('完整的系统提示词')).toBeInTheDocument();
+
+      // 后端又记了一份（seq=9）：一轮对话跑完（回复已发出 / 被取消）后的那份提示词
+      chatFlowPromptLatest.mockResolvedValue({
+        ...PROMPTS,
+        seq: 9,
+        items: [...PROMPTS.items, { ...PROMPTS.items[1], seq: 9, recorded_at: '2026-09-12T10:09:00' }],
+        entry: {
+          ...PROMPTS.entry,
+          iteration: 3,
+          recorded_at: '2026-09-12T10:09:00',
+          messages: [{ role: 'system', content: '那一轮结束后的完整提示词' }],
+          response: { content: '这一轮的回复' },
+        },
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL.chatFlowPrompts + 100);
+      });
+      await settle();
+
+      expect(screen.getByText('那一轮结束后的完整提示词')).toBeInTheDocument();
+      expect(screen.queryByText('完整的系统提示词')).not.toBeInTheDocument();
+      expect(chatFlowPromptLatest.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('手动翻到更早的一份时停在那一份，可一键回到最新', async () => {
+    const user = userEvent.setup();
+    render(<ChatFlows />);
+    await screen.findByText('完整的系统提示词');
+
+    await user.click(screen.getByRole('button', { name: /#7/ }));
+    await screen.findByText('更早一份的完整提示词');
+    // 不再顶着「实时」标记，而是给出回到最新的入口
+    expect(screen.queryByText(/已跟随最新一份/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /回到最新一份/ }));
+    await waitFor(() => expect(screen.getByText('完整的系统提示词')).toBeInTheDocument());
+    expect(screen.getByText(/已跟随最新一份（#8）/)).toBeInTheDocument();
+  });
+
   it('切换到历史里的其它份时才请求全量接口', async () => {
     const user = userEvent.setup();
     render(<ChatFlows />);
@@ -222,13 +293,23 @@ describe('ChatFlows', () => {
     await waitFor(() => expect(chatFlowPromptClear).toHaveBeenCalledTimes(1));
   });
 
-  it('文案已改写：完整提示词写入本地磁盘并提示隐私', async () => {
+  it('文案说明纯内存 + 逐份 diff + 图片哈希，并保留隐私提示', async () => {
     render(<ChatFlows />);
     await screen.findByText('完整的系统提示词');
 
-    expect(screen.getByText(/完整提示词会写入本地磁盘/)).toBeInTheDocument();
-    expect(screen.getByText(/chat_flows\/prompts\//)).toBeInTheDocument();
+    expect(screen.getByText(/完整提示词也只存在内存里/)).toBeInTheDocument();
+    expect(screen.getByText(/逐份只存相对上一份的 diff/)).toBeInTheDocument();
+    expect(screen.getByText(/图片只保留 sha256 哈希/)).toBeInTheDocument();
     expect(screen.getByText(/属隐私数据/)).toBeInTheDocument();
+  });
+
+  it('历史列表展示完整篇幅与逐份驻留成本', async () => {
+    render(<ChatFlows />);
+    await screen.findByText('完整的系统提示词');
+
+    expect(screen.getByText(/常驻 6\.0 KB/)).toBeInTheDocument();
+    expect(screen.getByText(/驻留 512 B/)).toBeInTheDocument();
+    expect(screen.getByText(/图片 1/)).toBeInTheDocument();
   });
 
   it('切换聊天流后按新 key 拉取详情与提示词历史', async () => {

@@ -50,6 +50,11 @@ chengyu_step_timeout_seconds = 60
 fortune_include_bad_luck = false
 # 战绩流水（mg_record）保留天数。
 record_keep_days = 30
+# 是否允许其它插件通过能力接口（points.add）增减积分；
+# 关闭后积分只由本插件的玩法产生，points.get / points.rank 等读接口不受影响。
+points_allow_external_write = true
+# 其它插件单次增减积分的绝对值上限，超过直接拒绝（防呆，不代表余额上限）。
+points_max_delta = 100000
 # 卡片主题模式：random = 每张卡片按该玩法的候选主题池随机；fixed = 固定用下面的 theme。
 theme_mode = "random"
 # theme_mode = fixed 时使用的主题名（minecraft / bottle / fortune / chengyu / checkin / game / default）；

@@ -5,6 +5,7 @@
 export class TextCapture {
   readonly element: HTMLInputElement;
   private active = false;
+  private composing = false;
   value = '';
   private onCommit: ((value: string) => void) | null = null;
   private onCancel: (() => void) | null = null;
@@ -25,23 +26,34 @@ export class TextCapture {
       this.value = input.value;
       this.onType?.(this.value);
     });
+    input.addEventListener('compositionstart', () => { this.composing = true; });
+    input.addEventListener('compositionend', () => {
+      this.composing = false;
+      this.value = input.value;
+      this.onType?.(this.value);
+    });
     input.addEventListener('keydown', (event) => {
+      if (!this.active) return;
       event.stopPropagation();
+      if (this.composing || event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Enter') {
         event.preventDefault();
-        const value = this.value;
+        const value = input.value;
+        const commit = this.onCommit;
         this.close();
-        this.onCommit?.(value);
+        commit?.(value);
       } else if (event.key === 'Escape') {
         event.preventDefault();
+        const cancel = this.onCancel;
         this.close();
-        this.onCancel?.();
+        cancel?.();
       }
     });
     input.addEventListener('blur', () => {
       if (this.active) {
-        this.active = false;
-        this.onCancel?.();
+        const cancel = this.onCancel;
+        this.close();
+        cancel?.();
       }
     });
   }
@@ -61,13 +73,20 @@ export class TextCapture {
     this.onCommit = options.onCommit;
     this.onCancel = options.onCancel ?? null;
     this.onType = options.onType ?? null;
+    this.composing = false;
     this.active = true;
     this.element.focus({ preventScroll: true });
     this.element.setSelectionRange(this.value.length, this.value.length);
   }
 
+  dispose(): void {
+    this.close();
+    this.element.remove();
+  }
+
   close(): void {
     this.active = false;
+    this.composing = false;
     this.onCommit = null;
     this.onCancel = null;
     this.onType = null;

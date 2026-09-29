@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_chat.schema.types import ChatChunk, Message, ToolDefinition
+from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 from neobot_chat.providers.vision import raise_if_image_unsupported
 
 _RETRYABLE_HTTP_STATUSES = frozenset({500, 502, 503, 504})
@@ -45,6 +46,86 @@ def normalize_anthropic_stop_reason(stop_reason: object) -> str | None:
     if value == "max_tokens":
         return "length"
     return value
+
+
+def tool_arguments_text(raw: object) -> str:
+    """把工具参数归一化成「JSON 对象文本」的出口。
+
+    空串/空白串表示「本次调用没有参数」：流式 provider 的无参工具会停在空累加器上
+    （没有 input_json_delta），旧版本持久化的历史里也可能留着空串。统一归一化为
+    {} 文本，否则模型/服务端会收到非法 JSON。其余字符串原样返回，非字符串值序列化。
+    """
+    if raw is None:
+        return "{}"
+    if isinstance(raw, str):
+        return raw if raw.strip() else "{}"
+    try:
+        return json.dumps(raw)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def tool_arguments_object(
+    raw: object,
+    *,
+    on_invalid: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
+    """把出站历史里的工具参数还原成 Anthropic 需要的对象，**绝不抛异常**。
+
+    区分三种情况，避免「一次坏数据让整段会话永久失败」：
+
+    - 空串/空白串 = 无参数，返回 {}，不算错误、不回调；
+    - 非法 JSON 或非对象 JSON = 损坏的历史/半包，退化为 {} 并调用
+      on_invalid(raw, reason) 上报，调用方可以接 logger.warning 留痕；
+    - 合法对象直接返回（不改写）。
+
+    parse_tool_args 保持严格语义，供需要感知解析失败的场景使用。
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str):
+        if on_invalid is not None:
+            on_invalid(repr(raw), f"arguments 不是字符串: {type(raw).__name__}")
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        if on_invalid is not None:
+            on_invalid(text, f"JSON 解析失败: {exc}")
+        return {}
+    if not isinstance(parsed, dict):
+        if on_invalid is not None:
+            on_invalid(text, f"参数不是 JSON 对象: {type(parsed).__name__}")
+        return {}
+    return parsed
+
+
+def normalized_tool_calls(tool_calls: list[ToolCall]) -> list[ToolCall]:
+    """返回把空/空白 arguments 归一化为 {} 的 tool_calls。
+
+    只在确实需要修复时才复制，绝不改写调用方持有的历史消息对象；
+    已是合法非空 arguments 的条目按原对象返回。
+    """
+    copied: list[ToolCall] | None = None
+    for index, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if not isinstance(function, dict):
+            continue
+        arguments = function.get("arguments")
+        text = tool_arguments_text(arguments)
+        if text == arguments:
+            continue
+        if copied is None:
+            copied = list(tool_calls)
+        copied[index] = cast(ToolCall, {**call, "function": {**function, "arguments": text}})
+    return copied if copied is not None else tool_calls
 
 
 class Provider(Protocol):

@@ -48,8 +48,9 @@ def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
     """构建完整提示词历史记录器(每次模型调用的完整上下文)。
 
     由 ``[chat].chat_flow_prompt_history_enabled``(默认 True)控制,与 ``debug.enabled`` 解耦;
-    目录为 ``<DATA_DIR>/chat_flows/prompts/``(原 ``debug/context/`` 的历史不迁移、不消费),
-    全局保留份数取 ``chat_flow_prompt_history_limit``(默认 100)。
+    **纯内存 + 逐份 diff**(features/spec(10)):不再落盘,全局保留份数取
+    ``chat_flow_prompt_history_limit``(默认 100)。旧落盘目录
+    ``<DATA_DIR>/chat_flows/prompts/`` 只作为 legacy 传入,用于提示与清空,不再读取。
     """
     chat_cfg = getattr(config, "chat", None)
     enabled = getattr(chat_cfg, "chat_flow_prompt_history_enabled", True)
@@ -74,14 +75,12 @@ def build_context_recorder(*, config: BotConfigSchema, logger: Any) -> Any:
                 f"{DEFAULT_PROMPT_HISTORY_LIMIT}"
             )
         limit = DEFAULT_PROMPT_HISTORY_LIMIT
-    latest_in_memory = getattr(chat_cfg, "chat_flow_latest_in_memory", False)
     from neobot_app.observability.context_recorder import ContextRecorder
 
     return ContextRecorder(
-        DATA_DIR / "chat_flows" / "prompts",
-        max_files=limit,
+        limit=limit,
         logger=logger,
-        latest_in_memory=bool(latest_in_memory),
+        legacy_dir=DATA_DIR / "chat_flows" / "prompts",
     )
 
 

@@ -2,6 +2,8 @@
 // 设计：绘制即命中测试 —— 画按钮时把矩形登记进本帧命中表，点击时直接按 id 判定，
 // 不需要维护两套布局。
 
+import { drawProtossCommand, drawProtossHeader } from './protoss-command';
+
 export interface Rect {
   x: number;
   y: number;
@@ -31,8 +33,8 @@ export function makeTheme(accent: string): Theme {
     ok: '#4fe0a0',
     warn: '#ffc861',
     error: '#ff7b7b',
-    panel: 'rgba(10, 26, 38, 0.72)',
-    panelEdge: hexWithAlpha(accent, 0.55),
+    panel: 'rgba(10, 16, 32, 0.86)',
+    panelEdge: 'rgba(195, 161, 86, 0.65)',
     grid: 'rgba(80, 180, 220, 0.08)',
   };
 }
@@ -123,10 +125,7 @@ export class UiSurface {
     for (let y = 0; y < this.height; y += 4) ctx.fillRect(0, y, this.width, 1);
 
     // 标题栏
-    ctx.fillStyle = hexWithAlpha(this.theme.accent, 0.14);
-    ctx.fillRect(0, 0, this.width, 64);
-    ctx.fillStyle = this.theme.accent;
-    ctx.fillRect(0, 62, this.width, 2);
+    drawProtossHeader(ctx, { x: 0, y: 0, w: this.width, h: 64 });
     ctx.font = 'bold 30px ' + FONT_STACK;
     ctx.fillStyle = this.theme.text;
     ctx.textAlign = 'left';
@@ -270,17 +269,10 @@ export class UiSurface {
     const hovered = this.hoverRect(id, rect);
     const tone = options.tone || this.theme.accent;
     ctx.save();
-    ctx.fillStyle = options.disabled
-      ? 'rgba(60,70,80,0.35)'
-      : hovered
-        ? hexWithAlpha(tone, 0.32)
-        : hexWithAlpha(tone, 0.12);
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.strokeStyle = options.disabled ? 'rgba(120,130,140,0.4)' : tone;
-    ctx.lineWidth = hovered ? 2.5 : 1.5;
-    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+    drawProtossCommand(ctx, rect, { hovered, pressed: hovered && this.cursor.down,
+      disabled: options.disabled, danger: tone === this.theme.error || tone === this.theme.warn });
     ctx.font = 'bold ' + (options.size ?? 18) + 'px ' + FONT_STACK;
-    ctx.fillStyle = options.disabled ? 'rgba(180,190,200,0.5)' : this.theme.text;
+    ctx.fillStyle = options.disabled ? '#a8b7c4' : this.theme.text;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, rect.w - 12);

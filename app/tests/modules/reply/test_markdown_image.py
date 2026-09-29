@@ -1,4 +1,4 @@
-"""MarkdownImageConverter 测试：渲染超时、浏览器失败降级、pillowmd 回退路径。"""
+"""MarkdownImageConverter 测试：渲染超时、浏览器失败降级、pillowmd 回退路径、画布裁剪。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from neobot_app.reply.markdown_image import MarkdownImageConverter, MarkdownImageError
 
@@ -111,3 +112,113 @@ def test_cleanup_expired_removes_only_old_files(tmp_path):
 
     assert not old.exists()
     assert new.exists()
+
+# ── 画布裁剪：不得把浏览器视口高度当成内容高度（fix(10)） ────────
+
+
+class _FakeBrowser:
+    """最小浏览器替身，复刻真实语义：整页 scrollHeight 不会小于视口高度。
+
+    真实 Chrome 里 document.documentElement.scrollHeight >= clientHeight 是 CSS
+    规范行为，浏览器窗口固定 1280x800，因此「先量整页、再设视口」在短内容上
+    必然得到 ~800px 高的画布（下方全是空白）。这个替身把这条语义显式建模出来，
+    让回归用例不依赖真机浏览器也能复现/锁死该缺陷。
+    """
+
+    def __init__(self, *, content_height: int, window_height: int = 800, broken_element: bool = False) -> None:
+        self._content_height = content_height
+        self._viewport = (1280, window_height)
+        self._broken_element = broken_element
+        self.viewports: list[tuple[int, int]] = []
+        self.scripts: list[str] = []
+
+    async def navigate(self, url: str) -> dict:
+        return {"success": True, "url": url}
+
+    async def execute_js(self, script: str) -> dict:
+        self.scripts.append(script)
+        if "getBoundingClientRect" in script:
+            if self._broken_element:
+                return {"success": True, "result": "0"}
+            return {"success": True, "result": str(self._content_height)}
+        # 旧的「整页高度」口径：被视口高度托底
+        return {"success": True, "result": str(max(self._content_height, self._viewport[1]))}
+
+    async def set_viewport(
+        self, width: int, height: int, device_scale_factor: float = 1.0
+    ) -> dict:
+        self._viewport = (width, height)
+        self.viewports.append((width, height))
+        return {"success": True}
+
+    async def screenshot(self) -> dict:
+        width, height = self._viewport
+        path = self._shot_dir / f"shot_{len(self.viewports)}.jpg"
+        Image.new("RGB", (width, height), "white").save(str(path), "JPEG")
+        return {"success": True, "path": str(path)}
+
+
+def _converter_with_browser(tmp_path: Path, browser: _FakeBrowser) -> MarkdownImageConverter:
+    browser._shot_dir = tmp_path / "shots"
+    browser._shot_dir.mkdir(parents=True, exist_ok=True)
+    return MarkdownImageConverter(output_dir=tmp_path, browser_instance=browser)
+
+
+async def test_short_markdown_canvas_is_not_window_height(tmp_path: Path) -> None:
+    """短内容：画布只能等于内容高度（下限 200），绝不能是浏览器窗口高度 800。"""
+    browser = _FakeBrowser(content_height=140)
+    converter = _converter_with_browser(tmp_path, browser)
+
+    path = await converter.convert("# 标题\n\n一行正文。")
+
+    with Image.open(path) as image:
+        assert image.size == (840, 200)
+    # 截图前才会设成最终画布高度；测量阶段用的是探针高度
+    assert browser.viewports[-1] == (840, 200)
+    assert any("getBoundingClientRect" in script for script in browser.scripts)
+
+
+async def test_medium_markdown_canvas_hugs_content(tmp_path: Path) -> None:
+    """中等内容（小于窗口高度）：画布等于内容高度，而不是 800。"""
+    browser = _FakeBrowser(content_height=560)
+    converter = _converter_with_browser(tmp_path, browser)
+
+    path = await converter.convert("# 标题\n\n" + "\n".join(f"- {i}" for i in range(20)))
+
+    with Image.open(path) as image:
+        assert image.size == (840, 560)
+    assert browser.viewports[-1] == (840, 560)
+
+
+async def test_tall_markdown_canvas_follows_content(tmp_path: Path) -> None:
+    """超长内容：画布跟随内容高度（上限 8192），不被探针高度截断。"""
+    browser = _FakeBrowser(content_height=1500)
+    converter = _converter_with_browser(tmp_path, browser)
+
+    path = await converter.convert("# 标题\n\n" + "\n".join(f"- {i}" for i in range(200)))
+
+    with Image.open(path) as image:
+        assert image.size == (840, 1500)
+
+
+async def test_canvas_height_is_clamped_to_max(tmp_path: Path) -> None:
+    """异常超长内容钳到上限，避免造出超大图。"""
+    browser = _FakeBrowser(content_height=200_000)
+    converter = _converter_with_browser(tmp_path, browser)
+
+    path = await converter.convert("# 标题")
+
+    with Image.open(path) as image:
+        assert image.size == (840, 8192)
+
+
+async def test_page_height_fallback_used_when_element_missing(tmp_path: Path) -> None:
+    """内容元素量不到时退回整页高度；此时视口已被压到探针高度，结果仍是内容高度。"""
+    browser = _FakeBrowser(content_height=430, broken_element=True)
+    converter = _converter_with_browser(tmp_path, browser)
+
+    path = await converter.convert("# 标题\n\n正文")
+
+    with Image.open(path) as image:
+        assert image.size == (840, 430)
+

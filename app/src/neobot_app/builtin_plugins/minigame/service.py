@@ -179,6 +179,62 @@ class MinigameService:
         )
         return await self.ensure_profile(uid)
 
+    async def apply_points(
+        self,
+        user_id: Any,
+        delta: int,
+        *,
+        allow_negative: bool = False,
+        play: bool = False,
+        win: bool = False,
+    ) -> dict[str, Any]:
+        """原子增减积分（给其它插件用的写入口，见插件能力 points.add）。
+
+        与 add_score 的差别集中在**扣分**：余额不足时必须语义明确，因此
+
+        - delta >= 0：直接加上（等价 add_score）；
+        - delta < 0 且 allow_negative=False（默认）：把 score + delta >= 0 写进
+          UPDATE 的 WHERE，**整笔生效或整笔不生效**，不做部分扣减——并发下
+          也不会扣成负数；
+        - delta < 0 且 allow_negative=True：允许扣成负数（罚分场景）。
+
+        返回 ``{"applied": int, "insufficient": bool, "profile": dict}``：
+        insufficient=True 时 applied=0，profile 是当前档案（未被改动）。
+        """
+        uid = str(user_id)
+        amount = int(delta)
+        await self.ensure_profile(uid)
+        if amount == 0:
+            return {
+                "applied": 0,
+                "insufficient": False,
+                "profile": await self.get_profile(uid),
+            }
+
+        sql = (
+            "UPDATE mg_profile "
+            "SET score = score + :delta, "
+            "best_score = MAX(best_score, score + :delta), "
+            "plays = plays + :plays, wins = wins + :wins, updated_at = :now "
+            "WHERE user_id = :uid"
+        )
+        if amount < 0 and not allow_negative:
+            sql += " AND score + :delta >= 0"
+        changed = await self._run(
+            sql,
+            {
+                "uid": uid,
+                "delta": amount,
+                "plays": 1 if play else 0,
+                "wins": 1 if win else 0,
+                "now": self.now_iso(),
+            },
+        )
+        profile = await self.get_profile(uid)
+        if changed <= 0 and amount < 0 and not allow_negative:
+            return {"applied": 0, "insufficient": True, "profile": profile}
+        return {"applied": amount, "insufficient": False, "profile": profile}
+
     # ── 每日上限（mg_daily）──────────────────────────────────────
 
     async def daily_plays(self, user_id: Any, game_id: str, day: str | None = None) -> int:
@@ -371,21 +427,24 @@ class MinigameService:
         返回 {"already": bool, "score": int, "streak": int, "base": int,
         "bonus": int, "total": int, "day": str}；同一自然日重复签到不加分，
         并返回既有结果。
+
+        「占当日名额 + 加分」在**同一事务**内完成，并以 mg_checkin 的 INSERT
+        rowcount 作为加分前提：并发重复签到只有一个调用方拿到 rowcount=1 并
+        加分，其余调用方按已签到返回既有结果，因此不会重复记账，
+        already/total 也不会互相矛盾。
         """
         uid = str(user_id)
         day = self.today()
         existing = await self.get_checkin(uid, day)
         if existing is not None:
-            profile = await self.get_profile(uid)
-            return {
-                "already": True,
-                "score": int(existing["score"]),
-                "streak": int(existing["streak"]),
-                "base": int(existing["score"]),
-                "bonus": 0,
-                "total": int(profile["score"]),
-                "day": day,
-            }
+            return self._checkin_result(
+                already=True,
+                stored=existing,
+                profile=await self.get_profile(uid),
+                base=int(existing["score"]),
+                bonus=0,
+                day=day,
+            )
 
         low = int(getattr(self._config, "checkin_score_min", 1))
         high = int(getattr(self._config, "checkin_score_max", 10))
@@ -400,20 +459,41 @@ class MinigameService:
         bonus = min(max(streak - 1, 0) * per_day, cap)
         score = base + bonus
 
-        await self._run(
-            """
-            INSERT INTO mg_checkin (user_id, day, score, streak, created_at)
-            VALUES (:uid, :day, :score, :streak, :now)
-            ON CONFLICT (user_id, day) DO NOTHING
-            """,
-            {"uid": uid, "day": day, "score": score, "streak": streak, "now": self.now_iso()},
+        claimed, stored, profile = await self._claim_checkin(
+            uid, day, score=score, streak=streak
         )
-        stored = await self.get_checkin(uid, day)
-        if stored is None:  # pragma: no cover - 理论上不可能
-            stored = {"score": score, "streak": streak}
-        profile = await self.add_score(uid, score)
+        if not claimed:
+            # 并发下当日名额已被别的调用方占走：以对方落库的结果为准，本次不加分。
+            return self._checkin_result(
+                already=True,
+                stored=stored,
+                profile=profile,
+                base=int(stored["score"]),
+                bonus=0,
+                day=day,
+            )
+        return self._checkin_result(
+            already=False,
+            stored=stored,
+            profile=profile,
+            base=base,
+            bonus=bonus,
+            day=day,
+        )
+
+    @staticmethod
+    def _checkin_result(
+        *,
+        already: bool,
+        stored: dict[str, Any],
+        profile: dict[str, Any],
+        base: int,
+        bonus: int,
+        day: str,
+    ) -> dict[str, Any]:
+        """统一签到返回值：already=True 的调用方也必须与落库事实一致。"""
         return {
-            "already": False,
+            "already": already,
             "score": int(stored["score"]),
             "streak": int(stored["streak"]),
             "base": base,
@@ -421,6 +501,90 @@ class MinigameService:
             "total": int(profile["score"]),
             "day": day,
         }
+
+    async def _claim_checkin(
+        self, uid: str, day: str, *, score: int, streak: int
+    ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+        """原子占位并加分，返回 (是否由本次占位, 签到行, 加分后的档案)。
+
+        插入 mg_checkin 与 mg_profile 加分在同一事务内提交；rowcount=0 表示
+        当日名额已被并发调用方占走，此时**不加分**——这是幂等的唯一判据，
+        不能再依赖事务外读到的 existing（那正是并发重复记账的根因）。
+        """
+        from sqlalchemy import text
+
+        now = self.now_iso()
+        async with self._database.transaction() as session:
+            inserted = int(
+                (
+                    await session.execute(
+                        text(
+                            """
+                            INSERT INTO mg_checkin (user_id, day, score, streak, created_at)
+                            VALUES (:uid, :day, :score, :streak, :now)
+                            ON CONFLICT (user_id, day) DO NOTHING
+                            """
+                        ),
+                        {
+                            "uid": uid,
+                            "day": day,
+                            "score": int(score),
+                            "streak": int(streak),
+                            "now": now,
+                        },
+                    )
+                ).rowcount
+                or 0
+            )
+            if inserted:
+                # 与 add_score(uid, score) 等价，但必须与本事务的占位同生共死。
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO mg_profile (user_id, score, best_score, plays, wins, updated_at)
+                        VALUES (:uid, 0, 0, 0, 0, :now)
+                        ON CONFLICT (user_id) DO NOTHING
+                        """
+                    ),
+                    {"uid": uid, "now": now},
+                )
+                await session.execute(
+                    text(
+                        """
+                        UPDATE mg_profile
+                           SET score = score + :delta,
+                               best_score = MAX(best_score, score + :delta),
+                               plays = plays + :plays,
+                               wins = wins + :wins,
+                               updated_at = :now
+                         WHERE user_id = :uid
+                        """
+                    ),
+                    {"uid": uid, "delta": int(score), "plays": 0, "wins": 0, "now": now},
+                )
+            stored_row = (
+                await session.execute(
+                    text("SELECT * FROM mg_checkin WHERE user_id = :uid AND day = :day"),
+                    {"uid": uid, "day": day},
+                )
+            ).first()
+            profile_row = (
+                await session.execute(
+                    text("SELECT * FROM mg_profile WHERE user_id = :uid"), {"uid": uid}
+                )
+            ).first()
+
+        stored = (
+            dict(stored_row._mapping)
+            if stored_row is not None
+            else {"score": int(score), "streak": int(streak)}
+        )
+        profile = (
+            dict(profile_row._mapping)
+            if profile_row is not None
+            else await self.ensure_profile(uid)
+        )
+        return inserted > 0, stored, profile
 
     async def streak(self, user_id: Any) -> int:
         row = await self.get_checkin(user_id)

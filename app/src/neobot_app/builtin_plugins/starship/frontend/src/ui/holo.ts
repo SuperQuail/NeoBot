@@ -1,75 +1,19 @@
-// ui/holo.ts —— 全息曲面屏：自建弧面几何 + canvas 贴图 + 发光边框 + 基座。
-// 「不平面」的关键：屏幕是水平与垂直双向带弧度的投影面（环绕玩家），
-// 配合发光边框、地面反光与体积光，而不是一块平板。
-
+// Compatibility name: the surface is now inset into a solid 3D instrument.
 import * as THREE from 'three';
-import { ShipMaterials } from '../world/materials';
+import type { ShipMaterials } from '../world/materials';
+import { ConsoleModel } from './console-model';
+import { terminalLayout } from './terminal-layout';
 
 export interface HoloScreenOptions {
   accent: number;
-  /** 屏幕弧面半径（米） */
+  stationId?: string;
+  /** Legacy sizing hints; the inset is deliberately capped below console width. */
   radius?: number;
-  /** 屏幕高度（米） */
   screenHeight?: number;
   thetaLength?: number;
-  /** canvas 贴图分辨率 */
   canvasWidth?: number;
   canvasHeight?: number;
   withPedestal?: boolean;
-}
-
-/**
- * 弧面屏幕几何：绕 Y 轴的水平弧 + 垂直方向的轻微鼓出。
- *
- * 自己生成而不使用 CylinderGeometry：UV 完全可控（不再有圆柱 UV 的镜像/朝向问题），
- * 法线朝向玩家一侧，因此材质用 FrontSide 即可，不存在背面剔除的坑。
- */
-function createCurvedScreenGeometry(
-  radius: number,
-  height: number,
-  thetaStart: number,
-  thetaLength: number,
-  segments = 32,
-  rows = 6,
-  bulge = 0.07,
-): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
-  for (let row = 0; row <= rows; row += 1) {
-    const v = row / rows;
-    const y = (0.5 - v) * height;
-    const radial = radius - Math.sin(v * Math.PI) * bulge;
-    for (let column = 0; column <= segments; column += 1) {
-      const u = column / segments;
-      const theta = thetaStart + u * thetaLength;
-      const x = Math.sin(theta) * radial;
-      const z = Math.cos(theta) * radial;
-      positions.push(x, y, z);
-      // 朝向轴心（玩家所在的一侧）
-      normals.push(-Math.sin(theta), 0, -Math.cos(theta));
-      uvs.push(u, 1 - v);
-    }
-  }
-  const stride = segments + 1;
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < segments; column += 1) {
-      const a = row * stride + column;
-      const b = a + 1;
-      const c = a + stride;
-      const d = c + 1;
-      // 逆时针缠绕：面朝玩家一侧（法线指向轴心），FrontSide 才不会被剔除
-      indices.push(a, b, c, b, d, c);
-    }
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  geometry.computeBoundingSphere();
-  return geometry;
 }
 
 export class HoloScreen {
@@ -79,204 +23,109 @@ export class HoloScreen {
   readonly texture: THREE.CanvasTexture;
   readonly radius: number;
   readonly height: number;
+  readonly width: number;
   readonly thetaStart: number;
   readonly thetaLength: number;
-  private readonly glow: THREE.Mesh;
-  private readonly rimTop: THREE.Mesh;
-  private readonly rimBottom: THREE.Mesh;
-  private readonly accent: THREE.Color;
+  private readonly model: ConsoleModel | null;
+  private readonly material: THREE.MeshBasicMaterial;
+  private disposed = false;
+  private businessTargets: THREE.Mesh[] | null = null;
 
   constructor(options: HoloScreenOptions) {
-    const canvasWidth = options.canvasWidth ?? 1024;
-    const canvasHeight = options.canvasHeight ?? 576;
     this.canvas = document.createElement('canvas');
-    this.canvas.width = canvasWidth;
-    this.canvas.height = canvasHeight;
+    this.canvas.width = options.canvasWidth ?? 1024;
+    this.canvas.height = options.canvasHeight ?? 576;
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.generateMipmaps = false;
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
-    this.texture.wrapS = THREE.ClampToEdgeWrapping;
-    this.texture.wrapT = THREE.ClampToEdgeWrapping;
-
-    this.radius = options.radius ?? 1.55;
-    this.height = options.screenHeight ?? 0.95;
-    this.thetaLength = options.thetaLength ?? 1.15;
+    this.radius = options.radius ?? 1.25;
+    const layout = terminalLayout(options.stationId ?? "config");
+    this.height = options.screenHeight ?? layout.height;
+    this.width = this.height * this.canvas.width / this.canvas.height;
+    this.thetaLength = options.thetaLength ?? 0;
     this.thetaStart = Math.PI - this.thetaLength / 2;
-    this.accent = new THREE.Color(options.accent);
-
-    this.mesh = new THREE.Mesh(
-      createCurvedScreenGeometry(
-        this.radius,
-        this.height,
-        this.thetaStart,
-        this.thetaLength,
-      ),
-      new THREE.MeshBasicMaterial({
-        map: this.texture,
-        transparent: true,
-        opacity: 0.96,
-        side: THREE.FrontSide,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    );
-    this.mesh.name = 'holo-screen';
-    this.group.add(this.mesh);
-
-    // 外发光：比屏幕略大的弧面，加色混合
-    this.glow = new THREE.Mesh(
-      createCurvedScreenGeometry(
-        this.radius + 0.02,
-        this.height * 1.08,
-        this.thetaStart,
-        this.thetaLength,
-        32,
-        4,
-        0.08,
-      ),
-      new THREE.MeshBasicMaterial({
-        color: this.accent,
-        transparent: true,
-        opacity: 0.16,
-        side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    this.group.add(this.glow);
-
-    // 上下发光边框：复用同一套弧面生成器，保证与屏幕严丝合缝
-    const rimMaterial = new THREE.MeshBasicMaterial({
-      color: this.accent,
-      transparent: true,
-      opacity: 0.95,
-      side: THREE.DoubleSide,
-      toneMapped: false,
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture, color: 0x7c969e, side: THREE.FrontSide, toneMapped: false,
     });
-    const rimGeometry = createCurvedScreenGeometry(
-      this.radius + 0.015,
-      0.05,
-      this.thetaStart - 0.02,
-      this.thetaLength + 0.04,
-      32,
-      1,
-      0,
-    );
-    this.rimTop = new THREE.Mesh(rimGeometry, rimMaterial);
-    this.rimTop.position.y = this.height / 2 + 0.03;
-    this.rimBottom = new THREE.Mesh(rimGeometry, rimMaterial);
-    this.rimBottom.position.y = -this.height / 2 - 0.03;
-    this.group.add(this.rimTop, this.rimBottom);
-
-    if (options.withPedestal !== false) {
-      const column = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16, 0.24, 0.9, 12),
-        new THREE.MeshStandardMaterial({ color: 0x5a6472, metalness: 0.8, roughness: 0.4 }),
-      );
-      column.position.y = -this.height / 2 - 0.45;
-      const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.55, 0.62, 0.12, 16),
-        new THREE.MeshStandardMaterial({ color: 0x424a56, metalness: 0.7, roughness: 0.5 }),
-      );
-      base.position.y = -this.height / 2 - 0.92;
-      const halo = new THREE.Mesh(
-        new THREE.TorusGeometry(0.5, 0.03, 6, 28),
-        new THREE.MeshBasicMaterial({
-          color: this.accent,
-          transparent: true,
-          opacity: 0.7,
-          toneMapped: false,
-        }),
-      );
-      halo.rotation.x = Math.PI / 2;
-      halo.position.y = -this.height / 2 - 0.86;
-      this.group.add(column, base, halo);
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(this.width, this.height), this.material);
+    this.mesh.name = 'console-inset-interface';
+    this.model = options.withPedestal === false ? null : new ConsoleModel(options.accent, this.width, this.height, options.stationId);
+    if (this.model) {
+      this.group.add(this.model.group);
+      this.model.panel.add(this.mesh);
+      this.mesh.position.z = 0.096;
+    } else {
+      this.group.add(this.mesh);
     }
+    // game keeps raycasting screen.mesh with recursive=false. Delegate the physical
+    // switch caps here, keeping their object identity and no UV (not a canvas click).
+    const surfaceRaycast = this.mesh.raycast.bind(this.mesh);
+    this.mesh.raycast = (raycaster, intersections) => {
+      if (this.disposed) return;
+      this.group.updateWorldMatrix(true, true);
+      if (!this.businessTargets) surfaceRaycast(raycaster, intersections);
+      for (const key of this.businessTargets ?? this.model?.keys ?? []) {
+        const hits: THREE.Intersection[] = [];
+        key.raycast(raycaster, hits);
+        for (const hit of hits) {
+          delete hit.uv;
+          intersections.push(hit);
+        }
+      }
+    };
+  }
 
-    // 投影光锥（让全息屏有「从底座投上来」的体积感）
-    const cone = new THREE.Mesh(
-      createCurvedScreenGeometry(
-        this.radius * 0.98,
-        this.height * 0.55,
-        this.thetaStart,
-        this.thetaLength,
-        24,
-        2,
-        0.02,
-      ),
-      new THREE.MeshBasicMaterial({
-        color: this.accent,
-        transparent: true,
-        opacity: 0.07,
-        side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    cone.position.y = -this.height / 2 - 0.24;
-    this.group.add(cone);
+  setBusinessControls(group: THREE.Group, targets: THREE.Mesh[]): void {
+    this.businessTargets = targets;
+    this.mesh.visible = false;
+    this.model?.setBusinessControls(true);
+    this.group.add(group);
   }
 
   setAccent(color: number): void {
-    this.accent.setHex(color);
-    (this.glow.material as THREE.MeshBasicMaterial).color.setHex(color);
-    (this.rimTop.material as THREE.MeshBasicMaterial).color.setHex(color);
+    this.model?.setAccent(color);
   }
 
-  /** 屏幕中心的世界坐标（用于相机聚焦与距离判断） */
+  setFocused(focused: boolean): void {
+    this.material.color.setHex(focused ? 0xffffff : 0x7c969e);
+    this.model?.setFocused(focused);
+  }
+
+  update(dt: number, focused: boolean): void {
+    this.model?.update(dt, focused);
+  }
+
+  pressKey(key: THREE.Object3D | null): void {
+    this.model?.pressKey(key);
+  }
+
+  /** Actual visible glass center, not the old curvature origin behind the surface. */
   worldCenter(target = new THREE.Vector3()): THREE.Vector3 {
+    this.mesh.updateWorldMatrix(true, false);
     return this.mesh.getWorldPosition(target);
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.model?.dispose();
+    this.mesh.geometry.dispose();
+    this.material.dispose();
     this.texture.dispose();
-    this.group.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (mesh.geometry) mesh.geometry.dispose();
-      const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(material)) material.forEach((item) => item.dispose());
-      else material?.dispose();
-    });
   }
 }
 
-/** 把全息屏架在墙边的小工具：返回可直接 add 到场景的组 */
+/** The rig has its origin on the floor and faces local +Z. No borrowed materials. */
 export function createStationRig(
   materials: ShipMaterials,
-  options: { accent: number; title: string; subtitle?: string },
+  options: { accent: number; title: string; subtitle?: string; stationId?: string },
 ): { group: THREE.Group; screen: HoloScreen } {
   const group = new THREE.Group();
-  const screen = new HoloScreen({
-    canvasWidth: 1024,
-    canvasHeight: 576,
-    accent: options.accent,
-    radius: 1.7,
-    screenHeight: 1.05,
-    thetaLength: 1.2,
-  });
-  screen.group.position.set(0, 1.35, 0);
+  group.name = options.title;
+  const screen = new HoloScreen({ accent: options.accent, stationId: options.stationId, canvasWidth: 1024, canvasHeight: 576 });
   group.add(screen.group);
-
-  // 操作台面（放在屏幕前方偏下，不挡住投影）
-  const desk = new THREE.Mesh(
-    new THREE.BoxGeometry(1.5, 0.08, 0.42),
-    new THREE.MeshStandardMaterial({ color: 0x4b5563, metalness: 0.7, roughness: 0.45 }),
-  );
-  desk.position.set(0, 0.76, 1.28);
-  group.add(desk);
-  const deskGlow = new THREE.Mesh(
-    new THREE.BoxGeometry(1.42, 0.02, 0.34),
-    new THREE.MeshBasicMaterial({
-      color: options.accent,
-      transparent: true,
-      opacity: 0.3,
-      toneMapped: false,
-    }),
-  );
-  deskGlow.position.set(0, 0.81, 1.28);
-  group.add(deskGlow);
   void materials;
   return { group, screen };
 }

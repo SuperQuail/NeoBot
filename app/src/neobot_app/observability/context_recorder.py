@@ -1,166 +1,188 @@
-"""聊天流提示词历史记录器（完整提示词落盘 + 轻量内存索引）。
+"""聊天流提示词历史记录器（纯内存 + 逐份 diff + 图片只留哈希）。
 
-每次模型调用的完整上下文(messages)落盘为一个独立 JSON 文件，供网页面板
-「聊天流 → 提示词历史」按需读取（完整内容、不做任何截断）：
+面板「聊天流 → 完整提示词」的数据源。每次模型调用的完整上下文都记在这里，
+但**不再落盘**（features/spec(10) 取代 spec(3) 的落盘实现）：
 
-- 文件命名: ``ctx_<YYYYmmdd_HHMMSS_ffffff>_<seq>.json``（沿用既有命名）；
-- 目录: ``<DATA_DIR>/chat_flows/prompts/``（原 ``debug/context/`` 的历史不迁移、不消费）；
-- 保留策略: 全局最近 ``max_files`` 份（默认 100），写满删除最旧整份文件；
-- 内存: 只保留 ``PromptMeta`` 轻量索引（约 150 B/条）；默认不保留提示词正文，
-  ``latest_in_memory=True`` 时额外把最新一份留在内存，换取常规轮询不读盘；
-- 写盘: :func:`neobot_app.utils.atomic.atomic_write_text`（同目录临时文件 + fsync +
-  原子替换），读者不会拿到半截 JSON；
-- 失败处理: 读写异常一律只记 debug，绝不反噬回复管线。
+- **不落盘**：状态全在内存，重启即清空。既没有 ctx_*.json 残留，也没有
+  「全局保留 N 份 × 单份 0.5~1.2 MB」的磁盘占用；旧目录里的历史文件不再读取，
+  可在面板「清空提示词历史」时一并删除；
+- **逐份 diff**：第 1 份存完整快照，之后每份只存相对上一份的补丁（见 prompt_diff），
+  回复管线的 messages 是逐轮追加的，因此补丁极小 —— 100 份历史常驻约 1~2 MB；
+- **图片脱敏**：messages 里的 data:image/...;base64 正文换成 sha256 哈希
+  （图库去重同口径），面板审查提示词时不再搬运数 MB 的 base64；
+- **有界**：全局保留最近 limit 份，超出后从最旧一份开始淘汰并重新定基；
+- **失败处理**：读写异常一律只记 debug，绝不反噬回复管线。
 
-进程启动时扫描既有文件重建索引，重启后历史仍然可用。
+读取语义：read_entry / read_latest 返回的是**内部对象**，调用方只读不写
+（面板只做 JSON 序列化）；逐份重建时返回的是全新对象，可以放心使用。
 """
 
 from __future__ import annotations
 
-import json
-import re
+import copy
 import threading
-from dataclasses import dataclass, replace
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.utils.atomic import atomic_write_text
-
-#: 文件名形如 ctx_20250912_101112_123456_0007.json
-_FILENAME_PATTERN = re.compile(r"^ctx_(\d{8}_\d{6}_\d{6})_(\d+)\.json$")
-#: 重建索引时只读文件前缀来提取元数据，避免启动时为上百 MB 的 JSON 全量解析
-_META_PROBE_CHARS = 262_144
-#: 探针文本中可按顶层缩进(2 空格)提取的标量字段
-_PROBE_FIELDS = (
-    "pipeline_key",
-    "conversation_kind",
-    "conversation_id",
-    "iteration",
-    "model",
-    "messages_count",
-    "recorded_at",
+from neobot_app.observability.prompt_diff import (
+    apply_patch,
+    count_image_refs,
+    diff_payload,
+    json_safe,
+    patch_bytes,
+    payload_bytes,
+    sanitize_images,
 )
-#: 顶层字段缩进恰好 2 个空格，嵌套字段更深，因此锚定缩进不会误取子结构里的同名字段
-_PROBE_PATTERNS = {
-    field: re.compile(rf'^  "{field}":\s*(.+)$', re.MULTILINE) for field in _PROBE_FIELDS
-}
+
+#: 完整提示词历史默认全局保留份数
+DEFAULT_PROMPT_HISTORY_LIMIT = 100
 
 
 @dataclass(frozen=True)
 class PromptMeta:
-    """一份落盘提示词的元数据（不含正文，约 150 B/条）。"""
+    """一份提示词历史的元数据（不含正文）。"""
 
     seq: int
-    path: str
     pipeline_key: str
     iteration: int
     model: str
     total_messages: int
     bytes: int
+    patch_bytes: int
+    images: int
     recorded_at: str
 
     def to_dict(self) -> dict[str, Any]:
         """转成面板 API 友好的普通字典。"""
         return {
             "seq": self.seq,
-            "path": self.path,
             "pipeline_key": self.pipeline_key,
             "iteration": self.iteration,
             "model": self.model,
             "total_messages": self.total_messages,
             "bytes": self.bytes,
+            "patch_bytes": self.patch_bytes,
+            "images": self.images,
             "recorded_at": self.recorded_at,
         }
 
 
 class ContextRecorder:
-    """把完整聊天上下文写入滚动文件集(全局最新 max_files 份)，并维护元数据索引。"""
+    """把完整聊天上下文留在内存里（逐份 diff），并维护元数据索引。"""
 
     def __init__(
         self,
-        log_dir: Path,
         *,
-        max_files: int = 100,
+        limit: int = DEFAULT_PROMPT_HISTORY_LIMIT,
         logger: Logger | None = None,
-        latest_in_memory: bool = False,
+        legacy_dir: Any = None,
     ) -> None:
-        if max_files <= 0:
-            raise ValueError("max_files must be greater than 0")
-        self._log_dir = Path(log_dir)
-        self._max_files = int(max_files)
-        self._latest_in_memory = bool(latest_in_memory)
-        self._lock = threading.Lock()
+        if limit <= 0:
+            raise ValueError("limit must be greater than 0")
+        self._limit = int(limit)
         self._logger = logger or NullLogger()
+        self._legacy_dir = legacy_dir
+        self._lock = threading.Lock()
         self._seq = 0
         self._entries: dict[int, PromptMeta] = {}
+        #: 最旧保留份（完整快照）及其 seq
+        self._base_seq = 0
+        self._base_payload: Any = None
+        #: seq → 相对上一份的补丁（base_seq 之后每一份都有一条，可能是空列表）
+        self._patches: dict[int, list[dict[str, Any]]] = {}
+        #: 最新一份（完整快照）：面板默认视图 + 下一次记录时的 diff 基线
         self._latest_seq = 0
-        self._latest_payload: dict[str, Any] | None = None
-        try:
-            self._log_dir.mkdir(parents=True, exist_ok=True)
-            self._rebuild_index()
-            if self._latest_in_memory:
-                self._preload_latest()
-        except Exception as exc:
-            self._logger.debug(
-                "初始化聊天上下文记录器目录失败(忽略)",
-                log_dir=str(self._log_dir),
-                error=str(exc),
-            )
+        self._latest_payload: Any = None
+        self._image_refs = 0
+        self._log_legacy_hint()
         self._logger.info(
-            "ContextRecorder 已初始化",
-            log_dir=str(self._log_dir),
-            max_files=self._max_files,
-            latest_in_memory=self._latest_in_memory,
-            entries=len(self._entries),
+            "ContextRecorder 已初始化（纯内存 + 逐份 diff）", limit=self._limit
         )
 
-    @property
-    def log_dir(self) -> Path:
-        return self._log_dir
+    # ── 只读属性 ──
 
     @property
-    def max_files(self) -> int:
+    def limit(self) -> int:
         """全局保留份数上限。"""
-        return self._max_files
-
-    @property
-    def latest_in_memory(self) -> bool:
-        """是否把最新一份完整提示词常驻内存。"""
-        return self._latest_in_memory
+        return self._limit
 
     @property
     def latest_seq(self) -> int | None:
-        """最新一份的 seq；目录为空时返回 None。"""
+        """最新一份的 seq；没有历史时返回 None。"""
         with self._lock:
-            return max(self._entries) if self._entries else None
+            return self._latest_seq or None
 
-    def record_context(self, payload: dict[str, Any]) -> Path:
-        """落盘一次模型调用上下文，返回目标文件路径。
+    @property
+    def storage_bytes(self) -> int:
+        """当前实际驻留的估算体积（快照 + 全部补丁）。
 
-        写盘失败只记 debug 并返回目标路径（文件可能不存在），不抛异常。
+        与「份数 × 单份体积」的落盘口径对比，用来证明 diff 存储的成本下降。
+        最新一份的完整快照本身也是下一轮 diff 的基线，因此计入。
+        """
+        with self._lock:
+            total = 0
+            if self._base_payload is not None:
+                total += payload_bytes(self._base_payload)
+            if self._latest_seq and self._latest_seq != self._base_seq:
+                total += payload_bytes(self._latest_payload)
+            total += sum(item.patch_bytes for item in self._entries.values())
+            return total
+
+    @property
+    def image_refs(self) -> int:
+        """累计脱敏掉的图片引用处数。"""
+        with self._lock:
+            return self._image_refs
+
+    # ── 写入 ──
+
+    def record_context(self, payload: dict[str, Any]) -> int:
+        """记录一次模型调用上下文，返回本次 seq；失败返回 0（不抛异常）。
+
+        写入前先做图片脱敏，再转纯 JSON 结构，然后与上一份求补丁。
         """
         with self._lock:
             self._seq += 1
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            target = self._log_dir / f"ctx_{stamp}_{self._seq:04d}.json"
+            seq = self._seq
             try:
-                text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-                atomic_write_text(target, text)
-                self._entries[self._seq] = self._meta_from_payload(
-                    payload, seq=self._seq, path=target, size=len(text.encode("utf-8"))
+                sanitized, replaced, _freed = sanitize_images(payload)
+                safe = json_safe(sanitized)
+                data = safe if isinstance(safe, dict) else {}
+                if self._base_payload is None:
+                    self._base_payload = safe
+                    self._base_seq = seq
+                    patch: list[dict[str, Any]] = []
+                else:
+                    patch = diff_payload(self._latest_payload, safe)
+                self._patches[seq] = patch
+                messages = data.get("messages")
+                total = _as_int(data.get("messages_count"), default=-1)
+                if total < 0:
+                    total = len(messages) if isinstance(messages, list) else 0
+                self._entries[seq] = PromptMeta(
+                    seq=seq,
+                    pipeline_key=_pipeline_key(data),
+                    iteration=_as_int(data.get("iteration")),
+                    model=str(data.get("model") or ""),
+                    total_messages=total,
+                    bytes=payload_bytes(safe),
+                    patch_bytes=patch_bytes(patch),
+                    images=count_image_refs(safe),
+                    recorded_at=str(data.get("recorded_at") or ""),
                 )
-                if self._latest_in_memory:
-                    self._latest_seq = self._seq
-                    self._latest_payload = payload
+                self._latest_seq = seq
+                self._latest_payload = safe
+                self._image_refs += replaced
                 self._prune()
             except Exception as exc:
-                self._logger.debug(
-                    "记录聊天上下文失败(忽略)", path=str(target), error=str(exc)
-                )
-            return target
+                self._logger.debug("记录聊天上下文失败(忽略)", seq=seq, error=str(exc))
+                return 0
+            return seq
+
+    # ── 读取 ──
 
     def list_entries(self, pipeline_key: str | None = None) -> list[PromptMeta]:
         """列出提示词元数据，按 seq 升序（由旧到新）；可按 pipeline_key 过滤。"""
@@ -172,187 +194,106 @@ class ContextRecorder:
         return [item for item in items if item.pipeline_key == key]
 
     def read_entry(self, seq: int) -> dict[str, Any] | None:
-        """按 seq 读取单份完整提示词全文；不存在或读取失败返回 None，不抛。"""
+        """按 seq 读取单份完整提示词；不存在返回 None，不抛异常。"""
         try:
             key = int(seq)
         except (TypeError, ValueError):
             return None
         with self._lock:
-            return self._read_payload(key)
+            if key not in self._entries:
+                return None
+            if key == self._latest_seq:
+                return self._latest_payload
+            if key == self._base_seq:
+                return self._base_payload
+            return self._materialize(key)
 
     def read_latest(self) -> dict[str, Any] | None:
         """读取最新一份完整提示词（面板默认视图）；没有历史时返回 None。"""
         with self._lock:
-            if not self._entries:
-                return None
-            key = max(self._entries)
-            return self._read_payload(key)
+            return self._latest_payload
 
     def clear(self) -> int:
-        """删除全部落盘提示词并清空索引，返回删除的文件数。"""
+        """清空内存里的全部历史与旧落盘文件，返回清掉的份数。"""
         with self._lock:
-            removed = 0
-            for path in sorted(self._log_dir.glob("ctx_*.json")):
+            removed = len(self._entries)
+            self._entries.clear()
+            self._patches.clear()
+            self._base_seq = 0
+            self._base_payload = None
+            self._latest_seq = 0
+            self._latest_payload = None
+            self._image_refs = 0
+            # seq 保持单调递增，避免面板手里的旧 seq 与新记录撞号
+            self._purge_legacy_files()
+            return removed
+
+    # ── 内部（调用方需持有 self._lock） ──
+
+    def _materialize(self, seq: int) -> Any:
+        """从最旧快照出发逐个应用补丁，重建某一份（返回全新对象）。"""
+        payload = copy.deepcopy(self._base_payload)
+        for key in range(self._base_seq + 1, seq + 1):
+            apply_patch(payload, self._patches.get(key) or [])
+        return payload
+
+    def _prune(self) -> None:
+        """只保留最新 limit 份：淘汰最旧一份并把它的后继重新定基。"""
+        while len(self._entries) > self._limit and len(self._entries) > 1:
+            oldest = min(self._entries)
+            new_base_seq = oldest + 1
+            if new_base_seq not in self._entries:
+                break
+            self._base_payload = self._materialize(new_base_seq)
+            self._base_seq = new_base_seq
+            self._patches.pop(new_base_seq, None)
+            self._entries.pop(oldest, None)
+
+    def _log_legacy_hint(self) -> None:
+        """旧落盘目录存在时提示一次：不再读取，可在面板清空。"""
+        path = self._legacy_path()
+        if path is None:
+            return
+        try:
+            if not path.exists():
+                return
+            count = len(list(path.glob("ctx_*.json")))
+            if count <= 0:
+                return
+            self._logger.info(
+                "检测到旧的落盘提示词历史（已改为纯内存，不再读取）",
+                dir=str(path),
+                files=count,
+                hint="可在面板「清空提示词历史」或手动删除该目录",
+            )
+        except Exception as exc:  # pragma: no cover - 只做提示，失败无所谓
+            self._logger.debug("检查旧提示词目录失败(忽略)", error=str(exc))
+
+    def _purge_legacy_files(self) -> int:
+        """删除旧落盘目录里的 ctx_*.json（清空历史时顺带回收磁盘）。"""
+        path = self._legacy_path()
+        if path is None:
+            return 0
+        removed = 0
+        try:
+            for item in sorted(path.glob("ctx_*.json")):
                 try:
-                    path.unlink()
+                    item.unlink()
                     removed += 1
                 except OSError:
                     continue
-            self._entries.clear()
-            self._latest_seq = 0
-            self._latest_payload = None
-            # seq 保持单调，避免删除失败的残留文件被新文件覆盖
-            return removed
+        except Exception as exc:  # pragma: no cover
+            self._logger.debug("删除旧提示词文件失败(忽略)", error=str(exc))
+        return removed
 
-    # ── 内部：索引与落盘（调用方需持有 self._lock，初始化阶段除外） ──
-
-    def _read_payload(self, key: int) -> dict[str, Any] | None:
-        """读取单个 seq 的完整 JSON；latest_in_memory 命中时不读盘。"""
-        meta = self._entries.get(key)
-        if meta is None:
-            return None
-        if (
-            self._latest_in_memory
-            and self._latest_seq == key
-            and self._latest_payload is not None
-        ):
-            return dict(self._latest_payload)
-        try:
-            data = json.loads(Path(meta.path).read_text(encoding="utf-8"))
-        except Exception as exc:
-            self._logger.debug(
-                "读取提示词历史失败(忽略)", seq=key, path=meta.path, error=str(exc)
-            )
-            return None
-        return data if isinstance(data, dict) else None
-
-    def _preload_latest(self) -> None:
-        """latest_in_memory=True 时，启动后把最新一份读进内存。"""
-        if not self._entries:
-            return
-        key = max(self._entries)
-        payload = self._read_payload(key)
-        if payload is not None:
-            self._latest_seq = key
-            self._latest_payload = payload
-
-    def _rebuild_index(self) -> None:
-        """扫描目录重建索引（重启后历史仍可用），并顺带按上限清理。"""
-        entries: dict[int, PromptMeta] = {}
-        max_seq = 0
-        for path in sorted(self._log_dir.glob("ctx_*.json")):
-            seq, stamp = _parse_filename(path)
-            if seq is None:
-                continue
-            entries[seq] = self._meta_from_file(path, seq=seq, fallback_time=stamp)
-            max_seq = max(max_seq, seq)
-        self._entries = entries
-        self._seq = max_seq
-        self._prune()
-
-    def _prune(self) -> None:
-        """只保留最新 max_files 份，删除最旧整份文件并同步索引。"""
-        files = sorted(self._log_dir.glob("ctx_*.json"))
-        overflow = len(files) - self._max_files
-        if overflow <= 0:
-            return
-        for old in files[:overflow]:
-            try:
-                old.unlink()
-            except OSError:
-                continue
-            seq, _ = _parse_filename(old)
-            if seq is None:
-                continue
-            self._entries.pop(seq, None)
-            if self._latest_seq == seq:
-                self._latest_seq = 0
-                self._latest_payload = None
-
-    def _meta_from_payload(
-        self, payload: Any, *, seq: int, path: Path, size: int
-    ) -> PromptMeta:
-        """从完整 payload 里取元数据。"""
-        data = payload if isinstance(payload, dict) else {}
-        messages = data.get("messages")
-        total = _as_int(data.get("messages_count"), default=-1)
-        if total < 0:
-            total = len(messages) if isinstance(messages, list) else 0
-        return PromptMeta(
-            seq=seq,
-            path=str(path),
-            pipeline_key=_pipeline_key(data),
-            iteration=_as_int(data.get("iteration")),
-            model=str(data.get("model") or ""),
-            total_messages=total,
-            bytes=int(size),
-            recorded_at=str(data.get("recorded_at") or ""),
-        )
-
-    def _meta_from_file(
-        self, path: Path, *, seq: int, fallback_time: str
-    ) -> PromptMeta:
-        """从磁盘既有文件重建元数据（只解析可得字段）。"""
-        data: dict[str, Any] = {}
-        size = 0
-        try:
-            size = path.stat().st_size
-            data = _probe_metadata(path)
-        except Exception as exc:
-            self._logger.debug(
-                "读取提示词历史元数据失败(忽略)", path=str(path), error=str(exc)
-            )
-        meta = self._meta_from_payload(data, seq=seq, path=path, size=size)
-        if not meta.recorded_at:
-            meta = replace(meta, recorded_at=fallback_time)
-        return meta
+    def _legacy_path(self) -> Path | None:
+        return Path(self._legacy_dir) if self._legacy_dir is not None else None
 
 
-def _parse_filename(path: Path) -> tuple[int | None, str]:
-    """从文件名解析 (seq, 时间戳转 ISO)；不匹配返回 (None, "")。"""
-    match = _FILENAME_PATTERN.match(path.name)
-    if match is None:
-        return None, ""
-    return int(match.group(2)), _iso_from_stamp(match.group(1))
-
-
-def _iso_from_stamp(stamp: str) -> str:
-    """把文件名里的 YYYYmmdd_HHMMSS_ffffff 转成 ISO 文本。"""
-    try:
-        return datetime.strptime(stamp, "%Y%m%d_%H%M%S_%f").isoformat()
-    except ValueError:
-        return ""
-
-
-def _probe_metadata(path: Path) -> dict[str, Any]:
-    """读取文件前缀提取元数据，避免为索引全量解析大 JSON。"""
-    with path.open("r", encoding="utf-8") as handle:
-        chunk = handle.read(_META_PROBE_CHARS)
-    try:
-        data = json.loads(chunk)
-    except ValueError:
-        data = None
-    if isinstance(data, dict):
-        if "messages_count" in data or "messages" in data:
-            return data
-        scalars: dict[str, Any] = dict(data)
-    else:
-        scalars = {}
-    for field, pattern in _PROBE_PATTERNS.items():
-        if field in scalars:
-            continue
-        match = pattern.search(chunk)
-        if match is None:
-            continue
-        try:
-            scalars[field] = json.loads(match.group(1).rstrip().rstrip(","))
-        except ValueError:
-            continue
-    return scalars
-
-
-def _pipeline_key(data: dict[str, Any]) -> str:
+def _pipeline_key(data: Any) -> str:
     """优先取 payload 里的 pipeline_key，缺失时按 kind:id 兜底拼一个。"""
+    if not isinstance(data, dict):
+        return ""
     key = str(data.get("pipeline_key") or "").strip()
     if key:
         return key
@@ -372,3 +313,6 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+__all__ = ["DEFAULT_PROMPT_HISTORY_LIMIT", "ContextRecorder", "PromptMeta"]

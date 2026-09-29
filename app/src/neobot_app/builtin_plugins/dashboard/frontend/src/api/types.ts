@@ -679,18 +679,21 @@ export interface ScheduledTaskActionBody {
   state?: 'active' | 'disabled';
 }
 
-/** ── 完整提示词历史 /api/chat-flows/prompts(|/prompt)（features/spec(3)） ── */
+/** ── 提示词历史 /api/chat-flows/prompts(|/prompt)（spec(3) 建立，spec(10) 改纯内存） ── */
 
-/** 一份落盘提示词的元数据（列表接口只给这个，不含正文） */
+/** 一份提示词历史的元数据（列表接口只给这个，不含正文） */
 export interface ChatFlowPromptMeta {
   seq: number;
-  /** 落盘文件的绝对路径（<DATA_DIR>/chat_flows/prompts/ctx_*.json） */
-  path?: string;
   pipeline_key?: string;
   iteration?: number;
   model?: string;
   total_messages?: number;
+  /** 重建后的完整篇幅（字节）；仅供面板展示「这一份有多大」 */
   bytes?: number;
+  /** 实际驻留的补丁大小（字节）；逐份 diff 后通常只有完整篇幅的零头 */
+  patch_bytes?: number;
+  /** 该份里被脱敏成 sha256 的图片引用数 */
+  images?: number;
   recorded_at?: string;
 }
 
@@ -699,8 +702,12 @@ export interface ChatFlowPromptsPayload {
   items?: ChatFlowPromptMeta[];
   /** 本次请求的过滤条件（空串 = 全部聊天流） */
   pipeline_key?: string;
-  /** 全局保留份数（= ContextRecorder.max_files，默认 100） */
+  /** 全局保留份数（= ContextRecorder.limit，默认 100） */
   limit?: number;
+  /** 当前实际驻留内存（快照 + 全部补丁），与「每份都存全量」对比用 */
+  storage_bytes?: number;
+  /** 累计脱敏掉的图片引用处数 */
+  image_refs?: number;
   error?: string;
 }
 
@@ -738,6 +745,10 @@ export interface ChatFlowLatestPrompt {
   items: ChatFlowPromptMeta[];
   /** 全局保留份数 */
   limit: number;
+  /** 当前实际驻留内存（快照 + 全部补丁） */
+  storage_bytes?: number;
+  /** 累计脱敏掉的图片引用处数 */
+  image_refs?: number;
   /** 最新一份的 seq；没有任何历史时为 null */
   seq: number | null;
   entry: ChatFlowPromptEntry | null;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from typing import Any, Callable, Dict, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -25,6 +26,14 @@ from neobot_adapter.utils.parse import safe_parse_model
 
 
 class OneBotAdapter:
+    #: 接收器停止的总宽限（秒）。
+    #:
+    #: core.stop 偶尔会返回 False（旧接收线程尚未退出）；这里最多重试到该宽限，
+    #: 之后**放弃继续等待并报告明确错误**，而不是无条件无限重试 —— 后者会让整个
+    #: 运行时的拆除永久卡住（现场：每 8 秒刷一次的停止日志 + 运行时再也无法重建，
+    #: 只能杀进程）。监听端口在 server.close() 时已释放，放弃等待不会占住端口。
+    _STOP_TOTAL_GRACE_SECONDS = 16.0
+
     def __init__(
         self,
         *,
@@ -57,6 +66,11 @@ class OneBotAdapter:
     def connected(self) -> bool:
         """当前是否至少有一条 OneBot 反向 WebSocket 连接处于活跃状态。"""
         return bool(self._core.active_connections)
+
+    @property
+    def receiver_abandoned(self) -> bool:
+        """接收器是否已被放弃（旧线程卡死，进程内无法重建，只能重启进程）。"""
+        return self._core.abandoned
 
     @property
     def http_url(self) -> str:
@@ -142,8 +156,16 @@ class OneBotAdapter:
             return
         self._stopping = asyncio.Event()
         bind_core(self._core)
-        self._core.start()
+        try:
+            self._core.start()
+        except Exception:
+            # 接收器拒绝重建（旧线程卡死）：不要把核心绑定与「停止中」状态
+            # 留在半启动状态，也不要把异常静默吞掉 —— 上层必须能看见失败。
+            unbind_core()
+            self._stopping.set()
+            raise
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        self._dispatch_task.add_done_callback(self._on_dispatch_task_done)
 
     async def stop(self) -> None:
         self._stopping.set()
@@ -165,9 +187,17 @@ class OneBotAdapter:
                 )
         self._dispatch_task = None
         try:
+            deadline = time.monotonic() + self._STOP_TOTAL_GRACE_SECONDS
             while not await asyncio.to_thread(self._core.stop, 8.0):
                 # False 表示旧接收线程仍活着，不能向上层报告停止完成。
-                # 由生命周期控制器报告软超时并继续持有本任务；不自动强杀进程。
+                # 先按现场语义重试；但**必须有尽头**：否则运行时拆除会永远卡在这里。
+                if time.monotonic() >= deadline:
+                    self._logger.error(
+                        "适配器接收器在宽限期内仍未停止，放弃继续等待；"
+                        "监听端口已由 server.close() 释放，重建若失败会显式报错",
+                        grace_seconds=self._STOP_TOTAL_GRACE_SECONDS,
+                    )
+                    break
                 self._logger.error(
                     "适配器接收器停止尚未完成，仍在等待守护线程退出；不能启动新运行时"
                 )
@@ -358,7 +388,32 @@ class OneBotAdapter:
             event = await asyncio.to_thread(self._core.get_message, True, 0.1)
             if event is None:
                 continue
-            await self._dispatcher.publish(event)
+            try:
+                await self._dispatcher.publish(event)
+            except Exception as exc:
+                # 单条坏事件不得打死事件入口：记录后继续处理后续事件。
+                self._logger.error(
+                    "事件分发失败，已跳过该事件",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+    def _on_dispatch_task_done(self, task: "asyncio.Task[None]") -> None:
+        """分发循环退出必须可观测：否则事件入口会静静死去、无人知晓。"""
+        if self._stopping.is_set():
+            return
+        if task.cancelled():
+            self._logger.error("适配器分发循环被取消，事件入口已停止")
+            return
+        exc = task.exception()
+        if exc is None:
+            self._logger.warning("适配器分发循环已退出，事件入口已停止")
+        else:
+            self._logger.error(
+                "适配器分发循环异常退出，事件入口已停止",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def _subscribe(
         self,

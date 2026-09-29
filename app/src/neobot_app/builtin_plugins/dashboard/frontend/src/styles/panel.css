@@ -413,6 +413,8 @@
   .chat-prompt-history { border-right: none; padding-right: 0; }
 }
 .chat-prompt-history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chat-follow-latest { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chat-follow-latest .tag { margin-left: 4px; }
 .chat-history-list { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow: auto; }
 .chat-history-key { align-items: flex-start; }
 .chat-history-meta { display: flex; flex-direction: column; gap: 2px; }

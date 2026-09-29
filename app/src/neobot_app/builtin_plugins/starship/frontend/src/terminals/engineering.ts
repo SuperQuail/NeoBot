@@ -1,4 +1,4 @@
-// terminals/engineering.ts —— 工程舱终端：反应堆监控、能量分配、插件模块机架。
+// terminals/engineering.ts —— 工程舱终端：太阳核心监控、能量分配、插件模块机架。
 
 import * as THREE from 'three';
 
@@ -29,12 +29,12 @@ interface ServicesPayload {
 }
 
 // ---------------------------------------------------------------------------
-// 反应堆监控：系统资源 / 后台任务 / 宿主服务
+// 太阳核心监控：系统资源 / 后台任务 / 宿主服务
 // ---------------------------------------------------------------------------
 
 export const systemTerminal: TerminalDefinition = {
   id: 'system',
-  title: '反应堆监控',
+  title: '太阳核心监控',
   subtitle: '系统资源 · REACTOR',
   accent: 0xffb454,
   decorate(group, materials) {

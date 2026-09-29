@@ -72,7 +72,7 @@ export class Input {
 
   private bind(): void {
     this.on(window, 'keydown', (event) => {
-      if (this.textMode) return;
+      if (this.textMode || this.mode === 'menu' || document.querySelector('dialog[open]') || (event.target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable="true"], .hud-dialog-overlay')) return;
       const key = this.normalize(event);
       if (event.repeat) return;
       if (!this.keys.has(key)) this.pressedQueue.push(key);

@@ -2058,7 +2058,7 @@ class DashboardApi:
         return _json_ok(snapshot)
 
     # ------------------------------------------------------------------
-    # 完整提示词历史（features/spec(3) R3–R6）
+    # 完整提示词历史（features/spec(3) 建立；spec(10) 改为纯内存 + 逐份 diff）
     # ------------------------------------------------------------------
 
     def _context_recorder(self) -> Any:
@@ -2085,12 +2085,15 @@ class DashboardApi:
             {
                 "items": items,
                 "pipeline_key": pipeline_key,
-                "limit": int(getattr(recorder, "max_files", 0) or 0),
+                "limit": int(getattr(recorder, "limit", 0) or 0),
+                # 纯内存存储的实际驻留量（快照 + 全部补丁），供面板展示成本
+                "storage_bytes": int(getattr(recorder, "storage_bytes", 0) or 0),
+                "image_refs": int(getattr(recorder, "image_refs", 0) or 0),
             }
         )
 
     async def chat_flow_prompt(self, request: web.Request) -> web.Response:
-        """按需读取**单份完整提示词全文**（不截断；默认视图不读盘）。"""
+        """读取**单份完整提示词全文**（不截断；逐份重建自内存里的快照 + 补丁）。"""
         recorder = self._context_recorder()
         if recorder is None:
             return _json_error(
@@ -2109,7 +2112,7 @@ class DashboardApi:
         return _json_ok({"seq": seq, "entry": entry})
 
     async def chat_flow_prompts_clear(self, request: web.Request) -> web.Response:
-        """清空完整提示词历史（磁盘上的整份文件一并删除）。"""
+        """清空完整提示词历史（内存快照 + 补丁，顺带删除旧落盘残留）。"""
         denied = self._require_manage(request, action="清空提示词历史")
         if denied is not None:
             return denied
@@ -2123,7 +2126,9 @@ class DashboardApi:
         except Exception as exc:
             return _json_error(f"清空提示词历史失败: {exc}", status=500)
         self.logger.info(f"面板清空完整提示词历史: removed={removed}")
-        return _json_ok({"removed": removed, "message": f"已清空 {removed} 份完整提示词历史"})
+        return _json_ok(
+            {"removed": removed, "message": f"已清空 {removed} 份提示词历史（内存）"}
+        )
 
     # ------------------------------------------------------------------
     # 档案管理（features/spec(2)：把模型侧 CRUD 暴露到面板）

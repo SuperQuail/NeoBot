@@ -4,7 +4,11 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from neobot_chat.providers.base import BaseHTTPProvider, set_finish_reason
+from neobot_chat.providers.base import (
+    BaseHTTPProvider,
+    normalized_tool_calls,
+    set_finish_reason,
+)
 from neobot_chat.providers.vision import to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
 
@@ -77,15 +81,20 @@ class OpenAIProvider(BaseHTTPProvider):
         *,
         stream: bool,
     ) -> dict[str, Any]:
+        serialized: list[dict[str, Any]] = []
+        for message in messages:
+            item = {key: value for key, value in message.items() if key != "extensions"}
+            item["content"] = to_openai_content(message.get("content"))
+            # 历史里可能留着旧版本/半包产生的空 arguments（非法 JSON），
+            # 出口统一归一化为 {}，且不改写调用方持有的消息对象。
+            tool_calls = item.get("tool_calls")
+            if isinstance(tool_calls, list):
+                item["tool_calls"] = normalized_tool_calls(tool_calls)
+            serialized.append(item)
+
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {
-                    **{key: value for key, value in message.items() if key != "extensions"},
-                    "content": to_openai_content(message.get("content")),
-                }
-                for message in messages
-            ],
+            "messages": serialized,
         }
         if stream:
             payload["stream"] = True
@@ -134,7 +143,7 @@ class OpenAIProvider(BaseHTTPProvider):
                 tool_calls.append(tool_call)
 
         if tool_calls:
-            result["tool_calls"] = tool_calls
+            result["tool_calls"] = normalized_tool_calls(tool_calls)
 
         set_finish_reason(result, raw_choice.get("finish_reason"))
 
@@ -215,5 +224,7 @@ class OpenAIProvider(BaseHTTPProvider):
         }
         set_finish_reason(message, finish_reason)
         if tool_calls_map:
-            message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+            message["tool_calls"] = normalized_tool_calls(
+                [tool_calls_map[i] for i in sorted(tool_calls_map)]
+            )
         yield ChatChunk(message=message)

@@ -103,6 +103,19 @@ class MinigameConfig(BaseModel):
         le=3650,
         description="战绩流水（mg_record）保留天数。",
     )
+    points_allow_external_write: bool = Field(
+        default=True,
+        description=(
+            "是否允许其它插件通过能力接口（points.add）增减积分；"
+            "关闭后积分只由本插件的玩法产生，读接口不受影响。"
+        ),
+    )
+    points_max_delta: int = Field(
+        default=100_000,
+        ge=1,
+        le=10_000_000,
+        description="其它插件单次增减积分的绝对值上限，超过直接拒绝（防呆，不代表余额上限）。",
+    )
     theme_mode: str = Field(
         default="random",
         description=(

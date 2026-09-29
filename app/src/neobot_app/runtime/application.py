@@ -33,6 +33,9 @@ class ConnectionTimeoutError(RuntimeError):
 
 
 class NeoBotApplication(Generic[T]):
+    #: 适配器停止的软超时：只用于**先报错**，之后的等待由 shield 继续。
+    #: 适配器自身对接收器停止有 16s 总宽限（OneBotAdapter._STOP_TOTAL_GRACE_SECONDS），
+    #: 因此这里最多再等约 4s 就会拿到结果，不会永久卡住。
     _ADAPTER_STOP_TIMEOUT_SECONDS = 12.0
 
     def __init__(

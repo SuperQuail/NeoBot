@@ -97,7 +97,7 @@ export const repairStation = makeMinigameStation({
   title: '损管终端',
   subtitle: '损管抢修 · DAMAGE CONTROL',
   accent: 0xffc861,
-  description: '反应堆回路被震断，限时把电力从堆芯接到各个系统。',
+  description: '太阳核心回路被震断，限时把电力从堆芯接到各个系统。',
   howTo: [
     '点击导线格子让它旋转 90°',
     '绿色表示已通电，橙色边框是必须接通的系统',

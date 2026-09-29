@@ -242,11 +242,40 @@ code, .mono, .lv-time, .lv-msg, .log-viewport { font-family: var(--font-mono); }
 
 /* 折线图 */
 .linechart { width: 100%; height: 180px; }
+.lc-wrap { position: relative; width: 100%; }
 .lc-line { fill: none; stroke: var(--brand); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .lc-area { fill: var(--brand-soft); stroke: none; }
 .lc-grid line { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .lc-grid text { fill: var(--muted); font-size: 10px; }
 .lc-empty-text { fill: var(--muted); font-size: 12px; }
+/* 悬停：竖直参考线 + 高亮点 + 光标旁的详细数据 */
+.lc-cursor { pointer-events: none; }
+.lc-guide { stroke: var(--brand); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; vector-effect: non-scaling-stroke; }
+.lc-dot { fill: var(--panel); stroke: var(--brand); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.lc-tooltip {
+  position: absolute;
+  z-index: var(--z-tooltip);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 240px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.lc-tooltip-name { color: var(--muted); font-size: 10px; }
+.lc-tooltip-label { color: var(--muted); }
+.lc-tooltip-value { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.lc-tooltip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; color: var(--muted); margin-top: 2px; }
+.lc-tooltip-value + .lc-tooltip-row { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-soft); }
+.lc-tooltip-row-label { color: var(--muted); }
+.lc-tooltip-row-value { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* 排行榜 */
 .rank-list, .user-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }

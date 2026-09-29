@@ -6,13 +6,14 @@ import type { Hud } from '../core/hud';
 import type { QualityPreset } from '../config';
 import { consoleApi, gameApi, type Pollable } from '../net/api';
 import type { ShipMaterials } from '../world/materials';
-import { createSignTexture } from '../world/materials';
 import type { StationAnchor } from '../world/ship';
 import { HoloScreen, createStationRig } from './holo';
 import { UiSurface } from './surface';
+import { surfaceFocus, terminalLayout } from './terminal-layout';
 import type { TextCapture } from './textinput';
 import type { Availability, ShellState } from '../state';
 import type { GameActions } from '../core/actions';
+import { createPhysicalTerminal, type PhysicalTerminal } from '../terminals/physical';
 
 export interface TerminalHost {
   scene: THREE.Scene;
@@ -83,12 +84,15 @@ export class Terminal {
   readonly screen: HoloScreen;
   readonly ui: UiSurface;
   private controller: TerminalController | null = null;
+  private physical: PhysicalTerminal | null = null;
   private active = false;
   private dirty = true;
   private idleAccumulator = 0;
   private availability: Availability = { available: true, reason: '', hint: '', readOnly: false };
   private baseAccent: number;
   private disposed = false;
+  private readonly decoration = new THREE.Group();
+  private lastScrollId: string | null = null;
   /** 小游戏接管屏幕时的自定义绘制 */
   private override: ((ui: UiSurface, focused: boolean) => void) | null = null;
 
@@ -103,27 +107,15 @@ export class Terminal {
     const rig = createStationRig(host.materials, {
       accent: definition.accent,
       title: definition.title,
+      stationId: definition.id,
     });
     this.screen = rig.screen;
     this.group.add(rig.group);
-    definition.decorate?.(this.group, host.materials);
-
-    // 名牌
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.15, 0.36),
-      new THREE.MeshBasicMaterial({
-        map: createSignTexture(definition.title, definition.subtitle, {
-          width: 512,
-          height: 160,
-          accent: '#' + definition.accent.toString(16).padStart(6, '0'),
-        }),
-        transparent: true,
-        side: THREE.DoubleSide,
-      }),
-    );
-    // 名牌挂在全息屏上方的框架上，避免挡住投影
-    sign.position.set(0, 2.42, -0.9);
-    this.group.add(sign);
+    // Keep extension hooks, but seat their ornaments inside the rear machinery.
+    definition.decorate?.(this.decoration, host.materials);
+    this.decoration.scale.setScalar(0.24);
+    this.decoration.position.set(0, 0.2, -0.68);
+    this.group.add(this.decoration);
 
     this.group.position.copy(anchor.position);
     this.group.rotation.y = anchor.yaw;
@@ -133,21 +125,32 @@ export class Terminal {
     this.ui = new UiSurface(
       this.screen.canvas.width,
       this.screen.canvas.height,
-      '#33d6ff',
+      '#' + definition.accent.toString(16).padStart(6, '0'),
       this.screen.canvas,
     );
-    this.controller = definition.create
-      ? definition.create({
-          host,
-          anchor,
-          ui: this.ui,
-          shell: host.shell,
-          redraw: () => this.markDirty(),
-          toast: host.toast,
-          confirm: host.confirm,
-        })
-      : null;
-    this.drawFrame(true);
+    const context: TerminalContext = {
+      host, anchor, ui: this.ui, shell: host.shell,
+      redraw: () => this.markDirty(),
+      toast: (message, tone) => host.toast(message, tone),
+      confirm: (options) => host.confirm(options),
+    };
+    this.physical = createPhysicalTerminal(definition.id, context, definition.accent);
+    this.controller = this.physical ?? definition.create?.(context) ?? null;
+    if (this.physical) {
+      this.screen.setBusinessControls(this.physical.group, this.physical.targets);
+      this.decoration.visible = false;
+    }
+    this.drawFrame(false);
+  }
+
+  /** Exact visible solid instrument meshes; projection, text and hidden panels are excluded. */
+  solidMeshes(): THREE.Mesh[] {
+    this.group.updateWorldMatrix(true, true);
+    const meshes: THREE.Mesh[] = [];
+    this.group.traverseVisible(object => {
+      if (object instanceof THREE.Mesh && object.userData.solidConsole === true) meshes.push(object);
+    });
+    return meshes;
   }
 
   get available(): boolean {
@@ -181,73 +184,128 @@ export class Terminal {
     const changed =
       availability.available !== this.availability.available ||
       availability.reason !== this.availability.reason ||
+      availability.hint !== this.availability.hint ||
       availability.readOnly !== this.availability.readOnly;
     this.availability = availability;
+    this.physical?.setAvailability(availability.available, availability.reason);
     this.screen.setAccent(availability.available ? this.baseAccent : OFFLINE_ACCENT);
-    if (changed) this.markDirty();
+    if (changed) {
+      if (this.active) {
+        for (const poller of this.controller?.pollers ?? []) {
+          if (availability.available) poller.start(true);
+          else poller.stop();
+        }
+      }
+      this.markDirty();
+    }
   }
 
-  /** 聚焦视角：站在弧形屏外侧（凹面正前方）看向屏幕中心 */
+  /** Public interaction plane, shared by focus framing and world-side visibility. */
+  get operatingSurface(): THREE.Object3D { return this.physical?.operatingSurface ?? this.screen.mesh; }
+
+  /** Align the focus camera with the actual visible operation plane. */
   focusView(): { position: THREE.Vector3; target: THREE.Vector3 } {
-    const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(
-      new THREE.Vector3(0, 1, 0),
-      this.anchor.yaw,
-    );
-    const distance = this.screen.radius + 0.75;
-    const position = this.anchor.position
-      .clone()
-      .add(forward.multiplyScalar(distance))
-      .add(new THREE.Vector3(0, 1.52, 0));
-    const target = this.screen.worldCenter(new THREE.Vector3());
-    return { position, target };
+    if (this.physical) {
+      const layout = terminalLayout(this.definition.id);
+      return surfaceFocus(this.physical.operatingSurface, layout.width, layout.height, this.host.camera);
+    }
+    return surfaceFocus(this.screen.mesh, this.screen.width, this.screen.height, this.host.camera);
   }
 
   focus(): void {
-    if (this.active) return;
+    if (this.active || this.disposed) return;
     this.active = true;
+    this.screen.setFocused(true);
+    this.decoration.visible = false;
     this.controller?.onFocus?.();
-    for (const poller of this.controller?.pollers ?? []) poller.start(true);
+    if (this.available) for (const poller of this.controller?.pollers ?? []) poller.start(true);
     this.markDirty();
   }
 
   blur(): void {
     if (!this.active) return;
     this.active = false;
+    this.screen.setFocused(false);
+    this.decoration.visible = !this.physical;
+    this.screen.pressKey(null);
+    this.ui.clicked = false;
+    this.clearPointer();
     this.controller?.onBlur?.();
     for (const poller of this.controller?.pollers ?? []) poller.stop();
     this.markDirty();
   }
 
-  /** 屏幕射线命中：更新光标位置，返回是否消费了本次点击 */
+  private clearPointer(): void {
+    if (this.ui.cursor.inside) this.markDirty();
+    this.ui.cursor.inside = false;
+    this.ui.cursor.down = false;
+    // UiSurface's legacy hover helpers test coordinates, not cursor.inside.
+    this.ui.cursor.x = this.ui.cursor.y = -100000;
+    this.ui.clicked = false;
+    this.ui.hoverId = null;
+  }
+
+  /** A UV hit addresses the inset canvas; a no-UV key hit addresses solid hardware. */
   handlePointer(intersection: THREE.Intersection | null, clicked: boolean, wheel: number): void {
-    if (!intersection || !intersection.uv) {
-      this.ui.cursor.inside = false;
+    this.screen.pressKey(null);
+    if (!this.active || !this.available || this.disposed) {
+      this.clearPointer();
       return;
     }
-    const x = intersection.uv.x * this.ui.width;
-    const y = (1 - intersection.uv.y) * this.ui.height;
-    const moved = Math.abs(x - this.ui.cursor.x) > 0.5 || Math.abs(y - this.ui.cursor.y) > 0.5;
+    if (this.physical) {
+      this.clearPointer();
+      const index = intersection?.object.userData.physicalAction;
+      this.physical.hover(typeof index === 'number' ? intersection!.object : null, this.host.input.pointer.down);
+      if (clicked && typeof index === 'number') this.physical.activate(index);
+      return;
+    }
+    const key = intersection?.object.userData.consoleKey;
+    if (key) {
+      this.clearPointer();
+      if (this.host.input.pointer.down || clicked) this.screen.pressKey(intersection!.object);
+      // Screen-mode minigames own their click dispatch and must not refresh API data.
+      if (clicked && !this.override) {
+        if (key === 'refresh') {
+          for (const poller of this.controller?.pollers ?? []) void poller.tick();
+          this.host.toast('控制台数据已请求刷新', 'info');
+        } else if (this.lastScrollId) {
+          this.ui.scrollBy(this.lastScrollId, key === 'scroll-up' ? -3 : 3);
+        } else {
+          this.host.toast('先将光标移到列表，再使用上下实体键', 'info');
+        }
+        this.markDirty();
+      }
+      return;
+    }
+    if (!intersection?.uv) {
+      this.clearPointer();
+      return;
+    }
+    const x = THREE.MathUtils.clamp(intersection.uv.x, 0, 1) * this.ui.width;
+    const y = (1 - THREE.MathUtils.clamp(intersection.uv.y, 0, 1)) * this.ui.height;
+    const moved = !this.ui.cursor.inside || Math.abs(x - this.ui.cursor.x) > 0.5 || Math.abs(y - this.ui.cursor.y) > 0.5;
     this.ui.cursor.x = x;
     this.ui.cursor.y = y;
     this.ui.cursor.inside = true;
-    if (clicked) {
-      this.ui.clicked = true;
+    this.ui.cursor.down = this.host.input.pointer.down;
+    const hovered = this.ui.hitTest(x, y);
+    // Only list row IDs end with a numeric suffix; ordinary buttons aren't scroll targets.
+    const row = hovered?.match(/^(.*):[0-9]+$/);
+    if (row) this.lastScrollId = row[1];
+    if (clicked) this.ui.clicked = true;
+    if (moved || clicked) this.markDirty();
+    if (wheel !== 0 && row) {
+      this.ui.scrollBy(row[1], wheel * 0.05);
       this.markDirty();
-    }
-    if (moved) this.markDirty();
-    if (wheel !== 0) {
-      const hovered = this.ui.hitTest(x, y);
-      if (hovered) {
-        const id = hovered.split(':')[0];
-        this.ui.scrollBy(id, wheel * 0.05);
-        this.markDirty();
-      }
     }
   }
 
   update(dt: number): void {
     if (this.disposed) return;
     const interactive = this.active;
+    // Geometry animation never uploads canvas textures or starts API polling.
+    this.screen.update(dt, interactive);
+    if (this.physical && interactive) this.physical.sync();
     if (!interactive) {
       this.ui.cursor.inside = false;
       const animated = this.definition.id !== '' && this.controller?.idleAnimated === true;
@@ -261,35 +319,53 @@ export class Terminal {
       }
     }
     if (this.dirty) {
-      this.drawFrame(interactive);
+      // Controller callbacks can request another frame while drawing; don't erase it.
       this.dirty = false;
+      this.drawFrame(interactive);
     }
   }
 
   private drawFrame(interactive: boolean): void {
     const ui = this.ui;
-    ui.clicked = false;
+    if (this.physical) { this.physical.sync(); ui.clicked = false; return; }
+    // Consume AFTER the immediate-mode controller sees it, never before. Also accept
+    // legacy game callers that assign ui.clicked directly, but reject off-surface clicks.
+    ui.clicked = ui.clicked && interactive && ui.cursor.inside && this.available;
+    const consumedClick = ui.clicked;
     ui.hoverId = null;
-    if (!this.availability.available) {
-      this.drawOffline(ui);
-      ui.end();
-      return;
-    }
     ui.begin(1 / 30, this.definition.title, this.definition.subtitle);
-    if (this.availability.reason) {
-      ui.text(24, 92, '⚠ ' + this.availability.reason, {
-        size: 17,
-        color: ui.theme.warn,
-      });
-      if (this.availability.hint) {
-        ui.text(24, 116, this.availability.hint, { size: 15, color: ui.theme.textDim });
+    try {
+      if (!this.available) {
+        this.drawOffline(ui);
+      } else if (!interactive) {
+        this.drawStandby(ui);
+      } else {
+        if (this.availability.reason) {
+          ui.text(24, 92, '⚠ ' + this.availability.reason, { size: 17, color: ui.theme.warn });
+          if (this.availability.hint) ui.text(24, 116, this.availability.hint, { size: 15, color: ui.theme.textDim });
+        }
+        if (this.override) this.override(ui, interactive);
+        else this.controller?.draw(ui, interactive);
       }
+    } finally {
+      ui.end();
+      ui.clicked = false;
+      this.screen.texture.needsUpdate = true;
+      // Local tab/page state can change without calling ctx.redraw(). Refresh it once.
+      if (consumedClick) this.markDirty();
     }
-    if (this.override) this.override(ui, interactive);
-    else this.controller?.draw(ui, interactive);
-    ui.end();
-    // canvas 改了必须让贴图重新上传，否则屏幕上永远是第一帧
-    this.screen.texture.needsUpdate = true;
+  }
+
+  private drawStandby(ui: UiSurface): void {
+    const ctx = ui.ctx;
+    ctx.strokeStyle = ui.theme.accent;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(512, 145); ctx.lineTo(574, 244); ctx.lineTo(512, 340);
+    ctx.lineTo(450, 244); ctx.closePath(); ctx.stroke();
+    ui.text(512, 402, '神 经 链 接 · 待 命', { size: 30, align: 'center', color: ui.theme.accent });
+    ui.text(512, 450, '靠近并按 E 接入控制台', { size: 24, align: 'center' });
+    ui.text(512, 520, 'KHALAI COMMAND INTERFACE', { size: 16, align: 'center', color: ui.theme.textDim });
   }
 
   /** 未启用面板在游戏内的表现：熄屏 + 低功耗提示 + 恢复指引 */
@@ -335,5 +411,29 @@ export class Terminal {
     this.controller?.dispose?.();
     this.host.scene.remove(this.group);
     this.screen.dispose();
+    // Decorations may borrow ship-wide materials/textures. Never dispose those.
+    const sharedMaterials = new Set<THREE.Material>(Object.values(this.host.materials));
+    const sharedTextures = new Set<THREE.Texture>();
+    for (const material of sharedMaterials) {
+      for (const value of Object.values(material)) if (value instanceof THREE.Texture) sharedTextures.add(value);
+    }
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    this.decoration.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        if (sharedMaterials.has(material)) continue;
+        materials.add(material);
+        for (const value of Object.values(material)) {
+          if (value instanceof THREE.Texture && !sharedTextures.has(value)) textures.add(value);
+        }
+      }
+    });
+    geometries.forEach((geometry) => geometry.dispose());
+    materials.forEach((material) => material.dispose());
+    textures.forEach((texture) => texture.dispose());
+    this.group.clear();
   }
 }

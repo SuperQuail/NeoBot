@@ -697,9 +697,9 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         ),
     )
 
-    # 完整提示词历史记录器:每次模型调用的完整上下文,落盘保留最近 N 份(默认 100)。
-    # 由 [chat].chat_flow_prompt_history_enabled 控制,与 debug 开关解耦 —— 面板的
-    # 「聊天流 → 完整提示词」不依赖 debug.enabled。
+    # 完整提示词历史记录器:每次模型调用的完整上下文,纯内存 + 逐份 diff 保留最近
+    # N 份(默认 100),重启即清空。由 [chat].chat_flow_prompt_history_enabled 控制,
+    # 与 debug 开关解耦 —— 面板的「聊天流 → 完整提示词」不依赖 debug.enabled。
     context_recorder = build_context_recorder(
         config=config, logger=logger_factory.get_logger("app.context")
     )
@@ -1121,6 +1121,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
+    # cross_chat 的投递要拿住目标聊天的 ReplyEvent 才能取回回复：只有在编排器
+    # 可用时才走 start_background_reply，否则退化为 hub 注入（见 cross_chat_skill）。
+    _cross_chat_skill = skill_manager.get("cross_chat") if skill_manager is not None else None
+    if _cross_chat_skill is not None and callable(getattr(_cross_chat_skill, "set_orchestrator", None)):
+        _cross_chat_skill.set_orchestrator(reply_orchestrator)
     # 面板「聊天流」页的后台任务聚合:与 check_background_tasks 工具同源
     _register_flow_task_providers(
         chat_flow_registry,
@@ -1469,7 +1474,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "chat_flow_registry": (chat_flow_registry, "聊天流快照登记处（面板只读）"),
             "context_recorder": (
                 context_recorder,
-                "完整提示词历史记录器（面板按需读取，落盘保留最近 N 份）",
+                "完整提示词历史记录器（面板按需读取；纯内存 + 逐份 diff，保留最近 N 份）",
             ),
             "plugin_runtime": (plugin_runtime, "插件运行时"),
         },
