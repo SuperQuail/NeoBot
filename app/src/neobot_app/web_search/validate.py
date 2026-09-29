@@ -37,6 +37,8 @@ URL 比例 < 0.8。
 
 from __future__ import annotations
 
+from enum import Enum
+
 import html as html_module
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -541,3 +543,105 @@ def judge_results(
 ) -> ValidationReport:
     """`validate_results` 的两参兼容入口（fix(9) 参考实现的判据字段名）。"""
     return validate_results(query, results)
+
+
+# ── 失败分级（fix(9) 附录 B v2 §1）────────────────────────────────────
+
+
+class FailureKind(str, Enum):
+    """一次检索的失败类型 —— 决定"该换什么"，而不是盲目重试。
+
+    设计依据（实测）：
+    - 内容类失败是同一份缓存/身份问题，同通道重试 3 次自愈 0/21；
+    - 结构类失败（半包、未解码压缩）重试一次往往能恢复；
+    - 网络类失败（挑战页/超时）重试只会加深风控。
+    """
+
+    NONE = "none"          # 通过校验
+    NETWORK = "network"    # 超时 / 5xx / 挑战页 / 验证码
+    STRUCTURE = "structure"  # 解析不到结构 / 可解 URL 比例过低 / 正文乱码
+    CONTENT = "content"    # 能解析但与查询不相关（错配页）
+    EMPTY = "empty"        # 页面明确表示"没有结果"
+
+
+#: 命中这些 code 说明"没拿到合格页面"，属于网络/风控层面。
+_NETWORK_CODES = frozenset({"captcha", "challenge"})
+#: 命中这些 code 说明页面拿到了但结构不可用，值得同通道重试一次。
+_STRUCTURE_CODES = frozenset({"structure", "garbled", "url_ok_ratio"})
+#: 命中这些 code 说明是"页面内容与查询无关"，换通道无用、必须换身份/换引擎。
+_CONTENT_CODES = frozenset({"cov_max", "cov_top3", "cross_channel"})
+
+
+@dataclass
+class FailureClass:
+    """失败分级结论。
+
+    对外契约：`kind` / `retry_same_channel` / `switch_engine` / `describe()`。
+    其中 `retry_same_channel` 只是"允许"，是否真的重试由调用方按预算决定。
+    """
+
+    kind: FailureKind
+    reason: str
+    signals: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.kind is FailureKind.NONE
+
+    @property
+    def retry_same_channel(self) -> bool:
+        return self.kind is FailureKind.STRUCTURE
+
+    @property
+    def switch_engine(self) -> bool:
+        """是否需要换一个来源（换引擎/换身份）。EMPTY 与 NONE 都不需要。"""
+        return self.kind in (FailureKind.NETWORK, FailureKind.CONTENT, FailureKind.STRUCTURE)
+
+    def describe(self) -> str:
+        return f"{self.kind.value}: {self.reason}" if self.reason else self.kind.value
+
+
+def classify_failure(
+    query: str,
+    results: Sequence[Any] | Iterable[Any] | None = None,
+    *,
+    html: str | None = None,
+    error: str | None = None,
+    cross_channel: Sequence[Any] | Iterable[Any] | None = None,
+    channel: str = "",
+    coverage_threshold: float | None = None,
+) -> FailureClass:
+    """把一次检索的结局分成 通过 / 网络 / 结构 / 内容 / 空结果 五类。
+
+    `error` 表示"连页面都没拿到"（超时、5xx、连接失败），此时必然归为网络类；
+    已拿到页面则按校验信号的 code 归类。`EMPTY`（页面明说没有结果）**不算失败**，
+    调用方应返回 degraded + 空结果，而不是继续回退。
+    """
+    report = validate_results(
+        query,
+        results,
+        html=html,
+        cross_channel=cross_channel,
+        channel=channel,
+        coverage_threshold=coverage_threshold,
+    )
+    if report.valid:
+        return FailureClass(FailureKind.NONE, "ok", report.signals)
+
+    codes = set(report.codes)
+    if error:
+        # 抓取层失败：页面都没拿到，重试同通道通常无意义（风控/网络）。
+        kind, reason = FailureKind.NETWORK, f"抓取失败: {error}"
+    elif codes & _NETWORK_CODES:
+        kind, reason = FailureKind.NETWORK, report.reason
+    elif "no_results" in codes:
+        # 页面明确表示"没有结果"。注意此时通常还会伴随 structure（li.b_algo=0）：
+        # 空结果页本来就该没有结果块，不能因此判成结构类去重试/回退。
+        kind, reason = FailureKind.EMPTY, report.reason
+    elif codes & _STRUCTURE_CODES:
+        kind, reason = FailureKind.STRUCTURE, report.reason
+    elif codes & _CONTENT_CODES:
+        kind, reason = FailureKind.CONTENT, report.reason
+    else:
+        kind, reason = FailureKind.CONTENT, report.reason or "未知校验失败"
+    return FailureClass(kind, reason, report.signals)
