@@ -82,6 +82,24 @@ async def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> bo
     return predicate()
 
 
+async def _connect_when_ready(port: int, *, timeout: float = 10.0):
+    """等待接收线程真正开始监听后再连接。
+
+    OneBotAdapter.start() 把监听交给后台线程，返回时端口不一定已经 bind
+    （CI 的慢机器上尤其明显）。直接连接会得到 ConnectionRefusedError，因此这里
+    用「连接成功即返回」的有界轮询代替固定 sleep。
+    """
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return await websockets.connect(f"ws://127.0.0.1:{port}/onebot")
+        except OSError as exc:  # 端口尚未监听
+            last_error = exc
+            await asyncio.sleep(0.05)
+    raise AssertionError(f"接收线程在 {timeout}s 内未开始监听 127.0.0.1:{port}: {last_error}")
+
+
 # ── A. 非对象 JSON 帧 ────────────────────────────────────────────────
 
 
@@ -98,7 +116,8 @@ async def test_non_dict_frame_is_skipped_and_dispatch_stays_alive(frame: str) ->
 
     await adapter.start()
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}/onebot") as websocket:
+        websocket = await _connect_when_ready(port)
+        async with websocket:
             await websocket.send(frame)
             await asyncio.sleep(0.2)
             assert adapter.connected is True
@@ -254,7 +273,8 @@ async def test_normal_stop_start_cycle_still_rebuilds() -> None:
         assert adapter.core.thread.is_alive()
         assert adapter.core.abandoned is False
 
-        async with websockets.connect(f"ws://127.0.0.1:{port}/onebot"):
+        websocket = await _connect_when_ready(port)
+        async with websocket:
             assert await _wait_until(lambda: adapter.connected is True)
             # 连接仍在线时探针必须报「已连接」（闩锁 + 活跃连接都成立）。
             probe = ConnectionReadinessProbe(adapter, wait_seconds=1.0)
