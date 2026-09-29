@@ -8,11 +8,12 @@ from neobot_chat.providers.base import (
     BaseHTTPProvider,
     normalize_anthropic_stop_reason,
     set_finish_reason,
+    tool_arguments_object,
+    tool_arguments_text,
 )
 from neobot_chat.providers.vision import contains_images, to_anthropic_content
 from neobot_chat.schema.exceptions import NativeVisionUnsupportedError
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
-from neobot_chat.utils import parse_tool_args
 
 
 class AnthropicProvider(BaseHTTPProvider):
@@ -80,8 +81,7 @@ class AnthropicProvider(BaseHTTPProvider):
         system = "\n\n".join(system_parts) if system_parts else None
         return system, converted
 
-    @staticmethod
-    def _convert_assistant_msg(msg: Message) -> dict:
+    def _convert_assistant_msg(self, msg: Message) -> dict:
         blocks: list[dict] = []
         content = msg.get("content")
         if isinstance(content, str) and content:
@@ -94,10 +94,24 @@ class AnthropicProvider(BaseHTTPProvider):
                     "type": "tool_use",
                     "id": tc["id"],
                     "name": tc["function"]["name"],
-                    "input": parse_tool_args(tc["function"]["arguments"]),
+                    # 历史里的参数可能来自旧版本（空串）或半包（坏 JSON）：
+                    # 这里绝不抛异常，坏数据按无参数重放并留日志，避免整段会话
+                    # 从这一轮起每轮都在发请求前失败。
+                    "input": tool_arguments_object(
+                        tc["function"]["arguments"],
+                        on_invalid=self._report_invalid_tool_arguments,
+                    ),
                 }
             )
         return {"role": "assistant", "content": blocks}
+
+    def _report_invalid_tool_arguments(self, raw: str, reason: str) -> None:
+        """损坏的工具参数被按空对象重放时留痕（与「本来就无参数」区分开）。"""
+        self._logger.warning(
+            "历史中的工具参数无法解析，已按无参数 {} 重放；原始参数保留在历史中",
+            raw_arguments=raw[:200],
+            reason=reason,
+        )
 
     @staticmethod
     def _convert_tool_msg(msg: Message) -> dict:
@@ -178,7 +192,7 @@ class AnthropicProvider(BaseHTTPProvider):
                     tool_call = AnthropicProvider._build_tool_call(
                         tool_id=block.get("id"),
                         tool_name=block.get("name"),
-                        arguments=json.dumps(block.get("input", {})),
+                        arguments=tool_arguments_text(block.get("input")),
                     )
                     if tool_call is not None:
                         tool_calls.append(tool_call)
@@ -230,6 +244,9 @@ class AnthropicProvider(BaseHTTPProvider):
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         current_tool: ToolCall | None = None
+        # content_block_start 里带的初始 input：无参工具不会有 input_json_delta，
+        # 它必须成为最终的 arguments，否则会留下空串（非法 JSON）。
+        current_tool_input: object = None
         finish_reason: str | None = None
 
         event_type = ""
@@ -256,8 +273,11 @@ class AnthropicProvider(BaseHTTPProvider):
                         current_tool = self._build_tool_call(
                             tool_id=block.get("id"),
                             tool_name=block.get("name"),
+                            # 累加器从空串开始：input_json_delta 携带的是完整 JSON 串，
+                            # 若先用初始 input 播种再追加，会拼出非法的拼接 JSON。
                             arguments="",
                         )
+                        current_tool_input = block.get("input")
 
                 case "content_block_delta":
                     delta = data.get("delta", {})
@@ -273,8 +293,14 @@ class AnthropicProvider(BaseHTTPProvider):
 
                 case "content_block_stop":
                     if current_tool:
+                        if not current_tool["function"]["arguments"].strip():
+                            # 没有任何增量 = 无参工具，用初始 input（通常为空对象）收尾。
+                            current_tool["function"]["arguments"] = tool_arguments_text(
+                                current_tool_input
+                            )
                         tool_calls.append(current_tool)
                         current_tool = None
+                        current_tool_input = None
 
                 case "message_delta":
                     # stop_reason 只在 message_delta 里下发（content_block_* 里没有）。

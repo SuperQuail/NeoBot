@@ -7,7 +7,11 @@ from typing import Any
 
 import httpx
 
-from neobot_chat.providers.base import BaseHTTPProvider, set_finish_reason
+from neobot_chat.providers.base import (
+    BaseHTTPProvider,
+    normalized_tool_calls,
+    set_finish_reason,
+)
 from neobot_chat.schema.exceptions import NativeVisionUnsupportedError, ProviderError
 from neobot_chat.providers.vision import contains_images, raise_if_image_unsupported, to_openai_content
 from neobot_chat.schema.types import ChatChunk, Message, ToolCall, ToolDefinition
@@ -208,7 +212,14 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             if "tool_call_id" in message:
                 payload["tool_call_id"] = message["tool_call_id"]
             if "tool_calls" in message:
-                payload["tool_calls"] = message["tool_calls"]
+                tool_calls = message["tool_calls"]
+                # 历史里可能留着旧版本/半包产生的空 arguments（非法 JSON），
+                # 出口统一归一化为 {}，且不改写调用方持有的消息对象。
+                payload["tool_calls"] = (
+                    normalized_tool_calls(tool_calls)
+                    if isinstance(tool_calls, list)
+                    else tool_calls
+                )
 
             reasoning_content = self._get_reasoning_content(message)
             if reasoning_content:
@@ -290,7 +301,7 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
                 tool_calls.append(tool_call)
 
         if tool_calls:
-            result["tool_calls"] = tool_calls
+            result["tool_calls"] = normalized_tool_calls(tool_calls)
         return result
 
     async def chat(
@@ -407,7 +418,9 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         if reasoning_parts:
             self._set_reasoning_content(message, "".join(reasoning_parts))
         if tool_calls_map:
-            message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+            message["tool_calls"] = normalized_tool_calls(
+                [tool_calls_map[i] for i in sorted(tool_calls_map)]
+            )
         if stream_usage is not None:
             extensions = dict(message.get("extensions") or {})
             extensions["usage"] = stream_usage
