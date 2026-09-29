@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +14,14 @@ import httpx
 from neobot_app.utils.ssrf import validate_public_url_async
 from neobot_app.web_search.manager import SearchManager
 from neobot_app.web_search.models import SearchResponse, SearchResult
+from neobot_app.web_search.urls import strip_tracking_params, unwrap_tracking
+from neobot_app.web_search.validate import (
+    is_js_redirect_shell,
+    looks_garbled,
+    looks_like_empty_body,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,11 +35,28 @@ class SearchRound:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+def _is_text_content(content_type: str) -> bool:
+    """content-type 是否为可读文本（html/xml/json/plain 等）。"""
+    ctype = (content_type or "").lower()
+    if not ctype:
+        return True  # 缺 content-type 时不武断拒绝，交给正文判据
+    if ctype.startswith("text/"):
+        return True
+    return any(marker in ctype for marker in ("html", "xml", "json"))
+
+
 class SearchSession:
     """管理多轮搜索与阅读对话。"""
 
     MAX_PAGE_SIZE = 500_000       # 500KB limit per page
     MAX_RESULTS_PER_SEARCH = 20   # cap results per search round
+
+    READ_HEADERS: dict[str, str] = {
+        "User-Agent": "Mozilla/5.0 (compatible; NeoBot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+    }
 
     RESEARCH_MODES: dict[str, list[str]] = {
         "encyclopedia": [
@@ -82,6 +108,10 @@ class SearchSession:
         self._results_index: dict[int, SearchResult] = {}
         self._read_urls: set[str] = set()
 
+    async def aclose(self) -> None:
+        """释放底层引擎的长连接资源。"""
+        await self._manager.aclose()
+
     @property
     def rounds(self) -> list[SearchRound]:
         return list(self._rounds)
@@ -117,7 +147,11 @@ class SearchSession:
         if not results_to_fetch:
             return [self._results_index[idx] for idx in indices if idx in self._results_index]
 
-        async with httpx.AsyncClient(timeout=self._read_timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._read_timeout,
+            follow_redirects=True,
+            headers=dict(self.READ_HEADERS),
+        ) as client:
             await self._fetch_all(client, results_to_fetch)
 
         for r in results_to_fetch:
@@ -249,6 +283,7 @@ class SearchSession:
                 results=[],
                 engine="session",
                 error=f"已达到最大搜索轮次 ({self._max_rounds})",
+                degraded=True,
             )
 
         fetch_count = min(num_results * 2, 30)
@@ -320,6 +355,17 @@ class SearchSession:
 
         return reranked
 
+    @staticmethod
+    def _normalize_fetch_url(url: str) -> str:
+        """抓取前先归一化：解追踪壳 + 去跟踪参数；失败保留原值。"""
+        raw = str(url or "")
+        if not raw:
+            return raw
+        try:
+            return strip_tracking_params(unwrap_tracking(raw)) or raw
+        except Exception:
+            return raw
+
     async def _fetch_all(
         self,
         client: httpx.AsyncClient,
@@ -328,20 +374,38 @@ class SearchSession:
         import asyncio
 
         async def _fetch_one(r: SearchResult) -> SearchResult:
+            target = self._normalize_fetch_url(r.url)
+            if target != r.url and not r.raw_url:
+                r.raw_url = r.url
             # 搜索结果里的 URL 来自第三方页面（可被 SEO/恶意内容影响），
             # 必须按 SSRF 处理：否则可被引导去探测内网、本机面板(9981)
             # 或文件服务器(8765)。校验同时覆盖 IP 字面量与 DNS 解析结果。
-            if not await validate_public_url_async(r.url):
+            if not await validate_public_url_async(target):
                 r.content = "[已阻止] 该地址不是公网地址，未抓取"
                 r.content_fetched = False
                 return r
             try:
-                resp = await client.get(r.url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; NeoBot/1.0)",
-                    "Accept": "text/html,application/xhtml+xml",
-                })
+                resp = await client.get(target, headers=dict(self.READ_HEADERS))
                 resp.raise_for_status()
-                r.content = resp.text[: SearchSession.MAX_PAGE_SIZE]
+                if not _is_text_content(resp.headers.get("content-type", "")):
+                    r.content = f"[非文本内容] content-type={resp.headers.get('content-type')}"
+                    r.content_fetched = False
+                    return r
+                body = resp.text or ""
+                # 壳页 / 空正文 / 乱码都不算抓取成功（fix(9) D3 read 加固）。
+                if is_js_redirect_shell(body):
+                    r.content = "[跳过] 跳转壳页面，正文需浏览器渲染"
+                    r.content_fetched = False
+                    return r
+                if looks_like_empty_body(body):
+                    r.content = "[空内容] 页面正文为空"
+                    r.content_fetched = False
+                    return r
+                if looks_garbled(body):
+                    r.content = "[乱码] 正文不是可读文本"
+                    r.content_fetched = False
+                    return r
+                r.content = body[: SearchSession.MAX_PAGE_SIZE]
                 r.content_fetched = True
             except Exception as e:
                 r.content = f"[获取失败] {e}"
