@@ -82,7 +82,18 @@ class EventDispatcher:
 
     async def publish(self, event: Dict[str, Any]) -> None:
         with self._lock:
-            handlers = [handler for handler in self._handlers if handler.matches(event)]
+            handlers: list[_HandlerRegistration] = []
+            for handler in self._handlers:
+                try:
+                    if handler.matches(event):
+                        handlers.append(handler)
+                except Exception as exc:
+                    # 单个处理器的匹配逻辑（或形状异常的事件）不得让整条事件
+                    # 分发失败：跳过该处理器并告警，其余处理器继续。
+                    self._logger.error(
+                        "事件匹配失败，已跳过该处理器 "
+                        f"({handler.handler.__qualname__}): {exc}"
+                    )
 
         for handler in handlers:
             if handler.rule is not None:

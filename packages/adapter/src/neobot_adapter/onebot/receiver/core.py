@@ -18,6 +18,10 @@ from neobot_adapter.utils.parse import safe_parse_model
 
 logger = get_module_logger("adapter_receiver")
 
+#: data.get("echo") 的缺省哨兵：用于区分「没有 echo 键」与「echo 为 null」，
+#: 保持与原 '"echo" in data' 完全一致的判定语义（OneBot 响应用它关联回执）。
+_MISSING = object()
+
 
 def _extract_access_token(headers: Any, path: str) -> Optional[str]:
     """按 OneBot 11 鉴权规范从握手中取出 access token。
@@ -127,6 +131,14 @@ class AdapterCore:
         )
 
     @property
+    def abandoned(self) -> bool:
+        """上一次 stop() 是否已放弃等待旧接收线程（接收器不可用，需重启进程）。
+
+        供控制面据此给出明确错误，而不是把「重建被静默拒绝」当成正常状态。
+        """
+        return self._abandoned
+
+    @property
     def settings(self) -> ReverseWsSettings:
         """当前解析后的监听设置（供状态展示与重配比较）。"""
         return self.resolve_settings()
@@ -148,8 +160,15 @@ class AdapterCore:
 
         Returns:
             如果连接建立返回 True，超时返回 False
+
+        注意：_connection_established 是「曾经连上过」的闩锁。只看闩锁会在
+        接收器已被放弃（旧线程卡死、重建被拒绝）或框架刚断开时误报「已连接」，
+        让启动探针打印「事件管线就绪」而实际收不到任何事件。因此闩锁置位之后
+        还要确认当前确实存在活跃连接。
         """
-        return self._connection_established.wait(timeout=timeout)
+        if not self._connection_established.wait(timeout=timeout):
+            return False
+        return bool(self.active_connections)
 
     def iter_messages(
         self, block: bool = True, timeout: Optional[float] = None
@@ -181,11 +200,35 @@ class AdapterCore:
         return self._api_instance
 
     def start(self):
+        """启动反向 WebSocket 接收线程。
+
+        Raises:
+            RuntimeError: 旧接收线程在收到停止请求后仍然存活（stop() 宽限耗尽、
+                已放弃）。此时旧线程仍占着监听 socket 与它的事件循环，本方法
+                **无法**建立新的监听；必须显式失败，否则上层会把「没有任何监听」
+                当成重建成功。旧线程已退出的正常 stop→start（软重启/待机恢复）
+                不受影响，照常重建。
+        """
         with self._lifecycle_lock:
             if self.thread and self.thread.is_alive():
-                logger.error("接收器已在运行")
-                return
+                # 只有「线程确实没退」才拒绝：stop() 会先置 _stop_event 再等线程，
+                # 残留的 _stop_event 本身不代表线程还活着（软重启/待机恢复会连续
+                # stop→start）。跟着自己的 stop 信号正常退出的线程在这里会被判为
+                # 已结束，随后照常重建，不会被误判成卡死而中断恢复流程。
+                logger.error("接收器旧线程仍存活，拒绝重建（需重启进程）")
+                raise RuntimeError(
+                    "接收器旧线程仍存活（此前已请求停止但未退出），"
+                    "无法重建反向 WebSocket 服务；请重启 NeoBot 进程"
+                )
+            if self.thread is not None:
+                # 旧线程已退出（含「停止后正常收尾」）：不阻止重建，但留一条
+                # 日志便于区分「首次启动」与「重启」。
+                logger.info("接收器旧线程已退出，重建新的接收线程")
             self._stop_event.clear()
+            self._abandoned = False
+            # 新服务还没有任何连接：清掉上一次运行遗留的闩锁，
+            # 让 wait_for_connection 只反映本次运行建立的真实连接。
+            self._connection_established.clear()
             self.thread = threading.Thread(target=self._run_thread_target, daemon=True)
             self.thread.start()
         logger.info("接收器已启动")
@@ -235,6 +278,12 @@ class AdapterCore:
                         "接收器停止兜底超时，后台守护线程将由进程退出时回收"
                     )
                 self._abandoned = True
+                # 放弃 = 接收器已不可用：旧线程仍占着监听 socket 与事件循环，
+                # 既不会再接受新连接也不会回收已有连接。必须把「已连接」状态一并
+                # 作废，否则 wait_for_connection / 启动探针会继续报「已连接、
+                # 事件管线就绪」，而上层完全看不出服务已经死了。
+                self._connection_established.clear()
+                self.active_connections.clear()
             else:
                 self.thread = None
                 self._active_settings = None
@@ -262,6 +311,9 @@ class AdapterCore:
             self._async_stop_event = None
             # 先摘掉引用再收尾：stop() 从控制面线程读 self.loop 时不会再拿到这个 loop。
             self.loop = None
+            # 接收线程退出后不存在可用连接：无论 _run_server 的收尾是否被取消，
+            # 都在这里清闩锁，保证「闩锁置位 ⇒ 接收线程仍在运行」这一不变式。
+            self._connection_established.clear()
             self._shutdown_loop(loop)
 
     def _cancel_loop_tasks(self) -> None:
@@ -491,14 +543,23 @@ class AdapterCore:
                 except (json.JSONDecodeError, ValueError):
                     logger.warning("收到畸形 JSON 帧，已跳过")
                     continue
+                if not isinstance(data, dict):
+                    # OneBot 事件/响应帧必须是 JSON 对象。数组、字符串、数字、
+                    # null 等非对象帧若继续下传：'"echo" in data' 会抛 TypeError
+                    # 拆掉连接，字符串/数组还会被塞进消息队列并在
+                    # EventDispatcher.matches() 上抛 AttributeError 打死分发循环。
+                    logger.warning(
+                        f"收到非对象 JSON 帧({type(data).__name__})，已跳过"
+                    )
+                    continue
                 if self._packet_callback is not None:
                     try:
                         self._packet_callback(data)
                     except Exception as exc:
                         logger.error(f"调试收包回调失败: {exc}")
-                # 区分响应和事件
-                if "echo" in data:
-                    echo = data["echo"]
+                # 区分响应和事件（data 已确认为 dict，取键不会再抛异常）
+                echo = data.get("echo", _MISSING)
+                if echo is not _MISSING:
                     logger.debug(f"收到echo响应: echo={echo}")
                     await self._fulfill_echo(websocket, echo, data)
                 else:
@@ -547,6 +608,11 @@ class AdapterCore:
                     conn_echo_set.remove(echo)
 
     async def _handle_event(self, websocket, event):
+        # 入队只放 dict：非对象事件一旦进队列，会在 EventDispatcher.matches()
+        # 上抛 AttributeError 并打死分发循环（历史故障：[] / 不含 echo 的字符串）。
+        if not isinstance(event, dict):
+            logger.warning(f"忽略非对象事件({type(event).__name__})")
+            return
         # 放入队列（原始事件）
         try:
             self.message_queue.put_nowait(event)

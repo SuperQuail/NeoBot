@@ -68,6 +68,11 @@ class OneBotAdapter:
         return bool(self._core.active_connections)
 
     @property
+    def receiver_abandoned(self) -> bool:
+        """接收器是否已被放弃（旧线程卡死，进程内无法重建，只能重启进程）。"""
+        return self._core.abandoned
+
+    @property
     def http_url(self) -> str:
         """反向 WS 模式没有本地 HTTP 服务；显式声明以统一 RuntimeAdapter 契约。"""
         return ""
@@ -151,8 +156,16 @@ class OneBotAdapter:
             return
         self._stopping = asyncio.Event()
         bind_core(self._core)
-        self._core.start()
+        try:
+            self._core.start()
+        except Exception:
+            # 接收器拒绝重建（旧线程卡死）：不要把核心绑定与「停止中」状态
+            # 留在半启动状态，也不要把异常静默吞掉 —— 上层必须能看见失败。
+            unbind_core()
+            self._stopping.set()
+            raise
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        self._dispatch_task.add_done_callback(self._on_dispatch_task_done)
 
     async def stop(self) -> None:
         self._stopping.set()
@@ -375,7 +388,32 @@ class OneBotAdapter:
             event = await asyncio.to_thread(self._core.get_message, True, 0.1)
             if event is None:
                 continue
-            await self._dispatcher.publish(event)
+            try:
+                await self._dispatcher.publish(event)
+            except Exception as exc:
+                # 单条坏事件不得打死事件入口：记录后继续处理后续事件。
+                self._logger.error(
+                    "事件分发失败，已跳过该事件",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+    def _on_dispatch_task_done(self, task: "asyncio.Task[None]") -> None:
+        """分发循环退出必须可观测：否则事件入口会静静死去、无人知晓。"""
+        if self._stopping.is_set():
+            return
+        if task.cancelled():
+            self._logger.error("适配器分发循环被取消，事件入口已停止")
+            return
+        exc = task.exception()
+        if exc is None:
+            self._logger.warning("适配器分发循环已退出，事件入口已停止")
+        else:
+            self._logger.error(
+                "适配器分发循环异常退出，事件入口已停止",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def _subscribe(
         self,
