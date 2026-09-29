@@ -16,6 +16,7 @@ import io
 import json
 import os
 import tarfile
+import zipfile
 
 import pytest
 
@@ -353,4 +354,146 @@ async def test_tar_missing_archive_still_reported(make_sandbox) -> None:
 
     assert result["ok"] is False
     assert "归档文件不存在" in result["error"]
+
+# ── zip：字符串前缀绕过 / 符号链接成员 / 路径语义 ────────────────────
+
+
+async def test_zip_sibling_prefix_escape_rejected(make_sandbox) -> None:
+    """dest=uploads 时成员 ../uploads_evil/a.txt：字符串前缀比较必须换成路径语义。
+
+    修复前 (dest / "../uploads_evil/a.txt").resolve() 的字符串以 dest 为前缀，
+    startswith 检查放行（zipfile 事后会把 .. 剥掉，所以不真逃逸，但检查形同虚设；
+    同一个比较函数在 tar 分支就是真实的越界写）。
+    """
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    root = sandbox.resolve_path("")
+    archive = sandbox.resolve_path("zprefix.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        zf.writestr("../uploads_evil/a.txt", "pwned")
+
+    result = _parse(
+        await skill.execute(
+            "archive_decompress", {"archive": "zprefix.zip", "dest": "uploads"}
+        )
+    )
+
+    _assert_rejected(result)
+    assert not (root / "uploads_evil").exists()
+    assert not (sandbox.resolve_path("uploads/uploads_evil/a.txt")).exists()
+
+
+async def test_zip_symlink_member_rejected(make_sandbox) -> None:
+    """zip 成员声明为符号链接（外部属性 S_IFLNK）必须拒绝，不得原样落盘。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    outside = sandbox.resolve_path("").parent / "zip_escape"
+    archive = sandbox.resolve_path("zsym.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        info = zipfile.ZipInfo("esc")
+        info.external_attr = 0o120777 << 16
+        zf.writestr(info, str(outside))
+        zf.writestr("esc/pwn.txt", "pwned")
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "zsym.zip", "dest": "out"})
+    )
+
+    _assert_rejected(result)
+    assert not (sandbox.resolve_path("out/esc")).is_symlink()
+    assert not (outside / "pwn.txt").exists()
+
+
+async def test_zip_parent_traversal_member_rejected(make_sandbox) -> None:
+    """zip 成员 ../evil.txt 拒绝（回归护栏：修复前也拒绝）。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    root = sandbox.resolve_path("")
+    archive = sandbox.resolve_path("zup.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        zf.writestr("../evil.txt", "pwned")
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "zup.zip", "dest": "out"})
+    )
+
+    _assert_rejected(result)
+    assert not (root / "evil.txt").exists()
+
+
+async def test_zip_backslash_traversal_member_rejected(make_sandbox) -> None:
+    """反斜杠形式的 ..\\ 成员拒绝：Windows 上 zipfile 会把它当路径分隔符。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    root = sandbox.resolve_path("")
+    archive = sandbox.resolve_path("zbs.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        zf.writestr("..\\evil_zip_bs.txt", "pwned")
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "zbs.zip", "dest": "out"})
+    )
+
+    _assert_rejected(result)
+    assert not (root / "evil_zip_bs.txt").exists()
+
+
+async def test_zip_absolute_member_rejected(make_sandbox) -> None:
+    """zip 成员是绝对路径时拒绝，目标位置不得出现文件（回归护栏）。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    outside = sandbox.resolve_path("").parent / "zip_abs_pwn.txt"
+    archive = sandbox.resolve_path("zabs.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        zf.writestr(str(outside), "pwned")
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "zabs.zip", "dest": "out"})
+    )
+
+    _assert_rejected(result)
+    assert not outside.exists()
+
+
+async def test_zip_normal_archive_still_extracts(make_sandbox) -> None:
+    """中文名 + 多层目录：zip 分支修复后仍应正常解压。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    archive = sandbox.resolve_path("normal.zip")
+    with zipfile.ZipFile(str(archive), "w") as zf:
+        zf.writestr("资料/说明.txt", "中文内容")
+        zf.writestr("资料/子目录/更多.txt", "更多内容")
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "normal.zip", "dest": "out"})
+    )
+
+    assert result["ok"] is True, result
+    assert result["file_count"] == 2
+    assert (sandbox.resolve_path("out/资料/说明.txt")).read_text(encoding="utf-8") == "中文内容"
+    assert (
+        sandbox.resolve_path("out/资料/子目录/更多.txt")
+    ).read_text(encoding="utf-8") == "更多内容"
+
+
+async def test_zip_compress_then_decompress_roundtrip(make_sandbox) -> None:
+    """自家 zip 压缩→解压链路保持可用（端到端护栏）。"""
+    sandbox = make_sandbox()
+    skill = _skill(sandbox)
+    await sandbox.write_file(sandbox.resolve_path("src/一.txt"), b"one")
+    await sandbox.write_file(sandbox.resolve_path("src/sub/二.txt"), b"two")
+
+    packed = _parse(
+        await skill.execute("archive_compress", {"paths": ["src"], "output": "round.zip"})
+    )
+    assert packed["ok"] is True, packed
+
+    result = _parse(
+        await skill.execute("archive_decompress", {"archive": "round.zip", "dest": "unpacked"})
+    )
+
+    assert result["ok"] is True, result
+    assert (sandbox.resolve_path("unpacked/src/一.txt")).read_bytes() == b"one"
+    assert (sandbox.resolve_path("unpacked/src/sub/二.txt")).read_bytes() == b"two"
+
 

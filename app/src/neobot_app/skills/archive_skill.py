@@ -322,14 +322,28 @@ class ArchiveSkill(SkillModule):
     def _decompress_zip_sync(self, archive: Path, dest: Path) -> str:
         count = 0
         total_size = 0
+        dest_root = dest.resolve()
         with zipfile.ZipFile(str(archive), "r") as zf:
             members = zf.infolist()
-            # 安全检查：防止 Zip Slip 攻击
+            # 安全检查：防止 Zip Slip 攻击与符号链接成员落盘。
+            # 边界比较必须走路径语义（is_relative_to）：原字符串 startswith 会被
+            # 「dest 兄弟目录名以 dest 名为前缀」的成员绕过（dest=uploads 时
+            # ../uploads_evil/a.txt）。
             for m in members:
-                member_path = (dest / m.filename).resolve()
-                if not str(member_path).startswith(str(dest.resolve())):
-                    return _json({"ok": False, "error": f"安全拒绝：{m.filename} 试图解压到目标目录之外"})
-            zf.extractall(str(dest))
+                if _is_zip_symlink(m):
+                    return _json({
+                        "ok": False,
+                        "error": f"安全拒绝：{m.filename} 是符号链接成员",
+                    })
+                reason = _unsafe_member_reason(dest_root, m.filename)
+                if reason is not None:
+                    return _json({"ok": False, "error": f"安全拒绝：{m.filename} {reason}"})
+            if _ZIP_EXTRACT_FILTER_SUPPORTED:
+                # zipfile 的 filter= 晚于 tarfile（CPython 3.13 尚无此参数，实测 TypeError），
+                # 运行时支持时同样用 data 作为第二层兜底。
+                zf.extractall(str(dest), filter="data")
+            else:
+                zf.extractall(str(dest))
             count = len(members)
             total_size = sum(m.file_size for m in members)
         return _json({
