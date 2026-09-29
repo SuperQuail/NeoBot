@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from neobot_chat.runtime.agent import Agent
 from neobot_chat.schema.exceptions import ProviderError
 from neobot_chat.schema.types import ChatChunk, ToolAccessPolicy, ToolGuardContext
@@ -41,6 +43,25 @@ class _StreamingProvider:
         yield ChatChunk(delta="hel")
         yield ChatChunk(delta="lo")
         yield ChatChunk(message={"role": "assistant", "content": "hello"})
+
+    async def close(self) -> None:
+        return None
+
+
+class _StreamThenFailProvider:
+    """流式假 Provider：先产出一段 delta，再抛异常（模拟传输中断）。"""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.calls = 0
+
+    async def chat(self, messages: list[dict], tools=None) -> dict:
+        raise AssertionError("stream_invoke 不应调用 chat")
+
+    async def stream(self, messages: list[dict], tools=None):
+        self.calls += 1
+        yield ChatChunk(delta="半句")
+        raise self._error
 
     async def close(self) -> None:
         return None
@@ -269,21 +290,59 @@ async def test_invoke_reports_unknown_tool_error_in_messages(tmp_path: Path):
         await agent.close()
 
 
-async def test_invoke_returns_fallback_state_on_provider_error(tmp_path: Path):
-    """provider.chat 抛异常时 invoke 必须返回兜底状态而不向调用方抛错。"""
+async def test_invoke_raises_and_keeps_history_clean_on_provider_error(tmp_path: Path):
+    """provider.chat 抛异常时 invoke 必须显式失败，且不把错误写进对话历史。
+
+    旧行为是把 `Error: ...` 当成 assistant 回复返回，调用方无法区分"模型回复"与
+    "调用失败"，错误串还会随历史回灌 —— 见 fix(12) §4.2。
+    """
     # Arrange
     provider = FakeProvider([ProviderError("API down")])
     agent = Agent(provider, cwd=tmp_path, max_iterations=3)
     try:
-        # Act
-        state = await agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
+        # Act / Assert
+        with pytest.raises(ProviderError) as excinfo:
+            await agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
 
-        # Assert
-        assert isinstance(state, dict)
-        assert "messages" in state
-        last = state["messages"][-1]
-        assert last["role"] == "assistant"
-        assert last["content"].startswith("Error: ProviderError: API down")
+        assert "API down" in str(excinfo.value)
+        assert provider.calls == 1
+    finally:
+        await agent.close()
+
+
+async def test_invoke_wraps_unknown_provider_exception_with_context(tmp_path: Path):
+    """非 ProviderError 的底层异常要带上 provider/原因，便于编排层降级与归因。"""
+    provider = FakeProvider([RuntimeError("socket closed")])
+    agent = Agent(provider, cwd=tmp_path, max_iterations=3)
+    try:
+        with pytest.raises(ProviderError) as excinfo:
+            await agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
+
+        error = excinfo.value
+        assert error.original_name == "RuntimeError"
+        assert error.provider
+        assert error.iteration == 0
+        assert error.stream_started is False
+    finally:
+        await agent.close()
+
+
+async def test_stream_invoke_raises_with_stream_started_flag(tmp_path: Path):
+    """流式路径：已产出 delta 后失败必须带 stream_started=True，调用方据此不重放。"""
+    provider = _StreamThenFailProvider(RuntimeError("connection reset"))
+    agent = Agent(provider, cwd=tmp_path, max_iterations=3)
+    try:
+        received: list[str] = []
+        with pytest.raises(ProviderError) as excinfo:
+            async for chunk in agent.stream_invoke(
+                {"messages": [{"role": "user", "content": "hi"}]}
+            ):
+                if chunk.delta:
+                    received.append(chunk.delta)
+
+        assert received == ["半句"]
+        assert excinfo.value.stream_started is True
+        assert excinfo.value.original_name == "RuntimeError"
     finally:
         await agent.close()
 
