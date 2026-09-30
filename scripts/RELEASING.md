@@ -3,6 +3,7 @@
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：PR 的 Python 静态检查/测试、前端 lint/类型/测试/构建及入库产物一致性检查；同时可由发布工作流复用。
+- `.github/workflows/pr-title.yml`：PR 标题规范检查（`scripts/check_pr_title.py`）。PR 标题在 squash 合并时会成为 main 上的提交标题，因此按 commit message 规范阻断：格式、长度、`(#NN)`、空话、「主题 —— 明细」清单写法；「疑似罗列」只警告，加 `--strict` 才阻断。
 - `.github/workflows/publish.yml`：main 推送后通过 GitHub API 确认该提交来自合并 PR，直接推送不发布。也可在 Actions 页面手动对 main 触发（`workflow_dispatch`）：手动触发是对 main 的显式发布动作，仅当 ref 就是 main 时才可信，从其他分支手动触发一律跳过。两种情况都会先重跑 CI，通过后才检测版本、构建和上传。
 - CI 和发布流程只读检查源码版本及锁文件，不自动改版本、不更新锁文件，也不提交或推送代码；无需 main 写权限。
 
