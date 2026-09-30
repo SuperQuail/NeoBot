@@ -339,7 +339,16 @@ def cmd_open_web(args: argparse.Namespace) -> None:
     print()
 
     try:
-        from DrissionPage import ChromiumOptions, ChromiumPage
+        from neobot_app.browser.agent_browser._compat import (
+            DRISSIONPAGE_HINT,
+            ChromiumOptions,
+            ChromiumPage,
+            DRISSIONPAGE_AVAILABLE,
+        )
+
+        if not DRISSIONPAGE_AVAILABLE:
+            print(f"错误: {DRISSIONPAGE_HINT}")
+            sys.exit(1)
 
         # 自动检测浏览器路径（Chrome > Edge > Chromium）
         from neobot_app.browser.agent_browser.manager import _find_chrome_binary
@@ -381,19 +390,41 @@ def cmd_open_web(args: argparse.Namespace) -> None:
                 pass
 
         print("会话已保存。")
-    except ImportError:
-        print("错误: 需要安装 DrissionPage: pip install DrissionPage")
+    except ImportError as exc:
+        from neobot_app.browser.agent_browser._compat import DRISSIONPAGE_HINT
+
+        print(f"错误: {DRISSIONPAGE_HINT}")
+        print(f"（原始错误：{exc}）")
         sys.exit(1)
     except Exception as exc:
         print(f"错误: 启动浏览器失败: {exc}")
         sys.exit(1)
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """依赖体检：不启动 Bot，只回答「装的是哪一版、缺哪个符号」。"""
+    from neobot_app.doctor import collect_dependency_report, format_report
+
+    report = collect_dependency_report()
+    print(format_report(report))
+    unhealthy = [row for row in report["dependencies"] if not row["ok"]]
+    sys.exit(1 if unhealthy else 0)
+
+
 def cmd_install_browser(args: argparse.Namespace) -> None:
     """下载内嵌 Chromium（仅 Linux/macOS 或无 Chrome/Edge 时使用）。"""
     import platform
     if platform.system() == "Windows":
-        from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+        # 这条路会顺带 import DrissionPage：依赖版本不对时给出可执行的提示，
+        # 而不是抛一句 cannot import name 'ChromiumPage'。
+        try:
+            from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+        except Exception as exc:  # noqa: BLE001 - 导入期失败统一转成可读提示
+            from neobot_app.browser.agent_browser._compat import DRISSIONPAGE_HINT
+
+            print(f"错误: 浏览器组件不可用：{DRISSIONPAGE_HINT}")
+            print(f"（原始错误：{type(exc).__name__}: {exc}）")
+            sys.exit(1)
         existing = _find_chrome_binary()
         if existing:
             print(f"已检测到浏览器: {existing}")
@@ -1035,6 +1066,14 @@ def main() -> None:
     firewall_parser.add_argument(
         "--port", type=int, default=9981,
         help="网页面板端口 (默认 9981)",
+    )
+
+    # `neobot doctor`
+    sub.add_parser(
+        "doctor", help="依赖体检：列出关键第三方库的版本与缺失符号，不启动 Bot",
+        description="检查 DrissionPage / httpx / sqlalchemy / aiohttp / loguru 的版本，"
+                    "逐个验证项目真正用到的符号是否存在，并打印模块路径与解释器信息。"
+                    "新环境部署报 ImportError / AttributeError 时先跑它。",
     )
 
     # `neobot init [--force]`

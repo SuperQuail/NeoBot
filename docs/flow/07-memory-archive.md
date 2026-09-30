@@ -13,7 +13,7 @@ covers:
   - packages/storage/src/neobot_storage/models.py
   - packages/storage/src/neobot_storage/repositories/archive.py
   - packages/storage/src/neobot_storage/repositories/archive_snapshot.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 13d4c9b866ca
 ---
 

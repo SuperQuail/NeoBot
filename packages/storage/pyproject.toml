@@ -1,6 +1,6 @@
 [project]
 name = "neobot-storage"
-version = "1.1.0"
+version = "1.2.0"
 description = "Storage layer for NeoBot — SQLAlchemy + Alembic"
 readme = "README.md"
 authors = [
@@ -9,9 +9,9 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "sqlalchemy[asyncio]>=2.0",
-    "aiosqlite>=0.20.0",
-    "alembic>=1.15.0",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "aiosqlite>=0.20.0,<0.23",
+    "alembic>=1.15.0,<2",
     "neobot-contracts",
 ]
 

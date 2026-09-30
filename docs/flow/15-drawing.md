@@ -2,7 +2,7 @@
 flow: 15-drawing
 covers:
   - app/src/neobot_app/drawing/
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 5ba359524368
 ---
 

@@ -160,3 +160,7 @@ docs/flow/_site/
 .git-backup/
 scripts/flow/_pr_body_draft.txt
 scripts/flow/_commit_msg.txt
+
+# 本地临时提交信息文件（不入库）
+.commit-msg.tmp
+

@@ -8,7 +8,7 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 013bea14911e
 ---
 

@@ -9,11 +9,28 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from neobot_app.browser.agent_browser import AgentBrowser
 from neobot_contracts.ports.screenshot import ScreenshotUnavailable
 
 if TYPE_CHECKING:
+    from neobot_app.browser.agent_browser import AgentBrowser
     from neobot_app.browser.agent_browser.manager import BrowserManager
+
+
+def _agent_browser_class() -> Any:
+    """取 AgentBrowser 类（惰性导入，且保留可替换的引用点）。
+
+    两件事同时成立：
+
+    1. **惰性**：只有真的要驱动浏览器时才 import DrissionPage —— 依赖版本不对
+       （例如装成 5.x，顶层没有 ChromiumPage）时，浏览器包本身仍可导入，
+       不会在启动阶段炸掉整个进程；
+    2. **可替换**：测试与上层需要替换实现时，仍然指向同一个函数，
+       不需要知道内部 import 位置。
+    """
+
+    from neobot_app.browser.agent_browser import AgentBrowser as _AgentBrowser
+
+    return _AgentBrowser
 
 
 class BrowserScreenshotBackend:
@@ -78,9 +95,11 @@ class BrowserAgentWrapper:
     # ── 生命周期 ──
 
     async def _ensure(self) -> AgentBrowser:
+        # 惰性导入在 _agent_browser_class() 里：依赖版本不对时浏览器包仍可导入，
+        # 只有真正要驱动浏览器才会失败（见该函数的说明）。
         async with self._init_lock:
             if self._agent is None:
-                self._agent = AgentBrowser(
+                self._agent = _agent_browser_class()(
                     headless=self._headless,
                     port=self._port,
                     user_data_dir=str(self._data_dir),
