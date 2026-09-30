@@ -10,6 +10,7 @@ from typing import Any, cast
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_chat.providers.base import Provider
+from neobot_chat.schema.exceptions import ProviderError
 from neobot_chat.schema.protocol import StatePreprocessor, ToolGuard
 from neobot_chat.schema.types import (
     ChatChunk,
@@ -99,11 +100,24 @@ class Agent:
             self._emit("llm_start", {"iteration": i})
             try:
                 response = await self.provider.chat(messages, tools=tools)
+            except ProviderError:
+                # 已经是类型化的 provider 失败（含 NativeVisionUnsupportedError）：
+                # 原样上抛，既不包装也不写进历史 —— 视觉降级链路依赖这个类型。
+                self._emit("error", {"provider": True, "error": "ProviderError"})
+                raise
             except Exception as exc:
-                error_text = f"Error: {type(exc).__name__}: {exc}"
+                # 失败必须显式：旧行为是把异常降级成 assistant 文本返回，
+                # 调用方无法区分"模型回复"与"调用失败"，错误串还会随历史回灌。
+                error_text = f"{type(exc).__name__}: {exc}"
                 self._emit("error", {"provider": True, "error": error_text})
-                messages.append({"role": "assistant", "content": error_text})
-                break
+                raise ProviderError(
+                    error_text,
+                    provider=getattr(self.provider, "registered_key", "")
+                    or getattr(self.provider, "model", "")
+                    or type(self.provider).__name__,
+                    original=exc,
+                    iteration=i,
+                ) from exc
             if heartbeat:
                 heartbeat()
             messages.append(response)
@@ -137,22 +151,40 @@ class Agent:
             self._emit("llm_start", {"iteration": i, "stream": True})
 
             response: Message | None = None
+            # 是否已经向调用方产出过内容：决定失败后能否重放请求。
+            emitted = False
             try:
                 async for chunk in self.provider.stream(messages, tools=tools):
                     if chunk.reasoning_delta:
+                        emitted = True
                         yield ChatChunk(reasoning_delta=chunk.reasoning_delta)
                     if chunk.delta:
+                        emitted = True
                         yield ChatChunk(delta=chunk.delta)
                     chunk_message = chunk.message
                     if chunk_message is not None:
                         response = chunk_message
                         yield ChatChunk(message=chunk_message)
+            except ProviderError:
+                self._emit(
+                    "error",
+                    {"provider": True, "error": "ProviderError", "stream": True},
+                )
+                raise
             except Exception as exc:
-                error_text = f"Error: {type(exc).__name__}: {exc}"
-                self._emit("error", {"provider": True, "error": error_text})
-                messages.append({"role": "assistant", "content": error_text})
-                yield ChatChunk(state={**state, "messages": messages})
-                return
+                error_text = f"{type(exc).__name__}: {exc}"
+                self._emit("error", {"provider": True, "error": error_text, "stream": True})
+                # 不再产出"最后一个 chunk 是错误文本"的伪正常结束：调用方可能已把
+                # 前面的 delta 发给用户，stream_started 让其知道不能重放。
+                raise ProviderError(
+                    error_text,
+                    provider=getattr(self.provider, "registered_key", "")
+                    or getattr(self.provider, "model", "")
+                    or type(self.provider).__name__,
+                    original=exc,
+                    iteration=i,
+                    stream_started=emitted,
+                ) from exc
 
             if response is None:
                 break

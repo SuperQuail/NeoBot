@@ -116,11 +116,18 @@ class WebSearchExecutor:
         max_rounds: int = 5,
         preview_pages_limit: int = 30,
         variant_result_limit: int = 6,
+        *,
+        browser_fallback: bool = True,
+        browser_timeout_seconds: float = 8.0,
+        engine_budgets: dict[str, float] | None = None,
     ) -> None:
         self._engines = engines or ["bing", "duckduckgo"]
         self._max_rounds = max_rounds
         self._preview_pages_limit = preview_pages_limit
         self._variant_result_limit = variant_result_limit
+        self._browser_fallback = browser_fallback
+        self._browser_timeout_seconds = browser_timeout_seconds
+        self._engine_budgets = engine_budgets
         self._session: SearchSession | None = None
 
     def _get_session(self) -> SearchSession:
@@ -128,6 +135,9 @@ class WebSearchExecutor:
             self._session = SearchSession(
                 engines=self._engines,
                 max_rounds=self._max_rounds,
+                browser_fallback=self._browser_fallback,
+                browser_timeout_seconds=self._browser_timeout_seconds,
+                engine_budgets=self._engine_budgets,
             )
         return self._session
 

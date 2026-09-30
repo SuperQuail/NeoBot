@@ -600,8 +600,17 @@ class ArchiveMemoryAutoSummaryService:
                 conversation_kind=conversation_kind,
                 conversation_id=conversation_id,
             )
-        except Exception:
-            return
+        except Exception as exc:
+            # 计费/用量数据一旦丢失无法恢复，必须留痕（此前是静默 return，
+            # 统计面板与账单少计且事后无法定位）。
+            self._logger.warning(
+                "档案总结用量记录失败，本次消耗未计入统计",
+                conversation_kind=conversation_kind,
+                conversation_id=conversation_id,
+                input_tokens=locals().get("input_tokens", 0),
+                output_tokens=locals().get("output_tokens", 0),
+                error=str(exc) or type(exc).__name__,
+            )
 
     @asynccontextmanager
     async def _counter_lock(self, counter_key: str) -> AsyncIterator[asyncio.Lock]:

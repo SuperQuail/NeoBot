@@ -719,6 +719,10 @@ class ProblemSolverToolExecutor(ToolExecutor):
             engines=ws.get("engines"),
             max_rounds=ws.get("max_rounds", 5),
             preview_pages_limit=ws.get("preview_pages_limit", 30),
+            variant_result_limit=ws.get("variant_result_limit", 6),
+            browser_fallback=ws.get("browser_fallback", True),
+            browser_timeout_seconds=ws.get("browser_timeout_seconds", 8.0),
+            engine_budgets=ws.get("engine_budgets"),
         )
         self._sandbox = sandbox_service
         self._vision_provider = vision_provider

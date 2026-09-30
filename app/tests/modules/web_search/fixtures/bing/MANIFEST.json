@@ -1,0 +1,176 @@
+[
+ {
+  "fixture": "degraded_05_zhihu-zhinan.html",
+  "kind": "degraded",
+  "query": "知乎 直男",
+  "expect_domain": "zhihu.com",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://support.google.com/docs/answer/3093343?hl=en",
+   "https://support.google.com/docs/answer/3093343?hl=ja"
+  ]
+ },
+ {
+  "fixture": "degraded_06_meituan-waimai.html",
+  "kind": "degraded",
+  "query": "美团 外卖",
+  "expect_domain": "meituan.com",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://www.apartments.com/sunrise-center-apartments-citrus-heights-ca/e38gt9m/?msockid=32",
+   "https://www.apartmentfinder.com/California/Citrus-Heights-Apartments/Sunrise-Center-Apartm"
+  ]
+ },
+ {
+  "fixture": "degraded_14_zhihu-login.html",
+  "kind": "degraded",
+  "query": "知乎 登录",
+  "expect_domain": "zhihu.com",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://www.moneygeek.com/insurance/business/food/restaurant/",
+   "https://www.latentinsure.com/blog/best-restaurant-insurance"
+  ]
+ },
+ {
+  "fixture": "degraded_19_xiaopozhan.html",
+  "kind": "degraded",
+  "query": "小破站 官网",
+  "expect_domain": "bilibili.com",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://www.xiaohongshu.com/",
+   "https://baike.baidu.com/item/%E5%B0%8F/1402035"
+  ]
+ },
+ {
+  "fixture": "degraded_22_sf-express.html",
+  "kind": "degraded",
+  "query": "顺丰 快递单号查询",
+  "expect_domain": "sf-express",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://www.walmart.com/",
+   "https://www.walmart.com/all-departments"
+  ]
+ },
+ {
+  "fixture": "degraded_23_oriental-pearl.html",
+  "kind": "degraded",
+  "query": "东方明珠 门票",
+  "expect_domain": "orientalpearltower",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.25,
+  "cov_titletext_max": 0.25,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.25<0.35"
+  ],
+  "sample_urls": [
+   "https://www.eastmoney.com/",
+   "https://baike.baidu.com/item/%E4%B8%9C%E6%96%B9Project/6217040"
+  ]
+ },
+ {
+  "fixture": "degraded_24_douyin.html",
+  "kind": "degraded",
+  "query": "抖音 官网",
+  "expect_domain": "douyin.com",
+  "expected_ok": false,
+  "n_results": 10,
+  "cov_title_max": 0.0,
+  "cov_titletext_max": 0.0,
+  "judge_ok": false,
+  "reasons": [
+   "cov_max=0.00<0.35"
+  ],
+  "sample_urls": [
+   "https://www.microsoft.com/en-us?msockid=322ead11fdbe66111f60bac5fc226745",
+   "https://account.microsoft.com/account"
+  ]
+ },
+ {
+  "fixture": "good_00_tsinghua.html",
+  "kind": "good",
+  "query": "清华大学 官网",
+  "expect_domain": "tsinghua.edu.cn",
+  "expected_ok": true,
+  "n_results": 10,
+  "cov_title_max": 0.75,
+  "cov_titletext_max": 0.75,
+  "judge_ok": true,
+  "reasons": [],
+  "sample_urls": [
+   "https://www.tsinghua.edu.cn/",
+   "https://zh.m.wikipedia.org/wiki/%E6%B8%85%E5%8D%8E%E5%A4%A7%E5%AD%A6"
+  ]
+ },
+ {
+  "fixture": "good_08_douban.html",
+  "kind": "good",
+  "query": "豆瓣电影",
+  "expect_domain": "douban.com",
+  "expected_ok": true,
+  "n_results": 10,
+  "cov_title_max": 1.0,
+  "cov_titletext_max": 1.0,
+  "judge_ok": true,
+  "reasons": [],
+  "sample_urls": [
+   "https://movie.douban.com/",
+   "https://movie.douban.com/top250"
+  ]
+ },
+ {
+  "fixture": "good_11_netease-music.html",
+  "kind": "good",
+  "query": "网易云音乐",
+  "expect_domain": "163.com",
+  "expected_ok": true,
+  "n_results": 10,
+  "cov_title_max": 1.0,
+  "cov_titletext_max": 1.0,
+  "judge_ok": true,
+  "reasons": [],
+  "sample_urls": [
+   "https://music.163.com/",
+   "https://music.163.com/login"
+  ]
+ }
+]

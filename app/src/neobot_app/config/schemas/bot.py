@@ -1595,6 +1595,37 @@ class WebSearchConfig:
         default=6,
         metadata={"description": "研究模式中每个变体查询返回的最大结果数，默认 6"},
     )
+    engines: Optional[List[str]] = field(
+        default=None,
+        metadata={
+            "description": (
+                "搜索引擎与回退顺序（fix(9)）。默认 [\"bing\", \"duckduckgo\"]；"
+                "duckduckgo 始终作为最后兜底执行，排在浏览器通道之后。"
+            )
+        },
+    )
+    browser_fallback: bool = field(
+        default=True,
+        metadata={
+            "description": (
+                "HTTP 引擎都失败后是否再用浏览器脚本化通道补救（默认开）。"
+                "内容类失败（错配页）是身份/缓存问题，换浏览器比换站点有效。"
+            )
+        },
+    )
+    browser_timeout_seconds: Optional[float] = field(
+        default=8.0,
+        metadata={"description": "浏览器检索通道单次预算（秒），默认 8（实测单次约 1s）"},
+    )
+    engine_timeout_seconds: Optional[Dict[str, float]] = field(
+        default=None,
+        metadata={
+            "description": (
+                "按引擎覆盖单级预算（秒），例如 {\"duckduckgo\": 15}。"
+                "不填时 duckduckgo 用 15s（部署实测它慢）。"
+            )
+        },
+    )
 
 
 @dataclass

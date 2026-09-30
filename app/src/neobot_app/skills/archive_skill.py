@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
+import re
+import stat
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
@@ -18,6 +21,69 @@ from neobot_app.skills.base import SkillModule
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+#: 形如 "C:" 的 Windows 盘符前缀；成员名/链接目标出现即为绝对路径。
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+#: extractall(..., filter=) 的支持情况按运行时签名探测：
+#: tarfile 从 3.12 起有 filter=（本仓要求 3.13），zipfile 到 CPython 3.13 仍无
+#: （实测 TypeError: ZipFile.extractall() got an unexpected keyword argument 'filter'）。
+_ZIP_EXTRACT_FILTER_SUPPORTED = (
+    "filter" in inspect.signature(zipfile.ZipFile.extractall).parameters
+)
+
+
+def _is_absolute_member(name: str) -> bool:
+    """成员名/链接目标是否写成绝对路径（POSIX 根、Windows 盘符或 UNC）。"""
+    return name.startswith(("/", "\\")) or bool(_DRIVE_PREFIX.match(name))
+
+
+def _unsafe_member_reason(dest_root: Path, name: str, linkname: str = "") -> str | None:
+    """按路径语义校验归档成员（及链接目标）是否落在 dest 内。
+
+    返回拒绝原因，None 表示安全。注意：
+    - dest_root 必须是 resolve() 之后的目录；
+    - 边界判定用 Path.is_relative_to，不能用字符串 startswith —— 后者会被
+      「兄弟目录名以 dest 名为前缀」的成员绕过（dest=uploads 时 ../uploads_evil/a.txt）；
+    - resolve() 会跟随 dest 内既有的符号链接，因此穿过既有链接的成员同样被拒。
+    """
+    raw = str(name or "")
+    if not raw.strip():
+        return "成员名为空"
+    if _is_absolute_member(raw):
+        return "绝对路径"
+    parts = PurePosixPath(raw.replace("\\", "/")).parts
+    if ".." in parts:
+        return "包含 .. 的路径"
+    target = dest_root.joinpath(*parts)
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return "路径无法解析"
+    if not resolved.is_relative_to(dest_root):
+        return "路径解析后逃出目标目录"
+
+    link = str(linkname or "")
+    if not link.strip():
+        return None
+    if _is_absolute_member(link):
+        return "链接目标为绝对路径"
+    link_parts = PurePosixPath(link.replace("\\", "/")).parts
+    if ".." in link_parts:
+        return "链接目标包含 .."
+    try:
+        link_resolved = target.parent.joinpath(*link_parts).resolve()
+    except OSError:
+        return "链接目标无法解析"
+    if not link_resolved.is_relative_to(dest_root):
+        return "链接目标逃出目标目录"
+    return None
+
+
+def _is_zip_symlink(member: zipfile.ZipInfo) -> bool:
+    """zip 成员是否声明为符号链接（外部属性高 16 位是 Unix mode）。"""
+    return stat.S_ISLNK((member.external_attr >> 16) & 0xFFFF)
 
 
 class ArchiveSkill(SkillModule):
@@ -256,14 +322,28 @@ class ArchiveSkill(SkillModule):
     def _decompress_zip_sync(self, archive: Path, dest: Path) -> str:
         count = 0
         total_size = 0
+        dest_root = dest.resolve()
         with zipfile.ZipFile(str(archive), "r") as zf:
             members = zf.infolist()
-            # 安全检查：防止 Zip Slip 攻击
+            # 安全检查：防止 Zip Slip 攻击与符号链接成员落盘。
+            # 边界比较必须走路径语义（is_relative_to）：原字符串 startswith 会被
+            # 「dest 兄弟目录名以 dest 名为前缀」的成员绕过（dest=uploads 时
+            # ../uploads_evil/a.txt）。
             for m in members:
-                member_path = (dest / m.filename).resolve()
-                if not str(member_path).startswith(str(dest.resolve())):
-                    return _json({"ok": False, "error": f"安全拒绝：{m.filename} 试图解压到目标目录之外"})
-            zf.extractall(str(dest))
+                if _is_zip_symlink(m):
+                    return _json({
+                        "ok": False,
+                        "error": f"安全拒绝：{m.filename} 是符号链接成员",
+                    })
+                reason = _unsafe_member_reason(dest_root, m.filename)
+                if reason is not None:
+                    return _json({"ok": False, "error": f"安全拒绝：{m.filename} {reason}"})
+            if _ZIP_EXTRACT_FILTER_SUPPORTED:
+                # zipfile 的 filter= 晚于 tarfile（CPython 3.13 尚无此参数，实测 TypeError），
+                # 运行时支持时同样用 data 作为第二层兜底。
+                zf.extractall(str(dest), filter="data")
+            else:
+                zf.extractall(str(dest))
             count = len(members)
             total_size = sum(m.file_size for m in members)
         return _json({
@@ -294,15 +374,33 @@ class ArchiveSkill(SkillModule):
 
         count = 0
         total_size = 0
+        dest_root = dest.resolve()
         with tarfile.open(str(archive), mode) as tf:
-            # 安全检查
-            for m in tf.getmembers():
-                member_path = (dest / m.name).resolve()
-                if not str(member_path).startswith(str(dest.resolve())):
-                    return _json({"ok": False, "error": f"安全拒绝：{m.name} 试图解压到目标目录之外"})
-            tf.extractall(str(dest))
-            count = sum(1 for m in tf.getmembers() if m.isfile())
-            total_size = sum(m.size for m in tf.getmembers() if m.isfile())
+            members = tf.getmembers()
+            # 安全检查必须在解压前完成：extractall 会先建符号链接、再穿链接写文件，
+            # 事后检查落盘路径已经晚了。链接/设备成员一律拒绝（不看 linkname 是否"看起来"安全，
+            # 硬链接还能指向 dest 外已存在的文件）。
+            for m in members:
+                if (
+                    m.issym()
+                    or m.islnk()
+                    or m.ischr()
+                    or m.isblk()
+                    or m.isfifo()
+                    or m.isdev()
+                ):
+                    return _json({
+                        "ok": False,
+                        "error": f"安全拒绝：{m.name} 是不允许的链接/设备成员",
+                    })
+                reason = _unsafe_member_reason(dest_root, m.name, m.linkname)
+                if reason is not None:
+                    return _json({"ok": False, "error": f"安全拒绝：{m.name} {reason}"})
+            # filter="data" 是第二层兜底：即使上面的白名单漏了某种成员，tarfile 也会
+            # 拒绝绝对路径/越界链接并清掉 setuid 等高危位。
+            tf.extractall(str(dest), filter="data")
+            count = sum(1 for m in members if m.isfile())
+            total_size = sum(m.size for m in members if m.isfile())
         return _json({
             "ok": True,
             "format": archive.suffix.lstrip(".") if archive.suffix else archive_lower.rsplit(".", 1)[-1],

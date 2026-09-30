@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import random
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +21,11 @@ from neobot_app.credentials.model import (
 
 # 易读字符集(去掉易混淆的 0/O/1/l/I)
 _CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789"
+
+#: 凭据签发尝试的防爆破阈值：同一会话连续未命中达到此数量后进入冷却
+_ISSUE_MAX_FAILURES = 5
+#: 冷却时长（秒）：期间即使猜中也不签发，避免"低速无限次猜测"
+_ISSUE_BLOCK_SECONDS = 300.0
 
 
 @dataclass
@@ -49,6 +54,10 @@ class CredentialManager:
         self._default_duration = default_duration_minutes
         self._max_duration = max_duration_minutes
         self._credentials: dict[str, Credential] = {}
+        # 群聊里任何人都能发消息，凭据码只能靠"猜不中"来抵御爆破。
+        # 按会话记录连续未命中的次数，超限后冷却，避免无限次尝试。
+        self._issue_failures: dict[str, int] = {}
+        self._issue_blocked_until: dict[str, float] = {}
 
     # ── 查询 ──
 
@@ -119,16 +128,41 @@ class CredentialManager:
         return value
 
     def _generate_code(self) -> str:
+        # 必须用 secrets：random 是进程内全局 MT19937，输出可观测后理论上可被
+        # 恢复并预测后续凭据码，而凭据码等价于"管理员对该动作的授权"。
         while True:
-            code = "".join(random.choices(_CODE_CHARS, k=self._code_length))
+            code = "".join(secrets.choice(_CODE_CHARS) for _ in range(self._code_length))
             if code not in self._credentials:
                 return code
+
+    def _record_issue_failure(self, chat_flow: str, now: float) -> None:
+        """记录一次"没猜中"；达到阈值后进入冷却。"""
+        failures = self._issue_failures.get(chat_flow, 0) + 1
+        self._issue_failures[chat_flow] = failures
+        if failures >= _ISSUE_MAX_FAILURES:
+            self._issue_blocked_until[chat_flow] = now + _ISSUE_BLOCK_SECONDS
+            self._issue_failures[chat_flow] = 0
+
+    def _clear_issue_failures(self, chat_flow: str) -> None:
+        self._issue_failures.pop(chat_flow, None)
+        self._issue_blocked_until.pop(chat_flow, None)
+
+    def is_issue_blocked(self, chat_flow: str) -> bool:
+        """该会话是否正处于签发冷却期（供上层给出明确提示）。"""
+        return self._issue_blocked_until.get(chat_flow, 0.0) > time.time()
 
     # ── 签发(管理员发送凭据文本) ──
 
     def try_issue(self, *, chat_flow: str, code: str, issuer_id: int) -> CredentialIssueResult:
+        now = time.time()
+        # 冷却期内一律拒绝：此时连"猜中"也不签发，否则爆破只是被限速而非被阻断。
+        blocked_until = self._issue_blocked_until.get(chat_flow, 0.0)
+        if blocked_until > now:
+            return CredentialIssueResult(ok=False, error="rate_limited")
+
         credential = self._credentials.get(code.strip().lower())
         if credential is None or credential.chat_flow != chat_flow:
+            self._record_issue_failure(chat_flow, now)
             return CredentialIssueResult(ok=False, error="not_found")
         if credential.is_expired():
             credential.status = CRED_STATUS_EXPIRED
@@ -157,6 +191,7 @@ class CredentialManager:
         credential.issuer_id = issuer_id
         if credential.cred_type == CRED_TYPE_TIMED:
             credential.expires_at = time.time() + credential.duration_minutes * 60
+        self._clear_issue_failures(chat_flow)
         return CredentialIssueResult(ok=True, credential=credential, newly_issued=True)
 
     # ── 消费(风险操作执行前) ──
@@ -205,6 +240,11 @@ class CredentialManager:
         """清理过期凭据,返回清理数量。"""
         now = time.time()
         removed = 0
+        # 冷却已过的会话把计数一并回收，避免长期运行下字典无界增长
+        for flow, blocked_until in list(self._issue_blocked_until.items()):
+            if blocked_until <= now:
+                self._issue_blocked_until.pop(flow, None)
+                self._issue_failures.pop(flow, None)
         for code, credential in list(self._credentials.items()):
             if credential.status == CRED_STATUS_PENDING:
                 # pending 超时(10 分钟未签发)也清理,避免堆积

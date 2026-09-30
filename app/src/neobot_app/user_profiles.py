@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.utils.prompt_text import escape_prompt_text
+
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -250,7 +252,8 @@ class UserProfileService:
                     card = getattr(member, "card", None)
                     nickname = getattr(member, "nickname", None)
                     name = card or nickname or f"QQ:{user_id}"
-                    return f"群主：{name}（QQ：{user_id}）"
+                    # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
+                    return f"群主：{escape_prompt_text(name)}（QQ：{user_id}）"
 
         return ""
 
@@ -746,14 +749,20 @@ class UserProfileService:
         if user_id is None:
             return ""
 
-        nickname = getattr(member, "nickname", None) or getattr(profile, "nick_name", None) or f"QQ:{user_id}"
-        remark = getattr(profile, "remark", None)
+        # 昵称/群昵称/备注都是用户可控文本：统一走 escape_prompt_text，避免
+        # `</群友_1>` 之类的值闭合区块、把内容顶到区块外（fix(12) §4.9）。
+        nickname = escape_prompt_text(
+            getattr(member, "nickname", None)
+            or getattr(profile, "nick_name", None)
+            or f"QQ:{user_id}"
+        )
+        remark = escape_prompt_text(getattr(profile, "remark", None))
         nickname_part = f"昵称:{nickname}"
         if remark:
             nickname_part += f"(你对Ta的备注:{remark})"
 
         segments = [nickname_part]
-        card = getattr(member, "card", None)
+        card = escape_prompt_text(getattr(member, "card", None))
         if card:
             segments.append(f"群昵称:{card}")
         segments.append(f"QQ号:{user_id}")
@@ -785,7 +794,7 @@ class UserProfileService:
         segments.append(f"好感度:{favorability_label}({favorability})")
 
         if archive_text:
-            segments.append(f"你记得关于Ta的信息:{archive_text}")
+            segments.append(f"你记得关于Ta的信息:{escape_prompt_text(archive_text)}")
 
         return f"<群友_{index}>{','.join(segments)}</群友_{index}>"
 

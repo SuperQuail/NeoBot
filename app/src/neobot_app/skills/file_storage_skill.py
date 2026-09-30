@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from neobot_app.skills.base import SkillModule
+from neobot_app.utils.logger import get_module_logger
+
+logger = get_module_logger("app.skills.file_storage")
 
 _STORAGE_DOC = "文件存储.md"
 _TODO_DOC = "TODO.md"
@@ -80,15 +83,29 @@ class FileStorageSkill(SkillModule):
                 if not doc_path.exists():
                     await self._sandbox.write_file(doc_path, self._default_content(doc_name).encode("utf-8"))
 
+        async def _init_logged() -> None:
+            # fire-and-forget 的任务异常默认没人取回：只会在 stderr 留一行
+            # "Task exception was never retrieved"，应用日志里看不到，
+            # 表现为「目录建好了但索引文档永远不生成」且完全没有痕迹。
+            try:
+                await _init()
+            except Exception:
+                logger.exception("文件存储初始化失败（索引文档可能缺失）")
+
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import asyncio
-                asyncio.ensure_future(_init())
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not None:
+                running.create_task(_init_logged())
             else:
-                loop.run_until_complete(_init())
+                # 没有运行中的事件循环：同步跑完，避免文档永远不生成。
+                asyncio.run(_init_logged())
         except Exception:
-            pass
+            # 调度失败（例如无 loop 的线程）时不能静默：索引文档不会创建，
+            # 调用方却看不到任何异常。
+            logger.exception("文件存储初始化无法调度事件循环")
 
     @staticmethod
     def _default_content(doc_name: str) -> str:

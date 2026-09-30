@@ -148,3 +148,15 @@ node_modules/
 
 # 本地待实现功能工作区(功能方案文档, 不提交)
 /features/
+
+# 流程图截图与静态导出产物（可再生成，不入库）
+docs/flow/shots/
+docs/flow/_site/
+
+# 流程图截图临时裁剪（分析用，不入库）
+.flow_crops/
+
+# 本地 git 备份/暂存（不入库）
+.git-backup/
+scripts/flow/_pr_body_draft.txt
+scripts/flow/_commit_msg.txt
