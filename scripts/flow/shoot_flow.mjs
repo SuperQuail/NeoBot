@@ -173,7 +173,11 @@ async function main() {
   const shots = [];
   try {
     for (const stem of stems) {
-      const url = base + '/view/' + encodeURIComponent(stem) + '?bare=1';
+      // 收起态走 /view（纯文档渲染）；展开态走 /shot?expand=1 —— 后者在服务端就把
+      // 所有 <details> 标成 open，图与图之间不再互相折叠（/view 的展开是运行期 JS，截图时会互相覆盖）。
+      const url =
+        base + (options.expanded ? '/shot/' : '/view/') + encodeURIComponent(stem) +
+        (options.expanded ? '?expand=1' : '?bare=1');
       const opened = ab(['open', url], { timeoutMs: 45000 });
       if (opened.status !== 0) throw new Error(stem + ' 打开失败：' + (opened.stderr || opened.error));
       const ready = waitReady();
@@ -188,20 +192,6 @@ async function main() {
       const size = pngSize(target);
       shots.push({ stem, size });
       console.log('[shoot] ' + stem + ' -> ' + size.width + 'x' + size.height + '  ' + ready.detail);
-      if (options.expanded) {
-        ab(['open', url.replace('?bare=1', '?bare=1&expand=1')], { timeoutMs: 45000 });
-        const full = waitReady(60000);
-        if (!full.ok) throw new Error(stem + ' 展开态未就绪（' + full.detail + '）');
-        const fullTemp = path.join(TMP, 'x' + (seq += 1) + '.png');
-        ab(['screenshot', '--full', fullTemp], { timeoutMs: 90000 });
-        if (fs.existsSync(fullTemp)) {
-          const fullTarget = path.join(outDir, stem + '.expanded.png');
-          fs.copyFileSync(fullTemp, fullTarget);
-          const fullSize = pngSize(fullTarget);
-          shots.push({ stem: stem + '.expanded', size: fullSize });
-          console.log('[shoot] ' + stem + '.expanded -> ' + fullSize.width + 'x' + fullSize.height);
-        }
-      }
     }
   } finally {
     ab(['close'], { timeoutMs: 20000 });
