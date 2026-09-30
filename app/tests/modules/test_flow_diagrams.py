@@ -124,15 +124,35 @@ def test_healthy_diagram_passes(checker: ModuleType, tmp_path: Path) -> None:
     assert report.blocking == []
 
 
-def test_f1_reports_missing_cover_path(checker: ModuleType, tmp_path: Path) -> None:
+def test_f1_blocks_on_missing_file_cover(checker: ModuleType, tmp_path: Path) -> None:
+    """文件型 covers 不存在 -> 阻断（图对的是一个不存在的锚点）。"""
+
+    root = make_repo(tmp_path)
+    write_diagram(root, covers=["pkg/src/", "pkg/src/ghost.py"])
+
+    report = checker.run(root, strict_drift=False)
+
+    assert blocking_rules(report) == {"F1"}
+    assert "ghost.py" in report.blocking[0].message
+
+
+def test_f1_only_warns_on_missing_directory_cover(checker: ModuleType, tmp_path: Path) -> None:
+    """目录型 covers 不存在 -> 只警告。
+
+    原因：git 不跟踪空目录，本地存在的目录在 CI 克隆出来就没有了
+    （真实案例 app/src/neobot_app/bilibili/）。这种情况不算图写错，
+    但也必须显式提示，避免静默漂移。
+    """
+
     root = make_repo(tmp_path)
     write_diagram(root, covers=["pkg/src/", "does/not/exist/"])
 
     report = checker.run(root, strict_drift=False)
 
-    assert blocking_rules(report) == {"F1"}
-    message = report.blocking[0].message
-    assert "does/not/exist/" in message
+    assert report.blocking == []
+    f1_warnings = [finding for finding in report.warnings if finding.rule == "F1"]
+    assert len(f1_warnings) == 1
+    assert "does/not/exist/" in f1_warnings[0].message
 
 
 def test_f1_reports_flow_name_mismatch(checker: ModuleType, tmp_path: Path) -> None:

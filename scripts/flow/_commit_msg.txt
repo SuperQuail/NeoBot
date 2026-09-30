@@ -1,16 +1,21 @@
-docs(flow): spec(13) 施工完成 —— 30 张图 + 验收记录 + 双态截图 + 锚点审计器
+fix(flow): 目录型 covers 缺失改为警告，修正 bilibili 小节的历史
 
-新增/更新：
-- scripts/flow/acceptance_anchors.py：把图里的「文件:行号」锚点全部抽出来核对
-  （同名文件多候选时用上下文完整路径或行号范围消歧），输出通过率与错配样例
-- docs/flow/ACCEPTANCE.md：spec(13) A1–A8 的逐条实测记录与复跑命令
-- scripts/flow/shoot_flow.mjs：修掉「收起态与展开态互相覆盖」的缺陷 ——
-  现在每张图先截收起态（/view）再截展开态（/shot?expand=1），写不同文件名
-- docs/flow/shots/：34 张图 × 2 态 = 68 张 PNG（gitignore，可随时重跑）
+现象：CI 的「测试与静态检查」失败在 test_real_flow_directory_is_healthy ——
+F1 报 `covers 路径不存在：app/src/neobot_app/bilibili/`；本地却是全绿。
 
-验收数据（本轮实测）：
-- 图 30 张；mermaid 块 363 个，逐块渲染 **0 失败**；折叠细节块 200+ 个
-- check_flow_diagrams.py --strict-drift：阻断 0、警告 0
-- pytest app/tests/modules/test_flow_diagrams.py：16 passed
-- 锚点审计：1372 个锚点，1366 个解析成功且行号在范围内，**0 个错配**，通过率 99.56%
-  （6 个未解析均为文档性引用：省略写法 2、逻辑组件名 2、非源文件 2）
+根因：git 不跟踪空目录。该目录在工作区存在（只剩空目录与 __pycache__ 残留），
+CI 全新克隆出来就没有，于是同一条规则在两种环境给出不同结论。
+
+修复：
+- check_flow_diagrams.py：目录型 covers（以 / 结尾）不存在时降级为**警告**并注明原因，
+  文件型 covers 仍然阻断 —— 前者是「图指向一个尚未落地的目录」，后者才是真的锚点写错
+- 21-web-parse-bilibili.md：把「目录为空」改成核对过的真实历史 ——
+  源码由 096319a 引入、被 9e07e7d fix(pypi) 移除（三个分支上 0 个被跟踪文件），
+  但 alembic 0020_add_bilibili_links.py 仍在，表结构保留
+- app/tests/modules/test_flow_diagrams.py：拆成两条用例（文件型阻断 / 目录型仅警告），17 例
+
+验证：
+- uv run pytest app/tests/modules/test_flow_diagrams.py -q -> 17 passed
+- uv run ruff check . -> All checks passed
+- uv run python scripts/flow/check_flow_diagrams.py --strict-drift -> 阻断 0 项、警告 0 项
+- node scripts/flow/verify_flow_render.mjs 21-web-parse-bilibili -> 7 个块 0 失败

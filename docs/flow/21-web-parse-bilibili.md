@@ -135,18 +135,26 @@ flowchart TD
 </details>
 
 <details>
-### bilibili 目录是空的（如实记录）
+### bilibili：代码已因 PyPI 打包问题移除，只剩空目录
 
 ```mermaid
 flowchart LR
-    A["app/src/neobot_app/bilibili/"] --> B["0 个 .py 文件"]
-    B --> C["没有运行时实现"]
-    D["bilibili/skills/ 子目录存在"] --> E["同样没有可执行实现"]
+    A["096319a: 新增 bilibili/（client 774 行等）"] --> B["9e07e7d fix(pypi): 修复 pypi 安装"]
+    B --> C["源码从包内移除"]
+    C --> D["工作区只剩空目录 + __pycache__ 残留"]
+    E["packages/storage .../0020_add_bilibili_links.py"] --> F["迁移仍在（表结构保留）"]
 ```
 
-本轮实测：`app/src/neobot_app/bilibili/` **没有任何 `.py` 文件**（目录存在，含 `skills/` 子目录）。
-也就是说，B 站相关能力**当前不存在**。历史文档若提到「B 站解析」，以本图为准；
-要新增该能力，请新建图并登记到 `SPLIT-MAP.md`，不要往本图里塞。
+实测事实（本轮核对）：
+
+* 当前 **HEAD / origin/main / dev/next-1.0.x 三个分支上，`app/src/neobot_app/bilibili/` 里有 0 个被 git 跟踪的文件**；
+* 本地磁盘上该目录**只剩空目录与 `__pycache__` 残留**（曾经 import 过的字节码），没有任何 `.py`；
+* 源码由提交 `096319a` 引入（`client.py` 774 行、`cookie_provider.py` 315 行、`prompts.py` 355 行等），
+  后被 `9e07e7d fix(pypi): 修复 pypi 安装` 移除 —— 属于打包修复的连带结果；
+* 但 `packages/storage/.../alembic/versions/0020_add_bilibili_links.py` **仍在**，表结构保留。
+
+因此：**B 站能力当前不可用**（没有实现代码），数据表字段还在。
+要恢复或重做该能力，请新建图并登记到 `SPLIT-MAP.md`，不要往本图里塞。
 </details>
 
 ## 关键状态

@@ -332,8 +332,22 @@ def check_f1(diagram: Diagram, root: Path) -> list[Finding]:
     if not covers:
         findings.append(Finding("F1", diagram.name, "图头 covers: 为空（无法界定漂移范围）", True))
     for entry in covers:
-        if not (root / entry).exists():
-            findings.append(Finding("F1", diagram.name, f"covers 路径不存在：{entry}", True))
+        target = root / entry
+        if target.exists():
+            continue
+        # 目录型 covers 可能只是「空目录」：git 不跟踪空目录，本地存在、CI 克隆出来却不存在。
+        # 这种不算阻断（图对的是一个尚未落地的目录），但要显式提示，避免静默漂移。
+        if entry.endswith("/"):
+            findings.append(
+                Finding(
+                    "F1",
+                    diagram.name,
+                    f"covers 目录不存在（空目录不入 git？）：{entry}",
+                    False,
+                )
+            )
+            continue
+        findings.append(Finding("F1", diagram.name, f"covers 路径不存在：{entry}", True))
     if "flow" in diagram.front and diagram.front["flow"] != diagram.path.stem:
         findings.append(
             Finding(
