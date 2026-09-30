@@ -18,9 +18,9 @@
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
 | 01 启动/停机/待机 | [01-startup-shutdown.md](./01-startup-shutdown.md) ✅ | cli / bootstrap / application / standby / adapter_supervisor |
-| 01b 配置系统 | \`01b-config-system.md\` | config/schemas（bot.py 1783 行）/ loader / 校验 / 热重载入口 |
+| 01b 配置系统 | [01b-config-system.md](./01b-config-system.md) ✅ | config/schemas（bot.py 1783 行）/ loader / 校验 / 热重载入口 |
 | 05 模型路由 | [05-llm-routing.md](./05-llm-routing.md) ✅ | assembly/agents.py、bootstrap/_providers.py、chat/models.py |
-| 05b provider 与原生视觉降级 | \`05b-provider-native-vision.md\` | providers/*（deepseek/anthropic/native_vision）、异常契约、计费统计 |
+| 05b provider 与原生视觉降级 | [05b-provider-native-vision.md](./05b-provider-native-vision.md) ✅ | providers/*（deepseek/anthropic/native_vision）、异常契约、计费统计 |
 
 ### 3.3 主链路层（消息进 -> 回复出）
 
@@ -28,14 +28,14 @@
 |---|---|---|
 | 02 适配器入站 | [02-inbound-message.md](./02-inbound-message.md) ✅ | adapter 包、message/queue.py、runtime/gateway.py、inbound_pipeline |
 | 02b 回复意愿概率 | [02b-willing-probability.md](./02b-willing-probability.md) ✅ | willing/ 全部 + event_pipeline 的决策入口 |
-| 02c 事件管道 | \`02c-event-pipeline.md\` | runtime/event_pipeline.py（1468 行：去重/命令/队列/回复后积压/通知） |
+| 02c 事件管道 | [02c-event-pipeline.md](./02c-event-pipeline.md) ✅ | runtime/event_pipeline.py（1468 行：去重/命令/队列/回复后积压/通知） |
 | 03 回复管线 | [03-reply-pipeline.md](./03-reply-pipeline.md) ✅ | orchestrator 状态机/冷却/看门狗、sender、postprocess、output_guard |
-| 03b 回复管线工具面 | \`03b-reply-tools.md\` | reply/tools.py（2537 行：模型可见工具集与 executor） |
+| 03b 回复管线工具面 | [03b-reply-tools.md](./03b-reply-tools.md) ✅ | reply/tools.py（2537 行：模型可见工具集与 executor） |
 | 04 Agent 循环 | [04-agent-loop.md](./04-agent-loop.md) ✅ | chat/runtime/agent.py、problem_solver、self_heal |
 | 06 工具与技能 | [06-tools-skills.md](./06-tools-skills.md) ✅ | agent_tools/、skills/、沙箱 |
 | 09 面板 | [09-dashboard.md](./09-dashboard.md) ✅ | dashboard 路由/鉴权/静态产物/前端 |
-| 09b 面板接口面 | \`09b-dashboard-api.md\` | dashboard/api.py（2564 行）端点清单与权限 |
-| 09c 面板配置编辑 | \`09c-dashboard-config.md\` | config_manager.py（1464 行）+ 前端编辑器数据流 |
+| 09b 面板接口面 | [09b-dashboard-api.md](./09b-dashboard-api.md) ✅ | dashboard/api.py（2564 行）端点清单与权限 |
+| 09c 面板配置编辑 | [09c-dashboard-config.md](./09c-dashboard-config.md) ✅ | config_manager.py（1464 行）+ 前端编辑器数据流 |
 | 10 联网搜索 | [10-web-search.md](./10-web-search.md) ✅ | web_search/ 三级回退 |
 | 12 浏览器自动化 | [12-browser-automation.md](./12-browser-automation.md) | browser/agent_browser/manager.py（2084 行）+ actions + lifecycle |
 | 13 渲染与卡片 | [13-render-cards.md](./13-render-cards.md) | runtime/html_card.py、help_card、markdown_image、emoji、screenshot |
@@ -51,20 +51,20 @@
 | 08b 插件运行时 | \`08b-plugin-runtime.md\` | modloader/runtime.py（2168 行）+ installer + hooks |
 | 11 小游戏 | [11-minigame.md](./11-minigame.md) ✅ | builtin_plugins/minigame/ |
 | 15 绘画 | [15-drawing.md](./15-drawing.md) | drawing/service.py（1821 行）+ drawing 工具 |
-| 16 定时任务 | \`16-scheduled-tasks.md\` | runtime/scheduled_tasks.py、sleep_service、standby、notifications |
-| 17 命令系统 | \`17-commands.md\` | commands/、内置命令、权限树、命令重名来源前缀 |
-| 18 用户画像与好感度 | \`18-user-profiles.md\` | user_profiles.py（752 行）、favorability.py、memory 摘要 |
-| 19 凭据与安全 | \`19-credentials-security.md\` | credentials/、panel_auth.py、check_secrets、沙箱裁决 |
-| 20 头像与文件服务 | \`20-avatar-files.md\` | avatar_store.py、core/file_server.py、image_pool |
-| 21 联网解析与 B 站 | \`21-web-parse-bilibili.md\` | web_parser/、bilibili/、audio/ |
+| 16 定时任务 | [16-scheduled-tasks.md](./16-scheduled-tasks.md) ✅ | runtime/scheduled_tasks.py、sleep_service、standby、notifications |
+| 17 命令系统 | [17-commands.md](./17-commands.md) ✅ | commands/、内置命令、权限树、命令重名来源前缀 |
+| 18 用户画像与好感度 | [18-user-profiles.md](./18-user-profiles.md) ✅ | user_profiles.py（871 行）、favorability.py、memory 摘要 |
+| 19 凭据与安全 | [19-credentials-security.md](./19-credentials-security.md) ✅ | credentials/、panel_auth.py、check_secrets、沙箱裁决 |
+| 20 头像与文件服务 | [20-avatar-files.md](./20-avatar-files.md) ✅ | avatar_store.py、core/file_server.py、image_pool |
+| 21 联网解析与 B 站 | [21-web-parse-bilibili.md](./21-web-parse-bilibili.md) ✅ | web_parser/、bilibili/、audio/ |
 
 ### 3.5 数据与观测层
 
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
-| 22 存储与迁移 | \`22-storage-migrations.md\` | neobot_storage（uow/engine/alembic/models）、database/ |
-| 23 计费与统计 | [23-billing-stats.md](./23-billing-stats.md) | statistics/（billing 850 行、tracker）、observability/ |
-| 24 提示词与聊天流 | [24-prompt-chatflow.md](./24-prompt-chatflow.md) | prompt/、ChatFlowRegistry、面板聊天流 |
+| 22 存储与迁移 | [22-storage-migrations.md](./22-storage-migrations.md) ✅ | neobot_storage（uow/engine/alembic/models）、database/ |
+| 23 计费与统计 | [23-billing-stats.md](./23-billing-stats.md) ✅ | statistics/（billing 850 行、tracker 206 行）、observability/ |
+| 24 提示词与聊天流 | [24-prompt-chatflow.md](./24-prompt-chatflow.md) ✅ | prompt/、ChatFlowRegistry、面板聊天流 |
 
 ## 3. 写图过程中核出的「代码与直觉不符」清单
 
@@ -134,6 +134,16 @@
 | W59 | **\`app/src/neobot_app/credentials/\` 不是 API Key 仓库**：它是聊天动作口令（chat_flow 维度，五次未命中冷却 300s）；API Key 走 .env -> EnvConfig -> RegisteredModel.api_key | \`credentials/model.py:23\`、\`service.py:26\` | 排查「密钥无效」时不要进这个模块 |
 
 > 维护约定：这张表随图一起维护。修掉一条就把对应行删掉，并在相关图的「易错点」里更新描述。
+
+## 5. 规模小结
+
+| 项 | 值 |
+|---|---|
+| 图数量 | 30 张（含 00 总览） |
+| Mermaid 块 | 363 个，逐块渲染校验 0 失败 |
+| 折叠细节块 | 每图 5–12 个，全部可展开 |
+| 覆盖的代码 | app/src 与 packages/*/src 的全部 Python 模块 |
+| 写作过程核出的代码事实 | 100+ 条，见 §3 与 [FINDINGS.md](./FINDINGS.md) |
 
 ## 2. 为什么这么拆（拆分依据）
 
