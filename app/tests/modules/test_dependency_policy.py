@@ -94,12 +94,33 @@ def test_prerelease_is_disallowed() -> None:
     )
 
 
+#: 允许的版本形态：正式版 X.Y.Z，或开发分支上的预发布 X.Y.Z-aN / -bN / -rcN。
+#: 只放行这三种预发布标记，避免 .dev / .post / 本地版本号这类写法混进来。
+_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-(?:a|b|rc)\d+)?$")
+
+
 @pytest.mark.parametrize("rel", _MANIFESTS)
-def test_versions_are_stable_releases(rel: str) -> None:
-    """版本号必须是正式版：带 a/b/rc 的预发布不应出现在 main 上。"""
+def test_version_format_is_recognizable(rel: str) -> None:
+    """版本号必须是正式版，或开发分支上明确标记的预发布。
+
+    开发分支需要先把版本抬到预发布（如 1.2.1-a1，PEP 440 等价于 1.2.1a1），
+    以便区分「已发布」与「开发中」；但版本号本身仍是发版动作，只允许按
+    scripts/RELEASING.md 在 8 个 pyproject.toml 里同步修改。
+    """
 
     version = (_load(rel).get("project") or {}).get("version")
     assert version, f"{rel} 缺少 version"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", version), (
-        f"{rel} 的版本 {version!r} 不是正式版（形如 X.Y.Z，不带 a1/b1/rc1）"
+    assert _VERSION_PATTERN.fullmatch(version), (
+        f"{rel} 的版本 {version!r} 形态不合法："
+        "应为 X.Y.Z（正式版）或 X.Y.Z-a1 / -b1 / -rc1（开发分支预发布）"
     )
+
+
+def test_all_manifests_share_one_version() -> None:
+    """8 个 pyproject.toml 的版本必须完全一致（发版要求同一 PR 内同步）。"""
+
+    versions = {
+        rel: (_load(rel).get("project") or {}).get("version") for rel in _MANIFESTS
+    }
+    assert len(set(versions.values())) == 1, f"各 pyproject.toml 版本不一致：{versions}"
+
