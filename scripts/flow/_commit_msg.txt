@@ -1,18 +1,22 @@
-docs(flow): 全链路流程图系统骨架 + 主链路首批图（spec(13)）
+docs(flow): 第二批图（01/05/06/07/08/09/10/11）+ CI/pre-commit 接线 + 单测
 
-新增 docs/flow/ 分文件 Mermaid 图系统与配套工具（只新增文档与脚本，不改运行时代码）：
+本批把「一图一子系统」铺开，全部由并行作者按 docs/flow/REFERENCE.md 的粒度标准产出，
+每张图含主流程 + 时序 + 6–12 个折叠细节块（可展开到判据/阈值/行号级）：
 
-- docs/flow/REFERENCE.md：写作规范（粒度/格式/自检），粒度对照物为 02b-willing
-- docs/flow/README.md：用法、F1/F2/F3 检查规则、「改代码必须同步改图」约定
-- docs/flow/SPLIT-MAP.md：图清单与拆分依据（按实测行数拆分，含待补图）
-- docs/flow/00-overview.md：全局视图（启动->入站->处理->出站->停机，6 个折叠细节块）
-- docs/flow/02-inbound-message.md：反向 WS/两道 dict 守卫/事件网关/队列（8 个细节块）
-- docs/flow/02b-willing-probability.md：意愿概率逐步精确（0.5 起点 +0.15 问句 ×8 系数）
-- docs/flow/03-reply-pipeline.md：状态机/冷却/静默看门狗/后处理/自身发言入队
-- docs/flow/04-agent-loop.md：工具迭代/轮次上限/ProviderError 语义/自修复三重门槛
-- scripts/flow/check_flow_diagrams.py：F1 锚点 / F2 漂移哈希 / F3 结构 + 折叠块规模（--update 盖章）
-- scripts/flow/view_flow.py：本地只读查看器（折叠细节、按需展开、--export 单文件 HTML）
-- scripts/flow/screenshot_flow.mjs：agent-browser 截图流水线（默认收起态，--expanded 全展开）
-- scripts/flow/vendor/mermaid.min.js：离线渲染运行时（避免依赖 CDN）
+- 01-startup-shutdown：启动 13 步失败语义、装配顺序、连接探针、待机状态机、软重启两条路、停机三层超时、回滚清单
+- 05-llm-routing：角色->编号->模型 key 两层路由、原生视觉降级、ProviderError 契约、计费与统计
+- 06-tools-skills：工具注册、native vs ptc、PTC 四个预算、权限凭据、子 Agent/workflow/ralph、沙箱七道闸
+- 07-memory-archive：自动总结触发判据、memory_counter、三种写入结果、两层冷却、UoW/WAL
+- 08-plugins：发现与元数据、依赖五码传播、模块缓存代际、启停状态机、热重载回滚、配置原地生效
+- 09-dashboard：中间件链、会话/CSRF/限流、路由与 SPA 回退、静态产物一致性、前端数据流
+- 10-web-search：三级回退、失败分级五类、per-engine 限速锁、SearchSession 预算与重排
+- 11-minigame：命令/工具双入口、认人窗口与对局态、积分原子写、抽签权重、卡片降级三口径
 
-验收：check_flow_diagrams.py 阻断 0 项；12 张图中首批 5 张已落盘并通过检查。
+配套：
+- docs/flow/SPLIT-MAP.md：图清单 + 拆分依据（实测行数）+ **写图核出的 20 条「代码与直觉不符」清单（W1–W20）**
+- .github/workflows/ci.yml：test job 增加「流程图体检 --strict-drift」（F1/F2/F3 全阻断）
+- .githooks/pre-commit：改了 docs/flow/*.md 时跑 F1/F3（毫秒级、零误报）
+- app/tests/modules/test_flow_diagrams.py：16 例定向单测（造迷你仓库覆盖 F1/F2/F3、盖章幂等、哈希口径、节点统计）
+- scripts/flow：截图脚本改用 set viewport + 每图独立 agent-browser 会话；节点数改为「提示不阻断」；load 只认 NN-*.md
+
+验收：check_flow_diagrams.py --strict-drift 通过（13 张图，阻断 0）；pytest test_flow_diagrams.py 16 passed。

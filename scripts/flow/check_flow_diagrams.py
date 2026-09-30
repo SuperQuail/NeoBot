@@ -44,7 +44,7 @@ REQUIRED_SECTIONS: tuple[str, ...] = ("## 范围", "## 流程", "## 时序", "##
 
 #: 单文件图规模上限（spec(13) A3）
 MAX_MERMAID_LINES = 120
-MAX_FLOWCHART_NODES = 25
+MAX_FLOWCHART_NODES = 40  # 形状定义数；超过即提示（不阻断，因为行数才是客观上限）
 MAX_SEQUENCE_PARTICIPANTS = 15
 
 #: 折叠细节小节（<details>）最多几个：太多说明该拆图了
@@ -60,8 +60,8 @@ _MERMAID_FENCE = re.compile(r"^\s*" + _FENCE + chr(96) + r"?\s*mermaid\s*$", re.
 _FENCE_END = re.compile(r"^\s*" + _FENCE + chr(96) + r"?\s*$")
 _SECTION_HEADING = re.compile(r"^##\s+(.+?)\s*$")
 
-#: mermaid 流程图节点引用：形如 A[文本]、B{判断}、C((圆))、D(["柱"])、E[/斜/] 等
-_NODE_REF = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(\(\(|\(\[|\[\[|\[\(|\{\{|\[/|\[\\|\[|\(|\{\{)")
+#: mermaid 流程图节点引用：标识符紧跟 [ / { / ( 即视为形状定义（A[文本]、B{判断}、C((圆))）
+_NODE_REF = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*([\[\{<])")
 #: 时序图参与者
 _SEQ_PARTICIPANT = re.compile(r"^\s*(participant|actor)\s+([^\s]+)", re.IGNORECASE)
 #: flowchart 的连线：A --> B / A -.->|x| B；只取两端标识符
@@ -395,11 +395,20 @@ def count_flowchart_nodes(block: str) -> int:
 
 
 def count_edge_endpoints(block: str) -> int:
-    """连线端点标识符个数（用于交叉验证节点统计没漏）。"""
+    """图里出现过的节点标识符总数（形状定义 + 连线两端，去重）。
+
+    比 count_flowchart_nodes 更宽：`A --> B` 这种没写形状的也计入，
+    用来交叉验证「节点统计没漏」，也是 F3 的可读性参考数字。
+    """
 
     endpoints: set[str] = set()
     for raw in block.splitlines():
-        line = raw.split("%%", 1)[0]
+        line = raw.split("%%", 1)[0].strip()
+        if not line or line.lower().startswith(("flowchart", "graph", "direction")):
+            continue
+        for match in _NODE_REF.finditer(line):
+            if match.group(1).lower() not in _FLOW_KEYWORDS:
+                endpoints.add(match.group(1))
         for match in _EDGE.finditer(line):
             for group in match.groups():
                 if group and group.lower() not in _FLOW_KEYWORDS:
@@ -457,8 +466,14 @@ def check_f3(diagram: Diagram) -> list[Finding]:
                 Finding("F3", diagram.name, f"流程图 #{index} 有效行 {lines} > {MAX_MERMAID_LINES}", True)
             )
         if nodes > MAX_FLOWCHART_NODES:
+            # 只提示不阻断：节点数受排版影响，真正客观的上限是行数
             findings.append(
-                Finding("F3", diagram.name, f"流程图 #{index} 节点数 {nodes} > {MAX_FLOWCHART_NODES}", True)
+                Finding(
+                    "F3",
+                    diagram.name,
+                    f"流程图 #{index} 节点数 {nodes} > {MAX_FLOWCHART_NODES}（建议拆图）",
+                    False,
+                )
             )
     for index, block in enumerate(diagram.sequence_blocks, start=1):
         lines = _effective_lines(block)
@@ -491,6 +506,10 @@ def _effective_lines(block: str) -> int:
 
 
 def _git_short_hash(root: Path) -> str:
+    # 只认「这个目录自己就是仓库根」：否则临时目录会借用上层仓库的 HEAD，
+    # 把不相干的提交号写进图头（单测里踩过）。
+    if not (root / ".git").exists():
+        return ""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],

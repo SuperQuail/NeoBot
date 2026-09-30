@@ -152,3 +152,6 @@ node_modules/
 # 流程图截图与静态导出产物（可再生成，不入库）
 docs/flow/shots/
 docs/flow/_site/
+
+# 流程图截图临时裁剪（分析用，不入库）
+.flow_crops/

@@ -34,4 +34,17 @@ if echo "$staged" | grep -q "^${frontend_dir}/src/"; then
   fi
 fi
 
+# 流程图结构体检（spec(13) F1/F3：锚点存在 + 结构完整；毫秒级、零误报）
+# 只跑了改了 docs/flow/*.md 的提交；F2 漂移检测留给 CI（--strict-drift）
+flow_changed=$(git diff --cached --name-only | grep '^docs/flow/.*[.]md$' || true)
+if [ -n "$flow_changed" ] && [ -n "$python_bin" ]; then
+  flow_out=$("$python_bin" scripts/flow/check_flow_diagrams.py --quiet 2>&1)
+  flow_status=$?
+  if [ "$flow_status" -ne 0 ]; then
+    echo "$flow_out" >&2
+    echo "[pre-commit] 流程图体检未通过（F1/F3）；修好后重跑，或 scripts/flow/check_flow_diagrams.py --update 重新盖章" >&2
+    exit 1
+  fi
+fi
+
 exit 0

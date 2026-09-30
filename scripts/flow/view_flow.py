@@ -409,7 +409,8 @@ th { background:#f1f5f9; font-weight:600; }
 .meta-row { font-size:12px; color:var(--muted); display:flex; gap:7px; align-items:baseline; }
 .meta-row code { font-size:12px; color:var(--ink); }
 .bare { padding:0; background:#fff; }
-.bare .doc { border:0; border-radius:0; padding:18px; width:max-content; max-width:1900px; margin:0 auto; }
+.bare .doc { border:0; border-radius:0; padding:18px; width:100%; max-width:100%; margin:0 auto; overflow-x:hidden; }
+.bare .mermaid-rendered svg { max-width:100%; height:auto; }
 .hint { color:var(--muted); font-size:12px; }
 .details-block { margin-top:26px; border-top:2px dashed var(--line); padding-top:14px; }
 .details-toolbar { display:flex; gap:12px; align-items:baseline; margin-bottom:10px; }
@@ -489,7 +490,7 @@ RUNTIME_JS = """
       block.parentNode.insertBefore(fold, block);
       fold.appendChild(summary);
       fold.appendChild(block);
-      if (document.body.getAttribute('data-expand') === '1') { fold.open = true; }
+      // open 状态统一在循环结束后按「是否展开全部」设置
     });
     var block0 = document.querySelectorAll('.diagram-fold')[0];
     var expandAll = document.body.getAttribute('data-expand') === '1';

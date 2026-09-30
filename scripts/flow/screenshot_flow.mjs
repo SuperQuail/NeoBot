@@ -21,8 +21,12 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-/** /shot 页面渲染完成后展示的哨兵文字（见 view_flow.py 的 render_shot） */
-const READY_MARKER = '渲染完成';
+/**
+ * 渲染就绪判定：view_flow.py 的 RUNTIME_JS 会在全部 mermaid 渲染完成后给 body 打
+ * data-mermaid="ready"（失败打 "error"）。**不要**用页面文字做等待条件 ——
+ * agent-browser wait 会把 CLI 的成功回显（"✓ Done"）也算成命中，导致误判。
+ */
+const READY_ATTR = 'data-mermaid';
 
 function findRepoRoot(start) {
   let current = path.resolve(start);
@@ -34,6 +38,14 @@ function findRepoRoot(start) {
   }
 }
 
+function parseWidth(raw) {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 640 || value > 3000) {
+    throw new Error('--width 需要 640..3000 的数字，收到：' + raw);
+  }
+  return Math.trunc(value);
+}
+
 function parseArgs(argv) {
   const options = {
     stems: [],
@@ -41,14 +53,16 @@ function parseArgs(argv) {
     width: 1680,
     url: '',
     expanded: false,
+    session: '',
     quiet: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--out') options.out = argv[++i];
-    else if (arg === '--width') options.width = Number(argv[++i]);
+    else if (arg === '--width') options.width = parseWidth(argv[++i]);
     else if (arg === '--url') options.url = argv[++i];
     else if (arg === '--expanded') options.expanded = true;
+    else if (arg === '--session') options.session = argv[++i];
     else if (arg === '--quiet') options.quiet = true;
     else if (arg.startsWith('--')) throw new Error('未知参数：' + arg);
     else options.stems.push(arg);
@@ -72,6 +86,16 @@ function listStems(root) {
  * 「系统找不到指定的路径」，而 `agent-browser get title` 正常 —— 带引号的裸命令名
  * 不再走 PATH 搜索。所以「命令名一律不加引号」，只有含空格的参数才加引号。
  */
+/**
+ * 独立会话参数。
+ *
+ * agent-browser 的默认会话是全局共享的：并发截图时别人 open 的页面会把你的页面顶掉
+ * （实测截到过别人的图）。所以每张图固定用 flow-<图名> 自己的会话。
+ */
+function sessionArgs(session) {
+  return session ? ['--session', session] : [];
+}
+
 function quoteArg(value) {
   const text = String(value);
   if (text === '' || !/[\s"]/.test(text)) return text;
@@ -154,36 +178,44 @@ async function waitForServer(url, timeoutMs = 30000) {
   return false;
 }
 
-function capture(baseUrl, stem, target, { expanded, width }) {
+function capture(baseUrl, stem, target, { expanded, width, session }) {
+  // agent-browser 没有 --width 参数（历史事故：1660 被当成输出路径）。
+  // 视口宽度用 `set viewport <w> <h>` 设置，高度给足，再由 --full 截整页。
+  run('agent-browser', [...sessionArgs(session), 'set', 'viewport', String(width), '1200']);
   const url = baseUrl + '/shot/' + encodeURIComponent(stem) + (expanded ? '?expand=1' : '');
-  run('agent-browser', ['open', url]);
-  const ready = waitForRender(stem);
+  run('agent-browser', [...sessionArgs(session), 'open', url]);
+  const ready = waitForRender(stem, session);
   if (!ready.ok) throw new Error(stem + ' 渲染未就绪（' + ready.detail + '）');
-  const errors = run('agent-browser', ['get', 'count', '.mermaid-error'], { allowFailure: true });
+  void READY_ATTR;
+  const errors = run('agent-browser', [...sessionArgs(session), 'get', 'count', '.mermaid-error'], {
+    allowFailure: true,
+  });
   if (errors.stdout && errors.stdout !== '0') {
     throw new Error(stem + ' 有 ' + errors.stdout + ' 个 mermaid 块渲染失败');
   }
   // 先截到固定文件名再搬走：即使 --width 被 CLI 吞掉（历史事故：参数被当成保存路径），
   // 也不会在仓库根留下莫名其妙的大文件。
   const temp = path.join(TMP_DIR, 'shot-' + (scriptSeq += 1) + '.png');
-  run('agent-browser', ['screenshot', '--full', '--width', String(width), temp]);
+  run('agent-browser', [...sessionArgs(session), 'screenshot', '--full', temp]);
   if (!fs.existsSync(temp)) throw new Error(stem + ' 截图未落地：' + temp);
   fs.copyFileSync(temp, target);
   return pngSize(target);
 }
 
 /** 轮询页面状态：mermaid 全部渲染完成（data-mermaid=ready）才算好。 */
-function waitForRender(stem, timeoutMs = 40000) {
+function waitForRender(stem, session, timeoutMs = 40000) {
   const deadline = Date.now() + timeoutMs;
   let detail = '超时';
   while (Date.now() < deadline) {
-    const state = run('agent-browser', ['get', 'attr', 'body', 'data-mermaid'], {
+    const state = run('agent-browser', [...sessionArgs(session), 'get', 'attr', 'body', 'data-mermaid'], {
       allowFailure: true,
     });
     const value = state.stdout.trim();
     if (value === 'ready') return { ok: true, detail: value };
     if (value === 'error') {
-      const text = run('agent-browser', ['get', 'text', '.mermaid-error'], { allowFailure: true });
+      const text = run('agent-browser', [...sessionArgs(session), 'get', 'text', '.mermaid-error'], {
+        allowFailure: true,
+      });
       return { ok: false, detail: 'mermaid 渲染失败：' + text.stdout.slice(0, 300) };
     }
     detail = '当前 data-mermaid=' + JSON.stringify(value) + '（' + stem + '）';
@@ -227,12 +259,16 @@ async function main() {
   try {
     for (const stem of stems) {
       const target = path.join(outDir, stem + '.png');
-      const size = capture(baseUrl, stem, target, options);
+      const size = capture(baseUrl, stem, target, { ...options, session: options.session || 'flow-' + stem });
       shots.push({ stem, size });
       console.log('[flow-shot] ' + stem + ' -> ' + path.relative(root, target) + ' ' + describe(size));
       if (options.expanded) {
         const full = path.join(outDir, stem + '.expanded.png');
-        const fullSize = capture(baseUrl, stem, full, { ...options, expanded: true });
+        const fullSize = capture(baseUrl, stem, full, {
+          ...options,
+          expanded: true,
+          session: options.session || 'flow-' + stem,
+        });
         shots.push({ stem: stem + '.expanded', size: fullSize });
         console.log(
           '[flow-shot] ' + stem + '.expanded -> ' + path.relative(root, full) + ' ' + describe(fullSize),

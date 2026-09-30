@@ -131,7 +131,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph 配置层（落盘 config.toml, 重启仍在）
+    subgraph 配置层
       A1["chat.willing_global_coefficient"]
       A2["chat.willing_agent_global_coefficient"]
       A3["chat.group_response_coefficient: {群号: 系数}"]
@@ -140,14 +140,14 @@ flowchart LR
       A6["chat.at_mention_guaranteed_reply 默认 True"]
       A7["chat.group_use_black_list / group_list<br/>friend_use_black_list / friend_list"]
     end
-    subgraph 运行时层（内存, 重启清零）
+    subgraph 运行时层
       B1["runtime.global_coefficient"]
       B2["runtime.conversation_coefficients"]
       B3["runtime.user_global_coefficients"]
       B4["runtime.conversation_user_coefficients"]
       B5["runtime.blacklisted_conversations"]
     end
-    subgraph 观测层（只读, 当前 manager 不用）
+    subgraph 观测层
       C1["observe_window 决定 observed_messages_text 条数"]
       C2["matched_keywords 来自 chat.key_word 规则"]
       C3["called_bot_name / replied_to_message / queue_size / queue_text"]

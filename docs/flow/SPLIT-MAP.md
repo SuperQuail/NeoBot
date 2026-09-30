@@ -66,6 +66,36 @@
 | 23 计费与统计 | \`23-billing-stats.md\` | statistics/（billing 850 行、tracker）、observability/ |
 | 24 提示词与聊天流 | \`24-prompt-chatflow.md\` | prompt/、ChatFlowRegistry、面板聊天流 |
 
+## 3. 写图过程中核出的「代码与直觉不符」清单
+
+> 这些不是猜测，是写图时逐个 grep/read 核对出来的事实。**有图才有这些发现** ——
+> 建议逐条开 bugfix 或至少进 issue；在修之前，图里保留现状并标注，不要按「应该有」画。
+
+| # | 事实 | 位置 | 影响 |
+|---|---|---|---|
+| W1 | **待机期 QQ 命令不可达**：\`stop()\` 无条件执行 \`event_ingress.stop\`，\`EventGateway.stop\` 退订全部 4 个订阅（全仓仅此一处订阅） | \`runtime/application.py:457\`、\`runtime/gateway.py:63\` | 待机后 \`/reboot\` 收不到；\`standby_service.py:274\` 的「命令仍可用」与 \`bugfixes\` 里 \`fix(3)\`「已修复」在 HEAD 上都不成立（\`retain_ingress\` 只在分支 \`feat/wip-followups\`） |
+| W2 | **\`SandboxLock\` 是死装配**：\`acquire/release/acquire_temp/is_owner/is_occupied\` 全仓零调用点 | \`runtime/sandbox_lock.py\` | 「同一时间只有一个 agent 写沙箱」实际不成立；真正的保护只有进程内 \`file_lock\` + \`atomic_write\` |
+| W3 | **\`hold_temp\` 是 NO-OP**：只回显分钟数，无计时器/标记 | \`skills/sandbox_manager_skill.py:873\` | 临时文件仍按 1800s mtime 被清理 |
+| W4 | **\`auto_compact_chars\`（默认 200）是死配置**：全仓只有定义处，无读取点 | \`config/schemas/bot.py:1171\` | 面板改了没有任何效果 |
+| W5 | **\`ConnectionTimeoutError\` 已不再抛**，\`cmd_run\` 里的 \`except\` 是死分支 | \`runtime/application.py:27-32\`、\`cli.py:297\` | 旧文档/旧图若写「等连接超时会启动失败」是过时画法 |
+| W6 | **\`StandbyController.request_process_restart\` 是死链路**（除单测无调用方）；真入口是宿主服务 \`process_restart\`，而 \`/reboot\` 绑的是 \`application.request_restart\` | \`bootstrap/_standby_runtime.py:285\`、\`dashboard/api.py:2667\` | 「换进程」与「换代际」两条路极易混 |
+| W7 | **\`execute_command\` 注册时被无条件跳过** | \`agent_tools/runtime.py:103\` | 线协议命令工具只有 \`pwsh\`/\`bash\`；传 \`execute_command\` 得 UNKNOWN_TOOL |
+| W8 | **\`mode=ptc\` 只影响任务型 Agent**：主回复管线固定 \`definitions(mode="native")\` | \`skills/agent_tools_packages.py:60\` | 「切了 PTC 没变化」是预期行为 |
+| W9 | **不存在 \`minigame__card\` 工具**（spec(8) 描述的显式发卡工具在全仓 0 命中） | \`builtin_plugins/minigame/\` | 工具通道不发卡；文档口径需更正 |
+| W10 | **小游戏每日上限硬编码 5/5**，且判定是 check-then-act（并发可越过）；只有签到用 INSERT rowcount 做到了真幂等 | \`minigame/service.py:31-32\` | 面板改不了，并发下上限不硬 |
+| W11 | **\`add_score\` 无下界保护**（\`apply_points\` 才有 \`score + :delta >= 0\`） | \`minigame/service.py:151\` | 传负 delta 可写出负余额 |
+| W12 | **插件没有文件监听**：热重载只能由面板/命令显式触发；插件配置与本体配置是两条独立通道 | \`runtime/hot_reload_registry.py\`、\`runtime/plugin_config_reload.py\` | 「改了就会自动生效」是误解 |
+| W13 | **插件版本无法比较时一律放行**（\`version_satisfies -> None\`），源码运行 0.0.0 亦然 | \`modloader/version.py\` | 「明明写了 \`>=\` 却没拦住」是设计如此 |
+| W14 | **同名插件：第三方被静默丢弃**（仅一条 warning，面板无提示） | \`modloader/loader.py\` | 安装后「插件没生效」难排查 |
+| W15 | **压缩回滚不再触发容量治理**：\`set_if_version\` 只 WARNING 不拦截 | \`packages/memory/src/neobot_memory/archive_service.py:365\` | 管理员可写入超限档案，靠 \`list_over_limit\` 暴露 |
+| W16 | **\`_run_summary\` 异常分支无显式 \`return False\`**（注解标 \`-> bool\`，实际 \`None\`） | \`runtime/archive_memory_summary.py:561-569\` | 调用方按 falsy 处理所以行为正确，但类型注解是错的 |
+| W17 | **\`flush_all\` 不看 \`_retry_ready\`**：关闭收尾会把退避中的会话强行总结一次 | \`runtime/archive_memory_summary.py:791\` | 与 \`record_message\` 判据不一致 |
+| W18 | **\`_rollback_start\` 不是 \`started\` 的严格逆序**（\`event_ingress\` 提前、\`plugin\` 排在 \`adapter\` 前） | \`runtime/application.py:217\` | 文档写「逆序」是近似说法 |
+| W19 | **CLI 路径与 standalone 步数不同**：CLI 传 \`owns_plugins=False\`，插件由 \`cli.py\` 先起，\`app.start\` 的 S3/S7 被跳过 | \`cli.py:61/94\` | 读「13 步」要带条件 |
+| W20 | **Windows 上 SIGTERM 无人处理**（\`add_signal_handler\` 回退只装了 SIGINT） | \`cli.py:51-59\` | 优雅停机只能 Ctrl+C 或面板 |
+
+> 维护约定：这张表随图一起维护。修掉一条就把对应行删掉，并在相关图的「易错点」里更新描述。
+
 ## 2. 为什么这么拆（拆分依据）
 
 本轮按「代码规模 + 独立状态机 + 独立外部依赖」三条判据重新划分，实测数据（行数）：

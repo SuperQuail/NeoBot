@@ -138,6 +138,7 @@ flowchart TD
     S11 --> S12["event_ingress.start 事件入口开通"]
     S12 --> S13["scheduled_task_manager / markdown_image / report 循环"]
     S13 --> OK["_started = True"]
+    S0 -.standalone 路径.-> S3
     S1 -.任一步抛异常.-> RB["_rollback_start(started) 反向释放"]
 \`\`\`
 
