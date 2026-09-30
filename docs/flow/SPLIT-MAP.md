@@ -118,31 +118,62 @@
 | W43 | **\`add_bottle\` 新瓶 id 用 \`ORDER BY id DESC LIMIT 1\`** | \`minigame/service.py:319\` | 并发下拿到的不是本条的 id |
 | W44 | **卡片降级三种口径**：漂流瓶发卡片文本、接龙丢弃纯文本返回值、签到/抽签命令通道不出图 | \`minigame/*\` | 「为什么有的玩法没图/没字」看这里 |
 | W45 | **\`web_search_package.build_web_search_package\` 无运行时调用点**；\`self_heal.py:774\` 不转发浏览器/预算配置 | \`web_search_package.py:229\` | 自愈链路的搜索行为与主链路不一致 |
+| W46 | **首轮工具表是冻结快照**：\`build_reply_toolset\` 构造时把 \`executor.definitions()\` 拍成 \`Toolset.specs\`，首轮模型调用用冻结表，后续重建才重新取 | \`reply/tools.py:2683\`、\`orchestrator.py:2646\` | 插件 \`preactivate\`（如 minigame \`agent_reply(preactivate=[...])\`）在**首轮拿不到新工具 schema**；首轮模型不调工具则整轮都看不到 |
+| W47 | **\`skills__load_tools\` 的「本轮即可直接调用」以「已发生过一次工具批次」为前提** | \`reply/tools.py\`（dirty 只在工具批次后检查） | 同批次内后续调用能执行，但 schema 不在首次下发里 |
+| W48 | **视觉规则是双向的**：native_vision=True 藏 image_parse/drawing/user_profile 三个工具；!=True 藏 \`image_context__*\`，且无配置可覆盖 | \`reply/tools.py:930-938\` | 切换原生视觉会静默改变模型可见工具集 |
+| W49 | **会话工具 1 运行 + 1 排队；\`timeout_seconds=0\` 回落 300 而非「不超时」**，外层再加 10s；\`drain_sessions\` ≠ \`close\`（管线结束只等不取消） | \`reply/tools.py\` | 「设 0 表示不限时」是误解 |
+| W50 | **计划模式 safe 列表里有死条目**：\`sandbox_manager__read_file\` 等已被 \`is_tool_authorized\` 去重拦掉 | \`reply/tools.py\` | 白名单条目不生效，排查时先看去重 |
 
 > 维护约定：这张表随图一起维护。修掉一条就把对应行删掉，并在相关图的「易错点」里更新描述。
 
 ## 2. 为什么这么拆（拆分依据）
 
-本轮按「代码规模 + 独立状态机 + 独立外部依赖」三条判据重新划分，实测数据（行数）：
+本轮按「代码规模 + 独立状态机 + 独立外部依赖」三条判据重新划分。
+实测口径：`wc -l` 等价（`split(/\r?\n/).length - 1`，含空行），脚本 `scripts/flow/_audit.cjs` 可复跑。
 
-\`\`\`text
-reply/orchestrator.py       4465   -> 03 主图 + 03b 工具面
-dashboard/api.py            2564   -> 09b
-reply/tools.py              2537   -> 03b
-modloader/runtime.py        2168   -> 08 主图 + 08b
-browser/agent_browser/mgr   2084   -> 12
-runtime/archive_memory...py 1871   -> 07 主图 + 07b
-drawing/service.py          1821   -> 15
-config/schemas/bot.py       1783   -> 01b
-agents/self_heal.py         1678   -> 04 细节块
-runtime/html_card.py        1651   -> 13
-agents/problem_solver.py    1497   -> 04 细节块
-runtime/event_pipeline.py   1468   -> 02c
-dashboard/config_manager.py 1464   -> 09c
-bootstrap/__init__.py       1413   -> 01 细节块
-message/queue.py            1316   -> 02 细节块
-minigame/__init__.py        1180   -> 11
-\`\`\`
+```text
+app/builtin_plugins         38 文件  15345 行   -> 11 小游戏 + 09/09b/09c 面板
+app/skills                  42 文件  12904 行   -> 06 工具与技能
+app/runtime                 32 文件  12831 行   -> 01/01b/02c/07/07b/13/16/20（按子系统拆）
+pkg/modloader               37 文件  11843 行   -> 08 主图 + 08b 运行时
+app/reply                   12 文件  10230 行   -> 03 主图 + 03b 工具面
+pkg/adapter                 39 文件   8534 行   -> 02 适配器入站
+pkg/chat                    36 文件   5207 行   -> 04 Agent 循环 + 05 provider
+app/config                  18 文件   5112 行   -> 01b 配置系统
+app/agent_tools             14 文件   4105 行   -> 06 工具与技能
+app/browser                  5 文件   3938 行   -> 12 浏览器自动化
+pkg/storage                 42 文件   3917 行   -> 22 存储与迁移
+app/bootstrap               10 文件   3744 行   -> 01 启动装配
+app/agents                   3 文件   3479 行   -> 04 Agent 循环
+app/(root)                  12 文件   3462 行   -> 17 命令 + 18 画像 + 19 凭据 + 20 头像
+app/drawing                  5 文件   2792 行   -> 15 绘画
+app/message                  6 文件   2626 行   -> 02 入站 + 02c 事件管道
+app/web_search               8 文件   2523 行   -> 10 联网搜索
+app/statistics               7 文件   1620 行   -> 23 计费与统计
+```
+
+单文件 Top（拆分依据，行数含空行）：
+
+```text
+reply/orchestrator.py        4861  -> 03 主图 + 03b 工具面
+dashboard/api.py             2787  -> 09b
+reply/tools.py               2688  -> 03b
+modloader/runtime.py         2382  -> 08 主图 + 08b
+browser/agent_browser/mgr.py 2262  -> 12
+runtime/archive_memory_s...  2153  -> 07 主图 + 07b
+drawing/service.py           2017  -> 15
+config/schemas/bot.py        1969  -> 01b
+runtime/html_card.py         1832  -> 13
+agents/self_heal.py          1819  -> 04 细节块
+agents/problem_solver.py     1641  -> 04 细节块
+dashboard/config_manager.py  1621  -> 09c
+runtime/event_pipeline.py    1613  -> 02c
+bootstrap/__init__.py        1577  -> 01 细节块
+message/queue.py             1484  -> 02/02c 细节块
+minigame/__init__.py         1350  -> 11
+cli.py                       1069  -> 01 细节块
+adapter/local/store.py       1066  -> 02 细节块（本地适配器）
+```
 
 判据：**单文件 >800 行或含独立状态机/外部依赖的，单独成图**；否则并入所属子系统图的折叠细节。
 反例警戒：不要为了凑数量把「一个类的两个方法」拆成两张图 —— 图的价值在于「一眼看懂一条链路」。

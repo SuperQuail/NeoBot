@@ -1,9 +1,10 @@
-docs(flow): 新增 01b 配置系统图；截图脚本修好展开态与收口
+docs(flow): 修正模块审计口径（含空行的真实行数）+ 补录 W46–W50
 
-- docs/flow/01b-config-system.md：schema 分层、加载/校验/补全写回、热重载三策略与旁路读盘冲突、
-  死配置与弱契约（problem_solver 字段不存在、五个编号字段无读取点、auto_compact_chars 死配置）
-- scripts/flow/shoot_flow.mjs：展开态改走 /shot?expand=1（服务端就把 details 标 open，
-  避免 /view 运行期展开导致截图彼此覆盖）；补回循环收口，脚本可正常退出
-- 全部 16 张图的收起态与展开态截图已重新生成（1665 宽，data-mermaid=ready）
+- 之前的行数用 PowerShell Measure-Object -Line 统计，**会跳过空行**，整体偏低（例：tools.py 实测
+  2537 -> 真实 2688）。改为 node 计数（split(/\r?\n/).length-1，等价 wc -l），脚本落在
+  scripts/flow/_audit.cjs 可复跑；SPLIT-MAP 的模块表与单文件 Top 全部按新口径重写
+- 补录 03b 写图核出的 5 条事实：首轮工具表是冻结快照（插件 preactivate 首轮拿不到 schema）、
+  skills__load_tools 的「本轮即可用」以已发生过工具批次为前提、视觉规则双向且无配置覆盖、
+  timeout_seconds=0 回落 300 而非不限时、计划模式 safe 列表存在死条目
 
-验收：check_flow_diagrams.py --quiet 阻断 0；16 张图 × 2 态截图全部落地（docs/flow/shots，gitignore）。
+验收：check_flow_diagrams.py 阻断 0；16 张图不受影响。
