@@ -1,15 +1,12 @@
-docs(flow): 新增 15 绘画图；新增逐块渲染校验器；补录 08b/12/15 共 38 条事实
+docs(flow): 新增 23 计费统计 与 24 提示词聊天流（Lead 自绘）
 
-- docs/flow/15-drawing.md：提交判据与 3 秒宽限期、并发/容量/超时/取消、参考图 7 种前缀、
-  edits vs generations、失败分级、落盘命名、清理策略、多模型分派、安全与成本
-- scripts/flow/verify_flow_render.mjs：把每张图的**每个** mermaid 块交给页面内 mermaid.parse
-  逐块校验，一次跑完全部并给出 md 行号（F3 只能查结构，查不出语法错误）
-- 修复本轮暴露的 mermaid 语法错误：4 处边标签后多写了箭头（`-.->|否| --> I`）、
-  1 处时序图 Note 文本里的分号（mermaid 语句分隔符）
-  —— 现在 24 张图 / 289 个 mermaid 块 **全部渲染通过**
-- .github/workflows/ci.yml：新增逐块渲染校验步骤（continue-on-error，先只报告）
-- docs/flow/FINDINGS.md：补录 08b（10 条）、12（15 条）、15（13 条）
-  含：卸载备份嵌一层目录、同步钩子 timeout 是假的、标签页 index 两套口径导致关错页、
-  open_browser 脚本必然报错、绘画零计费、图库容量可越过等
+- docs/flow/23-billing-stats.md：UsageTracker.record 两道丢弃闸门、注册 key 优先的两级索引、
+  计价三态（脚本/内置/回落）与 SOURCE 四取值、**200ms 默认超时 + 2 worker/2 inflight 的线程池**、
+  落库与 5 张报表、缓存命中字符级估算、日志四类 sink 与自修复挂钩、DebugRecorder、ContextRecorder
+  重点写清：_VALID_MODULES 闭集里有 5 个模块全仓无写入点；不配脚本时 builtin_cost 恒 0
+- docs/flow/24-prompt-chatflow.md：PromptStore 三层取值与 mtime 签名、render_template 的占位符/转义/空区块三条规则、
+  PromptBuilder 分区装配、角色消息构造与关键词反应、ChatFlowRegistry 的四个上限与三处吞异常、
+  ContextRecorder 纯内存+逐份 diff+图片哈希、prompt_diff 的适用边界
+- SPLIT-MAP：登记 23/24 与先前批次图的完成状态
 
-验收：check_flow_diagrams.py --strict-drift 阻断 0；verify_flow_render.mjs 289/289 通过。
+验收：check_flow_diagrams.py --only 23,24 阻断 0；verify_flow_render 20/20 通过。

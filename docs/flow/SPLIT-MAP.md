@@ -37,9 +37,9 @@
 | 09b 面板接口面 | \`09b-dashboard-api.md\` | dashboard/api.py（2564 行）端点清单与权限 |
 | 09c 面板配置编辑 | \`09c-dashboard-config.md\` | config_manager.py（1464 行）+ 前端编辑器数据流 |
 | 10 联网搜索 | [10-web-search.md](./10-web-search.md) ✅ | web_search/ 三级回退 |
-| 12 浏览器自动化 | \`12-browser-automation.md\` | browser/agent_browser/manager.py（2084 行）+ actions + lifecycle |
-| 13 渲染与卡片 | \`13-render-cards.md\` | runtime/html_card.py、help_card、markdown_image、emoji、screenshot |
-| 14 表情包与图像解析 | \`14-emoji-image-parse.md\` | emoji/、image/、vision_detect/、image_pipeline |
+| 12 浏览器自动化 | [12-browser-automation.md](./12-browser-automation.md) | browser/agent_browser/manager.py（2084 行）+ actions + lifecycle |
+| 13 渲染与卡片 | [13-render-cards.md](./13-render-cards.md) | runtime/html_card.py、help_card、markdown_image、emoji、screenshot |
+| 14 表情包与图像解析 | [14-emoji-image-parse.md](./14-emoji-image-parse.md) | emoji/、image/、vision_detect/、image_pipeline |
 
 ### 3.4 能力与子系统层
 
@@ -50,7 +50,7 @@
 | 08 插件系统 | [08-plugins.md](./08-plugins.md) ✅ | modloader 包、hot_reload_registry、plugin_config_reload |
 | 08b 插件运行时 | \`08b-plugin-runtime.md\` | modloader/runtime.py（2168 行）+ installer + hooks |
 | 11 小游戏 | [11-minigame.md](./11-minigame.md) ✅ | builtin_plugins/minigame/ |
-| 15 绘画 | \`15-drawing.md\` | drawing/service.py（1821 行）+ drawing 工具 |
+| 15 绘画 | [15-drawing.md](./15-drawing.md) | drawing/service.py（1821 行）+ drawing 工具 |
 | 16 定时任务 | \`16-scheduled-tasks.md\` | runtime/scheduled_tasks.py、sleep_service、standby、notifications |
 | 17 命令系统 | \`17-commands.md\` | commands/、内置命令、权限树、命令重名来源前缀 |
 | 18 用户画像与好感度 | \`18-user-profiles.md\` | user_profiles.py（752 行）、favorability.py、memory 摘要 |
@@ -63,8 +63,8 @@
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
 | 22 存储与迁移 | \`22-storage-migrations.md\` | neobot_storage（uow/engine/alembic/models）、database/ |
-| 23 计费与统计 | \`23-billing-stats.md\` | statistics/（billing 850 行、tracker）、observability/ |
-| 24 提示词与聊天流 | \`24-prompt-chatflow.md\` | prompt/、ChatFlowRegistry、面板聊天流 |
+| 23 计费与统计 | [23-billing-stats.md](./23-billing-stats.md) | statistics/（billing 850 行、tracker）、observability/ |
+| 24 提示词与聊天流 | [24-prompt-chatflow.md](./24-prompt-chatflow.md) | prompt/、ChatFlowRegistry、面板聊天流 |
 
 ## 3. 写图过程中核出的「代码与直觉不符」清单
 
