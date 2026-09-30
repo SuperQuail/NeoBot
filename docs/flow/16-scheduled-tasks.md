@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/runtime/sleep_service.py
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
-verified_against: 96da9ef
-verified_hash: 151b959b4f0b
+verified_against: 08faa3f
+verified_hash: df2c44c67fdf
 ---
 
 # 16 定时任务 · 睡眠 · 后台通知 · 临时清理

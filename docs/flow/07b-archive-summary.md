@@ -3,8 +3,8 @@ flow: 07b-archive-summary
 covers:
   - app/src/neobot_app/runtime/archive_memory_summary.py
   - packages/memory/src/neobot_memory/archive_service.py
-verified_against: 96da9ef
-verified_hash: e7d2af8461d8
+verified_against: 08faa3f
+verified_hash: ce64fcefcf35
 ---
 
 # 07b 档案自动总结与压缩：计数触发 · 手写工具循环 · 溢出压缩 · 面板手动/批量入口

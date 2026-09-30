@@ -3,8 +3,8 @@ flow: 18-user-profiles
 covers:
   - app/src/neobot_app/user_profiles.py
   - app/src/neobot_app/favorability.py
-verified_against: 96da9ef
-verified_hash: a3706dbb1524
+verified_against: 08faa3f
+verified_hash: c1da25b84be6
 ---
 
 # 18 用户画像与好感度

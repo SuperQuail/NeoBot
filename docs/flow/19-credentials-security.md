@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/credentials/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 96da9ef
-verified_hash: 0dfe031f915f
+verified_against: 08faa3f
+verified_hash: 93e3c1dafcc7
 ---
 
 # 19 凭据、面板鉴权与安全边界

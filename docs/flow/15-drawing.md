@@ -2,8 +2,8 @@
 flow: 15-drawing
 covers:
   - app/src/neobot_app/drawing/
-verified_against: 96da9ef
-verified_hash: 80c2ab62b57e
+verified_against: 08faa3f
+verified_hash: 5ba359524368
 ---
 
 # 15 绘画子系统：提交判据 · 参考图接口分派 · 落盘清理 · 通知回执

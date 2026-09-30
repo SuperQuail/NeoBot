@@ -3,8 +3,8 @@ flow: 10-web-search
 covers:
   - app/src/neobot_app/web_search/
   - app/src/neobot_app/web_search_package.py
-verified_against: 96da9ef
-verified_hash: b7c465e93c6a
+verified_against: 08faa3f
+verified_hash: d394b6928778
 ---
 
 # 10 联网搜索：HTTP(Bing) → 浏览器脚本化 → DuckDuckGo 三级回退

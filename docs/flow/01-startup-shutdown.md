@@ -11,8 +11,8 @@ covers:
   - app/src/neobot_app/runtime/adapter_supervisor.py
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 96da9ef
-verified_hash: 33902f95ff1f
+verified_against: 08faa3f
+verified_hash: bb33a50cf947
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机

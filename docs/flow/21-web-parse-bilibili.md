@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/audio/
   - app/src/neobot_app/analysis/
   - app/src/neobot_app/bilibili/
-verified_against: 96da9ef
-verified_hash: 751af0bc04a8
+verified_against: 08faa3f
+verified_hash: 701708e9c62b
 ---
 
 # 21 网页解析 · 音频 · 本地分析

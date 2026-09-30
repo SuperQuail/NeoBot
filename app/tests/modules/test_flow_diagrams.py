@@ -253,6 +253,24 @@ def test_hash_ignores_pycache_and_non_python(checker: ModuleType, tmp_path: Path
     assert all(item.endswith(".py:") or ".py:" in item for item in manifest)
 
 
+def test_hash_is_line_ending_insensitive(checker: ModuleType, tmp_path: Path) -> None:
+    """CRLF 与 LF 必须算出同一个哈希。
+
+    真实事故：Windows 工作区是 CRLF、CI 克隆是 LF，直接对原始字节哈希会让 CI 把
+    本地全绿的图全部判成「过期」而阻断。
+    """
+
+    root = make_repo(tmp_path)
+    module = root / "pkg" / "src" / "core.py"
+    module.write_bytes(b"VALUE = 1\nVALUE2 = 2\n")
+    lf_digest = checker.compute_verified_hash(["pkg/src/"], root)[0]
+
+    module.write_bytes(b"VALUE = 1\r\nVALUE2 = 2\r\n")
+    crlf_digest = checker.compute_verified_hash(["pkg/src/"], root)[0]
+
+    assert lf_digest == crlf_digest
+
+
 def test_f2_warns_then_blocks_on_drift(checker: ModuleType, tmp_path: Path) -> None:
     root = make_repo(tmp_path)
     write_diagram(root)

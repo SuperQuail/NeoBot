@@ -2,8 +2,8 @@
 flow: 11-minigame
 covers:
   - app/src/neobot_app/builtin_plugins/minigame/
-verified_against: 96da9ef
-verified_hash: 64272780cb2c
+verified_against: 08faa3f
+verified_hash: cc030bb1a214
 ---
 
 # 11 小游戏：命令/关键词/工具三入口 · 认人窗口 · 积分账户 · 卡片渲染与降级

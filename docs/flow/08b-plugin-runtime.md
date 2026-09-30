@@ -8,8 +8,8 @@ covers:
   - packages/modloader/src/neobot_modloader/config_store.py
   - packages/modloader/src/neobot_modloader/config_validation.py
   - packages/modloader/src/neobot_modloader/plugins/dispatch.py
-verified_against: 96da9ef
-verified_hash: 78bff12c064e
+verified_against: 08faa3f
+verified_hash: bea7db57d3b9
 ---
 
 # 08b 插件运行时：门面动作矩阵 · 热重载回滚 · 安装器 · 钩子总线

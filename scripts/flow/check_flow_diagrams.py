@@ -302,6 +302,17 @@ def _iter_covered_files(covers: Iterable[str], root: Path) -> list[Path]:
     return [unique[key] for key in sorted(unique)]
 
 
+def _normalized_bytes(path: Path) -> bytes:
+    """读文件并把换行统一成 LF 后再算哈希。
+
+    为什么必须归一化：仓库在 Windows 上 checkout 成 CRLF、在 CI（Linux）上是 LF，
+    直接对原始字节哈希会让**同一次提交**在两地得到不同的图头哈希 —— CI 的
+    --strict-drift 于是把本地全绿的图全部判成「过期」。
+    哈希要对的是代码内容，不是本地的换行风格。
+    """
+
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
 def compute_verified_hash(covers: Iterable[str], root: Path) -> tuple[str, list[str]]:
     """按 spec(13) §4.3 的口径算 covers 范围的 12 位内容哈希。
 
@@ -314,7 +325,7 @@ def compute_verified_hash(covers: Iterable[str], root: Path) -> tuple[str, list[
 
     manifest: list[str] = []
     for path in _iter_covered_files(covers, root):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        digest = hashlib.sha256(_normalized_bytes(path)).hexdigest()[:16]
         manifest.append(f"{path.relative_to(root).as_posix()}:{digest}")
     payload = "\n".join(manifest).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:12], manifest

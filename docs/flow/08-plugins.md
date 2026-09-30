@@ -14,8 +14,8 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/runtime/plugin_config_reload.py
   - app/src/neobot_app/bootstrap/_skills.py
-verified_against: 96da9ef
-verified_hash: 3043e1c13c9c
+verified_against: 08faa3f
+verified_hash: a9a67a3d2b23
 ---
 
 # 08 插件系统：扫描 · 加载 · 启停 · 依赖 · 配置热重载
