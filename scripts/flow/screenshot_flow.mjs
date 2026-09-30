@@ -202,15 +202,36 @@ function capture(baseUrl, stem, target, { expanded, width, session }) {
   return pngSize(target);
 }
 
+/** 读 body 的 data-mermaid。必须带 --json，否则拿到的是 CLI 回显而不是属性值。 */
+function readDataMermaid(session) {
+  const result = run(
+    'agent-browser',
+    [...sessionArgs(session), 'get', 'attr', 'body', 'data-mermaid', '--json'],
+    { allowFailure: true, timeoutMs: 20000 },
+  );
+  const text = result.stdout.trim();
+  try {
+    const payload = JSON.parse(text);
+    // agent-browser --json 的返回形如：
+    //   {"success":true,"data":{"origin":"…","value":"ready"},"error":null}
+    const inner = payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object'
+      ? payload.data
+      : payload;
+    if (inner && typeof inner === 'object' && 'value' in inner) {
+      return String(inner.value ?? '').trim();
+    }
+  } catch {
+    /* 不是 JSON 就当地址原样用 */
+  }
+  return text;
+}
+
 /** 轮询页面状态：mermaid 全部渲染完成（data-mermaid=ready）才算好。 */
 function waitForRender(stem, session, timeoutMs = 40000) {
   const deadline = Date.now() + timeoutMs;
   let detail = '超时';
   while (Date.now() < deadline) {
-    const state = run('agent-browser', [...sessionArgs(session), 'get', 'attr', 'body', 'data-mermaid'], {
-      allowFailure: true,
-    });
-    const value = state.stdout.trim();
+    const value = readDataMermaid(session);
     if (value === 'ready') return { ok: true, detail: value };
     if (value === 'error') {
       const text = run('agent-browser', [...sessionArgs(session), 'get', 'text', '.mermaid-error'], {

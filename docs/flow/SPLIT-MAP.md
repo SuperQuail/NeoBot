@@ -93,6 +93,31 @@
 | W18 | **\`_rollback_start\` 不是 \`started\` 的严格逆序**（\`event_ingress\` 提前、\`plugin\` 排在 \`adapter\` 前） | \`runtime/application.py:217\` | 文档写「逆序」是近似说法 |
 | W19 | **CLI 路径与 standalone 步数不同**：CLI 传 \`owns_plugins=False\`，插件由 \`cli.py\` 先起，\`app.start\` 的 S3/S7 被跳过 | \`cli.py:61/94\` | 读「13 步」要带条件 |
 | W20 | **Windows 上 SIGTERM 无人处理**（\`add_signal_handler\` 回退只装了 SIGINT） | \`cli.py:51-59\` | 优雅停机只能 Ctrl+C 或面板 |
+| W21 | **原生视觉包装器不代理 \`registered_key\`**：只代理 native_vision/model/max_tokens/vision_degradation | \`packages/chat/src/neobot_chat/providers/native_vision.py\` | 开原生视觉后 \`getattr(provider,'registered_key')\` 恒空，计费回落 model_name，默认库 4 个 chat 条目同名 → **按模型绑定的计价脚本会串条目** |
+| W22 | **\`problem_solver\` 不是路由字段**：\`getattr(routing,'problem_solver',1)\` 恒回落 1；\`creator/memory/chat_interaction/willingness/scheduled_task\` 五个编号字段无 resolve 调用点 | \`app/src/neobot_app/assembly/agents.py\`、\`bootstrap/_pipeline.py:196\` | 配置里没有可改的开关；五个字段只被提示词目录读取 |
+| W23 | **声明 native_vision 的主模型可能被整体丢弃**：视觉模型不可用时直接 \`return (None, error)\` | \`bootstrap/_providers.py:62\` | 「能启动但不会回复」的一种来源 |
+| W24 | **\`resolve_agent_model_name\` 回退返回角色名而非 key** | \`assembly/agents.py:62\` | 默认库无该 key → ValidationError → 被上层解释成「主模型不可用」 |
+| W25 | **\`strip_images\` 主链路写死 False** | \`bootstrap/_providers.py:69\` | 回退到自己没有视觉的模型时不剥图也不报错 |
+| W26 | **会话字段永远为空**：\`CURRENT_CONVERSATION_KIND/ID\` 只有读取没有 setter | \`agents/*\` | 解题/自愈的用量记录恒无会话信息 |
+| W27 | **默认模型库 pricing 全 0** → 不配 \`billing_script\` 时 \`builtin_cost\` 恒 0 | \`config/schemas/bot.py\` | 「费用为 0」不是 bug，是配置缺省 |
+| W28 | **「内容类失败不重试」只在引擎内部成立**：\`SearchManager.search\` 的重试与失败类型无关，结构类叠加重试最多 4 次 HTTP | \`web_search/manager.py:132/158\` | 与 fix(9) v2 的 A10「HTTP ≤2 次」不符 |
+| W29 | **\`signals.empty\` 短路只有 Bing HTTP 会置位** | \`web_search/engine.py:231\` | 「页面明说无结果」在第 ②③ 级被当普通失败继续回退 |
+| W30 | **浏览器通道把抓取失败归成 CONTENT**（\`classify_failure\` 没传 error） | \`web_search/browser_channel.py:242\` | 排查「超时却说错配页」看这里 |
+| W31 | **浏览器级没有整级预算**；\`engine_budgets\` 只有 duckduckgo=15s（设计稿 8s） | \`web_search/manager.py\` | 冷启动+预热+重试+翻页可远超 \`browser_timeout_seconds=8\` |
+| W32 | **\`_resolve_chromium\` 只认 \`LOCALAPPDATA/ms-playwright\`** | \`web_search/browser_channel.py:72\` | 非 Windows 上 \`available()\` 恒 False（静默少一级） |
+| W33 | **\`set_global_concurrency\` 无调用点** → 全局信号量恒 None | \`web_search/manager.py\` | 全局并发上限不生效；限速是「实例 × 引擎名」 |
+| W34 | **未知引擎名会抛穿整条链路**：\`get_engine\` 抛 ValueError，而 \`_try\` 只捕 TimeoutError | \`web_search/engine.py:437\` | 变成工具层 \`[错误]\` 而不是 degraded 响应 |
+| W35 | **\`research\` 二次编号留别名**：\`_reindex_results\` 只加键不删旧键 | \`web_search/session.py\` | 实测 4 条结果编号两次后 \`all_results\` 返回 7 项（对象重复） |
+| W36 | **插件本体热重载靠删 \`__pycache__\` + 新 \`_gN\` 命名空间**，且没有文件监听 | \`modloader/loader.py\` | 「改了自动生效」是误解；只能由面板/命令触发 |
+| W37 | **四个依赖判定入口语义不同**（注册只查在不在 / 启动要求 READY / 面板只展示） | \`modloader/runtime.py:327\`、\`manager.py:224\` | 用错入口会把所有依赖插件误判自动禁用 |
+| W38 | **两处「重复注册」语义相反**：HotReloadRegistry 先注册者胜，插件配置消费者后登记覆盖 | \`runtime/hot_reload_registry.py:135\` | 注册顺序会静默改变行为 |
+| W39 | **\`load_all\` 注册顺序固定官方目录在前** | \`modloader/loader.py:82\` | 官方插件依赖第三方插件时 on_load 顺序可能与依赖方向相反 |
+| W40 | **小游戏工具通道的 300s 是「认人窗口」且是全局单槽** | \`minigame/__init__.py:72\` | 并发用工具会串人；与成语接龙 60s 对局态不是一回事 |
+| W41 | **抽签两个兜底不是同一档**（\`pick_level\` 末档「凶」vs \`level_for\` 未知回落「平」），开凶兆后权重和 111 | \`minigame/service.py\` | 概率口径与直觉不符 |
+| W42 | **\`streak\` 读的是「今天」那一行**：昨天连签、今天没签 → streak=0 且 checked_in_today=false | \`minigame/service.py\` | 面板/工具展示的连签天数会「归零」 |
+| W43 | **\`add_bottle\` 新瓶 id 用 \`ORDER BY id DESC LIMIT 1\`** | \`minigame/service.py:319\` | 并发下拿到的不是本条的 id |
+| W44 | **卡片降级三种口径**：漂流瓶发卡片文本、接龙丢弃纯文本返回值、签到/抽签命令通道不出图 | \`minigame/*\` | 「为什么有的玩法没图/没字」看这里 |
+| W45 | **\`web_search_package.build_web_search_package\` 无运行时调用点**；\`self_heal.py:774\` 不转发浏览器/预算配置 | \`web_search_package.py:229\` | 自愈链路的搜索行为与主链路不一致 |
 
 > 维护约定：这张表随图一起维护。修掉一条就把对应行删掉，并在相关图的「易错点」里更新描述。
 
