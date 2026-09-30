@@ -1,6 +1,6 @@
 [project]
 name = "neobot"
-version = "1.2.0-a1"
+version = "1.2.0"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
 authors = [
@@ -9,25 +9,28 @@ authors = [
 ]
 dependencies = [
     "drissionpage>=4.1,<4.2",
-    "fpdf2>=2.8",
-    "markdown>=3.10",
-    "markdown-it-py>=3.0",
-    "openpyxl>=3.1",
-    "pikepdf>=9.0",
-    "pillowmd>=0.7.3",
-    "pypdf>=6.7",
-    "python-docx>=1.2.0",
-    "transformers>=5.9.0",
-    "xlsxwriter>=3.2",
+    "fpdf2>=2.8,<3",
+    "markdown>=3.10,<4",
+    "markdown-it-py>=3.0,<5",
+    "openpyxl>=3.1,<4",
+    "pikepdf>=9.0,<11",
+    "pillowmd>=0.7.3,<0.8",
+    "pypdf>=6.7,<7",
+    "python-docx>=1.2.0,<2",
+    "transformers>=5.9.0,<6",
+    "xlsxwriter>=3.2,<4",
 ]
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true
 
 [tool.uv]
-# 显式钉住预发布解析语义：默认值在不同 uv 版本/机器上出现过差异（allow vs if-necessary），
-# 会让同一份 lock 解出不同版本 —— DrissionPage 5.0.0b1 就是这样被装进新部署的。
-prerelease = "if-necessary"
+# 预发布一律不参与解析。默认值在不同 uv 版本/机器上出现过差异（allow vs if-necessary），
+# 会让同一份 lock 解出不同版本 —— DrissionPage 5.0.0b1 就是这样被装进新部署的：
+# 它删掉了顶层 ChromiumPage，装上去直接启动失败。
+# 用 disallow 而不是 if-necessary：**即使别处（UV_PRERELEASE 环境变量、命令行、
+# 其它工具）开了 allow，也以这里的 disallow 为准**（已实测）。
+prerelease = "disallow"
 
 [tool.uv.workspace]
 members = [
@@ -55,13 +58,13 @@ markers = [
 
 [dependency-groups]
 dev = [
-    "mypy>=1.19.1",
-    "prompt-toolkit>=3.0.0",
-    "pyinstaller>=6.19.0",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=0.26.0",
-    "pytest-timeout>=2.3.1",
-    "ruff>=0.15.5",
+    "mypy>=1.19.1,<3",
+    "prompt-toolkit>=3.0.0,<4",
+    "pyinstaller>=6.19.0,<7",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=0.26.0,<2",
+    "pytest-timeout>=2.3.1,<3",
+    "ruff>=0.15.5,<0.17",
 ]
 
 [tool.ruff]
