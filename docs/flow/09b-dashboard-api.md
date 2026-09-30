@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: e325753812b9
 ---
 

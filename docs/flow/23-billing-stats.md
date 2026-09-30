@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/statistics/
   - app/src/neobot_app/observability/
   - app/src/neobot_app/cache/
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 7a5528dcba88
 ---
 

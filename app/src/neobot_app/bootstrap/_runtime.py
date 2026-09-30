@@ -141,8 +141,17 @@ def build_browser_components(
     if not browser_cfg or not browser_cfg.enabled:
         return result
 
-    from neobot_app.browser.agent_browser.manager import _find_chrome_binary
-    from neobot_app.browser import BrowserAgentWrapper, BrowserScreenshotBackend
+    # 浏览器是**可选功能**：依赖缺失/版本不兼容（例如 DrissionPage 装成了 5.x）
+    # 只应让浏览器不可用，绝不能让整个 bot 起不来。这里统一降级并留下可诊断的日志。
+    try:
+        from neobot_app.browser import BrowserAgentWrapper, BrowserScreenshotBackend
+        from neobot_app.browser.agent_browser.manager import _find_chrome_binary
+    except Exception as exc:  # noqa: BLE001 - 任意导入期失败都降级
+        logger.warning(
+            "浏览器已启用但依赖不可用，浏览器功能已禁用（其余功能不受影响）",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return result
 
     if not _find_chrome_binary():
         _auto_install_chromium()

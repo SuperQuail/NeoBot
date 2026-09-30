@@ -3,7 +3,7 @@ flow: 02c-event-pipeline
 covers:
   - app/src/neobot_app/runtime/event_pipeline.py
   - app/src/neobot_app/message/queue.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: b5cd04e4fe59
 ---
 

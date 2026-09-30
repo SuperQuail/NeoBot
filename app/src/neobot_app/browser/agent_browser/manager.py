@@ -21,9 +21,13 @@ import glob as _glob
 from io import BytesIO
 from typing import Any, Optional
 
-from DrissionPage import ChromiumOptions, ChromiumPage
-from DrissionPage._pages.chromium_base import ChromiumBase
-from DrissionPage.errors import PageDisconnectedError
+from ._compat import (
+    ChromiumBase,
+    ChromiumOptions,
+    ChromiumPage,
+    PageDisconnectedError,
+    require_drissionpage,
+)
 from PIL import Image
 
 from neobot_contracts.ports.screenshot import (
@@ -238,6 +242,9 @@ class BrowserManager:
 
     async def start(self) -> None:
         """启动浏览器，自动重试处理残留进程。"""
+        # DrissionPage 不可用（常见：装成了 5.x，顶层没有 ChromiumPage）时，
+        # 在这里就抛出带修复指引的错误，而不是等到调用某个属性才炸。
+        require_drissionpage()
         self._kill_orphaned_chrome()
         for attempt in range(3):
             try:

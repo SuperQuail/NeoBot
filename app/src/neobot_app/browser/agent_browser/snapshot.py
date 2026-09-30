@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from DrissionPage import ChromiumPage
+if TYPE_CHECKING:  # 只用于类型标注：运行期不导入 DrissionPage（见 _compat 的说明）
+    from ._compat import ChromiumPage
 
 
 @dataclass

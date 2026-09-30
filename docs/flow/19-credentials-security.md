@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/credentials/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 93e3c1dafcc7
 ---
 

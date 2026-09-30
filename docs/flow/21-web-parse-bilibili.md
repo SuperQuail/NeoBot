@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/audio/
   - app/src/neobot_app/analysis/
   - app/src/neobot_app/bilibili/
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: 701708e9c62b
 ---
 

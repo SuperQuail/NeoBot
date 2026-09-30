@@ -3,7 +3,7 @@ flow: 18-user-profiles
 covers:
   - app/src/neobot_app/user_profiles.py
   - app/src/neobot_app/favorability.py
-verified_against: 99836cd
+verified_against: 528fe18
 verified_hash: c1da25b84be6
 ---
 

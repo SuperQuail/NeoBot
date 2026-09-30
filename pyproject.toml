@@ -1,6 +1,6 @@
 [project]
 name = "neobot"
-version = "1.1.0"
+version = "1.2.0-a1"
 description = "a QQ LLM Bot "
 requires-python = ">=3.13"
 authors = [
@@ -8,7 +8,7 @@ authors = [
     { name = "tangtian", email = "a14b@126.com" },
 ]
 dependencies = [
-    "drissionpage>=4.1",
+    "drissionpage>=4.1,<4.2",
     "fpdf2>=2.8",
     "markdown>=3.10",
     "markdown-it-py>=3.0",
@@ -23,6 +23,11 @@ dependencies = [
 [[tool.uv.index]]
 url="https://pypi.tuna.tsinghua.edu.cn/simple"
 default=true
+
+[tool.uv]
+# 显式钉住预发布解析语义：默认值在不同 uv 版本/机器上出现过差异（allow vs if-necessary），
+# 会让同一份 lock 解出不同版本 —— DrissionPage 5.0.0b1 就是这样被装进新部署的。
+prerelease = "if-necessary"
 
 [tool.uv.workspace]
 members = [

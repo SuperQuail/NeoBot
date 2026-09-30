@@ -729,8 +729,10 @@ async def test_wrapper_can_reopen_for_skills_after_close(tmp_path, monkeypatch):
     fake_agent.start = AsyncMock()
     fake_agent.close = AsyncMock()
     fake_agent._manager = object()
+    # AgentBrowser 现在是惰性导入（见 browser/__init__.py 的 _agent_browser_class）：
+    # 依赖不可用时浏览器包仍能导入，因此替换点从模块属性改为这个钩子。
     monkeypatch.setattr(
-        "neobot_app.browser.AgentBrowser", lambda **kwargs: fake_agent
+        "neobot_app.browser._agent_browser_class", lambda: (lambda **kwargs: fake_agent)
     )
 
     wrapper = BrowserAgentWrapper(data_dir=tmp_path / "browser-profile")
