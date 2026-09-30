@@ -123,6 +123,15 @@
 | W48 | **视觉规则是双向的**：native_vision=True 藏 image_parse/drawing/user_profile 三个工具；!=True 藏 \`image_context__*\`，且无配置可覆盖 | \`reply/tools.py:930-938\` | 切换原生视觉会静默改变模型可见工具集 |
 | W49 | **会话工具 1 运行 + 1 排队；\`timeout_seconds=0\` 回落 300 而非「不超时」**，外层再加 10s；\`drain_sessions\` ≠ \`close\`（管线结束只等不取消） | \`reply/tools.py\` | 「设 0 表示不限时」是误解 |
 | W50 | **计划模式 safe 列表里有死条目**：\`sandbox_manager__read_file\` 等已被 \`is_tool_authorized\` 去重拦掉 | \`reply/tools.py\` | 白名单条目不生效，排查时先看去重 |
+| W51 | **\`raise_if_image_unsupported\` 无条件 \`await response.aread()\`**：流式路径会把整个 SSE 响应先读进内存 | \`packages/chat/src/neobot_chat/providers/vision.py:35\`、\`base.py:278\` | 「首个字节到达前才重试」的窗口几乎消失，\`started\` 标志不再代表首 token 延迟 |
+| W52 | **原生视觉降级的 system notice 只在 \`_strip_images=True\` 时注入**，而主链路写死 False | \`providers/native_vision.py:137-154\`、\`bootstrap/_providers.py:69\` | 降级文案**对用户与模型都不可见**，只进日志 |
+| W53 | **\`orchestrator.py:2972-2988\` 的「恢复工具 + 追加提示 + 重试一轮」在主链路不可达**：它要求 native_vision 由真变假，而 strip_images=False 时降级仍上报 True | \`reply/orchestrator.py:2972\` | 原生视觉降级后工具集不会自动恢复 |
+| W54 | **anthropic provider 不传 check_status** → 走 \`raise_for_status\`，4xx/5xx 抛 httpx.HTTPStatusError 而非 ProviderError | \`providers/anthropic.py:163/253\` | 只按 ProviderError 分类会漏路径 |
+| W55 | **面板模型连通性测试用独立 httpx + 固定 Bearer**，不走 provider 的 \`_build_headers\` | \`builtin_plugins/dashboard/model_probe.py:171\` | 对 Anthropic 官方端点必然报「鉴权失败」；面板测试 ≠ provider 可用性 |
+| W56 | **图片位置限制只在两条序列化路径上**（deepseek/anthropic），OpenAI 的 \`_build_payload\` 零限制 | \`providers/openai*.py:87\` | 「同一段历史能不能发出去」随供应商变化 |
+| W57 | **重试白名单不含 429**；且第 3 次尝试遇 5xx 时直接 raise → 最多 3 次请求而非 3 次重试 | \`packages/chat/src/neobot_chat/providers/base.py:15\` | 限流不会被重试；重试次数与直觉差 1 |
+| W58 | **视觉与主模型不可用的返回文案不同**（\`_providers.py:63\` vs \`:89\`） | \`bootstrap/_providers.py\` | 排查「为什么没回复」要看是哪一条文案 |
+| W59 | **\`app/src/neobot_app/credentials/\` 不是 API Key 仓库**：它是聊天动作口令（chat_flow 维度，五次未命中冷却 300s）；API Key 走 .env -> EnvConfig -> RegisteredModel.api_key | \`credentials/model.py:23\`、\`service.py:26\` | 排查「密钥无效」时不要进这个模块 |
 
 > 维护约定：这张表随图一起维护。修掉一条就把对应行删掉，并在相关图的「易错点」里更新描述。
 

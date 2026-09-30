@@ -28,6 +28,16 @@
 - [04-功能文档/星舰游戏](./04-功能文档/星舰游戏.md) — 官方娱乐插件：3D 星舰里的控制台终端
 - [04-功能文档/小游戏](./04-功能文档/小游戏.md) — 官方娱乐插件：漂流瓶 / 成语接龙 / 签到与积分 / 抽签（命令 + agent 双入口）
 
+### 流程图（全链路）
+
+- [flow/ 全链路流程图](./flow/README.md) — **21 张分文件 Mermaid 图**：进程启动到消息出站的全链路，
+  每张图含主流程、时序、可折叠的细节块（判据/阈值/行号级）与「关键状态 / 易错点」；
+  本地渲染 `uv run python scripts/flow/view_flow.py`，改代码后必须同步改图
+  （CI 与 pre-commit 会检查：`uv run python scripts/flow/check_flow_diagrams.py`）
+- [flow/图清单与拆分依据](./flow/SPLIT-MAP.md) — 每张图覆盖哪些代码、为什么这么拆、
+  以及写图核出的 50 条「代码与直觉不符」事实（W1–W50）
+- [flow/写作规范](./flow/REFERENCE.md) — 新增/修改图时必须遵守的格式与粒度
+
 ### 参考与开发
 
 - [05-配置参考](./05-配置参考.md) — `data/config.toml` 完整配置项说明
@@ -40,3 +50,4 @@
 - 本文档使用中文编写，文件名带数字前缀以固定阅读顺序。
 - 功能文档的准确信息来源：[`app/src/neobot_app/config/schemas/bot.py`](../app/src/neobot_app/config/schemas/bot.py) 中各配置字段的 `description` 元数据，以及各模块的 docstring。
 - 新增功能时，请同步更新对应的功能文档与配置参考。
+- **改动代码后必须同步更新 `docs/flow/` 里覆盖该路径的图**（跑 `scripts/flow/check_flow_diagrams.py --update` 重新盖章），否则 CI 的流程图体检会阻断。

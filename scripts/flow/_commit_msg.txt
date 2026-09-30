@@ -1,10 +1,10 @@
-docs(flow): 修正模块审计口径（含空行的真实行数）+ 补录 W46–W50
+docs(flow): 新增 05b provider 与原生视觉降级；补录 W51–W59
 
-- 之前的行数用 PowerShell Measure-Object -Line 统计，**会跳过空行**，整体偏低（例：tools.py 实测
-  2537 -> 真实 2688）。改为 node 计数（split(/\r?\n/).length-1，等价 wc -l），脚本落在
-  scripts/flow/_audit.cjs 可复跑；SPLIT-MAP 的模块表与单文件 Top 全部按新口径重写
-- 补录 03b 写图核出的 5 条事实：首轮工具表是冻结快照（插件 preactivate 首轮拿不到 schema）、
-  skills__load_tools 的「本轮即可用」以已发生过工具批次为前提、视觉规则双向且无配置覆盖、
-  timeout_seconds=0 回落 300 而非不限时、计划模式 safe 列表存在死条目
+- docs/flow/05b-provider-native-vision.md：provider 注册与解析、各 provider 序列化差异、
+  异常契约（含 anthropic 不走 check_status 的漏路径）、原生视觉包装器与 _degrade、
+  重试白名单与次数语义、凭据注入路径（credentials/ 已在 covers 中去掉，归 19 图）
+- SPLIT-MAP §3 补录 9 条事实：SSE 被整体缓冲、降级 notice 对用户/模型不可见、
+  工具恢复分支在主链路不可达、面板模型测试固定 Bearer、429 不重试、图片位置限制不统一、
+  视觉/主模型不可用文案不同、credentials/ 不是 API Key 仓库
 
-验收：check_flow_diagrams.py 阻断 0；16 张图不受影响。
+验收：check_flow_diagrams.py 阻断 0；05b 已用新 covers 重新盖章（86ab6bb6aa07）。
