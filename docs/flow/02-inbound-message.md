@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/message/queue.py
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
-verified_against: 08faa3f
+verified_against: 99836cd
 verified_hash: d615aae4eb56
 ---
 

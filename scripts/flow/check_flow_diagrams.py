@@ -37,7 +37,25 @@ FLOW_DIR = "docs/flow"
 HASH_SUFFIX = ".py"
 
 #: 参与哈希但应排除的目录名（缓存/构建产物，内容不稳定）
-EXCLUDED_DIRS = frozenset({"__pycache__", ".venv", ".mypy_cache", ".ruff_cache", ".pytest_cache"})
+#: 参与哈希但应排除的目录名。两类来源：
+#: 1) 缓存 —— 内容不稳定，且随本地运行变化；
+#: 2) 依赖/构建产物 —— **本地装了、CI 没装**，混进来会让同一提交在两地算出不同哈希
+#:    （真实事故：frontend/node_modules 里某个包自带的 flatted.py 只存在于本机）。
+EXCLUDED_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".venv",
+        "node_modules",
+        ".pnpm",
+        ".git",
+        "dist",
+        "build",
+        "site-packages",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
 
 #: 每张图必须出现的二级标题（顺序即文档结构顺序）
 REQUIRED_SECTIONS: tuple[str, ...] = ("## 范围", "## 流程", "## 时序", "## 细节", "## 关键状态", "## 易错点")

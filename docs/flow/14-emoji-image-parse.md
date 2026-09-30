@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/image/
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
-verified_against: 08faa3f
+verified_against: 99836cd
 verified_hash: b1c713601cd1
 ---
 

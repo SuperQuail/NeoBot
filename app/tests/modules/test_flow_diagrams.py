@@ -271,6 +271,25 @@ def test_hash_is_line_ending_insensitive(checker: ModuleType, tmp_path: Path) ->
     assert lf_digest == crlf_digest
 
 
+def test_hash_ignores_dependency_dirs(checker: ModuleType, tmp_path: Path) -> None:
+    """依赖/构建产物目录里的 .py 不参与哈希。
+
+    真实事故：本地 frontend/node_modules 里某包自带 flatted.py，CI 没装依赖，
+    于是同一提交在两地算出不同哈希，CI 把本地全绿的图判成「过期」。
+    """
+
+    root = make_repo(tmp_path)
+    baseline = checker.compute_verified_hash(["pkg/src/"], root)[0]
+
+    nested = root / "pkg" / "src" / "node_modules" / "somepkg"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "flatted.py").write_text("VALUE = 99\n", encoding="utf-8")
+    (root / "pkg" / "src" / "dist").mkdir(parents=True, exist_ok=True)
+    (root / "pkg" / "src" / "dist" / "built.py").write_text("VALUE = 100\n", encoding="utf-8")
+
+    assert checker.compute_verified_hash(["pkg/src/"], root)[0] == baseline
+
+
 def test_f2_warns_then_blocks_on_drift(checker: ModuleType, tmp_path: Path) -> None:
     root = make_repo(tmp_path)
     write_diagram(root)

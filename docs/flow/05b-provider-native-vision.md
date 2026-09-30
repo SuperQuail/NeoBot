@@ -6,7 +6,7 @@ covers:
   - packages/chat/src/neobot_chat/schema/exceptions.py
   - app/src/neobot_app/bootstrap/_providers.py
 
-verified_against: 08faa3f
+verified_against: 99836cd
 verified_hash: ebe6a6aabd9b
 ---
 
