@@ -11,7 +11,7 @@
 | 想干什么 | 怎么做 |
 |---|---|
 | 看渲染后的图（推荐） | \`uv run python scripts/flow/view_flow.py\` —— 浏览器打开，细节默认折叠，按需展开 |
-| 只看某一页并截图 | \`node scripts/flow/screenshot_flow.mjs <图名>\` —— 产物在 \`docs/flow/shots/\` |
+| 只看某一页并截图 | \`node scripts/flow/shoot_flow.mjs <图名>\` —— 产物在 \`docs/flow/shots/\` |
 | 导出可分享的单文件 HTML | \`uv run python scripts/flow/view_flow.py --export docs/flow/_site\` |
 | 改完代码后同步图 | 改图 -> \`uv run python scripts/flow/check_flow_diagrams.py --update\` -> 提交 |
 | 体检所有图 | \`uv run python scripts/flow/check_flow_diagrams.py\`（CI 用 \`--strict-drift\`） |

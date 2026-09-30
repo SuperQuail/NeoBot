@@ -1,12 +1,6 @@
-docs(flow): 新增 02c 事件管道与 03b 回复工具面 + 单会话批量截图脚本
+docs(flow): 截图命令统一到 shoot_flow.mjs（单会话批量）
 
-- docs/flow/02c-event-pipeline.md：群聊 17 步分派顺序、私聊差异、去重窗口、命令 consumed 语义、
-  回复中/含图两条挂起队列与 60s 积压、待机跳过、通知三类、后台任务与停机 flush
-- docs/flow/03b-reply-tools.md：回复管线工具面（reply/tools.py 2537 行）的装配/可见性过滤/
-  executor/结果回灌/原生视觉切换/输出兜底/视觉上下文
-- scripts/flow/shoot_flow.mjs：**单会话批量截图**（旧的 screenshot_flow.mjs 每图重启浏览器，
-  单图约 3 分钟且易被并发争用卡死）；就绪判定统一用 body[data-mermaid]==='ready'
-- scripts/flow/view_flow.py：修复 mermaid 块被 <pre class="code"> 套住的问题（整体替换 pre）
-- docs/flow/SPLIT-MAP.md：登记完成状态
-
-验收：14 张图一次会话截图成功（1665 宽，全部 data-mermaid=ready）。
+旧的 screenshot_flow.mjs 每张图重启一次浏览器，单图约 3 分钟且在多人并发时容易被
+agent-browser 会话争用卡死；shoot_flow.mjs 用「一次 viewer + 一个会话 + 逐图 open」
+把 14 张图缩短到一轮完成，就绪判定统一为 body[data-mermaid]==='ready'。
+文档（README/REFERENCE）里的命令同步更新。

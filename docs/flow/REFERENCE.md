@@ -99,7 +99,7 @@ flowchart TD
 
 \`\`\`powershell
 uv run python scripts/flow/check_flow_diagrams.py --update   # 盖章 + 自检（F1/F2/F3）
-node scripts/flow/screenshot_flow.mjs <你的图名> --url http://127.0.0.1:<端口>
+node scripts/flow/shoot_flow.mjs <你的图名> --url http://127.0.0.1:<端口>
 \`\`\`
 
 * 检查必须全绿（阻断 0 项）再提交；
