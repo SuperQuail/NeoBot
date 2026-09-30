@@ -18,7 +18,8 @@
 
 ## 2. 图清单与拆分依据
 
-> 完整清单（每张图的 covers 与状态）在 [SPLIT-MAP.md](./SPLIT-MAP.md)。
+> 完整清单（每张图的 covers 与状态）在 [SPLIT-MAP.md](./SPLIT-MAP.md)；
+> 写图核出的代码事实（每张图一节）在 [FINDINGS.md](./FINDINGS.md)。
 > 本文件只讲用法、检查规则与更新约定。
 
 ## 3. 检查规则（F1/F2/F3）

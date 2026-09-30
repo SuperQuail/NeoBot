@@ -1,10 +1,16 @@
-docs(flow): 新增 05b provider 与原生视觉降级；补录 W51–W59
+docs(flow): 第三批拆分图（07b/08b/09b/09c/12/13/14）+ 新增 FINDINGS.md 事实台账
 
-- docs/flow/05b-provider-native-vision.md：provider 注册与解析、各 provider 序列化差异、
-  异常契约（含 anthropic 不走 check_status 的漏路径）、原生视觉包装器与 _degrade、
-  重试白名单与次数语义、凭据注入路径（credentials/ 已在 covers 中去掉，归 19 图）
-- SPLIT-MAP §3 补录 9 条事实：SSE 被整体缓冲、降级 notice 对用户/模型不可见、
-  工具恢复分支在主链路不可达、面板模型测试固定 Bearer、429 不重试、图片位置限制不统一、
-  视觉/主模型不可用文案不同、credentials/ 不是 API Key 仓库
+本批 7 张图覆盖审计里最大的几个文件，全部含主流程 + 时序 + 8–12 个折叠细节块：
 
-验收：check_flow_diagrams.py 阻断 0；05b 已用新 covers 重新盖章（86ab6bb6aa07）。
+- 07b-archive-summary：auto_summary 2153 行的内部（计数触发、手写工具循环、两层冷却与退避、快照回滚）
+- 08b-plugin-runtime：modloader/runtime 2382 行（动作矩阵、热重载回滚、安装更新、钩子总线、四套依赖判定入口）
+- 09b-dashboard-api：api.py 2787 行端点面（权限双口径、失败语义两套、77 条路由的调用方）
+- 09c-dashboard-config：面板配置编辑器数据流（三模式、乐观锁、三个写入者保真度差异、前端竞态）
+- 12-browser-automation：浏览器 3938 行（会话生命周期、动作集、截图、超时与并发、安全边界）
+- 13-render-cards：卡片渲染 1832 行 + help 缓存 + Markdown 转图 + 截图 + 图片暂存池
+- 14-emoji-image-parse：表情包/图像解析/本地视觉（解析失败固化、随机打空、等图无限等、模型库不扫描）
+
+同时新增 docs/flow/FINDINGS.md：按图归档的代码事实台账（05b/09b/13/14 共 44 条），
+与 SPLIT-MAP §3 的早期 W1–W59 并存；约定「修一条标 ✅ + 提交号，不删行」。
+
+验收：check_flow_diagrams.py 阻断 0、警告 0（24 张图全绿）。

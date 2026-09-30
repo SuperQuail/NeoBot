@@ -68,7 +68,7 @@ flowchart TD
     P0 --> B{"该端点读请求体?"}
     B -- 否 --> S{"数据来源"}
     B -- 是 --> B1["_read_json｜api.py:179"]
-    B1 -- 非 JSON 对象 --> B2["400：handler 内 19 处显式报错"]
+    B1 -- 非 JSON 对象 --> B2["400：handler 内 20 处显式报错"]
     B1 -- 通过 --> S
     S -- 内存快照 --> S1["Metrics 日志缓冲 / chat_flow_registry / 插件快照"]
     S -- 用量库 --> S2["usage_session_factory 到 SqlAlchemyUsageRepository"]
@@ -234,7 +234,7 @@ flowchart TD
 | 类别 | 数量 | 端点 | 说明 |
 |---|---|---|---|
 | 要 CSRF 且要 manage | 29 | 全部插件写、本体配置写、模型写、提示词写、聊天流清空、档案编辑删除压缩、定时任务写、全部 `/api/admin/*` | 面板主流程 |
-| 要 CSRF 不要 manage | 5 | `auth/setup · auth/login · auth/logout · config/validate · config/billing/preview · prompts/preview` | 前三个是会话建立/撤销本身；后三个是纯计算 |
+| 要 CSRF 不要 manage | 6 | `auth/setup · auth/login · auth/logout · config/validate · config/billing/preview · prompts/preview` | 前三个是会话建立/撤销本身；后三个是纯计算 |
 | 不要 CSRF 但要 manage | 3 | `GET /api/archives/summarize · /archives/snapshots · /archives/snapshot` | GET 不校验 CSRF，却要 manage |
 
 反直觉的两处：**`logout` 要 CSRF**（它是写方法且不在预会话集合里，所以退登也必须带
@@ -578,6 +578,10 @@ flowchart TD
   `standby_service.resume`（软重启运行体，面板不断），后者是宿主 `process_restart`
   信号（重启进程，面板会断）。SPLIT-MAP 的 W6 记录的是「谁绑了哪个入口」，
   这里补的是「同一个面板上有两个都叫重启的按钮」。
+* **`/api/admin/resume` 与 `/api/admin/reboot` 是同一张皮**：两个 handler 自己都不查
+  manage，直接转发给 `_soft_restart`（`api.py:2632`，权限与日志都在那里）；
+  因此日志与 403 文案对两者都写「软重启运行」，从日志里看不出用户点的是「退出待机」
+  还是「软重启」—— 排查时只能靠 `reason` 字段。
 * **`_schedule_power_action` 的响应是动作前的状态**：`admin_standby` 返回
   `power_state()` 时待机还没开始，响应里的 `standby` 仍是旧值；前端必须轮询
   `/api/admin/power`。另外那个 `_power_tasks` 强引用是**必须**的（`api.py:2598` 注释）。
@@ -595,10 +599,12 @@ flowchart TD
 * **`models_library_save` 会把已序列化的响应体再解析回来**塞 `saved_key`
   （`api.py:1700-1710`）：说明 `_finish_config_write` 的返回体不可扩展。
   要加字段应该改 `_finish_config_write`，不要在调用点二次解析 JSON。
-* **两处 `_read_json` 没有 try**（`api.py:1890` 的 `prompts_preview`、
-  `api.py:2546` 的 `scheduled_tasks_action`）：坏请求体不会走 handler 内那条
-  「显式 400」，而是被 `_error_middleware` 兜成 400。错误体形状一样，但栈里多一层，
-  打断点定位时别以为是中间件自己报的。
+* **`_read_json` 的 25 个调用点有四种待遇**：20 处包 try 并显式回 400；
+  **4 处完全不包 try**（`api.py:1890 prompts_preview`、`api.py:1917 prompts_save`、
+  `api.py:1943 prompts_reset`、`api.py:2546 scheduled_tasks_action`），坏请求体靠
+  `_error_middleware` 兜成 400，错误体形状一样但栈里多一层；
+  1 处宽容处理（`api.py:2574 _power_reason` 把非法体当空体，电源动作照常执行）。
+  打断点定位 400 时先确认是哪一类。
 * **档案内部表是硬拒绝**：`memory_counter` 不能编辑（`api.py:2254`）也不能触发压缩
   （`api.py:2395`），两处都返回 400；但**可以删除**（删除只受 `allow_archive_delete` 管）。
   「内部表只读」这个说法在删除面前不成立。

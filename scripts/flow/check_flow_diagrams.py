@@ -264,7 +264,7 @@ def parse_diagram(path: Path) -> Diagram:
 
 
 #: 图目录里不是「图」的文件（说明/索引类），不参与 F1/F2/F3
-NON_DIAGRAM_FILES = frozenset({"README.md", "REFERENCE.md", "SPLIT-MAP.md"})
+NON_DIAGRAM_FILES = frozenset({"README.md", "REFERENCE.md", "SPLIT-MAP.md", "FINDINGS.md"})
 
 
 def load_diagrams(flow_dir: Path) -> list[Diagram]:
@@ -523,6 +523,19 @@ def _git_short_hash(root: Path) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+def select_diagrams(diagrams: Sequence[Diagram], only: Sequence[str] | None) -> list[Diagram]:
+    """按图名（或文件名）过滤；--update 并发时用它只盖自己的图。"""
+
+    if not only:
+        return list(diagrams)
+    wanted = {item.strip() for item in only if item.strip()}
+    picked = [d for d in diagrams if d.name in wanted or d.path.stem in wanted or d.path.name in wanted]
+    missing = wanted - {d.name for d in picked} - {d.path.stem for d in picked} - {d.path.name for d in picked}
+    if missing:
+        raise CheckError("--update 指定的图不存在：" + "、".join(sorted(missing)))
+    return picked
+
+
 def update_stamps(diagrams: Sequence[Diagram], root: Path, *, touch_commit: bool) -> list[str]:
     """把 verified_hash（可选 verified_against）写回图头。返回改动说明。"""
 
@@ -620,8 +633,8 @@ def render_report(report: Report) -> str:
     return "\n".join(lines)
 
 
-def run(root: Path, *, strict_drift: bool) -> Report:
-    diagrams = load_diagrams(root / FLOW_DIR)
+def run(root: Path, *, strict_drift: bool, only: Sequence[str] | None = None) -> Report:
+    diagrams = select_diagrams(load_diagrams(root / FLOW_DIR), only)
     findings: list[Finding] = []
     for diagram in diagrams:
         findings.extend(check_f1(diagram, root))
@@ -637,6 +650,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--update", action="store_true", help="把 verified_hash 写回图头（改图后盖章）")
     parser.add_argument(
+        "--only",
+        default=None,
+        help="只处理这些图（逗号分隔的图名/文件名）；并发写图时用它避免互相覆盖",
+    )
+    parser.add_argument(
         "--update-commit", action="store_true", help="盖章时连带把 verified_against 更新为当前提交短号"
     )
     parser.add_argument("--quiet", action="store_true", help="只输出阻断项")
@@ -648,9 +666,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[flow] {exc}", file=sys.stderr)
         return 2
 
+    only = [item for item in (args.only or "").split(",") if item.strip()] or None
+
     if args.update:
         try:
-            diagrams = load_diagrams(root / FLOW_DIR)
+            diagrams = select_diagrams(load_diagrams(root / FLOW_DIR), only)
         except CheckError as exc:
             print(f"[flow] {exc}", file=sys.stderr)
             return 2
@@ -663,7 +683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  - {line}")
 
     try:
-        report = run(root, strict_drift=args.strict_drift)
+        report = run(root, strict_drift=args.strict_drift, only=only)
     except CheckError as exc:
         print(f"[flow] {exc}", file=sys.stderr)
         return 2
