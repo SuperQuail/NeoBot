@@ -155,3 +155,8 @@ docs/flow/_site/
 
 # 流程图截图临时裁剪（分析用，不入库）
 .flow_crops/
+
+# 本地 git 备份/暂存（不入库）
+.git-backup/
+scripts/flow/_pr_body_draft.txt
+scripts/flow/_commit_msg.txt

@@ -1,4 +1,6 @@
-import pathlib, re, json
+import json
+import pathlib
+import re
 root = pathlib.Path('.').resolve()
 anchor = re.compile(r'([A-Za-z0-9_./\\-]+\.py):(\d+)')
 full = re.compile(r'([A-Za-z0-9_/\\-]+/[A-Za-z0-9_.\\-]+\.py)')
