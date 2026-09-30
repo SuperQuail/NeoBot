@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/runtime/sleep_service.py
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
-verified_against: 94f01be
+verified_against: 96da9ef
 verified_hash: 151b959b4f0b
 ---
 

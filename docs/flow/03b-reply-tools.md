@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/reply/tools.py
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
-verified_against: 1de0bea
+verified_against: 96da9ef
 verified_hash: 022e8a0fe851
 ---
 

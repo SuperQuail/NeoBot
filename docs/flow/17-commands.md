@@ -2,7 +2,7 @@
 flow: 17-commands
 covers:
   - app/src/neobot_app/commands/
-verified_against: 94f01be
+verified_against: 96da9ef
 verified_hash: abe8cbae0240
 ---
 

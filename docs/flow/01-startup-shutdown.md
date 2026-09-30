@@ -11,7 +11,7 @@ covers:
   - app/src/neobot_app/runtime/adapter_supervisor.py
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: dfe5416
+verified_against: 96da9ef
 verified_hash: 33902f95ff1f
 ---
 

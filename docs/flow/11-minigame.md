@@ -2,7 +2,7 @@
 flow: 11-minigame
 covers:
   - app/src/neobot_app/builtin_plugins/minigame/
-verified_against: f610088
+verified_against: 96da9ef
 verified_hash: 64272780cb2c
 ---
 

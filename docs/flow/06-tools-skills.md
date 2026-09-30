@@ -8,7 +8,7 @@ covers:
   - app/src/neobot_app/runtime/sandbox_lock.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
-verified_against: dfe5416
+verified_against: 96da9ef
 verified_hash: 02b4252f88d7
 ---
 

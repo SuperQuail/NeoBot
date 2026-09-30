@@ -8,7 +8,7 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: f610088
+verified_against: 96da9ef
 verified_hash: 0a7ecc6e3023
 ---
 

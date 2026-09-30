@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/reply/flow_registry.py
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
-verified_against: 04d93a4
+verified_against: 96da9ef
 verified_hash: 3fa9343ebb32
 ---
 

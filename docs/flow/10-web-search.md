@@ -3,7 +3,7 @@ flow: 10-web-search
 covers:
   - app/src/neobot_app/web_search/
   - app/src/neobot_app/web_search_package.py
-verified_against: dfe5416
+verified_against: 96da9ef
 verified_hash: b7c465e93c6a
 ---
 

@@ -5,7 +5,7 @@ covers:
   - packages/chat/src/neobot_chat/schema/exceptions.py
   - app/src/neobot_app/agents/
   - app/src/neobot_app/agent_tools/invocation.py
-verified_against: dfe5416
+verified_against: 96da9ef
 verified_hash: ffc0b89d2416
 ---
 

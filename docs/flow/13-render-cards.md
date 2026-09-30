@@ -8,7 +8,7 @@ covers:
   - app/src/neobot_app/screenshot.py
   - app/src/neobot_app/image_pool.py
   - packages/contracts/src/neobot_contracts/ports/screenshot.py
-verified_against: fdd346f
+verified_against: 96da9ef
 verified_hash: b8a323588260
 ---
 

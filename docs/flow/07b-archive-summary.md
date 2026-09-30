@@ -3,7 +3,7 @@ flow: 07b-archive-summary
 covers:
   - app/src/neobot_app/runtime/archive_memory_summary.py
   - packages/memory/src/neobot_memory/archive_service.py
-verified_against: fdd346f
+verified_against: 96da9ef
 verified_hash: e7d2af8461d8
 ---
 

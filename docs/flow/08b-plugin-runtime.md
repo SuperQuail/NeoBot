@@ -8,7 +8,7 @@ covers:
   - packages/modloader/src/neobot_modloader/config_store.py
   - packages/modloader/src/neobot_modloader/config_validation.py
   - packages/modloader/src/neobot_modloader/plugins/dispatch.py
-verified_against: fdd346f
+verified_against: 96da9ef
 verified_hash: 78bff12c064e
 ---
 

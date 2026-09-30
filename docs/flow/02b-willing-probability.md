@@ -3,7 +3,7 @@ flow: 02b-willing-probability
 covers:
   - app/src/neobot_app/willing/
   - app/src/neobot_app/runtime/event_pipeline.py
-verified_against: dfe5416
+verified_against: 96da9ef
 verified_hash: 637a315eb777
 ---
 

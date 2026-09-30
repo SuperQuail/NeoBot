@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/core/file_server.py
   - app/src/neobot_app/core/paths.py
   - app/src/neobot_app/image_pool.py
-verified_against: 94f01be
+verified_against: 96da9ef
 verified_hash: 49cbf82a3fe8
 ---
 

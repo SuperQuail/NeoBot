@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 1de0bea
+verified_against: 96da9ef
 verified_hash: f968eae87c2a
 ---
 

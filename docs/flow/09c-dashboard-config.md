@@ -10,7 +10,7 @@ covers:
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: e491910
+verified_against: 96da9ef
 verified_hash: c03cf13ede56
 ---
 
