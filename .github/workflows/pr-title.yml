@@ -1,7 +1,9 @@
 name: PR 标题
 
-# PR 标题在 squash 合并时就是 main 上的提交标题，也是 release notes 里的那一行，
-# 所以按 commit message 规范校验。编辑标题（edited）会重新触发，改名后立刻能看到结果。
+# 仓库 squash 设置为 PR_TITLE + PR_BODY：main 上的标题永远取 PR 标题、正文永远取 PR 描述，
+# 所以 PR 标题必须符合 commit message 规范（它会被永久留在 git log 与 release notes 里）。
+# 提交信息不进 main，不在这里校验。
+# 编辑标题（edited）会重新触发，改名后立刻能看到结果。
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
@@ -24,7 +26,7 @@ jobs:
           persist-credentials: false
 
       # 标题经环境变量传入，不拼进命令行：标题里的引号 / 反引号 / $ 不会影响 shell。
-      # 想连「疑似罗列」的警告一起阻断，在下面加 --strict。
+      # 想连「疑似罗列」的警告一起阻断，给下面加 --strict。
       - name: 校验 PR 标题
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

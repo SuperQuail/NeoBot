@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""PR 标题体检：PR 标题就是 squash 合并后写进 main 的提交标题，必须符合 commit message 规范。
+"""PR 标题体检：仓库 squash 设置为 ``PR_TITLE`` + ``PR_BODY``。
 
-本仓库用 GitHub 的「标题 + 提交明细」squash 合并，PR 标题会原样成为 main 上的提交标题、
-也会出现在 release notes 里，所以它是**永久历史**的一部分，而不是 PR 的元数据。
+PR 标题会成为 main 上的提交标题、PR 描述会成为提交正文，所以 PR 标题必须符合
+commit message 规范——它会永久留在 ``git log`` 与 release notes 里。
+提交信息不进 main（除非有人改用 rebase 合并），因此不在这里校验。
 
 用法::
 
@@ -77,6 +78,9 @@ _LIST_MARKERS = ("——", " + ", "＋")
 #: 并列分隔符：可能是清单，也可能只是领域并列（如「取消、重启与配置」），只警告。
 _PARALLEL_MARKERS = ("、", " / ")
 
+#: 约定式提交要求简述是祈使语气（动词开头）。中文词性没法用正则判，只列最明显的几种迂回说法，只警告。
+_NON_IMPERATIVE_OPENERS = re.compile(r"^(让|关于|对于|为了)")
+
 
 def display_width(text: str) -> int:
     """标题的显示宽度：东亚宽字符按 2 列，其余按 1 列。"""
@@ -109,6 +113,11 @@ def validate(title: str) -> tuple[list[str], list[str]]:
             errors.append(f"简述「{desc}」没有信息量：写清这次改了什么")
         if match.group("breaking"):
             warnings.append("破坏性变更（!）必须在 body 的「行为变化与迁移」里给出迁移步骤")
+        if _NON_IMPERATIVE_OPENERS.match(desc):
+            warnings.append(
+                "简述建议用动词开头的祈使句（修复 / 添加 / 移除 / 重订…）："
+                "「让…」「关于…」这类迂回说法不是约定式提交的祈使语气"
+            )
 
     if re.search(r"\(#\d+\)$", text):
         errors.append("标题不要自带 `(#NN)`：squash 合并时 GitHub 会自动补")
@@ -145,14 +154,14 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(errors="replace")
 
     online = os.environ.get("GITHUB_ACTIONS") == "true"
-    print(f"PR 标题：{' '.join(title.split()) or '（空）'}")
+    print(f"标题：{' '.join(title.split()) or '（空）'}")
     for message in errors:
         print(f"::error::{message}" if online else f"[错误] {message}")
     for message in warnings:
         print(f"::warning::{message}" if online else f"[警告] {message}")
 
     if errors:
-        print("标题校验未通过。PR 标题会成为 main 上的提交标题，规则见 AGENTS.md 的「PR 标题 = 提交标题」。")
+        print("标题校验未通过。这行字会成为 main 上的提交信息，规则见 AGENTS.md 的「Pull Request/Commit Message」。")
         return 1
     if warnings and args.strict:
         print("标题校验未通过（--strict：警告视为失败）。")
