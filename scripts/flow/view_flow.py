@@ -456,7 +456,9 @@ RUNTIME_JS = """
         holder.className = 'mermaid-rendered';
         holder.setAttribute('data-mermaid-index', String(i));
         holder.innerHTML = out.svg;
-        node.parentNode.replaceChild(holder, node);
+        // 包在 <pre class="code"> 里时必须整体替换，否则被 pre 的 white-space/padding 套住
+        var host = node.parentNode && node.parentNode.tagName === 'PRE' ? node.parentNode : node;
+        host.parentNode.replaceChild(holder, host);
       }).catch(function (err) {
         var pre = document.createElement('pre');
         pre.className = 'mermaid-error';

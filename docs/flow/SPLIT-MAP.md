@@ -17,26 +17,26 @@
 
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
-| 01 启动/停机/待机 | [01-startup-shutdown.md](./01-startup-shutdown.md) | cli / bootstrap / application / standby / adapter_supervisor |
+| 01 启动/停机/待机 | [01-startup-shutdown.md](./01-startup-shutdown.md) ✅ | cli / bootstrap / application / standby / adapter_supervisor |
 | 01b 配置系统 | \`01b-config-system.md\` | config/schemas（bot.py 1783 行）/ loader / 校验 / 热重载入口 |
-| 05 模型路由 | [05-llm-routing.md](./05-llm-routing.md) | assembly/agents.py、bootstrap/_providers.py、chat/models.py |
+| 05 模型路由 | [05-llm-routing.md](./05-llm-routing.md) ✅ | assembly/agents.py、bootstrap/_providers.py、chat/models.py |
 | 05b provider 与原生视觉降级 | \`05b-provider-native-vision.md\` | providers/*（deepseek/anthropic/native_vision）、异常契约、计费统计 |
 
 ### 3.3 主链路层（消息进 -> 回复出）
 
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
-| 02 适配器入站 | [02-inbound-message.md](./02-inbound-message.md) | adapter 包、message/queue.py、runtime/gateway.py、inbound_pipeline |
-| 02b 回复意愿概率 | [02b-willing-probability.md](./02b-willing-probability.md) | willing/ 全部 + event_pipeline 的决策入口 |
+| 02 适配器入站 | [02-inbound-message.md](./02-inbound-message.md) ✅ | adapter 包、message/queue.py、runtime/gateway.py、inbound_pipeline |
+| 02b 回复意愿概率 | [02b-willing-probability.md](./02b-willing-probability.md) ✅ | willing/ 全部 + event_pipeline 的决策入口 |
 | 02c 事件管道 | \`02c-event-pipeline.md\` | runtime/event_pipeline.py（1468 行：去重/命令/队列/回复后积压/通知） |
-| 03 回复管线 | [03-reply-pipeline.md](./03-reply-pipeline.md) | orchestrator 状态机/冷却/看门狗、sender、postprocess、output_guard |
+| 03 回复管线 | [03-reply-pipeline.md](./03-reply-pipeline.md) ✅ | orchestrator 状态机/冷却/看门狗、sender、postprocess、output_guard |
 | 03b 回复管线工具面 | \`03b-reply-tools.md\` | reply/tools.py（2537 行：模型可见工具集与 executor） |
-| 04 Agent 循环 | [04-agent-loop.md](./04-agent-loop.md) | chat/runtime/agent.py、problem_solver、self_heal |
-| 06 工具与技能 | [06-tools-skills.md](./06-tools-skills.md) | agent_tools/、skills/、沙箱 |
-| 09 面板 | [09-dashboard.md](./09-dashboard.md) | dashboard 路由/鉴权/静态产物/前端 |
+| 04 Agent 循环 | [04-agent-loop.md](./04-agent-loop.md) ✅ | chat/runtime/agent.py、problem_solver、self_heal |
+| 06 工具与技能 | [06-tools-skills.md](./06-tools-skills.md) ✅ | agent_tools/、skills/、沙箱 |
+| 09 面板 | [09-dashboard.md](./09-dashboard.md) ✅ | dashboard 路由/鉴权/静态产物/前端 |
 | 09b 面板接口面 | \`09b-dashboard-api.md\` | dashboard/api.py（2564 行）端点清单与权限 |
 | 09c 面板配置编辑 | \`09c-dashboard-config.md\` | config_manager.py（1464 行）+ 前端编辑器数据流 |
-| 10 联网搜索 | [10-web-search.md](./10-web-search.md) | web_search/ 三级回退 |
+| 10 联网搜索 | [10-web-search.md](./10-web-search.md) ✅ | web_search/ 三级回退 |
 | 12 浏览器自动化 | \`12-browser-automation.md\` | browser/agent_browser/manager.py（2084 行）+ actions + lifecycle |
 | 13 渲染与卡片 | \`13-render-cards.md\` | runtime/html_card.py、help_card、markdown_image、emoji、screenshot |
 | 14 表情包与图像解析 | \`14-emoji-image-parse.md\` | emoji/、image/、vision_detect/、image_pipeline |
@@ -45,11 +45,11 @@
 
 | 图 | 文件 | 覆盖范围 |
 |---|---|---|
-| 07 记忆与档案 | [07-memory-archive.md](./07-memory-archive.md) | packages/memory、archive_memory_summary、storage、contracts |
+| 07 记忆与档案 | [07-memory-archive.md](./07-memory-archive.md) ✅ | packages/memory、archive_memory_summary、storage、contracts |
 | 07b 档案自动总结 | \`07b-archive-summary.md\` | archive_memory_summary.py（1871 行）细节 |
-| 08 插件系统 | [08-plugins.md](./08-plugins.md) | modloader 包、hot_reload_registry、plugin_config_reload |
+| 08 插件系统 | [08-plugins.md](./08-plugins.md) ✅ | modloader 包、hot_reload_registry、plugin_config_reload |
 | 08b 插件运行时 | \`08b-plugin-runtime.md\` | modloader/runtime.py（2168 行）+ installer + hooks |
-| 11 小游戏 | [11-minigame.md](./11-minigame.md) | builtin_plugins/minigame/ |
+| 11 小游戏 | [11-minigame.md](./11-minigame.md) ✅ | builtin_plugins/minigame/ |
 | 15 绘画 | \`15-drawing.md\` | drawing/service.py（1821 行）+ drawing 工具 |
 | 16 定时任务 | \`16-scheduled-tasks.md\` | runtime/scheduled_tasks.py、sleep_service、standby、notifications |
 | 17 命令系统 | \`17-commands.md\` | commands/、内置命令、权限树、命令重名来源前缀 |
