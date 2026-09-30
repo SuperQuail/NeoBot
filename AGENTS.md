@@ -2,9 +2,16 @@
 
 ## Pull Request/Commit Message
 
-> 本仓库用 **squash 合并**，GitHub 的「标题 + 提交明细」模式：
-> **PR 标题会变成 main 上的提交标题**，PR 描述和每条提交的 body 会逐条进入 main。
-> 这些文字是永久历史，不是 PR 的临时说明——commit message 的规矩一字不差地适用。
+> 本仓库用 **squash 合并**，仓库设置为 `PR_TITLE` + `PR_BODY`：
+>
+> - main 上的**标题 = PR 标题**（永远，与提交数无关）
+> - main 上的**正文 = PR 描述**
+> - **提交信息不进 main**（除非有人改用 rebase 合并）
+>
+> 所以：**标题写 PR 标题，正文写 PR 描述**——这两处就是永久历史，
+> commit message 的规矩一字不差地适用。
+>
+> 合并对话框里会预填最终落地的那条 squash 信息，合并前看一眼——那是最后一次人工把关。
 
 ### 速查
 
@@ -17,9 +24,9 @@ fix(dashboard): 折线图宽度跟随容器
 验证：pnpm run verify 全绿；1440px / 820px 实测 viewBox 与渲染宽度一致
 ```
 
-- 标题：`<type>(<scope>): 一句话概括`，**不罗列子改动**
-- body：子改动逐条列，末尾写**真跑过**的验证
-- 一个 PR 装多个改动没问题——标题概括，body 列清即可
+- 标题写 **PR 标题**：`<type>(<scope>): 一句话概括`，**不罗列子改动**
+- 正文写 **PR 描述**：子改动逐条列，末尾写**真跑过**的验证
+- 一个 PR 装多个改动没问题——标题概括，描述里列清即可
 
 ### 1. 标题
 
@@ -37,8 +44,9 @@ refactor(modloader)!: 插件 API 改为能力注册制
 
 **硬性要求**
 
-CI 用 [scripts/check_pr_title.py](scripts/check_pr_title.py) 校验，
-配置见 [.github/workflows/pr-title.yml](.github/workflows/pr-title.yml)：
+CI 用 [scripts/check_pr_title.py](scripts/check_pr_title.py) 校验 **PR 标题**
+（见 [.github/workflows/pr-title.yml](.github/workflows/pr-title.yml)）；
+提交信息不进 main，不在校验范围内，但**建议同样写合规**——仓库也允许 rebase 合并。
 
 - 显示宽度 ≤ 72（中文/全角按 2 计）
 - 结尾不加句号
@@ -73,9 +81,10 @@ CI 用 [scripts/check_pr_title.py](scripts/check_pr_title.py) 校验，
 | 中 | `feat` `refactor`、新配置、新接口 | 需求、实现、验证、行为变化 |
 | 重 | bug 修复、并发与生命周期、破坏性变更、发版 | 现象、根因、修复、验证（+ 迁移） |
 
-- **PR 描述**：用 [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) 的模板
-- **提交 body**：同一套段落，`现象：` 起头或 `## 现象` 标题都可以
-- 不要出现「见 PR 描述」「WIP」「临时提交」——合并之后这些话没有意义
+- **PR 描述**：按下面三档写全——**它就是 main 上的正文**
+- **PR 标题**：概括（见第 1 节）——**它就是 main 上的标题**
+- **提交信息**：不进 main，但仍要写清楚——评审时会看，而且仓库允许 rebase 合并，那时它会原样进历史
+- 不要出现「见 PR 描述」「WIP」「临时提交」——这些话只在分支上有意义
 
 ### 3. 验证段
 
@@ -95,7 +104,7 @@ uv run ruff check .            # CI 的门禁就是这一条
 uv run pytest -m "not browser and not network and not slow and not llm"
 uv lock --check                # 改过依赖时
 
-# 标题自查（CI 也会校验）
+# 标题自查（CI 也会校验；它将成为 main 上的提交标题）
 python scripts/check_pr_title.py --title "<PR 标题>" --strict
 ```
 

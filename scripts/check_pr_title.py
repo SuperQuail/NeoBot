@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""PR 标题体检：PR 标题就是 squash 合并后写进 main 的提交标题，必须符合 commit message 规范。
+"""PR 标题体检：仓库 squash 设置为 ``PR_TITLE`` + ``PR_BODY``。
 
-本仓库用 GitHub 的「标题 + 提交明细」squash 合并，PR 标题会原样成为 main 上的提交标题、
-也会出现在 release notes 里，所以它是**永久历史**的一部分，而不是 PR 的元数据。
+PR 标题会成为 main 上的提交标题、PR 描述会成为提交正文，所以 PR 标题必须符合
+commit message 规范——它会永久留在 ``git log`` 与 release notes 里。
+提交信息不进 main（除非有人改用 rebase 合并），因此不在这里校验。
 
 用法::
 
@@ -145,14 +146,14 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(errors="replace")
 
     online = os.environ.get("GITHUB_ACTIONS") == "true"
-    print(f"PR 标题：{' '.join(title.split()) or '（空）'}")
+    print(f"标题：{' '.join(title.split()) or '（空）'}")
     for message in errors:
         print(f"::error::{message}" if online else f"[错误] {message}")
     for message in warnings:
         print(f"::warning::{message}" if online else f"[警告] {message}")
 
     if errors:
-        print("标题校验未通过。PR 标题会成为 main 上的提交标题，规则见 AGENTS.md 的「PR 标题 = 提交标题」。")
+        print("标题校验未通过。这行字会成为 main 上的提交信息，规则见 AGENTS.md 的「Pull Request/Commit Message」。")
         return 1
     if warnings and args.strict:
         print("标题校验未通过（--strict：警告视为失败）。")

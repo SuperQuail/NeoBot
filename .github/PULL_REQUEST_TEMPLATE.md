@@ -1,9 +1,12 @@
 <!--
-PR 标题 = 合并后 main 上的提交标题（squash 合并），也是 release notes 里的那一行。
-格式：<type>(<scope>): <中文简述>，破坏性变更加 !，不要自带 (#NN)。
-CI 会校验（scripts/check_pr_title.py）：标题概括，不要把子改动写成清单。
+本仓库 squash 设置为 PR_TITLE + PR_BODY，落到 main 上的就是下面这两处：
+  · PR 标题 → main 上的提交标题（永远，与提交数无关）
+  · PR 描述 → main 上的提交正文（永远）
+  · 提交信息不进 main（除非改用 rebase 合并），但评审会看，也请写清楚
 
-这份描述会原样进入 main，按提交 body 的标准写。
+格式：<type>(<scope>): <中文简述>，破坏性变更加 !，不要自带 (#NN)。
+CI 会校验 PR 标题（scripts/check_pr_title.py）：标题概括，不要把子改动写成清单。
+
 按改动风险保留下面的段落，用不到的删掉（详见 AGENTS.md）：
   轻档 chore/docs/依赖/文案            → 变更、验证
   中档 feat/refactor/新配置/新接口      → 需求、实现、验证、行为变化

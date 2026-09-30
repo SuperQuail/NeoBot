@@ -1,7 +1,8 @@
 """PR 标题必须符合 commit message 规范：直接复用 scripts/check_pr_title.py 的校验逻辑。
 
-PR 标题在 squash 合并时就是 main 上的提交标题，CI 用同一个脚本阻断
-（.github/workflows/pr-title.yml），所以这里的用例同时是「规则没被改坏」的护栏。
+仓库 squash 设置为 PR_TITLE + PR_BODY：PR 标题会成为 main 上的提交标题、PR 描述会成为正文，
+提交信息不进 main。CI 用同一个脚本阻断（.github/workflows/pr-title.yml），
+这里的用例同时是「规则没被改坏」的护栏。
 """
 
 from __future__ import annotations
