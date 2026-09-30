@@ -173,25 +173,31 @@ async function main() {
   const shots = [];
   try {
     for (const stem of stems) {
-      // 收起态走 /view（纯文档渲染）；展开态走 /shot?expand=1 —— 后者在服务端就把
-      // 所有 <details> 标成 open，图与图之间不再互相折叠（/view 的展开是运行期 JS，截图时会互相覆盖）。
-      const url =
-        base + (options.expanded ? '/shot/' : '/view/') + encodeURIComponent(stem) +
-        (options.expanded ? '?expand=1' : '?bare=1');
-      const opened = ab(['open', url], { timeoutMs: 45000 });
-      if (opened.status !== 0) throw new Error(stem + ' 打开失败：' + (opened.stderr || opened.error));
-      const ready = waitReady();
-      if (!ready.ok) throw new Error(stem + ' 渲染未就绪（' + ready.detail + '）');
-      const target = path.join(outDir, stem + '.png');
-      const temp = path.join(TMP, 's' + (seq += 1) + '.png');
-      const shot = ab(['screenshot', '--full', temp], { timeoutMs: 60000 });
-      if (!fs.existsSync(temp)) {
-        throw new Error(stem + ' 截图未落地：' + (shot.stderr || shot.error));
+      // 每张图都先截「收起态」（/view 纯文档渲染），再按需截「展开态」
+      // （/shot?expand=1 在服务端就把所有 <details> 标成 open）。
+      // 两态写不同文件名，避免互相覆盖 —— 早期版本用同一个目标名，后跑的会把前一张盖掉。
+      const states = options.expanded
+        ? [
+            { suffix: '', url: '/view/' + encodeURIComponent(stem) + '?bare=1' },
+            { suffix: '.expanded', url: '/shot/' + encodeURIComponent(stem) + '?expand=1' },
+          ]
+        : [{ suffix: '', url: '/view/' + encodeURIComponent(stem) + '?bare=1' }];
+      for (const state of states) {
+        const opened = ab(['open', base + state.url], { timeoutMs: 60000 });
+        if (opened.status !== 0) throw new Error(stem + ' 打开失败：' + (opened.stderr || opened.error));
+        const ready = waitReady();
+        if (!ready.ok) throw new Error(stem + ' 渲染未就绪（' + ready.detail + '）');
+        const target = path.join(outDir, stem + state.suffix + '.png');
+        const temp = path.join(TMP, 's' + (seq += 1) + '.png');
+        const shot = ab(['screenshot', '--full', temp], { timeoutMs: 90000 });
+        if (!fs.existsSync(temp)) {
+          throw new Error(stem + ' 截图未落地：' + (shot.stderr || shot.error));
+        }
+        fs.copyFileSync(temp, target);
+        const size = pngSize(target);
+        shots.push({ stem: stem + state.suffix, size });
+        console.log('[shoot] ' + stem + state.suffix + ' -> ' + size.width + 'x' + size.height);
       }
-      fs.copyFileSync(temp, target);
-      const size = pngSize(target);
-      shots.push({ stem, size });
-      console.log('[shoot] ' + stem + ' -> ' + size.width + 'x' + size.height + '  ' + ready.detail);
     }
   } finally {
     ab(['close'], { timeoutMs: 20000 });
