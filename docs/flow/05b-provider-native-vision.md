@@ -116,7 +116,7 @@ sequenceDiagram
     FB-->>NVP: Message 或 chunk
     NVP-->>AG: _annotate 挂 extensions.native_vision_fallback
     AG-->>BOOT: extensions.usage 与 finish_reason 交给编排器记账
-    Note over AG,DS: provider 只报 token 与 finish_reason, 不报耗时与会话; 用量落库失败不影响本次回复
+    Note over AG,DS: provider 只报 token 与 finish_reason, 不报耗时与会话， 用量落库失败不影响本次回复
 ```
 
 ## 细节
@@ -266,7 +266,7 @@ flowchart TD
     D1 --> F
     F --> G{"startup_reason 非空?"}
     G -- "是" --> H["_degrade: 启动即降级, 主模型从头到尾不被调用"]
-    G -.->|"否" --> I["_degradation = None"]
+    G -.->|否| I["_degradation = None"]
     H --> J["native_vision:64 读当前生效路由"]
     I --> J
     J --> K["model:74 代理 active.model"]
@@ -341,15 +341,15 @@ flowchart TD
     C -- "是" --> D["放行"]
     B -- "否" --> E{"native_vision 为真 且 名字在三件套内?"}
     E -- "是" --> E1["拒绝: image_parse__parse_image<br/>drawing__inspect_image<br/>user_profile__analyze_user_avatar"]
-    E -.->|"否" --> F["继续走技能白名单"]
+    E -.->|否| F["继续走技能白名单"]
     A --> G["orchestrator.py:2218 稳定段提示词<br/>原生视觉说明进 system"]
     G --> H["orchestrator.py:2783 每轮开头比对 native_vision"]
     H --> I{"与上一轮不同?"}
     I -- "是" --> I1["刷新工具表 + 追加 视觉能力变更 user 提示"]
-    I -.->|"否" --> J["继续本轮"]
+    I -.->|否| J["继续本轮"]
     I1 --> K{"本轮无工具调用?"}
     K -- "是" --> K1["orchestrator.py:2983 追加回退提示并 continue 重试一次"]
-    K -.->|"否" --> J
+    K -.->|否| J
     K1 -.->|"主链路 strip_images=False 时 native_vision 仍为真"| L["该分支不可达: 上面的比对不会触发"]
 ```
 

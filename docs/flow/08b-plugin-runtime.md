@@ -257,7 +257,7 @@ flowchart TD
 * **`dry_run` 也要下载**：要用远端 `plugin.toml` 才能回 `name/version/conflict`。
 * **`install_plugin` 不传 `expected_name`**：只有 `installer.update`（`installer.py:582`）校验「期望插件名」，面板的更新走的就是它。
 * **备份目录**：`BACKUP_DIR_NAME = ".plugin-backups"`，位置是 `plugin_dir.parent`（默认 `data/`）。替换安装的备份是平铺的 `<name>-<stamp>/`；**卸载的备份会再嵌一层** —— `_backup` 先 `copytree` 建好目录，`shutil.move(target, backup_path)` 遇到已存在目录会把源目录挪进去，实际代码在 `<name>-<stamp>/<name>/`。两条路都不做清理，备份只增不减。
-* **写入失败会还原备份**：~shutil.move~ 抛错且目标目录还不存在时，把备份搬回原位再返回 ~ok=False~（~installer.py:558-563~）。
+* **写入失败会还原备份**：`shutil.move` 抛错且目标目录还不存在时，把备份搬回原位再返回 `ok=False`（`installer.py:558-563`）。
 * **卸载不删代码**：`installer.uninstall` 只把插件目录移进备份并 `forget` 启停状态；`_loaded_sources` / `_loaded_paths` 被 pop，但 `_loaded_flags` 不清（见易错点）。
 
 </details>

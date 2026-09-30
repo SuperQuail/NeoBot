@@ -1,16 +1,15 @@
-docs(flow): 第三批拆分图（07b/08b/09b/09c/12/13/14）+ 新增 FINDINGS.md 事实台账
+docs(flow): 新增 15 绘画图；新增逐块渲染校验器；补录 08b/12/15 共 38 条事实
 
-本批 7 张图覆盖审计里最大的几个文件，全部含主流程 + 时序 + 8–12 个折叠细节块：
+- docs/flow/15-drawing.md：提交判据与 3 秒宽限期、并发/容量/超时/取消、参考图 7 种前缀、
+  edits vs generations、失败分级、落盘命名、清理策略、多模型分派、安全与成本
+- scripts/flow/verify_flow_render.mjs：把每张图的**每个** mermaid 块交给页面内 mermaid.parse
+  逐块校验，一次跑完全部并给出 md 行号（F3 只能查结构，查不出语法错误）
+- 修复本轮暴露的 mermaid 语法错误：4 处边标签后多写了箭头（`-.->|否| --> I`）、
+  1 处时序图 Note 文本里的分号（mermaid 语句分隔符）
+  —— 现在 24 张图 / 289 个 mermaid 块 **全部渲染通过**
+- .github/workflows/ci.yml：新增逐块渲染校验步骤（continue-on-error，先只报告）
+- docs/flow/FINDINGS.md：补录 08b（10 条）、12（15 条）、15（13 条）
+  含：卸载备份嵌一层目录、同步钩子 timeout 是假的、标签页 index 两套口径导致关错页、
+  open_browser 脚本必然报错、绘画零计费、图库容量可越过等
 
-- 07b-archive-summary：auto_summary 2153 行的内部（计数触发、手写工具循环、两层冷却与退避、快照回滚）
-- 08b-plugin-runtime：modloader/runtime 2382 行（动作矩阵、热重载回滚、安装更新、钩子总线、四套依赖判定入口）
-- 09b-dashboard-api：api.py 2787 行端点面（权限双口径、失败语义两套、77 条路由的调用方）
-- 09c-dashboard-config：面板配置编辑器数据流（三模式、乐观锁、三个写入者保真度差异、前端竞态）
-- 12-browser-automation：浏览器 3938 行（会话生命周期、动作集、截图、超时与并发、安全边界）
-- 13-render-cards：卡片渲染 1832 行 + help 缓存 + Markdown 转图 + 截图 + 图片暂存池
-- 14-emoji-image-parse：表情包/图像解析/本地视觉（解析失败固化、随机打空、等图无限等、模型库不扫描）
-
-同时新增 docs/flow/FINDINGS.md：按图归档的代码事实台账（05b/09b/13/14 共 44 条），
-与 SPLIT-MAP §3 的早期 W1–W59 并存；约定「修一条标 ✅ + 提交号，不删行」。
-
-验收：check_flow_diagrams.py 阻断 0、警告 0（24 张图全绿）。
+验收：check_flow_diagrams.py --strict-drift 阻断 0；verify_flow_render.mjs 289/289 通过。

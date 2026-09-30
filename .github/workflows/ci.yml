@@ -62,6 +62,12 @@ jobs:
       - name: 流程图体检（spec(13) F1/F2/F3）
         run: uv run python scripts/flow/check_flow_diagrams.py --strict-drift
 
+      - name: 流程图逐块渲染校验（可选，失败仅警告）
+        continue-on-error: true
+        run: |
+          node --version
+          node scripts/flow/verify_flow_render.mjs
+
   frontend:
     name: 前端
     runs-on: ubuntu-latest
