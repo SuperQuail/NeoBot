@@ -1,0 +1,18 @@
+docs(flow): 全链路流程图系统骨架 + 主链路首批图（spec(13)）
+
+新增 docs/flow/ 分文件 Mermaid 图系统与配套工具（只新增文档与脚本，不改运行时代码）：
+
+- docs/flow/REFERENCE.md：写作规范（粒度/格式/自检），粒度对照物为 02b-willing
+- docs/flow/README.md：用法、F1/F2/F3 检查规则、「改代码必须同步改图」约定
+- docs/flow/SPLIT-MAP.md：图清单与拆分依据（按实测行数拆分，含待补图）
+- docs/flow/00-overview.md：全局视图（启动->入站->处理->出站->停机，6 个折叠细节块）
+- docs/flow/02-inbound-message.md：反向 WS/两道 dict 守卫/事件网关/队列（8 个细节块）
+- docs/flow/02b-willing-probability.md：意愿概率逐步精确（0.5 起点 +0.15 问句 ×8 系数）
+- docs/flow/03-reply-pipeline.md：状态机/冷却/静默看门狗/后处理/自身发言入队
+- docs/flow/04-agent-loop.md：工具迭代/轮次上限/ProviderError 语义/自修复三重门槛
+- scripts/flow/check_flow_diagrams.py：F1 锚点 / F2 漂移哈希 / F3 结构 + 折叠块规模（--update 盖章）
+- scripts/flow/view_flow.py：本地只读查看器（折叠细节、按需展开、--export 单文件 HTML）
+- scripts/flow/screenshot_flow.mjs：agent-browser 截图流水线（默认收起态，--expanded 全展开）
+- scripts/flow/vendor/mermaid.min.js：离线渲染运行时（避免依赖 CDN）
+
+验收：check_flow_diagrams.py 阻断 0 项；12 张图中首批 5 张已落盘并通过检查。

@@ -148,3 +148,7 @@ node_modules/
 
 # 本地待实现功能工作区(功能方案文档, 不提交)
 /features/
+
+# 流程图截图与静态导出产物（可再生成，不入库）
+docs/flow/shots/
+docs/flow/_site/
