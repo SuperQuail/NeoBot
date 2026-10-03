@@ -56,6 +56,26 @@ class BlockedCleanup:
         await self.release.wait()
 
 
+class SlowCleanup:
+    """停机比观察窗口慢、但**最终会完成** —— 记忆总结这类收尾的现实模型。
+
+    与 BlockedCleanup 的区别在意图：那个模拟「卡住不放手」，这个模拟「就是要跑很久」。
+    缺陷的成因正是把后者当成了前者。
+    """
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+        self.block = False
+
+    async def shutdown(self) -> None:
+        self.calls += 1
+        if self.block:
+            self.entered.set()
+            await self.release.wait()
+
+
 def app(*, adapter=None, cleanup=None, chat=None, plugins=None) -> NeoBotApplication:
     return NeoBotApplication(
         adapter=adapter or IO(),
@@ -297,6 +317,81 @@ async def test_stop_timeout_retains_generation_and_allows_retry_only_after_clean
         await finish_controller(ctrl)
 
 
+async def test_slow_stop_past_its_window_still_rebuilds_generation(monkeypatch):
+    """回归：停机比观察窗口慢，软重启仍必须**最终**重建 —— 只停不重启是缺陷不是设计。
+
+    优雅关闭要跑记忆总结这类分钟级收尾，`STOP_TIMEOUT_SECONDS` 必然先到。该窗口
+    只是「比预期慢」的有界诊断：停机仍在推进、这一代已被 request_stop 判死，所以
+    调用方拿到 pending 之后，`_operation` 仍要等停机做完并发布新代际。
+
+    旧行为：`resume` 在停机后看到 `_aborted` 就直接放弃重建，于是运行时被停掉、
+    新运行时永不发布 —— 这正是「/reboot 只关闭不重启」。
+    """
+    slow = SlowCleanup()
+    monkeypatch.setattr(lifecycle, "STOP_TIMEOUT_SECONDS", 0.01)
+    service = StandbyService(connect_onebot=False, resume_timeout=10)
+    old = app(cleanup=slow)
+    fresh = app()
+    factory = Mock(return_value=fresh)
+    ctrl = controller(service, factory, initial=old)
+    await ctrl.start()
+    slow.block = True
+    try:
+        action = asyncio.create_task(service.resume())
+        await slow.entered.wait()
+        # 慢 ≠ 放手：清理做完之前不发布第二代、也不提前把动作判成失败。
+        await asyncio.sleep(0.05)
+        assert not action.done(), "停机仍在收尾时不得提前返回 pending（那会让状态判成失败）"
+        assert ctrl.application is None
+        factory.assert_not_called()
+        slow.release.set()
+        # 关键断言：放弃重建的旧行为会停在这里（application 永远是 None）。
+        ok, detail = await bounded(action, seconds=5)
+        assert ok, detail
+        assert ctrl.application is fresh and not old._started
+        assert factory.call_count == 1
+        assert not service._transition and not service.is_standby()
+    finally:
+        slow.release.set()
+        await finish_controller(ctrl)
+
+
+@pytest.mark.parametrize("previous", [False, True])
+async def test_slow_stop_past_its_window_still_enters_standby(monkeypatch, previous):
+    """回归：进入待机同理 —— 停机慢不该把状态退回「运行中」。
+
+    旧行为下 `_aborted` 让 `enter` 返回失败，服务把状态回滚成 RUNNING，而运行时
+    其实已经停了：面板显示运行中、实际没有运行时（静默哑火）。
+    """
+    slow = SlowCleanup()
+    monkeypatch.setattr(lifecycle, "STOP_TIMEOUT_SECONDS", 0.01)
+    service = StandbyService(
+        connect_onebot=previous, resume_timeout=10, enter_timeout=10
+    )
+    old = app(cleanup=slow)
+    factory = Mock()
+    ctrl = controller(service, factory, initial=old)
+    await ctrl.start()
+    slow.block = True
+    try:
+        action = asyncio.create_task(service.enter(reason="slow", operator="test"))
+        await slow.entered.wait()
+        await asyncio.sleep(0.05)
+        assert not action.done(), "停机仍在收尾时不得提前返回失败（那会把状态退回运行中）"
+        assert ctrl.application is None
+        factory.assert_not_called()
+        slow.release.set()
+        ok, detail = await bounded(action, seconds=5)
+        assert ok, detail
+        assert service.is_standby() and not service._transition
+        assert ctrl._app is None and ctrl.application is None
+        assert not old._started
+        factory.assert_not_called()
+    finally:
+        slow.release.set()
+        await finish_controller(ctrl)
+
+
 async def test_rebuilding_restart_aborts_future_publication_and_waits_for_old_cleanup(monkeypatch, capsys):
     monkeypatch.setattr(lifecycle, "STOP_TIMEOUT_SECONDS", 0.01)
     service = StandbyService(connect_onebot=False)
@@ -313,16 +408,21 @@ async def test_rebuilding_restart_aborts_future_publication_and_waits_for_old_cl
     rebuild = asyncio.create_task(service.resume())
     try:
         await cleanup.entered.wait()
-        ok, _ = await bounded(rebuild)
-        assert not ok
         signal.request()
         signal.request()
         await until(lambda: ctrl.exiting)
-        await asyncio.sleep(0.025)
+        await asyncio.sleep(0.05)
+        # 停机收尾期间：不发布第二代、不授权换进程 —— 慢不是放手。
         assert not entry.done(), "restart cannot authorize exec while cleanup is pending"
-        assert "强制重启" in capsys.readouterr().err
+        assert ctrl.application is None
+        assert "运行时正在切换中" in capsys.readouterr().err
         factory.assert_not_called()
         cleanup.release.set()
+        # 已经请求换进程了，软重启如实拒绝重建（不能一边换进程一边发新代际），
+        # 但理由必须是「进程正在关闭」——而不是停机慢导致的假失败。
+        ok, detail = await bounded(rebuild)
+        assert not ok and "运行时正在切换中" in detail, detail
+        assert "超时" not in detail
         assert await bounded(entry) is True
         factory.assert_not_called()
         assert not old._started and ctrl.application is None
