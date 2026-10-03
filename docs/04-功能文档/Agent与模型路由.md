@@ -47,9 +47,9 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - 旧配置（没有 `enabled_params`）首次加载时按「值 ≠ 默认值 ⇒ 视为已启用」推断一次并写回配置，
   面板会提示「已按旧配置推断，请复核」。
 
-调用方在 `[models.assignments]` 中只保存 key，因此同一个模型可以被多个调用方复用：
+调用方在 `[models.assignments]` 中只保存 `model_ref`（本机引用名，不发给供应商），因此同一个模型可以被多个调用方复用：
 
-| 调用方字段 | 默认 key | 用途 |
+| 调用方字段 | 默认 model_ref | 用途 |
 |---|---|---|
 | `primary_chat_model` | deepseek-flash | 主对话（Agent 编号 0） |
 | `agent_model_1` | deepseek-flash-max | 子 Agent（编号 1，max 推理） |
@@ -57,9 +57,9 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `agent_model_3` | deepseek-flash-off | 低成本任务（编号 3，非推理） |
 | `vision_model` | qwen3-vl-8b | 图像识别（缺 Key 时降级） |
 | `tts_model` | cosyvoice2 | 语音合成（TTS 关闭时不注册） |
-| `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 key） |
+| `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 model_ref） |
 
-注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同名 key 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
+注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同 `model_ref` 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
 
 ## Agent 模型路由（`agent_model` 配置）
 

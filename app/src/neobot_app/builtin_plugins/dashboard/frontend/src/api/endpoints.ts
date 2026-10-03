@@ -53,8 +53,8 @@ export interface SimpleMessage {
   /** 保存/重载类接口会带回「已生效 / 需重启」明细 */
   changes?: ConfigChanges;
   ok?: boolean;
-  key?: string;
-  saved_key?: string;
+  model_ref?: string;
+  saved_model_ref?: string;
   provider?: string;
   model_name?: string;
   url?: string;

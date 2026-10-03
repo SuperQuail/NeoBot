@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 59b8b53
-verified_hash: e8764a8601b8
+verified_against: 264696d
+verified_hash: 0f0c0a56fcc5
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -326,7 +326,7 @@ flowchart TD
 编号字段的真实语义：`resolve_agent_model_name`（`assembly/agents.py:38`）读
 `config.agent_model.〈角色〉` 得到 0-3 的编号，再经 `AGENT_ROLE_NAMES`
 （0→`primary_chat_model`、1→`agent_model_1`…）转成 `assignments` 里的角色名，
-最后查模型库拿 key。角色查不到就**回落到角色名本身**（`:62`），
+最后查模型库拿 model_ref。角色查不到就**回落到角色名本身**（`:62`），
 那是给尚未迁移的旧配置留的兼容口，面板上会看到模型名是一串角色名。
 </details>
 

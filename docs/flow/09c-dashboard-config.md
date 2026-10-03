@@ -10,8 +10,8 @@ covers:
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: 528fe18
-verified_hash: e199875a9f28
+verified_against: 264696d
+verified_hash: 1f149b6b1dfd
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流
@@ -281,7 +281,7 @@ flowchart TD
     C --> D{"调用点"}
     D -- BotConfigManager.save --> D1["校验与还原全部做完之后才比对 revision / :497"]
     D -- update_section --> D2["进入函数先比对，再读文档 / :538"]
-    D -- update_models --> D3["先比对，再做引用检查与 key 派生 / :664"]
+    D -- update_models --> D3["先比对，再做引用检查与引用名派生 / :664"]
     D -- update_plugins_proxy --> D4["先比对，再构造 ProxySettings / :587"]
     D -- EnvFileManager.save --> D5["先查键名合法，再比对 revision / :1355"]
     D -- PluginConfigEditor.save --> D6["先比对，再决定走 source 还是 config / plugin_config.py:370"]
@@ -507,10 +507,10 @@ flowchart TD
     A2 --> A3["_filter_managed(strict={section}) 丢掉未声明键后再校验"]
     A3 --> A4["strict 的含义：正在编辑的分区出现未知键仍然报错"]
     B["update_models(upsert / delete / assignments) / :647"] --> B1["delete 前查引用：仍被角色引用则拒绝并列出角色名"]
-    B1 --> B2["upsert 缺 key 时按模型名派生唯一引用名（小写、非字母数字转连字符、重名加序号）/ :795"]
+    B1 --> B2["upsert 缺 model_ref 时按模型名派生唯一引用名（小写、非字母数字转连字符、重名加序号）/ :795"]
     B2 --> B3["settings.params 伪字段先折叠回 enabled_params 与 extra_body"]
-    B3 --> B4["assignments 校验角色名与 key 存在性；除视觉与 TTS 外必须有值"]
-    B4 --> B5["派生出的 key 通过 resolved 出参回给前端（saved_key）"]
+    B3 --> B4["assignments 校验角色名与 model_ref 存在性；除视觉与 TTS 外必须有值"]
+    B4 --> B5["派生出的引用名通过 resolved 出参回给前端（saved_model_ref）"]
     C["update_plugins_proxy(mode, host, port) / :572"] --> C1["先用 ProxySettings 校验，再只改 [plugins] 的三个键"]
     C1 --> C2["同样走 _filter_managed 与 diff 合并"]
     D["三条路径的共同点"] --> D1["都只改自己负责的那一段，其它段原样保留"]

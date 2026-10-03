@@ -1682,7 +1682,7 @@ class DashboardApi:
         try:
             if action == "delete":
                 document = manager.update_models(
-                    delete=str(payload.get("key") or ""),
+                    delete=str(payload.get("model_ref") or ""),
                     expected_revision=payload.get("revision"),
                 )
             else:
@@ -1700,19 +1700,20 @@ class DashboardApi:
         response = await self._finish_config_write(
             request, document, payload, "模型库已保存"
         )
-        if resolved.get("key"):
+        if resolved.get("model_ref"):
             try:
                 body = json.loads(response.body.decode("utf-8"))
             except Exception:
                 return response
-            body["saved_key"] = resolved["key"]
+            body["saved_model_ref"] = resolved["model_ref"]
             return web.json_response(body)
         return response
 
     async def models_test(self, request: web.Request) -> web.Response:
         """测试模型连通性：网络是否可达、鉴权是否通过、模型名是否存在。
 
-        传 `key` 测试模型库中已保存的条目；传 `entry` 测试尚未保存的草稿。
+        传 `model_ref` 测试模型库中已保存的条目（引用名，不是发给供应商的模型名）；
+        传 `entry` 测试尚未保存的草稿。
         代理行为跟随条目的 `use_system_proxy`（默认直连）。
         """
         denied = self._require_manage(request, action="测试模型连通性")
@@ -1727,13 +1728,15 @@ class DashboardApi:
         from .model_probe import probe_model
 
         entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else None
-        key = str(payload.get("key") or "").strip()
+        model_ref = str(payload.get("model_ref") or "").strip()
         if entry is None:
             config_obj = self._models_config()
             models_config = getattr(config_obj, "models", None) if config_obj else None
-            definition = models_config.get(key) if models_config is not None else None
+            definition = (
+                models_config.get(model_ref) if models_config is not None else None
+            )
             if definition is None:
-                return _json_error(f"模型库中不存在 {key}", status=404)
+                return _json_error(f"模型库中不存在引用名 {model_ref}", status=404)
             entry = {
                 "provider": getattr(definition, "provider", ""),
                 "model_name": getattr(definition, "model_name", ""),
@@ -1762,14 +1765,14 @@ class DashboardApi:
         data = result.to_dict()
         data.update(
             {
-                "key": key,
+                "model_ref": model_ref,
                 "provider": provider,
                 "model_name": model_name,
                 "has_credentials": bool(platform and platform.url and platform.api_key),
             }
         )
         self.logger.info(
-            f"面板测试模型 ip={self.console.request_ip(request)} key={key or '-'} "
+            f"面板测试模型 ip={self.console.request_ip(request)} model_ref={model_ref or '-'} "
             f"ok={result.ok} status={result.status} proxy={use_system_proxy}"
         )
         return _json_ok(data)

@@ -102,7 +102,7 @@ function ModelsPanel() {
   }, [schema]);
 
   const editingLibraryItem = editing
-    ? library.find((item) => item.key && item.key === editing.draft?.key)
+    ? library.find((item) => item.model_ref && item.model_ref === editing.draft?.model_ref)
     : undefined;
 
   const startNew = () => setEditing({ isNew: true, draft: defaultsFromFields(schema) });
@@ -126,17 +126,17 @@ function ModelsPanel() {
     if (result.data?.models) setData((prev) => ({ ...(prev || {}), library: result.data?.models }));
     else await read();
     setEditing(null);
-    const savedKey = result.data?.saved_key;
+    const savedRef = result.data?.saved_model_ref;
     const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
-    toast(savedKey ? baseMessage + '（引用名 ' + savedKey + '）' : baseMessage, 'ok');
+    toast(savedRef ? baseMessage + '（引用名 ' + savedRef + '）' : baseMessage, 'ok');
   };
 
   const remove = async (item: any) => {
-    if (!confirm('确认从模型库删除 ' + item.key + '？')) return;
+    if (!confirm('确认从模型库删除 ' + item.model_ref + '？')) return;
     setBusy('delete');
     const result = await api.modelsLibrarySave({
       action: 'delete',
-      key: item.key,
+      model_ref: item.model_ref,
       revision: data?.revision,
     });
     setBusy('');
@@ -145,7 +145,7 @@ function ModelsPanel() {
       return;
     }
     if (result.data?.models) setData((prev) => ({ ...(prev || {}), library: result.data?.models }));
-    toast('已删除 ' + item.key, 'ok');
+    toast('已删除 ' + item.model_ref, 'ok');
   };
 
   const pullProviderModels = useCallback(async (provider: string, useSystemProxy?: boolean, { silent = false }: { silent?: boolean } = {}) => {
@@ -171,7 +171,7 @@ function ModelsPanel() {
   }, []);
 
   const runProbe = async (target: any) => {
-    const label = target.key || target.entry?.key || 'draft';
+    const label = target.model_ref || target.entry?.model_ref || 'draft';
     setBusy('test:' + label);
     const result = await api.modelsTest(target);
     setBusy('');
@@ -182,7 +182,7 @@ function ModelsPanel() {
     }
     setProbe({
       ...payload,
-      key: payload.key || target.key || target.entry?.key || '',
+      model_ref: payload.model_ref || target.model_ref || target.entry?.model_ref || '',
       provider: payload.provider || target.entry?.provider || '',
       model_name: payload.model_name || target.entry?.model_name || '',
     });
@@ -213,7 +213,7 @@ function ModelsPanel() {
     return bindValues(schema, editing.draft)
       .filter(
         (field) =>
-          field.name !== 'key' &&
+          field.name !== 'model_ref' &&
           field.name !== 'billing_script' &&
           field.name !== 'billing_config' &&
           !field.hidden,
@@ -270,18 +270,18 @@ function ModelsPanel() {
           </thead>
           <tbody>
             {library.map((item) => (
-              <tr key={item.key}>
-                <td><code>{item.key}</code></td>
+              <tr key={item.model_ref}>
+                <td><code>{item.model_ref}</code></td>
                 <td><span className="tag info">{item.type_label || item.model_type || '—'}</span></td>
-                <td>{item.description || '—'}</td>
+                <td>{item.display_name || '—'}</td>
                 <td>
                   <div>{item.provider}</div>
                   <div className="muted small">{item.model_name}</div>
                 </td>
                 <td>
-                  <span className={'tag ' + (item.key_configured ? 'ok' : 'err')}
+                  <span className={'tag ' + (item.api_key_configured ? 'ok' : 'err')}
                     title={'API Key 来自供应商环境变量 ' + item.provider + '_APIKey，模型本身不保存密钥'}>
-                    {item.key_configured ? '供应商 Key 已配置' : '供应商缺 Key'}
+                    {item.api_key_configured ? '供应商 Key 已配置' : '供应商缺 Key'}
                   </span>
                   {!item.url_configured && (
                     <span className="tag err" title={'请在环境变量中配置 ' + item.provider + '_URL'}>
@@ -302,8 +302,8 @@ function ModelsPanel() {
                 </td>
                 <td>
                   <button className="btn-sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</button>
-                  <button className="btn-sm" disabled={!!busy} onClick={() => runProbe({ key: item.key })}>
-                    {busy === 'test:' + item.key ? '测试中…' : '测试'}
+                  <button className="btn-sm" disabled={!!busy} onClick={() => runProbe({ model_ref: item.model_ref })}>
+                    {busy === 'test:' + item.model_ref ? '测试中…' : '测试'}
                   </button>
                   <button className="btn-sm danger" disabled={!!busy} onClick={() => remove(item)}>删除</button>
                 </td>
@@ -316,14 +316,14 @@ function ModelsPanel() {
       <Modal
         open={!!editing}
         size="wide"
-        title={editing?.isNew ? '新增模型' : '编辑模型 ' + (editing?.draft?.key || '')}
+        title={editing?.isNew ? '新增模型' : '编辑模型 ' + (editing?.draft?.model_ref || '')}
         onClose={() => setEditing(null)}
       >
         {editing && (
           <>
             <p className="muted small model-key-hint">
-              引用名（key）：
-              <code>{editing.draft?.key || '保存时按模型名自动生成'}</code>
+              引用名（model_ref）：
+              <code>{editing.draft?.model_ref || '保存时按模型名自动生成'}</code>
               <span className="muted"> · 调用方通过它引用该模型，无需手动填写</span>
             </p>
             {editingLibraryItem?.params_inferred && (
@@ -342,7 +342,7 @@ function ModelsPanel() {
               }
             />
             <BillingSection
-              modelKey={editing.draft?.key}
+              modelKey={editing.draft?.model_ref}
               script={String(editing.draft?.billing_script || '')}
               config={(editing.draft?.billing_config || {}) as Record<string, unknown>}
               disabled={!!busy}
@@ -363,8 +363,8 @@ function ModelsPanel() {
                 <Icon name="download" /> {pulling ? '拉取中…' : '拉取供应商模型'}
               </button>
               <button className="btn" disabled={!!busy}
-                onClick={() => runProbe({ entry: editing.draft, key: editing.draft?.key })}>
-                {busy === 'test:' + (editing.draft?.key || 'draft') ? '测试中…' : '测试连通性'}
+                onClick={() => runProbe({ entry: editing.draft, model_ref: editing.draft?.model_ref })}>
+                {busy === 'test:' + (editing.draft?.model_ref || 'draft') ? '测试中…' : '测试连通性'}
               </button>
               <button className="btn" disabled={!!busy} onClick={() => setEditing(null)}>取消</button>
               <button className="btn" disabled={!!busy} onClick={() => save(false)}>
@@ -386,7 +386,7 @@ function ModelsPanel() {
             </p>
             <table className="model-table">
               <tbody>
-                <tr><th>模型</th><td><code>{probe.key || '（未保存草稿）'}</code></td></tr>
+                <tr><th>模型引用名</th><td><code>{probe.model_ref || '（未保存草稿）'}</code></td></tr>
                 <tr><th>供应商 / 模型名</th><td>{probe.provider || '—'} / <code>{probe.model_name || '—'}</code></td></tr>
                 <tr><th>请求地址</th><td className="muted small">{probe.url || '—'}</td></tr>
                 <tr><th>代理</th><td>{probe.proxy ? '跟随系统代理' : '直连（不使用代理）'}</td></tr>
