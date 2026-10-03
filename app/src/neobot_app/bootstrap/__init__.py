@@ -685,7 +685,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
 
     # ── 待机服务(面板待机按钮、/standby /reboot 共用的状态机) ──
     # 待机 = 停掉 bot 运行时、只留面板与命令；运行时的停/启由装配层通过回调注入。
-    from neobot_app.runtime.standby_service import StandbyService
+    from neobot_app.runtime.standby_service import (
+        DEFAULT_RESUME_TIMEOUT_SECONDS,
+        DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+        StandbyService,
+    )
 
     standby_cfg = getattr(config, "standby", None)
     standby_service = _reuse_or(
@@ -697,6 +701,20 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             # 配置缺失时强制「启动即待机」：用默认配置把面板拉起来修配置
             start_in_standby=bool(_CONFIG_ERROR)
             or bool(getattr(standby_cfg, "start_in_standby", False)),
+            # 关闭/软重启的观察窗口：关闭要跑记忆总结这类分钟级收尾，窗口必须装得下。
+            shutdown_timeout=float(
+                getattr(standby_cfg, "shutdown_timeout_seconds", None)
+                or DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+            ),
+            resume_timeout=float(
+                getattr(standby_cfg, "resume_timeout_seconds", None)
+                or DEFAULT_RESUME_TIMEOUT_SECONDS
+            ),
+            # 进入待机同样是「停掉整个 bot 运行时」，与关闭共用同一个窗口。
+            enter_timeout=float(
+                getattr(standby_cfg, "shutdown_timeout_seconds", None)
+                or DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+            ),
         ),
     )
     if _CONFIG_ERROR:

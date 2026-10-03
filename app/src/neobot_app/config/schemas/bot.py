@@ -987,6 +987,22 @@ class Standby:
             "便于随时恢复运行；关闭后待机期只有面板可用）"
         },
     )
+    shutdown_timeout_seconds: Optional[float] = field(
+        default=300.0,
+        metadata={
+            "description": "进入待机/软重启时等待优雅关闭的窗口(秒)。关闭要跑记忆总结"
+            "这类收尾，单次总结预算默认 300 秒，所以窗口必须能装下它，否则会误判成"
+            "「关闭卡住」；窗口到点只是记日志并继续等，不会中断关闭。调大它不会让"
+            "关闭变慢，只是放宽判定"
+        },
+    )
+    resume_timeout_seconds: Optional[float] = field(
+        default=600.0,
+        metadata={
+            "description": "软重启运行的总窗口(秒)，必须大于 shutdown_timeout_seconds"
+            "（关闭 + 按当前配置重建运行时）；到点仍未完成才判失败并停在待机"
+        },
+    )
 
 
 @dataclass

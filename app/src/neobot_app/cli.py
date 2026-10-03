@@ -27,7 +27,7 @@ from neobot_app.bootstrap import (
     enable_core_reuse,
     get_cached_core,
 )
-from neobot_app.bootstrap._standby_runtime import StandbyController
+from neobot_app.bootstrap._standby_runtime import STOP_TIMEOUT_SECONDS, StandbyController
 from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import APP_VERSION, DATA_DIR
 from neobot_app.runtime.application import ConnectionTimeoutError
@@ -128,10 +128,12 @@ async def run() -> bool:
     return not state["stopping"] and restart_requested
 
 
-async def _drain_shutdown_task(task: asyncio.Task, phase: str) -> Any:
-    from neobot_app.bootstrap._standby_runtime import STOP_TIMEOUT_SECONDS
-
-    done, _ = await asyncio.wait((task,), timeout=STOP_TIMEOUT_SECONDS)
+async def _drain_shutdown_task(
+    task: asyncio.Task, phase: str, timeout: float | None = None
+) -> Any:
+    if timeout is None:
+        timeout = STOP_TIMEOUT_SECONDS
+    done, _ = await asyncio.wait((task,), timeout=timeout)
     if not done:
         print(
             f"优雅关闭仍在等待 {phase}；不会启动新进程。"
@@ -160,6 +162,8 @@ async def run_entry_loop(
         await restart_signal.wait()
         controller.request_shutdown()
 
+    #: 优雅关闭的观察窗口来自装配层（可配置）；控制器缺失时回落到模块默认值。
+    stop_timeout = float(getattr(controller, "stop_timeout", STOP_TIMEOUT_SECONDS))
     watcher = (
         asyncio.create_task(watch_restart(), name="neobot-process-restart-watch")
         if restart_signal is not None else None
@@ -226,17 +230,19 @@ async def run_entry_loop(
             if not startup_task.done():
                 startup_task.cancel()
             try:
-                await _drain_shutdown_task(startup_task, "startup")
+                await _drain_shutdown_task(startup_task, "startup", stop_timeout)
             except asyncio.CancelledError:
                 if not startup_task.cancelled():
                     raise
         if runtime_task is not None and not runtime_task.done():
             controller.request_shutdown()
-            await _drain_shutdown_task(runtime_task, "runtime")
+            await _drain_shutdown_task(runtime_task, "runtime", stop_timeout)
         if not shutdown_confirmed:
             while True:
                 await _drain_shutdown_task(
-                    asyncio.create_task(controller.wait_for_idle()), "runtime transition"
+                    asyncio.create_task(controller.wait_for_idle()),
+                    "runtime transition",
+                    stop_timeout,
                 )
                 ok, detail = await controller.shutdown()
                 if ok:

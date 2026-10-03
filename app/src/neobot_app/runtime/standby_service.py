@@ -36,8 +36,14 @@ OneBotAction = Callable[[bool], Awaitable[tuple[bool, str]]]
 
 #: set_hooks 的「未传入」哨兵：与显式传入 None（清除钩子）区分开
 _UNSET: Any = object()
-DEFAULT_RESUME_TIMEOUT_SECONDS = 120.0
-DEFAULT_ENTER_TIMEOUT_SECONDS = 20.0
+#: 优雅关闭的观察窗口：关闭要跑记忆总结这类收尾，单次总结预算默认 300 秒
+#: （agent.memory.trigger.max_summary_seconds），窗口必须能装下它。窗口到点只是
+#: 「比预期慢」的日志，不会中断关闭；调大它不会让关闭变慢，只是放宽判定。
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 300.0
+#: 软重启运行的总窗口：关闭（300）+ 按当前配置重建运行时（启动窗口 120）再留余量。
+DEFAULT_RESUME_TIMEOUT_SECONDS = 600.0
+#: 进入待机的窗口与关闭同量级：进入待机同样是「停掉整个 bot 运行时」。
+DEFAULT_ENTER_TIMEOUT_SECONDS = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 
 
 class StandbyService:
@@ -55,6 +61,7 @@ class StandbyService:
         on_onebot_change: OneBotAction | None = None,
         resume_timeout: float = DEFAULT_RESUME_TIMEOUT_SECONDS,
         enter_timeout: float = DEFAULT_ENTER_TIMEOUT_SECONDS,
+        shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
     ) -> None:
         self._logger = logger or NullLogger()
         self._state_path = Path(state_path) if state_path is not None else None
@@ -69,6 +76,8 @@ class StandbyService:
         self._lock = asyncio.Lock()
         self._resume_timeout = float(resume_timeout)
         self._enter_timeout = float(enter_timeout)
+        #: 优雅关闭的观察窗口，供装配层交给运行时控制器（它才是执行停机的人）。
+        self._shutdown_timeout = float(shutdown_timeout)
         self._pending_action: asyncio.Task | None = None
         self._lifecycle_status: Callable[[], dict[str, Any]] | None = None
         self._abort_transition: Callable[[asyncio.Task], None] | None = None
@@ -186,6 +195,11 @@ class StandbyService:
     def connect_onebot(self) -> bool:
         """待机时是否保持与 OneBot 的连接。"""
         return self._connect_onebot
+
+    @property
+    def shutdown_timeout(self) -> float:
+        """优雅关闭的观察窗口（秒）；装配层据此构造运行时控制器。"""
+        return self._shutdown_timeout
 
     def standby_for_seconds(self) -> int:
         if self._state != STANDBY:

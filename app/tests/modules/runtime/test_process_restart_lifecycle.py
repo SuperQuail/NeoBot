@@ -317,6 +317,23 @@ async def test_stop_timeout_retains_generation_and_allows_retry_only_after_clean
         await finish_controller(ctrl)
 
 
+def test_stop_window_is_configurable_and_shared_with_cli_drain():
+    """关闭窗口必须能从装配层一路走到控制器与 CLI 排水，而不是各自写死。
+
+    两处各写一个数就会出现「控制器等 300s、CLI 排水只等 20s」这类不一致：关闭还在
+    正常收尾，换进程的那一侧已经判定卡住。
+    """
+    service = StandbyService(connect_onebot=False, shutdown_timeout=123.0)
+    ctrl = controller(service, Mock())
+
+    assert service.shutdown_timeout == 123.0
+    assert ctrl.stop_timeout == 123.0
+    # 装配层缺席（测试替身）时回落到模块默认值，而不是炸在 AttributeError 上。
+    assert float(getattr(SimpleNamespace(), "stop_timeout", lifecycle.STOP_TIMEOUT_SECONDS)) == (
+        lifecycle.STOP_TIMEOUT_SECONDS
+    )
+
+
 async def test_slow_stop_past_its_window_still_rebuilds_generation(monkeypatch):
     """回归：停机比观察窗口慢，软重启仍必须**最终**重建 —— 只停不重启是缺陷不是设计。
 

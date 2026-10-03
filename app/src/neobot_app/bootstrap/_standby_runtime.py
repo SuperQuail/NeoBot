@@ -28,9 +28,18 @@ class StandbyController:
         logger: Logger | None = None,
         initial_application: Any = None,
         restart_signal: Any = None,
+        stop_timeout: float | None = None,
     ) -> None:
         self._standby = standby_service
         self._factory = runtime_factory
+        #: 优雅关闭的观察窗口。默认取待机服务上的配置值，保证「判定关闭」与「等待
+        #: 关闭」用的是同一个数；服务没暴露时回落到模块默认值。关闭要跑记忆总结
+        #: 这类收尾，窗口必须装得下它。
+        if stop_timeout is None:
+            stop_timeout = float(
+                getattr(standby_service, "shutdown_timeout", STOP_TIMEOUT_SECONDS)
+            )
+        self._stop_timeout = float(stop_timeout)
         self._adapter = adapter
         self._logger = logger or NullLogger()
         self._app: Any = None
@@ -58,6 +67,11 @@ class StandbyController:
     def application(self) -> Any:
         """Only a fully started, non-retiring generation may be run by the CLI."""
         return self._app if self._phase == "running" and not self.exiting and not self._aborted else None
+
+    @property
+    def stop_timeout(self) -> float:
+        """优雅关闭的观察窗口（秒）；装配层与 CLI 排水共用同一个数。"""
+        return self._stop_timeout
 
     @property
     def exiting(self) -> bool:
@@ -345,7 +359,7 @@ class StandbyController:
         self._stopping_task = asyncio.create_task(app.stop(), name="neobot-runtime-stop")
         # 停机不上报超时：慢 ≠ 卡死，且这一代已被 request_stop 判死，没有「尽早失败」
         # 可救的东西。上报只会让服务把一次成功的软重启判成失败，并把状态退回待机。
-        await self._wait_stage(self._stopping_task, STOP_TIMEOUT_SECONDS, prognostic=False)
+        await self._wait_stage(self._stopping_task, self._stop_timeout, prognostic=False)
         # Only successful completion relinquishes ownership. Failure retains app
         # for a subsequent explicit retry instead of publishing another runtime.
         self._app = None
