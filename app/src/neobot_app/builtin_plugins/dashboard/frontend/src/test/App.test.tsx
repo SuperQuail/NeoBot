@@ -3,7 +3,10 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
-import { setToken } from '../api/client';
+import { clearToken, setToken } from '../api/client';
+import { authStatus } from '../api/client';
+
+const mockAuthStatus = vi.mocked(authStatus);
 
 vi.mock('../api/client.js', async () => {
   const actual = await vi.importActual('../api/client.js');
@@ -57,6 +60,9 @@ function renderAt(path: string) {
 beforeEach(() => {
   setToken('test-token', 'test-csrf');
   document.documentElement.dataset.theme = 'light';
+  // 默认「已配置密码」：绝大多数用例只关心路由与导航，不应被鉴权探测干扰。
+  mockAuthStatus.mockReset();
+  mockAuthStatus.mockResolvedValue({ configured: true, setup_required: false, setup_allowed: false });
 });
 
 describe('应用外壳', () => {
@@ -129,5 +135,57 @@ describe('应用外壳', () => {
     );
 
     expect(await screen.findByPlaceholderText('请输入面板密码')).toBeInTheDocument();
+  });
+
+  it('未设置密码时带旧 token 打开控制台，自动落到设置密码页', async () => {
+    // 回归：旧实现只看 localStorage 里有没有 token，于是一个服务端早就不认的
+    // token 就能换到主界面；数据接口随后全 403，用户只能手动退出登录才走得出去。
+    mockAuthStatus.mockResolvedValue({
+      configured: false,
+      setup_required: true,
+      setup_allowed: true,
+      loopback: true,
+    });
+    setToken('stale-token', 'stale-csrf');
+
+    renderAt('/dashboard');
+
+    expect(await screen.findByPlaceholderText('至少 8 个字符')).toBeInTheDocument();
+    expect(screen.getByText('设置面板密码')).toBeInTheDocument();
+    expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '主页' })).not.toBeInTheDocument();
+  });
+
+  it('已设置密码时带 token 直接进主界面（不被鉴权探测拦住）', async () => {
+    renderAt('/dashboard');
+
+    expect(await screen.findByTestId('page-dashboard')).toBeInTheDocument();
+    expect(mockAuthStatus).toHaveBeenCalled();
+  });
+
+  it('已设置密码但无 token 时仍跳登录页', async () => {
+    // 注意：setToken('') 是空操作（内部有 if (token) 守卫），清会话要用 clearToken，
+    // 与「退出登录」按钮走的是同一条路径。
+    clearToken();
+
+    renderAt('/dashboard');
+
+    expect(await screen.findByPlaceholderText('请输入面板密码')).toBeInTheDocument();
+    expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
+  });
+
+  it('外网未设置密码时落到「仅本机可设置」提示页', async () => {
+    mockAuthStatus.mockResolvedValue({
+      configured: false,
+      setup_required: true,
+      setup_allowed: false,
+      loopback: false,
+    });
+    setToken('stale-token', 'stale-csrf');
+
+    renderAt('/dashboard');
+
+    expect(await screen.findByText('尚未设置面板密码')).toBeInTheDocument();
+    expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
   });
 });
