@@ -3,8 +3,8 @@ flow: 02b-willing-probability
 covers:
   - app/src/neobot_app/willing/
   - app/src/neobot_app/runtime/event_pipeline.py
-verified_against: 528fe18
-verified_hash: 3052a05cbd82
+verified_against: 8e7341c
+verified_hash: b579c6787b23
 ---
 
 # 02b 回复意愿：概率到底怎么算出来的（逐步精确）
