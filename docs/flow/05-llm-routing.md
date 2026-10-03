@@ -145,7 +145,7 @@ flowchart TD
 |---|---|---|
 | 角色 -> 编号 | `AgentModelRouting` 8 个整数字段 | main_agent=0；其余 7 个（creator/memory/chat_interaction/willingness/scheduled_task/archive_summary/self_heal）全为 1 |
 | 编号 -> 角色名 | `AGENT_ROLE_NAMES` 硬编码字典 | 0/1/2/3 -> primary_chat_model/agent_model_1/agent_model_2/agent_model_3 |
-| 角色名 -> key | `ModelAssignments` 6 个单值角色 + 1 个列表 | primary_chat_model=deepseek-v4-pro；agent_model_1/2/3=deepseek-v4-flash-max/high/off；vision_model=qwen3-vl-8b；tts_model=cosyvoice2；creator_image_models=[flux-schnell] |
+| 角色名 -> key | `ModelAssignments` 6 个单值角色 + 1 个列表 | primary_chat_model=deepseek-flash；agent_model_1/2/3=deepseek-flash-max/high/off；vision_model=qwen3-vl-8b；tts_model=cosyvoice2；creator_image_models=[flux-schnell] |
 
 关键事实：**配置里没有「角色 -> key」的直连字段**。改 `[agent_model].main_agent=2` 只是让主回复
 去引用「编号 2 当前绑定的 key」，真正换模型要改 `[models.assignments].agent_model_2`。

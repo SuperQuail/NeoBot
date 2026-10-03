@@ -51,10 +51,10 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 | 调用方字段 | 默认 key | 用途 |
 |---|---|---|
-| `primary_chat_model` | deepseek-v4-pro | 主对话（Agent 编号 0） |
-| `agent_model_1` | deepseek-v4-flash-max | 子 Agent（编号 1，max 推理） |
-| `agent_model_2` | deepseek-v4-flash-high | 子 Agent（编号 2，high 推理） |
-| `agent_model_3` | deepseek-v4-flash-off | 低成本任务（编号 3，非推理） |
+| `primary_chat_model` | deepseek-flash | 主对话（Agent 编号 0） |
+| `agent_model_1` | deepseek-flash-max | 子 Agent（编号 1，max 推理） |
+| `agent_model_2` | deepseek-flash-high | 子 Agent（编号 2，high 推理） |
+| `agent_model_3` | deepseek-flash-off | 低成本任务（编号 3，非推理） |
 | `vision_model` | qwen3-vl-8b | 图像识别（缺 Key 时降级） |
 | `tts_model` | cosyvoice2 | 语音合成（TTS 关闭时不注册） |
 | `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 key） |
