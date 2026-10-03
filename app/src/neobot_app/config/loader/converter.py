@@ -489,16 +489,14 @@ def dataclass_to_toml(
                 if types:
                     actual_type = types[0]
 
-            placeholder = (
-                0
-                if actual_type is int
-                else 0.0
-                if actual_type is float
-                else False
-                if actual_type is bool
-                else ""
-            )
-            item = tomlkit.item(placeholder)
+            if not required and field.default is None:
+                # 可选且默认「不填」的字段：没有值就**不写这个键**。写占位值会
+                # 凭空造出一个用户没设过的值，而集合类型（List/Dict）过去还会被
+                # 写成字符串 ""（下面的 _placeholder_item 现在不再这么干），
+                # 结果加载时报类型不匹配、面板严格校验直接拒绝保存 —— 用户却
+                # 在表单里找不到这个键可改。
+                continue
+            item = _placeholder_item(field_type, actual_type)
 
         required_text = "[必须项]" if required else "[可选项]"
         if description and item is not None and hasattr(item, "comment"):
@@ -506,6 +504,32 @@ def dataclass_to_toml(
         doc[field_name] = item
 
     return doc, missing_required, missing_optional
+
+
+def _placeholder_item(field_type: Any, actual_type: Any) -> Any:
+    """为「没有值」的字段生成**类型正确**的 TOML 占位值。
+
+    ``actual_type`` 已剥掉 `Optional`。集合类型必须给出空集合：写成 ``""`` 会造出一个
+    连它自己的 schema 都不接受的值，加载时只是 warning，面板保存时却是硬错误。
+    """
+    if actual_type is int:
+        return tomlkit.item(0)
+    if actual_type is float:
+        return tomlkit.item(0.0)
+    if actual_type is bool:
+        return tomlkit.item(False)
+    origin = get_origin(actual_type)
+    if origin is list or origin is set or origin is tuple or origin is frozenset:
+        return tomlkit.item([])
+    if origin is dict:
+        return tomlkit.item({})
+    if origin is None and isinstance(actual_type, type):
+        if issubclass(actual_type, (list, set, tuple, frozenset)):
+            return tomlkit.item([])
+        if issubclass(actual_type, dict):
+            return tomlkit.item({})
+    # 其余（含 str 与未知类型）：空串是唯一既能表达「空」又能被 TOML 表示的占位。
+    return tomlkit.item("")
 
 
 def _get_default_data_value(default_data: dict[Any, Any] | None, field_name: str) -> Any:
