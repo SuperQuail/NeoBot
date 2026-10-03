@@ -149,5 +149,5 @@ class EventGateway:
         else:
             self._logger.debug("忽略未知消息类型", message_type=message_type)
 
-    async def flush_pending_summaries(self) -> None:
-        await self._legacy.flush_pending_summaries()
+    async def flush_pending_summaries(self, timeout: float | None = None) -> None:
+        await self._legacy.flush_pending_summaries(timeout=timeout)

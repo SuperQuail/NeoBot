@@ -23,6 +23,31 @@ if TYPE_CHECKING:
     from neobot_chat.providers.base import Provider
 
 
+def _consume_flush_result(task: asyncio.Task) -> None:
+    """消费超预算后仍在跑的冲刷任务结果，避免异常无人取用。"""
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except Exception:
+        pass
+
+
+def _settled_flush_result(task: asyncio.Task) -> Any:
+    """取一个已结束的冲刷任务结果；未结束/失败都视为「本次没刷新」。"""
+    if not task.done() or task.cancelled():
+        return None
+    try:
+        return task.result()
+    except Exception:
+        return None
+
+
+def _unfinished_flush_count(tasks: list[asyncio.Task]) -> int:
+    """仍未结束的冲刷任务数（超预算时用于如实上报，而不是假装刷完了）。"""
+    return sum(1 for task in tasks if not task.done())
+
+
 COUNTER_TABLE = "memory_counter"
 ITEM_ARCHIVE_TABLE = "item_archive"
 MAX_STORED_MESSAGE_CHARS = 800
@@ -788,11 +813,16 @@ class ArchiveMemoryAutoSummaryService:
         except Exception:
             return 0
 
-    async def flush_all(self) -> None:
+    async def flush_all(self, timeout: float | None = None) -> None:
         """关闭时并发刷新所有待处理的计数器。
 
         遍历每个存在未摘要消息（count > 0）但尚未达到配置间隔的计数器，
         立即触发摘要，确保退出时消息不丢失。
+
+        `timeout` 给这次冲刷一个有界预算：调用方是进程关闭，不能无限期挂在这里。
+        到点只是停止**继续启动**新的总结并记 warning；已经启动的那些由
+        `_summarize_and_reset` 复位计数器（成功）或保留消息（失败），所以最坏情况
+        是少总结几条，消息仍在计数器里留给下次，不会丢。
         """
         try:
             items = await self._archive.list(
@@ -855,16 +885,30 @@ class ArchiveMemoryAutoSummaryService:
                 )
                 return False
 
-        results = await asyncio.gather(
-            *(_flush_one(item) for item in items),
-            return_exceptions=True,
-        )
+        tasks = [asyncio.create_task(_flush_one(item)) for item in items]
+        if timeout is None:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            _done, pending = await asyncio.wait(tasks, timeout=timeout)
+            # 到点不取消收尾：写档案是最后一步，取消会留下谁都没清的中间态。改为让它们
+            # 跑完并消费结果，避免「exception was never retrieved」。
+            for task in pending:
+                task.add_done_callback(_consume_flush_result)
+            # 与 gather(return_exceptions=True) 同语义：失败的记 None，不在此处抛出。
+            results = [_settled_flush_result(task) for task in tasks]
+        unfinished = _unfinished_flush_count(tasks)
         flushed = sum(1 for r in results if r is True)
 
         if flushed:
             self._logger.info(
                 "关闭时已刷新档案自动总结",
                 flushed_count=flushed,
+            )
+        if unfinished:
+            self._logger.warning(
+                "关闭时档案自动总结超出预算，已停止等待",
+                unfinished_count=unfinished,
+                timeout_seconds=timeout,
             )
 
     async def wait_pending_overflow_tasks(self, timeout: float = 30.0) -> None:
