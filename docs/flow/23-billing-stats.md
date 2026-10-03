@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/statistics/
   - app/src/neobot_app/observability/
   - app/src/neobot_app/cache/
-verified_against: 528fe18
-verified_hash: 7a5528dcba88
+verified_against: 8d2b9ae
+verified_hash: ea88020bcde9
 ---
 
 # 23 计费、用量统计与可观测性

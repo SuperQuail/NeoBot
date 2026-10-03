@@ -8,8 +8,8 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: 528fe18
-verified_hash: e324a0b30940
+verified_against: 8d2b9ae
+verified_hash: 2e6463d06fa4
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -467,7 +467,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["configure_loguru:247"] --> B["stderr sink DEBUG<br/>挂 _redacting_filter"]
+    A["configure_loguru:247"] --> B["stdout sink DEBUG<br/>挂 _redacting_filter"]
     A --> C["文件 sink neobot.log<br/>rotation 10MB, retention 7 days<br/>diagnose=False, 同挂脱敏 filter"]
     A --> D["runtime_events sink:123<br/>DEBUG 级全量转 RuntimeEnvelope kind=log"]
     A --> E["self-heal sink:150 ERROR 级<br/>排除 adapter_receiver / app.image_parse / app.self_heal"]
@@ -486,9 +486,13 @@ flowchart TD
     F --> O["面板 GET /api/config/billing<br/>describe / script_status / bindings"]
 ```
 
-* 日志脱敏（`logging.py:51-95`）在**格式化前**改写共享 record：API Key、token、password、
-  URL 内嵌凭据都被替换成 ***；异常 traceback 也重新渲染后挂回 `record["exception"]`，
-  自修复 sink 仍能拿到结构化 traceback。
+* 控制台 sink 走 **stdout** 而不是 stderr（`logging.py:271-279`）：宿主（容器日志、
+  进程管理器、把实例输出重定向到文件再 tail 的前端）通常只收一路流，普通日志落在
+  stderr 会被归成「错误通道」，级别色与归类语义都被带偏。真正的致命错误仍由 CLI 直接
+  `print(file=sys.stderr)`，不受影响。
+* 日志脱敏（`logging.py:61` 的 `_redacting_filter`，`logging.py:51` 的 `redact_sensitive`）在
+  **格式化前**改写共享 record：API Key、token、password、URL 内嵌凭据都被替换成 ***；
+  异常 traceback 也重新渲染后挂回 `record["exception"]`，自修复 sink 仍能拿到结构化 traceback。
 * `LoguruLoggerAdapter._format`（`:313-318`）把关键字参数拼成 `k=v` 追加到消息尾部 ——
   `logger.warning("...", script=name, timeout_ms=...)` 这类结构化字段只在**文本**里，
   机器可读版本在 runtime_events sink 的 payload 与 billing 面板里。
