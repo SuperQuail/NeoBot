@@ -378,6 +378,54 @@ async def test_flush_all_summarizes_partial_counters_and_resets():
 
 
 @pytest.mark.asyncio
+async def test_flush_all_stops_waiting_at_its_budget_without_cancelling_work():
+    """Arrange 一个有总结在途的计数器，Act 用 0 预算 flush_all，
+    Assert 到点就返回、不取消在途总结、消息仍留在计数器里等下次。"""
+    archive = _FakeArchive()
+    service = _make_service(archive=archive, provider=_FakeProvider(), group_interval=3)
+    await archive.set(
+        "memory_counter",
+        "group:111",
+        json.dumps({"count": 2, "messages": [{"text": "a"}, {"text": "b"}]}),
+        ["auto_summary_counter"],
+    )
+    # 直接占用单飞名额：模拟「已有一次总结在途」，flush 必须等它。
+    assert service._begin_summary("group:111") is True
+    try:
+        await asyncio.wait_for(service.flush_all(timeout=0.0), timeout=1)
+        # 到点只停止等待，不取消收尾。
+        assert service._active_summaries == {"group:111"}
+        assert json.loads(archive.raw("memory_counter", "group:111")["value"])["count"] == 2
+    finally:
+        service._end_summary("group:111")
+
+
+@pytest.mark.asyncio
+async def test_flush_all_budget_does_not_change_the_reporting_contract():
+    """关闭冲刷是「尽力而为 + 有界」：超预算不抛异常，正常积压仍照常刷新。
+
+    预算存在是为了让关闭有上界，不是为了改变「刷没刷成功」的语义。
+    """
+    archive = _FakeArchive()
+    provider = _FakeProvider()
+    service = _make_service(archive=archive, provider=provider, group_interval=3)
+    await archive.set(
+        "memory_counter",
+        "group:111",
+        json.dumps({"count": 2, "messages": [{"text": "a"}, {"text": "b"}]}),
+        ["auto_summary_counter"],
+    )
+
+    await service.flush_all(timeout=5.0)
+
+    assert len(provider.calls) == 1
+    assert json.loads(archive.raw("memory_counter", "group:111")["value"]) == {
+        "count": 0,
+        "messages": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_flush_all_skips_counters_without_pending_messages():
     """Arrange 空计数与已达标(3/3)两个计数器，Act 调用 flush_all，
     Assert 不产生任何摘要调用且状态保持不变。"""

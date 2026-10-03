@@ -28,9 +28,18 @@ class StandbyController:
         logger: Logger | None = None,
         initial_application: Any = None,
         restart_signal: Any = None,
+        stop_timeout: float | None = None,
     ) -> None:
         self._standby = standby_service
         self._factory = runtime_factory
+        #: 优雅关闭的观察窗口。默认取待机服务上的配置值，保证「判定关闭」与「等待
+        #: 关闭」用的是同一个数；服务没暴露时回落到模块默认值。关闭要跑记忆总结
+        #: 这类收尾，窗口必须装得下它。
+        if stop_timeout is None:
+            stop_timeout = float(
+                getattr(standby_service, "shutdown_timeout", STOP_TIMEOUT_SECONDS)
+            )
+        self._stop_timeout = float(stop_timeout)
         self._adapter = adapter
         self._logger = logger or NullLogger()
         self._app: Any = None
@@ -45,6 +54,10 @@ class StandbyController:
         self._phase = "idle"
         self._failure = ""
         self._aborted = False
+        #: 调用方已撤销本次过渡（外层观察窗口到点 / HTTP 任务被取消）。就此发布的
+        #: 新代际没人认领：服务不会提交 RUNNING，代际本身也拿不到 run_forever 的入口
+        #: 循环。置位后本次过渡只允许收尾，不再发布第二代。
+        self._caller_revoked = False
         self._attention = asyncio.Event()
         self._caller_task: asyncio.Task | None = None
         self._cancel_transition: Callable[[], None] | None = None
@@ -54,6 +67,11 @@ class StandbyController:
     def application(self) -> Any:
         """Only a fully started, non-retiring generation may be run by the CLI."""
         return self._app if self._phase == "running" and not self.exiting and not self._aborted else None
+
+    @property
+    def stop_timeout(self) -> float:
+        """优雅关闭的观察窗口（秒）；装配层与 CLI 排水共用同一个数。"""
+        return self._stop_timeout
 
     @property
     def exiting(self) -> bool:
@@ -74,11 +92,19 @@ class StandbyController:
         )
 
     def _report_pending(self, timeout: float) -> None:
+        """超时是有界诊断：仍置 `_aborted` 以撤销未提交的改动。
+
+        置位不是「判死这一代」，而是「本次动作的结果不算数」——适配器切换这类动作
+        的补偿（`set_onebot` 的 `on_abort`）靠它才能在超时后把未提交的连接状态
+        收回来。但 `_aborted` **不能**被当成「不要重建」的判据：优雅关闭要跑记忆
+        总结这类分钟级收尾，窗口到点只说明「比预期慢」，此时停机仍在推进。软重启
+        的停机阶段必须忽略它（见 `resume`），否则就是「只停不重启」。
+        """
         self._aborted = True
         self._failure = (
             f"运行时 {self._phase} 超时（观察窗口 {timeout:g}s）："
             "清理仍在进行，未启动第二个运行时。"
-            "清理完成后可重试；进程重启请求仍可接受，但若优雅关闭持续卡住，"
+            "清理完成后本操作会继续收尾；进程重启请求仍可接受，但若优雅关闭持续卡住，"
             "需手动处理或显式强制重启进程（不会自动强杀）。"
         )
         self._logger.error(self._failure)
@@ -107,6 +133,7 @@ class StandbyController:
         hook during the outer service's final await/commit boundary.
         """
         if self._caller_task is caller and self._cancel_transition is not None:
+            self._caller_revoked = True
             self._cancel_transition()
 
     async def _perform(
@@ -121,6 +148,7 @@ class StandbyController:
         if self.exiting and not shutdown:
             return False, "进程正在关闭或等待重启，不再启动新的运行时。"
         self._aborted = False
+        self._caller_revoked = False
         self._failure = ""
         self._attention.clear()
         self._caller_task = asyncio.current_task()
@@ -192,12 +220,31 @@ class StandbyController:
             cancel_transition()
             raise
 
-    async def _wait_stage(self, task: asyncio.Task, timeout: float) -> None:
+    async def _wait_stage(
+        self, task: asyncio.Task, timeout: float, *, prognostic: bool = True
+    ) -> None:
+        """等一个阶段结束；窗口到点是否上报由 `prognostic` 决定。
+
+        `prognostic=True`（启动/适配器切换）：窗口到点就上报，让调用方尽早拿到有界
+        失败，代价是「慢」会被当成失败——启动半成品确实该丢弃、适配器切换确实该补偿，
+        所以这个代价是划算的。
+
+        `prognostic=False`（停机）：停机慢只是慢。优雅关闭要跑记忆总结这类分钟级
+        收尾，窗口必然先到；此时上报会让调用方在动作其实已经成功时把状态判成失败
+        （软重启回报 pending、服务停在待机，而代际其实已经重建）。所以这里只记日志，
+        等它真的做完；有界性交给调用方自己的外层窗口。
+        """
         done, _ = await asyncio.wait((task,), timeout=timeout if timeout > 0 else None)
         if not done:
-            self._report_pending(timeout)
-            if task is self._starting_task:
-                self._abort_operation()
+            if prognostic:
+                self._report_pending(timeout)
+                if task is self._starting_task:
+                    self._abort_operation()
+            else:
+                self._logger.warning(
+                    f"运行时 {self._phase} 超过观察窗口（{timeout:g}s）仍在收尾；"
+                    "这是慢不是卡死，继续等它做完（记忆总结等关闭收尾可能耗时数分钟）。"
+                )
         # This unbounded drain is OWNED by _operation. The caller already got a
         # bounded failure via _attention; no cancellation can discard resources.
         await asyncio.shield(task)
@@ -230,7 +277,16 @@ class StandbyController:
     async def resume(self) -> tuple[bool, str]:
         async def resume() -> tuple[bool, str]:
             await self._stop_runtime()
-            if self._aborted or self.exiting:
+            # 停机真的做完了，之前「比预期慢」的那份延迟诊断就失效了：清掉它，否则
+            # owned_action 的 finally 会把下面刚发布的新代际当成未提交的代际补偿掉。
+            self._aborted = False
+            # 只认真正的退出意图。停机慢不否决重建 —— 那正是「只停不重启」的成因。
+            if self.exiting:
+                return False, self._pending_message()
+            # 调用方已经撤销本次过渡（外层窗口到点 / HTTP 任务被取消）：这一代发出去
+            # 也没人认领 —— 服务不会提交 RUNNING，也拿不到 run_forever 的入口循环。
+            # 老老实实停在待机，让人重试；宁可少发一代，不发一代孤儿。
+            if self._caller_revoked:
                 return False, self._pending_message()
             await self._start_runtime()
             if self.application is None:
@@ -301,7 +357,9 @@ class StandbyController:
         if callable(request):
             request()
         self._stopping_task = asyncio.create_task(app.stop(), name="neobot-runtime-stop")
-        await self._wait_stage(self._stopping_task, STOP_TIMEOUT_SECONDS)
+        # 停机不上报超时：慢 ≠ 卡死，且这一代已被 request_stop 判死，没有「尽早失败」
+        # 可救的东西。上报只会让服务把一次成功的软重启判成失败，并把状态退回待机。
+        await self._wait_stage(self._stopping_task, self._stop_timeout, prognostic=False)
         # Only successful completion relinquishes ownership. Failure retains app
         # for a subsequent explicit retry instead of publishing another runtime.
         self._app = None

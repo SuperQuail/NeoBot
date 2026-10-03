@@ -127,8 +127,11 @@ class EventPipeline:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
-    async def flush_pending_summaries(self) -> None:
+    async def flush_pending_summaries(self, timeout: float | None = None) -> None:
         """关闭时的收尾：停止派生后台任务、取消在途任务、冲刷未达阈值的摘要。
+
+        `timeout` 是这次冲刷的有界预算（秒）；到点停止继续启动新的总结并记 warning，
+        消息仍留在计数器里留给下次启动，所以「少总结几条」不等于丢消息。
 
         事件订阅由 EventGateway 负责（它才是唯一入口），EventPipeline 不再自己
         订阅：旧实现的 ``start()`` 会再注册一套 ``message``/``notice``/``request``
@@ -140,7 +143,7 @@ class EventPipeline:
         self._stopping = True
         await self._cancel_background_tasks()
         if self._archive_summary_service is not None:
-            await self._archive_summary_service.flush_all()
+            await self._archive_summary_service.flush_all(timeout=timeout)
 
     def _track_background_task(
         self,

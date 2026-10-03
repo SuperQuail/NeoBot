@@ -32,6 +32,11 @@ class ConnectionTimeoutError(RuntimeError):
     """
 
 
+#: 关闭时冲刷档案自动总结的有界预算（秒）。单次总结预算默认 300 秒，一次冲刷覆盖
+#: 当时积压的全部会话；给到 600 秒是为了让「正常积压」能跑完，同时避免无界等待。
+CLOSE_FLUSH_TIMEOUT_SECONDS = 600.0
+
+
 class NeoBotApplication(Generic[T]):
     #: 适配器停止的软超时：只用于**先报错**，之后的等待由 shield 继续。
     #: 适配器自身对接收器停止有 16s 总宽限（OneBotAdapter._STOP_TOTAL_GRACE_SECONDS），
@@ -465,10 +470,14 @@ class NeoBotApplication(Generic[T]):
             if self._drawing_manager is not None:
                 steps.append(("drawing manager", self._drawing_manager.shutdown))
         if self._message_pipeline is not None:
+            # 关闭收尾的有界预算：遍历所有待总结计数器并逐条跑模型，不设界就等于把
+            # 「关闭要多久」交给当时积压了多少会话。到点停手，消息留在计数器里给下次。
             steps.append(
                 (
                     "message pipeline summaries",
-                    self._message_pipeline.flush_pending_summaries,
+                    lambda: self._message_pipeline.flush_pending_summaries(
+                        timeout=CLOSE_FLUSH_TIMEOUT_SECONDS
+                    ),
                 )
             )
         if self._archive_summary_service is not None:

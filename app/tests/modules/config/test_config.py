@@ -519,3 +519,36 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
     assert "[[models.registry]]" in raw
     assert "[models.assignments]" in raw
     assert "[[models.creator_image_models]]" not in raw
+
+
+def test_standby_windows_default_to_cover_graceful_shutdown(monkeypatch, tmp_path):
+    """[standby] 的关闭/软重启窗口：默认值必须装得下记忆总结这类收尾。
+
+    关闭要跑 `flush_all`（单次总结预算默认 300 秒），窗口小于它就会在关闭仍在正常
+    推进时报超时 —— 那正是「/reboot 只停不重启」的成因。
+    """
+    # Arrange
+    _clear_platform_env(monkeypatch)
+    for key, value in _DEEPSEEK_KEYS.items():
+        monkeypatch.setenv(key, value)
+
+    # Act：不写 [standby] 分区时走 schema 默认值
+    defaults = Config.load(_write_minimal_config(tmp_path), BotConfig).standby
+
+    # Assert
+    assert defaults.shutdown_timeout_seconds == 300.0
+    assert defaults.resume_timeout_seconds == 600.0
+    assert defaults.resume_timeout_seconds > defaults.shutdown_timeout_seconds
+
+    # Act：显式配置覆盖默认值
+    cfg_path = tmp_path / "custom.toml"
+    cfg_path.write_text(
+        "[bot]\naccount = 10001\n\n[chat]\n\n"
+        "[standby]\nshutdown_timeout_seconds = 900.0\nresume_timeout_seconds = 1800.0\n",
+        encoding="utf-8",
+    )
+    custom = Config.load(cfg_path, BotConfig).standby
+
+    # Assert
+    assert custom.shutdown_timeout_seconds == 900.0
+    assert custom.resume_timeout_seconds == 1800.0

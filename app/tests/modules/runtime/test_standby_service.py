@@ -54,6 +54,33 @@ def test_start_in_standby() -> None:
     assert service.status()["reason"] == "启动即待机"
 
 
+def test_shutdown_window_covers_the_summary_budget_by_default() -> None:
+    """默认窗口必须装得下优雅关闭的真实收尾，否则「慢」会被误判成「卡住」。
+
+    关闭要跑 `flush_all`，单次记忆总结预算默认 300 秒；窗口小于它就会在关闭仍在
+    正常推进时报超时（这正是一开始把软重启判死的成因）。
+    """
+    from neobot_app.runtime.archive_memory_summary import DEFAULT_SUMMARY_BUDGET_SECONDS
+    from neobot_app.runtime.standby_service import (
+        DEFAULT_ENTER_TIMEOUT_SECONDS,
+        DEFAULT_RESUME_TIMEOUT_SECONDS,
+        DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    )
+
+    assert DEFAULT_SHUTDOWN_TIMEOUT_SECONDS >= DEFAULT_SUMMARY_BUDGET_SECONDS
+    assert DEFAULT_ENTER_TIMEOUT_SECONDS == DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    assert DEFAULT_RESUME_TIMEOUT_SECONDS > DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+
+    service, _ = _service()
+    assert service.shutdown_timeout == DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+
+
+def test_shutdown_timeout_is_configurable() -> None:
+    service, _ = _service(shutdown_timeout=42.5)
+
+    assert service.shutdown_timeout == 42.5
+
+
 @pytest.mark.asyncio
 async def test_enter_and_reboot_round_trip() -> None:
     service, calls = _service()

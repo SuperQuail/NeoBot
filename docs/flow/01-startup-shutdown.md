@@ -12,7 +12,7 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/connection_readiness.py
 verified_against: 528fe18
-verified_hash: 47f57aa71c38
+verified_hash: bca7bf90c782
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -259,7 +259,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    START["StandbyService.__init__｜standby_service.py:46"] --> S0{"start_in_standby 或 _CONFIG_ERROR ?"}
+    START["StandbyService.__init__｜standby_service.py:52"] --> S0{"start_in_standby 或 _CONFIG_ERROR ?"}
     S0 -- 是 --> SB["_state=STANDBY, reason='启动即待机', operator='config'"]
     S0 -- 否 --> RUN["_state=RUNNING"]
     RUN --> E["enter(reason, operator)"]
@@ -267,15 +267,15 @@ flowchart TD
     EB -- 是 --> EB1["返回 False + _busy_message, 不排队"]
     EB -- 否 --> E2["加锁; 已 STANDBY 则只更新原因并 _persist"]
     E2 --> E3["先落 _state=STANDBY, 再调 on_enter<br/>(装配层注入的 controller.enter)"]
-    E3 --> E4["_call_hook 观察窗口 20s<br/>DEFAULT_ENTER_TIMEOUT_SECONDS"]
+    E3 --> E4["_call_hook 观察窗口 = shutdown_timeout<br/>DEFAULT_ENTER_TIMEOUT_SECONDS=300s"]
     E4 -- 超时或失败 --> E5["abort_transition(task) + cancel<br/>已接线时保留 STANDBY, 记 '进入待机未完成：…'"]
     E4 -- 成功 --> E6["_persist 写 data/standby.json"]
     SB --> R["resume(reason, operator)"]
     E6 --> R
-    R --> R1["先落 STANDBY + '软重启运行中'<br/>再调 on_resume, 窗口 120s"]
+    R --> R1["先落 STANDBY + '软重启运行中'<br/>再调 on_resume, 窗口 600s"]
     R1 -- 失败 --> R2["停在 STANDBY, reason='软重启运行失败：…'"]
     R1 -- 成功 --> R3["_state=RUNNING, reason 清空, _persist"]
-    R3 --> RB["reboot 只是 resume(reason='软重启') 的别名｜standby_service.py:329"]
+    R3 --> RB["reboot 只是 resume(reason='软重启') 的别名｜standby_service.py:341"]
 ```
 
 * `_transition`（`:92`）是「本服务忙 + hook 任务未结束 + 控制器 pending」三者取或：
@@ -285,9 +285,12 @@ flowchart TD
   **绝不把超时的操作提升成 running**，也不会让旧完成清掉新代际。
 * 谁置位谁清理：`_transition_active` 在 `try/finally` 里清；`_state` 只有
   `resume` 成功、`record_failure` 才改写；`_persist` 每次状态变更都落盘，
-  `_restore`（`:359`）只恢复 `connect_onebot` —— **待机状态不跨进程恢复**。
-* `set_connect_onebot`（`:333`）只有当值与现值不同（或上次失败）才调 hook，
-  hook 成功后才提交 `_connect_onebot` 并落盘；hook 用时是 `enter_timeout`（20s）。
+  `_restore`（`:371`）只恢复 `connect_onebot` —— **待机状态不跨进程恢复**。
+* `set_connect_onebot`（`:345`）只有当值与现值不同（或上次失败）才调 hook，
+  hook 成功后才提交 `_connect_onebot` 并落盘；hook 用时是 `enter_timeout`。
+* **停机慢 ≠ 重启失败**：`on_resume` 内部的停机阶段（`controller.resume` →
+  `_stop_runtime`）遇到关闭收尾超过窗口时不上报失败，而是等它做完再重建；`resume`
+  只在「进程真的要退出」或「调用方已撤销本次过渡」时放弃发布新代际。
 </details>
 
 <details>
@@ -295,7 +298,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["公开动作 start / enter / resume / shutdown / set_onebot<br/>_standby_runtime.py:205-283"] --> B{"_operation 尚未完成 ?"}
+    A["公开动作 start / enter / resume / shutdown / set_onebot<br/>_standby_runtime.py:252-333"] --> B{"_operation 尚未完成 ?"}
     B -- 是 --> B1["返回 False + _pending_message<br/>'运行时正在切换中, 尚未确认清理完成'"]
     B -- 否 --> C{"exiting 且不是 shutdown ?"}
     C -- 是 --> C1["拒绝启动: '进程正在关闭或等待重启'"]
@@ -309,11 +312,13 @@ flowchart TD
     J --> K["取消路径: cancel_transition -> _abort_operation<br/>补偿任务接管 _operation"]
 ```
 
-* 观察窗口只有两个数：停机类 `STOP_TIMEOUT_SECONDS=20.0`，启动类
-  `START_TIMEOUT_SECONDS=120.0`（`_standby_runtime.py:17-18`）。
-  `_wait_stage`（`:195`）超时后调 `_report_pending` 再
-  `await asyncio.shield(task)` —— 注释原话：这个无界等待归 `_operation` 所有，
-  调用方已经拿到有界失败，取消不能丢弃资源。
+* 观察窗口：停机类取 `StandbyController.stop_timeout`（默认
+  `DEFAULT_SHUTDOWN_TIMEOUT_SECONDS=300.0`，来自 `[standby].shutdown_timeout_seconds`），
+  启动类 `START_TIMEOUT_SECONDS=120.0`（`_standby_runtime.py:17-20`）。
+  `_wait_stage`（`:217`）超时后：`prognostic=True` 走 `_report_pending` 再
+  `await asyncio.shield(task)`（注释原话：这个无界等待归 `_operation` 所有，
+  调用方已经拿到有界失败，取消不能丢弃资源）；`prognostic=False`（停机）只记
+  warning，不上报 —— 停机慢不等于放弃重建。
 * `application` 属性（`:53`）是**唯一**的代际发布口：只有
   `phase == "running"` 且未 `exiting`、未 `_aborted` 才把 app 交给 CLI；
   `_start_runtime` 成功后才写 `_app`，`_stop_runtime` 抛异常时**保留**
@@ -331,7 +336,7 @@ flowchart TD
 flowchart TD
     subgraph P1["路径 A: 软重启运行, 进程不动"]
       A1["面板 POST /api/admin/reboot｜dashboard/api.py:2628<br/>或 QQ /reboot｜commands/builtin.py:456"] --> A2["StandbyService.reboot -> resume"]
-      A2 --> A3["controller.resume｜_standby_runtime.py:230"]
+      A2 --> A3["controller.resume｜_standby_runtime.py:277"]
       A3 --> A4["_stop_runtime: request_stop + app.stop<br/>观察窗口 20s"]
       A4 --> A5["_start_runtime: runtime_factory 新建 application<br/>核心对象仍复用"]
       A5 --> A6["app.start 观察窗口 120s<br/>-> _app 发布, phase=running"]
@@ -416,7 +421,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["触发: SIGINT/SIGTERM / 重启信号 / 待机 enter-resume / 运行时异常退出"] --> B["controller.shutdown｜_standby_runtime.py:247"]
+    A["触发: SIGINT/SIGTERM / 重启信号 / 待机 enter-resume / 运行时异常退出"] --> B["controller.shutdown｜_standby_runtime.py:303"]
     B --> C["request_shutdown: _shutdown_requested=True + _abort_operation"]
     C --> D["_stop_runtime: request_stop 后 app.stop<br/>观察窗口 20s"]
     D --> E{"20s 内完成 ?"}
@@ -437,13 +442,20 @@ flowchart TD
     K -.->|CLI 侧 _drain_shutdown_task｜cli.py:131| O["20s 只打印 '优雅关闭仍在等待'<br/>随后 shield 继续等, 绝不启动新进程"]
 ```
 
-三层超时全部同构（**先报错、再无限期等**）：
+三层超时全部同构（**先报错、再无限期等**）；阈值都可配置，默认值见下表：
 
 | 位置 | 阈值 | 超时后的行为 |
 |---|---|---|
-| `cli._drain_shutdown_task` | `STOP_TIMEOUT_SECONDS=20.0` | 往 stderr 打印「不会启动新进程」，然后 `shield` 继续等 |
-| `StandbyController._wait_stage` | 20s / 120s | `_report_pending` 置 `_aborted` 并写 failure，调用方拿到有界失败；任务仍被拥有 |
+| `cli._drain_shutdown_task` | 取 `controller.stop_timeout`（默认 300s） | 往 stderr 打印「不会启动新进程」，然后 `shield` 继续等 |
+| `StandbyController._wait_stage`（停机） | 同上，默认 300s | **只记 warning 并继续等**（`prognostic=False`）：停机慢只是慢，这一代已被 `request_stop` 判死，没有「尽早失败」可救 |
+| `StandbyController._wait_stage`（启动/适配器切换） | `START_TIMEOUT_SECONDS=120.0` | `_report_pending` 置 `_aborted` 并写 failure，调用方拿到有界失败；任务仍被拥有 |
 | `NeoBotApplication._stop_adapter_with_timeout` | `_ADAPTER_STOP_TIMEOUT_SECONDS=12.0` | 记 ERROR，然后 `shield` 等同一个 task；`_adapter_stop_task` 复用，避免重复 stop |
+| `ArchiveMemoryAutoSummaryService.flush_all` | `CLOSE_FLUSH_TIMEOUT_SECONDS=600.0` | 停止继续启动新的总结并记 warning，不取消在途收尾；未总结的消息留在计数器里给下次 |
+
+> **停机窗口为何不「先报错」**：优雅关闭要跑记忆总结（`flush_all`，单次总结预算默认
+> 300s），窗口必然先到。若此时上报，调用方会在动作其实成功时把状态判成失败 ——
+> 软重启回报 pending、服务停在待机，而代际其实已经重建（曾经的「/reboot 只停不重启」）。
+> 有界性由调用方自己的外层窗口（`[standby].resume_timeout_seconds`）负责。
 
 适配器自身还有限：`OneBotAdapter.stop` 先 `wait_for(task, 2.0)` 停止分发循环
 （从分发循环内部调用时直接跳过等待，`adapter.py:170`），再以
@@ -531,7 +543,7 @@ flowchart TD
 * **默认配置绝不进缓存**：`_load_config_for_reuse`（`:598`）在 `_CONFIG_ERROR`
   非空时把 `config` 从缓存 pop —— 否则用户修好文件后，每次软重启都会复用这份空配置，
   `_CONFIG_ERROR` 永远清不掉，恢复路径形同虚设。
-* `record_failure`（`standby_service.py:152`）与 `set_startup_reason` 的分工：
+* `record_failure`（`standby_service.py:161`）与 `set_startup_reason` 的分工：
   前者**改状态**（置 STANDBY + 落盘 + ERROR 日志），后者**只改文案**（非 STANDBY 时直接返回）。
 </details>
 
@@ -546,7 +558,7 @@ flowchart TD
     C -- 否 --> D{"值未变化且 phase 不是 failed ?"}
     D -- 是 --> D1["直接返回 True: 未变化"]
     D -- 否 --> E["调 on_onebot_change hook = controller.set_onebot<br/>窗口 = enter_timeout 20s"]
-    E --> F["StandbyController.set_onebot｜_standby_runtime.py:263"]
+    E --> F["StandbyController.set_onebot｜_standby_runtime.py:319"]
     F --> G{"_app 非空, 即运行中 ?"}
     G -- 是 --> G1["拒绝: 运行中始终使用 OneBot 连接<br/>请先进入待机"]
     G -- 否 --> H["_sync_adapter(desired=enabled)"]
@@ -612,9 +624,9 @@ flowchart TD
   启动步骤时，必须同时在 `_rollback_start` 里给出对应的释放位置，并想清楚它相对
   `event_ingress` / `plugin` / `adapter` 的先后。
 * **`_adapter_running` 是记账不是探测**：`_start_runtime` 成功后直接置 True
-  （`_standby_runtime.py:352`），前提是 `app.start()` 里的第 4 步确实起了适配器。
+  （`_standby_runtime.py:414`），前提是 `app.start()` 里的第 4 步确实起了适配器。
   若把 `adapter.start` 挪到更靠后或改成不抛异常，这里的记账会失真。
-* **待机状态不跨进程恢复**：`_restore` 只读 `connect_onebot`（`standby_service.py:359`），
+* **待机状态不跨进程恢复**：`_restore` 只读 `connect_onebot`（`standby_service.py:373`），
   想开箱待机必须配置 `[standby].start_in_standby = true`，不要指望重启后自动回到待机。
 * **配置兜底对象不进缓存**：`_load_config_for_reuse` 的 `pop("config")` 是恢复路径的
   命门，删掉它会造成「修好配置也永远复用空配置」的静默哑火。
