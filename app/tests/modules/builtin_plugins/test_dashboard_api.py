@@ -687,13 +687,13 @@ async def test_env_add_platform_validates_input(panel) -> None:
 
 
 async def test_models_library_crud_and_assignments(panel) -> None:
-    """模型库单独存储：面板可新增/改绑/删除，调用方只引用 key。"""
+    """模型库单独存储：面板可新增/改绑/删除，调用方只引用 model_ref（引用名）。"""
     _, _, base, config_path = panel
     token, csrf = await _login(base)
     headers = {"X-Token": token, "X-CSRF-Token": csrf}
     entry = {
-        "key": "my-flux",
-        "description": "自定义生图模型",
+        "model_ref": "my-flux",
+        "display_name": "自定义生图模型",
         "provider": "SiliconFlow",
         "model_name": "black-forest-labs/FLUX.1-dev",
         "native_vision": False,
@@ -718,11 +718,11 @@ async def test_models_library_crud_and_assignments(panel) -> None:
         blocked = await client.post(
             base + "/api/config/models/library",
             headers=headers,
-            json={"action": "delete", "key": "my-flux", "revision": bound.json()["revision"]},
+            json={"action": "delete", "model_ref": "my-flux", "revision": bound.json()["revision"]},
         )
 
     assert created.status_code == 200, created.text
-    library = {item["key"]: item for item in created.json()["models"]["library"]}
+    library = {item["model_ref"]: item for item in created.json()["models"]["library"]}
     assert library["my-flux"]["model_name"] == "black-forest-labs/FLUX.1-dev"
     assert library["my-flux"]["assigned"] is False
     assert bound.status_code == 200, bound.text
@@ -731,7 +731,8 @@ async def test_models_library_crud_and_assignments(panel) -> None:
     assert blocked.status_code == 400
     assert "引用" in blocked.json()["error"]
     raw = config_path.read_text(encoding="utf-8")
-    assert 'key = "my-flux"' in raw
+    assert 'model_ref = "my-flux"' in raw
+    assert 'display_name = "自定义生图模型"' in raw
     assert "creator_image_models = [\"my-flux\"]" in raw
 
 
@@ -745,7 +746,7 @@ async def test_models_view_exposes_options_and_proxy_flag(panel) -> None:
     payload = response.json()
     assert "DeepSeek" in payload["provider_options"]
     assert isinstance(payload["model_name_options"], list)
-    entry = next(item for item in payload["library"] if item["key"] == "deepseek-v4-pro")
+    entry = next(item for item in payload["library"] if item["model_ref"] == "deepseek-flash")
     assert entry["use_system_proxy"] is False
     assert entry["entry"]["use_system_proxy"] is False
 
@@ -765,12 +766,12 @@ async def test_models_test_endpoint_reports_missing_credentials(panel) -> None:
         missing = await client.post(
             base + "/api/config/models/test",
             headers={"X-Token": token, "X-CSRF-Token": csrf},
-            json={"key": "deepseek-v4-pro"},
+            json={"model_ref": "deepseek-flash"},
         )
         unknown = await client.post(
             base + "/api/config/models/test",
             headers={"X-Token": token, "X-CSRF-Token": csrf},
-            json={"key": "no-such-model"},
+            json={"model_ref": "no-such-model"},
         )
 
     assert missing.status_code == 200

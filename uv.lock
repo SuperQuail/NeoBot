@@ -1696,7 +1696,7 @@ wheels = [
 
 [[package]]
 name = "neobot"
-version = "1.2.1"
+version = "1.2.2"
 source = { virtual = "." }
 dependencies = [
     { name = "drissionpage" },
@@ -1751,7 +1751,7 @@ dev = [
 
 [[package]]
 name = "neobot-adapter"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/adapter" }
 dependencies = [
     { name = "aiohttp" },
@@ -1772,7 +1772,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-app"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "app" }
 dependencies = [
     { name = "aiohttp" },
@@ -1859,7 +1859,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-chat"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/chat" }
 dependencies = [
     { name = "httpx" },
@@ -1876,12 +1876,12 @@ requires-dist = [
 
 [[package]]
 name = "neobot-contracts"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/contracts" }
 
 [[package]]
 name = "neobot-memory"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/memory" }
 dependencies = [
     { name = "neobot-contracts" },
@@ -1892,7 +1892,7 @@ requires-dist = [{ name = "neobot-contracts", editable = "packages/contracts" }]
 
 [[package]]
 name = "neobot-modloader"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/modloader" }
 dependencies = [
     { name = "aiosqlite" },
@@ -1913,7 +1913,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-storage"
-version = "1.2.1"
+version = "1.2.2"
 source = { editable = "packages/storage" }
 dependencies = [
     { name = "aiosqlite" },

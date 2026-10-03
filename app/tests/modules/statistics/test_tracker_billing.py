@@ -122,8 +122,8 @@ def register_model(
 ) -> None:
     model_registry.register(
         RegisteredModel(
-            name=key,
-            description=key,
+            model_ref=key,
+            display_name=key,
             provider_name="DeepSeek",
             model_name=model_name,
             base_url="https://api.deepseek.com/v1",

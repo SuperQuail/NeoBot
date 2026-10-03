@@ -102,9 +102,9 @@ function AssignPanel() {
                 <div className="assign-choices">
                   {library.length === 0 && <span className="muted small">模型库为空</span>}
                   {sortedLibrary(meta.role).map((item) => {
-                    const checked = (draft.creator_image_models || []).includes(String(item.key || ""));
+                    const checked = (draft.creator_image_models || []).includes(String(item.model_ref || ""));
                     return (
-                      <label className="assign-choice" key={item.key}>
+                      <label className="assign-choice" key={item.model_ref}>
                         <input
                           type="checkbox"
                           checked={checked}
@@ -114,12 +114,12 @@ function AssignPanel() {
                             return {
                               ...previous,
                               creator_image_models: checked
-                                ? current.filter((key) => key !== item.key)
-                                : [...current, item.key],
+                                ? current.filter((ref) => ref !== item.model_ref)
+                                : [...current, String(item.model_ref)],
                             };
                           })}
                         />
-                        <span>{labelOf(String(item.key || ""))}</span>
+                        <span>{labelOf(String(item.model_ref || ""))}</span>
                       </label>
                     );
                   })}
@@ -134,7 +134,7 @@ function AssignPanel() {
                   {!meta.required && <option value="">（不指定）</option>}
                   {meta.required && !draft[meta.role] && <option value="">（请选择）</option>}
                   {sortedLibrary(meta.role).map((item) => (
-                    <option key={item.key} value={item.key}>{labelOf(String(item.key || ""))}</option>
+                    <option key={item.model_ref} value={item.model_ref}>{labelOf(String(item.model_ref || ""))}</option>
                   ))}
                 </select>
               )}
@@ -148,12 +148,12 @@ function AssignPanel() {
         <span className="muted small">重载配置后生效</span>
       </div>
       <table className="model-table">
-        <thead><tr><th>调用方</th><th>模型 key</th><th>供应商 / 模型</th><th>状态</th></tr></thead>
+        <thead><tr><th>调用方</th><th>模型引用名</th><th>供应商 / 模型</th><th>状态</th></tr></thead>
         <tbody>
           {(data?.roles || []).map((item, index) => (
             <tr key={item.role + '-' + index}>
               <td>{item.label}</td>
-              <td><code>{item.key || '—'}</code></td>
+              <td><code>{item.model_ref || '—'}</code></td>
               <td className="muted small">{[item.provider, item.model_name].filter(Boolean).join(' / ') || '—'}</td>
               <td>
                 {item.missing && <span className="tag err">模型库中不存在</span>}

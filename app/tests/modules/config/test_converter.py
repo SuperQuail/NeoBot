@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import Dict, List, Optional
 
 import pytest
+import tomlkit
 
 from neobot_app.config.loader.converter import dataclass_to_toml, dict_to_dataclass
 from neobot_app.config.schemas.bot import (
@@ -18,6 +19,19 @@ from neobot_app.config.schemas.bot import (
 class _SubConfig:
     name: str = "sub-default"
     count: int = 1
+
+
+@dataclass
+class _CollectionConfig:
+    """Optional 集合字段的占位值形态（回归 issue：曾被写成 ""）。"""
+
+    engines: Optional[List[str]] = None
+    budgets: Optional[Dict[str, float]] = None
+    rate: float = 1.0
+    # 没有 default=None 的 Optional 集合：既不能省略（required=False 但默认不是 None
+    # 的字段省略会丢字段），也不能写 "" —— 只能写类型正确的空集合。
+    loose_list: Optional[List[int]] = field(default_factory=list)
+    loose_dict: Optional[Dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -168,7 +182,7 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     raw = {
         "registry": [
             {
-                "key": "deepseek-v4-pro",
+                "model_ref": "deepseek-flash",
                 "provider": "DeepSeek",
                 "model_name": "deepseek-chat",
                 "settings": {
@@ -183,7 +197,7 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     models = dict_to_dataclass(raw, Models)
 
     # Assert
-    primary = models.get("deepseek-v4-pro")
+    primary = models.get("deepseek-flash")
     assert primary is not None
     assert primary.provider == "DeepSeek"
     assert primary.model_name == "deepseek-chat"
@@ -191,9 +205,51 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     assert primary.settings.deepseek_thinking_mode == "random"
     assert primary.settings.deepseek_reasoning_effort == "max"
     assert primary.pricing.input_price_per_mtokens == 0.0
-    # 调用方只引用 key，未在 registry 里出现的默认条目不应被隐式保留
-    assert models.assignments.primary_chat_model == "deepseek-v4-pro"
-    assert [item.key for item in models.registry] == ["deepseek-v4-pro"]
+    # 调用方只引用 model_ref，未在 registry 里出现的默认条目不应被隐式保留
+    assert models.assignments.primary_chat_model == "deepseek-flash"
+    assert [item.model_ref for item in models.registry] == ["deepseek-flash"]
+
+
+def test_toml_placeholders_are_type_correct_for_optional_collections():
+    """回归：Optional[List]/Optional[Dict] 不能写成 ""。
+
+    以前占位值只认 int/float/bool，其余一律 "",于是生成的 config.toml 里出现
+    engines = ""、engine_timeout_seconds = "" —— 一个连 schema 自己都不接受的值：
+    加载时只是 warning，面板保存时却是硬错误，而表单里根本没有这个键可改。
+    """
+    # Act：无现有数据（首次生成）
+    document, _, _ = dataclass_to_toml(_CollectionConfig, None, is_root=True)
+    rendered = tomlkit.dumps(document)
+    parsed = tomlkit.parse(rendered).unwrap()
+
+    # Assert：默认 None 的可选字段干脆不写，交给代码默认值
+    assert "engines" not in parsed
+    assert "budgets" not in parsed
+    # 有真实默认值的集合字段照常写出正确的默认值
+    assert parsed["loose_list"] == []
+    assert parsed["loose_dict"] == {}
+    # 核心不变量：不再出现类型错误的空串占位
+    assert '= ""' not in rendered
+    assert "rate = 1.0" in rendered
+
+
+def test_toml_placeholders_repair_invalid_existing_values():
+    """回归：已有文件里若是历史遗留的 ""，重写后必须修好而不是继续写回 ""。"""
+    # Arrange：模拟被写坏的 config.toml（这几个字段都在根层）
+    existing = tomlkit.parse(
+        'engines = ""\nbudgets = ""\nrate = 2.5\n'
+    ).unwrap()
+
+    # Act
+    document, _, _ = dataclass_to_toml(_CollectionConfig, existing, is_root=True)
+    rendered = tomlkit.dumps(document)
+    parsed = tomlkit.parse(rendered).unwrap()
+
+    # Assert：类型错误的值被当成缺失处理，重写后是合法形态
+    assert parsed.get("engines") != ""
+    assert parsed.get("budgets") != ""
+    assert '= ""' not in rendered
+    assert parsed["rate"] == 2.5
 
 
 def test_dataclass_to_toml_fills_defaults_and_marks_required_missing():

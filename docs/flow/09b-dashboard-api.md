@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: 528fe18
-verified_hash: e325753812b9
+verified_against: 264696d
+verified_hash: dbc912c69f83
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -596,7 +596,7 @@ flowchart TD
 * **`plugin_config_save` 的提示文案顺序有坑**（`api.py:1317-1321` 注释）：
   `_plugin_config_meta` 会写一条通用 `message`，必须在它**之后**覆盖
   `applied` 与 `message`，否则「已生效 / 需重启」的提示会被通用文案吞掉。
-* **`models_library_save` 会把已序列化的响应体再解析回来**塞 `saved_key`
+* **`models_library_save` 会把已序列化的响应体再解析回来**塞 `saved_model_ref`
   （`api.py:1700-1710`）：说明 `_finish_config_write` 的返回体不可扩展。
   要加字段应该改 `_finish_config_write`，不要在调用点二次解析 JSON。
 * **`_read_json` 的 25 个调用点有四种待遇**：20 处包 try 并显式回 400；

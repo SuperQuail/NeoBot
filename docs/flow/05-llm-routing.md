@@ -8,8 +8,8 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: 8d2b9ae
-verified_hash: 2e6463d06fa4
+verified_against: 264696d
+verified_hash: 4aeb025c1d69
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -19,7 +19,7 @@ verified_hash: 2e6463d06fa4
 本图覆盖「一次模型调用」前后的三段链路：
 
 1. **路由**：`[agent_model]`（角色 -> 编号 0-3，`config/schemas/bot.py:656`）与
-   `[models.assignments]`（角色 -> 模型 key，`:538`），经
+   `[models.assignments]`（角色 -> 模型引用名 model_ref，`:538`），经
    `assembly/agents.py:38 resolve_agent_model_name` 解析成 `create_provider` 能用的 key；
 2. **降级**：`bootstrap/_providers.py:26 build_main_provider` 的三条分叉，以及
    `packages/chat/src/neobot_chat/providers/native_vision.py:15 NativeVisionFallbackProvider`
@@ -52,10 +52,10 @@ verified_hash: 2e6463d06fa4
 
 ```mermaid
 flowchart TD
-    A["[models.registry] ModelDefinition<br/>key / native_vision / billing_script"] --> B["[models.assignments] ModelAssignments<br/>primary_chat_model / agent_model_1..3 / vision_model"]
-    B --> C{"resolve_agent_model_name:38<br/>分配命中且 key 在库?"}
-    C -- "是" --> D["模型 key"]
-    C -- "否：分配缺失或 key 悬空，回退角色名" --> D
+    A["[models.registry] ModelDefinition<br/>model_ref / native_vision / billing_script"] --> B["[models.assignments] ModelAssignments<br/>primary_chat_model / agent_model_1..3 / vision_model"]
+    B --> C{"resolve_agent_model_name:38<br/>分配命中且 model_ref 在库?"}
+    C -- "是" --> D["模型 model_ref"]
+    C -- "否：分配缺失或 model_ref 悬空，回退角色名" --> D
     D --> E{"主模型 native_vision?"}
     E -- "是" --> F["create_provider 主模型"]
     E -- "否" --> H["create_provider 主模型"]
@@ -98,10 +98,10 @@ sequenceDiagram
     participant BS as BillingService
     participant DB as ModelUsageRecord
 
-    BOOT->>MR: 配置 registry 按 key 注册 RegisteredModel
+    BOOT->>MR: 配置 registry 按 model_ref 注册 RegisteredModel
     BOOT->>RT: resolve_agent_model_name(角色, default_index)
-    RT-->>BOOT: 模型 key 或回退角色名
-    BOOT->>MR: create_provider(key) 注入 registered_key
+    RT-->>BOOT: 模型 model_ref 或回退角色名
+    BOOT->>MR: create_provider(model_ref) 注入 registered_key
     BOOT->>NVP: 主模型声明 native_vision 时包装, strip_images=False
     Note over BOOT,NVP: 视觉模型不可用时直接返回 (None, error), 主 provider 被丢弃
     BOOT->>OR: install_provider(provider, error_message) 只换引用不关旧实例
@@ -145,7 +145,7 @@ flowchart TD
 |---|---|---|
 | 角色 -> 编号 | `AgentModelRouting` 8 个整数字段 | main_agent=0；其余 7 个（creator/memory/chat_interaction/willingness/scheduled_task/archive_summary/self_heal）全为 1 |
 | 编号 -> 角色名 | `AGENT_ROLE_NAMES` 硬编码字典 | 0/1/2/3 -> primary_chat_model/agent_model_1/agent_model_2/agent_model_3 |
-| 角色名 -> key | `ModelAssignments` 6 个单值角色 + 1 个列表 | primary_chat_model=deepseek-v4-pro；agent_model_1/2/3=deepseek-v4-flash-max/high/off；vision_model=qwen3-vl-8b；tts_model=cosyvoice2；creator_image_models=[flux-schnell] |
+| 角色名 -> key | `ModelAssignments` 6 个单值角色 + 1 个列表 | primary_chat_model=deepseek-flash；agent_model_1/2/3=deepseek-flash-max/high/off；vision_model=qwen3-vl-8b；tts_model=cosyvoice2；creator_image_models=[flux-schnell] |
 
 关键事实：**配置里没有「角色 -> key」的直连字段**。改 `[agent_model].main_agent=2` 只是让主回复
 去引用「编号 2 当前绑定的 key」，真正换模型要改 `[models.assignments].agent_model_2`。
@@ -168,10 +168,10 @@ flowchart TD
     D1 --> E["role = AGENT_ROLE_NAMES.get<br/>index 缺省时用 default_index 的角色"]
     D2 --> E
     E --> F{"assignments 存在且有 models.get?"}
-    F -- "否" --> G["return role：返回角色名而非 key"]
-    F -- "是" --> H["key = assignments.role 去首尾空白"]
-    H --> I{"key 非空且 models.get 命中?"}
-    I -- "是" --> J["return key"]
+    F -- "否" --> G["return role：返回角色名而非 model_ref"]
+    F -- "是" --> H["model_ref = assignments.role 去首尾空白"]
+    H --> I{"model_ref 非空且 models.get 命中?"}
+    I -- "是" --> J["return model_ref"]
     I -- "否" --> G
 ```
 

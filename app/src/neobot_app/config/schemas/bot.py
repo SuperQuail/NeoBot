@@ -265,12 +265,24 @@ def normalize_model_type(value: Any) -> str:
 
 @dataclass
 class ModelDefinition:
-    """模型库中的一个模型；调用方通过 key 引用它。"""
+    """模型库中的一个模型。
 
-    key: str = field(
+    三个名字必须分清（这是最容易出错的地方）：
+
+    - ``model_ref``：**本机引用名**，只是调用方（``[models.assignments]``）用来指向本条目
+      的唯一标识，**永远不会发给供应商**；
+    - ``display_name``：面板/日志里**给人看的名字**（也作为 Agent 选择生图模型的参考）；
+    - ``model_name``：**真正发给供应商的模型标识**，写进请求体 ``{"model": ...}``。
+
+    换句话说：``model_ref`` 是「我们怎么称呼它」，``model_name`` 是「供应商怎么称呼它」。
+    改 ``model_ref`` 不影响调用，改 ``model_name`` 才会改变实际调用的模型。
+    """
+
+    model_ref: str = field(
         default="",
         metadata={
-            "description": "模型唯一标识（调用方引用名），只能包含字母、数字、下划线、点和短横线；"
+            "description": "本机引用名（调用方在 [models.assignments] 里引用它）："
+            "只能包含字母、数字、下划线、点和短横线；**不会发给供应商**。"
             "面板不展示，新建时按模型名自动生成",
             "hidden": True,
         },
@@ -283,10 +295,11 @@ class ModelDefinition:
             "options_strict": True,
         },
     )
-    description: str = field(
+    display_name: str = field(
         default="",
         metadata={
-            "description": "模型用途说明（留空时按类型自动生成；Agent 选择生图模型时也会参考）"
+            "description": "模型显示名：面板列表、启动日志与 Agent 选择生图模型时使用的名字；"
+            "留空时按模型类型自动生成。它只是给人看的标签，**不影响实际调用**"
         },
     )
     provider: str = field(
@@ -295,7 +308,10 @@ class ModelDefinition:
     )
     model_name: str = field(
         default="deepseek-chat",
-        metadata={"description": "模型名"},
+        metadata={
+            "description": "模型名：**真正发给供应商的模型标识**（请求体 model 字段）。"
+            "必须是供应商侧存在的名字，写错会在调用时报错"
+        },
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)
     settings: DeepSeekModelSettings = field(default_factory=DeepSeekModelSettings)
@@ -338,22 +354,23 @@ class ModelDefinition:
     )
 
     def __post_init__(self) -> None:
-        self.key = normalize_model_key(self.key)
+        self.model_ref = normalize_model_key(self.model_ref)
         self.model_type = normalize_model_type(self.model_type)
         # 图像识别模型天然具备视觉能力（原生视觉回退路由本就按"图片原样发送"处理），
         # 因此 model_type=vision 的模型无需用户手工配置 native_vision。
         if self.model_type == "vision":
             self.native_vision = True
-        if not str(self.description or "").strip():
-            self.description = MODEL_TYPE_LABELS.get(self.model_type, "模型")
+        if not str(self.display_name or "").strip():
+            self.display_name = MODEL_TYPE_LABELS.get(self.model_type, "模型")
 
     @property
     def type_label(self) -> str:
         return MODEL_TYPE_LABELS.get(self.model_type, self.model_type)
 
     @property
-    def display_name(self) -> str:
-        return self.description or self.model_name or self.key
+    def label(self) -> str:
+        """展示用兜底标签：显示名 → 模型名 → 引用名。"""
+        return self.display_name or self.model_name or self.model_ref
 
 
 #: 兼容旧名称（历史配置与外部脚本可能仍引用 ModelRegistration）
@@ -362,9 +379,12 @@ ModelRegistration = ModelDefinition
 
 def _default_primary_chat_model() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-pro",
+        # key 与真实模型名对齐：DeepSeek 侧只有 deepseek-flash，旧 key 里的 "v4-pro"
+        # 是历史遗留（早期 model_name 确实叫 deepseek-v4-*），它既不存在的模型、
+        # 又让「引用的 key」看起来像另一个模型。只有 flash，不再保留 pro 条目。
+        model_ref="deepseek-flash",
         model_type="chat",
-        description="主对话模型（Agent模型编号0）",
+        display_name="主对话模型（Agent模型编号0，deepseek-flash max 推理）",
         provider="DeepSeek",
         model_name="deepseek-flash",
         native_vision=True,
@@ -388,9 +408,9 @@ def _default_primary_chat_model() -> "ModelDefinition":
 
 def _default_agent_model_1() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-max",
+        model_ref="deepseek-flash-max",
         model_type="chat",
-        description="Agent模型编号1：deepseek-flash max 推理模式",
+        display_name="Agent模型编号1：deepseek-flash max 推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
         native_vision=True,
@@ -414,9 +434,9 @@ def _default_agent_model_1() -> "ModelDefinition":
 
 def _default_agent_model_2() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-high",
+        model_ref="deepseek-flash-high",
         model_type="chat",
-        description="Agent模型编号2：deepseek-flash high 推理模式",
+        display_name="Agent模型编号2：deepseek-flash high 推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
         native_vision=True,
@@ -440,9 +460,9 @@ def _default_agent_model_2() -> "ModelDefinition":
 
 def _default_agent_model_3() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-off",
+        model_ref="deepseek-flash-off",
         model_type="chat",
-        description="Agent模型编号3：deepseek-flash 非推理模式",
+        display_name="Agent模型编号3：deepseek-flash 非推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
         native_vision=True,
@@ -466,9 +486,9 @@ def _default_agent_model_3() -> "ModelDefinition":
 
 def _default_vision_model() -> "ModelDefinition":
     return ModelDefinition(
-        key="qwen3-vl-8b",
+        model_ref="qwen3-vl-8b",
         model_type="vision",
-        description="图像识别模型",
+        display_name="图像识别模型",
         provider="硅基流动",
         model_name="Qwen/Qwen3-VL-8B-Instruct",
         # native_vision 无需显式配置：vision 类型在 __post_init__ 中自动视为原生视觉
@@ -487,9 +507,9 @@ def _default_vision_model() -> "ModelDefinition":
 
 def _default_tts_model() -> "ModelDefinition":
     return ModelDefinition(
-        key="cosyvoice2",
+        model_ref="cosyvoice2",
         model_type="tts",
-        description="语音模型",
+        display_name="语音模型",
         provider="硅基流动",
         model_name="FunAudioLLM/CosyVoice2-0.5B",
         settings=ModelSettings(
@@ -506,9 +526,9 @@ def _default_tts_model() -> "ModelDefinition":
 
 def _default_creator_image_model() -> "ModelDefinition":
     return ModelDefinition(
-        key="flux-schnell",
+        model_ref="flux-schnell",
         model_type="image",
-        description="创作者Agent生图模型（默认）",
+        display_name="创作者Agent生图模型（默认）",
         provider="SiliconFlow",
         model_name="black-forest-labs/FLUX.1-schnell",
         settings=ModelSettings(
@@ -540,19 +560,19 @@ class ModelAssignments:
     """各调用方引用的模型 key（在模型库 [models.registry] 中定义）。"""
 
     primary_chat_model: str = field(
-        default="deepseek-v4-pro",
+        default="deepseek-flash",
         metadata={"description": "Agent模型编号0（主对话模型）引用的模型 key"},
     )
     agent_model_1: str = field(
-        default="deepseek-v4-flash-max",
+        default="deepseek-flash-max",
         metadata={"description": "Agent模型编号1引用的模型 key"},
     )
     agent_model_2: str = field(
-        default="deepseek-v4-flash-high",
+        default="deepseek-flash-high",
         metadata={"description": "Agent模型编号2引用的模型 key"},
     )
     agent_model_3: str = field(
-        default="deepseek-v4-flash-off",
+        default="deepseek-flash-off",
         metadata={"description": "Agent模型编号3引用的模型 key"},
     )
     vision_model: str = field(
@@ -615,26 +635,27 @@ class Models:
     )
     assignments: ModelAssignments = field(
         default_factory=ModelAssignments,
-        metadata={"description": "各调用方引用的模型 key"},
+        metadata={"description": "各调用方引用的模型（值为模型条目里的 model_ref 引用名）"},
     )
 
-    def by_key(self) -> Dict[str, ModelDefinition]:
-        return {item.key: item for item in self.registry if item.key}
+    def by_ref(self) -> Dict[str, ModelDefinition]:
+        """引用名 -> 模型条目。引用名只是本机标识，不会发给供应商。"""
+        return {item.model_ref: item for item in self.registry if item.model_ref}
 
-    def get(self, key: str) -> Optional[ModelDefinition]:
-        return self.by_key().get(str(key or "").strip())
+    def get(self, model_ref: str) -> Optional[ModelDefinition]:
+        return self.by_ref().get(str(model_ref or "").strip())
 
     def iter_definitions(self) -> Iterator[tuple[str, ModelDefinition]]:
-        """遍历模型库：(key, 模型定义)。"""
+        """遍历模型库：(引用名, 模型定义)。"""
         for item in self.registry:
-            if item.key:
-                yield item.key, item
+            if item.model_ref:
+                yield item.model_ref, item
 
     def iter_role_models(self) -> Iterator[tuple[str, ModelDefinition]]:
-        """遍历调用方实际引用的模型：(角色名, 模型定义)；key 缺失时跳过。"""
-        library = self.by_key()
-        for role, key in self.assignments.items():
-            definition = library.get(key)
+        """遍历调用方实际引用的模型：(角色名, 模型定义)；引用名缺失时跳过。"""
+        library = self.by_ref()
+        for role, model_ref in self.assignments.items():
+            definition = library.get(model_ref)
             if definition is not None:
                 yield role, definition
 
@@ -642,10 +663,16 @@ class Models:
         """兼容旧接口：等价于 iter_role_models()。"""
         return self.iter_role_models()
 
-    def missing_assignment_keys(self) -> List[str]:
-        """返回引用了但模型库里不存在的 key。"""
-        library = self.by_key()
-        return sorted({key for _role, key in self.assignments.items() if key not in library})
+    def missing_assignment_refs(self) -> List[str]:
+        """返回引用了但模型库里不存在的引用名（model_ref）。"""
+        library = self.by_ref()
+        return sorted(
+            {
+                model_ref
+                for _role, model_ref in self.assignments.items()
+                if model_ref not in library
+            }
+        )
 
     @property
     def creator_image_model_names(self) -> List[str]:
@@ -1649,7 +1676,7 @@ class BotConfig:
     """机器人主配置。"""
 
     version: str = field(
-        default="0.6.0",
+        default="0.7.0",
         metadata={"description": "配置文件版本（由程序维护，请勿手动修改）", "readonly": True},
     )
     bot: Bot = field(default_factory=Bot)

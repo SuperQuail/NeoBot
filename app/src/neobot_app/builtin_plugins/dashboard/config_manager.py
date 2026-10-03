@@ -656,7 +656,7 @@ class BotConfigManager:
     ) -> dict[str, Any]:
         """模型库增删改 + 调用方分配，只改动 config.toml 的 [models] 段。
 
-        `upsert` 未提供 key（引用名）时，按模型名自动生成唯一引用名；
+        `upsert` 未提供 model_ref（引用名）时，按模型名自动生成唯一引用名；
         生成的引用名通过 `resolved`（可选出参）返回给调用方。
         """
         from neobot_app.config.schemas.bot import ModelAssignments, normalize_model_key
@@ -677,8 +677,8 @@ class BotConfigManager:
             target = normalize_model_key(str(delete))
             references = [
                 role
-                for role, key in _assignment_items(current_assignments)
-                if key == target
+                for role, model_ref in _assignment_items(current_assignments)
+                if model_ref == target
             ]
             if references:
                 labels = "、".join(ROLE_LABELS.get(role, role) for role in references)
@@ -690,32 +690,32 @@ class BotConfigManager:
                         }
                     ]
                 )
-            if not any(str(item.get("key") or "") == target for item in library):
+            if not any(str(item.get("model_ref") or "") == target for item in library):
                 raise ConfigValidationError(
                     [{"path": "models.registry", "message": f"模型库中不存在 {target}"}]
                 )
-            library = [item for item in library if str(item.get("key") or "") != target]
+            library = [item for item in library if str(item.get("model_ref") or "") != target]
         elif upsert is not None:
             entry = {str(key): value for key, value in dict(upsert).items()}
             if isinstance(entry.get("settings"), dict):
                 # 面板伪字段（settings.params）折叠回 enabled_params / extra_body / 参数值
                 entry["settings"] = fold_params_into_settings(entry["settings"])
-            entry["key"] = normalize_model_key(str(entry.get("key") or ""))
-            if not entry["key"]:
+            entry["model_ref"] = normalize_model_key(str(entry.get("model_ref") or ""))
+            if not entry["model_ref"]:
                 # 面板不暴露引用名：按「模型名」自动生成（重名时追加序号）
-                entry["key"] = _derive_model_key(
+                entry["model_ref"] = _derive_model_key(
                     str(entry.get("model_name") or ""),
                     str(entry.get("model_type") or "chat"),
-                    {str(item.get("key") or "") for item in library},
+                    {str(item.get("model_ref") or "") for item in library},
                 )
             for index, item in enumerate(library):
-                if str(item.get("key") or "") == entry["key"]:
+                if str(item.get("model_ref") or "") == entry["model_ref"]:
                     library[index] = {**item, **entry}
                     break
             else:
                 library.append(entry)
             if resolved is not None:
-                resolved["key"] = entry["key"]
+                resolved["model_ref"] = entry["model_ref"]
 
         if assignments is not None:
             valid_roles = set(ModelAssignments.SINGLE_ROLES) | {"creator_image_models"}
@@ -727,23 +727,23 @@ class BotConfigManager:
                         "message": "未知调用方: " + "、".join(sorted(unknown)),
                     }
                 )
-            library_keys = {str(item.get("key") or "") for item in library}
+            library_refs = {str(item.get("model_ref") or "") for item in library}
             for role in ModelAssignments.SINGLE_ROLES:
                 if role not in assignments:
                     continue
-                key = str(assignments.get(role) or "").strip()
-                if key and key not in library_keys:
+                model_ref = str(assignments.get(role) or "").strip()
+                if model_ref and model_ref not in library_refs:
                     errors.append(
                         {
                             "path": f"models.assignments.{role}",
-                            "message": f"模型库中不存在 key: {key}",
+                            "message": f"模型库中不存在引用名: {model_ref}",
                         }
                     )
-                if not key and role not in ("vision_model", "tts_model"):
+                if not model_ref and role not in ("vision_model", "tts_model"):
                     errors.append(
                         {"path": f"models.assignments.{role}", "message": "该调用方必须指定模型"}
                     )
-                current_assignments[role] = key
+                current_assignments[role] = model_ref
             images = assignments.get("creator_image_models")
             if images is not None:
                 if not isinstance(images, list):
@@ -759,12 +759,12 @@ class BotConfigManager:
                         for item in images
                         if str(item or "").strip()
                     ]
-                    for key in cleaned:
-                        if key not in library_keys:
+                    for model_ref in cleaned:
+                        if model_ref not in library_refs:
                             errors.append(
                                 {
                                     "path": "models.assignments.creator_image_models",
-                                    "message": f"模型库中不存在 key: {key}",
+                                    "message": f"模型库中不存在引用名: {model_ref}",
                                 }
                             )
                     current_assignments["creator_image_models"] = cleaned
@@ -1460,14 +1460,17 @@ def models_view(config: Any = None) -> dict[str, Any]:
     roles: list[dict[str, Any]] = []
 
     if models_config is not None and hasattr(models_config, "iter_definitions"):
-        by_key = models_config.by_key()
-        assigned_keys = {key for _role, key in models_config.assignments.items()}
-        for key, definition in models_config.iter_definitions():
+        by_ref = models_config.by_ref()
+        assigned_refs = {ref for _role, ref in models_config.assignments.items()}
+        for model_ref, definition in models_config.iter_definitions():
             platform = platform_payload(str(getattr(definition, "provider", "") or ""))
             library.append(
                 {
-                    "key": key,
-                    "description": str(getattr(definition, "description", "") or ""),
+                    # model_ref = 本机引用名（不发供应商）；model_name 才是发出去的模型名。
+                    "model_ref": model_ref,
+                    "display_name": str(
+                        getattr(definition, "display_name", "") or ""
+                    ),
                     "provider": str(getattr(definition, "provider", "") or ""),
                     "model_name": str(getattr(definition, "model_name", "") or ""),
                     "model_type": str(getattr(definition, "model_type", "chat") or "chat"),
@@ -1485,14 +1488,15 @@ def models_view(config: Any = None) -> dict[str, Any]:
                     "has_balance_hint": bool(
                         str(getattr(definition, "balance_query_hint", "") or "").strip()
                     ),
-                    "assigned": key in assigned_keys,
-                    "registered": key in registered_names,
+                    "assigned": model_ref in assigned_refs,
+                    "registered": model_ref in registered_names,
                     "url_configured": bool(platform.get("url")),
-                    "key_configured": bool(platform.get("has_key")),
+                    # 供应商 API Key 是否已配置（与引用名无关，别再叫 key_configured）
+                    "api_key_configured": bool(platform.get("has_key")),
                     # 完整条目（供面板编辑；模型条目不含密钥）
                     "entry": _jsonable(definition),
                     # spec(4) Part B R12：本次启动按旧配置推断过 enabled_params
-                    "params_inferred": is_inferred(key),
+                    "params_inferred": is_inferred(model_ref),
                 }
             )
         assignments = {
@@ -1503,48 +1507,48 @@ def models_view(config: Any = None) -> dict[str, Any]:
             "creator_image_models": list(models_config.assignments.image_keys()),
         }
         for role in models_config.assignments.SINGLE_ROLES:
-            key = models_config.assignments.role_key(role)
-            definition = by_key.get(key)
+            model_ref = models_config.assignments.role_key(role)
+            definition = by_ref.get(model_ref)
             roles.append(
                 {
                     "role": role,
                     "label": ROLE_LABELS.get(role, role),
-                    "key": key,
+                    "model_ref": model_ref,
                     "missing": definition is None,
-                    "description": str(getattr(definition, "description", "") or "") if definition else "",
+                    "display_name": str(getattr(definition, "display_name", "") or "") if definition else "",
                     "provider": str(getattr(definition, "provider", "") or "") if definition else "",
                     "model_name": str(getattr(definition, "model_name", "") or "") if definition else "",
-                    "registered": key in registered_names,
+                    "registered": model_ref in registered_names,
                 }
             )
         image_roles = [
             {
                 "role": "creator_image_models",
                 "label": ROLE_LABELS["creator_image_models"],
-                "key": key,
-                "missing": by_key.get(key) is None,
-                "description": str(getattr(by_key.get(key), "description", "") or "") if by_key.get(key) else "",
-                "provider": str(getattr(by_key.get(key), "provider", "") or "") if by_key.get(key) else "",
-                "model_name": str(getattr(by_key.get(key), "model_name", "") or "") if by_key.get(key) else "",
-                "registered": key in registered_names,
+                "model_ref": image_ref,
+                "missing": by_ref.get(image_ref) is None,
+                "display_name": str(getattr(by_ref.get(image_ref), "display_name", "") or "") if by_ref.get(image_ref) else "",
+                "provider": str(getattr(by_ref.get(image_ref), "provider", "") or "") if by_ref.get(image_ref) else "",
+                "model_name": str(getattr(by_ref.get(image_ref), "model_name", "") or "") if by_ref.get(image_ref) else "",
+                "registered": image_ref in registered_names,
             }
-            for key in models_config.assignments.image_keys()
+            for image_ref in models_config.assignments.image_keys()
         ]
         roles.extend(image_roles)
 
     # 运行时注册表（可能包含库中没有的旧式条目）
     registered: list[dict[str, Any]] = []
-    for name, item in registry.items():
+    for model_ref, item in registry.items():
         platform = platform_payload(str(getattr(item, "provider_name", "") or ""))
         registered.append(
             {
-                "name": name,
-                "description": str(getattr(item, "description", "") or ""),
+                "model_ref": model_ref,
+                "display_name": str(getattr(item, "display_name", "") or ""),
                 "provider": str(getattr(item, "provider_name", "") or ""),
                 "model_name": str(getattr(item, "model_name", "") or ""),
                 "native_vision": bool(getattr(item, "native_vision", False)),
                 "url_configured": bool(platform.get("url")),
-                "key_configured": bool(platform.get("has_key")),
+                "api_key_configured": bool(platform.get("has_key")),
             }
         )
 

@@ -252,18 +252,18 @@ export interface ConfigDocument {
   [key: string]: unknown;
 }
 
-/** 模型库条目 */
+/** 模型库条目。model_ref 只是本机引用名，model_name 才是发给供应商的模型名 */
 export interface ModelItem {
-  key?: string;
+  model_ref?: string;
   name?: string;
-  description?: string;
+  display_name?: string;
   provider?: string;
   model_name?: string;
   model_type?: string;
   type_label?: string;
   use_system_proxy?: boolean;
-  /** 列表视图附带的状态标记 */
-  key_configured?: boolean;
+  /** 列表视图附带的状态标记（供应商 API Key 是否已配置，与引用名无关） */
+  api_key_configured?: boolean;
   url_configured?: boolean;
   registered?: boolean;
   assigned?: boolean;
@@ -273,7 +273,7 @@ export interface ModelItem {
 
 export interface ModelProbeResult {
   ok?: boolean;
-  key?: string;
+  model_ref?: string;
   provider?: string;
   model_name?: string;
   url?: string;
@@ -308,7 +308,8 @@ export interface ModelsPayload {
   roles?: Array<{
     role: string;
     label?: string;
-    key?: string;
+    model_ref?: string;
+    display_name?: string;
     provider?: string;
     model_name?: string;
     status?: string;
@@ -316,7 +317,7 @@ export interface ModelsPayload {
     registered?: boolean;
     [k: string]: unknown;
   }>;
-  saved_key?: string;
+  saved_model_ref?: string;
   message?: string;
   applied?: boolean;
   changes?: ConfigChanges;

@@ -25,7 +25,7 @@ class FakeRegistry:
 
 def test_document_only_lists_models_with_hint() -> None:
     config = BotConfig()
-    primary = config.models.get("deepseek-v4-pro")
+    primary = config.models.get("deepseek-flash")
     assert primary is not None
     primary.balance_query_hint = "GET https://api.example.com/user/balance，Authorization: Bearer <key>"
 
@@ -33,10 +33,10 @@ def test_document_only_lists_models_with_hint() -> None:
 
     assert count == 1
     # 余额提示属于模型本身，文档按模型 key 列出
-    assert "## deepseek-v4-pro" in document
+    assert "## deepseek-flash" in document
     assert "https://api.example.com/user/balance" in document
     # 未配置提示的模型不出现在文档里
-    assert "deepseek-v4-flash-max" not in document
+    assert "deepseek-flash-max" not in document
     assert document.rstrip().endswith(NO_HINT_NOTE)
 
 

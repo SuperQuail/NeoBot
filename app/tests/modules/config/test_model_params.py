@@ -83,9 +83,9 @@ def _model_block(
 ) -> str:
     return (
         "[[models.registry]]\n"
-        f'key = "{key}"\n'
+        f'model_ref = "{key}"\n'
         f'model_type = "{model_type}"\n'
-        f'description = "测试模型 {key}"\n'
+        f'display_name = "测试模型 {key}"\n'
         f'provider = "{provider}"\n'
         'model_name = "test-model-1"\n'
         "[models.registry.settings]\n" + settings_body
@@ -420,7 +420,7 @@ def test_extra_body_reserved_prefix_is_rejected_and_ignored(
         config={
             "models": {
                 "registry": [
-                    {"key": "chat-a", "settings": {"extra_body": {"__x__": 1}}}
+                    {"model_ref": "chat-a", "settings": {"extra_body": {"__x__": 1}}}
                 ]
             }
         }
@@ -508,7 +508,7 @@ def test_legacy_config_infers_enabled_params_and_keeps_values(tmp_path, monkeypa
 
     config = Config.load(config_path, BotConfig)
 
-    settings_config = config.models.by_key()["ds-a"].settings
+    settings_config = config.models.by_ref()["ds-a"].settings
     assert settings_config.enabled_params == [
         "image_api",
         "deepseek_reasoning_effort",

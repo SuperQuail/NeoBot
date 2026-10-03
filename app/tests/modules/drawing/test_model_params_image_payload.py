@@ -35,9 +35,9 @@ _DEEPSEEK_ENV = {
 _CONFIG = (
     "[bot]\naccount = 10001\n\n[chat]\n\n"
     "[[models.registry]]\n"
-    'key = "img-a"\n'
+    'model_ref = "img-a"\n'
     'model_type = "image"\n'
-    'description = "测试生图模型"\n'
+    'display_name = "测试生图模型"\n'
     'provider = "DeepSeek"\n'
     'model_name = "stub-image-xl"\n'
     "[models.registry.settings]\n"

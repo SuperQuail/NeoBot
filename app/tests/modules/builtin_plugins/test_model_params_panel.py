@@ -30,9 +30,9 @@ _DEEPSEEK_ENV = {
 _OLD_CONFIG = (
     "[bot]\naccount = 10001\n\n[chat]\n\n"
     "[[models.registry]]\n"
-    'key = "ds-a"\n'
+    'model_ref = "ds-a"\n'
     'model_type = "chat"\n'
-    'description = "测试模型 ds-a"\n'
+    'display_name = "测试模型 ds-a"\n'
     'provider = "DeepSeek"\n'
     'model_name = "deepseek-flash"\n'
     "[models.registry.settings]\n"
@@ -136,7 +136,7 @@ def test_legacy_inference_marks_model_in_models_view(tmp_path, monkeypatch) -> N
     Config.load(config_path, BotConfig)
 
     payload = models_view(manager.instance())
-    entry = next(item for item in payload["library"] if item["key"] == "ds-a")
+    entry = next(item for item in payload["library"] if item["model_ref"] == "ds-a")
     assert entry["params_inferred"] is True
     assert entry["entry"]["settings"]["enabled_params"] == ["deepseek_reasoning_effort"]
 
@@ -149,9 +149,9 @@ def test_config_page_save_folds_params_pseudo_field(tmp_path, monkeypatch) -> No
         "models": {
             "registry": [
                 {
-                    "key": "ds-a",
+                    "model_ref": "ds-a",
                     "model_type": "chat",
-                    "description": "测试模型 ds-a",
+                    "display_name": "测试模型 ds-a",
                     "provider": "DeepSeek",
                     "model_name": "deepseek-flash",
                     "settings": {
@@ -187,7 +187,7 @@ def test_config_page_save_folds_params_pseudo_field(tmp_path, monkeypatch) -> No
     raw = config_path.read_text(encoding="utf-8")
     assert "[models.registry.settings.params]" not in raw
     assert not any(line.strip().startswith("params") for line in raw.splitlines())
-    saved = manager.instance().models.by_key()["ds-a"].settings
+    saved = manager.instance().models.by_ref()["ds-a"].settings
     assert saved.enabled_params == ["deepseek_reasoning_effort", "deepseek_thinking_mode"]
     assert saved.extra_body == {"top_k": 40}
     assert saved.deepseek_thinking_mode == "disabled"
@@ -201,7 +201,7 @@ def test_model_library_upsert_folds_params_pseudo_field(tmp_path, monkeypatch) -
     resolved: dict[str, Any] = {}
     manager.update_models(
         upsert={
-            "key": "ds-a",
+            "model_ref": "ds-a",
             "model_type": "chat",
             "provider": "DeepSeek",
             "model_name": "deepseek-flash",
@@ -218,7 +218,7 @@ def test_model_library_upsert_folds_params_pseudo_field(tmp_path, monkeypatch) -
         resolved=resolved,
         expected_revision=manager.revision(),
     )
-    saved = manager.instance().models.by_key()["ds-a"].settings
+    saved = manager.instance().models.by_ref()["ds-a"].settings
     assert saved.enabled_params == ["frequency_penalty"]
     assert saved.frequency_penalty == 0.25
     assert saved.extra_body == {"top_k": 7}

@@ -175,9 +175,9 @@ async def test_provider_then_pull_models_then_save_visible_immediately(
 
         # 4) 新建一个生图模型（Key 来自供应商，条目本身没有 key 字段）
         entry = {
-            "key": "stub-image",
+            "model_ref": "stub-image",
             "model_type": "image",
-            "description": "仿真生图模型",
+            "display_name": "仿真生图模型",
             "provider": PROVIDER,
             "model_name": "stub-image-xl",
             "native_vision": False,
@@ -191,26 +191,26 @@ async def test_provider_then_pull_models_then_save_visible_immediately(
         )
         assert saved.status_code == 200, saved.text
         saved_payload = saved.json()
-        library = {item["key"]: item for item in saved_payload["models"]["library"]}
+        library = {item["model_ref"]: item for item in saved_payload["models"]["library"]}
         assert "stub-image" in library, saved_payload["models"]["library"]
         created = library["stub-image"]
         assert created["model_type"] == "image"
         assert created["type_label"] == "生图模型"
-        assert created["key_configured"] is True
+        assert created["api_key_configured"] is True
         assert created["url_configured"] is True
         assert "api_key" not in created["entry"]
         assert "apiKey" not in created["entry"]
 
         # 5) 重新读取（等价于刷新页面）：依然在
         again = await client.get(base + "/api/config/models", headers={"X-Token": token})
-        keys = {item["key"] for item in again.json()["library"]}
+        keys = {item["model_ref"] for item in again.json()["library"]}
         assert "stub-image" in keys
 
         # 6) 连通性测试：走真实 HTTP，命中 stub 的模型列表
         probed = await client.post(
             base + "/api/config/models/test",
             headers=headers,
-            json={"key": "stub-image"},
+            json={"model_ref": "stub-image"},
         )
         assert probed.status_code == 200, probed.text
         probe_payload = probed.json()
@@ -228,10 +228,10 @@ async def test_provider_then_pull_models_then_save_visible_immediately(
             restarted = await client.get(
                 base2 + "/api/config/models", headers={"X-Token": token2}
             )
-        keys = {item["key"] for item in restarted.json()["library"]}
+        keys = {item["model_ref"] for item in restarted.json()["library"]}
         assert "stub-image" in keys, "保存后重启（刷新）必须仍然可见"
         entry_after = next(
-            item for item in restarted.json()["library"] if item["key"] == "stub-image"
+            item for item in restarted.json()["library"] if item["model_ref"] == "stub-image"
         )
         assert entry_after["model_type"] == "image"
     finally:
@@ -250,7 +250,7 @@ async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> Non
         revision = models.json()["revision"]
         entry = {
             "model_type": "image",
-            "description": "自动引用名模型",
+            "display_name": "自动引用名模型",
             "provider": PROVIDER,
             "model_name": "Stub/Image XL",  # 大小写与斜杠都会被规整
         }
@@ -260,7 +260,7 @@ async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> Non
             json={"action": "upsert", "entry": entry, "revision": revision},
         )
         assert first.status_code == 200, first.text
-        assert first.json()["saved_key"] == "stub-image-xl"
+        assert first.json()["saved_model_ref"] == "stub-image-xl"
 
         # 同名再来一个 -> 自动加序号
         second = await client.post(
@@ -273,9 +273,9 @@ async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> Non
             },
         )
         assert second.status_code == 200, second.text
-        assert second.json()["saved_key"] == "stub-image-xl-2"
+        assert second.json()["saved_model_ref"] == "stub-image-xl-2"
 
-        keys = {item["key"] for item in second.json()["models"]["library"]}
+        keys = {item["model_ref"] for item in second.json()["models"]["library"]}
         assert {"stub-image-xl", "stub-image-xl-2"} <= keys
 
         # 编辑已有条目时保留原引用名
@@ -285,9 +285,9 @@ async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> Non
             json={
                 "action": "upsert",
                 "entry": {
-                    "key": "stub-image-xl",
+                    "model_ref": "stub-image-xl",
                     "model_type": "image",
-                    "description": "改过的描述",
+                    "display_name": "改过的描述",
                     "provider": PROVIDER,
                     "model_name": "Stub/Image XL",
                 },
@@ -295,8 +295,8 @@ async def test_new_model_without_key_gets_auto_reference(simulated_panel) -> Non
             },
         )
         assert again.status_code == 200, again.text
-        library = {item["key"]: item for item in again.json()["models"]["library"]}
-        assert library["stub-image-xl"]["description"] == "改过的描述"
+        library = {item["model_ref"]: item for item in again.json()["models"]["library"]}
+        assert library["stub-image-xl"]["display_name"] == "改过的描述"
         assert len([k for k in library if k.startswith("stub-image-xl")]) == 2
 
 
@@ -322,9 +322,9 @@ async def test_model_type_and_registration_after_reload(simulated_panel) -> None
             json={
                 "action": "upsert",
                 "entry": {
-                    "key": "stub-chat",
+                    "model_ref": "stub-chat",
                     "model_type": "chat",
-                    "description": "仿真对话模型",
+                    "display_name": "仿真对话模型",
                     "provider": PROVIDER,
                     "model_name": "stub-chat-1",
                 },

@@ -53,10 +53,17 @@ def _normalize_provider_kind(provider_name: str) -> str:
 
 @dataclass(frozen=True)
 class RegisteredModel:
-    """已注册模型。"""
+    """已注册模型。
 
-    name: str
-    description: str
+    字段语义（与配置里的 ``ModelDefinition`` 一一对应）：
+
+    - ``model_ref``：本机引用名，注册表的键，**不会发给供应商**；
+    - ``display_name``：面板/日志里给人看的名字；
+    - ``model_name``：**真正发给供应商的模型标识**，写进请求体 ``{"model": ...}``。
+    """
+
+    model_ref: str
+    display_name: str
     provider_name: str
     model_name: str
     base_url: str
@@ -82,18 +89,19 @@ class RegisteredModel:
 
         返回前注入 ``registered_key``：用量记账必须能区分同一 ``model_name`` 的不同
         注册条目（spec(4) §4.1.1 / D19）；provider 是普通类，可直接挂属性。
+        注意 ``registered_key`` 是**本机引用名**（``model_ref``），供应商侧永远看不到它。
         """
         provider = self._build_provider()
         # provider 是普通类（无 __slots__），可直接挂属性
-        setattr(provider, "registered_key", self.name)
+        setattr(provider, "registered_key", self.model_ref)
         return provider
 
     def _build_provider(self) -> Provider:
         """按供应商类型构造 Provider（不含 registered_key 注入）。"""
         if not self.base_url:
-            raise ValidationError(f"Model '{self.name}' is missing base_url")
+            raise ValidationError(f"Model '{self.model_ref}' is missing base_url")
         if not self.api_key:
-            raise ValidationError(f"Model '{self.name}' is missing api_key")
+            raise ValidationError(f"Model '{self.model_ref}' is missing api_key")
 
         if self.provider_kind == "anthropic":
             # AnthropicProvider 把 max_tokens 收窄成 int，与 Provider 基类的 int|None 不兼容
@@ -156,18 +164,21 @@ class ModelRegistry:
         self._models.clear()
 
     def register(self, model: RegisteredModel, *, replace: bool = True) -> None:
-        if not replace and model.name in self._models:
-            raise ValidationError(f"Model '{model.name}' is already registered")
-        self._models[model.name] = model
+        if not replace and model.model_ref in self._models:
+            raise ValidationError(
+                f"Model '{model.model_ref}' is already registered"
+            )
+        self._models[model.model_ref] = model
 
-    def get(self, name: str) -> RegisteredModel:
+    def get(self, model_ref: str) -> RegisteredModel:
+        """按**引用名**取已注册模型（不是发给供应商的模型名）。"""
         try:
-            return self._models[name]
+            return self._models[model_ref]
         except KeyError as exc:
-            raise ValidationError(f"Model '{name}' is not registered") from exc
+            raise ValidationError(f"Model '{model_ref}' is not registered") from exc
 
-    def create_provider(self, name: str) -> Provider:
-        return self.get(name).create_provider()
+    def create_provider(self, model_ref: str) -> Provider:
+        return self.get(model_ref).create_provider()
 
     def items(self) -> tuple[tuple[str, RegisteredModel], ...]:
         return tuple(self._models.items())
@@ -184,9 +195,9 @@ def register_model(model: RegisteredModel, *, replace: bool = True) -> None:
     model_registry.register(model, replace=replace)
 
 
-def get_registered_model(name: str) -> RegisteredModel:
-    return model_registry.get(name)
+def get_registered_model(model_ref: str) -> RegisteredModel:
+    return model_registry.get(model_ref)
 
 
-def create_provider(name: str) -> Provider:
-    return model_registry.create_provider(name)
+def create_provider(model_ref: str) -> Provider:
+    return model_registry.create_provider(model_ref)

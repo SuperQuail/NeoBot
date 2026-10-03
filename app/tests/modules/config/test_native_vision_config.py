@@ -14,7 +14,7 @@ from neobot_app.config.schemas.bot import BotConfig, ModelRegistration
 from neobot_chat import get_model_registry
 from neobot_chat.providers.native_vision import NativeVisionFallbackProvider
 
-PRIMARY_KEY = "deepseek-v4-pro"
+PRIMARY_KEY = "deepseek-flash"
 VISION_KEY = "qwen3-vl-8b"
 
 
@@ -61,7 +61,7 @@ def test_config_registration_passes_native_vision(monkeypatch):
     primary.native_vision = True
     primary.model_name = "deepseek-v4-flash-vision-exp"
     # 默认全部为原生视觉，这里显式关掉一个以验证 False 也能正确透传
-    _library_entry(config, "deepseek-v4-flash-max").native_vision = False
+    _library_entry(config, "deepseek-flash-max").native_vision = False
     registry = get_model_registry()
     saved = registry.items()
     try:
@@ -69,7 +69,7 @@ def test_config_registration_passes_native_vision(monkeypatch):
         main = registry.get(PRIMARY_KEY)
         assert main.native_vision
         assert main.create_provider().native_vision
-        assert not registry.get("deepseek-v4-flash-max").native_vision
+        assert not registry.get("deepseek-flash-max").native_vision
     finally:
         registry.clear()
         for _, model in saved:
@@ -80,7 +80,7 @@ async def test_bootstrap_wraps_main_with_vision_model_fallback(monkeypatch):
     """主模型声明原生视觉时，回退路由固定为视觉模型（按分配 key 解析）。"""
     config = BotConfig()
     config.agent_model.main_agent = 2
-    _library_entry(config, "deepseek-v4-flash-high").native_vision = True
+    _library_entry(config, "deepseek-flash-high").native_vision = True
     created = []
 
     def create(name):
@@ -92,7 +92,7 @@ async def test_bootstrap_wraps_main_with_vision_model_fallback(monkeypatch):
     assert error is None
     assert isinstance(provider, NativeVisionFallbackProvider)
     assert provider.native_vision
-    assert created == ["deepseek-v4-flash-high", VISION_KEY]
+    assert created == ["deepseek-flash-high", VISION_KEY]
     await provider.close()
 
 
@@ -179,7 +179,7 @@ def test_native_vision_image_count_toml_roundtrip(count):
 def test_native_vision_toml_conversion_roundtrip():
     data = tomlkit.parse(
         '[[models.registry]]\n'
-        'key = "deepseek-v4-pro"\n'
+        'model_ref = "deepseek-flash"\n'
         'model_name = "deepseek-v4-flash-vision-exp"\n'
         'native_vision = true\n'
     ).unwrap()
@@ -199,17 +199,17 @@ def test_native_vision_toml_load_roundtrip(monkeypatch, tmp_path):
     # 只保留一个模型库条目时，所有角色都指向它（避免引用不存在的 key）
     path.write_text(
         '[[models.registry]]\n'
-        'key = "deepseek-v4-pro"\n'
+        'model_ref = "deepseek-flash"\n'
         'model_name = "deepseek-v4-flash-vision-exp"\n'
         'native_vision = true\n'
         '\n'
         '[models.assignments]\n'
-        'primary_chat_model = "deepseek-v4-pro"\n'
-        'agent_model_1 = "deepseek-v4-pro"\n'
-        'agent_model_2 = "deepseek-v4-pro"\n'
-        'agent_model_3 = "deepseek-v4-pro"\n'
-        'vision_model = "deepseek-v4-pro"\n'
-        'tts_model = "deepseek-v4-pro"\n'
+        'primary_chat_model = "deepseek-flash"\n'
+        'agent_model_1 = "deepseek-flash"\n'
+        'agent_model_2 = "deepseek-flash"\n'
+        'agent_model_3 = "deepseek-flash"\n'
+        'vision_model = "deepseek-flash"\n'
+        'tts_model = "deepseek-flash"\n'
         'creator_image_models = []\n'
         '\n'
         '[agent_model]\nmain_agent = 2\n',

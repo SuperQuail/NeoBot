@@ -6,8 +6,8 @@ covers:
   - packages/chat/src/neobot_chat/schema/exceptions.py
   - app/src/neobot_app/bootstrap/_providers.py
 
-verified_against: 528fe18
-verified_hash: ebe6a6aabd9b
+verified_against: 264696d
+verified_hash: 077d56f07879
 ---
 
 # 05b Provider 实现与原生视觉降级：注册表 · 三种供应商 · 异常契约 · 包装器
@@ -31,7 +31,7 @@ verified_hash: ebe6a6aabd9b
 
 **不画什么**（指向相邻图，避免重叠）：
 
-* 角色 -> 编号 -> 模型 key 的两层路由、`[models.assignments]`、计费脚本选路与报表
+* 角色 -> 编号 -> 模型 model_ref 的两层路由、`[models.assignments]`、计费脚本选路与报表
   —— `05-llm-routing.md`（本图只画它交给 provider 的那一段）；
 * 用量落库 / 报表细节 —— `05-llm-routing.md` 与 `23-billing-stats.md`；
 * Agent 循环与工具执行 —— `04-agent-loop.md`；模型可见工具集的完整清单 —— `03b-reply-tools.md`；
@@ -102,7 +102,7 @@ sequenceDiagram
 
     BOOT->>ENV: get_api_platform_config(平台名) 读 平台名_URL 与 平台名_APIKey
     ENV-->>BOOT: url 与 api_key（缺失则整条模型不注册）
-    BOOT->>REG: create_provider(key): get 命中否则 ValidationError
+    BOOT->>REG: create_provider(model_ref): get 命中否则 ValidationError
     REG->>RM: _build_provider 按 provider_kind 选类
     RM-->>BOOT: provider 实例并注入 registered_key
     Note over BOOT,FB: 视觉 provider 先建（bootstrap/__init__.py:815），再建主 provider 并复用该实例
@@ -139,7 +139,7 @@ flowchart TD
     I -- "anthropic" --> I1["AnthropicProvider"]
     I -- "deepseek" --> I2["DeepSeekOfficalProvider"]
     I -.->|"openai 或任意未识别值"| I3["OpenAIProvider"]
-    I1 --> J["setattr provider.registered_key = name"]
+    I1 --> J["setattr provider.registered_key = model_ref"]
     I2 --> J
     I3 --> J
     J --> K["用量记账按 registered_key 区分同名条目"]

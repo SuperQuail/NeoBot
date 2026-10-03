@@ -79,16 +79,16 @@ _LEGACY_ROLE_DESCRIPTIONS = {
 
 
 def _default_model_library_map() -> dict[str, dict[str, Any]]:
-    """默认模型库：key -> 条目字典（迁移时用于补齐旧配置缺失的角色）。"""
+    """默认模型库：引用名 -> 条目字典（迁移时用于补齐旧配置缺失的角色）。"""
     from dataclasses import asdict
 
     from neobot_app.config.schemas.bot import _default_model_library
 
-    return {item.key: asdict(item) for item in _default_model_library()}
+    return {item.model_ref: asdict(item) for item in _default_model_library()}
 
 
 def _default_role_assignments() -> dict[str, str]:
-    """默认调用方引用：角色 -> 默认模型 key。"""
+    """默认调用方引用：角色 -> 默认模型条目引用名。"""
     from neobot_app.config.schemas.bot import ModelAssignments
 
     return dict(ModelAssignments().items())
@@ -204,4 +204,94 @@ def migrate_v4_to_v5(old: dict) -> dict:
             migrated_models["creator_image_models"] = [legacy_image_model]
         new["models"] = migrated_models
 
+    return new
+
+
+#: 旧的默认对话模型 key -> 新 key。这些 key 一开始由 model_name 自动生成，当时
+#: DeepSeek 侧确实叫 deepseek-v4-*；后来 model_name 换成真实模型名 deepseek-flash，
+#: key 没跟着改，于是留下一个既不对应任何模型、又让人误以为在跑另一个模型的空壳前缀。
+#: 映射是**无条件**的：key 只是「调用方引用名」，改写它不动用户的 provider/model_name/
+#: 参数，所以即便用户改过这些旧 key 条目，改名后依然指向同一个模型，不会丢配置。
+_LEGACY_DEFAULT_MODEL_KEYS: dict[str, str] = {
+    "deepseek-v4-pro": "deepseek-flash-max",
+    "deepseek-v4-flash-max": "deepseek-flash-max",
+    "deepseek-v4-flash-high": "deepseek-flash-high",
+    "deepseek-v4-flash-off": "deepseek-flash-off",
+}
+
+
+@Config.migration(from_version="0.6.0", to_version="0.7.0")
+def migrate_v6_to_v7(old: dict) -> dict:
+    """迁移 0.6.0 -> 0.7.0：默认对话模型 key 与真实模型名对齐。
+
+    - [[models.registry]] 里旧的 deepseek-v4-* key 改名为 deepseek-flash*；
+      已停用的 pro 条目并入 flash（两者本来就是同一模型名 + 同一 max 推理强度）。
+    - [models.assignments] 里引用旧 key 的角色同步改指新 key，避免出现
+      「引用了模型库里不存在的 key」而让整条角色降级。
+    """
+    new: dict[str, Any] = {"version": "0.7.0"}
+    for key, value in old.items():
+        if key in ("version", "models"):
+            continue
+        new[key] = value
+
+    models = old.get("models")
+    if not isinstance(models, dict):
+        return new
+
+    migrated_models: dict[str, Any] = {}
+    for name, value in models.items():
+        if name not in ("registry", "assignments"):
+            migrated_models[name] = value
+
+    registry = models.get("registry")
+    renamed: dict[str, str] = {}
+    seen_refs: set[str] = set()
+    migrated_registry: list[Any] = []
+    if isinstance(registry, list):
+        for entry in registry:
+            if not isinstance(entry, dict):
+                migrated_registry.append(entry)
+                continue
+            # 旧写法 key/description -> 新写法 model_ref/display_name。
+            # 两者都是纯改名：provider / model_name / 参数原样保留。
+            entry = dict(entry)
+            current = str(entry.pop("key", "") or entry.get("model_ref") or "").strip()
+            if "description" in entry and "display_name" not in entry:
+                entry["display_name"] = entry.pop("description")
+            target = _LEGACY_DEFAULT_MODEL_KEYS.get(current)
+            if target is not None:
+                # pro 与 flash-max 同为 model_name=deepseek-flash + max 推理，指向同一
+                # 新引用名；去重后只留一条，否则模型库里会出现两个同模型条目。
+                if target in seen_refs:
+                    renamed[current] = target
+                    continue
+                entry["model_ref"] = target
+                renamed[current] = target
+            else:
+                entry["model_ref"] = current
+            ref_now = str(entry.get("model_ref") or "").strip()
+            if ref_now in seen_refs:
+                continue
+            if ref_now:
+                seen_refs.add(ref_now)
+            migrated_registry.append(entry)
+    if migrated_registry:
+        migrated_models["registry"] = migrated_registry
+
+    assignments = models.get("assignments")
+    if isinstance(assignments, dict):
+        migrated_assignments: dict[str, Any] = {}
+        for role, value in assignments.items():
+            if isinstance(value, list):
+                migrated_assignments[role] = [
+                    renamed.get(str(item).strip(), item) for item in value
+                ]
+            else:
+                text = str(value or "").strip()
+                migrated_assignments[role] = renamed.get(text, value)
+        migrated_models["assignments"] = migrated_assignments
+
+    if migrated_models:
+        new["models"] = migrated_models
     return new

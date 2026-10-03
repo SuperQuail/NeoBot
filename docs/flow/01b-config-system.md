@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 528fe18
-verified_hash: 529e1cdbb4e3
+verified_against: 264696d
+verified_hash: 0f0c0a56fcc5
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -125,10 +125,10 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A["BotConfig｜bot.py:1632，实际类型是 EnhancedBotConfig｜:1969"] --> B["version: str = 0.6.0，metadata readonly｜:1635"]
-    A --> C["bot / chat / models / agent_model / willing / tts / plugins｜:1639-1645"]
-    A --> D["message / file_server / adapter / debug / standby / scheduled_task｜:1646-1651"]
-    A --> E["agent / web_search / billing / avatars｜:1652-1655"]
+    A["BotConfig｜bot.py:1651，实际类型是 EnhancedBotConfig｜:1981"] --> B["version: str = 0.7.0，metadata readonly｜:1654"]
+    A --> C["bot / chat / models / agent_model / willing / tts / plugins｜:1658-1664"]
+    A --> D["message / file_server / adapter / debug / standby / scheduled_task｜:1665-1670"]
+    A --> E["agent / web_search / billing / avatars｜:1671-1674"]
     C --> C1["chat 实际是 EnhancedChat｜:1658，共 77 个字段，基类 13 加增强 64"]
     C --> C2["models: registry 模型库 + assignments 调用方引用｜:601"]
     C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色｜:633"]
@@ -326,7 +326,7 @@ flowchart TD
 编号字段的真实语义：`resolve_agent_model_name`（`assembly/agents.py:38`）读
 `config.agent_model.〈角色〉` 得到 0-3 的编号，再经 `AGENT_ROLE_NAMES`
 （0→`primary_chat_model`、1→`agent_model_1`…）转成 `assignments` 里的角色名，
-最后查模型库拿 key。角色查不到就**回落到角色名本身**（`:62`），
+最后查模型库拿 model_ref。角色查不到就**回落到角色名本身**（`:62`），
 那是给尚未迁移的旧配置留的兼容口，面板上会看到模型名是一串角色名。
 </details>
 
@@ -387,7 +387,7 @@ flowchart TD
 |---|---|---|---|
 | `bootstrap._CONFIG_ERROR` | `_load_config_or_defaults` 捕获异常时写原因｜`__init__.py:553` | 下一次加载成功时清空｜`:563` | 非空即强制 `start_in_standby`｜`:698`，并写入待机原因文案｜`:703`；兜底配置不进复用缓存｜`:607` |
 | 磁盘 config.toml | 三个写入者（loader 补全 / chat_writer 定点 / 面板整份） | 用户手改或面板 TOML 模式 | 解析失败一律不改文件并抛 `ConfigLoadError`；写失败只有「文件原本不存在」是致命的 |
-| `version` 字段 | schema 默认 0.6.0；迁移链每步强制推进｜`manager.py:275` | 无 | 找不到迁移链：warning 后用旧数据继续，下次启动再试 |
+| `version` 字段 | schema 默认 0.7.0；迁移链每步强制推进｜`manager.py:275` | 无 | 找不到迁移链：warning 后用旧数据继续，下次启动再试 |
 | `ConfigProxy._config` | `build_config` 构造；`reload(new)` 原地替换｜`proxy.py:15` | 进程重启 | 兜底对象同样包成 ConfigProxy，否则面板与命令的重载入口会 AttributeError｜`__init__.py:562` |
 | `HotReloadRegistry._consumers` | `register`：同名忽略，先注册者胜｜`registry.py:146` | `unregister`（软重启前）｜`:156` | 一个都不命中 → 报告写「没有组件声明关心本次改动的配置项」｜`:96` |
 | `config.hot_reload.RULES` | 模块常量 + `register_rule` 追加覆盖 | 只有测试调 `unregister_rule` | 未登记路径默认「需要重启」，不会静默生效 |
