@@ -31,12 +31,13 @@ class ModelFinding:
     """一条模型配置缺失的事实。"""
 
     role: str
-    key: str
+    model_ref: str
     missing: tuple[str, ...]
 
     def describe(self) -> str:
-        if self.key:
-            prefix = f"模型 {self.key}（{self.role}）缺少: "
+        # 注意：这里打的是「引用名」，不是发给供应商的模型名。
+        if self.model_ref:
+            prefix = f"模型 {self.model_ref}（{self.role}）缺少: "
         else:
             prefix = f"{self.role}: "
         return prefix + "、".join(self.missing)

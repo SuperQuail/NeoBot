@@ -158,7 +158,7 @@ def _infer_missing_model_params(existing_data: dict[Any, Any]) -> list[str]:
     """R12：旧配置缺 enabled_params 时按“值 ≠ schema 默认值”推断一次并写回。
 
     只在配置文件里**没有** enabled_params 的模型条目上执行；推断结果直接写进待落盘的
-    原始数据（随后由 dataclass_to_toml 补全并原子写回），并登记模型 key 供面板提示
+    原始数据（随后由 dataclass_to_toml 补全并原子写回），并登记模型引用名供面板提示
     「已按旧配置推断，请复核」。
     """
     from neobot_app.config.model_params import infer_enabled_params, mark_inferred
@@ -178,11 +178,12 @@ def _infer_missing_model_params(existing_data: dict[Any, Any]) -> list[str]:
             continue
         inferred = infer_enabled_params(settings_raw)
         settings_raw["enabled_params"] = inferred
-        key = str(entry.get("key") or "").strip()
-        if key:
-            inferred_keys.append(key)
+        # 兼容两种写法：迁移前叫 key，迁移后叫 model_ref（都是「本机引用名」）。
+        model_ref = str(entry.get("model_ref") or entry.get("key") or "").strip()
+        if model_ref:
+            inferred_keys.append(model_ref)
         logger.info(
-            f"模型 {key or '?'} 的配置缺少 enabled_params，已按旧配置推断: "
+            f"模型 {model_ref or '?'} 的配置缺少 enabled_params，已按旧配置推断: "
             + (", ".join(inferred) if inferred else "（无可选参数需要启用）")
         )
     if inferred_keys:
@@ -337,18 +338,20 @@ class Config:
         )
         assignments = getattr(models_config, "assignments", None)
         if assignments is not None and hasattr(assignments, "items"):
-            for ref_role, ref_key in assignments.items():
-                if ref_key in library_keys:
+            for ref_role, ref_value in assignments.items():
+                if ref_value in library_keys:
                     continue
                 if not _feature_enabled(ref_role):
-                    logger.info(f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_key}")
+                    logger.info(
+                        f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_value}"
+                    )
                     continue
                 findings.append(
                     ModelFinding(
                         role=ref_role,
-                        key=str(ref_key),
+                        model_ref=str(ref_value),
                         missing=(
-                            f"调用方 {ref_role} 引用了模型库中不存在的 key: {ref_key}",
+                            f"调用方 {ref_role} 引用了模型库中不存在的引用名: {ref_value}",
                         ),
                     )
                 )
@@ -361,9 +364,9 @@ class Config:
                 (item.name, getattr(models_config, item.name))
                 for item in fields(models_config)
                 if is_dataclass(getattr(models_config, item.name))
-            ]
+            ]  # 兼容「按角色字段直接持有模型」的旧结构，与模型库无关
 
-        registered_keys: set[str] = set()
+        registered_refs: set[str] = set()
         for role, model_config in registrations:
             if not is_dataclass(model_config):
                 continue
@@ -371,24 +374,27 @@ class Config:
                 logger.info(f"{role} 对应功能未启用，跳过注册与校验")
                 continue
 
-            key = str(getattr(model_config, "key", "") or "").strip()
-            if not key:
+            # model_ref 是本机引用名（注册表键），model_name 才是发给供应商的模型标识。
+            model_ref = str(getattr(model_config, "model_ref", "") or "").strip()
+            if not model_ref:
                 findings.append(
                     ModelFinding(
                         role=role,
-                        key="",
-                        missing=("引用的模型缺少 key（模型库条目的 key 不能为空）",),
+                        model_ref="",
+                        missing=(
+                            "引用的模型缺少 model_ref（模型库条目的引用名不能为空）",
+                        ),
                     )
                 )
                 continue
-            if key in registered_keys:
+            if model_ref in registered_refs:
                 continue
 
             provider_name = getattr(model_config, "provider", "").strip()
             model_name = getattr(model_config, "model_name", "").strip()
-            description = getattr(model_config, "description", key).strip()
-            if role == "primary_chat_model" and "模型编号0" not in description:
-                description = f"{description}（Agent模型编号0）"
+            display_name = getattr(model_config, "display_name", model_ref).strip()
+            if role == "primary_chat_model" and "模型编号0" not in display_name:
+                display_name = f"{display_name}（Agent模型编号0）"
 
             missing: list[str] = []
             if not provider_name:
@@ -406,10 +412,10 @@ class Config:
 
             if missing:
                 findings.append(
-                    ModelFinding(role=role, key=key, missing=tuple(missing))
+                    ModelFinding(role=role, model_ref=model_ref, missing=tuple(missing))
                 )
                 continue
-            registered_keys.add(key)
+            registered_refs.add(model_ref)
 
             pricing_config = getattr(model_config, "pricing", None)
             settings_config = getattr(model_config, "settings", None)
@@ -433,7 +439,7 @@ class Config:
             # 只下发 enabled_params 里、且 scope 匹配的可选参数；其余值原地保留在配置里
             enabled_params = _resolve_enabled_params(
                 settings_config,
-                key=key,
+                key=model_ref,
                 provider_name=provider_name,
                 model_type=model_type_value,
             )
@@ -452,7 +458,7 @@ class Config:
                 presence_penalty=_optional("presence_penalty", None),
                 extra_body=_build_runtime_extra_body(
                     settings_config,
-                    key=key,
+                    key=model_ref,
                     provider_name=provider_name,
                     model_type=model_type_value,
                 ),
@@ -463,8 +469,8 @@ class Config:
             )
             pending.append(
                 (
-                    key,
-                    description,
+                    model_ref,
+                    display_name,
                     provider_name,
                     model_name,
                     platform_config,
@@ -497,8 +503,8 @@ class Config:
 
         registered_count = 0
         for (
-            name,
-            description,
+            model_ref,
+            display_name,
             provider_name,
             model_name,
             platform_config,
@@ -512,8 +518,8 @@ class Config:
         ) in pending:
             registry.register(
                 RegisteredModel(
-                    name=name,
-                    description=description,
+                    model_ref=model_ref,
+                    display_name=display_name,
                     provider_name=provider_name,
                     model_name=model_name,
                     base_url=platform_config.url,
@@ -528,8 +534,9 @@ class Config:
                 )
             )
             registered_count += 1
+            # 左边是引用名（本机用），右边才是发出去的模型名 —— 排查时别把两者看混。
             logger.info(
-                f"已注册模型: {name} -> {provider_name}/{model_name}"
+                f"已注册模型: {model_ref} -> {provider_name}/{model_name}"
             )
 
         logger.info(f"模型注册完成，共注册 {registered_count} 个模型")

@@ -176,7 +176,7 @@ class CreatorImageService:
             {
                 "name": name,
                 "index": index,
-                "description": self._models[name].description,
+                "display_name": self._models[name].display_name,
                 "provider": self._models[name].provider_name,
                 "model_name": self._models[name].model_name,
                 "default": name == self._default_model_name,
@@ -201,7 +201,7 @@ class CreatorImageService:
         for name in self._model_names:
             model = self._models[name]
             candidates = {
-                str(model.description).casefold(),
+                str(model.display_name).casefold(),
                 str(model.provider_name).casefold(),
                 str(model.model_name).casefold(),
             }
@@ -212,7 +212,7 @@ class CreatorImageService:
             if lowered in str(model.model_name).casefold() or lowered in str(model.provider_name).casefold():
                 return name
         available = "、".join(
-            f"{index}:{self._models[name].description or name}"
+            f"{index}:{self._models[name].display_name or name}"
             for index, name in enumerate(self._model_names)
         )
         raise ValueError(f"未知生图模型选择 {selector!r}；可用: {available}")
