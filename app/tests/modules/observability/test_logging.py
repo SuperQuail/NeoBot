@@ -103,14 +103,34 @@ def test_file_sink_output_is_redacted(tmp_path) -> None:
 
 
 def test_console_sink_output_is_redacted(capsys) -> None:
-    """控制台 sink 也必须脱敏：stderr 会被容器/重定向落到日志文件。"""
+    """控制台 sink 也必须脱敏：stdout 会被容器/重定向落到日志文件。"""
     configure_loguru()
     try:
         loguru.logger.error("认证失败 client_secret=abcdef123456")
     finally:
         loguru.logger.remove()
 
-    assert "abcdef123456" not in capsys.readouterr().err
+    assert "abcdef123456" not in capsys.readouterr().out
+
+
+def test_console_sink_writes_to_stdout_not_stderr(capsys) -> None:
+    """控制台日志走 stdout。
+
+    宿主（容器日志、进程管理器、NapCatQQ Desktop 这类把实例输出重定向到日志
+    文件再 tail 的前端）通常只收集一路流；stderr 混在其中的话，行会被归到
+    「错误通道」、级别色也会被带偏。这里锁住「普通日志只出现在 stdout」。
+    """
+    configure_loguru()
+    try:
+        loguru.logger.info("启动完成")
+        loguru.logger.warning("配置缺失")
+    finally:
+        loguru.logger.remove()
+
+    captured = capsys.readouterr()
+    assert "启动完成" in captured.out
+    assert "配置缺失" in captured.out
+    assert captured.err == "", "控制台日志不该再往 stderr 写"
 
 
 def test_redacting_filter_redacts_traceback_in_exception_records() -> None:

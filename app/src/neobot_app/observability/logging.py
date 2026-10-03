@@ -247,8 +247,13 @@ def _file_sink_format(record: dict[str, Any]) -> str:
 def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = False) -> None:
     """配置 Loguru 输出格式。
 
-    移除默认 handler，注册 stderr 和可选的文件 handler。
+    移除默认 handler，注册 stdout 和可选的文件 handler。
     同时拦截 stdlib logging 调用，统一路由到 loguru。
+
+    控制台 sink 走 **stdout** 而不是 stderr：宿主（容器日志、进程管理器、
+    NapCatQQ Desktop 这类把实例输出重定向到日志文件再 tail 的前端）通常只
+    收集一路流；stderr 混在其中的话，行会被当成「错误通道」，颜色与级别
+    归类的语义也会被带偏。真正的致命错误仍由 CLI 直接 `print(file=sys.stderr)`。
     """
     loguru.logger.remove()
     loguru.logger.configure(extra={"module_name": "root"})
@@ -264,11 +269,11 @@ def configure_loguru(log_dir: Path | None = None, *, runtime_events: bool = Fals
     )
 
     loguru.logger.add(
-        sys.stderr,
+        sys.stdout,
         format=console_format,
         level="DEBUG",
         colorize=True,
-        # 控制台此前没有挂脱敏 filter：密钥会以明文进 stderr（容器/重定向日志
+        # 控制台此前没有挂脱敏 filter：密钥会以明文进控制台（容器/重定向日志
         # 同样会落盘）。挂上后 record 被改写，后续 sink 也拿到脱敏文本。
         filter=_redacting_filter,
     )
