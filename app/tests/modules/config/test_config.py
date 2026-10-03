@@ -256,8 +256,8 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
         "[chat]\n"
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-flash"\n'
-        'description = "主对话模型（Agent模型编号0）"\n'
+        'model_ref = "deepseek-flash"\n'
+        'display_name = "主对话模型（Agent模型编号0）"\n'
         'provider = "DeepSeek"\n'
         'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
@@ -265,22 +265,22 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
         'deepseek_reasoning_effort = "high"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-flash-max"\n'
-        'description = "Agent模型编号1"\n'
+        'model_ref = "deepseek-flash-max"\n'
+        'display_name = "Agent模型编号1"\n'
         'provider = "DeepSeek"\n'
         'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
         'deepseek_reasoning_effort = "max"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-flash-high"\n'
-        'description = "Agent模型编号2"\n'
+        'model_ref = "deepseek-flash-high"\n'
+        'display_name = "Agent模型编号2"\n'
         'provider = "DeepSeek"\n'
         'model_name = "deepseek-flash"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-flash-off"\n'
-        'description = "Agent模型编号3"\n'
+        'model_ref = "deepseek-flash-off"\n'
+        'display_name = "Agent模型编号3"\n'
         'provider = "DeepSeek"\n'
         'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
@@ -307,7 +307,7 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
         assert registered.model_name == model_name
         assert registered.base_url == _DEEPSEEK_KEYS["DeepSeek_URL"]
         assert registered.api_key == _DEEPSEEK_KEYS["DeepSeek_APIKey"]
-    assert "Agent模型编号0" in registry.get("deepseek-flash").description
+    assert "Agent模型编号0" in registry.get("deepseek-flash").display_name
     primary_extra = registry.get("deepseek-flash").settings.extra_body
     assert primary_extra["__deepseek_reasoning_effort__"] == "high"
     assert primary_extra["__deepseek_random_thinking_probability__"] == 1.0
@@ -347,19 +347,19 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
         "creator_image_models = []\n"
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-flash"\n'
+        'model_ref = "deepseek-flash"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-flash-max"\n'
+        'model_ref = "deepseek-flash-max"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-flash-high"\n'
+        'model_ref = "deepseek-flash-high"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-flash-off"\n'
+        'model_ref = "deepseek-flash-off"\n'
         'provider = ""\n'
         'model_name = ""\n',
         encoding="utf-8",
@@ -522,21 +522,21 @@ def test_migration_v6_to_v7_renames_legacy_default_model_keys(monkeypatch, tmp_p
 
     # Assert
     assert config_obj.version == "0.7.0"
-    keys = [item.key for item in config_obj.models.registry]
+    refs = [item.model_ref for item in config_obj.models.registry]
     # pro 与 flash-max 是同一模型（同 model_name + 同 max 推理），合并后不留重复条目
-    assert keys == ["deepseek-flash-max", "deepseek-flash-high", "deepseek-flash-off"]
-    # fixture 只定义了对话模型，vision/tts/image 的 key 本来就不在库里；
+    assert refs == ["deepseek-flash-max", "deepseek-flash-high", "deepseek-flash-off"]
+    # fixture 只定义了对话模型，vision/tts/image 的引用名本来就不在库里；
     # 这里要证的是「改名后对话角色不悬空」，而不是补齐整个模型库。
-    library_keys = {item.key for item in config_obj.models.registry}
+    library_refs = {item.model_ref for item in config_obj.models.registry}
     assignments = config_obj.models.assignments
-    chat_keys = [
+    chat_refs = [
         assignments.primary_chat_model,
         assignments.agent_model_1,
         assignments.agent_model_2,
         assignments.agent_model_3,
     ]
-    assert all(key in library_keys for key in chat_keys)
-    assert "deepseek-v4-pro" not in config_obj.models.missing_assignment_keys()
+    assert all(ref in library_refs for ref in chat_refs)
+    assert "deepseek-v4-pro" not in config_obj.models.missing_assignment_refs()
     assert assignments.primary_chat_model == "deepseek-flash-max"
     assert assignments.agent_model_1 == "deepseek-flash-max"
     assert assignments.agent_model_2 == "deepseek-flash-high"
@@ -589,7 +589,7 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
     assert image_keys == ["black-forest-labs-FLUX.1-schnell"]
     image_model = config_obj.models.get(image_keys[0])
     assert image_model is not None
-    assert image_model.description == "旧生图模型"
+    assert image_model.display_name == "旧生图模型"
     assert image_model.model_name == "black-forest-labs/FLUX.1-schnell"
     raw = cfg_path.read_text(encoding="utf-8")
     assert "[console]" not in raw

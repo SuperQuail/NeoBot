@@ -20,8 +20,8 @@ from neobot_app.config.availability import (
 )
 
 
-def _finding(role: str, key: str = "some-model", missing: tuple[str, ...] = ("平台 X_APIKey 配置",)):
-    return ModelFinding(role=role, key=key, missing=missing)
+def _finding(role: str, model_ref: str = "some-model", missing: tuple[str, ...] = ("平台 X_APIKey 配置",)):
+    return ModelFinding(role=role, model_ref=model_ref, missing=missing)
 
 
 # ── 默认策略：保守 ──────────────────────────────────────────────────
@@ -75,11 +75,11 @@ def test_degrade_everything_never_fatal(role: str) -> None:
 
 
 def test_degrade_everything_preserves_all_findings() -> None:
-    findings = [_finding("primary_chat_model", key="a"), _finding("tts_model", key="b")]
+    findings = [_finding("primary_chat_model", model_ref="a"), _finding("tts_model", model_ref="b")]
 
     report = DegradeEverythingPolicy().classify(findings)
 
-    assert [item.key for item in report.degraded] == ["a", "b"]
+    assert [item.model_ref for item in report.degraded] == ["a", "b"]
 
 
 # ── 文案 ────────────────────────────────────────────────────────────
@@ -88,16 +88,16 @@ def test_degrade_everything_preserves_all_findings() -> None:
 def test_fatal_message_lists_every_finding() -> None:
     report = ModelAvailabilityPolicy().classify(
         [
-            _finding("primary_chat_model", key="deepseek-v4-pro", missing=("平台 DeepSeek_APIKey 配置",)),
-            _finding("agent_model_1", key="deepseek-v4-flash", missing=("provider 配置", "model_name 配置")),
+            _finding("primary_chat_model", model_ref="deepseek-flash", missing=("平台 DeepSeek_APIKey 配置",)),
+            _finding("agent_model_1", model_ref="deepseek-flash-high", missing=("provider 配置", "model_name 配置")),
         ]
     )
 
     message = report.fatal_message()
 
     assert "配置校验失败" in message
-    assert "模型 deepseek-v4-pro（primary_chat_model）缺少: 平台 DeepSeek_APIKey 配置" in message
-    assert "模型 deepseek-v4-flash（agent_model_1）缺少: provider 配置、model_name 配置" in message
+    assert "模型 deepseek-flash（primary_chat_model）缺少: 平台 DeepSeek_APIKey 配置" in message
+    assert "模型 deepseek-flash-high（agent_model_1）缺少: provider 配置、model_name 配置" in message
 
 
 def test_fatal_message_is_empty_without_fatal_findings() -> None:
@@ -106,7 +106,7 @@ def test_fatal_message_is_empty_without_fatal_findings() -> None:
 
 def test_degraded_messages_are_per_finding() -> None:
     report = ModelAvailabilityPolicy().classify(
-        [_finding("vision_model", key="qwen3-vl"), _finding("tts_model", key="cosyvoice2")]
+        [_finding("vision_model", model_ref="qwen3-vl"), _finding("tts_model", model_ref="cosyvoice2")]
     )
 
     messages = report.degraded_messages()
@@ -116,12 +116,12 @@ def test_degraded_messages_are_per_finding() -> None:
     assert messages[1].startswith("模型 cosyvoice2（tts_model）缺少: ")
 
 
-def test_finding_without_key_describes_role_only() -> None:
-    """引用缺失 key 的场景没有具体模型 key，文案不能出现空的「模型 （role）」。"""
+def test_finding_without_ref_describes_role_only() -> None:
+    """引用名缺失的场景没有具体引用名，文案不能出现空的「模型 （role）」。"""
     text = ModelFinding(
         role="primary_chat_model",
-        key="",
-        missing=("引用的模型缺少 key（模型库条目的 key 不能为空）",),
+        model_ref="",
+        missing=("引用的模型缺少 model_ref（模型库条目的引用名不能为空）",),
     ).describe()
 
     assert "模型 （" not in text

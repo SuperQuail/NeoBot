@@ -182,7 +182,7 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     raw = {
         "registry": [
             {
-                "key": "deepseek-flash",
+                "model_ref": "deepseek-flash",
                 "provider": "DeepSeek",
                 "model_name": "deepseek-chat",
                 "settings": {
@@ -205,9 +205,9 @@ def test_dict_to_dataclass_nested_structure_and_subclass_detection():
     assert primary.settings.deepseek_thinking_mode == "random"
     assert primary.settings.deepseek_reasoning_effort == "max"
     assert primary.pricing.input_price_per_mtokens == 0.0
-    # 调用方只引用 key，未在 registry 里出现的默认条目不应被隐式保留
+    # 调用方只引用 model_ref，未在 registry 里出现的默认条目不应被隐式保留
     assert models.assignments.primary_chat_model == "deepseek-flash"
-    assert [item.key for item in models.registry] == ["deepseek-flash"]
+    assert [item.model_ref for item in models.registry] == ["deepseek-flash"]
 
 
 def test_toml_placeholders_are_type_correct_for_optional_collections():

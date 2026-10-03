@@ -153,7 +153,7 @@ def test_form_save_keeps_unknown_keys_inside_table_arrays(tmp_path: Path) -> Non
     config_path.write_text(
         'version = "0.6.0"\n'
         "\n[[models.registry]]\n"
-        'key = "m1"\n'
+        'model_ref = "m1"\n'
         'model_type = "chat"\n'
         'provider = "DeepSeek"\n'
         'model_name = "deepseek-chat"\n'

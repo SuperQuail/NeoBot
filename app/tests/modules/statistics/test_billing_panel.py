@@ -94,8 +94,8 @@ def restore_registry():
 def register_model(key: str, *, billing_script: str = "", billing_config: dict | None = None) -> None:
     model_registry.register(
         RegisteredModel(
-            name=key,
-            description=key,
+            model_ref=key,
+            display_name=key,
             provider_name="DeepSeek",
             model_name="deepseek-flash",
             base_url="https://api.deepseek.com/v1",

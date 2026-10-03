@@ -289,7 +289,7 @@ def test_anthropic_invalid_data_url_is_validation_not_capability_failure():
 @pytest.mark.parametrize("provider_name,provider_class", [("OpenAI", OpenAIProvider), ("DeepSeek", DeepSeekOfficialProvider), ("Anthropic", AnthropicProvider)])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_registration_propagates_capability(provider_name, provider_class, enabled):
-    registered = RegisteredModel(name="main", description="test", provider_name=provider_name,
+    registered = RegisteredModel(model_ref="main", display_name="test", provider_name=provider_name,
                                  model_name="model", base_url="https://example.test", api_key="key", native_vision=enabled)
     provider = registered.create_provider()
     assert isinstance(provider, provider_class)

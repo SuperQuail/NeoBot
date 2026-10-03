@@ -79,16 +79,16 @@ _LEGACY_ROLE_DESCRIPTIONS = {
 
 
 def _default_model_library_map() -> dict[str, dict[str, Any]]:
-    """默认模型库：key -> 条目字典（迁移时用于补齐旧配置缺失的角色）。"""
+    """默认模型库：引用名 -> 条目字典（迁移时用于补齐旧配置缺失的角色）。"""
     from dataclasses import asdict
 
     from neobot_app.config.schemas.bot import _default_model_library
 
-    return {item.key: asdict(item) for item in _default_model_library()}
+    return {item.model_ref: asdict(item) for item in _default_model_library()}
 
 
 def _default_role_assignments() -> dict[str, str]:
-    """默认调用方引用：角色 -> 默认模型 key。"""
+    """默认调用方引用：角色 -> 默认模型条目引用名。"""
     from neobot_app.config.schemas.bot import ModelAssignments
 
     return dict(ModelAssignments().items())
@@ -246,28 +246,35 @@ def migrate_v6_to_v7(old: dict) -> dict:
 
     registry = models.get("registry")
     renamed: dict[str, str] = {}
-    seen_keys: set[str] = set()
+    seen_refs: set[str] = set()
     migrated_registry: list[Any] = []
     if isinstance(registry, list):
         for entry in registry:
             if not isinstance(entry, dict):
                 migrated_registry.append(entry)
                 continue
-            current = str(entry.get("key") or "").strip()
+            # 旧写法 key/description -> 新写法 model_ref/display_name。
+            # 两者都是纯改名：provider / model_name / 参数原样保留。
+            entry = dict(entry)
+            current = str(entry.pop("key", "") or entry.get("model_ref") or "").strip()
+            if "description" in entry and "display_name" not in entry:
+                entry["display_name"] = entry.pop("description")
             target = _LEGACY_DEFAULT_MODEL_KEYS.get(current)
             if target is not None:
                 # pro 与 flash-max 同为 model_name=deepseek-flash + max 推理，指向同一
-                # 新 key；去重后只留一条，否则模型库里会出现两个同名条目。
-                if target in seen_keys:
+                # 新引用名；去重后只留一条，否则模型库里会出现两个同模型条目。
+                if target in seen_refs:
                     renamed[current] = target
                     continue
-                entry = {**entry, "key": target}
+                entry["model_ref"] = target
                 renamed[current] = target
-            key_now = str(entry.get("key") or "").strip()
-            if key_now in seen_keys:
+            else:
+                entry["model_ref"] = current
+            ref_now = str(entry.get("model_ref") or "").strip()
+            if ref_now in seen_refs:
                 continue
-            if key_now:
-                seen_keys.add(key_now)
+            if ref_now:
+                seen_refs.add(ref_now)
             migrated_registry.append(entry)
     if migrated_registry:
         migrated_models["registry"] = migrated_registry

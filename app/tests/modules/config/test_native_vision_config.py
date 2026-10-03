@@ -179,7 +179,7 @@ def test_native_vision_image_count_toml_roundtrip(count):
 def test_native_vision_toml_conversion_roundtrip():
     data = tomlkit.parse(
         '[[models.registry]]\n'
-        'key = "deepseek-flash"\n'
+        'model_ref = "deepseek-flash"\n'
         'model_name = "deepseek-v4-flash-vision-exp"\n'
         'native_vision = true\n'
     ).unwrap()
@@ -199,7 +199,7 @@ def test_native_vision_toml_load_roundtrip(monkeypatch, tmp_path):
     # 只保留一个模型库条目时，所有角色都指向它（避免引用不存在的 key）
     path.write_text(
         '[[models.registry]]\n'
-        'key = "deepseek-flash"\n'
+        'model_ref = "deepseek-flash"\n'
         'model_name = "deepseek-v4-flash-vision-exp"\n'
         'native_vision = true\n'
         '\n'

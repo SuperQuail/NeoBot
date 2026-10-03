@@ -15,8 +15,8 @@ def _make_service(names: list[str]) -> CreatorImageService:
     service._models = {}
     for index, name in enumerate(names):
         service._models[name] = RegisteredModel(
-            name=name,
-            description=f"模型{index}",
+            model_ref=name,
+            display_name=f"模型{index}",
             provider_name=f"Provider{index}",
             model_name=f"vendor/model-{index}",
             base_url="https://example.com",
@@ -59,8 +59,8 @@ def test_available_models_lists_default() -> None:
 def test_register_model_accepts_second_image_model() -> None:
     register_model(
         RegisteredModel(
-            name="creator_image_models_1",
-            description="备用生图模型",
+            model_ref="creator_image_models_1",
+            display_name="备用生图模型",
             provider_name="SiliconFlow",
             model_name="black-forest-labs/FLUX.1-dev",
             base_url="https://api.siliconflow.cn/v1",
@@ -72,4 +72,4 @@ def test_register_model_accepts_second_image_model() -> None:
     )
     from neobot_chat import get_registered_model
 
-    assert get_registered_model("creator_image_models_1").description == "备用生图模型"
+    assert get_registered_model("creator_image_models_1").display_name == "备用生图模型"
