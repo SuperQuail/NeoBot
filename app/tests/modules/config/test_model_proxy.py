@@ -60,7 +60,7 @@ def test_register_models_passes_proxy_flag(monkeypatch) -> None:
     from neobot_app.config.loader.manager import Config
 
     config = BotConfig()
-    entry = config.models.get("deepseek-v4-pro")
+    entry = config.models.get("deepseek-flash")
     assert entry is not None
     entry.use_system_proxy = True
     monkeypatch.setenv("DeepSeek_URL", "https://api.deepseek.com")
@@ -68,6 +68,6 @@ def test_register_models_passes_proxy_flag(monkeypatch) -> None:
 
     Config.register_models(config)
 
-    registered = get_model_registry().get("deepseek-v4-pro")
+    registered = get_model_registry().get("deepseek-flash")
     assert registered.use_system_proxy is True
     assert registered.create_provider().use_system_proxy is True

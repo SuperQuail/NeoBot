@@ -362,9 +362,12 @@ ModelRegistration = ModelDefinition
 
 def _default_primary_chat_model() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-pro",
+        # key 与真实模型名对齐：DeepSeek 侧只有 deepseek-flash，旧 key 里的 "v4-pro"
+        # 是历史遗留（早期 model_name 确实叫 deepseek-v4-*），它既不存在的模型、
+        # 又让「引用的 key」看起来像另一个模型。只有 flash，不再保留 pro 条目。
+        key="deepseek-flash",
         model_type="chat",
-        description="主对话模型（Agent模型编号0）",
+        description="主对话模型（Agent模型编号0，deepseek-flash max 推理）",
         provider="DeepSeek",
         model_name="deepseek-flash",
         native_vision=True,
@@ -388,7 +391,7 @@ def _default_primary_chat_model() -> "ModelDefinition":
 
 def _default_agent_model_1() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-max",
+        key="deepseek-flash-max",
         model_type="chat",
         description="Agent模型编号1：deepseek-flash max 推理模式",
         provider="DeepSeek",
@@ -414,7 +417,7 @@ def _default_agent_model_1() -> "ModelDefinition":
 
 def _default_agent_model_2() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-high",
+        key="deepseek-flash-high",
         model_type="chat",
         description="Agent模型编号2：deepseek-flash high 推理模式",
         provider="DeepSeek",
@@ -440,7 +443,7 @@ def _default_agent_model_2() -> "ModelDefinition":
 
 def _default_agent_model_3() -> "ModelDefinition":
     return ModelDefinition(
-        key="deepseek-v4-flash-off",
+        key="deepseek-flash-off",
         model_type="chat",
         description="Agent模型编号3：deepseek-flash 非推理模式",
         provider="DeepSeek",
@@ -540,19 +543,19 @@ class ModelAssignments:
     """各调用方引用的模型 key（在模型库 [models.registry] 中定义）。"""
 
     primary_chat_model: str = field(
-        default="deepseek-v4-pro",
+        default="deepseek-flash",
         metadata={"description": "Agent模型编号0（主对话模型）引用的模型 key"},
     )
     agent_model_1: str = field(
-        default="deepseek-v4-flash-max",
+        default="deepseek-flash-max",
         metadata={"description": "Agent模型编号1引用的模型 key"},
     )
     agent_model_2: str = field(
-        default="deepseek-v4-flash-high",
+        default="deepseek-flash-high",
         metadata={"description": "Agent模型编号2引用的模型 key"},
     )
     agent_model_3: str = field(
-        default="deepseek-v4-flash-off",
+        default="deepseek-flash-off",
         metadata={"description": "Agent模型编号3引用的模型 key"},
     )
     vision_model: str = field(
@@ -1649,7 +1652,7 @@ class BotConfig:
     """机器人主配置。"""
 
     version: str = field(
-        default="0.6.0",
+        default="0.7.0",
         metadata={"description": "配置文件版本（由程序维护，请勿手动修改）", "readonly": True},
     )
     bot: Bot = field(default_factory=Bot)

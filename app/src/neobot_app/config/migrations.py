@@ -205,3 +205,86 @@ def migrate_v4_to_v5(old: dict) -> dict:
         new["models"] = migrated_models
 
     return new
+
+
+#: 旧的默认对话模型 key -> 新 key。这些 key 一开始由 model_name 自动生成，当时
+#: DeepSeek 侧确实叫 deepseek-v4-*；后来 model_name 换成真实模型名 deepseek-flash，
+#: key 没跟着改，于是留下一个既不对应任何模型、又让人误以为在跑另一个模型的空壳前缀。
+#: 映射是**无条件**的：key 只是「调用方引用名」，改写它不动用户的 provider/model_name/
+#: 参数，所以即便用户改过这些旧 key 条目，改名后依然指向同一个模型，不会丢配置。
+_LEGACY_DEFAULT_MODEL_KEYS: dict[str, str] = {
+    "deepseek-v4-pro": "deepseek-flash-max",
+    "deepseek-v4-flash-max": "deepseek-flash-max",
+    "deepseek-v4-flash-high": "deepseek-flash-high",
+    "deepseek-v4-flash-off": "deepseek-flash-off",
+}
+
+
+@Config.migration(from_version="0.6.0", to_version="0.7.0")
+def migrate_v6_to_v7(old: dict) -> dict:
+    """迁移 0.6.0 -> 0.7.0：默认对话模型 key 与真实模型名对齐。
+
+    - [[models.registry]] 里旧的 deepseek-v4-* key 改名为 deepseek-flash*；
+      已停用的 pro 条目并入 flash（两者本来就是同一模型名 + 同一 max 推理强度）。
+    - [models.assignments] 里引用旧 key 的角色同步改指新 key，避免出现
+      「引用了模型库里不存在的 key」而让整条角色降级。
+    """
+    new: dict[str, Any] = {"version": "0.7.0"}
+    for key, value in old.items():
+        if key in ("version", "models"):
+            continue
+        new[key] = value
+
+    models = old.get("models")
+    if not isinstance(models, dict):
+        return new
+
+    migrated_models: dict[str, Any] = {}
+    for name, value in models.items():
+        if name not in ("registry", "assignments"):
+            migrated_models[name] = value
+
+    registry = models.get("registry")
+    renamed: dict[str, str] = {}
+    seen_keys: set[str] = set()
+    migrated_registry: list[Any] = []
+    if isinstance(registry, list):
+        for entry in registry:
+            if not isinstance(entry, dict):
+                migrated_registry.append(entry)
+                continue
+            current = str(entry.get("key") or "").strip()
+            target = _LEGACY_DEFAULT_MODEL_KEYS.get(current)
+            if target is not None:
+                # pro 与 flash-max 同为 model_name=deepseek-flash + max 推理，指向同一
+                # 新 key；去重后只留一条，否则模型库里会出现两个同名条目。
+                if target in seen_keys:
+                    renamed[current] = target
+                    continue
+                entry = {**entry, "key": target}
+                renamed[current] = target
+            key_now = str(entry.get("key") or "").strip()
+            if key_now in seen_keys:
+                continue
+            if key_now:
+                seen_keys.add(key_now)
+            migrated_registry.append(entry)
+    if migrated_registry:
+        migrated_models["registry"] = migrated_registry
+
+    assignments = models.get("assignments")
+    if isinstance(assignments, dict):
+        migrated_assignments: dict[str, Any] = {}
+        for role, value in assignments.items():
+            if isinstance(value, list):
+                migrated_assignments[role] = [
+                    renamed.get(str(item).strip(), item) for item in value
+                ]
+            else:
+                text = str(value or "").strip()
+                migrated_assignments[role] = renamed.get(text, value)
+        migrated_models["assignments"] = migrated_assignments
+
+    if migrated_models:
+        new["models"] = migrated_models
+    return new

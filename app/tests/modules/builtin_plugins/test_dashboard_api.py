@@ -745,7 +745,7 @@ async def test_models_view_exposes_options_and_proxy_flag(panel) -> None:
     payload = response.json()
     assert "DeepSeek" in payload["provider_options"]
     assert isinstance(payload["model_name_options"], list)
-    entry = next(item for item in payload["library"] if item["key"] == "deepseek-v4-pro")
+    entry = next(item for item in payload["library"] if item["key"] == "deepseek-flash")
     assert entry["use_system_proxy"] is False
     assert entry["entry"]["use_system_proxy"] is False
 
@@ -765,7 +765,7 @@ async def test_models_test_endpoint_reports_missing_credentials(panel) -> None:
         missing = await client.post(
             base + "/api/config/models/test",
             headers={"X-Token": token, "X-CSRF-Token": csrf},
-            json={"key": "deepseek-v4-pro"},
+            json={"key": "deepseek-flash"},
         )
         unknown = await client.post(
             base + "/api/config/models/test",

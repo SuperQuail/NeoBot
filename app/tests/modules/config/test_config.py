@@ -111,10 +111,10 @@ def test_load_missing_only_optional_platform_keys_succeeds(monkeypatch, tmp_path
 
     assert config_obj.bot.account == 10001
     registry = get_model_registry()
-    assert "deepseek-v4-pro" in registry.names
-    assert "deepseek-v4-flash-max" in registry.names
-    assert "deepseek-v4-flash-high" in registry.names
-    assert "deepseek-v4-flash-off" in registry.names
+    assert "deepseek-flash" in registry.names
+    assert "deepseek-flash-max" in registry.names
+    assert "deepseek-flash-high" in registry.names
+    assert "deepseek-flash-off" in registry.names
     assert "qwen3-vl-8b" not in registry.names
     assert "cosyvoice2" not in registry.names
     assert "flux-schnell" not in registry.names
@@ -256,33 +256,33 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
         "[chat]\n"
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-v4-pro"\n'
+        'key = "deepseek-flash"\n'
         'description = "主对话模型（Agent模型编号0）"\n'
         'provider = "DeepSeek"\n'
-        'model_name = "deepseek-v4-pro"\n'
+        'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
         "deepseek_random_thinking_probability = 2.5\n"
         'deepseek_reasoning_effort = "high"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-max"\n'
+        'key = "deepseek-flash-max"\n'
         'description = "Agent模型编号1"\n'
         'provider = "DeepSeek"\n'
-        'model_name = "deepseek-v4-flash"\n'
+        'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
         'deepseek_reasoning_effort = "max"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-high"\n'
+        'key = "deepseek-flash-high"\n'
         'description = "Agent模型编号2"\n'
         'provider = "DeepSeek"\n'
-        'model_name = "deepseek-v4-flash"\n'
+        'model_name = "deepseek-flash"\n'
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-off"\n'
+        'key = "deepseek-flash-off"\n'
         'description = "Agent模型编号3"\n'
         'provider = "DeepSeek"\n'
-        'model_name = "deepseek-v4-flash"\n'
+        'model_name = "deepseek-flash"\n'
         "[models.registry.settings]\n"
         'deepseek_thinking_mode = "disabled"\n',
         encoding="utf-8",
@@ -295,10 +295,10 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
     assert config_obj.bot.account == 10001
     registry = get_model_registry()
     expected_models = {
-        "deepseek-v4-pro": "deepseek-v4-pro",
-        "deepseek-v4-flash-max": "deepseek-v4-flash",
-        "deepseek-v4-flash-high": "deepseek-v4-flash",
-        "deepseek-v4-flash-off": "deepseek-v4-flash",
+        "deepseek-flash": "deepseek-flash",
+        "deepseek-flash-max": "deepseek-flash",
+        "deepseek-flash-high": "deepseek-flash",
+        "deepseek-flash-off": "deepseek-flash",
     }
     assert set(registry.names) == set(expected_models)
     for key, model_name in expected_models.items():
@@ -307,24 +307,24 @@ def test_load_only_deepseek_key_registers_chat_models_with_details(monkeypatch, 
         assert registered.model_name == model_name
         assert registered.base_url == _DEEPSEEK_KEYS["DeepSeek_URL"]
         assert registered.api_key == _DEEPSEEK_KEYS["DeepSeek_APIKey"]
-    assert "Agent模型编号0" in registry.get("deepseek-v4-pro").description
-    primary_extra = registry.get("deepseek-v4-pro").settings.extra_body
+    assert "Agent模型编号0" in registry.get("deepseek-flash").description
+    primary_extra = registry.get("deepseek-flash").settings.extra_body
     assert primary_extra["__deepseek_reasoning_effort__"] == "high"
     assert primary_extra["__deepseek_random_thinking_probability__"] == 1.0
     assert primary_extra["__deepseek_thinking_mode__"] == "true"
     assert (
-        registry.get("deepseek-v4-flash-max").settings.extra_body[
+        registry.get("deepseek-flash-max").settings.extra_body[
             "__deepseek_reasoning_effort__"
         ]
         == "max"
     )
     assert (
-        registry.get("deepseek-v4-flash-off").settings.extra_body[
+        registry.get("deepseek-flash-off").settings.extra_body[
             "__deepseek_thinking_mode__"
         ]
         == "false"
     )
-    assert registry.get("deepseek-v4-flash-high").settings.extra_body[
+    assert registry.get("deepseek-flash-high").settings.extra_body[
         "__deepseek_random_thinking_probability__"
     ] == 0.6
 
@@ -338,28 +338,28 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
     cfg_path = tmp_path / "bot.toml"
     cfg_path.write_text(
         "[models.assignments]\n"
-        'primary_chat_model = "deepseek-v4-pro"\n'
-        'agent_model_1 = "deepseek-v4-flash-max"\n'
-        'agent_model_2 = "deepseek-v4-flash-high"\n'
-        'agent_model_3 = "deepseek-v4-flash-off"\n'
+        'primary_chat_model = "deepseek-flash"\n'
+        'agent_model_1 = "deepseek-flash-max"\n'
+        'agent_model_2 = "deepseek-flash-high"\n'
+        'agent_model_3 = "deepseek-flash-off"\n'
         'vision_model = ""\n'
         'tts_model = ""\n'
         "creator_image_models = []\n"
         "\n"
         "[[models.registry]]\n"
-        'key = "deepseek-v4-pro"\n'
+        'key = "deepseek-flash"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-max"\n'
+        'key = "deepseek-flash-max"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-high"\n'
+        'key = "deepseek-flash-high"\n'
         'provider = ""\n'
         'model_name = ""\n'
         "[[models.registry]]\n"
-        'key = "deepseek-v4-flash-off"\n'
+        'key = "deepseek-flash-off"\n'
         'provider = ""\n'
         'model_name = ""\n',
         encoding="utf-8",
@@ -373,10 +373,10 @@ def test_load_missing_items_reports_exact_full_list_with_multiple_reasons(
     # Assert
     message = "\n".join(loguru_messages)
     expected = {
-        "deepseek-v4-pro": "primary_chat_model",
-        "deepseek-v4-flash-max": "agent_model_1",
-        "deepseek-v4-flash-high": "agent_model_2",
-        "deepseek-v4-flash-off": "agent_model_3",
+        "deepseek-flash": "primary_chat_model",
+        "deepseek-flash-max": "agent_model_1",
+        "deepseek-flash-high": "agent_model_2",
+        "deepseek-flash-off": "agent_model_3",
     }
     for key, role in expected.items():
         assert f"模型 {key}（{role}）缺少: provider 配置、model_name 配置" in message
@@ -440,7 +440,7 @@ def test_load_invalid_type_value_falls_back_to_default_and_rewrites(monkeypatch,
 
 
 def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
-    """迁移必须在 Config.load 时注册并链式生效(0.3.0 -> 0.4.0 -> 0.5.0),防止迁移成为死代码。"""
+    """迁移必须在 Config.load 时注册并链式生效(0.3.0 -> ... -> 当前 schema 版本),防止迁移成为死代码。"""
     # Arrange
     _clear_platform_env(monkeypatch)
     for key, value in _DEEPSEEK_KEYS.items():
@@ -464,12 +464,90 @@ def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.6.0"
+    assert config_obj.version == "0.7.0"
     assert not hasattr(config_obj.chat, "group_prompt_template")
     assert config_obj.bot.bot_data, "bot_data 必须保留"
     raw = cfg_path.read_text(encoding="utf-8")
     assert "group_prompt_template" not in raw
-    assert 'version = "0.6.0"' in raw
+    assert 'version = "0.7.0"' in raw
+
+
+def test_migration_v6_to_v7_renames_legacy_default_model_keys(monkeypatch, tmp_path):
+    """0.6.0 -> 0.7.0：旧的 deepseek-v4-* 默认 key 改名，并同步 assignments 的引用。
+
+    回归：key 是与真实模型名对不上的历史遗留（DeepSeek 侧只有 deepseek-flash），
+    已停用的 pro 条目还要并进 flash-max，不能留两条同模型条目。
+    """
+    # Arrange
+    _clear_platform_env(monkeypatch)
+    for key, value in _DEEPSEEK_KEYS.items():
+        monkeypatch.setenv(key, value)
+    cfg_path = tmp_path / "bot.toml"
+    cfg_path.write_text(
+        'version = "0.6.0"\n'
+        "[bot]\naccount = 10001\n\n"
+        "[chat]\n\n"
+        "[[models.registry]]\n"
+        'key = "deepseek-v4-pro"\n'
+        'description = "主对话模型（Agent模型编号0）"\n'
+        'provider = "DeepSeek"\n'
+        'model_name = "deepseek-flash"\n'
+        "[[models.registry]]\n"
+        'key = "deepseek-v4-flash-max"\n'
+        'description = "Agent模型编号1"\n'
+        'provider = "DeepSeek"\n'
+        'model_name = "deepseek-flash"\n'
+        "[[models.registry]]\n"
+        'key = "deepseek-v4-flash-high"\n'
+        'provider = "DeepSeek"\n'
+        'model_name = "deepseek-flash"\n'
+        "[[models.registry]]\n"
+        'key = "deepseek-v4-flash-off"\n'
+        'provider = "DeepSeek"\n'
+        'model_name = "deepseek-flash"\n'
+        "\n"
+        "[models.assignments]\n"
+        'primary_chat_model = "deepseek-v4-pro"\n'
+        'agent_model_1 = "deepseek-v4-flash-max"\n'
+        'agent_model_2 = "deepseek-v4-flash-high"\n'
+        'agent_model_3 = "deepseek-v4-flash-off"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "neobot_app.config.loader.manager.backup_config", lambda *a, **k: None
+    )
+
+    # Act
+    config_obj = Config.load(cfg_path, BotConfig)
+
+    # Assert
+    assert config_obj.version == "0.7.0"
+    keys = [item.key for item in config_obj.models.registry]
+    # pro 与 flash-max 是同一模型（同 model_name + 同 max 推理），合并后不留重复条目
+    assert keys == ["deepseek-flash-max", "deepseek-flash-high", "deepseek-flash-off"]
+    # fixture 只定义了对话模型，vision/tts/image 的 key 本来就不在库里；
+    # 这里要证的是「改名后对话角色不悬空」，而不是补齐整个模型库。
+    library_keys = {item.key for item in config_obj.models.registry}
+    assignments = config_obj.models.assignments
+    chat_keys = [
+        assignments.primary_chat_model,
+        assignments.agent_model_1,
+        assignments.agent_model_2,
+        assignments.agent_model_3,
+    ]
+    assert all(key in library_keys for key in chat_keys)
+    assert "deepseek-v4-pro" not in config_obj.models.missing_assignment_keys()
+    assert assignments.primary_chat_model == "deepseek-flash-max"
+    assert assignments.agent_model_1 == "deepseek-flash-max"
+    assert assignments.agent_model_2 == "deepseek-flash-high"
+    assert assignments.agent_model_3 == "deepseek-flash-off"
+    # 用户侧的 provider / model_name 不被改名影响
+    assert all(
+        item.model_name == "deepseek-flash" for item in config_obj.models.registry
+    )
+    raw = cfg_path.read_text(encoding="utf-8")
+    assert "deepseek-v4-pro" not in raw
+    assert "deepseek-v4-flash-max" not in raw
 
 
 def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path):
@@ -503,7 +581,7 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.6.0"
+    assert config_obj.version == "0.7.0"
     # 面板配置已移出本体配置（见 plugin_config_migration），旧分区直接丢弃
     assert not hasattr(config_obj, "console")
     assert not hasattr(config_obj, "dashboard")
