@@ -1279,3 +1279,107 @@ async def test_save_surfaces_effective_message(panel) -> None:
     assert message != "插件配置保存在插件数据目录，与插件代码和启停状态分离"
     assert "配置已保存" in message
 
+
+class _FakeServices:
+    """`_service(name)` 的最小替身：只实现 .get(name, default)。"""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+
+    def get(self, name: str, default=None):
+        return self._mapping.get(name, default)
+
+
+class _FakeStopSignal:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def request(self) -> None:
+        self.calls += 1
+
+
+async def test_shutdown_requests_core_signal(tmp_path: Path) -> None:
+    """正常路径：本机 + 有管理权限时触发核心停机信号，并立刻返回 200。
+
+    立刻返回是刻意的——调用方（桌面端）拿到 200 后要按进程存活轮询等待，
+    不能把「已请求」当成「已关闭」，所以响应文案必须说清是「已请求」。
+    """
+    signal = _FakeStopSignal()
+    server, _, base, _ = await _start_panel(
+        tmp_path, services=_FakeServices({"process_stop": signal})
+    )
+    try:
+        token, csrf = await _login(base)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/admin/shutdown",
+                headers={"X-Token": token, "X-CSRF-Token": csrf},
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is True
+        assert "已请求" in response.json()["message"]
+        assert signal.calls == 1
+    finally:
+        await server.stop()
+
+
+async def test_shutdown_coalesces_repeated_requests(tmp_path: Path) -> None:
+    """重复请求由信号自己合并，端点不做去重也不报错。"""
+    signal = _FakeStopSignal()
+    server, _, base, _ = await _start_panel(
+        tmp_path, services=_FakeServices({"process_stop": signal})
+    )
+    try:
+        token, csrf = await _login(base)
+        headers = {"X-Token": token, "X-CSRF-Token": csrf}
+        async with httpx.AsyncClient() as client:
+            first = await client.post(base + "/api/admin/shutdown", headers=headers)
+            second = await client.post(base + "/api/admin/shutdown", headers=headers)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert signal.calls == 2
+    finally:
+        await server.stop()
+
+
+async def test_shutdown_rejects_non_loopback(tmp_path: Path) -> None:
+    """关闭入口只认本机：远端（含伪造 XFF）不能关停别人的进程。
+
+    这是本次新增端点的关键安全边界——面板默认 0.0.0.0 对外开放，
+    一个只靠 token 保护的「关停整个进程」入口等于远程 DoS。
+    """
+    signal = _FakeStopSignal()
+    server, _, base, _ = await _start_panel(
+        tmp_path, trust_proxy=True, services=_FakeServices({"process_stop": signal})
+    )
+    try:
+        token, csrf = await _login(base)
+        spoofed = {
+            "X-Token": token,
+            "X-CSRF-Token": csrf,
+            # 可信代理把真实客户端追加在末尾；最左项是客户端自己编的
+            "X-Forwarded-For": "127.0.0.1, 203.0.113.9",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(base + "/api/admin/shutdown", headers=spoofed)
+        assert response.status_code == 403, response.text
+        assert signal.calls == 0, "远端请求不能触发停机"
+    finally:
+        await server.stop()
+
+
+async def test_shutdown_reports_unavailable_without_signal(tmp_path: Path) -> None:
+    """旧装配里没有 `process_stop` 服务：给 503 与可读文案，而不是 500。"""
+    server, _, base, _ = await _start_panel(tmp_path, services=_FakeServices({}))
+    try:
+        token, csrf = await _login(base)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/admin/shutdown",
+                headers={"X-Token": token, "X-CSRF-Token": csrf},
+            )
+        assert response.status_code == 503, response.text
+        assert "不可用" in response.json()["error"]
+    finally:
+        await server.stop()
+

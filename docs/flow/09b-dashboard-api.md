@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: 264696d
-verified_hash: dbc912c69f83
+verified_against: 0decd49
+verified_hash: 767955257dd1
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -167,7 +167,7 @@ flowchart LR
 | 聊天流 | 5 | `/api/chat-flows{,,/detail,/prompts,/prompt,/prompts/clear}` | 清空 manage | 内存登记处 + 记录器 |
 | 档案 | 11 | `/api/archives{,/over-limit,/items,/item,/summarize,/summarize/over-limit,/snapshots,/snapshot}` | 编辑删除压缩 manage | 档案服务 + 总结服务 |
 | 定时任务 | 2 | `/api/scheduled-tasks · /action` | 读只读、写 manage | 管理器投影 + reminder 技能 |
-| 运维 | 6 | `/api/admin/{power,standby,resume,reboot,standby/onebot,restart}` | 全部 manage | 待机服务 / 进程重启信号 |
+| 运维 | 7 | `/api/admin/{power,standby,resume,reboot,standby/onebot,restart,shutdown}` | 全部 manage（`shutdown` 另外只收本机） | 待机服务 / 进程重启信号 / 进程停机信号 |
 
 命名规律只在「档案」组破了一次：`/api/archives/summarize` 与 `/api/archives/summarize/over-limit`
 是两个**不同的**批量语义（单条异步 vs 批量异步），只看前缀会以为是同一个接口的两种方法。
@@ -372,6 +372,7 @@ flowchart TD
     A --> C["POST /api/admin/resume 与 /reboot｜api.py:2624 2628"]
     A --> D["POST /api/admin/restart｜api.py:2667"]
     A --> E["POST /api/admin/standby/onebot｜api.py:2648"]
+    A --> F["POST /api/admin/shutdown｜api.py:2670<br/>只收本机 + manage<br/>-> process_stop 信号 -> request_stop"]
     B --> B0["_require_manage 进入待机"]
     C --> C0["_require_manage 软重启运行"]
     B0 --> B1["_schedule_power_action｜api.py:2579<br/>create_task 并用 _power_tasks 持强引用"]
@@ -394,6 +395,7 @@ flowchart TD
 |---|---|---|---|
 | `/api/admin/reboot`、`/api/admin/resume` | **软重启运行体**：停掉再按当前配置重建 bot 侧对象 | `standby_service.resume`，后台任务 | 面板与连接保持可用 |
 | `/api/admin/restart` | **重启进程**：让代码改动生效 | 宿主 `process_restart` 信号（回落 `application.request_restart`） | 面板会断开重连 |
+| `/api/admin/shutdown` | **优雅关闭整个进程**（等价 SIGTERM） | 核心 `process_stop` 信号 -> `cli.py` 的 `stop_watcher` -> `request_stop()` | 面板会断开且不再回来 |
 
 `_power_tasks` 那个强引用不是洁癖：代码注释（`api.py:2598`）写明「返回值被丢弃的后台任务
 可能被 GC 回收，待机或软重启会静默半途而废」。任何重构都不能改成裸 `create_task`。

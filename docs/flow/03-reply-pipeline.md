@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 528fe18
-verified_hash: 013bea14911e
+verified_against: 0decd49
+verified_hash: 045da8ee16a6
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -266,3 +266,9 @@ flowchart LR
   但绝不能因为落盘失败把已发出的回复判为失败）。
 * **看门狗是闭包不是任务**：关机路径不会去 cancel 它，靠 deadline 自愈；改 `_run_agent_mode`
   时要保证每个可能长时间阻塞的 await 前后都有 `reset_silent_deadline`。
+* **空格是中英之间的排版，不是句子边界**：分句器的分隔符集合含半角空格
+  （`postprocess.py:197`），而 agent 习惯在英文词前后加空格 —— `这是一个 bot 框架`
+  曾被从「个|空格|bot」切成两条。现在**只要空格有一侧是 CJK 就不切**，
+  并且一侧 CJK、另一侧字母数字的空格按排版删掉（`_normalize_cjk_latin_spaces`）。
+  边界要留神：英文靠「句号/感叹号之后那个空格」断句（半角 `.` `!` `?` 不在分隔符集合里），
+  所以**不能**把所有空格都设成不可切，否则 `Hello. World. Bye.` 再也不分句。

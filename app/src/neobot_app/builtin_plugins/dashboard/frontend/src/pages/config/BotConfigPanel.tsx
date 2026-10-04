@@ -5,9 +5,9 @@ import type { ConfigSaveBody } from '../../api/endpoints';
 import type { ConfigChanges, ConfigDocument, FieldDescriptor } from '../../api/types';
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
-import SchemaForm from '../../components/SchemaForm';
+import { ConfigTreePanel } from './ConfigTreePanel';
 import { getPath, setPath } from '../../utils/paths';
-import { bindValues, changedLeaves, type ChangeEntry, type HistoryMap, type Notice } from './shared';
+import { changedLeaves, type ChangeEntry, type HistoryMap, type Notice } from './shared';
 function BotConfigPanel() {
   const [doc, setDoc] = useState<ConfigDocument | null>(null);
   const [draft, setDraft] = useState<Record<string, any>>({});
@@ -25,7 +25,6 @@ function BotConfigPanel() {
   const [changes, setChanges] = useState<ConfigChanges | null>(null);
   const draftRef = useRef<Record<string, any>>({});
   draftRef.current = draft;
-  const fields = useMemo(() => bindValues(doc?.schema || [], draft), [doc, draft]);
 
   const applyDoc = useCallback((data: ConfigDocument) => {
     setDoc(data);
@@ -300,7 +299,7 @@ function BotConfigPanel() {
         {mode === 'form' && (
           <input
             className="input cfg-search"
-            placeholder="搜索配置项…"
+            placeholder="搜索配置项（支持路径与说明）…"
             value={filter}
             disabled={!!busy}
             onChange={(event) => setFilter(event.target.value)}
@@ -308,6 +307,7 @@ function BotConfigPanel() {
         )}
         <div className="spacer" />
         <button className="btn" disabled={!!busy} onClick={validate}>{busy === 'validate' ? '校验中…' : '校验'}</button>
+        {/* 撤销/重做/恢复默认留在工具栏：它们是「表单历史」，放在树面板里会让 TOML 模式下整组消失 */}
         <button className="btn" disabled={!!busy || mode === 'toml' || !undoStack.length} title="撤销 (Ctrl+Z)" onClick={undo}>
           <Icon name="undo" /> 撤销{undoStack.length ? ' ' + undoStack.length : ''}
         </button>
@@ -370,14 +370,15 @@ function BotConfigPanel() {
 
       <div className="config-body">
         {mode === 'form' ? (
-          <SchemaForm
-            fields={fields}
-            values={draft}
+          <ConfigTreePanel
+            schema={doc.schema || []}
+            draft={draft}
             baseline={doc.config || {}}
-            disabled={!!busy}
-            filter={filter}
             history={history}
             collapse={collapse}
+            disabled={!!busy}
+            filter={filter}
+            onFilterChange={setFilter}
             onToggleCollapse={(key) => setCollapse((previous) => ({ ...previous, [key]: !previous[key] }))}
             onRestore={restoreValue}
             onChange={changeField}

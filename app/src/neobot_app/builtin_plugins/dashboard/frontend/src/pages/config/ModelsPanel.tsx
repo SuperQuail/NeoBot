@@ -83,8 +83,11 @@ function ModelsPanel() {
     read();
   }, [read]);
 
-  const library = data?.library || [];
-  const schema = data?.entry_schema || [];
+  // 兜底：library 必须是数组。后端契约是「视图对象里带 library 数组」，
+  // 一旦上游误把对象塞进来，直接渲染会抛 "library.filter is not a function" 整页崩掉
+  // （issue #65），这里退化成空列表而不是白屏。
+  const library = Array.isArray(data?.library) ? data.library : [];
+  const schema = Array.isArray(data?.entry_schema) ? data.entry_schema : [];
 
   // 参数目录里的可选参数名（保存时只把目录内的值写回 settings.<name>）
   const catalogNames = useMemo(() => {
@@ -123,8 +126,11 @@ function ModelsPanel() {
       toast(result.error || '保存模型失败', 'err');
       return;
     }
-    if (result.data?.models) setData((prev) => ({ ...(prev || {}), library: result.data?.models }));
-    else await read();
+    // 后端的 models 是「模型视图对象」{library, assignments, roles, …}，不是数组；
+    // 直接塞进 library 会让随后的 library.filter(...) 抛 TypeError（issue #65）。
+    if (result.data?.models?.library) {
+      setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
+    } else await read();
     setEditing(null);
     const savedRef = result.data?.saved_model_ref;
     const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
@@ -144,7 +150,9 @@ function ModelsPanel() {
       toast(result.error || '删除失败', 'err');
       return;
     }
-    if (result.data?.models) setData((prev) => ({ ...(prev || {}), library: result.data?.models }));
+    if (result.data?.models?.library) {
+      setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
+    }
     toast('已删除 ' + item.model_ref, 'ok');
   };
 

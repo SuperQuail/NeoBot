@@ -28,6 +28,7 @@ export default function System() {
   const [reason, setReason] = useState('');
   const [notice, setNotice] = useState('');
   const [restartOpen, setRestartOpen] = useState(false);
+  const [shutdownOpen, setShutdownOpen] = useState(false);
   const services = useQuery(QK.services, () => api.services(), { interval: POLL.services });
   const tasks = useQuery(QK.tasks, () => api.tasks(), { interval: POLL.tasks });
   const usage = useQuery(`${QK.usage}:${hours}`, () => api.statsUsage(hours), { interval: POLL.usage, deps: [hours] });
@@ -57,12 +58,21 @@ export default function System() {
     },
   });
 
+  const doShutdown = useMutation(() => api.shutdownProcess(), {
+    onSuccess: (result) => {
+      setNotice(noticeFrom(result, '已请求优雅关闭；等待清理完成后进程会退出'));
+      setShutdownOpen(false);
+    },
+  });
+
   const powerState = power.data;
   const standby = !!powerState?.standby;
   const powerAvailable = powerState?.available !== false;
   const connectOnebot = !!powerState?.connect_onebot;
   const controlBusy = !!powerState?.transition || !!doStandby.busy || !!doResume.busy || !!doReboot.busy;
-  const actionError = doStandby.error || doResume.error || doReboot.error || doOnebot.error || doRestart.error;
+  const actionError =
+    doStandby.error || doResume.error || doReboot.error || doOnebot.error
+    || doRestart.error || doShutdown.error;
 
   const serviceItems = services.data?.items || [];
   const scheduled = tasks.data?.scheduled || [];
@@ -123,6 +133,13 @@ export default function System() {
           <button className="btn" disabled={!!doRestart.busy} onClick={() => setRestartOpen(true)}>
             {doRestart.busy ? '重启中…' : '重启进程'}
           </button>
+          <button
+            className="btn danger"
+            disabled={!!doShutdown.busy}
+            onClick={() => setShutdownOpen(true)}
+          >
+            {doShutdown.busy ? '关闭中…' : '关闭 NeoBot'}
+          </button>
         </div>
         <label className="standby-switch">
           <input
@@ -140,12 +157,31 @@ export default function System() {
           <span>进入待机：停掉回复与记忆管线，只保留面板与命令。</span>
           <span>软重启运行：按当前配置重建运行时，不重启进程。</span>
           <span>重启进程：加载代码改动，会短暂断线。</span>
+          <span>关闭 NeoBot：优雅收尾后退出进程（记忆总结可能数分钟）；退出后需由外部再次启动。</span>
         </div>
         {!powerAvailable && <div className="workspace-error" role="alert">待机服务不可用，请重启 NeoBot</div>}
         {(actionError || notice) && (
           <div className="muted small" role="status">{actionError || notice}</div>
         )}
       </section>
+
+      <Modal
+        open={shutdownOpen}
+        title="关闭 NeoBot"
+        onClose={() => { if (!doShutdown.busy) setShutdownOpen(false); }}
+      >
+        <p className="muted">
+          关闭会先跑完收尾（关闭冲刷、记忆总结等，可能持续数分钟），完成后进程退出。
+          退出后本面板与平台连接都会断开，需要由外部（桌面端、systemd、容器编排）再次启动。
+        </p>
+        <p className="muted small">若只想重新加载代码改动，请用「重启进程」。</p>
+        <div className="modal-actions">
+          <button className="btn" disabled={!!doShutdown.busy} onClick={() => setShutdownOpen(false)}>取消</button>
+          <button className="btn danger" disabled={!!doShutdown.busy} onClick={() => void doShutdown.run()}>
+            {doShutdown.busy ? '关闭中…' : '确认关闭'}
+          </button>
+        </div>
+      </Modal>
 
       <Modal open={restartOpen} title="重启进程" onClose={() => { if (!doRestart.busy) setRestartOpen(false); }}>
         <p className="muted">

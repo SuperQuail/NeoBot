@@ -27,6 +27,7 @@ fix(dashboard): 折线图宽度跟随容器
 - 标题写 **PR 标题**：`<type>(<scope>): 一句话概括`，**不罗列子改动**
 - 正文写 **PR 描述**：子改动逐条列，末尾写**真跑过**的验证
 - 一个 PR 装多个改动没问题——标题概括，描述里列清即可
+- 修了 issue 就在描述末尾写 `Closes #NN`（详见第 7 节）——贴链接**不算关联**
 
 ### 1. 标题
 
@@ -135,6 +136,58 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
 - 新增配置项 → 更新 `docs/05-配置参考.md`
 - 改前端源码 → 重建并提交 `web/`（CI 会比对产物，不一致直接失败）
 - 涉及版本 → 同一个 PR 内更新 8 个 `pyproject.toml` 与 `uv.lock`
+
+### 7. 关联 issue
+
+**本 PR 在修某个 issue 时，必须在 PR 描述里用关闭关键字把它关联上。**
+
+只有关键字才算关联。在描述里贴一句 `https://github.com/…/issues/59` 或写「相关 issue：见 #59」
+**不算**：GitHub 不会记录关系，issue 侧看不到这个 PR，合并时也不会自动关闭。
+
+在 PR 描述末尾加一段。**每个 issue 都要带自己的关键字**——官方口径是
+「多 issue 就对每个 issue 用完整写法」，别写成 `Closes #59, #60`（第二个没有关键字）：
+
+```markdown
+## 关联 issue（合并时自动关闭）
+
+Closes #59
+Closes #60
+```
+
+同一行也行，但每个都要带关键字，例如 `Resolves #10, resolves #123`。
+
+支持的关键字（大小写不敏感，后面可跟冒号）：`close` `closes` `closed`
+`fix` `fixes` `fixed` `resolve` `resolves` `resolved`。
+
+| 关键字 | 语义 | 什么时候用 |
+|---|---|---|
+| `Closes`/`Fixes`/`Resolves` | 合并时**自动关闭**该 issue | 本 PR 确实修完了这个 issue——**默认用这个** |
+| `Refs`/`Related to` | 只建立关联，**不关闭** | 只做了部分工作、或只是相关但未修完 |
+
+> 注意：`Refs` 不在 GitHub 的关闭关键字表里，它只建立引用关系，不会关闭 issue——
+> 这正是「分步修完、最后一步才 Closes」需要的语义。
+
+省事与把关：
+
+- 用 `gh` 建 PR 时把这段直接写进 `--body-file`；**不要**先建空描述再补——
+  关联是随描述一起落地的。
+- 合并前看一眼 PR 侧栏的 **Development / Linked issues**：那里列出了 issue，
+  才说明关联真的生效了。用下面的命令核对：
+
+```bash
+gh api graphql -f query='{ repository(owner:"OWNER",name:"REPO") {
+  pullRequest(number: PR) { closingIssuesReferences(first:10) { totalCount nodes { number } } } } }'
+```
+
+- `totalCount` 必须等于你打算关闭的 issue 数；对不上就是关键字没写对。
+- **PR 描述与 issue 不是一对一**：一个 PR 修多个 issue 就写多个 `Closes`；
+  一个 issue 被多个 PR 分步修完，只有**最后一个**写 `Closes`，前面的写 `Refs`。
+- 关**别的仓库**的 issue 要写全限定名：`Closes owner/repo#123`。
+- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `main`）时生效；
+  指向其它分支时关键字被直接忽略——既不建立关联，合并也不会关 issue。
+- 没有对应 issue 的改动（文档、依赖、纯内部重构）不必硬凑一个——**别为此新建 issue**。
+
+> 依据：[GitHub Docs — Linking a pull request to an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)
 
 ---
 

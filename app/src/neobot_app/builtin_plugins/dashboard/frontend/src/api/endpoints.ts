@@ -325,6 +325,9 @@ export const api = {
 
   // 管理（重启进程以加载代码改动）
   restart: () => postJSON<SimpleMessage>('/api/admin/restart'),
+  // 优雅关闭整个进程（等价 SIGTERM）；宿主 / 桌面端也用它请 NeoBot 自己收尾。
+  // 只接受本机来源，见 api.py 的 admin_shutdown。
+  shutdownProcess: () => postJSON<SimpleMessage>('/api/admin/shutdown'),
 };
 
 export type Api = typeof api;

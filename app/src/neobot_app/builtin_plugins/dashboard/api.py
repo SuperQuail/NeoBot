@@ -2667,6 +2667,32 @@ class DashboardApi:
             return _json_error(message)
         return _json_ok({**self.power_state(), "message": message})
 
+    async def admin_shutdown(self, request: web.Request) -> web.Response:
+        """优雅关闭整个进程（等价收到 SIGTERM）。
+
+        与 `admin_restart` 的区别：那个换一代运行时（面板与进程都留着），
+        这个让进程退出。宿主（NapCatQQ Desktop 这类进程管理器）用它请 NeoBot
+        自己开始收尾——Windows 上它没法发 POSIX 信号，本机子进程也没有控制台，
+        所以 HTTP 是唯一可用的「请它退」手段。
+
+        只接受本机来源：这是关停整个进程的入口，不该被远端触发。
+        """
+        if not is_loopback(self.console.request_ip(request)):
+            return _json_error("关闭入口只接受本机请求", status=403)
+        denied = self._require_manage(request, action="关闭 NeoBot")
+        if denied is not None:
+            return denied
+        # 与重启同源：核心信号跨代际存活，待机态 / 切换中也收得到
+        signal = self._service("process_stop")
+        stop = getattr(signal, "request", None)
+        if not callable(stop):
+            return _json_error("优雅关闭入口不可用，请手动停止 NeoBot", status=503)
+        self.logger.warning(f"面板请求优雅关闭 NeoBot ip={self.console.request_ip(request)}")
+        # 立刻接受并返回：重复请求在信号里合并。调用方（如桌面端）拿到 200 后
+        # 应当按进程存活轮询等待，而不是把「已请求」当成「已关闭」。
+        stop()
+        return _json_ok({"message": "已请求优雅关闭；须等待清理完成（记忆总结可能数分钟）"})
+
     async def admin_restart(self, request: web.Request) -> web.Response:
         denied = self._require_manage(request)
         if denied is not None:

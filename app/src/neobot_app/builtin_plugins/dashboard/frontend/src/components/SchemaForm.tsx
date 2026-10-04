@@ -13,7 +13,7 @@ import Field from './schema/Field';
 import { defaultsFromFields, formatValue, pathKey, type SchemaFormProps } from './schema/fieldTypes';
 
 export default function SchemaForm({
-  fields = [], values, onChange, disabled, filter, baseline, history = {}, onRestore, onToggleCollapse, collapse = {},
+  fields = [], values, onChange, disabled, filter, globallyFiltered, baseline, history = {}, onRestore, onToggleCollapse, collapse = {},
 }: SchemaFormProps) {
   const [historyTarget, setHistoryTarget] = useState<FieldDescriptor | null>(null);
 
@@ -51,6 +51,7 @@ export default function SchemaForm({
     <div className="cfg-root">
       {fields.map((descriptor) => (
         <Field key={descriptor.path.join('.')} descriptor={descriptor} disabled={disabled} filter={filter}
+          globallyFiltered={globallyFiltered}
           changedPaths={changedPaths} history={history} collapse={collapse}
           onToggleCollapse={onToggleCollapse}
           onRestore={onRestore} onShowHistory={showHistory}

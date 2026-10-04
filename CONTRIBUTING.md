@@ -46,7 +46,10 @@ git commit -m "feat: 添加新功能描述"
 在 GitHub 上创建 Pull Request，填写：
 - 标题
 - 变更说明
-- 相关 issue 编号（如有）
+- 关联 issue（如有）：用关闭关键字写进描述，例如 `Closes #59`。
+  只贴 `#59` 或 issue 链接**不算关联**——GitHub 不会记录关系，合并时也不会自动关闭。
+  多个 issue 要各自带关键字（`Closes #59` 与 `Closes #60` 各一行，或
+  `Resolves #10, resolves #123`）。详见 [AGENTS.md](AGENTS.md) 第 7 节。
 
 ## 开发规范
 

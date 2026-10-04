@@ -35,14 +35,20 @@ function AssignPanel() {
     read();
   }, [read]);
 
-  const library = data?.library || [];
-  const roles = data?.roles_meta || [];
+  // 兜底：library 必须是数组，否则下面的 .find / [...library] 会整页崩（issue #65）
+  const library = Array.isArray(data?.library) ? data.library : [];
+  const roles = Array.isArray(data?.roles_meta) ? data.roles_meta : [];
 
-  const labelOf = (key: string) => {
-    const item = library.find((entry) => entry.key === key);
-    if (!item) return key + '（模型库中不存在）';
+  const labelOf = (modelRef: string) => {
+    const item = library.find((entry) => entry.model_ref === modelRef);
+    if (!item) return modelRef + '（模型库中不存在）';
     const type = item.type_label ? '[' + item.type_label + '] ' : '';
-    return type + item.key + ' · ' + (item.description || item.model_name || item.provider);
+    return (
+      type +
+      item.model_ref +
+      ' · ' +
+      (item.display_name || item.model_name || item.provider)
+    );
   };
 
   /** 与该角色类型匹配的模型排在前面，其余仍可选。 */
@@ -52,7 +58,7 @@ function AssignPanel() {
       const leftMatch = left.model_type === expected ? 0 : 1;
       const rightMatch = right.model_type === expected ? 0 : 1;
       if (leftMatch !== rightMatch) return leftMatch - rightMatch;
-      return String(left.key).localeCompare(String(right.key));
+      return String(left.model_ref).localeCompare(String(right.model_ref));
     });
   };
 
@@ -67,7 +73,17 @@ function AssignPanel() {
       toast(result.error || '保存失败', 'err');
       return;
     }
-    if (result.data?.models) setData((prev) => ({ ...(prev || {}), library: result.data?.models }));
+    // 后端的 models 是「模型视图对象」{library, assignments, roles, …}，不是数组；
+    // 同 ModelsPanel 一样取 .library，并顺带刷新分配与角色视图（issue #65）。
+    const view = result.data?.models;
+    if (view) {
+      setData((prev) => ({
+        ...(prev || {}),
+        library: view.library ?? prev?.library,
+        assignments: view.assignments ?? prev?.assignments,
+        roles: view.roles ?? prev?.roles,
+      }));
+    }
     toast('模型分配已保存；重载配置后生效', 'ok');
   };
 

@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 264696d
-verified_hash: 0f0c0a56fcc5
+verified_against: 0decd49
+verified_hash: e4a05b610299
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -402,6 +402,14 @@ flowchart TD
   （`manager.py:606`）。配置里少写一整段，结果是「用默认值悄悄跑起来」。
 * **缺 Key 不是错误**：默认 `DegradeEverythingPolicy`（`manager.py:315`），缺 Key 只让该功能降级；
   「严格致命」策略（`availability.py:79`）在生产路径无人调用，看到它别以为会拦。
+* **引用名是调用方唯一的定位手段，缺失或重复都会静默失效**：`by_ref()` 会跳过空引用名的条目
+  （`bot.py:641` 的 `if item.model_ref`），字典推导对重复引用名是**后写覆盖** ——
+  两者都不报错，表现为「配置写了却没生效」。`register_models` 现在会在注册前把这两类
+  各告警一条（指出第几个条目 / 涉及哪些位置），既有行为（跳过、后者生效）不变。
+* **「引用名是否存在」这条校验不能静默兜底**：它取 `by_ref()` 的结果；取不到方法时
+  **明确告警**而不是当成空集。曾经这里用 `hasattr(models_config, "by_key")` 探测旧方法名，
+  字段改名后恒为 `False`，于是 `library_keys` 恒为空、**所有合法分配被误报为「引用名不存在」**，
+  严格策略下还会直接 `ConfigLoadError`。`hasattr` 兼容探测会把「改名漏改」变成静默失效。
 * **只有三处 `ConfigLoadError`**，且只有前两处可达：解析失败（`:591`）、
   无法生成文件（`:632`）、严格策略下的模型缺配置（`:489`）。
   「配置缺失 → 强制待机」这条线实际由**解析失败**触发。

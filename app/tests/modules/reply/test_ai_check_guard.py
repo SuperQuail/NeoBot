@@ -132,7 +132,7 @@ async def test_bare_cancel_in_plain_model_output_is_not_claimed_sent(monkeypatch
 
 
 @pytest.mark.parametrize("text,segments", [
-    ("cancel 是什么意思", ["cancel", "是什么意思"]),
+    ("cancel，是什么意思", ["cancel", "是什么意思"]),
     ("我选择\ncancel", ["我选择", "cancel"]),
 ])
 @pytest.mark.parametrize("via_tool", [False, True])

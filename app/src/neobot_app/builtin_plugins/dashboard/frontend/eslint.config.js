@@ -8,7 +8,9 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import jsxA11y from 'eslint-plugin-jsx-a11y';
 
 export default tseslint.config(
-  { ignores: ['dist/**', '../web/**', 'node_modules/**', 'coverage/**'] },
+  // preview/** 是本地评估用的渲染脚手架（.gitignore 已忽略、不进产物、不进 CI），
+  // 与 dist/** 同属本地产物，因此不参与 lint。
+  { ignores: ['dist/**', 'preview/**', '../web/**', 'node_modules/**', 'coverage/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

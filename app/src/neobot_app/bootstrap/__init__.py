@@ -78,6 +78,7 @@ from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
 from neobot_app.runtime.provider_reload import ProviderReloadConsumer
 from neobot_app.runtime.process_restart import ProcessRestartSignal
+from neobot_app.runtime.process_stop import ProcessStopSignal
 from neobot_app.skills.balance_guide import sync_balance_query_skill
 
 
@@ -1581,9 +1582,15 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     # keep the legacy application.request_restart path rather than a dead flag.
     if _REUSE_ENABLED:
         restart_signal = _reuse_or("process_restart", ProcessRestartSignal)
+        # 优雅停机信号与重启信号并列：面板的退出端点也走核心信号，
+        # 这样才能在待机态 / 切换中收到停机请求（那一代 Application 可能已经不在）
+        stop_signal = _reuse_or("process_stop", ProcessStopSignal)
         register_host_services(
             plugin["host_facade"],
-            {"process_restart": (restart_signal, "进程重启信号（核心持有）")},
+            {
+                "process_restart": (restart_signal, "进程重启信号（核心持有）"),
+                "process_stop": (stop_signal, "优雅停机信号（核心持有）"),
+            },
         )
 
     # 命令 /reboot:绑定应用重启回调

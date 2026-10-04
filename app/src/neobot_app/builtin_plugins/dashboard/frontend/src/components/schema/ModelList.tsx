@@ -3,7 +3,7 @@ import { useState } from 'react';
 import Icon from '../Icon';
 import type { FieldDescriptor } from '../../api/types';
 import { HotBadge } from './FieldChrome';
-import { getPath, matchPath } from '../../utils/paths';
+import { matchPath } from '../../utils/paths';
 import Field from './Field';
 import { defaultsFromFields, type FieldCallbacks } from './fieldTypes';
 function ModelList({ descriptor, disabled, onChange, filter }: { descriptor: FieldDescriptor; filter?: string } & Pick<FieldCallbacks, 'onChange' | 'disabled'>) {
@@ -27,9 +27,18 @@ function ModelList({ descriptor, disabled, onChange, filter }: { descriptor: Fie
     [next[index], next[target]] = [next[target], next[index]];
     setList(next);
   };
-  const visible = items.filter((entry) =>
-    !filter || entry.fields.some((field) => matchPath(field.path, filter) || String(getPath(entry.fields, []) ?? ''))
-  );
+  // 搜索过滤：路径命中，或该项的任一字段值命中关键词。
+  // 注意别写成 String(getPath(entry.fields, [])) —— 空路径会取回整个 fields 数组，
+  // String(...) 永远非空，条件恒真，等于没过滤（issue #66）。
+  const keyword = String(filter || '').trim().toLowerCase();
+  const entryMatches = (entry: { fields: FieldDescriptor[] }) =>
+    !keyword ||
+    entry.fields.some(
+      (field) =>
+        matchPath(field.path, keyword) ||
+        String(field.value ?? '').toLowerCase().includes(keyword),
+    );
+  const visible = items.filter(entryMatches);
 
   return (
     <section className="cfg-group cfg-list">
@@ -62,7 +71,9 @@ function ModelList({ descriptor, disabled, onChange, filter }: { descriptor: Fie
               <button type="button" className="icon-btn danger" title="删除" disabled={disabled} onClick={() => remove(index)}><Icon name="trash" /></button>
             </div>
             {entry.fields.map((field) => (
-              <Field key={field.path.join('.')} descriptor={field} disabled={disabled} filter={filter}
+              // force_visible：这一项已经被判定命中（可能是靠某个字段的值命中的），
+              // 它的子字段就不要再按路径各自过滤一遍 —— 否则整项渲染出来却没有控件。
+              <Field key={field.path.join('.')} descriptor={{ ...field, force_visible: true }} disabled={disabled} filter={filter}
                 onChange={(next) => {
                   const cloned: Record<string, any>[] = structuredClone(list);
                   let node: Record<string, any> = cloned[index];
