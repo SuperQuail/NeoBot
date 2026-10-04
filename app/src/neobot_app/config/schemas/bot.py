@@ -59,7 +59,7 @@ class Chat:
         metadata={"description": "群聊观察上限"},
     )
     group_chat_chance: Optional[float] = field(
-        default=0.5,
+        default=0.3,
         metadata={"description": "群聊基础回复概率"},
     )
     group_use_black_list: Optional[bool] = field(
@@ -484,27 +484,6 @@ def _default_agent_model_3() -> "ModelDefinition":
     )
 
 
-def _default_vision_model() -> "ModelDefinition":
-    return ModelDefinition(
-        model_ref="qwen3-vl-8b",
-        model_type="vision",
-        display_name="图像识别模型",
-        provider="硅基流动",
-        model_name="Qwen/Qwen3-VL-8B-Instruct",
-        # native_vision 无需显式配置：vision 类型在 __post_init__ 中自动视为原生视觉
-        settings=ModelSettings(
-            temperature=0.7,
-            max_output_tokens=2048,
-            timeout_seconds=120.0,
-            top_p=1.0,
-        ),
-        pricing=ModelPricing(
-            input_price_per_mtokens=1.89,
-            output_price_per_mtokens=1.89,
-        ),
-    )
-
-
 def _default_tts_model() -> "ModelDefinition":
     return ModelDefinition(
         model_ref="cosyvoice2",
@@ -524,34 +503,21 @@ def _default_tts_model() -> "ModelDefinition":
     )
 
 
-def _default_creator_image_model() -> "ModelDefinition":
-    return ModelDefinition(
-        model_ref="flux-schnell",
-        model_type="image",
-        display_name="创作者Agent生图模型（默认）",
-        provider="SiliconFlow",
-        model_name="black-forest-labs/FLUX.1-schnell",
-        settings=ModelSettings(
-            temperature=1.0,
-            timeout_seconds=300.0,
-        ),
-        pricing=ModelPricing(
-            input_price_per_mtokens=0.0,
-            output_price_per_mtokens=0.0,
-        ),
-    )
-
-
 def _default_model_library() -> "List[ModelDefinition]":
-    """默认模型库：模型单独存储，调用方只引用 key。"""
+    """默认模型库：模型单独存储，调用方只引用 key。
+
+    默认只带 DeepSeek 对话模型与语音模型，理由：
+    - **不预置生图模型**：原先的 `flux-schnell` 指向平台侧并不存在的模型名，
+      留着只会让新用户以为「绘图能用」，实际一调就报模型不存在；
+    - **不预置独立视觉模型**：默认视觉模型就是 deepseek-flash（high 推理，见
+      `ModelAssignments.vision_model`），它是真实可用的模型，用户少申请一个平台 Key。
+    """
     return [
         _default_primary_chat_model(),
         _default_agent_model_1(),
         _default_agent_model_2(),
         _default_agent_model_3(),
-        _default_vision_model(),
         _default_tts_model(),
-        _default_creator_image_model(),
     ]
 
 
@@ -576,17 +542,21 @@ class ModelAssignments:
         metadata={"description": "Agent模型编号3引用的模型 key"},
     )
     vision_model: str = field(
-        default="qwen3-vl-8b",
-        metadata={"description": "图像识别模型引用的模型 key"},
+        default="deepseek-flash-high",
+        metadata={
+            "description": "图像识别模型引用的模型 key；默认复用 deepseek-flash（high 推理）"
+            "——它是真实可用的模型，避免新用户为了看图再申请一个平台 Key"
+        },
     )
     tts_model: str = field(
         default="cosyvoice2",
         metadata={"description": "语音模型引用的模型 key"},
     )
     creator_image_models: List[str] = field(
-        default_factory=lambda: ["flux-schnell"],
+        default_factory=list,
         metadata={
-            "description": "创作者Agent生图模型列表（引用 key）；配置多个时由 Agent 按描述自行选择"
+            "description": "创作者Agent生图模型列表（引用 key）；配置多个时由 Agent 按描述自行选择。"
+            "**默认为空**：出厂不预置生图模型，需要 AI 绘图时再在模型库里加一个真实可用的生图模型"
         },
     )
 
@@ -783,8 +753,11 @@ class TTS:
     """TTS 功能配置。"""
 
     enabled: bool = field(
-        default=True,
-        metadata={"description": "是否启用TTS功能"},
+        default=False,
+        metadata={
+            "description": "是否启用TTS功能；**默认关闭**：TTS 需要单独的语音模型与平台 Key，"
+            "新用户先不启用，需要时在模型库里加好语音模型再打开"
+        },
     )
     tts_provider: str = field(
         default="siliconflow",
@@ -1089,12 +1062,12 @@ class CreatorEmojiConfig:
     """表情包管理配置。"""
 
     allow_add: Optional[bool] = field(
-        default=False,
-        metadata={"description": "是否允许 Creator Agent 增加表情包"},
+        default=True,
+        metadata={"description": "是否允许 Creator Agent 增加表情包（默认允许）"},
     )
     allow_delete: Optional[bool] = field(
-        default=False,
-        metadata={"description": "是否允许 Creator Agent 删除表情包"},
+        default=True,
+        metadata={"description": "是否允许 Creator Agent 删除表情包（默认允许）"},
     )
     page_size: int = field(
         default=50,
@@ -1137,8 +1110,11 @@ class ImageCreationConfig:
     """图像创作配置（生图、图库、表情包）。"""
 
     enabled: bool = field(
-        default=False,
-        metadata={"description": "是否启用图像创作功能"},
+        default=True,
+        metadata={
+            "description": "是否启用图像创作功能（图库 / 表情包增删 / AI 绘图）；"
+            "默认开启：表情包管理开箱可用，AI 绘图另需分配 creator_image_models"
+        },
     )
     gallery: GalleryConfig = field(default_factory=GalleryConfig)
     emoji: CreatorEmojiConfig = field(default_factory=CreatorEmojiConfig)
