@@ -66,20 +66,21 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 在模型库点「保存并重载」会重建这些组件的 provider：**主对话 / 视觉 / 档案总结 / TTS / 生图 /
 解题 Agent / 自修复 Agent**。
 
-但仍有部分组件在**启动期**就持有了 provider，改模型后要**重启进程**才会换成新的：
+**表情包图片解析**（`EmojiService.install_vision_provider`）与**技能**
+（绘图看参考图、图片解析）也会一起换：技能侧按「谁实现了 `install_vision_provider`
+就推给谁」扫描 `SkillManager.all_skills`，以后新增会看图的技能只要实现同一入口就自动跟上。
 
-- 表情包图片解析（emoji 服务持有的视觉 provider）
-- 绘图服务的视觉 provider
-- 应用级 provider 引用（`runtime/application.py`）
-- 技能实例持有的 provider（`skills/*`）
-- 回复发送器的 provider（`reply/sender.py`）
+实现方式是每个组件注册成**独立的热重载消费者**（[runtime/provider_reload.py](../../app/src/neobot_app/runtime/provider_reload.py)），
+`models` / `env` 变更时分发；注册表逐个隔离失败，一个组件建不起来不会拖垮其余。
 
-所以面板在模型库**保存或删除**后会常驻显示一条「需要重启进程」的提示（响应字段
-`needs_restart_parts`）—— 注意别只看 `changes.needs_restart_count`：热重载分类表把
-`models` 整体标成可热重载，那个计数**恒为 0**。
+两点仍需注意：
 
-清单来源是 [runtime/provider_reload.py](../../app/src/neobot_app/runtime/provider_reload.py) 的
-`MODEL_RELOAD_GAPS`：每补一处换装入口就删一条，删空后提示自动消失。
+- 别用 `changes.needs_restart_count` 判断「有没有没热更到的部分」：热重载分类表把
+  `models` 整体标成可热重载，那个计数**恒为 0**。真正的判断依据是 `needs_restart_parts`
+  （由 `MODEL_RELOAD_GAPS` 驱动）—— 该清单经审计后**已清空**，即目前清点到的持有者都能热重载。
+  面板在模型库保存 / 删除后会常驻显示这条提示，清单一旦非空就会重新出现。
+- 服务注册表里的 `services["vision_provider"]` 仍是**启动期实例**（仓库内无消费者）；
+  插件若读取它，换模型后需要自行重新取。
 
 ## Agent 模型路由（`agent_model` 配置）
 

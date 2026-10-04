@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/runtime/sandbox_lock.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
-verified_against: 528fe18
-verified_hash: cbd12c7f55e8
+verified_against: 4b77152
+verified_hash: 8927b2bae1a0
 ---
 
 # 06 工具运行时与技能：注册 · native/PTC · 管理员凭据 · 沙箱裁决 · 维护 Agent
@@ -580,6 +580,11 @@ CLI 侧（`cli.py:558`）有同构的一份循环，两条路径共用同一套 
 
 ## 易错点
 
+* **技能持有视觉 provider，换模型要主动推**：`DrawingSkill`（看参考图）与 `ImageParseSkill`（解析图片）
+  在启动期建好后一直持有 `_vision_provider` 且**真的在用**。热重载的 `skills` 消费者按
+  「谁实现了 `install_vision_provider` 就推给谁」扫描 `skill_manager.all_skills`
+  （**property，不是方法**，写成 `all_skills()` 直接 TypeError）—— 新增会看图的技能
+  只要实现同一入口就自动跟上（issue #75）。
 * **SandboxLock 是死装配**：`acquire` / `acquire_temp` / `is_owner` / `is_occupied` 全仓库零调用点，
   `SandboxService._lock` 与 `SandboxManagerSkill._lock` 赋值后未使用。想加互斥必须自己接线。
 * **`hold_temp` 是 NO-OP**：`minutes` 只出现在返回文案里，没有保活计时，临时目录照样按 mtime 被清。

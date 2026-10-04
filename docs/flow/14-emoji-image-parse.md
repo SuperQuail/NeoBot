@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/image/
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
-verified_against: 528fe18
-verified_hash: b1c713601cd1
+verified_against: 4b77152
+verified_hash: dcbd901118a0
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
@@ -17,7 +17,7 @@ verified_hash: b1c713601cd1
 
 * **入站图片解析**：`image/parser.py` 的 `ImageParseService`（下载 → md5 缓存 → 视觉模型 → 消息段原位替换）与它的等待闸门；`message/image_pipeline.py` 的 `prepare_local_image`（本地图片哈希 + 压缩，emoji 与视觉请求共用）。
 * **统一取图入口**：`image/source.py` 的 `ImageSourceResolver.resolve`（六种图片来源参数、队列 / Adapter 回源）。`vision_detect`、`emoji_add`、`image_context` 三个工具面共用它。
-* **表情包库**：`emoji/service.py` 的 `EmojiService`（目录扫描、内容哈希去重、编号映射、`.txt` 侧文件、视觉解析、发送与使用次数）；`emoji/mapping.py` 是 QQ 表情静态表（`lookup_emoji` / `search_emoji` / `list_all_emoji`，纯数据、无状态、不进提示词）。
+* **表情包库**：`emoji/service.py` 的 `EmojiService`（目录扫描、内容哈希去重、编号映射、`.txt` 侧文件、视觉解析、发送与使用次数；视觉 provider 由 `install_vision_provider` 换装，热重载 `emoji` 消费者调用 —— issue #75）；`emoji/mapping.py` 是 QQ 表情静态表（`lookup_emoji` / `search_emoji` / `list_all_emoji`，纯数据、无状态、不进提示词）。
 * **本地视觉检测**：`vision_detect/` 的 `ModelLibrary`（扫 `models/` 目录与 `models.toml` 索引合并）、`OnnxDetector` 与 `TorchYoloDetector`（双推理栈）、`VisionDetectService`（检测器池、热重载、中文摘要）。
 
 **不画什么**（避免与相邻图重叠）：

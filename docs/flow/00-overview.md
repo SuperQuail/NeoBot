@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 93d0141
-verified_hash: f5cd40bbbc6c
+verified_against: 4b77152
+verified_hash: 29e5cf9970f4
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -262,14 +262,17 @@ flowchart TD
   新凭据不生效，而提示还会说「没有检测到配置项变化」。面板保存 env 时会显式声明
   `env` 路径把它补上（issue #74）。
 * **热重载的覆盖面 = 注册的消费者数**：只有声明关心 `models` / `env` 的消费者会被通知。
-  装配期共注册 5 个：`provider`（主对话 / 视觉 / 档案总结，共享 bundle 原子换装）、
-  `tts`、`creator_image`、`problem_solver`、`self_heal` —— 各自独立，
+  装配期共注册 7 个：`provider`（主对话 / 视觉 / 档案总结，共享 bundle 原子换装）、
+  `tts`、`creator_image`、`emoji`、`skills`、`problem_solver`、`self_heal` —— 各自独立，
   注册表逐个隔离失败，所以一个组件建不起来不会拖垮其余。
   **构造期固化了模型产物的组件必须注册 `ModelConsumerReload`**
   （`runtime/provider_reload.py`），否则改配置后它只会静默用旧值 ——
   TTS 以前正是如此：模型没注册就干脆不建服务，补完平台 Key 也必须重启进程。
   两个可选 Agent 的 provider 被闭包捕获，只能**重跑装配**来换；装配被跳过
   （provider 不可用）时要显式 `set_agent(None)`，否则旧 Agent 会继续持旧凭据跑。
+  `emoji` 换装 `EmojiService.install_vision_provider`；`skills` 按
+  「谁实现了 `install_vision_provider` 就推给谁」**扫描** `skill_manager.all_skills`
+  （它是 **property 不是方法**），新增会看图的技能自动跟上。
 * **分类表说「可热重载」不等于覆盖全了**：`models` / `env` 被整体标成可热重载，
   于是 `needs_restart_count` 恒为 0，面板会说「0 项需重启」—— 而启动期把 `vision_provider`
   交给了一大批组件（emoji / drawing / application / skills / sender 等），它们仍在用旧 provider。

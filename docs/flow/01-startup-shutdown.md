@@ -12,8 +12,8 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 93d0141
-verified_hash: a0b011adac1c
+verified_against: 4b77152
+verified_hash: f7960d742640
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -225,9 +225,11 @@ flowchart TD
 `AdapterSupervisor` 在 :784 先注册，`_provider_reload` 在 :1182 先 unregister 再
 register，所以顺序永远是「适配器先重连 → provider 再重建」。
 
-热重载的覆盖范围由**注册的消费者**决定，装配期共 5 个：provider（主对话 / 视觉 / 档案总结，
-共享 bundle 原子换装）、`tts`、`creator_image`、`problem_solver`、`self_heal`
-（后四个是 `ModelConsumerReload`，各自独立、注册表逐个隔离失败）。
+热重载的覆盖范围由**注册的消费者**决定，装配期共 7 个：provider（主对话 / 视觉 / 档案总结，
+共享 bundle 原子换装）、`tts`、`creator_image`、`emoji`、`skills`、`problem_solver`、
+`self_heal`（后六个是 `ModelConsumerReload`，各自独立、注册表逐个隔离失败）。
+`emoji` 换装表情包解析的视觉 provider；`skills` 扫 `skill_manager.all_skills`（property）
+把新 provider 推给所有实现 `install_vision_provider` 的技能。
 构造期固化了模型产物的组件要一并注册，否则它只能等重启。两个可选 Agent 的 provider
 被闭包捕获，靠**重跑装配**换；装配因 provider 不可用被跳过时显式 `set_agent(None)`，
 免得旧 Agent 继续持旧凭据。重建这几个 Agent 时，provider 与**视觉 provider** 都要现取
