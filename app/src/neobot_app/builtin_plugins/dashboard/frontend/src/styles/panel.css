@@ -456,3 +456,81 @@
 .model-params-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .model-params-add .input { flex: 1 1 160px; min-width: 120px; }
 .model-params-warning { margin: 2px 0; }
+
+
+/* ── 方案 B：左侧分组树 + 右侧只渲染选中组（ConfigTreePanel）──
+   动机：17 个顶层分区、chat 直属 77 项、models 里还套 registry 列表；
+   叠盒子在大分区上难定位，改为「左树定位 + 右区渲染」把层级深度压到 1。 */
+.cfg-tree { display: grid; grid-template-columns: 210px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel); min-height: 420px; }
+.cfg-tree-side { display: flex; flex-direction: column; background: var(--panel-2); border-right: 1px solid var(--border); min-width: 0; }
+.cfg-tree-cap { padding: 10px 12px 6px; color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.cfg-tree-cap b { color: var(--brand); }
+.cfg-tree-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 8px; overflow-y: auto; flex: 1; }
+.cfg-tree-item { display: flex; align-items: center; gap: 6px; width: 100%; border: 1px solid transparent; background: transparent; color: var(--text); border-radius: 9px; padding: 6px 9px; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.cfg-tree-item:hover { background: var(--brand-soft); }
+.cfg-tree-item.on { background: var(--brand-soft); border-color: var(--brand); font-weight: 600; }
+.cfg-tree-item .cfg-tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-tree-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cfg-tree-badge { font-size: 9.5px; border: 1px solid var(--warn); color: var(--warn); border-radius: 5px; padding: 0 4px; }
+.cfg-tree-empty { color: var(--muted); font-size: 12px; padding: 8px 10px; margin: 0; }
+.cfg-tree-side-foot { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px; border-top: 1px solid var(--border); }
+.cfg-tree-body { padding: 12px 16px; min-width: 0; overflow-x: hidden; }
+.cfg-tree-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.cfg-tree-head h3 { margin: 0; font-size: 15px; }
+/* 右区只渲染一个分组，组外壳不必再画一层盒子 */
+.cfg-tree-body .cfg-root { gap: 0; }
+.cfg-tree-body .cfg-group { border: none; padding: 0; background: transparent; }
+.cfg-tree-body .cfg-group > .cfg-section-heading { position: sticky; top: 0; background: var(--panel); z-index: 1; padding-bottom: 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+
+/* 搜索命中高亮：路径与说明里的关键词都标出来 */
+mark { background: rgba(245, 158, 11, .2); color: var(--warn); border-radius: 3px; padding: 0 2px; font-weight: 700; }
+
+/* ── 数组/字典编辑器 ── */
+.cfg-collection { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.cfg-collection.is-disabled { opacity: .6; pointer-events: none; }
+.cfg-collection-bar { display: flex; align-items: center; gap: 6px; }
+.cfg-collection-bar .spacer { flex: 1; }
+.cfg-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.cfg-chips-empty { color: var(--muted); font-size: 12px; }
+.cfg-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--panel-2); border-radius: 999px; padding: 2px 4px 2px 9px; font-size: 12px; font-family: var(--font-mono); max-width: 100%; }
+.cfg-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-chip-remove { border: none; background: rgba(239, 68, 68, .14); color: var(--err); width: 16px; height: 16px; border-radius: 50%; line-height: 1; font-size: 11px; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.cfg-chip-remove:disabled { background: transparent; color: var(--muted); cursor: not-allowed; }
+.cfg-chip-add { padding: 0 4px 0 8px; border-style: dashed; font-family: var(--font-sans); }
+.cfg-chip-input { border: none; background: transparent; color: var(--text); font: inherit; font-size: 12px; width: 76px; outline: none; }
+.cfg-draglist { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.cfg-draglist-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--border); }
+.cfg-draglist-row:first-child { border-top: none; }
+.cfg-draglist-row.over { background: var(--brand-soft); box-shadow: inset 0 2px 0 var(--brand); }
+.cfg-draglist-row.add { border-top-style: dashed; }
+.cfg-draglist-grip { color: var(--muted); cursor: grab; text-align: center; user-select: none; }
+.cfg-draglist-input { border: none; background: transparent; font-family: var(--font-mono); font-size: 12px; padding: 3px 2px; }
+.cfg-draglist-input:focus { background: var(--panel-2); border-radius: 6px; }
+.cfg-row-remove { border: none; background: transparent; color: var(--err); opacity: .7; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.cfg-row-remove:hover { opacity: 1; }
+.cfg-match-hint { display: none; }
+.cfg-kv { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; width: 100%; }
+.cfg-kv-row { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1.4fr) 24px; align-items: center; gap: 6px; padding: 3px 8px; border-top: 1px solid var(--border); }
+.cfg-kv-row:first-child { border-top: none; }
+.cfg-kv-row.head { color: var(--muted); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; background: var(--panel-2); }
+.cfg-kv-row.empty { color: var(--muted); font-size: 12px; }
+.cfg-kv-row.add { border-top-style: dashed; }
+.cfg-kv-input { border: none; background: transparent; font-size: 12px; padding: 3px 2px; }
+.cfg-kv-input.mono { font-family: var(--font-mono); }
+.cfg-kv-input:focus { background: var(--panel-2); border-radius: 6px; }
+.cfg-kv-hit { display: none; }
+
+
+/* 字段全路径前缀（左树模式下字段名不带前缀，靠它补回上下文） */
+.cfg-path-prefix { color: var(--muted); font-weight: 500; }
+.cfg-label p mark { font-weight: 600; }
+
+/* 长值不能撑破布局：拖拽列表的输入框必须能收缩，否则 200+ 字符的 URL 会溢出卡片 */
+.cfg-draglist-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.cfg-draglist-input { min-width: 0; width: 100%; overflow-x: auto; white-space: nowrap; }
+/* 类型保真提示：可视化编辑会把非字符串元素转成文本 */
+.cfg-collection-warn { margin: 0; color: var(--warn); font-size: 11.5px; line-height: 1.5; }
+.cfg-collection-warn b { font-weight: 700; }
+/* 键值表的长值也要能收缩 */
+.cfg-kv-row { grid-template-columns: minmax(70px, 1fr) minmax(70px, 1.4fr) 24px; }
+.cfg-kv-input { min-width: 0; }

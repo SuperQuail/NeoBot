@@ -62,7 +62,10 @@ describe('SchemaForm', () => {
 
   it('注册表：已知 kind 命中，未知 kind 兜底为标量且不抛异常', () => {
     expect(fieldRegistry.scalar).toBeDefined();
-    expect(fieldRegistry.list).toBe(fieldRegistry.dict);
+    // list / dict 曾经共用 JsonField（原始 JSON 文本域）；现在各自有可视化编辑器，不应再相等
+    expect(fieldRegistry.list).toBeDefined();
+    expect(fieldRegistry.dict).toBeDefined();
+    expect(fieldRegistry.list).not.toBe(fieldRegistry.dict);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const Fallback = resolveFieldComponent('brand_new_kind');
     expect(Fallback).toBe(fieldRegistry.scalar);

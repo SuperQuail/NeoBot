@@ -5,7 +5,8 @@
 import type { ComponentType } from 'react';
 import type { FieldDescriptor } from '../../api/types';
 import ComboboxField from './ComboboxField';
-import JsonField from './JsonField';
+import DictField from './DictField';
+import ListField from './ListField';
 import ModelList from './ModelList';
 import ModelParamsField from './ModelParamsField';
 import ScalarField from './ScalarField';
@@ -18,8 +19,9 @@ export const fieldRegistry: Record<string, FieldComponent> = {
   model_list: ModelList,
   // 模型参数目录（spec(4) Part B）：三段式可选参数增删 + 自定义参数
   model_params: ModelParamsField,
-  list: JsonField,
-  dict: JsonField,
+  // 数组/字典：可视化编辑（自动在 chip 墙 / 拖拽列表 / 键值表之间选形态），保留 JSON 兜底
+  list: ListField,
+  dict: DictField,
   // 下拉候选型标量：由 ScalarField 内部再次分流到 ComboboxField
   enum: ScalarField,
 };

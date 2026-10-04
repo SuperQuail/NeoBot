@@ -4,8 +4,9 @@ import Icon from '../Icon';
 import type { FieldDescriptor } from '../../api/types';
 import ComboboxField from './ComboboxField';
 import { FieldActions, HotBadge } from './FieldChrome';
+import { Highlight } from './Highlight';
 import { SECRET_RE, type FieldCallbacks } from './fieldTypes';
-function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount }: { descriptor: FieldDescriptor } & FieldCallbacks) {
+function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount, filter }: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const [reveal, setReveal] = useState(false);
   const [text, setText] = useState(value === undefined || value === null ? '' : String(value));
   const [error, setError] = useState('');
@@ -40,10 +41,17 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
     },
   };
 
+  // 面板收敛为「左树选分区 + 右侧只渲染该分区」，字段名不再带前缀；
+  // 搜索时把父路径补成灰色前缀，命中片段标黄，用户才看得出「命中在哪一层」。
+  const parentPath = descriptor.path.slice(0, -1).join('.');
   const header = (
     <div className="cfg-label">
-      <label htmlFor={id}>{descriptor.name}{descriptor.readonly && <span className="muted small"> · 只读</span>}</label>
-      {descriptor.description && <p>{descriptor.description}</p>}
+      <label htmlFor={id}>
+        {parentPath && <span className="cfg-path-prefix">{parentPath}.</span>}
+        <Highlight text={descriptor.name} keyword={filter} />
+        {descriptor.readonly && <span className="muted small"> · 只读</span>}
+      </label>
+      {descriptor.description && <p><Highlight text={descriptor.description} keyword={filter} /></p>}
       <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
     </div>
   );

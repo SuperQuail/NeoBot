@@ -20,6 +20,8 @@ export interface FieldCallbacks {
 
 export interface FieldProps extends FieldCallbacks {
   descriptor: FieldDescriptor;
+  /** 父级（ConfigTreePanel）已经按关键词筛过字段：这里不再二次过滤，只做高亮 */
+  globallyFiltered?: boolean;
   changedPaths?: Set<string>;
   history?: Record<string, Array<{ value: unknown; at: string }>>;
   collapse?: Record<string, boolean>;
@@ -32,6 +34,8 @@ export interface SchemaFormProps {
   onChange: (path: string[], value: FieldValue) => void;
   disabled?: boolean;
   filter?: string;
+  /** 字段已由父级筛好：只高亮命中，不再逐字段过滤 */
+  globallyFiltered?: boolean;
   baseline?: Record<string, FieldValue>;
   history?: Record<string, Array<{ value: unknown; at: string }>>;
   onRestore?: (path: string[], value: FieldValue) => void;
