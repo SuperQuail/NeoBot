@@ -287,20 +287,41 @@ async def test_reload_on_change_uses_new_logic(tmp_path):
 
 
 def test_templates_synced_and_user_edits_preserved(tmp_path):
-    """A13：两个模板存在；用户改过之后不被覆盖；删掉后会重新种下。"""
+    """A13：模板会被种下；删掉后会重新种下。
+
+    `deepseek_peak_valley` 已改为**内置脚本**（不再从 templates/ 同步）：
+    它开箱可用，不该在 Billing/ 下种一个文件 —— 那样反而多一个会被误删/改坏的失败面。
+    用户若自己放同名脚本，用户脚本优先（见下一条用例）。
+    """
     make_service(tmp_path, enabled=False)
     billing_dir = tmp_path / "Billing"
-    assert (billing_dir / "deepseek_peak_valley.py").exists()
     assert (billing_dir / "per_call.py").exists()
-
-    user_edit = "# 我自己改过的峰谷脚本\nVALUE = 1\n"
-    (billing_dir / "deepseek_peak_valley.py").write_text(user_edit, encoding="utf-8")
-    make_service(tmp_path, enabled=False)  # 模拟再次启动
-    assert (billing_dir / "deepseek_peak_valley.py").read_text(encoding="utf-8") == user_edit
+    assert not (billing_dir / "deepseek_peak_valley.py").exists(), "内置脚本不该被种成文件"
 
     (billing_dir / "per_call.py").unlink()
     make_service(tmp_path, enabled=False)
     assert (billing_dir / "per_call.py").exists()
+
+
+def test_builtin_script_needs_no_file_and_user_file_wins(tmp_path):
+    """内置脚本开箱可用；同名的**用户脚本优先**（尊重用户自定义）。"""
+    peak_ctx = context(occurred_at=datetime(2026, 9, 9, 2, 0, tzinfo=timezone.utc))
+
+    service = make_service(tmp_path, enabled=True)
+    builtin = service.preview(script_name="deepseek_peak_valley", ctx=peak_ctx)
+    assert builtin.source == "script:deepseek_peak_valley"
+    assert builtin.cost_cny > 0
+    binding = service.bindings([("m1", "deepseek_peak_valley", {})])[0]
+    assert binding["available"] is True
+    # 内置来源在面板里标成「<内置>」：用户一眼能看出这不是自己的脚本文件
+    assert binding["source"] == "script:deepseek_peak_valley"
+
+    # 放一个同名用户脚本 → 用户脚本生效，内置被覆盖
+    write_script(tmp_path, "deepseek_peak_valley", "def compute_cost(ctx):\n    return 42.0\n")
+    overridden = make_service(tmp_path, enabled=True).preview(
+        script_name="deepseek_peak_valley", ctx=peak_ctx
+    )
+    assert overridden.cost_cny == pytest.approx(42.0)
 
 
 # ── A16：纯函数与只读 ctx ────────────────────────────────────────

@@ -26,7 +26,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
@@ -82,6 +82,60 @@ def get_billing_executor() -> ThreadPoolExecutor:
                 thread_name_prefix="billing",
             )
         return _EXECUTOR
+
+
+#: 内置计价脚本的哨兵路径：面板据此显示「随代码分发，不是用户脚本文件」
+_BUILTIN_PATH = Path("<内置>")
+
+#: DeepSeek 峰谷口径（北京时间；官方：周一至周五 09:00-12:00、14:00-18:00 为高峰）
+_DEEPSEEK_PEAK_WINDOWS = ((dtime(9, 0), dtime(12, 0)), (dtime(14, 0), dtime(18, 0)))
+_DEEPSEEK_OFF_PEAK_RATIO = 0.5
+
+
+def builtin_deepseek_peak_valley(ctx: Mapping[str, Any]) -> dict[str, Any]:
+    """DeepSeek 峰谷计价（**内置**脚本）。
+
+    口径来源：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+    高峰 = 北京时间周一至周五 09:00-12:00、14:00-18:00；其余为空闲；空闲价 = 高峰价 ×0.5。
+
+    **模型条目的 pricing 要填高峰价**（默认模型库就是这么填的）；填均价会让金额系统性偏小。
+
+    为什么不放在 <DATA_DIR>/Billing/ 里当模板：默认模型库本来就要求按峰谷折算，
+    而模板文件可能没同步、被误删或改坏 —— 放代码里就没有这些失败面。
+    用户若在 <DATA_DIR>/Billing/ 放了同名脚本，**用户脚本优先**（见 `_load_policy`）。
+
+    节假日不特殊处理：官方口径里法定节假日全天算空闲，而节假日表无法离线维护；
+    真要精确到节假日，写个同名用户脚本覆盖即可。
+    """
+    occurred_at = datetime.fromisoformat(str(ctx["occurred_at"]))
+    now = occurred_at.astimezone(timezone(timedelta(hours=8)))
+    is_peak = now.weekday() < 5 and any(
+        start <= now.time() < end for start, end in _DEEPSEEK_PEAK_WINDOWS
+    )
+    ratio = 1.0 if is_peak else _DEEPSEEK_OFF_PEAK_RATIO
+
+    usage = ctx.get("usage") or {}
+    pricing = ctx.get("pricing") or {}
+    hit = usage.get("cache_hit_tokens") or 0
+    miss = usage.get("cache_miss_tokens") or usage.get("input_tokens") or 0
+    out = usage.get("output_tokens") or 0
+    parts = {
+        "cache_hit": hit * float(pricing.get("cache_hit_price_per_mtokens") or 0.0) / 1e6,
+        "cache_miss": miss * float(pricing.get("input_price_per_mtokens") or 0.0) / 1e6,
+        "output": out * float(pricing.get("output_price_per_mtokens") or 0.0) / 1e6,
+    }
+    window = "高峰" if is_peak else "空闲 ×0.5"
+    return {
+        "cost_cny": sum(parts.values()) * ratio,
+        "components": {key: round(value * ratio, 8) for key, value in parts.items()},
+        "note": window + " @ " + now.strftime("%Y-%m-%d %H:%M") + " CST",
+    }
+
+
+#: 内置计价脚本表：名字 -> compute(ctx)。`billing_script` 命中且**没有**同名用户脚本时生效。
+BUILTIN_SCRIPTS: Mapping[str, Callable[[Mapping[str, Any]], Any]] = {
+    "deepseek_peak_valley": builtin_deepseek_peak_valley,
+}
 
 
 def builtin_cost(
@@ -392,9 +446,11 @@ class BillingService:
             self._logger.debug("计费模板清单写入失败", error=str(exc))
 
     def template_names(self) -> list[str]:
-        if not _TEMPLATES_DIR.is_dir():
-            return []
-        return sorted(item.stem for item in _TEMPLATES_DIR.glob("*.py"))
+        """面板可选的脚本名：**内置脚本** + templates/ 下的模板。"""
+        names: set[str] = set(BUILTIN_SCRIPTS)
+        if _TEMPLATES_DIR.is_dir():
+            names |= {item.stem for item in _TEMPLATES_DIR.glob("*.py")}
+        return sorted(names)
 
     def sync_templates(self) -> list[str]:
         """把内置模板同步到 <DATA_DIR>/Billing/（**不覆盖用户改动**，A13）。
@@ -521,6 +577,22 @@ class BillingService:
     def _load_policy(self, name: str, *, force: bool = False) -> _LoadedPolicy | None:
         path = self._resolve_script_path(name)
         if path is None:
+            builtin = BUILTIN_SCRIPTS.get(name)
+            if builtin is not None:
+                # 内置脚本：不需要用户脚本文件。mtime/size 恒为 0（内容随代码走）。
+                policy = _LoadedPolicy(
+                    name=name, path=_BUILTIN_PATH, mtime_ns=0, size=0, compute=builtin
+                )
+                with self._lock:
+                    self._policies[name] = policy
+                    self._missing.discard(name)
+                record = self._stats.setdefault(name, _ScriptStat(name=name))
+                record.ok = True
+                record.path = str(_BUILTIN_PATH)
+                record.error = ""
+                record.loaded_at = datetime.now(timezone.utc).isoformat()
+                self._errors.pop(name, None)
+                return policy
             self._errors[name] = f"脚本 {name} 不存在于 {self._custom_dir}"
             with self._lock:
                 self._missing.add(name)
