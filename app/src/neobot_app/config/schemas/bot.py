@@ -1900,8 +1900,8 @@ class EnhancedChat(Chat):
         metadata={"description": "私聊回复后挂起等待秒数；超时无新消息则结束会话，默认300秒（5分钟）"},
     )
     private_chat_max_tokens: Optional[int] = field(
-        default=50000,
-        metadata={"description": "私聊会话最大token数；超过后重启聊天管线"},
+        default=250000,
+        metadata={"description": "私聊会话最大token数；超过后重启聊天管线（默认 250K）"},
     )
     private_chat_dynamic_warmup: Optional[bool] = field(
         default=True,
