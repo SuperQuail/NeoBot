@@ -194,17 +194,21 @@ class ModelConsumerReload(ConfigConsumer):
 
 #: 模型 / 凭据变更后**已知仍未接入热重载**的部分（issue #75）。
 #:
-#: 为什么要显式列出来：`models` 在热重载分类表里是「可热重载」（provider 消费者登记的），
-#: 于是 `diff_snapshot` 的 `needs_restart_count` 恒为 0 —— 面板只会说「全部已生效」，
-#: 而这些组件仍在用启动期的 provider。把缺口摆在这里保持可见：
-#: **补齐一个就删一条**，删空后提示自然消失。
-MODEL_RELOAD_GAPS: tuple[str, ...] = (
-    "表情包图片解析（emoji 服务持有的视觉 provider）",
-    "绘图服务的视觉 provider（drawing）",
-    "应用级 provider 引用（runtime/application.py）",
-    "技能实例持有的 provider（skills/*）",
-    "回复发送器的 provider（reply/sender.py）",
-)
+#: 为什么要显式列出来：`models` 在分类表里是「可热重载」，于是 `needs_restart_count` 恒为 0，
+#: 面板只会说「全部已生效」。缺口摆在这里保持可见：**补齐一个就删一条**，删空后提示自然消失。
+#:
+#: 2026-10 审计（issue #75）后为空，逐条结论：
+#: - 表情包图片解析、技能（绘图看参考图 / 图片解析）：**已接入**换装入口并注册消费者
+#: - `drawing/service.py` 的 `_vision_provider` 属于 `CreatorImageService` ——
+#:   它已被 `creator_image` 消费者**整体重建**，不是缺口
+#: - `runtime/application.py` 的引用只用于 `close()`（资源清理），与「用哪个模型」无关
+#: - `reply/sender.py` 的 `_provider` 赋值后**从未被读取**（死状态）
+#: - `reply/tools.py` 的 `ReplyToolExecutor` 由 `build_reply_toolset` **每回复**构建，
+#:   传的是编排器当前 provider（`native_vision_provider=self._provider`），天然跟得上
+#:
+#: 遗留（非 staleness，但值得知道）：服务注册表里的 `services["vision_provider"]` 仍是
+#: 启动期实例（仓库内无消费者）；插件若读取它，换模型后要自行重新取。
+MODEL_RELOAD_GAPS: tuple[str, ...] = ()
 
 
 def model_reload_restart_hint() -> str:

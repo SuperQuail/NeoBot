@@ -1539,17 +1539,22 @@ async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> N
     finally:
         await server.stop()
 
-
 # ── 模型/凭据变更后的「仍需重启」提示（issue #75）────────────────
 
 
-def test_model_change_appends_restart_hint() -> None:
-    """改模型/密钥必须提示「仍需重启」。
+def test_model_change_appends_restart_hint(monkeypatch) -> None:
+    """机制：模型/凭据变更且**存在缺口**时，必须追加「仍需重启」。
 
-    分类表把 \`models\` 整体标成可热重载（provider 消费者登记的规则），
-    所以 \`needs_restart_count\` 恒为 0 —— 不额外补一句，面板就会声称「0 项需重启」，
-    而实际仍有组件在用启动期的 provider。
+    分类表把 \`models\` 整体标成可热重载，所以 \`needs_restart_count\` 恒为 0 ——
+    不额外补一句，面板就会声称「0 项需重启」，而实际仍有组件在用启动期的 provider。
+    生产清单经审计后已清空，所以这里**打桩**一个缺口来验证机制本身：
+    以后再有组件忘了接热重载，把它写回 \`MODEL_RELOAD_GAPS\` 即可重新提示。
     """
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(
+        provider_reload, "MODEL_RELOAD_GAPS", ("示例组件（未接热重载）",)
+    )
     from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
 
     message, gaps = _append_model_reload_hint(
@@ -1558,13 +1563,15 @@ def test_model_change_appends_restart_hint() -> None:
     )
 
     assert "重启" in message
-    assert gaps, "缺口没补齐之前必须如实提示，不能返回空"
-    assert any("表情包" in item or "emoji" in item for item in gaps)
-    assert any("绘图" in item for item in gaps)
+    assert "示例组件" in message
+    assert gaps == ["示例组件（未接热重载）"]
 
 
-def test_env_change_also_appends_restart_hint() -> None:
-    """平台凭据（.env）同样算模型类变更：换 Key 后也有组件不会跟着换。"""
+def test_env_change_also_appends_restart_hint(monkeypatch) -> None:
+    """平台凭据（\`.env\`）同样算模型类变更。"""
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(provider_reload, "MODEL_RELOAD_GAPS", ("示例组件",))
     from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
 
     _message, gaps = _append_model_reload_hint("配置已重载", {"env": {}})
@@ -1572,13 +1579,30 @@ def test_env_change_also_appends_restart_hint() -> None:
     assert gaps
 
 
-def test_unrelated_change_keeps_message_untouched() -> None:
+def test_unrelated_change_keeps_message_untouched(monkeypatch) -> None:
     """与模型无关的改动不该背这口锅：文案保持原样。"""
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(provider_reload, "MODEL_RELOAD_GAPS", ("示例组件",))
     from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
 
     message, gaps = _append_model_reload_hint(
         "配置已热重载：1 项已生效，0 项需重启",
         {"chat.group_chat_chance": 0.3},
+    )
+
+    assert gaps == []
+    assert message.endswith("0 项需重启")
+
+
+def test_no_gaps_means_no_restart_hint() -> None:
+    """审计后清单为空：模型变更不再多嘴「需重启」，提示随缺口出现 / 消失。"""
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+    from neobot_app.runtime.provider_reload import MODEL_RELOAD_GAPS
+
+    assert MODEL_RELOAD_GAPS == (), "缺口清空后才该为空；新发现缺口请写回清单"
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：2 项已生效，0 项需重启", {"models.registry[0].x": 1}
     )
 
     assert gaps == []

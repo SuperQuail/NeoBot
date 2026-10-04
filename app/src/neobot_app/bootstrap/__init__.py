@@ -1233,6 +1233,29 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             or vision_provider
         )
 
+    def _rebuild_emoji(new_config: Any) -> None:
+        """表情包的图片解析用的视觉 provider 也要换（issue #75）。
+
+        `EmojiService._vision_provider` 在构造期固化，且真的用在解析表情包图片上 ——
+        不换装的话，换了视觉模型之后表情包识别仍走旧模型。
+        """
+        emoji_service.install_vision_provider(_current_vision_provider(new_config))
+
+    def _rebuild_skills(new_config: Any) -> None:
+        """把新视觉 provider 推给所有声明了换装入口的技能（issue #75）。
+
+        技能在启动期由 `build_all_skills` 建好并注册，内部持有视觉 provider 且**真的在用**
+        （drawing_skill 看参考图、image_parse_skill 解析图片）。这里按
+        「谁实现了 `install_vision_provider` 就推给谁」扫描，而不是写死技能名：
+        以后新增会看图的技能，实现同一入口即可自动跟上。
+        """
+        provider = _current_vision_provider(new_config)
+        # all_skills 是 property，不是方法（写成 all_skills() 会抛 TypeError）
+        for skill in skill_manager.all_skills:
+            installer = getattr(skill, "install_vision_provider", None)
+            if callable(installer):
+                installer(provider)
+
     def _rebuild_creator_image(new_config: Any) -> None:
         """重建生图服务并换装（生图服务在构造时固化默认模型与平台凭据）。
 
@@ -1307,6 +1330,16 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             name="creator_image",
             rebuild=_rebuild_creator_image,
             reason="生图服务持有默认模型与平台凭据，变更后重建（启用开关变更仍需重启）",
+        ),
+        ModelConsumerReload(
+            name="emoji",
+            rebuild=_rebuild_emoji,
+            reason="表情包图片解析持有视觉 provider（真的在用），模型变更后换装",
+        ),
+        ModelConsumerReload(
+            name="skills",
+            rebuild=_rebuild_skills,
+            reason="技能（绘图看参考图 / 图片解析）持有视觉 provider，模型变更后推送新实例",
         ),
         ModelConsumerReload(
             name="problem_solver",

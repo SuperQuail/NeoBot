@@ -102,6 +102,16 @@ class EmojiService:
         self._disk_refresh_task: asyncio.Task[None] | None = None
         self._scan_lock = asyncio.Lock()
 
+    def install_vision_provider(self, provider: Provider | None) -> Provider | None:
+        """换用新的视觉 provider，返回旧的（热重载：只换引用，不负责关闭旧对象）。
+
+        issue #75：表情包的图片解析走 `self._vision_provider`（见 `_describe_*`），
+        而它在构造期就固化了 —— 换了视觉模型不推给它，表情包识别会一直用旧模型。
+        """
+        previous = self._vision_provider
+        self._vision_provider = provider
+        return previous
+
     def bind_send_dependencies(self, adapter: Any, file_server: Any) -> None:
         """注入发送能力（适配器与文件服务器），供 send_sticker 使用。"""
         self._adapter = adapter
