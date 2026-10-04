@@ -94,6 +94,12 @@ def register_config_reload_command(
     from neobot_app.config.loader.manager import ConfigLoadError
 
     async def _reload_config(**kwargs: Any) -> dict[str, Any]:
+        # `.env` 的值不进 config.toml 的配置快照，所以「只改环境变量」时下面的 diff
+        # 是空的、一个消费者都不会被触发。调用方（面板保存 env）用它把
+        # 「配置之外但必须重建」的路径显式带进来 —— 否则新凭据要等重启才生效（issue #74）。
+        extra_changed_paths = tuple(
+            str(item) for item in (kwargs.get("extra_changed_paths") or ()) if str(item)
+        )
         try:
             before = snapshot(config)
         except Exception:
@@ -121,12 +127,13 @@ def register_config_reload_command(
         # 构建期组件不会自己发现配置变了：按注册表把改动分发给声明关心的组件，
         # 让「在面板里改完就用」成立，而不是让用户自己判断该不该重启。
         reload_report = None
-        if hot_reload is not None and changes is not None:
+        if hot_reload is not None and (changes is not None or extra_changed_paths):
             changed_paths = [
                 str(item["path"])
                 for group in ("hot_reload", "needs_restart")
-                for item in changes.get(group) or []
+                for item in (changes or {}).get(group) or []
             ]
+            changed_paths.extend(extra_changed_paths)
             try:
                 report = await hot_reload.apply(config, changed_paths)
             except Exception as exc:

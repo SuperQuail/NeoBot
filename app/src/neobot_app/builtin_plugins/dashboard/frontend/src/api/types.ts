@@ -353,6 +353,10 @@ export interface EnvPayload {
   platforms?: Array<{ name?: string; url?: string; has_key?: boolean; builtin?: boolean; [k: string]: unknown }>;
   revision?: number;
   message?: string;
+  /** 保存并重载的结果：仍有部分模块需重启进程才生效（启动期读取环境变量的那些，如 TTS / 生图） */
+  needs_restart?: boolean;
+  /** 重载是否成功 */
+  applied?: boolean;
   [key: string]: unknown;
 }
 

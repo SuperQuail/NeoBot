@@ -34,9 +34,15 @@ class ProviderBundle:
 
 
 class ProviderReloadConsumer(ConfigConsumer):
-    """模型与平台密钥变更时重建 provider 并原地替换。"""
+    """模型与平台密钥变更时重建 provider 并原地替换。
 
-    config_paths: tuple[str, ...] = ("models",)
+    `env` 与 `models` 并列在关心范围内：平台 URL / APIKey 来自 `.env`，
+    **不进 config.toml 的配置快照**，所以「只改环境变量」不会体现在配置 diff 里。
+    面板保存 env 时会显式带上这条路径（`dashboard/api.py` 的 `env_save`），
+    否则消费者根本不会被触发，新凭据要等重启才生效（issue #74）。
+    """
+
+    config_paths: tuple[str, ...] = ("models", "env")
 
     def __init__(
         self,
@@ -72,6 +78,11 @@ class ProviderReloadConsumer(ConfigConsumer):
                 "models",
                 True,
                 "模型库与平台密钥变更后重建 provider 并原地替换（新 provider 不可用时保持原样）",
+            ),
+            HotReloadRule(
+                "env",
+                True,
+                "平台凭据（.env）变更后重建 provider；覆盖 主对话 / 视觉 / 档案总结 三个挂载点",
             ),
         )
 

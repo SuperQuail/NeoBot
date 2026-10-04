@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 0decd49
-verified_hash: 989601eeb6b8
+verified_against: 8107657
+verified_hash: a146b7528a3d
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -506,6 +506,11 @@ flowchart TD
   只是 `/api/*` 被 403 拦住。别把「未配置密码」当成「端口关闭」。
 * **`/api/auth/setup` 在已配置密码时也在公开集里**：处理器回 400「请直接登录」而不是 401。
   这是刻意设计（避免暴露「需要登录」的接口形态），不是漏配。
+* **面板提示「已保存」不等于已经生效**：面板只报后端给的 `message`。配置项分
+  「运行期读取（立即生效）」与「启动期持有快照（必须重启）」两类，而 `.env` 更特殊 ——
+  它不进配置快照、连重载的 diff 都看不见。所以保存 env 后要按 `needs_restart`
+  把「仍需重启」的意思如实呈现（警告样式 + 就地给出重启入口），别让绿色对勾
+  盖过「新 Key 还没生效」这件事（issue #74）。
 * **点「退出登录」不会结束服务端会话**：`Layout.tsx:123` 的 logout 只 `clearToken` 加跳转，
   并不调用 `/api/auth/logout`；而浏览器同源 fetch 仍会自动带上 HttpOnly Cookie，
   会话要等 `session_timeout_minutes`（默认 720 分钟）过期、进程重启或改密码才失效。

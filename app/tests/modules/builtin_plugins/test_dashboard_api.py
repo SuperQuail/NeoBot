@@ -617,7 +617,8 @@ async def test_env_delete_and_reload_via_api(panel, monkeypatch) -> None:
     path.write_text("DeepSeek_URL=https://example.com\nCUSTOM_VALUE=hello\n", encoding="utf-8")
     reloaded = []
 
-    async def reload_config(self):
+    async def reload_config(self, **kwargs):
+        # 保存 .env 会带 extra_changed_paths 声明 env 变更（issue #74）
         reloaded.append(path.read_text(encoding="utf-8"))
         return {"ok": True, "message": "重载成功"}
 

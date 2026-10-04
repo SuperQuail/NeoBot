@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 0decd49
-verified_hash: 9b4f0dfca1ca
+verified_against: 8107657
+verified_hash: 32bc0b72e07b
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -257,6 +257,11 @@ flowchart TD
 
 * **入站帧必须先判 `dict`**：数组/字符串帧若直接入队会打死分发循环（见 `fix(13)`）；
   连接存活与分发循环存活是两条独立判据，别只看其中一条。
+* **配置 diff 看不见 `.env`**：环境变量由 `load_env()` 直接写 `os.environ`，不进
+  `BotConfig` 快照，所以「只改环境变量」时 `changed_paths` 是空的 —— 热重载消费者不被触发、
+  新凭据不生效，而提示还会说「没有检测到配置项变化」。面板保存 env 时会显式声明
+  `env` 路径把它补上；TTS / 生图 / 联网搜索等在启动期读取环境变量、没有消费者，
+  仍需重启进程（issue #74）。
 * **适配器没连上不代表启动失败**：`start()` 里连接探针只观察不致命，启动流程与面板不因
   「框架还没连上」被回滚。
 * **provider 异常不再降级成 assistant 文本**：历史里不能出现 `Error: ...`

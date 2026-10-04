@@ -12,8 +12,8 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 0decd49
-verified_hash: 685db1faf976
+verified_against: 8107657
+verified_hash: 1b5bcf066b67
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -224,6 +224,12 @@ flowchart TD
 热重载消费者按**注册顺序**生效（`runtime/hot_reload_registry.py:113` 注释「先注册先生效」）：
 `AdapterSupervisor` 在 :784 先注册，`_provider_reload` 在 :1182 先 unregister 再
 register，所以顺序永远是「适配器先重连 → provider 再重建」。
+
+`_reload_config` 还接受 `extra_changed_paths`：`.env` 的值**不进配置快照**，
+所以「只改环境变量」时 diff 是空的、消费者一个都不会被触发。调用方（面板保存 env）
+必须显式声明 `env` 这条路径，provider 消费者才会按新凭据重建；否则表现为
+「提示保存成功，但新 Key 要等重启才生效」。TTS / 生图 / 联网搜索等在启动期读取
+环境变量、没有对应消费者，仍需重启进程 —— 响应里的 `needs_restart` 就是这件事（issue #74）。
 </details>
 
 <details>

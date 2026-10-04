@@ -73,6 +73,45 @@ def _json_error(message: str, *, status: int = 400, **extra: Any) -> web.Respons
     return web.json_response(payload, status=status)
 
 
+#: 保存 .env 后仍然必须重启才能生效的部分：这些模块在启动时构建并持有 provider，
+#: 没有注册热重载消费者（ProviderReloadConsumer 只覆盖 reply / image_parse / archive）。
+ENV_RESTART_HINT = (
+    "在启动时读取环境变量的其它模块（TTS、生图、联网搜索等）需重启进程后生效"
+)
+
+
+def _env_reload_message(
+    reload_result: dict[str, Any], env_written: bool
+) -> tuple[str, bool]:
+    """组合「保存 .env 并重载」后的提示文案；返回 (文案, 是否仍需重启)。
+
+    为什么要单独写文案：环境变量不进 config.toml 的配置快照，重载自身的分支是
+    「配置已重载，本次没有检测到配置项变化」—— 对刚改完 Key 的用户来说，
+    这句话既像成功又像什么都没发生，正是 issue #74 的误导来源。
+    """
+    if not env_written:
+        return "未检测到环境变量改动；已重载配置。", False
+
+    report = reload_result.get("hot_reload") or {}
+    applied = [str(item.get("name") or "") for item in report.get("applied") or []]
+    failed = list(report.get("failed") or [])
+
+    if failed:
+        reasons = "；".join(
+            str(item.get("error") or item.get("name") or "未知原因") for item in failed
+        )
+        head = f"环境变量已保存并重载，但部分组件重建失败（{reasons}），仍在用旧凭据。"
+    elif "provider" in applied:
+        head = (
+            "环境变量已保存并重载：平台凭据变更已重建 provider"
+            "（覆盖 主对话 / 视觉 / 档案总结）。"
+        )
+    else:
+        head = "环境变量已保存并重载。"
+
+    return f"{head}{ENV_RESTART_HINT}。", True
+
+
 def _parse_cost_detail(raw: Any) -> dict[str, Any] | None:
     """把 cost_detail 的单行 JSON 解析回 {components, note}（解析失败返回原始文本）。"""
     if raw is None:
@@ -1479,9 +1518,18 @@ class DashboardApi:
             return _json_ok(result)
         return _json_error(str(result.get("message") or "重载失败"), status=500)
 
-    async def _reload_config(self, *, with_changes: bool = False) -> dict[str, Any]:
+    async def _reload_config(
+        self, *, with_changes: bool = False, extra_changed_paths: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        """重载配置并返回结果。
+
+        `extra_changed_paths`：**配置快照之外**的改动路径（目前只有 `.env`）。
+        `.env` 的值不进 config.toml，配置 diff 里永远看不到它，所以要由调用方
+        显式声明，否则热重载消费者一个都不会被触发（issue #74）。
+        """
         from neobot_app.config.hot_reload import diff_snapshot, snapshot, summarize_changes
 
+        extra_paths = tuple(str(item) for item in extra_changed_paths if str(item))
         before: dict[str, Any] | None = None
         if with_changes:
             config_obj = self._models_config()
@@ -1496,7 +1544,13 @@ class DashboardApi:
         if not callable(caller):
             return {"ok": False, "message": "配置重载入口不可用，请重启 NeoBot"}
         try:
-            result = caller("config.reload")
+            # 只在真的要声明时带参：宿主命令注册表的**实现**未必接受 `**kwargs`
+            # （协议上允许，但既有实现是 `call(self, name)`）。不为一个只在 env 场景用到的
+            # 参数去改外部调用契约 —— 保持 `config.reload` 的调用形态不变。
+            if extra_paths:
+                result = caller("config.reload", extra_changed_paths=extra_paths)
+            else:
+                result = caller("config.reload")
             if asyncio.iscoroutine(result):
                 result = await result
         except Exception as exc:
@@ -1505,6 +1559,9 @@ class DashboardApi:
             return {"ok": False, "message": "配置重载返回异常"}
         ok = str(result.get("status") or "").lower() == "ok"
         payload: dict[str, Any] = {"ok": ok, "message": str(result.get("message") or "")}
+        # 透传热重载报告：env 保存要据此说明「哪些组件已按新凭据重建」
+        if isinstance(result.get("hot_reload"), dict):
+            payload["hot_reload"] = result["hot_reload"]
         if ok and before is not None:
             after = self._models_config()
             if after is not None:
@@ -1516,7 +1573,9 @@ class DashboardApi:
                             f"配置已热重载：{payload['changes']['hot_reload_count']} 项已生效，"
                             f"{payload['changes']['needs_restart_count']} 项需重启"
                         )
-                    else:
+                    elif not extra_paths:
+                        # 只有「配置快照里也确实没有变化」时才这么说。改了 .env 的场景
+                        # 走不到这里 —— 那句「没有检测到配置项变化」会让用户以为没保存成功。
                         payload["message"] = "配置已重载，本次没有检测到配置项变化"
                 except Exception as exc:
                     self.logger.warning(f"配置差异计算失败: {exc}")
@@ -1586,11 +1645,20 @@ class DashboardApi:
         except Exception as exc:
             return _json_error(f"保存 .env 失败: {exc}", status=500)
         document["can_manage"] = self.console.manage_plugins
+        env_written = bool(payload.get("updates") or payload.get("deletes"))
         document["message"] = "环境变量已保存；模型注册表需重载后生效"
         if payload.get("reload"):
-            reload_result = await self._reload_config()
+            reload_result = await self._reload_config(
+                # 显式声明 env 变更：.env 不进 config.toml 的配置快照，不带这条路径
+                # 的话 provider 消费者不会被触发，新凭据要等重启才生效（issue #74）。
+                extra_changed_paths=("env",) if env_written else (),
+            )
             document["applied"] = bool(reload_result.get("ok"))
-            document["message"] = str(reload_result.get("message") or document["message"])
+            message, needs_restart = _env_reload_message(reload_result, env_written)
+            document["message"] = message
+            document["needs_restart"] = needs_restart
+            if reload_result.get("hot_reload"):
+                document["hot_reload"] = reload_result["hot_reload"]
         return _json_ok(document)
 
     def _models_config(self) -> Any:
