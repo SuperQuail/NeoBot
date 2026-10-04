@@ -52,7 +52,9 @@ def test_missing_section_returns_empty_dict() -> None:
 
 def test_schema_defaults_are_typed() -> None:
     section = WebSearchConfig()
-    assert section.engines is None
+    # 默认搜索源**写死在 schema 里**，而不是留 None 靠 SearchManager 兜底：
+    # 这样面板、配置参考与审计脚本看到的就是真实生效的值（两者语义本就相同）
+    assert section.engines == ["bing", "duckduckgo"]
     assert section.browser_fallback is True
     assert section.browser_timeout_seconds == 8.0
     assert section.engine_timeout_seconds is None

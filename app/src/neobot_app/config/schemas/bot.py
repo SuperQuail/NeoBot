@@ -1639,11 +1639,12 @@ class WebSearchConfig:
         metadata={"description": "研究模式中每个变体查询返回的最大结果数，默认 6"},
     )
     engines: Optional[List[str]] = field(
-        default=None,
+        default_factory=lambda: ["bing", "duckduckgo"],
         metadata={
             "description": (
                 "搜索引擎与回退顺序（fix(9)）。默认 [\"bing\", \"duckduckgo\"]；"
                 "duckduckgo 始终作为最后兜底执行，排在浏览器通道之后。"
+                "这两个引擎都无需申请 Key，所以出厂即可用"
             )
         },
     )
