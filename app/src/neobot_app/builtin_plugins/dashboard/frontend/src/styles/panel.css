@@ -534,3 +534,17 @@ mark { background: rgba(245, 158, 11, .2); color: var(--warn); border-radius: 3p
 /* 键值表的长值也要能收缩 */
 .cfg-kv-row { grid-template-columns: minmax(70px, 1fr) minmax(70px, 1.4fr) 24px; }
 .cfg-kv-input { min-width: 0; }
+
+/* ── 长文本控件（LongTextField）──
+   替换掉原来「按文本长度在 input/textarea 之间切换」的做法：
+   类型不稳定会导致打字途中丢焦点，且 rows 只数换行、不算折行。 */
+.cfg-longtext { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+/* height: auto 必须显式写：theme.css 的 .input 有全局 height:34px，
+   会把 textarea 压成单行高、让 rows 属性形同虚设（这正是旧控件「需要换行时不好用」的根因）。 */
+.cfg-longtext-area { height: auto; min-height: 33px; width: 100%; resize: vertical; line-height: 21px; padding: 6px 9px; font-family: var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cfg-longtext-area.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.cfg-longtext-modal { min-height: 52vh; resize: none; }
+.cfg-longtext-bar { display: flex; align-items: center; gap: 8px; }
+.cfg-longtext-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cfg-longtext-bar .btn-sm { margin-left: auto; }
+.cfg-json-actions { display: flex; align-items: center; gap: 8px; }

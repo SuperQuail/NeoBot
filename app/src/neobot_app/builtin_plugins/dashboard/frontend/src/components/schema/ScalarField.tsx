@@ -5,6 +5,7 @@ import type { FieldDescriptor } from '../../api/types';
 import ComboboxField from './ComboboxField';
 import { FieldActions, HotBadge } from './FieldChrome';
 import { Highlight } from './Highlight';
+import LongTextField from './LongTextField';
 import { SECRET_RE, type FieldCallbacks } from './fieldTypes';
 function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount, filter }: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const [reveal, setReveal] = useState(false);
@@ -27,6 +28,12 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
   /** 原生 input 事件在组字中会带 isComposing；React 的 Event 类型没声明它。 */
   const isComposingEvent = (event: { nativeEvent: Event }) =>
     (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
+
+  /** LongTextField 的提交口：本地状态与草稿一起更新。 */
+  const setTextAndEmit = (next: string) => {
+    setText(next);
+    onChange(next);
+  };
 
   // 组字生命周期：结束时把最终文本一次性提交（组字期间不提交）。
   const compositionProps = {
@@ -100,23 +107,27 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
   }
 
   const numeric = descriptor.type === 'int' || descriptor.type === 'float';
-  if (longText) {
+
+  // 非数字、非密钥的字符串一律走 LongTextField：
+  // 它永远是 textarea（类型不翻转 → 不会像旧实现那样在打字途中换控件、丢焦点），
+  // 高度按实测 scrollHeight（含折行）自动增高。
+  if (!numeric && !secret) {
     return (
       <div className="cfg-row">
         {header}
         <div className="cfg-control">
-          <textarea id={id} className="input" spellCheck={false} disabled={locked}
+          <LongTextField
             value={text}
-            // rows 也走本地状态：组字期间按外部 value 重算会让换行边界抖动、打断候选词
-            rows={Math.min(8, Math.max(3, text.split('\n').length))}
-            {...compositionProps}
-            onChange={(event) => {
-              const raw = event.target.value;
-              setText(raw);
-              // 组字中的中间态只留在本地，不写草稿/撤销栈，也不触发受控回写
-              if (composing.current || isComposingEvent(event)) return;
-              onChange(raw);
-            }} />
+            onChange={setTextAndEmit}
+            disabled={locked}
+            minRows={longText ? 3 : 1}
+            monospace={longText}
+            // 短字段不显示行数/放大：它就是个单行框，多一行说明纯属噪音
+            showCount={longText}
+            expandable={longText}
+            ariaLabel={descriptor.name}
+            ariaInvalid={!!error}
+          />
           <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
             onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
         </div>
