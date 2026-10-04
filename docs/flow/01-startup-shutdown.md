@@ -12,7 +12,7 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 8107657
+verified_against: b982184
 verified_hash: 1b5bcf066b67
 ---
 
