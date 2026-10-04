@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: c61f9eb
+verified_against: 2b8996a
 verified_hash: 60359e157442
 ---
 
