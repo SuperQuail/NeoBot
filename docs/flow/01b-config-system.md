@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 14cab4c
-verified_hash: 4cd686138133
+verified_against: 5d6c775
+verified_hash: cc80bf175d43
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -411,6 +411,9 @@ flowchart TD
   留空能正常启动，缺口交给面板首页的 `notices` 提示，而不是配置校验报错。
   4 个对话模型的 `pricing` 填的是 DeepSeek 官方价目表的**高峰价**，并挂
   `billing_script = "deepseek_peak_valley"`（空闲按 ×0.5）—— 填均价会让金额系统性偏小。
+  该脚本是**内置**的（`billing.py::BUILTIN_SCRIPTS`，随代码分发、不需要 `Billing/` 下的文件；
+  同名用户脚本优先）；`web_search.engines` 默认也写实为 `["bing", "duckduckgo"]`，
+  不再留 `None` 让 `SearchManager` 兜底 —— 面板/文档/审计看到的即为生效值。
 * **引用名是调用方唯一的定位手段，缺失或重复都会静默失效**：`by_ref()` 会跳过空引用名的条目
   （`bot.py:641` 的 `if item.model_ref`），字典推导对重复引用名是**后写覆盖** ——
   两者都不报错，表现为「配置写了却没生效」。`register_models` 现在会在注册前把这两类

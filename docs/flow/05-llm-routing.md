@@ -8,8 +8,8 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: 264696d
-verified_hash: 4aeb025c1d69
+verified_against: 5d6c775
+verified_hash: 0427690437b2
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -411,10 +411,11 @@ billing_config / conversation / occurred_at / local_time / tzname`；
 `usage` 只透传 input_tokens、output_tokens、cache_hit_tokens、cache_miss_tokens、
 completion_tokens_details 五个键，不注入 provider、DB session 或服务对象。
 
-**随仓库分发的两个模板**：`templates/deepseek_peak_valley.py`（北京时间周一至周五
-09:00-12:00 与 14:00-18:00 为高峰，空闲时段乘 0.5；注释强调模型 pricing 必须填**高峰价**，
-填均价会让金额系统性偏小）与 `templates/per_call.py`（读 `billing_config.price_per_call`，
-与 token 无关）。
+**随仓库分发**：`deepseek_peak_valley` 是**内置脚本**（`billing.py::BUILTIN_SCRIPTS`，随代码走）——
+北京时间周一至周五 09:00-12:00 与 14:00-18:00 为高峰，空闲时段乘 0.5；模型 pricing 必须填
+**高峰价**，填均价会让金额系统性偏小。它**不需要用户脚本文件**（同名用户脚本优先，尊重自定义），
+默认模型库直接引用它。另有 `templates/per_call.py` 模板（读 `billing_config.price_per_call`，
+与 token 无关），启动时同步到 `<数据目录>/Billing/`。
 </details>
 
 <details>
