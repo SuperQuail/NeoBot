@@ -141,8 +141,44 @@ def build_over_limit_reject_hint(*, max_length: int, max_sentence_count: int) ->
     )
 
 
+#: 中日韩字符（基本区 / 扩展 A / 兼容表意 / 假名 / 谚文）。
+_CJK_CLASS = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af"
+
+#: 中英之间的排版空格：一侧 CJK、另一侧字母或数字。
+#: agent 习惯在英文词前后加空格（「这是一个 bot 框架」），这种空格既不该切句、也不该留在正文里。
+#: 只看字母数字、不看标点 —— 否则会毁掉 Markdown：列表项变 -项目、标题变 #标题。
+_CJK_LATIN_SPACE_RE = re.compile(
+    rf"(?<=[{_CJK_CLASS}])[ \t]+(?=[0-9A-Za-z])|(?<=[0-9A-Za-z])[ \t]+(?=[{_CJK_CLASS}])"
+)
+
+
+def _is_cjk(char: str) -> bool:
+    return any(
+        start <= char <= end
+        for start, end in (
+            ("\u3400", "\u4dbf"),
+            ("\u4e00", "\u9fff"),
+            ("\uf900", "\ufaff"),
+            ("\u3040", "\u30ff"),
+            ("\uac00", "\ud7af"),
+        )
+    )
+
+
+def _normalize_cjk_latin_spaces(text: str) -> str:
+    """去掉中英之间的排版空格：这是一个 bot 框架 -> 这是一个bot框架。
+
+    只处理「一侧 CJK、另一侧字母数字」的空格：
+    - 英文词内部的空格（pip install）两侧都不是 CJK，原样保留；
+    - Markdown 记号后的空格（- 开头、# 开头）因为记号不是字母数字，也原样保留。
+    """
+    return _CJK_LATIN_SPACE_RE.sub("", text)
+
+
 def split_into_sentences_w_remove_punctuation(text: str, *, rng: Any = random) -> list[str]:
-    raw_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw_text = _normalize_cjk_latin_spaces(
+        str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    )
     hard_parts = [part.strip() for part in re.split(r"\n+", raw_text) if part.strip()]
     if len(hard_parts) > 1:
         messages: list[str] = []
@@ -150,7 +186,7 @@ def split_into_sentences_w_remove_punctuation(text: str, *, rng: Any = random) -
             messages.extend(split_into_sentences_w_remove_punctuation(part, rng=rng))
         return messages
 
-    text = re.sub(r"\n\s*\n+", "\n", str(text or ""))
+    text = re.sub(r"\n\s*\n+", "\n", raw_text)
     text = re.sub(r"\n\s*([，,。;\s])", r"\1", text)
     text = re.sub(r"([，,。;\s])\s*\n", r"\1", text)
     text = re.sub(r"([\u4e00-\u9fff])\n([\u4e00-\u9fff])", r"\1。\2", text)
@@ -172,6 +208,11 @@ def split_into_sentences_w_remove_punctuation(text: str, *, rng: Any = random) -
             prev_char = text[index - 1]
             next_char = text[index + 1]
             if is_english_letter(prev_char) and is_english_letter(next_char):
+                can_split = False
+            # 空格只要有一侧是 CJK，就只是中英排版，不是句子边界。
+            # 原先只保护「英文字母 空格 英文字母」，于是「这是一个 bot 框架」
+            # 会被从「个|空格|bot」处切开，切成「这是一个」+「bot 框架」两段。
+            elif char == " " and (_is_cjk(prev_char) or _is_cjk(next_char)):
                 can_split = False
 
         if can_split:

@@ -270,8 +270,10 @@ async def test_existing_markers_fences_and_literals_are_not_postprocess_shells(r
     assert wire_text(adapter) == [raw]
 
 
+# 边界从空格换成全角逗号：空格在中英之间已不再切句（见 test_split_spacing.py），
+# 这里要的是「合法正文里出现一个裸 cancel 片段」这个场景，用标点边界同样成立。
 @pytest.mark.parametrize("text,expected", [
-    ("cancel 是什么意思", ["cancel", "是什么意思"]),
+    ("cancel，是什么意思", ["cancel", "是什么意思"]),
     ("我选择\ncancel", ["我选择", "cancel"]),
 ])
 @pytest.mark.parametrize("preview_tool", ["split_reply", "send_reply"])
@@ -290,7 +292,7 @@ async def test_exposed_preview_approved_round_trip_preserves_literal_word(text, 
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("cancel 是什么意思", ["cancel", "是什么意思"]),
+    ("cancel，是什么意思", ["cancel", "是什么意思"]),
     ("我选择\ncancel", ["我选择", "cancel"]),
 ])
 async def test_plain_split_round_trip_requires_no_ai_approval_flag(text, expected):
@@ -315,7 +317,7 @@ async def test_preview_provenance_cannot_send_control_only_body_after_cleanup(te
 async def test_only_exact_executor_preview_can_preserve_control_word(mode):
     sender, event, adapter = make_sender()
     executor = tool_for(sender, event)
-    text, segments = "cancel 是什么意思", ["cancel", "是什么意思"]
+    text, segments = "cancel，是什么意思", ["cancel", "是什么意思"]
     if mode != "no_preview":
         await executor.execute("split_reply", {"text": text})
     if mode == "other_executor":
@@ -352,7 +354,7 @@ async def test_preview_proof_is_rechecked_after_each_mutating_hook(stage):
 
     sender, event, adapter = make_sender(hook=MutateParts())
     executor = tool_for(sender, event)
-    text = "cancel 是什么意思"
+    text = "cancel，是什么意思"
     preview = json.loads(await executor.execute("split_reply", {"text": text}))
     result = await executor.execute("send_reply", {
         "text": text, "segments": preview["messages"], "ai_check_approved": True,
@@ -370,7 +372,7 @@ async def test_rewriting_only_preview_source_invalidates_proof(stage):
 
     sender, event, adapter = make_sender(hook=ChangeSource())
     executor = tool_for(sender, event)
-    text = "cancel 是什么意思"
+    text = "cancel，是什么意思"
     preview = json.loads(await executor.execute("split_reply", {"text": text}))
     await executor.execute("send_reply", {"text": text, "segments": preview["messages"], "ai_check_approved": True})
     assert wire_text(adapter) == ["是什么意思"]
