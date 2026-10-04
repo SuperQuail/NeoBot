@@ -411,6 +411,7 @@ class DashboardServer:
         self._route(app, "POST", "/api/admin/reboot", self.api.admin_reboot)
         self._route(app, "POST", "/api/admin/standby/onebot", self.api.admin_standby_onebot)
         self._route(app, "POST", "/api/admin/restart", self.api.admin_restart)
+        self._route(app, "POST", "/api/admin/shutdown", self.api.admin_shutdown)
 
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)

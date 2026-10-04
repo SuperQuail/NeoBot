@@ -58,7 +58,20 @@ async def run() -> bool:
                     lambda _signum, _frame: loop.call_soon_threadsafe(request_stop),
                 )
 
+    # 面板的退出端点走核心信号（`process_stop`）：它跨代际存活，待机态 / 切换中
+    # 也收得到。在旧版装配里这个服务不存在，那就只有 SIGINT/SIGTERM 一条路，
+    # 与本次改动前一致。
+    stop_watcher: asyncio.Task[None] | None = None
+
+    async def watch_stop() -> None:
+        signal = get_cached_core("process_stop")
+        if signal is None:
+            return
+        await signal.wait()
+        request_stop()
+
     enable_core_reuse()
+    stop_watcher = asyncio.create_task(watch_stop(), name="neobot-process-stop-watch")
     application = create_application(owns_plugins=False)
     standby_service = get_cached_core("standby_service")
     if standby_service is None:
@@ -114,6 +127,9 @@ async def run() -> bool:
         )
     finally:
         state["application"] = None
+        if stop_watcher is not None:
+            stop_watcher.cancel()
+            await asyncio.gather(stop_watcher, return_exceptions=True)
         # Do not rely on asyncio.run's cancellation drain to own core shutdown.
         # In particular, a timeout is a report, NEVER permission to exec early.
         if plugin_runtime is not None:
