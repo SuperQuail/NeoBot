@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 0decd49
-verified_hash: e4a05b610299
+verified_against: 588281f
+verified_hash: 77e01618f15c
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -402,6 +402,11 @@ flowchart TD
   （`manager.py:606`）。配置里少写一整段，结果是「用默认值悄悄跑起来」。
 * **缺 Key 不是错误**：默认 `DegradeEverythingPolicy`（`manager.py:315`），缺 Key 只让该功能降级；
   「严格致命」策略（`availability.py:79`）在生产路径无人调用，看到它别以为会拦。
+* **默认模型库只追求「装上就能跑」**：出厂 5 个条目 —— 4 个 DeepSeek 对话模型 + TTS 模型。
+  `vision_model` 默认指向 `deepseek-flash-high`（真实可用，不必为看图再申请平台 Key），
+  `creator_image_models` **默认为空**（原先预置的生图条目指向平台侧并不存在的模型名，
+  留着只会让人以为绘图可用），`tts.enabled` **默认 false**。
+  改默认值只影响新配置：已有配置里的值不会被覆盖 —— 要让老配置跟着变，得写迁移。
 * **引用名是调用方唯一的定位手段，缺失或重复都会静默失效**：`by_ref()` 会跳过空引用名的条目
   （`bot.py:641` 的 `if item.model_ref`），字典推导对重复引用名是**后写覆盖** ——
   两者都不报错，表现为「配置写了却没生效」。`register_models` 现在会在注册前把这两类

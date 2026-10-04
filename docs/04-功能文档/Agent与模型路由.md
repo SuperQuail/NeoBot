@@ -55,9 +55,9 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `agent_model_1` | deepseek-flash-max | 子 Agent（编号 1，max 推理） |
 | `agent_model_2` | deepseek-flash-high | 子 Agent（编号 2，high 推理） |
 | `agent_model_3` | deepseek-flash-off | 低成本任务（编号 3，非推理） |
-| `vision_model` | qwen3-vl-8b | 图像识别（缺 Key 时降级） |
+| `vision_model` | deepseek-flash-high | 图像识别（默认复用 deepseek-flash，缺 Key 时降级） |
 | `tts_model` | cosyvoice2 | 语音合成（TTS 关闭时不注册） |
-| `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 model_ref） |
+| `creator_image_models`（列表） | []（默认空） | 生图（可分配多个 model_ref；需要 AI 绘图时再添加真实可用的生图模型） |
 
 注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同 `model_ref` 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
 
