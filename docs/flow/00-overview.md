@@ -7,7 +7,7 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 2e67bc0
+verified_against: 993be4b
 verified_hash: 288d2270bca7
 ---
 
