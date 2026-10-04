@@ -332,10 +332,42 @@ class Config:
         pending: list[tuple] = []
         findings: list[ModelFinding] = []
 
-        # 调用方引用了模型库里不存在的 key：致命或降级由策略判定
-        library_keys = (
-            set(models_config.by_key()) if hasattr(models_config, "by_key") else set()
-        )
+        # 模型库自检：引用名是调用方唯一的定位手段。
+        # by_ref() 会跳过空引用名的条目，字典推导又会用后写覆盖同名条目 ——
+        # 两者都不报错，于是「配置写了却没生效」变成没有任何线索的静默故障。
+        # 这里在注册前把两类问题都明确说出来。
+        registry_items = list(getattr(models_config, "registry", None) or [])
+        ref_positions: dict[str, list[int]] = {}
+        for position, item in enumerate(registry_items, start=1):
+            item_ref = str(getattr(item, "model_ref", "") or "").strip()
+            if not item_ref:
+                logger.warning(
+                    f"模型库第 {position} 个条目缺少引用名（model_ref），该条目将被忽略："
+                    f"provider={getattr(item, 'provider', '') or '-'} "
+                    f"model_name={getattr(item, 'model_name', '') or '-'}。"
+                    "请为它补一个唯一引用名，否则调用方无法引用到它"
+                )
+                continue
+            ref_positions.setdefault(item_ref, []).append(position)
+        for dup_ref, positions in ref_positions.items():
+            if len(positions) > 1:
+                joined = "、".join(f"第 {position} 个" for position in positions)
+                logger.warning(
+                    f"模型库存在重复引用名 {dup_ref}（{joined}条目）："
+                    "只有最后一个会生效，其余条目无法被调用方引用；请改成互不相同的名字"
+                )
+
+        # 调用方引用了模型库里不存在的引用名：致命或降级由策略判定
+        by_ref = getattr(models_config, "by_ref", None)
+        if callable(by_ref):
+            library_keys = set(by_ref())
+        else:
+            # 不静默兜底：探测不到就明确说出来。上一版这里用 hasattr 探测旧方法名，
+            # 改名后恒为 False，导致所有合法引用被误报为「不存在」（issue #68）。
+            library_keys = set()
+            logger.warning(
+                "配置对象的 models 段没有 by_ref()，「引用名是否存在」这项校验已跳过"
+            )
         assignments = getattr(models_config, "assignments", None)
         if assignments is not None and hasattr(assignments, "items"):
             for ref_role, ref_value in assignments.items():
