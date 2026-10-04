@@ -47,6 +47,42 @@ export interface Overview {
   notices?: Array<{ level?: string; text?: string; hint?: string }>;
 }
 
+/** 快捷部署 /api/deploy/status */
+export interface DeployStep {
+  key?: string;
+  label?: string;
+  done?: boolean;
+  hint?: string;
+  action?: string;
+}
+
+/** OneBot 反向 WS 的生效监听信息（NapCat 侧要填的就是地址与 token） */
+export interface OneBotConnection {
+  host?: string;
+  port?: number;
+  token?: string;
+  token_enabled?: boolean;
+  bind_all?: boolean;
+  /** 同机连接用（NapCat 与 NeoBot 同机） */
+  url_local?: string;
+  /** 局域网连接用（NapCat 在另一台机器） */
+  url_lan?: string;
+  /** 路径由框架侧自己配，服务端不限制 */
+  path_hint?: string;
+  /** 未配 token 却对外监听时的安全告警 */
+  warning?: string | null;
+  from_config?: boolean;
+}
+
+export interface DeployStatus {
+  steps?: DeployStep[];
+  onebot?: OneBotConnection;
+  values?: { bot_account?: string; bot_nick_name?: string; admin_accounts?: string[] };
+  revision?: number;
+  env_revision?: number;
+  ready?: boolean;
+}
+
 /** 机器人 /api/bots 与 /api/bot/detail */
 export interface BotSummary {
   user_id?: string | number;

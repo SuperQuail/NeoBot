@@ -1384,3 +1384,139 @@ async def test_shutdown_reports_unavailable_without_signal(tmp_path: Path) -> No
     finally:
         await server.stop()
 
+
+
+# ── 快捷部署菜单 ─────────────────────────────────────────────────
+
+
+async def test_deploy_status_reports_steps_and_onebot_defaults(panel) -> None:
+    """部署状态：四项必填逐条判出 done/缺失，并给出 OneBot 的生效监听信息。
+
+    面板要把**真正会监听的**地址与 token 交给 NapCat，所以这里断言的是
+    adapter 包解析后的结果（配置 > 环境变量 > 默认值），不是配置字段原值。
+    """
+    _, _, base, _ = panel
+    token, _csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    steps = {step["key"]: step for step in payload["steps"]}
+    assert set(steps) == {"bot_identity", "platform_key", "admin", "onebot"}
+    # 测试用面板里 .env 已有 DeepSeek_APIKey，所以平台密钥这项应当是完成的
+    assert steps["platform_key"]["done"] is True
+    # 一个都没配的项：身份 / 管理员 / OneBot
+    assert steps["bot_identity"]["done"] is False
+    assert steps["admin"]["done"] is False
+    assert steps["onebot"]["done"] is False
+    assert payload["ready"] is False
+
+    onebot = payload["onebot"]
+    # 配置里没有 [adapter] 段 -> 回落到默认监听 0.0.0.0:8080
+    assert onebot["host"] == "0.0.0.0"
+    assert onebot["port"] == 8080
+    assert onebot["url_local"] == "ws://127.0.0.1:8080"
+    assert onebot["url_lan"].startswith("ws://") and onebot["url_lan"].endswith(":8080")
+    # 未配 token 又对外监听：必须给出安全告警（而不是静默）
+    assert onebot["token_enabled"] is False
+    assert onebot["warning"]
+
+
+async def test_deploy_generate_token_writes_and_reenables(panel) -> None:
+    """生成 token：写入 [adapter] 并让适配器按新 token 重连，状态随之变为已启用。"""
+    _, _, base, config_path = panel
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+
+    async with httpx.AsyncClient() as client:
+        before = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+        generated = await client.post(
+            base + "/api/deploy/onebot-token",
+            headers=headers,
+            json={"revision": before.json()["revision"]},
+        )
+
+    assert generated.status_code == 200, generated.text
+    payload = generated.json()
+    assert payload["ok"] is True
+    new_token = payload["token"]
+    assert isinstance(new_token, str) and len(new_token) >= 20
+
+    # 落盘：配置里出现同一个 token（NapCat 侧要填的就是它）
+    written = config_path.read_text(encoding="utf-8")
+    assert new_token in written
+
+    # 测试用面板没有注入宿主重载入口（host_commands），所以这一步必然没生效 ——
+    # 端点必须**如实**说「需重启后生效」，而不是假装已生效。
+    assert payload["applied"] is False
+    assert "重启" in payload["message"]
+
+
+async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
+    """OneBot 的地址/端口/token 取**运行中配置**的生效值（NapCat 侧照抄这两样）。"""
+    from types import SimpleNamespace
+
+    class _Services:
+        def __init__(self, mapping: dict) -> None:
+            self._mapping = mapping
+
+        def get(self, name: str, default: object = None) -> object:
+            return self._mapping.get(name, default)
+
+    config = SimpleNamespace(
+        bot=SimpleNamespace(account="10001", nick_name="NeoBot"),
+        chat=SimpleNamespace(admin_accounts=["10002"]),
+        adapter=SimpleNamespace(
+            reverse_ws_host="127.0.0.1",
+            reverse_ws_port=8091,
+            reverse_ws_access_token="fixed-token",
+        ),
+    )
+    server, _, base, _ = await _start_panel(tmp_path, services=_Services({"config": config}))
+    try:
+        token, _csrf = await _login(base)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        steps = {step["key"]: step for step in payload["steps"]}
+        assert steps["bot_identity"]["done"] is True
+        assert steps["admin"]["done"] is True
+        assert steps["onebot"]["done"] is True
+        # 测试面板的 .env 里有 DeepSeek_APIKey -> 四项齐全
+        assert payload["ready"] is True
+
+        onebot = payload["onebot"]
+        assert onebot["host"] == "127.0.0.1"
+        assert onebot["port"] == 8091
+        assert onebot["token"] == "fixed-token"
+        assert onebot["url_local"] == "ws://127.0.0.1:8091"
+        # 回环地址 + 有 token：不该报安全告警
+        assert onebot["warning"] is None
+    finally:
+        await server.stop()
+
+
+async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> None:
+    """写操作要 manage 权限：面板关闭管理功能时直接 403。"""
+    from tests.modules.builtin_plugins.test_dashboard_api import _start_panel
+
+    server, _, base, _ = await _start_panel(tmp_path)
+    try:
+        token, csrf = await _login(base)
+        # manage_plugins 是只读属性（读面板配置），所以改类属性来模拟「已禁用管理」；
+        # monkeypatch 会在用例结束后还原。
+        monkeypatch.setattr(
+            type(server), "manage_plugins", property(lambda self: False), raising=True
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/deploy/onebot-token",
+                headers={"X-Token": token, "X-CSRF-Token": csrf},
+                json={},
+            )
+        assert response.status_code == 403
+    finally:
+        await server.stop()

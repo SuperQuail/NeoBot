@@ -24,6 +24,7 @@ import type {
   ChatFlowsPayload,
   ConfigChanges,
   ConfigDocument,
+  DeployStatus,
   EnvPayload,
   ExtensionEntry,
   LogPayload,
@@ -283,6 +284,10 @@ export const api = {
 
   // 本体配置 / 环境变量 / 模型
   config: () => getResult<ConfigDocument>('/api/config'),
+  // 快捷部署：只读状态（缺什么 + OneBot 生效地址/token）与 token 生成
+  deployStatus: () => getResult<DeployStatus>('/api/deploy/status'),
+  deployOneBotToken: (body: unknown) =>
+    postJSON<{ token?: string; message?: string; applied?: boolean }>('/api/deploy/onebot-token', body),
   configSave: (body: ConfigSaveBody) => postJSON<ConfigDocument>('/api/config', body),
   configValidate: (body: ConfigSaveBody) =>
     postJSON<{ errors?: Array<{ path?: string; message?: string }> }>('/api/config/validate', body),

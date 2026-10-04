@@ -22,6 +22,7 @@ interface NavEntry {
 
 const NAV: NavEntry[] = [
   { to: '/dashboard', label: '主页', name: '仪表盘', icon: 'home' },
+  { to: '/deploy', label: '部署', name: '快捷部署', icon: 'play' },
   { to: '/plugins', label: '插件', name: '插件管理', icon: 'package' },
   { to: '/config', label: '配置', name: '配置管理', icon: 'settings' },
   { to: '/system', label: '系统', name: '系统状态', icon: 'cpu' },
