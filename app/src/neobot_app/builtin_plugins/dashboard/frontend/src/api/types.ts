@@ -43,6 +43,8 @@ export interface Overview {
   plugins_total?: number;
   bot_nickname?: string;
   bot_user_id?: string | number;
+  /** 首页要提示的配置缺口（如未配置超级管理员账号）；后端只读运行中的配置生成 */
+  notices?: Array<{ level?: string; text?: string; hint?: string }>;
 }
 
 /** 机器人 /api/bots 与 /api/bot/detail */

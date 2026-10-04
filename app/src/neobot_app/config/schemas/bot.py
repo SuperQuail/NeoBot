@@ -399,10 +399,16 @@ def _default_primary_chat_model() -> "ModelDefinition":
             deepseek_reasoning_effort="max",
             deepseek_random_thinking_probability=0.6,
         ),
+        # DeepSeek 官方定价（元/百万 tokens，填**高峰价**）：
+        # https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+        # 空闲时段 = 高峰价 ×0.5，由 billing_script 折算 —— 所以这里填高峰价，
+        # 填均价会让统计金额系统性偏小（模板顶部有同样的提醒）。
         pricing=ModelPricing(
-            input_price_per_mtokens=0.0,
-            output_price_per_mtokens=0.0,
+            input_price_per_mtokens=2.0,
+            output_price_per_mtokens=8.0,
+            cache_hit_price_per_mtokens=0.04,
         ),
+        billing_script="deepseek_peak_valley",
     )
 
 
@@ -425,10 +431,16 @@ def _default_agent_model_1() -> "ModelDefinition":
             deepseek_reasoning_effort="max",
             deepseek_random_thinking_probability=0.6,
         ),
+        # DeepSeek 官方定价（元/百万 tokens，填**高峰价**）：
+        # https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+        # 空闲时段 = 高峰价 ×0.5，由 billing_script 折算 —— 所以这里填高峰价，
+        # 填均价会让统计金额系统性偏小（模板顶部有同样的提醒）。
         pricing=ModelPricing(
-            input_price_per_mtokens=0.0,
-            output_price_per_mtokens=0.0,
+            input_price_per_mtokens=2.0,
+            output_price_per_mtokens=8.0,
+            cache_hit_price_per_mtokens=0.04,
         ),
+        billing_script="deepseek_peak_valley",
     )
 
 
@@ -451,10 +463,16 @@ def _default_agent_model_2() -> "ModelDefinition":
             deepseek_reasoning_effort="high",
             deepseek_random_thinking_probability=0.6,
         ),
+        # DeepSeek 官方定价（元/百万 tokens，填**高峰价**）：
+        # https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+        # 空闲时段 = 高峰价 ×0.5，由 billing_script 折算 —— 所以这里填高峰价，
+        # 填均价会让统计金额系统性偏小（模板顶部有同样的提醒）。
         pricing=ModelPricing(
-            input_price_per_mtokens=0.0,
-            output_price_per_mtokens=0.0,
+            input_price_per_mtokens=2.0,
+            output_price_per_mtokens=8.0,
+            cache_hit_price_per_mtokens=0.04,
         ),
+        billing_script="deepseek_peak_valley",
     )
 
 
@@ -477,10 +495,16 @@ def _default_agent_model_3() -> "ModelDefinition":
             deepseek_reasoning_effort="high",
             deepseek_random_thinking_probability=0.6,
         ),
+        # DeepSeek 官方定价（元/百万 tokens，填**高峰价**）：
+        # https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+        # 空闲时段 = 高峰价 ×0.5，由 billing_script 折算 —— 所以这里填高峰价，
+        # 填均价会让统计金额系统性偏小（模板顶部有同样的提醒）。
         pricing=ModelPricing(
-            input_price_per_mtokens=0.0,
-            output_price_per_mtokens=0.0,
+            input_price_per_mtokens=2.0,
+            output_price_per_mtokens=8.0,
+            cache_hit_price_per_mtokens=0.04,
         ),
+        billing_script="deepseek_peak_valley",
     )
 
 
@@ -1963,9 +1987,12 @@ class EnhancedChat(Chat):
         default=1.0,
         metadata={"description": "余额预警阈值（CNY），低于此值时发送私聊通知；默认1.0"},
     )
-    admin_accounts: List[str] = field(
+    admin_accounts: Optional[List[str]] = field(
         default_factory=list,
-        metadata={"description": "超级管理员QQ号列表，用于接收余额不足等系统通知；仅可通过配置增减"},
+        metadata={
+            "description": "超级管理员QQ号列表，用于接收余额不足等系统通知；仅可通过配置增减。"
+            "留空也能正常启动，但相关系统通知无人接收；面板首页会给出提示"
+        },
     )
     sub_admin_accounts: List[str] = field(
         default_factory=list,

@@ -379,8 +379,32 @@ class DashboardApi:
                 "python_version": system.get("python_version"),
                 "hostname": system.get("hostname"),
                 "standby": bool(self.power_state().get("standby")),
+                "notices": self._config_notices(),
             }
         )
+
+    def _config_notices(self) -> list[dict[str, Any]]:
+        """控制台首页要提示的配置缺口（只读运行中的配置，不写任何东西）。
+
+        目前只有一条：**未配置超级管理员账号**。这类缺口不会报错、也不影响启动，
+        但「余额不足」等系统通知会发不出去 —— 只在启动日志里 warning 一次，
+        很容易被忽略到最后。放在首页比放在日志里有用。
+        """
+        notices: list[dict[str, Any]] = []
+        try:
+            config_obj = self._config_proxy()
+            accounts = getattr(getattr(config_obj, "chat", None), "admin_accounts", None) or []
+            if not [str(item).strip() for item in accounts if str(item).strip()]:
+                notices.append(
+                    {
+                        "level": "warning",
+                        "text": "尚未配置超级管理员账号，可能影响部分命令使用",
+                        "hint": "在「配置管理 → 本体配置 → chat」里填 admin_accounts（QQ 号列表）",
+                    }
+                )
+        except Exception as exc:
+            self.logger.warning(f"生成配置提示失败: {exc}")
+        return notices
 
     def power_state(self) -> dict[str, Any]:
         """当前运行状态（运行中 / 待机中）；待机服务未注册时返回 available=False。"""
