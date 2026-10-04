@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: b982184
-verified_hash: 3bbb372d5460
+verified_against: 14cab4c
+verified_hash: f5c9ba3d026a
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -506,6 +506,9 @@ flowchart TD
   只是 `/api/*` 被 403 拦住。别把「未配置密码」当成「端口关闭」。
 * **`/api/auth/setup` 在已配置密码时也在公开集里**：处理器回 400「请直接登录」而不是 401。
   这是刻意设计（避免暴露「需要登录」的接口形态），不是漏配。
+* **首页承载「不报错但影响使用」的配置缺口**：`/api/overview` 的 `notices` 由后端读运行中
+  配置生成（如未配置超级管理员账号），首页按 warning 样式渲染。这类缺口不影响启动、
+  也不抛异常，只留在启动日志里很容易被忽略到最后 —— 该提示的放首页，别只 log 一行。
 * **面板提示「已保存」不等于已经生效**：面板只报后端给的 `message`。配置项分
   「运行期读取（立即生效）」与「启动期持有快照（必须重启）」两类，而 `.env` 更特殊 ——
   它不进配置快照、连重载的 diff 都看不见。所以保存 env 后要按 `needs_restart`

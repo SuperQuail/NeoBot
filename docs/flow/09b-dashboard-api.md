@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: b982184
-verified_hash: a7a6d31d9787
+verified_against: 14cab4c
+verified_hash: c0dfd48bb634
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
