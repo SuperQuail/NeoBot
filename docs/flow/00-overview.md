@@ -218,7 +218,7 @@ flowchart LR
 
 \`\`\`mermaid
 flowchart TD
-    A["SIGINT/SIGTERM 或面板/命令"] --> B{"是软重启?"}
+    A["SIGINT/SIGTERM 或面板/命令<br/>(面板退出走核心 process_stop 信号)"] --> B{"是软重启?"}
     B -- 否 --> C["request_stop -> _shutdown_event.set"]
     B -- 是 --> D["request_restart -> 额外置 _restart_requested"]
     C --> E["run_forever 退出 -> stop()"]
@@ -237,6 +237,10 @@ flowchart TD
 
 超时只用于**报告**：\`_drain_shutdown_task\` 打印「仍在等待、不会启动新进程」后继续 shield 等，
 取消不等于停止（\`cli.py:131\`、\`application.py:535\`）。
+两个**核心持有的信号**并列：`process_restart`（换一代运行时）与 `process_stop`（让进程退出，后加）。
+面板的 `POST /api/admin/shutdown` 走后者 —— 只接受本机来源并要求管理权限，请求立即返回，
+调用方须按进程存活轮询。`cli.py` 的 `stop_watcher` 收到后调用的仍是 `request_stop()`，
+**与 SIGINT/SIGTERM 同一个汇点**，所以上面这条停机顺序不受入口影响。
 </details>
 
 ## 关键状态

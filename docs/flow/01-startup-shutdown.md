@@ -10,6 +10,7 @@ covers:
   - app/src/neobot_app/runtime/standby_service.py
   - app/src/neobot_app/runtime/adapter_supervisor.py
   - app/src/neobot_app/runtime/process_restart.py
+  - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
 verified_against: 528fe18
 verified_hash: bca7bf90c782
@@ -27,7 +28,7 @@ verified_hash: bca7bf90c782
 核心对象复用、`app/src/neobot_app/bootstrap/_pipeline.py` 的管线与应用组装、
 `NeoBotApplication.start/stop`、`ConnectionReadinessProbe`、
 `StandbyService` 状态机、`StandbyController` 代际编排、`ProcessRestartSignal`、
-`AdapterSupervisor` 监听热重载。
+`ProcessStopSignal`、`AdapterSupervisor` 监听热重载。
 
 **不画**（各自成图，避免重复）：
 
@@ -50,6 +51,14 @@ verified_hash: bca7bf90c782
 2. `StandbyController.request_process_restart`（`_standby_runtime.py:285`）除测试外
    **没有任何生产调用方** —— 它不是进程重启入口，真正的入口是宿主服务 `process_restart`
    （面板 `/api/admin/restart` 直接拿它）。
+2b. **两个核心信号是并列的，别混**：`process_restart` 换一代运行时（面板与进程都留着），
+   `process_stop` 让进程正常退出。后者是后加的：面板
+   `POST /api/admin/shutdown` 需要一种「请它退」的手段 —— Windows 上 `SIGTERM` 不被处理
+   （见第 5 条），本机子进程也没有控制台，HTTP 是唯一可用的入口。
+   两者都由**核心**持有（跨代际存活），所以待机态 / 切换中收到也丢不掉；
+   `cli.py` 起一个 `stop_watcher` 任务等 `process_stop`，收到后走的就是既有的
+   `request_stop()` —— 与 SIGINT/SIGTERM 同一个汇点，停机顺序不变。
+   旧装配里没有这个服务时，`watch_stop` 直接返回，退化成「只有 SIGINT/SIGTERM」。
 3. `ConnectionTimeoutError`（`runtime/application.py:27`）**已不再被抛出**，
    只保留类型兼容旧 `except` 分支；`cmd_run` 里那个 `except` 是死分支。
 4. 「启动 13 步」是 `NeoBotApplication.start` 的阶段计数口径（与 `00-overview.md` 一致）。
@@ -69,7 +78,8 @@ flowchart TD
     B -- "init / open_web / firewall-open / sandbox_CP" --> B1["各自子命令, 不起运行时"]
     C --> D["run｜cli.py:37<br/>注册 SIGINT/SIGTERM -> request_stop"]
     D --> E["enable_core_reuse + create_application｜cli.py:61<br/>owns_plugins=False"]
-    E --> F{"get_cached_core('standby_service') 为空?"}
+    E --> E1["watch_stop 任务｜cli.py:61<br/>get_cached_core('process_stop').wait()<br/>收到 -> request_stop()"]
+    E1 --> F{"get_cached_core('standby_service') 为空?"}
     F -- 是 --> F1["遗留单机装配: 直接 run_forever<br/>无待机/软重启"]
     F -- 否 --> G["StandbyController｜cli.py:75<br/>runtime_factory=create_application"]
     G --> H["standby_service.set_hooks｜cli.py:84<br/>on_enter/on_resume/on_onebot_change"]
