@@ -1240,6 +1240,49 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         )
         drawing_manager.set_image_service(service)
 
+    def _rebuild_problem_solver(new_config: Any) -> None:
+        """重建解题 Agent 并换绑到 manager。
+
+        provider 在装配时被 Agent 经闭包捕获，所以只能重跑装配来换。
+        `provider=` 传的是**当前**主 provider（provider 消费者先注册、先执行），
+        它同时也是解题模型不可用时的回退目标。
+        """
+        before = getattr(problem_solver_manager, "_agent", None)
+        build_problem_solver_agent_wiring(
+            config=new_config,
+            problem_solver_manager=problem_solver_manager,
+            provider=reply_orchestrator.provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            vision_provider=vision_provider,
+            prompt_store=prompt_store,
+        )
+        # 装配函数在 provider 不可用时直接 return、不动 manager：那样旧 Agent 会继续
+        # 用旧凭据跑，比「功能停用」更危险。这里显式摘掉。
+        if getattr(problem_solver_manager, "_agent", None) is before and before is not None:
+            problem_solver_manager.set_agent(None)
+
+    def _rebuild_self_heal(new_config: Any) -> None:
+        """重建自修复 Agent 并换绑（同样：provider 被 Agent 捕获，只能重跑装配）。"""
+        agent = build_self_heal_agent_wiring(
+            config=new_config,
+            manager=self_heal_manager,
+            provider=reply_orchestrator.provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            data_dir=DATA_DIR,
+            source_roots=source_roots,
+            log_file=log_file_path,
+            vision_provider=vision_provider,
+            web_search_config=_web_search_config_dict(new_config),
+            prompt_store=prompt_store,
+        )
+        if agent is None:
+            # provider 不可用 -> 装配跳过；显式停用，不留旧 Agent。
+            self_heal_manager.set_agent(None)
+
     for _consumer in (
         ModelConsumerReload(
             name="tts",
@@ -1250,6 +1293,16 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             name="creator_image",
             rebuild=_rebuild_creator_image,
             reason="生图服务持有默认模型与平台凭据，变更后重建（启用开关变更仍需重启）",
+        ),
+        ModelConsumerReload(
+            name="problem_solver",
+            rebuild=_rebuild_problem_solver,
+            reason="解题 Agent 经闭包捕获 provider，模型/凭据变更后重跑装配",
+        ),
+        ModelConsumerReload(
+            name="self_heal",
+            rebuild=_rebuild_self_heal,
+            reason="自修复 Agent 经闭包捕获 provider，模型/凭据变更后重跑装配",
         ),
     ):
         hot_reload_registry.unregister(_consumer.name)

@@ -105,3 +105,26 @@ def test_consumer_declares_its_own_reason() -> None:
     assert {rule.path for rule in policies} == {"models", "env"}
     assert all(rule.hot_reload is True for rule in policies)
     assert all(rule.reason == "TTS 凭据变更后重建" for rule in policies)
+
+
+def test_agent_managers_replace_agent_on_reinstall() -> None:
+    """热重载靠「重跑装配」换 provider，前提是 set_agent 是**替换**而非追加。
+
+    解题 / 自修复两个 Agent 的 provider 被闭包捕获，换不掉只能重建；一旦 set_agent
+    变成追加语义，热重载会留下一个仍持旧凭据的 Agent 继续跑 —— 比功能停用更危险。
+    `_rebuild_problem_solver` 还依赖「装配被跳过时 manager 里的 agent 不变」来检测
+    provider 不可用（进而显式摘掉），所以这里把两种状态都钉住。
+    """
+
+    from neobot_app.agents.problem_solver import ProblemSolverManager
+    from neobot_app.agents.self_heal import SelfHealManager
+
+    for manager in (ProblemSolverManager(), SelfHealManager()):
+        first, second = object(), object()
+
+        manager.set_agent(first)
+        assert manager._agent is first
+        manager.set_agent(second)
+        assert manager._agent is second, "必须是替换：追加会让旧 Agent 继续持旧 provider"
+        manager.set_agent(None)
+        assert manager._agent is None, "provider 不可用时必须能显式停用"

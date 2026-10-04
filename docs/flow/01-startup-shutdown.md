@@ -12,8 +12,8 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 259c88a
-verified_hash: 484bdb5332e2
+verified_against: 2e67bc0
+verified_hash: 061c3d9f8ff7
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -225,9 +225,12 @@ flowchart TD
 `AdapterSupervisor` 在 :784 先注册，`_provider_reload` 在 :1182 先 unregister 再
 register，所以顺序永远是「适配器先重连 → provider 再重建」。
 
-热重载的覆盖范围由**注册的消费者**决定：provider（主对话 / 视觉 / 档案总结）、`tts`、
-`creator_image` 各注册一个消费者，注册表逐个隔离失败。装配期新固化了模型产物的组件，
-要一并注册 `ModelConsumerReload`，否则它只能等重启。
+热重载的覆盖范围由**注册的消费者**决定，装配期共 5 个：provider（主对话 / 视觉 / 档案总结，
+共享 bundle 原子换装）、`tts`、`creator_image`、`problem_solver`、`self_heal`
+（后四个是 `ModelConsumerReload`，各自独立、注册表逐个隔离失败）。
+构造期固化了模型产物的组件要一并注册，否则它只能等重启。两个可选 Agent 的 provider
+被闭包捕获，靠**重跑装配**换；装配因 provider 不可用被跳过时显式 `set_agent(None)`，
+免得旧 Agent 继续持旧凭据。
 
 `_reload_config` 还接受 `extra_changed_paths`：`.env` 的值**不进配置快照**，
 所以「只改环境变量」时 diff 是空的、消费者一个都不会被触发。调用方（面板保存 env）

@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 259c88a
-verified_hash: a508da4b0205
+verified_against: 2e67bc0
+verified_hash: 288d2270bca7
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -261,12 +261,15 @@ flowchart TD
   `BotConfig` 快照，所以「只改环境变量」时 `changed_paths` 是空的 —— 热重载消费者不被触发、
   新凭据不生效，而提示还会说「没有检测到配置项变化」。面板保存 env 时会显式声明
   `env` 路径把它补上（issue #74）。
-* **热重载的覆盖面 = 注册的消费者数**：只有声明关心 `models` / `env` 的消费者会被通知 ——
-  provider（主对话 / 视觉 / 档案总结，共享 bundle 原子换装）、`tts`、`creator_image`
-  各是一个独立消费者，注册表逐个隔离失败，所以一个组件建不起来不会拖垮其余。
+* **热重载的覆盖面 = 注册的消费者数**：只有声明关心 `models` / `env` 的消费者会被通知。
+  装配期共注册 5 个：`provider`（主对话 / 视觉 / 档案总结，共享 bundle 原子换装）、
+  `tts`、`creator_image`、`problem_solver`、`self_heal` —— 各自独立，
+  注册表逐个隔离失败，所以一个组件建不起来不会拖垮其余。
   **构造期固化了模型产物的组件必须注册 `ModelConsumerReload`**
   （`runtime/provider_reload.py`），否则改配置后它只会静默用旧值 ——
   TTS 以前正是如此：模型没注册就干脆不建服务，补完平台 Key 也必须重启进程。
+  两个可选 Agent 的 provider 被闭包捕获，只能**重跑装配**来换；装配被跳过
+  （provider 不可用）时要显式 `set_agent(None)`，否则旧 Agent 会继续持旧凭据跑。
 * **适配器没连上不代表启动失败**：`start()` 里连接探针只观察不致命，启动流程与面板不因
   「框架还没连上」被回滚。
 * **provider 异常不再降级成 assistant 文本**：历史里不能出现 `Error: ...`
