@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 528fe18
-verified_hash: 013bea14911e
+verified_against: 0decd49
+verified_hash: 045da8ee16a6
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
