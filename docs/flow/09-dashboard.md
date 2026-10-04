@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 2b8996a
-verified_hash: 60359e157442
+verified_against: 5c7b345
+verified_hash: 73cfc479304a
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -507,9 +507,12 @@ flowchart TD
 * **`/api/auth/setup` 在已配置密码时也在公开集里**：处理器回 400「请直接登录」而不是 401。
   这是刻意设计（避免暴露「需要登录」的接口形态），不是漏配。
 * **快捷部署页要给「真正会监听的」OneBot 信息**：面板是反向 WS 的**服务端**，由 NapCat 主动连过来，
-  所以第 3 步给出的地址与 token 必须来自 `ReverseWsSettings.resolve`（配置 > 环境变量 > 默认值），
+  所以给出的地址与 token 必须来自 `ReverseWsSettings.resolve`（配置 > 环境变量 > 默认值），
   而不是配置字段原值 —— 否则用户照着抄一个连不上的地址。监听 `0.0.0.0` 时同机地址与局域网地址
-  要**分开给**（`0.0.0.0` 是不能连的）；路径由 NapCat 侧自己配、服务端不限制。
+  要**分开给**（`0.0.0.0` 是不能连的）；路径由 NapCat 侧自己配、服务端不限制（仓库文档用 `/onebot`）。
+* **引导的「必填」要能识别出厂占位**：`bot.account` 默认是 `0`、昵称与人设都是示例文案 ——
+  只看「非空」会把占位当成配好了。判定用 schema 默认值现算比对（`_deploy_field_defaults`），
+  不写死字面量；并且 `bot.account` 是 **int**，转文本别写 `x or ""`（`0` 是假值，会被吞成空串）。
 * **首页承载「不报错但影响使用」的配置缺口**：`/api/overview` 的 `notices` 由后端读运行中
   配置生成（如未配置超级管理员账号），首页按 warning 样式渲染。这类缺口不影响启动、
   也不抛异常，只留在启动日志里很容易被忽略到最后 —— 该提示的放首页，别只 log 一行。

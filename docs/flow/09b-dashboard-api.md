@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: 2b8996a
-verified_hash: d6b6ede1be30
+verified_against: 5c7b345
+verified_hash: 367ab1e3e59f
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -161,7 +161,7 @@ flowchart LR
 | 概览与指标 | 10 | `/api/overview · system · bots · bot/detail · series/messages · series/latency · stats/api-calls · stats/active-users · series/usage · stats/usage` | 会话 | 内存 Metrics + psutil + 用量库 |
 | 用量与计费 | 4 | `/api/stats/usage/records · /api/config/billing · billing/reload · billing/preview` | reload 需 manage，其余只认会话 | 用量库 + Billing 服务 |
 | 日志任务服务 | 3 | `/api/logs · tasks · services` | 会话 | 内存日志缓冲 + 管理器投影 |
-| 快捷部署 | 2 | `/api/deploy/status · /api/deploy/onebot-token` | manage | status 只读运行中配置与 .env 现状；生成 token 写回 `[adapter]` 并**用 extra_changed_paths=("adapter",)** 触发适配器按新 token 重连（没生效就如实说需重启） |
+| 快捷部署 | 2 | `/api/deploy/status · /api/deploy/onebot-token` | manage | status 逐项给出 `required`/`done`（`ready` 只看必填）；**出厂占位不算配好**（`_deploy_field_defaults` 现算 schema 默认值比对）；OneBot 段复用 `ReverseWsSettings.resolve` 并预留 `auto_connect`；生成 token 写回 `[adapter]` 并**用 extra_changed_paths=("adapter",)** 触发适配器按新 token 重连（没生效就如实说需重启） |
 | 插件 | 12 | `/api/plugins` 与 `/api/plugins/{name}/{toggle,reload,update,uninstall,config}` | 列表与探测只读；其余 manage | 插件运行时快照 + 插件目录文件 |
 | 本体配置 | 12 | `/api/config · config/validate · config/reload · config/models{,/library,/assignments,/test,/provider-models} · config/env{,/platform}` | 读只读、写 manage | config.toml / .env / 模型库 |
 | 提示词 | 5 | `/api/analysis/prompts · prompts · prompts/preview · prompts/save · prompts/reset` | 保存与重置 manage | prompt store + custom/prompts.toml |
