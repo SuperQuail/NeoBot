@@ -51,6 +51,8 @@ export interface Overview {
 export interface DeployStep {
   key?: string;
   label?: string;
+  /** 必填项才参与「可以工作了」的判定；选填项配不配都不拦 */
+  required?: boolean;
   done?: boolean;
   hint?: string;
   action?: string;
@@ -72,12 +74,23 @@ export interface OneBotConnection {
   /** 未配 token 却对外监听时的安全告警 */
   warning?: string | null;
   from_config?: boolean;
+  /** 预留：装了 NapCat Desktop 后可自动创建连接（当前 available=false + 原因） */
+  auto_connect?: { available?: boolean; reason?: string };
 }
 
 export interface DeployStatus {
   steps?: DeployStep[];
   onebot?: OneBotConnection;
-  values?: { bot_account?: string; bot_nick_name?: string; admin_accounts?: string[] };
+  values?: {
+    bot_account?: string;
+    bot_nick_name?: string;
+    bot_data?: string;
+    alias_name?: string[];
+    admin_accounts?: string[];
+    group_chat_chance?: number;
+  };
+  /** 出厂默认值：account / 昵称 / 人设仍是出厂占位时，向导据此判「未配置」 */
+  defaults?: { bot_account?: string; bot_nick_name?: string; bot_data?: string };
   revision?: number;
   env_revision?: number;
   ready?: boolean;

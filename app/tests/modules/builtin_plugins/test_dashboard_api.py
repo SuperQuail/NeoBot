@@ -1403,16 +1403,26 @@ async def test_deploy_status_reports_steps_and_onebot_defaults(panel) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     steps = {step["key"]: step for step in payload["steps"]}
-    assert set(steps) == {"bot_identity", "platform_key", "admin", "onebot"}
+    assert set(steps) == {"bot_identity", "persona", "platform_key", "onebot", "admin"}
+    # 必填 / 选填要能区分开：ready 只由必填项决定
+    required = {key for key, step in steps.items() if step["required"]}
+    assert required == {"bot_identity", "persona", "platform_key", "onebot"}
+    assert steps["admin"]["required"] is False
     # 测试用面板里 .env 已有 DeepSeek_APIKey，所以平台密钥这项应当是完成的
     assert steps["platform_key"]["done"] is True
-    # 一个都没配的项：身份 / 管理员 / OneBot
+    # 一个都没配的项：身份 / 人设 / OneBot
     assert steps["bot_identity"]["done"] is False
-    assert steps["admin"]["done"] is False
+    assert steps["persona"]["done"] is False
     assert steps["onebot"]["done"] is False
     assert payload["ready"] is False
+    # 出厂占位不算配好：account 默认就是 '0'，人设默认是示例文案
+    assert payload["values"]["bot_account"] in ("", "0")
+    assert payload["defaults"]["bot_account"] == "0"
 
     onebot = payload["onebot"]
+    # 预留接口：装 NapCat Desktop 后由它自动建连接，现在必须报「不可用 + 原因」
+    assert onebot["auto_connect"]["available"] is False
+    assert onebot["auto_connect"]["reason"]
     # 配置里没有 [adapter] 段 -> 回落到默认监听 0.0.0.0:8080
     assert onebot["host"] == "0.0.0.0"
     assert onebot["port"] == 8080
@@ -1465,8 +1475,13 @@ async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
             return self._mapping.get(name, default)
 
     config = SimpleNamespace(
-        bot=SimpleNamespace(account="10001", nick_name="NeoBot"),
-        chat=SimpleNamespace(admin_accounts=["10002"]),
+        bot=SimpleNamespace(
+            account="10001",
+            nick_name="玄天",
+            bot_data="你是群里的老群友「玄天」，说话简短。",
+            alias_name=["玄天"],
+        ),
+        chat=SimpleNamespace(admin_accounts=["10002"], group_chat_chance=0.3),
         adapter=SimpleNamespace(
             reverse_ws_host="127.0.0.1",
             reverse_ws_port=8091,
@@ -1483,10 +1498,13 @@ async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
         payload = response.json()
         steps = {step["key"]: step for step in payload["steps"]}
         assert steps["bot_identity"]["done"] is True
+        assert steps["persona"]["done"] is True
         assert steps["admin"]["done"] is True
         assert steps["onebot"]["done"] is True
-        # 测试面板的 .env 里有 DeepSeek_APIKey -> 四项齐全
+        # 测试面板的 .env 里有 DeepSeek_APIKey -> 必填项齐全
         assert payload["ready"] is True
+        assert payload["values"]["bot_data"].startswith("你是群里的老群友")
+        assert payload["values"]["group_chat_chance"] == 0.3
 
         onebot = payload["onebot"]
         assert onebot["host"] == "127.0.0.1"

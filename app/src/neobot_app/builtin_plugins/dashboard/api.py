@@ -59,6 +59,35 @@ def _pydantic_errors(exc: Any) -> list[dict[str, str]]:
     return errors
 
 
+def _as_text(value: Any) -> str:
+    """把配置值转成可比较的文本。
+
+    不能写成 `x or ""` —— `bot.account` 是 **int**，默认值 `0` 是假值，
+    一 `or` 就变成空串，「出厂占位 0」与「未填」就分不出来了。
+    """
+    return "" if value is None else str(value).strip()
+
+
+def _deploy_field_defaults() -> dict[str, str]:
+    """快捷部署判定用的**出厂默认值**（现算，不写死字面量）。
+
+    出厂配置里 `bot.account` 是 `'0'`、昵称与人设都是示例文案 —— 这些「假数据」
+    让「没配」和「配了」在配置值上长得一样。向导据此把它们判成未配置；
+    默认值以后改了这里自动跟上（不写死字面量就是为了这个）。
+    """
+    try:
+        from neobot_app.config.schemas.bot import BotConfig as _BotConfigSchema
+
+        bot = _BotConfigSchema().bot
+        return {
+            "bot_account": _as_text(getattr(bot, "account", "")),
+            "bot_nick_name": _as_text(getattr(bot, "nick_name", "")),
+            "bot_data": _as_text(getattr(bot, "bot_data", "")),
+        }
+    except Exception:
+        return {"bot_account": "", "bot_nick_name": "", "bot_data": ""}
+
+
 def _detect_lan_host() -> str:
     """猜一个「局域网内其他机器连得上本机」的地址（拿不到就回环）。
 
@@ -1652,13 +1681,29 @@ class DashboardApi:
 
         bot = getattr(config_obj, "bot", None)
         chat = getattr(config_obj, "chat", None)
-        account = str(getattr(bot, "account", "") or "").strip()
-        nick_name = str(getattr(bot, "nick_name", "") or "").strip()
+        account = _as_text(getattr(bot, "account", ""))
+        nick_name = _as_text(getattr(bot, "nick_name", ""))
+        persona = _as_text(getattr(bot, "bot_data", ""))
+        aliases = [
+            str(item).strip()
+            for item in (getattr(bot, "alias_name", None) or [])
+            if str(item).strip()
+        ]
         admins = [
             str(item).strip()
             for item in (getattr(chat, "admin_accounts", None) or [])
             if str(item).strip()
         ]
+        try:
+            group_chat_chance = float(getattr(chat, "group_chat_chance", 0.3) or 0.0)
+        except (TypeError, ValueError):
+            group_chat_chance = 0.3
+        # 出厂占位不算「配好了」：`account` 默认是 '0'、昵称与人设都是示例文案。
+        # 用 schema 默认值现算而不是写死字面量 —— 默认值以后改了这里自动跟上。
+        defaults = _deploy_field_defaults()
+        account_ready = bool(account) and account.casefold() != defaults["bot_account"].casefold()
+        nick_ready = bool(nick_name) and nick_name.casefold() != defaults["bot_nick_name"].casefold()
+        persona_ready = bool(persona) and persona.casefold() != defaults["bot_data"].casefold()
 
         env_revision = None
         deepseek_ready = False
@@ -1677,30 +1722,42 @@ class DashboardApi:
             {
                 "key": "bot_identity",
                 "label": "机器人身份",
-                "done": bool(account and nick_name),
-                "hint": "填机器人 QQ 号与昵称：面板「机器人」页、命令与落盘都用它",
+                "required": True,
+                "done": bool(account_ready and nick_ready),
+                "hint": "机器人 QQ 号与昵称都是必填：面板「机器人」页、命令与落盘都用它",
                 "action": "identity",
+            },
+            {
+                "key": "persona",
+                "label": "人设",
+                "required": True,
+                "done": persona_ready,
+                "hint": "写清「你是谁、怎么说话、有什么规矩」——它插进系统提示词（{bot_data}）",
+                "action": "persona",
             },
             {
                 "key": "platform_key",
                 "label": "平台密钥",
+                "required": True,
                 "done": deepseek_ready,
                 "hint": "至少填 DeepSeek_APIKey —— 默认模型库全部走 DeepSeek",
                 "action": "platform_key",
             },
             {
-                "key": "admin",
-                "label": "超级管理员",
-                "done": bool(admins),
-                "hint": "填一个 QQ 号用于接收余额不足等系统通知（可留空，但收不到通知）",
-                "action": "admin",
-            },
-            {
                 "key": "onebot",
                 "label": "OneBot 连接",
+                "required": True,
                 "done": bool(onebot["port"]) and bool(onebot["token"]),
                 "hint": "配好监听端口与 access token，再把下面两样填进 NapCat",
                 "action": "onebot",
+            },
+            {
+                "key": "admin",
+                "label": "超级管理员（选填）",
+                "required": False,
+                "done": bool(admins),
+                "hint": "填一个 QQ 号用于接收余额不足等系统通知；留空也能正常跑，只是收不到通知",
+                "action": "admin",
             },
         ]
         return _json_ok(
@@ -1710,11 +1767,15 @@ class DashboardApi:
                 "values": {
                     "bot_account": account,
                     "bot_nick_name": nick_name,
+                    "bot_data": persona,
+                    "alias_name": aliases,
                     "admin_accounts": admins,
+                    "group_chat_chance": group_chat_chance,
                 },
+                "defaults": defaults,
                 "revision": self._config_manager().revision(),
                 "env_revision": env_revision,
-                "ready": all(step["done"] for step in steps),
+                "ready": all(step["done"] for step in steps if step["required"]),
             }
         )
 
@@ -1746,9 +1807,19 @@ class DashboardApi:
             "bind_all": bind_all,
             "url_local": f"ws://127.0.0.1:{port}",
             "url_lan": f"ws://{_detect_lan_host()}:{port}",
-            "path_hint": "/onebot/v11/ws",
+            # 路径由框架侧自己配、服务端不校验；这里给仓库文档（08-部署说明 §4.2）用的惯例写法
+            "path_hint": "/onebot",
             "warning": settings.security_warning(),
             "from_config": raw_port > 0,
+            # 预留：装了 NapCat Desktop 之后由它直接创建连接（端口与 token 自动生成并回填）。
+            # 现在只报「不可用 + 原因」，前端据此显示「自动连接（待支持）」而不是假装能用。
+            "auto_connect": {
+                "available": False,
+                "reason": (
+                    "自动创建连接需要 NapCat Desktop 支持（后续版本提供）；"
+                    "在此之前请手动把下面的地址与 token 填进 NapCat 的反向 WS"
+                ),
+            },
         }
 
     async def deploy_generate_token(self, request: web.Request) -> web.Response:
