@@ -5,7 +5,8 @@ import type { ModelItem, ModelProbeResult, ModelsPayload } from '../../api/types
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
 import Modal from '../../components/Modal';
-import SchemaForm, { defaultsFromFields } from '../../components/SchemaForm';
+import { defaultsFromFields } from '../../components/SchemaForm';
+import { ConfigTreePanel } from './ConfigTreePanel';
 import { setPath } from '../../utils/paths';
 import { BillingSection } from './BillingSection';
 import { bindValues } from './shared';
@@ -70,6 +71,9 @@ function ModelsPanel() {
   // 模型/凭据变更后仍有组件必须重启才会用新模型（issue #75）：这是**常驻提示**，
   // 不能只用 toast —— 用户可能过一会儿才回来配 NapCat/重启。
   const [restartParts, setRestartParts] = useState<string[]>([]);
+  // 模型条目表单与本体配置同款（左树 + 右区）：搜索词与分组折叠状态各自独立
+  const [formFilter, setFormFilter] = useState('');
+  const [formCollapse, setFormCollapse] = useState<Record<string, boolean>>({});
 
   const read = useCallback(async () => {
     setLoading(true);
@@ -353,13 +357,35 @@ function ModelsPanel() {
                 已按旧配置推断本模型启用的可选参数（值 ≠ 默认值视为已启用），请复核参数区后保存。
               </p>
             )}
-            <SchemaForm
-              fields={fields}
+            {/* 与「本体配置」同款表单（左树定位 + 右区渲染），不再用旧的嵌套折叠样式 */}
+            <div className="config-toolbar">
+              <input
+                className="input cfg-search"
+                placeholder="搜索模型字段（支持路径与说明）…"
+                value={formFilter}
+                onChange={(event) => setFormFilter(event.target.value)}
+              />
+            </div>
+            <ConfigTreePanel
+              schema={fields}
+              draft={editing.draft}
+              baseline={
+                editing.isNew
+                  ? undefined
+                  : (editingLibraryItem?.entry as Record<string, any> | undefined)
+              }
+              history={{}}
+              collapse={formCollapse}
               disabled={!!busy}
+              filter={formFilter}
+              onFilterChange={setFormFilter}
               onChange={(path, value) =>
                 setEditing((previous) =>
                   previous ? { ...previous, draft: setPath(previous.draft, path, value) } : previous,
                 )
+              }
+              onToggleCollapse={(key) =>
+                setFormCollapse((previous) => ({ ...previous, [key]: !previous[key] }))
               }
             />
             <BillingSection

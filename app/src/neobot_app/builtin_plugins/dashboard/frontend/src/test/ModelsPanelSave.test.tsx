@@ -8,7 +8,7 @@
 // 这里直接构造「library 被写成视图对象」的坏数据，锁住「面板必须扛得住」这一点：
 // 崩溃点在 render 期，所以修复前本用例会抛 library.filter is not a function。
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ModelsPanel } from '../pages/config/ModelsPanel';
 import { api } from '../api/endpoints';
 import type { ModelsPayload } from '../api/types';
@@ -73,5 +73,21 @@ describe('模型库视图形状（issue #65）', () => {
     // 只要还能渲染出面板主体（标题 + 计数标签），就说明没有在 render 期抛异常
     expect(await screen.findByRole('heading', { name: '模型库' })).toBeInTheDocument();
     expect(screen.getByText('0 个模型')).toBeInTheDocument();
+  });
+});
+
+
+describe('模型编辑表单样式（issue #75）', () => {
+  it('用与本体配置同款的面板：左树 + 搜索，而不是旧的嵌套折叠表单', async () => {
+    vi.mocked(api.configModels).mockResolvedValue({
+      ok: true, data: VIEW as ModelsPayload, error: null, status: 200,
+    });
+    const { container } = render(<ModelsPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
+
+    // ConfigTreePanel 的标志性结构：cfg-tree（左树）+ cfg-search（搜索框）
+    expect(container.querySelector('.cfg-tree')).toBeTruthy();
+    expect(container.querySelector('.cfg-search')).toBeTruthy();
   });
 });
