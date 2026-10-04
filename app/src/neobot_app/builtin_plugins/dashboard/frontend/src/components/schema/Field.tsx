@@ -11,16 +11,18 @@ export default function Field(props: FieldProps) {
   const changed = changedPaths ? changedPaths.has(key) : false;
   const historyCount = history?.[key]?.length || 0;
 
-  if (filter && !matchPath(descriptor.path, filter) && descriptor.kind === 'scalar') return null;
+  // force_visible：父级（model_list 条目）已判定命中，这里不再按路径二次过滤
+  if (filter && !descriptor.force_visible && descriptor.kind === 'scalar' && !matchPath(descriptor.path, filter)) return null;
 
   // 分组不是「一种控件」，而是递归容器，因此不放进注册表
   if (descriptor.kind === 'group') {
     // 含参数目录伪字段的分组（settings）：被标记 hidden 的可选字段由伪字段接管
     // （在「已添加参数」区按 enabled_params 呈现），这里不再单独渲染，避免重复。
     const paramCatalog = (descriptor.fields || []).some((field) => field.kind === 'model_params');
+    const inherited = descriptor.force_visible === true;
     const visible = (descriptor.fields || []).filter(
       (field) =>
-        (!filter || field.kind !== 'scalar' || matchPath(field.path, filter)) &&
+        (!filter || inherited || field.kind !== 'scalar' || matchPath(field.path, filter)) &&
         !(paramCatalog && field.hidden),
     );
     if (filter && visible.length === 0) return null;
@@ -39,7 +41,7 @@ export default function Field(props: FieldProps) {
         </div>
         {descriptor.description && <p className="muted small cfg-hint">{descriptor.description}</p>}
         {!collapsed && visible.map((field) => (
-          <Field key={field.path.join('.')} descriptor={field} disabled={disabled} filter={filter}
+          <Field key={field.path.join('.')} descriptor={inherited ? { ...field, force_visible: true } : field} disabled={disabled} filter={filter}
             changedPaths={changedPaths} onRestore={onRestore} onShowHistory={onShowHistory}
             history={history} collapse={collapse} onToggleCollapse={onToggleCollapse}
             onChange={(next) => {

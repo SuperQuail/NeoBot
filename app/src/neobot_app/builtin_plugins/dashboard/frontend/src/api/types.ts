@@ -287,24 +287,14 @@ export interface ModelProbeResult {
   message?: string;
 }
 
-/** 模型库 /api/config/models */
-export interface ModelsPayload {
+/** 模型视图：模型库 + 分配 + 角色 + 表单描述（后端 models_view() 的返回） */
+export interface ModelsView {
   library?: ModelItem[];
-  entry_schema?: FieldDescriptor[];
-  provider_options?: string[];
-  model_type_labels?: Record<string, string>;
-  role_model_types?: Record<string, string>;
-  roles_meta?: Array<{ role: string; label?: string; multi?: boolean; required?: boolean; model_type?: string; model_type_label?: string }>;
   assignments?: {
     roles?: Record<string, string>;
     creator_image_models?: string[];
     [key: string]: unknown;
   };
-  revision?: number;
-  providers?: string[];
-  /** 写配置成功后后端带回的最新模型库视图 */
-  models?: ModelItem[];
-  /** 模型分配的「当前生效情况」表 */
   roles?: Array<{
     role: string;
     label?: string;
@@ -317,6 +307,23 @@ export interface ModelsPayload {
     registered?: boolean;
     [k: string]: unknown;
   }>;
+  roles_meta?: Array<{ role: string; label?: string; multi?: boolean; required?: boolean; model_type?: string; model_type_label?: string }>;
+  entry_schema?: FieldDescriptor[];
+  provider_options?: string[];
+  model_name_options?: string[];
+  model_type_labels?: Record<string, string>;
+  role_model_types?: Record<string, string>;
+  platforms?: Array<{ name?: string; url?: string; has_key?: boolean; builtin?: boolean; [k: string]: unknown }>;
+  [key: string]: unknown;
+}
+
+/** 模型库 /api/config/models */
+export interface ModelsPayload extends ModelsView {
+  library?: ModelItem[];
+  revision?: number;
+  providers?: string[];
+  /** 写配置成功后后端带回的最新**模型视图对象**（不是数组，取 .library 才是条目列表） */
+  models?: ModelsView;
   saved_model_ref?: string;
   message?: string;
   applied?: boolean;
