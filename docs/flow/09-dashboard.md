@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 5c7b345
-verified_hash: 73cfc479304a
+verified_against: 93d0141
+verified_hash: e0f7a8284325
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -513,6 +513,10 @@ flowchart TD
 * **引导的「必填」要能识别出厂占位**：`bot.account` 默认是 `0`、昵称与人设都是示例文案 ——
   只看「非空」会把占位当成配好了。判定用 schema 默认值现算比对（`_deploy_field_defaults`），
   不写死字面量；并且 `bot.account` 是 **int**，转文本别写 `x or ""`（`0` 是假值，会被吞成空串）。
+* **模型库保存/删除后要提示「仍需重启」**：分类表把 `models` 整体标成可热重载，所以
+  `needs_restart_count` 常为 0；面板要拿响应里的 `needs_restart_parts` 渲染**常驻** warning
+  （不是 toast —— 用户可能过一会儿才回来重启）。删除模型同样要带 `reload`，
+  否则运行期继续持有已删模型的 provider（issue #75）。
 * **首页承载「不报错但影响使用」的配置缺口**：`/api/overview` 的 `notices` 由后端读运行中
   配置生成（如未配置超级管理员账号），首页按 warning 样式渲染。这类缺口不影响启动、
   也不抛异常，只留在启动日志里很容易被忽略到最后 —— 该提示的放首页，别只 log 一行。

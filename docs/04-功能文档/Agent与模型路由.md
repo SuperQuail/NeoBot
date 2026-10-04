@@ -61,6 +61,26 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 
 注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同 `model_ref` 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
 
+### 改模型后：哪些立即生效、哪些必须重启
+
+在模型库点「保存并重载」会重建这些组件的 provider：**主对话 / 视觉 / 档案总结 / TTS / 生图 /
+解题 Agent / 自修复 Agent**。
+
+但仍有部分组件在**启动期**就持有了 provider，改模型后要**重启进程**才会换成新的：
+
+- 表情包图片解析（emoji 服务持有的视觉 provider）
+- 绘图服务的视觉 provider
+- 应用级 provider 引用（`runtime/application.py`）
+- 技能实例持有的 provider（`skills/*`）
+- 回复发送器的 provider（`reply/sender.py`）
+
+所以面板在模型库**保存或删除**后会常驻显示一条「需要重启进程」的提示（响应字段
+`needs_restart_parts`）—— 注意别只看 `changes.needs_restart_count`：热重载分类表把
+`models` 整体标成可热重载，那个计数**恒为 0**。
+
+清单来源是 [runtime/provider_reload.py](../../app/src/neobot_app/runtime/provider_reload.py) 的
+`MODEL_RELOAD_GAPS`：每补一处换装入口就删一条，删空后提示自动消失。
+
 ## Agent 模型路由（`agent_model` 配置）
 
 每个 Agent 通过编号（0-3）选择使用的模型：

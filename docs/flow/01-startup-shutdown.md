@@ -12,8 +12,8 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 993be4b
-verified_hash: 061c3d9f8ff7
+verified_against: 93d0141
+verified_hash: a0b011adac1c
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -230,7 +230,12 @@ register，所以顺序永远是「适配器先重连 → provider 再重建」�
 （后四个是 `ModelConsumerReload`，各自独立、注册表逐个隔离失败）。
 构造期固化了模型产物的组件要一并注册，否则它只能等重启。两个可选 Agent 的 provider
 被闭包捕获，靠**重跑装配**换；装配因 provider 不可用被跳过时显式 `set_agent(None)`，
-免得旧 Agent 继续持旧凭据。
+免得旧 Agent 继续持旧凭据。重建这几个 Agent 时，provider 与**视觉 provider** 都要现取
+（`_current_vision_provider`）—— 用装配闭包里的启动期实例等于「重建了但装的是旧的」。
+
+**覆盖不全必须如实说**：`models` 被整体标成可热重载 → `needs_restart_count` 为 0，
+但 emoji / drawing / application / skills / sender 等仍持启动期 provider。
+缺口清单在 `runtime/provider_reload.MODEL_RELOAD_GAPS`，面板据此追加「仍需重启」提示（issue #75）。
 
 `_reload_config` 还接受 `extra_changed_paths`：`.env` 的值**不进配置快照**，
 所以「只改环境变量」时 diff 是空的、消费者一个都不会被触发。调用方（面板保存 env）

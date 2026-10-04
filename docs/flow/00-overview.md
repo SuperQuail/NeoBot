@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 993be4b
-verified_hash: 288d2270bca7
+verified_against: 93d0141
+verified_hash: f5cd40bbbc6c
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -270,6 +270,13 @@ flowchart TD
   TTS 以前正是如此：模型没注册就干脆不建服务，补完平台 Key 也必须重启进程。
   两个可选 Agent 的 provider 被闭包捕获，只能**重跑装配**来换；装配被跳过
   （provider 不可用）时要显式 `set_agent(None)`，否则旧 Agent 会继续持旧凭据跑。
+* **分类表说「可热重载」不等于覆盖全了**：`models` / `env` 被整体标成可热重载，
+  于是 `needs_restart_count` 恒为 0，面板会说「0 项需重启」—— 而启动期把 `vision_provider`
+  交给了一大批组件（emoji / drawing / application / skills / sender 等），它们仍在用旧 provider。
+  缺口清单显式写在 `runtime/provider_reload.MODEL_RELOAD_GAPS`，**补一个删一条**；
+  面板文案由 `_append_model_reload_hint` 追加「仍需重启」提示（issue #75）。
+  重建器取 provider 必须**现取**（`_current_vision_provider`），把装配闭包里的启动期实例
+  再注入一遍 = 换了但没换，比不重建更隐蔽。
 * **适配器没连上不代表启动失败**：`start()` 里连接探针只观察不致命，启动流程与面板不因
   「框架还没连上」被回滚。
 * **provider 异常不再降级成 assistant 文本**：历史里不能出现 `Error: ...`
