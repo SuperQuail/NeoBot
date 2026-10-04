@@ -12,8 +12,8 @@ covers:
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: b982184
-verified_hash: 1b5bcf066b67
+verified_against: d9c9ab2
+verified_hash: 484bdb5332e2
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
@@ -224,6 +224,10 @@ flowchart TD
 热重载消费者按**注册顺序**生效（`runtime/hot_reload_registry.py:113` 注释「先注册先生效」）：
 `AdapterSupervisor` 在 :784 先注册，`_provider_reload` 在 :1182 先 unregister 再
 register，所以顺序永远是「适配器先重连 → provider 再重建」。
+
+热重载的覆盖范围由**注册的消费者**决定：provider（主对话 / 视觉 / 档案总结）、`tts`、
+`creator_image` 各注册一个消费者，注册表逐个隔离失败。装配期新固化了模型产物的组件，
+要一并注册 `ModelConsumerReload`，否则它只能等重启。
 
 `_reload_config` 还接受 `extra_changed_paths`：`.env` 的值**不进配置快照**，
 所以「只改环境变量」时 diff 是空的、消费者一个都不会被触发。调用方（面板保存 env）

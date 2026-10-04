@@ -76,7 +76,10 @@ from datetime import datetime, timezone
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
-from neobot_app.runtime.provider_reload import ProviderReloadConsumer
+from neobot_app.runtime.provider_reload import (
+    ModelConsumerReload,
+    ProviderReloadConsumer,
+)
 from neobot_app.runtime.process_restart import ProcessRestartSignal
 from neobot_app.runtime.process_stop import ProcessStopSignal
 from neobot_app.skills.balance_guide import sync_balance_query_skill
@@ -1200,6 +1203,57 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     # 软重启会重建 provider：先移除指向上一轮对象的消费者，再注册新的
     hot_reload_registry.unregister(getattr(_provider_reload, 'name', 'provider'))
     hot_reload_registry.register(_provider_reload)
+
+    # ── 其余「持有模型产物」的组件：同样跟着 models/env 变更重建 ──
+    # 每个组件是独立消费者：注册表逐个隔离失败（见 runtime/hot_reload_registry.apply），
+    # 所以 TTS 建不起来不会拖垮 provider 的重建，报告里也能逐个看到成败。
+    def _rebuild_tts(new_config: Any) -> None:
+        """重建 TTS 服务并换装。
+
+        启动期这个服务是「模型没注册就直接不建」的（build_tts_service 里那道闸门）：
+        不重建的话，用户先在面板里补好平台 Key、再点重载也依然要重启进程 ——
+        这正是 issue #74 里「覆盖不到」的那一半。
+        `build_tts_service` 返回 None 表示当前配置下 TTS 仍不可用，这里如实换装成
+        停用状态（而不是留着旧服务继续用旧凭据）。
+        """
+        service = build_tts_service(config=new_config, logger_factory=logger_factory)
+        reply_orchestrator.install_tts_service(service)
+
+    def _rebuild_creator_image(new_config: Any) -> None:
+        """重建生图服务并换装（生图服务在构造时固化默认模型与平台凭据）。
+
+        仅覆盖「本来就启用」的情况：`agent.creator.enabled` 是装配期开关，
+        从关闭改为启用属于结构性变更，仍按需重启（consumer 的 reason 里写明）。
+        """
+        creator_cfg = getattr(getattr(new_config, "agent", None), "creator", None)
+        if creator_cfg is None or not getattr(creator_cfg, "enabled", False):
+            return
+        service = build_creator_image_service(
+            uow_factory=uow_factory,
+            adapter=adapter,
+            config=new_config,
+            emoji_service=emoji_service,
+            vision_provider=vision_provider,
+            file_server=file_server,
+            image_pool=image_pool,
+            logger_factory=logger_factory,
+        )
+        drawing_manager.set_image_service(service)
+
+    for _consumer in (
+        ModelConsumerReload(
+            name="tts",
+            rebuild=_rebuild_tts,
+            reason="TTS 服务持有模型（音色与平台密钥），凭据变更后重建",
+        ),
+        ModelConsumerReload(
+            name="creator_image",
+            rebuild=_rebuild_creator_image,
+            reason="生图服务持有默认模型与平台凭据，变更后重建（启用开关变更仍需重启）",
+        ),
+    ):
+        hot_reload_registry.unregister(_consumer.name)
+        hot_reload_registry.register(_consumer)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []

@@ -134,3 +134,59 @@ class ProviderReloadConsumer(ConfigConsumer):
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
+
+
+class ModelConsumerReload(ConfigConsumer):
+    """通用「持有模型产物的组件」重建器：接入一行，失败互不牵连。
+
+    为什么需要它：provider 之外还有组件把**模型条目**固化在自己身上 ——
+    TTS 服务（音色与平台密钥）、生图服务（默认模型与平台）、可选 Agent 的 provider。
+    它们此前只在启动期装配一次，于是「先在面板里配好平台 Key，再重载」走不通，
+    必须重启进程。
+
+    与 `ProviderReloadConsumer` 的分工：那个负责「主对话 / 视觉 / 档案总结」这一组
+    **共享 bundle、原子换装**的 provider；这个负责其余**各自独立**的组件 ——
+    每个组件注册成独立消费者，注册表本就是「单个失败不影响其余组件」
+    （`hot_reload_registry.apply`），所以 TTS 建不起来不会拖垮 provider 的重建，
+    报告里也能逐个看到成败。
+
+    接入方式（装配处一行）：
+
+        registry.register(ModelConsumerReload(name="tts", rebuild=_rebuild_tts))
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        rebuild: Callable[[Any], Any],
+        reason: str = "",
+        logger: Logger | None = None,
+    ) -> None:
+        self._name = name
+        self._rebuild = rebuild
+        self._reason = reason or f"{name} 持有的模型配置变更后重建"
+        self._logger = logger or NullLogger()
+
+    #: 与 provider 消费者同源：模型库与平台凭据（.env）变了都要重建。
+    config_paths: tuple[str, ...] = ("models", "env")
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def hot_reload_policies(self) -> tuple[Any, ...]:
+        from neobot_app.config.hot_reload import HotReloadRule
+
+        return (
+            HotReloadRule("models", True, self._reason),
+            HotReloadRule("env", True, self._reason),
+        )
+
+    async def apply_config(self, config: Any) -> None:
+        """重建并换装。失败直接抛出：由注册表记为「该组件失败」，其余组件继续。"""
+        result = self._rebuild(config)
+        if inspect.isawaitable(result):
+            await result
+        self._logger.info(f"{self._name} 已按新配置重建")
