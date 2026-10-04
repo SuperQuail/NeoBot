@@ -67,6 +67,9 @@ function ModelsPanel() {
   const [pulledProvider, setPulledProvider] = useState('');
   const [pulling, setPulling] = useState('');
   const pulledRef = useRef('');
+  // 模型/凭据变更后仍有组件必须重启才会用新模型（issue #75）：这是**常驻提示**，
+  // 不能只用 toast —— 用户可能过一会儿才回来配 NapCat/重启。
+  const [restartParts, setRestartParts] = useState<string[]>([]);
 
   const read = useCallback(async () => {
     setLoading(true);
@@ -132,6 +135,7 @@ function ModelsPanel() {
       setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
     } else await read();
     setEditing(null);
+    setRestartParts(result.data?.needs_restart_parts || []);
     const savedRef = result.data?.saved_model_ref;
     const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
     toast(savedRef ? baseMessage + '（引用名 ' + savedRef + '）' : baseMessage, 'ok');
@@ -144,12 +148,15 @@ function ModelsPanel() {
       action: 'delete',
       model_ref: item.model_ref,
       revision: data?.revision,
+      // 删除同样要重载：不重载的话运行期继续持有已删模型的 provider（issue #75）
+      reload: true,
     });
     setBusy('');
     if (!result.ok) {
       toast(result.error || '删除失败', 'err');
       return;
     }
+    setRestartParts(result.data?.needs_restart_parts || []);
     if (result.data?.models?.library) {
       setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
     }
@@ -269,6 +276,12 @@ function ModelsPanel() {
         模型单独存储在 <code>[models.registry]</code>，主对话 / Agent / 视觉 / TTS / 生图只引用 key；
         同一个模型可被多个调用方复用，改一处全局生效。
       </p>
+      {restartParts.length > 0 && (
+        <p className="config-notice warning" role="status">
+          <Icon name="more" /> 模型/密钥已生效，但以下部分<b>需要重启进程</b>后才会用新模型：
+          {restartParts.join('、')}
+        </p>
+      )}
       {loading && !data && <p className="empty muted" role="status">正在读取模型库…</p>}
       {data && library.length === 0 && <div className="empty muted">模型库为空，点击「新增模型」添加</div>}
       {library.length > 0 && (

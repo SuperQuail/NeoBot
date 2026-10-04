@@ -1538,3 +1538,48 @@ async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> N
         assert response.status_code == 403
     finally:
         await server.stop()
+
+
+# ── 模型/凭据变更后的「仍需重启」提示（issue #75）────────────────
+
+
+def test_model_change_appends_restart_hint() -> None:
+    """改模型/密钥必须提示「仍需重启」。
+
+    分类表把 \`models\` 整体标成可热重载（provider 消费者登记的规则），
+    所以 \`needs_restart_count\` 恒为 0 —— 不额外补一句，面板就会声称「0 项需重启」，
+    而实际仍有组件在用启动期的 provider。
+    """
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：3 项已生效，0 项需重启",
+        {"models.registry[0].model_name": "another-model"},
+    )
+
+    assert "重启" in message
+    assert gaps, "缺口没补齐之前必须如实提示，不能返回空"
+    assert any("表情包" in item or "emoji" in item for item in gaps)
+    assert any("绘图" in item for item in gaps)
+
+
+def test_env_change_also_appends_restart_hint() -> None:
+    """平台凭据（.env）同样算模型类变更：换 Key 后也有组件不会跟着换。"""
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    _message, gaps = _append_model_reload_hint("配置已重载", {"env": {}})
+
+    assert gaps
+
+
+def test_unrelated_change_keeps_message_untouched() -> None:
+    """与模型无关的改动不该背这口锅：文案保持原样。"""
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：1 项已生效，0 项需重启",
+        {"chat.group_chat_chance": 0.3},
+    )
+
+    assert gaps == []
+    assert message.endswith("0 项需重启")

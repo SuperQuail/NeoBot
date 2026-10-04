@@ -379,6 +379,12 @@ export interface ModelsPayload extends ModelsView {
   message?: string;
   applied?: boolean;
   changes?: ConfigChanges;
+  /**
+   * 模型/凭据变更后**仍需重启进程**才会用新模型的部分（issue #75）。
+   * 分类表把 `models` 整体标成可热重载，所以 `changes.needs_restart_count` 常为 0；
+   * 这份清单才是完整的「哪些没热更到」。
+   */
+  needs_restart_parts?: string[];
   [key: string]: unknown;
 }
 

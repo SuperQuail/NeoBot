@@ -12,7 +12,7 @@ import secrets
 import socket
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from aiohttp import web
 
@@ -66,6 +66,29 @@ def _as_text(value: Any) -> str:
     一 `or` 就变成空串，「出厂占位 0」与「未填」就分不出来了。
     """
     return "" if value is None else str(value).strip()
+
+
+def _append_model_reload_hint(
+    message: str, changes: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """模型 / 凭据变更后追加「仍需重启」提示；返回 (文案, 未覆盖部分)。
+
+    为什么必须补这一句：`models` / `env` 在热重载分类表里被**整体**标成可热重载
+    （provider 消费者登记的规则），于是 `diff_snapshot` 的 `needs_restart_count` 恒为 0 ——
+    面板只会说「0 项需重启」，而实际仍有组件在用启动期的 provider（issue #75）。
+    缺口清单在 `runtime/provider_reload.MODEL_RELOAD_GAPS`：补一个删一条。
+    """
+    from neobot_app.runtime.provider_reload import (
+        MODEL_RELOAD_GAPS,
+        model_reload_restart_hint,
+    )
+
+    if not MODEL_RELOAD_GAPS:
+        return message, []
+    groups = {str(path).split(".", 1)[0] for path in changes}
+    if not groups & {"models", "env"}:
+        return message, []
+    return message + model_reload_restart_hint(), list(MODEL_RELOAD_GAPS)
 
 
 def _deploy_field_defaults() -> dict[str, str]:
@@ -1647,10 +1670,14 @@ class DashboardApi:
                     changes = diff_snapshot(before, after)
                     payload["changes"] = summarize_changes(changes)
                     if changes:
-                        payload["message"] = (
+                        message, restart_parts = _append_model_reload_hint(
                             f"配置已热重载：{payload['changes']['hot_reload_count']} 项已生效，"
-                            f"{payload['changes']['needs_restart_count']} 项需重启"
+                            f"{payload['changes']['needs_restart_count']} 项需重启",
+                            changes,
                         )
+                        payload["message"] = message
+                        if restart_parts:
+                            payload["needs_restart_parts"] = restart_parts
                     elif not extra_paths:
                         # 只有「配置快照里也确实没有变化」时才这么说。改了 .env 的场景
                         # 走不到这里 —— 那句「没有检测到配置项变化」会让用户以为没保存成功。
@@ -1659,7 +1686,7 @@ class DashboardApi:
                     self.logger.warning(f"配置差异计算失败: {exc}")
         return payload
 
-# ── 快捷部署（新手引导）──────────────────────────────────────────
+    # ── 快捷部署（新手引导）──────────────────────────────────────────
 
     async def deploy_status(self, request: web.Request) -> web.Response:
         """快捷部署菜单：还差哪几项、以及 OneBot 连接所需的一切（只读）。
@@ -2166,6 +2193,8 @@ class DashboardApi:
             document["message"] = str(reload_result.get("message") or message)
             if reload_result.get("changes"):
                 document["changes"] = reload_result["changes"]
+            if reload_result.get("needs_restart_parts"):
+                document["needs_restart_parts"] = reload_result["needs_restart_parts"]
         try:
             document["models"] = models_view(self._models_config())
         except Exception:

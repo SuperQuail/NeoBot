@@ -1219,6 +1219,20 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         service = build_tts_service(config=new_config, logger_factory=logger_factory)
         reply_orchestrator.install_tts_service(service)
 
+    def _current_vision_provider(new_config: Any) -> Any:
+        """重建时**现取**视觉 provider。
+
+        装配闭包里的 `vision_provider` 是**启动期**那一个：直接把它再注入一遍，
+        等于「重建了但装的还是旧视觉模型」—— 比不重建更隐蔽（issue #75）。
+        这里按新配置重建；建不出来时回退到旧的，总比塞个 None 好。
+        """
+        return (
+            build_vision_provider(
+                logger=provider_logger, model_name=resolve_vision_model_name(new_config)
+            )
+            or vision_provider
+        )
+
     def _rebuild_creator_image(new_config: Any) -> None:
         """重建生图服务并换装（生图服务在构造时固化默认模型与平台凭据）。
 
@@ -1233,7 +1247,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             adapter=adapter,
             config=new_config,
             emoji_service=emoji_service,
-            vision_provider=vision_provider,
+            vision_provider=_current_vision_provider(new_config),
             file_server=file_server,
             image_pool=image_pool,
             logger_factory=logger_factory,
@@ -1255,7 +1269,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             provider_logger=provider_logger,
             sandbox_service=sandbox["sandbox_service"],
             logger_factory=logger_factory,
-            vision_provider=vision_provider,
+            vision_provider=_current_vision_provider(new_config),
             prompt_store=prompt_store,
         )
         # 装配函数在 provider 不可用时直接 return、不动 manager：那样旧 Agent 会继续
@@ -1275,7 +1289,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             data_dir=DATA_DIR,
             source_roots=source_roots,
             log_file=log_file_path,
-            vision_provider=vision_provider,
+            vision_provider=_current_vision_provider(new_config),
             web_search_config=_web_search_config_dict(new_config),
             prompt_store=prompt_store,
         )

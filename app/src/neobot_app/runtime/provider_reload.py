@@ -190,3 +190,28 @@ class ModelConsumerReload(ConfigConsumer):
         if inspect.isawaitable(result):
             await result
         self._logger.info(f"{self._name} 已按新配置重建")
+
+
+#: 模型 / 凭据变更后**已知仍未接入热重载**的部分（issue #75）。
+#:
+#: 为什么要显式列出来：`models` 在热重载分类表里是「可热重载」（provider 消费者登记的），
+#: 于是 `diff_snapshot` 的 `needs_restart_count` 恒为 0 —— 面板只会说「全部已生效」，
+#: 而这些组件仍在用启动期的 provider。把缺口摆在这里保持可见：
+#: **补齐一个就删一条**，删空后提示自然消失。
+MODEL_RELOAD_GAPS: tuple[str, ...] = (
+    "表情包图片解析（emoji 服务持有的视觉 provider）",
+    "绘图服务的视觉 provider（drawing）",
+    "应用级 provider 引用（runtime/application.py）",
+    "技能实例持有的 provider（skills/*）",
+    "回复发送器的 provider（reply/sender.py）",
+)
+
+
+def model_reload_restart_hint() -> str:
+    """模型 / 凭据变更后追加的「仍需重启」提示；缺口清空时返回空串。"""
+    if not MODEL_RELOAD_GAPS:
+        return ""
+    return (
+        "；以下部分仍需**重启进程**后才会用新模型："
+        + "、".join(MODEL_RELOAD_GAPS)
+    )
