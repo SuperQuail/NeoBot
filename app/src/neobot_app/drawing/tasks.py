@@ -31,4 +31,8 @@ class DrawTask:
     record_payload: dict[str, Any] | None = None
     notification_count: int = 0
     notified: bool = False
+    #: 通知重试耗尽（失败/结果没能及时送达 agent）。**不覆盖 `status`** ——
+    #: 早先的实现把 status 改写成 "timeout"，既丢了 failed/completed，
+    #: 又让终端通知一律按「图片已生成」发出（issue #76）。
+    notification_timed_out: bool = False
     created_at: float = field(default_factory=monotonic_seconds)
