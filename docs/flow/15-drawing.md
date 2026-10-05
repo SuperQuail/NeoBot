@@ -2,8 +2,8 @@
 flow: 15-drawing
 covers:
   - app/src/neobot_app/drawing/
-verified_against: a5c0611
-verified_hash: 5307d836025a
+verified_against: 802eb41
+verified_hash: 806f3a8788b0
 ---
 
 # 15 绘画子系统：提交判据 · 参考图接口分派 · 落盘清理 · 通知回执
@@ -342,7 +342,7 @@ flowchart TD
 flowchart TD
     A["bootstrap：agent.creator.enabled=True 才建服务 / bootstrap/__init__.py:865"] --> B["model_names = models.creator_image_model_names = assignments.image_keys()"]
     B --> C{"model_names 为空?"}
-    C -- 是 --> C1["ValueError：至少需要一个生图模型注册名（构造即失败）"]
+    C -- 是 --> C1["软降级：warning 后照常构造（_model_names=()，图库/表情包照常）<br/>绘图入口 _require_image_model 抛可读错误；draw 工具不暴露"]
     C -- 否 --> D["逐个 get_registered_model(key)：缺 key 抛 ValidationError"]
     D --> E["默认模型 = 列表第一个；default_model_name 只读"]
     E --> F["每模型一个 httpx.AsyncClient：base_url 去尾斜杠 + Authorization Bearer + 自身超时"]
@@ -354,6 +354,12 @@ flowchart TD
 
 `null`（未指定）与空串都解析为默认模型；**纯数字是 0 基序号**，不是图库编号——同一串数字
 在 `references` 里是图库编号、在 `provider` 里是序号，这是最容易读错的一处。
+
+**空模型列表是软降级，不是构造失败**（issue #82）：出厂默认「`agent.creator.enabled=true` +
+`creator_image_models=[]`」，而图库（gallery）、表情包、图库图片解析都挂在这个服务上、**都不需要**
+生图模型 —— 以前构造期直接抛 `ValueError`，等于让全新部署根本起不来。现在只有绘图入口不可用：
+`draw` 不暴露、`resolve_model_name` / `generate_image` 给「未配置生图模型（`creator_image_models` 为空）」
+的可读错误，`process_image` / `check_draw_status` / 图库 / 表情包照常。
 `manager.resolve_model_name` 只是转调 `service.resolve_model_name`（服务未注入时返回空串）。
 </details>
 
