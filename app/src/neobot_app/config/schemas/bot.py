@@ -42,9 +42,17 @@ class Bot:
         default="你是一个可爱的机器人,如果你对别人有备注,你会倾向于叫你备注对方的名字",
         metadata={"description": "描述机器人的人设"},
     )
+    # [WIP · 尚未接线] 结婚玩法本身还没实现：本开关读得到但不生效（全仓没有任何消费方，
+    # 改它不会产生任何效果）。面板与配置参考会显示 description 里的标记，提醒用户别把它
+    # 当成可用开关。后续开发计划见 TODO/待办事项.md「待办」第 12 项（好感度系统与结婚系统）。
     enable_bot_get_married: bool = field(
         default=False,
-        metadata={"description": "是否允许bot与好友结婚"},
+        metadata={
+            "description": (
+                "[WIP · 尚未接线] 是否允许 Bot 与好友结婚（互动彩蛋）；"
+                "当前不生效 —— 结婚玩法尚未实现，没有任何代码读取该开关。"
+            )
+        },
     )
 
 
