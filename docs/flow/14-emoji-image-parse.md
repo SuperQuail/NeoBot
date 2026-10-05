@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/image/
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
-verified_against: d37eae4
-verified_hash: 3139904416cc
+verified_against: 2d7925b
+verified_hash: 50749b2ff7af
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
@@ -44,7 +44,7 @@ flowchart TD
         B -- native_vision_provider.native_vision is True --> B1["原图保留 不替换段 交原生视觉附录 见 03b"]
         B --> D{"消息段含 image / cardimage 无则 NO-OP"}
         D -- 有 --> E["create_task(_parse_and_replace) 并按 queue_key 记账 / parser.py:91"]
-        E --> F["_parse_single_image 下载 30s 放大到至少 29px 取 md5 / parser.py:150"]
+        E --> F["多张图并发 _parse_single_image 下载 15s 放大到至少 29px 取 md5 / parser.py:150"]
         F --> G{"ImageAnalysisService.get(md5) 命中"}
         G -- 命中 --> G1["返回 [图片：缓存描述]"]
         G -- 未命中 --> H{"vision_provider 已配置"}
@@ -130,14 +130,14 @@ flowchart TD
     A0 -- 是 --> EXP["返回 None 加过期引用键<br/>调用方落 [图片：已过期...]<br/>不发任何请求"]
     A0 -- 否 --> B["_segment_data 归一 dict 或 model_dump"]
     B --> C{"data.url 非空"}
-    C -- 有 --> D["image_http_client timeout=30s GET / parser.py:227"]
+    C -- 有 --> D["image_http_client timeout=15s GET / parser.py:227"]
     D --> E{"raise_for_status 通过且 _is_valid_image"}
     E -- 是 --> OK["返回图片字节"]
     E -- 否 --> W["warning 内容不是有效图片 url 截断 80 字符"]
     C -- 无 --> W
     W --> F{"data.file 非空"}
     F -- 无 --> NONE["返回 None 调用方落 [图片解析失败]"]
-    F -- 有 --> G["adapter get_image(file, timeout=30s) / parser.py:250"]
+    F -- 有 --> G["adapter get_image(file, timeout=15s) / parser.py:250"]
     G --> H{"响应里有 data.file 或 data.url"}
     H -- 无 --> EXP
     H -- 有 --> I["_read_image_ref base64 到 file 到本地路径 到 http"]
@@ -150,7 +150,7 @@ flowchart TD
 
 * 魔数校验是 `utils/image_bytes.py:18 looks_like_image`：长度小于 16 字节直接 False；`RIFF` 开头还必须第 8-12 字节是 `WEBP`；其余按 `IMAGE_MAGIC_PREFIXES`（JPEG / PNG / GIF87a / GIF89a / BMP）前缀匹配。它不引入 Pillow 解码开销，代价是**只认容器头**。
 * URL 分支失败**不抛异常**，只 warning 后落到 `file` 分支；两段都失败返回 `None`。
-* **先查登记表再动手**：引用键（`file:` / `url:` / `msg:<id>:<index>`，内联 `base64://` 与 `data:` 不算引用）命中登记表就直接返回过期 —— 预热灌进来的历史图片里，那些设备侧已经清掉的那些，每轮都要白等一个 30 秒窗口（见本图「拉不到的图片」小节）。
+* **先查登记表再动手**：引用键（`file:` / `url:` / `msg:<id>:<index>`，内联 `base64://` 与 `data:` 不算引用）命中登记表就直接返回过期 —— 预热灌进来的历史图片里，那些设备侧已经清掉的那些，每轮都要白等一个超时窗口（见本图「拉不到的图片」小节）。
 * **只在「这张图没了」时登记**：`is_expiry_failure` 只认超时与 `403 / 404 / 410`，`get_image` 返回空数据也算；断线一类的普通异常**不登记** —— 登记了会把还能拉的图一并废掉。
 * 注释里写明了为什么只包一层超时（`parser.py:219-222`）：外层再包 `asyncio.wait_for` 会与 `get_image` 内层超时互相 cancel，迟到的 echo 打中已取消的 future 会抛 `InvalidStateError` 并回收连接。改这里前先读这段注释。
 * 图片字节没有任何大小上限：`ImageParseService` 不走 `image/source.py` 的受限读取（`read_image_ref(..., max_bytes=...)`），下载多大就吞多大。
@@ -410,6 +410,8 @@ flowchart TD
 ```
 
 * **登记表只在内存里**（`ImageUnavailableRegistry`，容量 512，LRU）：语义就是「本次运行内不再拉」。进程重启即清空 —— 设备侧补回了历史记录，重启一次就能重新尝试。
+* **超时单价 15 秒、多张并发**：`IMAGE_FETCH_TIMEOUT_SECONDS = 15`（`image/source.py`，下载超时统一口径）；
+  一轮多张图、一条消息多张图都并发（`refresh_defaults` / `_parse_and_replace`），最坏只等一次超时。
 * **为什么要登记**：带预热时队列里灌入大量历史消息，其中一部分图片的设备侧聊天记录已被清理（或图片过久被服务器回收），URL 与 `get_image` 两条路都拿不到字节。原生视觉的默认加载（`ReplyVisionContext.refresh_defaults`）只把**成功**的图缓存下来，失败的下轮还会再挑中，单张要烧满一个 30 秒窗口、默认一次 4 张 —— 最坏一轮 120 秒纯等待，正好等于群聊静默熔断阈值。
 * **描述回显走引用摘要**：解析结果本体仍按内容哈希存 `images` 表；拉不到的图算不出哈希，所以另用 `image_refs` 存「引用摘要（`sha1(key)` 前 32 位）→ 描述」。查不到就只报过期，不影响主流程；`install_description_lookup` 由 bootstrap 接上（`bootstrap/__init__.py`）。
 * **过期文案有两种形态**：独立成句的 `EXPIRED_NOTICE`（工具结果）与塞进正文的 `EXPIRED_INLINE`（`[图片：已过期…]` 消息段）。两者都不带原始 file id / 临时 URL —— 工具结果与模型上下文只该看到「过期」这件事。

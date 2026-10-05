@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: d37eae4
-verified_hash: ec7b07c0bc38
+verified_against: 2d7925b
+verified_hash: 6e54c27db45e
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机

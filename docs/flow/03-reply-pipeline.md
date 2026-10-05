@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 259c88a
-verified_hash: b7f455eba6af
+verified_against: 2d7925b
+verified_hash: 3b22bbaf149f
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -237,8 +237,10 @@ flowchart LR
 
 三处登记（`orchestrator.py:1337 / 1357 / 1382`）全部 try/except；
 面板按 `pipeline_key` 取快照与后台任务（`flow_registry.py:147`）。
-视觉上下文 `ReplyVisionContext`：每轮 `refresh_defaults` 在预算内加载图片，
-`request_messages` 在请求边界追加图片附录，加载失败**可见可重试**。
+视觉上下文 `ReplyVisionContext`：每轮 `refresh_defaults` 在预算内**并发**加载图片（最坏只等
+一次超时，单张 15 秒），`request_messages` 在请求边界追加图片附录，加载失败**可见可重试**；
+已判定「拉不到」的图由进程内登记表直接短路，不再每轮重试（见 `14`）。
+被 @ 触发的那一轮还会在上下文块末尾追加一条 `[at_mention_wait]` 等待指引（见 `24`）。
 </details>
 
 ## 关键状态
