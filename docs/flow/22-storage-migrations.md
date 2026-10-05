@@ -2,17 +2,17 @@
 flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
-verified_against: 528fe18
-verified_hash: 7c6d43b94868
+verified_against: d37eae4
+verified_hash: e30a69954e89
 ---
 
 # 22 存储与迁移
 
 ## 范围
 
-`neobot_storage` 包（32 个 py 文件）：异步引擎与 PRAGMA、UoW 事务边界、15 张表、
-27 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像）
-都通过它读写 SQLite。
+`neobot_storage` 包（32 个 py 文件）：异步引擎与 PRAGMA、UoW 事务边界、16 张表、
+28 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
+图片引用索引）都通过它读写 SQLite。
 
 不在这里：档案的业务语义见 `07` / `07b`；用量与计费见 `23-billing-stats.md`；
 头像三列的业务含义见 `20-avatar-files.md`。
@@ -154,7 +154,7 @@ flowchart TD
 </details>
 
 <details>
-### 15 张表与谁在写
+### 16 张表与谁在写
 
 ```mermaid
 flowchart LR
@@ -171,6 +171,7 @@ flowchart LR
     end
     subgraph 多媒体
       T8["images"] --> W8["14 图像解析"]
+      T8b["image_refs"] --> W8b["14 图片引用索引（过期回显）"]
       T9["emojis"] --> W9["14 表情包"]
       T10["creator_images / creator_image_sequences"] --> W10["15 绘画"]
     end
@@ -181,13 +182,17 @@ flowchart LR
     end
 ```
 
+`image_refs` 是**引用摘要 → 描述**的兜底缓存（迁移 0028，`source_ref` 主键 + `updated_at` 索引）：
+图片本体仍按内容哈希存 `images`，而拉不到的图算不出哈希，回显只能按引用摘要查
+（见 `14-emoji-image-parse` 的「拉不到的图片」小节）。写入时顺手清掉超过 30 天的行。
+
 表名全部**小写复数**（迁移 `0002_lowercase_table_names` 统一过）。
 `completed_scheduled_tasks` 上有 `task_uuid` 唯一约束（迁移 0021）——
 这是「同一任务不会被重复标记完成」的数据库级保证（见 `16` 的去重）。
 </details>
 
 <details>
-### 迁移链：27 个版本与不可逆操作
+### 迁移链：28 个版本与不可逆操作
 
 ```mermaid
 flowchart TD
@@ -201,6 +206,7 @@ flowchart TD
     H --> I["0021 unique task_uuid（含去重 DELETE，不可逆）"]
     I --> J["0022 maintenance_runs / 0023 gallery_no / 0024 sequences"]
     J --> K["0025 usage_cost_source / 0026 archive_snapshots / 0027 avatar_storage"]
+    K --> L["0028 image_refs（引用摘要 → 描述，可往返）"]
 ```
 
 两个要注意的点：
