@@ -137,7 +137,7 @@ class _RecordingCommands:
 
 
 class _StubApi:
-    """只满足 \`_reload_config\` 依赖的最小替身：_service / _models_config / logger。"""
+    """只满足 `_reload_config` 依赖的最小替身：_service / _models_config / logger。"""
 
     def __init__(self, commands: _RecordingCommands) -> None:
         self._commands = commands
@@ -156,7 +156,7 @@ class _StubApi:
 
 
 async def test_reload_forwards_env_path_to_host_command() -> None:
-    """保存 env 时，\`extra_changed_paths=("env",)\` 必须传到 config.reload。"""
+    """保存 env 时，`extra_changed_paths=("env",)` 必须传到 config.reload。"""
     commands = _RecordingCommands(
         {"status": "ok", "message": "配置已重载，本次没有检测到配置项变化。"}
     )

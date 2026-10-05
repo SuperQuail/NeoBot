@@ -1545,10 +1545,10 @@ async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> N
 def test_model_change_appends_restart_hint(monkeypatch) -> None:
     """机制：模型/凭据变更且**存在缺口**时，必须追加「仍需重启」。
 
-    分类表把 \`models\` 整体标成可热重载，所以 \`needs_restart_count\` 恒为 0 ——
+    分类表把 `models` 整体标成可热重载，所以 `needs_restart_count` 恒为 0 ——
     不额外补一句，面板就会声称「0 项需重启」，而实际仍有组件在用启动期的 provider。
     生产清单经审计后已清空，所以这里**打桩**一个缺口来验证机制本身：
-    以后再有组件忘了接热重载，把它写回 \`MODEL_RELOAD_GAPS\` 即可重新提示。
+    以后再有组件忘了接热重载，把它写回 `MODEL_RELOAD_GAPS` 即可重新提示。
     """
     from neobot_app.runtime import provider_reload
 
@@ -1568,7 +1568,7 @@ def test_model_change_appends_restart_hint(monkeypatch) -> None:
 
 
 def test_env_change_also_appends_restart_hint(monkeypatch) -> None:
-    """平台凭据（\`.env\`）同样算模型类变更。"""
+    """平台凭据（`.env`）同样算模型类变更。"""
     from neobot_app.runtime import provider_reload
 
     monkeypatch.setattr(provider_reload, "MODEL_RELOAD_GAPS", ("示例组件",))

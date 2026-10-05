@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-import dataclasses
+import typing
 
 from neobot_app.config.schemas.bot import BotConfig, ModelDefinition
 
@@ -18,12 +18,14 @@ def _chat_models(config: BotConfig) -> list[ModelDefinition]:
 
 def test_admin_accounts_is_optional_not_required() -> None:
     """留空不能拦启动：它由面板首页提示，而不是配置校验。"""
-    field = next(f for f in dataclasses.fields(BotConfig().chat) if f.name == "admin_accounts")
-
-    # Optional[...] 才会被判为非必须（面板与环境变量模板都按这个判据走）。
-    # 注：模块用了 future annotations，field.type 是字符串，判 "Optional[" 而不是 NoneType。
-    assert "Optional[" in str(field.type), "admin_accounts 应为 Optional，否则会被当成必须项"
-    assert BotConfig().chat.admin_accounts == []
+    # 判据是「类型里允许 None」——比匹配 "Optional[" 字符串可靠：
+    # Python 3.14 把 Optional[List[str]] 的 repr 改成了 "typing.List[str] | None"，
+    # 字符串匹配会在 3.13 通过、3.14 失败（CI 就是这么挂的）。
+    # 注意取的是**实例的类**：BotConfig.chat 这种类属性在 default_factory 字段上并不存在
+    chat_section = BotConfig().chat
+    hint = typing.get_type_hints(type(chat_section))["admin_accounts"]
+    assert type(None) in typing.get_args(hint), "admin_accounts 应为 Optional，否则会被当成必须项"
+    assert chat_section.admin_accounts == []
 
 
 def test_default_chat_models_use_deepseek_official_peak_pricing() -> None:
