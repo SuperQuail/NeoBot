@@ -31,6 +31,14 @@ class ImageAnalysisAccess(Protocol):
 
     async def exists(self, file_hash: str) -> bool: ...
 
+    async def remember_ref(self, source_ref: str, analysis_text: str) -> None:
+        """记下「图片引用摘要 -> 描述」：拉不到图时据此回显（见 image/unavailable.py）。"""
+        ...
+
+    async def get_ref_text(self, source_ref: str) -> Optional[str]:
+        """按引用摘要取回描述；没有记录时返回 None。"""
+        ...
+
     async def list(
         self,
         *,

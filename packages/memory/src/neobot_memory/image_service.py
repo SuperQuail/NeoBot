@@ -83,6 +83,39 @@ class ImageAnalysisService:
         )
         return item
 
+    async def remember_ref(self, source_ref: str, analysis_text: str) -> None:
+        """记下「图片引用摘要 -> 描述」（图片过期时回显用）。
+
+        纯兜底缓存：写失败只记日志，绝不能反噬解析路径。
+        """
+        if not source_ref or not analysis_text:
+            return
+        try:
+            async with self._uow_factory() as uow:
+                await uow.images.remember_ref(source_ref, analysis_text)
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning(
+                "图片引用索引写入失败（已忽略）",
+                source_ref=source_ref,
+                error=str(exc),
+            )
+
+    async def description_for_ref(self, source_ref: str) -> Optional[str]:
+        """按引用摘要取回描述；查不到或查失败都返回 None。"""
+        if not source_ref:
+            return None
+        try:
+            async with self._uow_factory() as uow:
+                return await uow.images.get_ref_text(source_ref)
+        except Exception as exc:
+            self._logger.warning(
+                "图片引用索引查询失败（已忽略）",
+                source_ref=source_ref,
+                error=str(exc),
+            )
+            return None
+
     async def delete(self, file_hash: str) -> bool:
         async with self._uow_factory() as uow:
             deleted = await uow.images.delete(file_hash)
