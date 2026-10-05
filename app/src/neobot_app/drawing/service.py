@@ -115,19 +115,26 @@ class CreatorImageService:
         names = tuple(model_names) if model_names else ((model_name,) if model_name else ())
         self._model_names: tuple[str, ...] = tuple(dict.fromkeys(name for name in names if name))
         if not self._model_names:
-            raise ValueError("至少需要一个生图模型注册名")
+            # 出厂默认**不预置生图模型**（models.assignments.creator_image_models 为空），而
+            # agent.creator 默认开着（图库 / 表情包要用）—— 两者一撞，以前这里直接抛
+            # ValueError，全新部署根本起不来（issue #82）。
+            # 图库（gallery）、表情包、图库图片解析都挂在本服务的其它方法上，**都不需要**
+            # 生图模型，所以这里软降级：只有绘图入口不可用，其余照常。
+            self._logger.warning(
+                "未配置生图模型，绘图功能不可用（图库 / 表情包不受影响）",
+                hint="在 models.assignments.creator_image_models 里加入模型库引用后重启或热重载",
+            )
         self._models: dict[str, Any] = {
             name: get_registered_model(name) for name in self._model_names
         }
-        self._default_model_name = self._model_names[0]
+        self._default_model_name = self._model_names[0] if self._model_names else ""
         self._base_dir = data_dir / "creator"
         self._tmp_dir = self._base_dir / "tmp"
         self._gallery_dir = self._base_dir / "gallery"
         self._markdown_dir = markdown_dir
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._gallery_dir.mkdir(parents=True, exist_ok=True)
-        default_model = self._models[self._default_model_name]
-        timeout = default_model.settings.timeout_seconds
+        timeout = self._request_timeout_seconds()
         self._clients: dict[str, httpx.AsyncClient] = {}
         for name, model in self._models.items():
             model_timeout = float(model.settings.timeout_seconds or timeout)
@@ -137,13 +144,40 @@ class CreatorImageService:
                 timeout=httpx.Timeout(model_timeout, connect=min(model_timeout, 10.0)),
                 trust_env=bool(getattr(model, "use_system_proxy", False)),
             )
-        self._model = default_model
-        self._client = self._clients[self._default_model_name]
+        self._model = self._models.get(self._default_model_name)
+        self._client = self._clients.get(self._default_model_name)
         # 用户可控 URL 下载使用无凭据 client，避免 API Key 外发
         self._public_client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
         )
         self._cleanup_task: asyncio.Task[None] | None = None
+
+    #: 没有配置生图模型时，无凭据下载 client 用的兜底超时
+    _FALLBACK_REQUEST_TIMEOUT_SECONDS = 60.0
+
+    def _request_timeout_seconds(self) -> float:
+        """默认生图模型的请求超时；没配模型时用兜底值（只影响内部 client）。"""
+        model = self._models.get(self._default_model_name)
+        raw = getattr(getattr(model, "settings", None), "timeout_seconds", None)
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            return self._FALLBACK_REQUEST_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else self._FALLBACK_REQUEST_TIMEOUT_SECONDS
+
+    def _require_image_model(self) -> None:
+        """没有配置生图模型时抛出可读错误（**绘图入口专用**）。
+
+        图库 / 表情包 / 图片解析走本服务的其它方法，不经过这里：未配置生图模型只意味着
+        「画不了图」，不是整个服务不可用（issue #82）。
+        """
+        if self._model_names:
+            return
+        raise ValueError(
+            "未配置生图模型：models.assignments.creator_image_models 为空。"
+            "请在模型库里添加一个生图模型，并把它的引用填进该配置，然后重启或热重载；"
+            "图库与表情包不受影响。"
+        )
 
     async def close(self) -> None:
         await self._stop_cleanup_task()
@@ -186,6 +220,9 @@ class CreatorImageService:
 
     def resolve_model_name(self, selector: str | None) -> str:
         """把 Agent 给出的选择（序号 / 注册名 / 描述 / 供应商 / 模型名）解析为注册名。"""
+        # 没有生图模型时，任何取值都解析不出来：在这里就给「未配置生图模型」的可读错误，
+        # 而不是让下游拿空注册名去 self._models[""] 撞 KeyError。
+        self._require_image_model()
         if selector is None:
             return self._default_model_name
         raw = str(selector).strip()
@@ -429,6 +466,7 @@ class CreatorImageService:
         conv_id: str = "",
         model: str | None = None,
     ) -> CreatorImageRecord:
+        self._require_image_model()
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt 不能为空")

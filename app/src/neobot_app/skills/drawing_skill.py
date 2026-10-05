@@ -125,6 +125,14 @@ class DrawingSkill(SkillModule):
                 "（立绘与某个QQ用户强相关时必须写「相关者QQ:<QQ号>」，完全不与人相关的图片可不写）",
             ]
         )
+        if not self._image_model_options():
+            # 工具表里已经没有 draw 了（见 get_tools），这里把「为什么没有」讲清楚，
+            # 免得模型以为是自己没权限或调用姿势不对（issue #82）。
+            parts.append(
+                "【当前不可用】未配置生图模型（models.assignments.creator_image_models 为空），"
+                "draw 工具不可用；图库、表情包与 process_image 不受影响。"
+                "需要绘图时请让部署者在模型库里添加生图模型并填入该配置，然后重启或热重载。"
+            )
         return "\n\n".join(parts)
 
     def reset(self) -> None:
@@ -192,6 +200,7 @@ class DrawingSkill(SkillModule):
             "requester": {"type": "string", "description": "可选，委托者描述"},
             "requirements": {"type": "string", "description": "可选，绘图要求描述"},
         }
+        has_image_model = bool(self._image_model_options())
         provider_property = self._provider_property()
         if provider_property is not None:
             draw_properties["provider"] = provider_property
@@ -278,6 +287,13 @@ class DrawingSkill(SkillModule):
                     },
                 )
             )
+        if not has_image_model:
+            # 没有生图模型时 draw 必然失败（issue #82）：不暴露它，避免模型调一个注定报错的
+            # 工具；能力与原因写在操作说明里，图库 / 表情包 / process_image 不受影响。
+            tools = [
+                tool for tool in tools
+                if tool.get("function", {}).get("name") != "draw"
+            ]
         return tools
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> str:

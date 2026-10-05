@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/runtime/sandbox_lock.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
-verified_against: 2d7925b
-verified_hash: ffd69c657f80
+verified_against: 802eb41
+verified_hash: 6b4cb407be15
 ---
 
 # 06 工具运行时与技能：注册 · native/PTC · 管理员凭据 · 沙箱裁决 · 维护 Agent
@@ -390,6 +390,7 @@ flowchart TD
     A["SkillManager 构造｜base.py:156"] --> B{"eager_tool_skills"}
     B -- "None" --> B1["全部技能的工具常驻，历史行为"]
     B -- "默认集合" --> B2["常驻 6 个：chat_history / drawing / gallery / image_context / image_pool / image_send"]
+    B2 --> B3["技能内部还会按可用性隐藏工具：<br/>drawing 的 draw 无生图模型时不暴露（15-drawing）<br/>process_image 无 image_service 时不暴露"]
     B2 --> C["其余技能只留一行摘要，进 get_instructions"]
     C --> D["SkillToolActivation｜activation.py:27"]
     D --> E["tools 取 常驻 + 已激活 的工具集"]
