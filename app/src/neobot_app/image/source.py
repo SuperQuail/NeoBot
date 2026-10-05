@@ -34,6 +34,14 @@ from neobot_app.message.numbering import MessageNumbering
 from neobot_app.utils.http import image_http_client
 
 
+#: 图片下载的统一超时（秒）。
+#:
+#: 15 秒是「等一张拉不到的图」的单价：带消息预热时一轮可能同时挑中多张历史图片，
+#: 那些图（设备侧历史已清理 / 图片过久被回收）永远拿不到，等待纯属白费。配合**并发**
+#: 拉取，最坏情况从「张数 × 30 秒」压到「一次 15 秒」。
+IMAGE_FETCH_TIMEOUT_SECONDS = 15.0
+
+
 def _response_data_for_get_image(response: Any) -> dict | None:
     """从 get_image API 响应中提取 data 字典。"""
     if response is None:
@@ -103,7 +111,7 @@ async def _read_bounded_image_ref(
 
 
 async def read_image_ref(
-    ref: str, *, timeout: float = 30.0, max_bytes: int | None = None
+    ref: str, *, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS, max_bytes: int | None = None
 ) -> bytes | None:
     """读取图片引用；max_bytes 可选，设置后严格校验 base64 并限制 IO 大小。"""
     if max_bytes is not None:
@@ -207,7 +215,7 @@ class ImageSourceResolver:
         self,
         args: dict[str, Any],
         *,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """按参数解析图片字节。
 
@@ -358,7 +366,7 @@ class ImageSourceResolver:
         self,
         message_id: int,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """通过 Adapter 回源消息,并返回第 N 张图片及失败原因。"""
         segments = await self._fetch_segments_by_message_id(message_id)
@@ -374,7 +382,7 @@ class ImageSourceResolver:
         self,
         segments: list,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         if image_index < 0:
             return None, f"图片编号不能为负数: {image_index}"
@@ -406,7 +414,7 @@ class ImageSourceResolver:
         self,
         seg_data: dict,
         *,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
         message_id: Any = None,
         image_index: Any = None,
     ) -> tuple[bytes | None, str | None]:
@@ -499,7 +507,7 @@ class ImageSourceResolver:
         self,
         chat_flow_id: str,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> bytes | None:
         """通过聊天流 ID 和图片编号获取图片字节(从最新消息向前找)。"""
         if chat_flow_id.startswith("Group_"):
@@ -558,7 +566,7 @@ class ImageSourceResolver:
             return None
 
     async def _extract_image_from_message(
-        self, message: Any, image_index: int = 0, timeout: float = 30.0
+        self, message: Any, image_index: int = 0, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS
     ) -> tuple[bytes | None, str | None]:
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
@@ -592,7 +600,7 @@ class ImageSourceResolver:
         msg_number: int,
         image_index: int = 0,
         numbering_mapping: dict[int, int] | None = None,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """通过显示消息编号(如 "75: 用户名: [图片]" 中的 75)获取图片字节。"""
         parts = pipeline_key.split(":", 1)
@@ -670,7 +678,7 @@ async def resolve_image_bytes(
     adapter: Any = None,
     group_message_queue: Any = None,
     friend_message_queue: Any = None,
-    timeout: float = 30.0,
+    timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
 ) -> tuple[bytes | None, str | None]:
     """便捷入口:按参数解析图片字节(与 ImageSourceResolver.resolve 一致)。"""
     resolver = ImageSourceResolver(

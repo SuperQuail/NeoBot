@@ -19,7 +19,7 @@ from typing import Any
 
 from PIL import Image
 
-from neobot_app.image.source import ImageSourceResolver
+from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS, ImageSourceResolver
 from neobot_app.image.unavailable import clean_expired_text, is_expired_message
 from neobot_app.skills.base import SkillModule
 
@@ -233,7 +233,11 @@ class ImageContextSkill(SkillModule):
         ):
             properties[name] = {"type": "array", "items": {"type": item_type}, "description": desc}
         properties["detail"] = {"type": "string", "enum": ["auto", "low", "high"], "default": "auto"}
-        properties["timeout_seconds"] = {"type": "integer", "default": 30, "description": "整个调用超时，1至120秒"}
+        properties["timeout_seconds"] = {
+            "type": "integer",
+            "default": int(IMAGE_FETCH_TIMEOUT_SECONDS),
+            "description": f"整个调用超时，1至120秒（默认 {int(IMAGE_FETCH_TIMEOUT_SECONDS)} 秒）",
+        }
         return [self._tool_def("add_image", "获取图片到主模型原生视觉上下文；普通同步工具，不提交后台解析。每次只选一种来源；返回文本为metadata，图片另行进入上下文。", {"properties": properties})]
 
     def _expand(self, args: dict) -> list[dict]:
@@ -366,7 +370,7 @@ class ImageContextSkill(SkillModule):
             seen_replies: set[int] = set()
             truncated = False
             current_image_index = 0
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(IMAGE_FETCH_TIMEOUT_SECONDS):
                 for segment in segments:
                     kind = self._resolver._segment_type(segment)
                     if kind not in ("image", "cardimage", "reply"):
@@ -393,11 +397,13 @@ class ImageContextSkill(SkillModule):
                         if self._resolver._image_count(replied_segments) == 0:
                             continue
                         raw, download_error = await self._resolver._download_from_segments_with_error(
-                            replied_segments, 0, timeout=30
+                            replied_segments, 0, timeout=IMAGE_FETCH_TIMEOUT_SECONDS
                         )
                     else:
                         current_image_index += 1
-                        raw, download_error = await self._resolver._download_image_segment(data, timeout=30)
+                        raw, download_error = await self._resolver._download_image_segment(
+                            data, timeout=IMAGE_FETCH_TIMEOUT_SECONDS
+                        )
                     if raw is None:
                         if is_expired_message(download_error):
                             # 拉不到的图（设备侧历史被清理 / 过久被回收）：说清是过期，
@@ -431,7 +437,11 @@ class ImageContextSkill(SkillModule):
             detail = args.get("detail", "auto")
             if detail not in ("auto", "low", "high"):
                 raise ValueError("detail 必须是 auto/low/high")
-            timeout = _integer(args.get("timeout_seconds", 30), "timeout_seconds", minimum=1)
+            timeout = _integer(
+                args.get("timeout_seconds", int(IMAGE_FETCH_TIMEOUT_SECONDS)),
+                "timeout_seconds",
+                minimum=1,
+            )
             if timeout > 120:
                 raise ValueError("timeout_seconds 不能超过120秒")
             requests = self._expand(args)

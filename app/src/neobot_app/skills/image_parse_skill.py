@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS
 from neobot_app.image.unavailable import (
     DESCRIPTION_PREFIX,
     EXPIRED_NOTICE,
@@ -39,7 +40,7 @@ def _response_data_for_get_image(response: Any) -> dict | None:
     return None
 
 
-async def _read_image_ref(ref: str, *, timeout: float = 30.0) -> bytes | None:
+async def _read_image_ref(ref: str, *, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS) -> bytes | None:
     """读取图片引用（base64 / data URL / file / URL / 路径）。"""
     import base64 as _base64
 
@@ -296,7 +297,7 @@ class ImageParseSkill(SkillModule):
         self,
         message_id: int,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """通过 Adapter 回源消息，并返回第 N 张图片及具体失败原因。"""
         segments = await self._fetch_segments_by_message_id(message_id)
@@ -314,7 +315,7 @@ class ImageParseSkill(SkillModule):
         self,
         message_id: int,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> bytes | None:
         """通过消息 ID 获取第 N 张图片的字节。"""
         result, _ = await self._resolve_by_message_id_with_error(
@@ -328,7 +329,7 @@ class ImageParseSkill(SkillModule):
         self,
         message_id: int,
         image_indices: list[int],
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> list[tuple[bytes | None, str | None]]:
         """通过消息 ID 一次回源多张图片，并保留每张图的失败原因。"""
         segments = await self._fetch_segments_by_message_id(message_id)
@@ -351,7 +352,7 @@ class ImageParseSkill(SkillModule):
         self,
         message_id: int,
         image_indices: list[int],
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> list[bytes | None]:
         """通过消息 ID 一次性获取多张图片字节（一次 API 调用，多次下载）。"""
         results = await self._resolve_many_by_message_id_with_errors(
@@ -365,7 +366,7 @@ class ImageParseSkill(SkillModule):
         self,
         segments: list,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """从 segments 中下载指定图片，并返回可用于诊断的错误。"""
         if image_index < 0:
@@ -400,7 +401,7 @@ class ImageParseSkill(SkillModule):
         self,
         segments: list,
         image_index: int = 0,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> bytes | None:
         """从 segments 列表中找第 image_index 张图片并下载。"""
         result, _ = await self._download_from_segments_with_error(
@@ -410,7 +411,7 @@ class ImageParseSkill(SkillModule):
         )
         return result
 
-    async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = 30.0) -> bytes | None:
+    async def _resolve_by_chat_flow(self, chat_flow_id: str, image_index: int = 0, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS) -> bytes | None:
         """通过聊天流 ID 和图片编号获取图片字节。"""
         if chat_flow_id.startswith("Group_"):
             queue_key = chat_flow_id[len("Group_"):]
@@ -472,7 +473,7 @@ class ImageParseSkill(SkillModule):
         except Exception:
             return None
 
-    async def _resolve_many_by_chat_flow(self, chat_flow_id: str, image_indices: list[int], timeout: float = 30.0) -> list[bytes | None]:
+    async def _resolve_many_by_chat_flow(self, chat_flow_id: str, image_indices: list[int], timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS) -> list[bytes | None]:
         """通过聊天流 ID 一次性获取多张图片字节。"""
         if chat_flow_id.startswith("Group_"):
             queue_key = chat_flow_id[len("Group_"):]
@@ -547,7 +548,7 @@ class ImageParseSkill(SkillModule):
         except Exception:
             return [None] * len(image_indices)
 
-    async def _download_image_segment(self, seg_data: dict, *, timeout: float = 30.0) -> tuple[bytes | None, str | None]:
+    async def _download_image_segment(self, seg_data: dict, *, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS) -> tuple[bytes | None, str | None]:
         """从 segment data 下载图片字节。
 
         先尝试 URL 直下，失败/缺失时 fallback 到 file 字段走 get_image API
@@ -626,7 +627,7 @@ class ImageParseSkill(SkillModule):
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,
         numbering_mapping: dict[int, int] | None = None,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> tuple[bytes | None, str | None]:
         """通过显示消息编号（如 "75: 用户名: [图片]" 中的 75）获取图片字节。
 
@@ -711,7 +712,7 @@ class ImageParseSkill(SkillModule):
     async def _resolve_many_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_indices: list[int],
         numbering_mapping: dict[int, int] | None = None,
-        timeout: float = 30.0,
+        timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS,
     ) -> list[tuple[bytes | None, str | None]]:
         """通过显示消息编号一次拉取多张图片字节（共用同一次消息查找）。
         Returns: [(bytes_or_None, error_reason_or_None), ...]
@@ -811,7 +812,7 @@ class ImageParseSkill(SkillModule):
             return seg_data.model_dump(exclude_none=True) or {}
         return {}
 
-    async def _extract_image_from_message(self, message: Any, image_index: int = 0, timeout: float = 30.0) -> tuple[bytes | None, str | None]:
+    async def _extract_image_from_message(self, message: Any, image_index: int = 0, timeout: float = IMAGE_FETCH_TIMEOUT_SECONDS) -> tuple[bytes | None, str | None]:
         """从消息对象中提取第 image_index 张图片的字节。"""
         segments = getattr(message, "message", None)
         if not segments:

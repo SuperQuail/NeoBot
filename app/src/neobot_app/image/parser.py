@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS
 from neobot_app.image.unavailable import (
     REGISTRY,
     describe,
@@ -140,20 +141,27 @@ class ImageParseService:
         if not segments:
             return
 
-        for i in indices:
-            if i >= len(segments):
-                continue
-            seg = segments[i]
+        async def parse_one(index: int) -> None:
+            if index >= len(segments):
+                return
+            seg = segments[index]
             seg_type = _segment_type(seg)
             if seg_type not in ("image", "cardimage"):
-                continue
+                return
             try:
                 description = await self._parse_single_image(seg)
             except Exception as exc:
                 self._logger.error("图片解析失败", error=str(exc))
                 description = "[图片解析失败]"
             # 替换为解析后的文本段
-            segments[i] = _make_text_segment(description)
+            segments[index] = _make_text_segment(description)
+
+        # 一条消息里的多张图并发解析：串行时每张各自付一次下载超时（转发多条图片时
+        # 会等比放大等待），并发后最坏只等一次超时。每张各写各的下标，互不干扰。
+        await asyncio.gather(
+            *(parse_one(index) for index in indices),
+            return_exceptions=True,
+        )
 
     async def _parse_single_image(self, segment) -> str:
         image_bytes, expired_key = await self._download_image_with_reason(segment)
@@ -253,7 +261,7 @@ class ImageParseService:
 
         if url:
             try:
-                async with image_http_client(timeout=30.0, url=url) as client:
+                async with image_http_client(timeout=IMAGE_FETCH_TIMEOUT_SECONDS, url=url) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
                     content = resp.content
@@ -276,7 +284,7 @@ class ImageParseService:
                 # 不再外层包 asyncio.wait_for —— 双层 wait_for 时，内层超时
                 # 与外层 cancel 互相竞争，迟到 echo 容易击中已取消 future 触发
                 # InvalidStateError，进而回收连接。单层 + 直接取图超时足够。
-                result = await get_image(str(file_name), timeout=30.0)
+                result = await get_image(str(file_name), timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
                 img_data = _response_data(result)
                 img_file = ""
                 if isinstance(img_data, dict):
@@ -292,7 +300,11 @@ class ImageParseService:
                     self._logger.warning("get_image 返回无效数据", file=str(file_name)[:60])
             except TimeoutError:
                 expired = True
-                self._logger.warning("通过get_image下载超时", file=str(file_name)[:60], timeout_seconds=30.0)
+                self._logger.warning(
+                    "通过get_image下载超时",
+                    file=str(file_name)[:60],
+                    timeout_seconds=IMAGE_FETCH_TIMEOUT_SECONDS,
+                )
             except Exception as exc:
                 # 非超时异常不判过期：可能是适配器断线一类的瞬时故障，下次还该再试。
                 self._logger.warning("通过get_image下载失败", file=str(file_name)[:60], error=str(exc))
@@ -400,7 +412,7 @@ async def _read_image_ref(ref: str) -> bytes | None:
         return path.read_bytes()
     if not ref.startswith(("http://", "https://")):
         return None  # 非 URL 引用无需创建 HTTP 客户端
-    async with image_http_client(timeout=30.0, url=ref) as client:
+    async with image_http_client(timeout=IMAGE_FETCH_TIMEOUT_SECONDS, url=ref) as client:
         resp = await client.get(ref)
         resp.raise_for_status()
         return resp.content
