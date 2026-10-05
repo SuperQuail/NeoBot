@@ -1,6 +1,6 @@
 [project]
 name = "neobot-contracts"
-version = "1.2.4-a1"
+version = "1.2.4-a2"
 description = "Cross-module domain models and port interfaces for NeoBot"
 readme = "README.md"
 authors = [
