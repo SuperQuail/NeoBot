@@ -15,7 +15,25 @@ from neobot_chat import get_model_registry
 from neobot_chat.providers.native_vision import NativeVisionFallbackProvider
 
 PRIMARY_KEY = "deepseek-flash"
-VISION_KEY = "qwen3-vl-8b"
+#: 用例自带的独立视觉模型。**不再依赖出厂默认**：默认视觉模型现在是
+#: deepseek-flash-high（与 agent_model_2 同一个条目），而这里要验证的是
+#: 「回退到一个不同的视觉模型」，用默认值就退化成了同一个模型。
+VISION_KEY = "test-vision"
+
+
+def _with_test_vision(config: BotConfig) -> BotConfig:
+    """给配置补一个独立的视觉模型条目并把 vision_model 指向它。"""
+    config.models.registry.append(
+        ModelRegistration(
+            model_ref=VISION_KEY,
+            model_type="vision",
+            display_name="测试视觉模型",
+            provider="TestProvider",
+            model_name="test-vision-model",
+        )
+    )
+    config.models.assignments.vision_model = VISION_KEY
+    return config
 
 
 class FakeProvider:
@@ -43,9 +61,12 @@ def test_native_vision_defaults():
     # 但默认模型库里的对话模型已声明原生视觉（deepseek-flash）
     assert _library_entry(config, PRIMARY_KEY).native_vision is True
     # 图像识别模型无需配置 native_vision：按 model_type=vision 自动视为原生视觉
-    assert _library_entry(config, VISION_KEY).native_vision is True
+    # （出厂默认的视觉模型是 chat 条目 deepseek-flash-high，已显式声明原生视觉，
+    #   所以这条「按类型自动」的性质用独立条目验证）
+    assert ModelRegistration(model_ref="vision-typed", model_type="vision").native_vision is True
     assert config.models.assignments.primary_chat_model == PRIMARY_KEY
-    assert config.models.assignments.vision_model == VISION_KEY
+    # 出厂默认：视觉模型复用 deepseek-flash（high 推理），少申请一个平台 Key
+    assert config.models.assignments.vision_model == "deepseek-flash-high"
     assert config.chat.native_vision_default_image_count == 4
     # 回退目标固定为视觉模型，不再需要用户手选回退模型编号
     assert "main_agent_vision_fallback" not in {
@@ -78,7 +99,7 @@ def test_config_registration_passes_native_vision(monkeypatch):
 
 async def test_bootstrap_wraps_main_with_vision_model_fallback(monkeypatch):
     """主模型声明原生视觉时，回退路由固定为视觉模型（按分配 key 解析）。"""
-    config = BotConfig()
+    config = _with_test_vision(BotConfig())
     config.agent_model.main_agent = 2
     _library_entry(config, "deepseek-flash-high").native_vision = True
     created = []
@@ -99,7 +120,7 @@ async def test_bootstrap_wraps_main_with_vision_model_fallback(monkeypatch):
 @pytest.mark.parametrize("failure", ["creation", "capability"])
 async def test_unavailable_primary_falls_back_to_vision_model(monkeypatch, failure):
     """主模型不可用（创建失败或无视觉能力）时自动切换到视觉模型，图片照常发送。"""
-    config = BotConfig()
+    config = _with_test_vision(BotConfig())
     _library_entry(config, PRIMARY_KEY).native_vision = True
 
     def create(name):

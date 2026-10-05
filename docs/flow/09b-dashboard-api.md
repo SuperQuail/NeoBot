@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
-verified_against: 0decd49
-verified_hash: 767955257dd1
+verified_against: 93d0141
+verified_hash: a2d80da565e0
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -161,6 +161,8 @@ flowchart LR
 | 概览与指标 | 10 | `/api/overview · system · bots · bot/detail · series/messages · series/latency · stats/api-calls · stats/active-users · series/usage · stats/usage` | 会话 | 内存 Metrics + psutil + 用量库 |
 | 用量与计费 | 4 | `/api/stats/usage/records · /api/config/billing · billing/reload · billing/preview` | reload 需 manage，其余只认会话 | 用量库 + Billing 服务 |
 | 日志任务服务 | 3 | `/api/logs · tasks · services` | 会话 | 内存日志缓冲 + 管理器投影 |
+| 模型库写操作 | 2 | `/api/config/models/library · /models/assignments` | manage | 写回 `[models.registry]`；带 `reload` 时经 `_append_model_reload_hint` 追加「仍需重启」把 `needs_restart_parts` 带回前端（分类表的 `needs_restart_count` 会把这件事吃掉，issue #75） |
+| 快捷部署 | 2 | `/api/deploy/status · /api/deploy/onebot-token` | manage | status 逐项给出 `required`/`done`（`ready` 只看必填）；**出厂占位不算配好**（`_deploy_field_defaults` 现算 schema 默认值比对）；OneBot 段复用 `ReverseWsSettings.resolve` 并预留 `auto_connect`；生成 token 写回 `[adapter]` 并**用 extra_changed_paths=("adapter",)** 触发适配器按新 token 重连（没生效就如实说需重启） |
 | 插件 | 12 | `/api/plugins` 与 `/api/plugins/{name}/{toggle,reload,update,uninstall,config}` | 列表与探测只读；其余 manage | 插件运行时快照 + 插件目录文件 |
 | 本体配置 | 12 | `/api/config · config/validate · config/reload · config/models{,/library,/assignments,/test,/provider-models} · config/env{,/platform}` | 读只读、写 manage | config.toml / .env / 模型库 |
 | 提示词 | 5 | `/api/analysis/prompts · prompts · prompts/preview · prompts/save · prompts/reset` | 保存与重置 manage | prompt store + custom/prompts.toml |
@@ -319,6 +321,14 @@ flowchart LR
 | 用量库 | `/api/stats/usage`、`/api/series/usage` | `usage_session_factory` 为空即回 200 加 `available:false` | 异常被吞：200 加 `available:false` 加 `error` |
 | 文件 | `/api/config`、`/api/config/env`、`/api/prompts` | 管理器总是存在 | 读取失败 400（校验）或 500（IO） |
 | 宿主服务 | 档案 计费 定时 运维 | 一律 503 加「未注入 xxx」 | 依端点而定，多为 500 |
+
+`/api/config/env` 保存后可以顺带重载，但**环境变量不在配置快照里** ——
+配置 diff 永远看不到 `.env`。所以面板保存时会显式带上 `env` 这条变更路径
+（`env_save` 传给 `_reload_config` 的 `extra_changed_paths`）：
+不带的话热重载消费者一个都不会被触发，provider 仍握着旧凭据，而提示语还会说
+「没有检测到配置项变化」。响应里的 `needs_restart` 表示「仍有模块必须重启进程」——
+TTS / 生图 / 联网搜索等在启动期读取环境变量，没有对应消费者，热重载覆盖不到；
+前端据此用警告样式提示并就地给出重启入口（issue #74）。
 
 `Metrics` 的 `data/stats.json` 只在进程启动与保存时碰盘，**不是**每次请求都读文件；
 `system.py` 也不读 `stats.json`，它实时问 psutil 与磁盘。把面板的「今日消息」当

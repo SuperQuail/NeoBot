@@ -50,7 +50,9 @@ def test_document_without_any_hint_still_contains_note() -> None:
 
 def test_sync_writes_file_and_registers_skill(tmp_path: Path) -> None:
     config = BotConfig()
-    vision = config.models.get("qwen3-vl-8b")
+    # 走 assignments 取「当前视觉模型」，别写死引用名：
+    # 出厂默认从 qwen3-vl-8b 改成 deepseek-flash-high 后，写死就会挂。
+    vision = config.models.get(config.models.assignments.vision_model)
     assert vision is not None
     vision.balance_query_hint = "GET https://vision.example.com/balance"
     registry = FakeRegistry()

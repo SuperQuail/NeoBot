@@ -76,7 +76,10 @@ from datetime import datetime, timezone
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
-from neobot_app.runtime.provider_reload import ProviderReloadConsumer
+from neobot_app.runtime.provider_reload import (
+    ModelConsumerReload,
+    ProviderReloadConsumer,
+)
 from neobot_app.runtime.process_restart import ProcessRestartSignal
 from neobot_app.runtime.process_stop import ProcessStopSignal
 from neobot_app.skills.balance_guide import sync_balance_query_skill
@@ -1200,6 +1203,157 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     # 软重启会重建 provider：先移除指向上一轮对象的消费者，再注册新的
     hot_reload_registry.unregister(getattr(_provider_reload, 'name', 'provider'))
     hot_reload_registry.register(_provider_reload)
+
+    # ── 其余「持有模型产物」的组件：同样跟着 models/env 变更重建 ──
+    # 每个组件是独立消费者：注册表逐个隔离失败（见 runtime/hot_reload_registry.apply），
+    # 所以 TTS 建不起来不会拖垮 provider 的重建，报告里也能逐个看到成败。
+    def _rebuild_tts(new_config: Any) -> None:
+        """重建 TTS 服务并换装。
+
+        启动期这个服务是「模型没注册就直接不建」的（build_tts_service 里那道闸门）：
+        不重建的话，用户先在面板里补好平台 Key、再点重载也依然要重启进程 ——
+        这正是 issue #74 里「覆盖不到」的那一半。
+        `build_tts_service` 返回 None 表示当前配置下 TTS 仍不可用，这里如实换装成
+        停用状态（而不是留着旧服务继续用旧凭据）。
+        """
+        service = build_tts_service(config=new_config, logger_factory=logger_factory)
+        reply_orchestrator.install_tts_service(service)
+
+    def _current_vision_provider(new_config: Any) -> Any:
+        """重建时**现取**视觉 provider。
+
+        装配闭包里的 `vision_provider` 是**启动期**那一个：直接把它再注入一遍，
+        等于「重建了但装的还是旧视觉模型」—— 比不重建更隐蔽（issue #75）。
+        这里按新配置重建；建不出来时回退到旧的，总比塞个 None 好。
+        """
+        return (
+            build_vision_provider(
+                logger=provider_logger, model_name=resolve_vision_model_name(new_config)
+            )
+            or vision_provider
+        )
+
+    def _rebuild_emoji(new_config: Any) -> None:
+        """表情包的图片解析用的视觉 provider 也要换（issue #75）。
+
+        `EmojiService._vision_provider` 在构造期固化，且真的用在解析表情包图片上 ——
+        不换装的话，换了视觉模型之后表情包识别仍走旧模型。
+        """
+        emoji_service.install_vision_provider(_current_vision_provider(new_config))
+
+    def _rebuild_skills(new_config: Any) -> None:
+        """把新视觉 provider 推给所有声明了换装入口的技能（issue #75）。
+
+        技能在启动期由 `build_all_skills` 建好并注册，内部持有视觉 provider 且**真的在用**
+        （drawing_skill 看参考图、image_parse_skill 解析图片）。这里按
+        「谁实现了 `install_vision_provider` 就推给谁」扫描，而不是写死技能名：
+        以后新增会看图的技能，实现同一入口即可自动跟上。
+        """
+        provider = _current_vision_provider(new_config)
+        # all_skills 是 property，不是方法（写成 all_skills() 会抛 TypeError）
+        for skill in skill_manager.all_skills:
+            installer = getattr(skill, "install_vision_provider", None)
+            if callable(installer):
+                installer(provider)
+
+    def _rebuild_creator_image(new_config: Any) -> None:
+        """重建生图服务并换装（生图服务在构造时固化默认模型与平台凭据）。
+
+        仅覆盖「本来就启用」的情况：`agent.creator.enabled` 是装配期开关，
+        从关闭改为启用属于结构性变更，仍按需重启（consumer 的 reason 里写明）。
+        """
+        creator_cfg = getattr(getattr(new_config, "agent", None), "creator", None)
+        if creator_cfg is None or not getattr(creator_cfg, "enabled", False):
+            return
+        service = build_creator_image_service(
+            uow_factory=uow_factory,
+            adapter=adapter,
+            config=new_config,
+            emoji_service=emoji_service,
+            vision_provider=_current_vision_provider(new_config),
+            file_server=file_server,
+            image_pool=image_pool,
+            logger_factory=logger_factory,
+        )
+        drawing_manager.set_image_service(service)
+
+    def _rebuild_problem_solver(new_config: Any) -> None:
+        """重建解题 Agent 并换绑到 manager。
+
+        provider 在装配时被 Agent 经闭包捕获，所以只能重跑装配来换。
+        `provider=` 传的是**当前**主 provider（provider 消费者先注册、先执行），
+        它同时也是解题模型不可用时的回退目标。
+        """
+        before = getattr(problem_solver_manager, "_agent", None)
+        build_problem_solver_agent_wiring(
+            config=new_config,
+            problem_solver_manager=problem_solver_manager,
+            provider=reply_orchestrator.provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            vision_provider=_current_vision_provider(new_config),
+            prompt_store=prompt_store,
+        )
+        # 装配函数在 provider 不可用时直接 return、不动 manager：那样旧 Agent 会继续
+        # 用旧凭据跑，比「功能停用」更危险。这里显式摘掉。
+        if getattr(problem_solver_manager, "_agent", None) is before and before is not None:
+            problem_solver_manager.set_agent(None)
+
+    def _rebuild_self_heal(new_config: Any) -> None:
+        """重建自修复 Agent 并换绑（同样：provider 被 Agent 捕获，只能重跑装配）。"""
+        agent = build_self_heal_agent_wiring(
+            config=new_config,
+            manager=self_heal_manager,
+            provider=reply_orchestrator.provider,
+            provider_logger=provider_logger,
+            sandbox_service=sandbox["sandbox_service"],
+            logger_factory=logger_factory,
+            data_dir=DATA_DIR,
+            source_roots=source_roots,
+            log_file=log_file_path,
+            vision_provider=_current_vision_provider(new_config),
+            web_search_config=_web_search_config_dict(new_config),
+            prompt_store=prompt_store,
+        )
+        if agent is None:
+            # provider 不可用 -> 装配跳过；显式停用，不留旧 Agent。
+            self_heal_manager.set_agent(None)
+
+    for _consumer in (
+        ModelConsumerReload(
+            name="tts",
+            rebuild=_rebuild_tts,
+            reason="TTS 服务持有模型（音色与平台密钥），凭据变更后重建",
+        ),
+        ModelConsumerReload(
+            name="creator_image",
+            rebuild=_rebuild_creator_image,
+            reason="生图服务持有默认模型与平台凭据，变更后重建（启用开关变更仍需重启）",
+        ),
+        ModelConsumerReload(
+            name="emoji",
+            rebuild=_rebuild_emoji,
+            reason="表情包图片解析持有视觉 provider（真的在用），模型变更后换装",
+        ),
+        ModelConsumerReload(
+            name="skills",
+            rebuild=_rebuild_skills,
+            reason="技能（绘图看参考图 / 图片解析）持有视觉 provider，模型变更后推送新实例",
+        ),
+        ModelConsumerReload(
+            name="problem_solver",
+            rebuild=_rebuild_problem_solver,
+            reason="解题 Agent 经闭包捕获 provider，模型/凭据变更后重跑装配",
+        ),
+        ModelConsumerReload(
+            name="self_heal",
+            rebuild=_rebuild_self_heal,
+            reason="自修复 Agent 经闭包捕获 provider，模型/凭据变更后重跑装配",
+        ),
+    ):
+        hot_reload_registry.unregister(_consumer.name)
+        hot_reload_registry.register(_consumer)
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []

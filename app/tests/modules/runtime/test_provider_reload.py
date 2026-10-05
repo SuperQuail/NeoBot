@@ -177,7 +177,9 @@ def test_consumer_declares_models_scope() -> None:
     consumer = _consumer(_MountPoint())
 
     assert consumer.name == "provider"
-    assert consumer.config_paths == ("models",)
+    # env 与 models 并列：平台 URL / APIKey 来自 .env，本身不进 config.toml 的配置快照，
+    # 只改环境变量时 diff 是空的 —— 面板保存 env 会显式带这条路径（issue #74）。
+    assert consumer.config_paths == ("models", "env")
     policies = consumer.hot_reload_policies
     assert policies[0].path == "models"
     assert policies[0].hot_reload is True

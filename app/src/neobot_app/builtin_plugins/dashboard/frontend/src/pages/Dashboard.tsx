@@ -23,6 +23,9 @@ export default function Dashboard() {
   const logItems = logs.data?.items || [];
 
   const pluginLoaded = pluginItems.filter((p) => p.status === 'loaded').length;
+  // 配置缺口（未配超级管理员等）：不报错也不影响启动，但会影响实际使用，
+  // 所以放在首页而不是只留在启动日志里。
+  const notices = Array.isArray(d.notices) ? d.notices : [];
 
   return (
     <div className="page">
@@ -50,6 +53,14 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
+      {/* 配置缺口提示：不报错也不拦启动，但会影响实际使用 */}
+      {notices.map((notice, index) => (
+        <section className="card config-notice warning" role="status" key={index}>
+          <b>{notice.text || '配置提示'}</b>
+          {notice.hint && <span className="muted small"> · {notice.hint}</span>}
+        </section>
+      ))}
 
       {/* 统计卡 */}
       <section className="grid stats">

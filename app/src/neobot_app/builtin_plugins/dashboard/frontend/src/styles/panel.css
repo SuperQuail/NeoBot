@@ -548,3 +548,23 @@ mark { background: rgba(245, 158, 11, .2); color: var(--warn); border-radius: 3p
 .cfg-longtext-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .cfg-longtext-bar .btn-sm { margin-left: auto; }
 .cfg-json-actions { display: flex; align-items: center; gap: 8px; }
+
+/* 快捷部署：引导清单 + OneBot 连接信息（第 3 步要给 NapCat 抄地址与 token） */
+.deploy-steps { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.deploy-steps li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.deploy-steps li.done { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.deploy-steps li .muted { margin-left: auto; }
+.deploy-ready { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; color: var(--ok, #4a4); font-size: 13px; }
+.deploy-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 10px 0; }
+.deploy-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted, #889); }
+.deploy-copy-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.deploy-copy-label { min-width: 96px; font-size: 12.5px; color: var(--muted, #889); }
+.deploy-copy-value { flex: 1 1 240px; min-width: 0; padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, var(--border) 35%, transparent); font-family: var(--font-mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.deploy-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+.deploy-badge { padding: 1px 6px; border-radius: 999px; font-size: 11px; color: var(--muted, #889); border: 1px solid var(--border); }
+.deploy-badge.required { color: var(--warn, #d90); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.deploy-req { margin-left: 4px; padding: 0 5px; border-radius: 999px; font-size: 11px; color: var(--warn, #d90); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.deploy-persona { width: 100%; min-height: 120px; resize: vertical; line-height: 1.6; font-family: var(--font-sans); }
+.deploy-steps li .muted { margin-left: auto; max-width: 46%; text-align: right; }
+.deploy-req { font-style: normal; }

@@ -30,6 +30,18 @@ class DrawingSkill(SkillModule):
         self._vision_provider = vision_provider
         self._enable_image_inspect = enable_image_inspect
 
+    def install_vision_provider(self, provider: Any) -> Any:
+        """换用新的视觉 provider，返回旧的（热重载：只换引用，不负责关闭旧对象）。
+
+        issue #75：技能在启动期建好后一直持有视觉 provider，而且**真的在用**
+        （绘图时看参考图）—— 换模型后不推给它，就会一直用旧的。
+        """
+        previous = self._vision_provider
+        self._vision_provider = provider
+        return previous
+
+
+
     @property
     def name(self) -> str:
         return "drawing"

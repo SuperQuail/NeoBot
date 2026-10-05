@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
+import socket
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from aiohttp import web
 
@@ -57,6 +59,81 @@ def _pydantic_errors(exc: Any) -> list[dict[str, str]]:
     return errors
 
 
+def _as_text(value: Any) -> str:
+    """把配置值转成可比较的文本。
+
+    不能写成 `x or ""` —— `bot.account` 是 **int**，默认值 `0` 是假值，
+    一 `or` 就变成空串，「出厂占位 0」与「未填」就分不出来了。
+    """
+    return "" if value is None else str(value).strip()
+
+
+def _append_model_reload_hint(
+    message: str, changes: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """模型 / 凭据变更后追加「仍需重启」提示；返回 (文案, 未覆盖部分)。
+
+    为什么必须补这一句：`models` / `env` 在热重载分类表里被**整体**标成可热重载
+    （provider 消费者登记的规则），于是 `diff_snapshot` 的 `needs_restart_count` 恒为 0 ——
+    面板只会说「0 项需重启」，而实际仍有组件在用启动期的 provider（issue #75）。
+    缺口清单在 `runtime/provider_reload.MODEL_RELOAD_GAPS`：补一个删一条。
+    """
+    from neobot_app.runtime.provider_reload import (
+        MODEL_RELOAD_GAPS,
+        model_reload_restart_hint,
+    )
+
+    if not MODEL_RELOAD_GAPS:
+        return message, []
+    groups = {str(path).split(".", 1)[0] for path in changes}
+    if not groups & {"models", "env"}:
+        return message, []
+    return message + model_reload_restart_hint(), list(MODEL_RELOAD_GAPS)
+
+
+def _deploy_field_defaults() -> dict[str, str]:
+    """快捷部署判定用的**出厂默认值**（现算，不写死字面量）。
+
+    出厂配置里 `bot.account` 是 `'0'`、昵称与人设都是示例文案 —— 这些「假数据」
+    让「没配」和「配了」在配置值上长得一样。向导据此把它们判成未配置；
+    默认值以后改了这里自动跟上（不写死字面量就是为了这个）。
+    """
+    try:
+        from neobot_app.config.schemas.bot import BotConfig as _BotConfigSchema
+
+        bot = _BotConfigSchema().bot
+        return {
+            "bot_account": _as_text(getattr(bot, "account", "")),
+            "bot_nick_name": _as_text(getattr(bot, "nick_name", "")),
+            "bot_data": _as_text(getattr(bot, "bot_data", "")),
+        }
+    except Exception:
+        return {"bot_account": "", "bot_nick_name": "", "bot_data": ""}
+
+
+def _detect_lan_host() -> str:
+    """猜一个「局域网内其他机器连得上本机」的地址（拿不到就回环）。
+
+    做法是向一个公网地址开 UDP socket、看内核选了哪张网卡 —— **不实际发包**，
+    也不需要外网可达。失败时回落到 127.0.0.1：宁可让用户自己改，
+    也不要给他一个连不上的地址（NapCat 那边只会看到「连接失败」）。
+    """
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        sock.connect(("223.5.5.5", 80))
+        return str(sock.getsockname()[0]) or "127.0.0.1"
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def _json_ok(data: Any = None, **extra: Any) -> web.Response:
     payload: dict[str, Any] = {"ok": True}
     if isinstance(data, dict):
@@ -71,6 +148,45 @@ def _json_error(message: str, *, status: int = 400, **extra: Any) -> web.Respons
     payload = {"ok": False, "error": str(message)}
     payload.update(extra)
     return web.json_response(payload, status=status)
+
+
+#: 保存 .env 后仍然必须重启才能生效的部分：这些模块在启动时构建并持有 provider，
+#: 没有注册热重载消费者（ProviderReloadConsumer 只覆盖 reply / image_parse / archive）。
+ENV_RESTART_HINT = (
+    "在启动时读取环境变量的其它模块（TTS、生图、联网搜索等）需重启进程后生效"
+)
+
+
+def _env_reload_message(
+    reload_result: dict[str, Any], env_written: bool
+) -> tuple[str, bool]:
+    """组合「保存 .env 并重载」后的提示文案；返回 (文案, 是否仍需重启)。
+
+    为什么要单独写文案：环境变量不进 config.toml 的配置快照，重载自身的分支是
+    「配置已重载，本次没有检测到配置项变化」—— 对刚改完 Key 的用户来说，
+    这句话既像成功又像什么都没发生，正是 issue #74 的误导来源。
+    """
+    if not env_written:
+        return "未检测到环境变量改动；已重载配置。", False
+
+    report = reload_result.get("hot_reload") or {}
+    applied = [str(item.get("name") or "") for item in report.get("applied") or []]
+    failed = list(report.get("failed") or [])
+
+    if failed:
+        reasons = "；".join(
+            str(item.get("error") or item.get("name") or "未知原因") for item in failed
+        )
+        head = f"环境变量已保存并重载，但部分组件重建失败（{reasons}），仍在用旧凭据。"
+    elif "provider" in applied:
+        head = (
+            "环境变量已保存并重载：平台凭据变更已重建 provider"
+            "（覆盖 主对话 / 视觉 / 档案总结）。"
+        )
+    else:
+        head = "环境变量已保存并重载。"
+
+    return f"{head}{ENV_RESTART_HINT}。", True
 
 
 def _parse_cost_detail(raw: Any) -> dict[str, Any] | None:
@@ -340,8 +456,32 @@ class DashboardApi:
                 "python_version": system.get("python_version"),
                 "hostname": system.get("hostname"),
                 "standby": bool(self.power_state().get("standby")),
+                "notices": self._config_notices(),
             }
         )
+
+    def _config_notices(self) -> list[dict[str, Any]]:
+        """控制台首页要提示的配置缺口（只读运行中的配置，不写任何东西）。
+
+        目前只有一条：**未配置超级管理员账号**。这类缺口不会报错、也不影响启动，
+        但「余额不足」等系统通知会发不出去 —— 只在启动日志里 warning 一次，
+        很容易被忽略到最后。放在首页比放在日志里有用。
+        """
+        notices: list[dict[str, Any]] = []
+        try:
+            config_obj = self._config_proxy()
+            accounts = getattr(getattr(config_obj, "chat", None), "admin_accounts", None) or []
+            if not [str(item).strip() for item in accounts if str(item).strip()]:
+                notices.append(
+                    {
+                        "level": "warning",
+                        "text": "尚未配置超级管理员账号，可能影响部分命令使用",
+                        "hint": "在「配置管理 → 本体配置 → chat」里填 admin_accounts（QQ 号列表）",
+                    }
+                )
+        except Exception as exc:
+            self.logger.warning(f"生成配置提示失败: {exc}")
+        return notices
 
     def power_state(self) -> dict[str, Any]:
         """当前运行状态（运行中 / 待机中）；待机服务未注册时返回 available=False。"""
@@ -1479,9 +1619,18 @@ class DashboardApi:
             return _json_ok(result)
         return _json_error(str(result.get("message") or "重载失败"), status=500)
 
-    async def _reload_config(self, *, with_changes: bool = False) -> dict[str, Any]:
+    async def _reload_config(
+        self, *, with_changes: bool = False, extra_changed_paths: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        """重载配置并返回结果。
+
+        `extra_changed_paths`：**配置快照之外**的改动路径（目前只有 `.env`）。
+        `.env` 的值不进 config.toml，配置 diff 里永远看不到它，所以要由调用方
+        显式声明，否则热重载消费者一个都不会被触发（issue #74）。
+        """
         from neobot_app.config.hot_reload import diff_snapshot, snapshot, summarize_changes
 
+        extra_paths = tuple(str(item) for item in extra_changed_paths if str(item))
         before: dict[str, Any] | None = None
         if with_changes:
             config_obj = self._models_config()
@@ -1496,7 +1645,13 @@ class DashboardApi:
         if not callable(caller):
             return {"ok": False, "message": "配置重载入口不可用，请重启 NeoBot"}
         try:
-            result = caller("config.reload")
+            # 只在真的要声明时带参：宿主命令注册表的**实现**未必接受 `**kwargs`
+            # （协议上允许，但既有实现是 `call(self, name)`）。不为一个只在 env 场景用到的
+            # 参数去改外部调用契约 —— 保持 `config.reload` 的调用形态不变。
+            if extra_paths:
+                result = caller("config.reload", extra_changed_paths=extra_paths)
+            else:
+                result = caller("config.reload")
             if asyncio.iscoroutine(result):
                 result = await result
         except Exception as exc:
@@ -1505,6 +1660,9 @@ class DashboardApi:
             return {"ok": False, "message": "配置重载返回异常"}
         ok = str(result.get("status") or "").lower() == "ok"
         payload: dict[str, Any] = {"ok": ok, "message": str(result.get("message") or "")}
+        # 透传热重载报告：env 保存要据此说明「哪些组件已按新凭据重建」
+        if isinstance(result.get("hot_reload"), dict):
+            payload["hot_reload"] = result["hot_reload"]
         if ok and before is not None:
             after = self._models_config()
             if after is not None:
@@ -1512,15 +1670,223 @@ class DashboardApi:
                     changes = diff_snapshot(before, after)
                     payload["changes"] = summarize_changes(changes)
                     if changes:
-                        payload["message"] = (
+                        message, restart_parts = _append_model_reload_hint(
                             f"配置已热重载：{payload['changes']['hot_reload_count']} 项已生效，"
-                            f"{payload['changes']['needs_restart_count']} 项需重启"
+                            f"{payload['changes']['needs_restart_count']} 项需重启",
+                            changes,
                         )
-                    else:
+                        payload["message"] = message
+                        if restart_parts:
+                            payload["needs_restart_parts"] = restart_parts
+                    elif not extra_paths:
+                        # 只有「配置快照里也确实没有变化」时才这么说。改了 .env 的场景
+                        # 走不到这里 —— 那句「没有检测到配置项变化」会让用户以为没保存成功。
                         payload["message"] = "配置已重载，本次没有检测到配置项变化"
                 except Exception as exc:
                     self.logger.warning(f"配置差异计算失败: {exc}")
         return payload
+
+    # ── 快捷部署（新手引导）──────────────────────────────────────────
+
+    async def deploy_status(self, request: web.Request) -> web.Response:
+        """快捷部署菜单：还差哪几项、以及 OneBot 连接所需的一切（只读）。
+
+        新手只需要配少数几项就能把 Bot 跑起来，这个端点把「必须项」逐条判出
+        done/缺失，并把反向 WS 的**生效**监听信息一并给出 —— NapCat 侧要填的
+        就是地址与 access token 这两样。
+
+        注：OneBot 反向 WS 的**路径由框架侧自己配**，服务端不限制（见
+        `neobot_adapter/onebot/receiver/core.py`），NapCat 常用 `/onebot/v11/ws`。
+        """
+        denied = self._require_manage(request, action="查看部署状态")
+        if denied is not None:
+            return denied
+        try:
+            config_obj = self._config_proxy()
+        except Exception as exc:
+            return _json_error(f"读取配置失败: {exc}", status=500)
+
+        bot = getattr(config_obj, "bot", None)
+        chat = getattr(config_obj, "chat", None)
+        account = _as_text(getattr(bot, "account", ""))
+        nick_name = _as_text(getattr(bot, "nick_name", ""))
+        persona = _as_text(getattr(bot, "bot_data", ""))
+        aliases = [
+            str(item).strip()
+            for item in (getattr(bot, "alias_name", None) or [])
+            if str(item).strip()
+        ]
+        admins = [
+            str(item).strip()
+            for item in (getattr(chat, "admin_accounts", None) or [])
+            if str(item).strip()
+        ]
+        try:
+            group_chat_chance = float(getattr(chat, "group_chat_chance", 0.3) or 0.0)
+        except (TypeError, ValueError):
+            group_chat_chance = 0.3
+        # 出厂占位不算「配好了」：`account` 默认是 '0'、昵称与人设都是示例文案。
+        # 用 schema 默认值现算而不是写死字面量 —— 默认值以后改了这里自动跟上。
+        defaults = _deploy_field_defaults()
+        account_ready = bool(account) and account.casefold() != defaults["bot_account"].casefold()
+        nick_ready = bool(nick_name) and nick_name.casefold() != defaults["bot_nick_name"].casefold()
+        persona_ready = bool(persona) and persona.casefold() != defaults["bot_data"].casefold()
+
+        env_revision = None
+        deepseek_ready = False
+        try:
+            env_document = self._env_manager().read(mask=True)
+            env_revision = env_document.get("revision")
+            for item in env_document.get("items") or []:
+                key = str(item.get("key") or "")
+                if key.casefold().startswith("deepseek_") and key.casefold().endswith("apikey"):
+                    deepseek_ready = bool(item.get("has_value"))
+        except Exception as exc:
+            self.logger.warning(f"读取 .env 失败: {exc}")
+
+        onebot = self._onebot_connection()
+        steps = [
+            {
+                "key": "bot_identity",
+                "label": "机器人身份",
+                "required": True,
+                "done": bool(account_ready and nick_ready),
+                "hint": "机器人 QQ 号与昵称都是必填：面板「机器人」页、命令与落盘都用它",
+                "action": "identity",
+            },
+            {
+                "key": "persona",
+                "label": "人设",
+                "required": True,
+                "done": persona_ready,
+                "hint": "写清「你是谁、怎么说话、有什么规矩」——它插进系统提示词（{bot_data}）",
+                "action": "persona",
+            },
+            {
+                "key": "platform_key",
+                "label": "平台密钥",
+                "required": True,
+                "done": deepseek_ready,
+                "hint": "至少填 DeepSeek_APIKey —— 默认模型库全部走 DeepSeek",
+                "action": "platform_key",
+            },
+            {
+                "key": "onebot",
+                "label": "OneBot 连接",
+                "required": True,
+                "done": bool(onebot["port"]) and bool(onebot["token"]),
+                "hint": "配好监听端口与 access token，再把下面两样填进 NapCat",
+                "action": "onebot",
+            },
+            {
+                "key": "admin",
+                "label": "超级管理员（选填）",
+                "required": False,
+                "done": bool(admins),
+                "hint": "填一个 QQ 号用于接收余额不足等系统通知；留空也能正常跑，只是收不到通知",
+                "action": "admin",
+            },
+        ]
+        return _json_ok(
+            {
+                "steps": steps,
+                "onebot": onebot,
+                "values": {
+                    "bot_account": account,
+                    "bot_nick_name": nick_name,
+                    "bot_data": persona,
+                    "alias_name": aliases,
+                    "admin_accounts": admins,
+                    "group_chat_chance": group_chat_chance,
+                },
+                "defaults": defaults,
+                "revision": self._config_manager().revision(),
+                "env_revision": env_revision,
+                "ready": all(step["done"] for step in steps if step["required"]),
+            }
+        )
+
+    def _onebot_connection(self) -> dict[str, Any]:
+        """反向 WS 的生效监听信息（配置 > 环境变量 > 默认值）。
+
+        复用 adapter 包的 `ReverseWsSettings.resolve`，不在这里重写一套解析规则 ——
+        面板显示的必须是**真正会监听的**地址与 token，否则 NapCat 那边连不上。
+        """
+        from neobot_adapter.onebot.receiver.settings import ReverseWsSettings
+
+        config_obj = self._config_proxy()
+        adapter = getattr(config_obj, "adapter", None)
+        raw_port = int(getattr(adapter, "reverse_ws_port", 0) or 0)
+        settings = ReverseWsSettings.resolve(
+            host=str(getattr(adapter, "reverse_ws_host", "") or "") or None,
+            port=raw_port or None,
+            access_token=str(getattr(adapter, "reverse_ws_access_token", "") or ""),
+        )
+        port = int(settings.port)
+        # 监听 0.0.0.0 时「连哪个地址」要分开给：NapCat 与本程序同机用回环，
+        # 不同机用局域网地址 —— 直接给 0.0.0.0 是连不上的。
+        bind_all = settings.host in {"0.0.0.0", "::", ""}
+        return {
+            "host": settings.host,
+            "port": port,
+            "token": settings.access_token,
+            "token_enabled": settings.token_enabled,
+            "bind_all": bind_all,
+            "url_local": f"ws://127.0.0.1:{port}",
+            "url_lan": f"ws://{_detect_lan_host()}:{port}",
+            # 路径由框架侧自己配、服务端不校验；这里给仓库文档（08-部署说明 §4.2）用的惯例写法
+            "path_hint": "/onebot",
+            "warning": settings.security_warning(),
+            "from_config": raw_port > 0,
+            # 预留：装了 NapCat Desktop 之后由它直接创建连接（端口与 token 自动生成并回填）。
+            # 现在只报「不可用 + 原因」，前端据此显示「自动连接（待支持）」而不是假装能用。
+            "auto_connect": {
+                "available": False,
+                "reason": (
+                    "自动创建连接需要 NapCat Desktop 支持（后续版本提供）；"
+                    "在此之前请手动把下面的地址与 token 填进 NapCat 的反向 WS"
+                ),
+            },
+        }
+
+    async def deploy_generate_token(self, request: web.Request) -> web.Response:
+        """生成一个 OneBot access token 并写入 `[adapter]`（NapCat 侧填同一个值）。"""
+        denied = self._require_manage(request, action="生成 OneBot token")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+
+        token = secrets.token_urlsafe(24)
+        manager = self._config_manager()
+        try:
+            document = manager.save(
+                config={"adapter": {"reverse_ws_access_token": token}},
+                expected_revision=payload.get("revision"),
+            )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
+        except ConfigValidationError as exc:
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"保存 access token 失败: {exc}", status=500)
+
+        # adapter 是 AdapterSupervisor 的热重载路径：这一步会让它按新 token 重连，
+        # 不需要重启进程（失败也不回滚配置，只是提示需要重启）。
+        reload_result = await self._reload_config(extra_changed_paths=("adapter",))
+        applied = bool(reload_result.get("ok"))
+        document["token"] = token
+        document["applied"] = applied
+        document["message"] = (
+            "已生成并写入 access token；请把它填进 NapCat 的反向 WS 配置"
+            if applied
+            else "access token 已写入配置，但适配器重载失败，需重启 NeoBot 后生效"
+        )
+        document["can_manage"] = self.console.manage_plugins
+        return _json_ok(document)
+
 
     async def env_get(self, request: web.Request) -> web.Response:
         try:
@@ -1586,11 +1952,20 @@ class DashboardApi:
         except Exception as exc:
             return _json_error(f"保存 .env 失败: {exc}", status=500)
         document["can_manage"] = self.console.manage_plugins
+        env_written = bool(payload.get("updates") or payload.get("deletes"))
         document["message"] = "环境变量已保存；模型注册表需重载后生效"
         if payload.get("reload"):
-            reload_result = await self._reload_config()
+            reload_result = await self._reload_config(
+                # 显式声明 env 变更：.env 不进 config.toml 的配置快照，不带这条路径
+                # 的话 provider 消费者不会被触发，新凭据要等重启才生效（issue #74）。
+                extra_changed_paths=("env",) if env_written else (),
+            )
             document["applied"] = bool(reload_result.get("ok"))
-            document["message"] = str(reload_result.get("message") or document["message"])
+            message, needs_restart = _env_reload_message(reload_result, env_written)
+            document["message"] = message
+            document["needs_restart"] = needs_restart
+            if reload_result.get("hot_reload"):
+                document["hot_reload"] = reload_result["hot_reload"]
         return _json_ok(document)
 
     def _models_config(self) -> Any:
@@ -1818,6 +2193,8 @@ class DashboardApi:
             document["message"] = str(reload_result.get("message") or message)
             if reload_result.get("changes"):
                 document["changes"] = reload_result["changes"]
+            if reload_result.get("needs_restart_parts"):
+                document["needs_restart_parts"] = reload_result["needs_restart_parts"]
         try:
             document["models"] = models_view(self._models_config())
         except Exception:

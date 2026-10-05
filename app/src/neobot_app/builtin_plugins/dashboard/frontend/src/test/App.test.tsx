@@ -36,6 +36,7 @@ vi.mock('../pages/Archives.jsx', () => ({ default: () => <div data-testid="page-
 
 const NAV_LABELS = [
   '主页',
+  '部署',
   '插件',
   '配置',
   '系统',

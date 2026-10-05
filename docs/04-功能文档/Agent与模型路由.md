@@ -55,11 +55,32 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 | `agent_model_1` | deepseek-flash-max | 子 Agent（编号 1，max 推理） |
 | `agent_model_2` | deepseek-flash-high | 子 Agent（编号 2，high 推理） |
 | `agent_model_3` | deepseek-flash-off | 低成本任务（编号 3，非推理） |
-| `vision_model` | qwen3-vl-8b | 图像识别（缺 Key 时降级） |
+| `vision_model` | deepseek-flash-high | 图像识别（默认复用 deepseek-flash，缺 Key 时降级） |
 | `tts_model` | cosyvoice2 | 语音合成（TTS 关闭时不注册） |
-| `creator_image_models`（列表） | ["flux-schnell"] | 生图（可分配多个 model_ref） |
+| `creator_image_models`（列表） | []（默认空） | 生图（可分配多个 model_ref；需要 AI 绘图时再添加真实可用的生图模型） |
 
 注册时机：配置加载时按模型库条目逐个注册到运行时模型注册表（同 `model_ref` 只注册一次）；`vision_model` / `tts_model` 缺 Key 时只告警并降级，主对话 / Agent 模型缺 Key 会直接报错并列出全部缺失项。
+
+### 改模型后：哪些立即生效、哪些必须重启
+
+在模型库点「保存并重载」会重建这些组件的 provider：**主对话 / 视觉 / 档案总结 / TTS / 生图 /
+解题 Agent / 自修复 Agent**。
+
+**表情包图片解析**（`EmojiService.install_vision_provider`）与**技能**
+（绘图看参考图、图片解析）也会一起换：技能侧按「谁实现了 `install_vision_provider`
+就推给谁」扫描 `SkillManager.all_skills`，以后新增会看图的技能只要实现同一入口就自动跟上。
+
+实现方式是每个组件注册成**独立的热重载消费者**（[runtime/provider_reload.py](../../app/src/neobot_app/runtime/provider_reload.py)），
+`models` / `env` 变更时分发；注册表逐个隔离失败，一个组件建不起来不会拖垮其余。
+
+两点仍需注意：
+
+- 别用 `changes.needs_restart_count` 判断「有没有没热更到的部分」：热重载分类表把
+  `models` 整体标成可热重载，那个计数**恒为 0**。真正的判断依据是 `needs_restart_parts`
+  （由 `MODEL_RELOAD_GAPS` 驱动）—— 该清单经审计后**已清空**，即目前清点到的持有者都能热重载。
+  面板在模型库保存 / 删除后会常驻显示这条提示，清单一旦非空就会重新出现。
+- 服务注册表里的 `services["vision_provider"]` 仍是**启动期实例**（仓库内无消费者）；
+  插件若读取它，换模型后需要自行重新取。
 
 ## Agent 模型路由（`agent_model` 配置）
 

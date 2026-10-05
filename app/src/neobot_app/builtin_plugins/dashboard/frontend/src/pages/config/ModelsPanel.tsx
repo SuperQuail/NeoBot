@@ -5,7 +5,8 @@ import type { ModelItem, ModelProbeResult, ModelsPayload } from '../../api/types
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
 import Modal from '../../components/Modal';
-import SchemaForm, { defaultsFromFields } from '../../components/SchemaForm';
+import { defaultsFromFields } from '../../components/SchemaForm';
+import { ConfigTreePanel } from './ConfigTreePanel';
 import { setPath } from '../../utils/paths';
 import { BillingSection } from './BillingSection';
 import { bindValues } from './shared';
@@ -67,6 +68,12 @@ function ModelsPanel() {
   const [pulledProvider, setPulledProvider] = useState('');
   const [pulling, setPulling] = useState('');
   const pulledRef = useRef('');
+  // 模型/凭据变更后仍有组件必须重启才会用新模型（issue #75）：这是**常驻提示**，
+  // 不能只用 toast —— 用户可能过一会儿才回来配 NapCat/重启。
+  const [restartParts, setRestartParts] = useState<string[]>([]);
+  // 模型条目表单与本体配置同款（左树 + 右区）：搜索词与分组折叠状态各自独立
+  const [formFilter, setFormFilter] = useState('');
+  const [formCollapse, setFormCollapse] = useState<Record<string, boolean>>({});
 
   const read = useCallback(async () => {
     setLoading(true);
@@ -132,6 +139,7 @@ function ModelsPanel() {
       setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
     } else await read();
     setEditing(null);
+    setRestartParts(result.data?.needs_restart_parts || []);
     const savedRef = result.data?.saved_model_ref;
     const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
     toast(savedRef ? baseMessage + '（引用名 ' + savedRef + '）' : baseMessage, 'ok');
@@ -144,12 +152,15 @@ function ModelsPanel() {
       action: 'delete',
       model_ref: item.model_ref,
       revision: data?.revision,
+      // 删除同样要重载：不重载的话运行期继续持有已删模型的 provider（issue #75）
+      reload: true,
     });
     setBusy('');
     if (!result.ok) {
       toast(result.error || '删除失败', 'err');
       return;
     }
+    setRestartParts(result.data?.needs_restart_parts || []);
     if (result.data?.models?.library) {
       setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
     }
@@ -269,6 +280,12 @@ function ModelsPanel() {
         模型单独存储在 <code>[models.registry]</code>，主对话 / Agent / 视觉 / TTS / 生图只引用 key；
         同一个模型可被多个调用方复用，改一处全局生效。
       </p>
+      {restartParts.length > 0 && (
+        <p className="config-notice warning" role="status">
+          <Icon name="more" /> 模型/密钥已生效，但以下部分<b>需要重启进程</b>后才会用新模型：
+          {restartParts.join('、')}
+        </p>
+      )}
       {loading && !data && <p className="empty muted" role="status">正在读取模型库…</p>}
       {data && library.length === 0 && <div className="empty muted">模型库为空，点击「新增模型」添加</div>}
       {library.length > 0 && (
@@ -340,13 +357,35 @@ function ModelsPanel() {
                 已按旧配置推断本模型启用的可选参数（值 ≠ 默认值视为已启用），请复核参数区后保存。
               </p>
             )}
-            <SchemaForm
-              fields={fields}
+            {/* 与「本体配置」同款表单（左树定位 + 右区渲染），不再用旧的嵌套折叠样式 */}
+            <div className="config-toolbar">
+              <input
+                className="input cfg-search"
+                placeholder="搜索模型字段（支持路径与说明）…"
+                value={formFilter}
+                onChange={(event) => setFormFilter(event.target.value)}
+              />
+            </div>
+            <ConfigTreePanel
+              schema={fields}
+              draft={editing.draft}
+              baseline={
+                editing.isNew
+                  ? undefined
+                  : (editingLibraryItem?.entry as Record<string, any> | undefined)
+              }
+              history={{}}
+              collapse={formCollapse}
               disabled={!!busy}
+              filter={formFilter}
+              onFilterChange={setFormFilter}
               onChange={(path, value) =>
                 setEditing((previous) =>
                   previous ? { ...previous, draft: setPath(previous.draft, path, value) } : previous,
                 )
+              }
+              onToggleCollapse={(key) =>
+                setFormCollapse((previous) => ({ ...previous, [key]: !previous[key] }))
               }
             />
             <BillingSection

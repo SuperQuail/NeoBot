@@ -125,6 +125,17 @@ class GallerySkill(SkillModule):
         self._file_server = file_server
         self._adapter = adapter
 
+    def install_vision_provider(self, provider: Any) -> Any:
+        """换用新的视觉 provider，返回旧的（热重载：只换引用，不负责关闭旧对象）。
+
+        issue #75：技能在启动期建好后一直持有视觉 provider，而且**真的在用**
+        （图库图片理解）—— 换模型后不推给它，就会一直用旧的。
+        """
+        previous = self._vision_provider
+        self._vision_provider = provider
+        return previous
+
+
     def reset(self) -> None:
         pass
 

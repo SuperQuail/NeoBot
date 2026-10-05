@@ -617,7 +617,8 @@ async def test_env_delete_and_reload_via_api(panel, monkeypatch) -> None:
     path.write_text("DeepSeek_URL=https://example.com\nCUSTOM_VALUE=hello\n", encoding="utf-8")
     reloaded = []
 
-    async def reload_config(self):
+    async def reload_config(self, **kwargs):
+        # 保存 .env 会带 extra_changed_paths 声明 env 变更（issue #74）
         reloaded.append(path.read_text(encoding="utf-8"))
         return {"ok": True, "message": "重载成功"}
 
@@ -1383,3 +1384,226 @@ async def test_shutdown_reports_unavailable_without_signal(tmp_path: Path) -> No
     finally:
         await server.stop()
 
+
+
+# ── 快捷部署菜单 ─────────────────────────────────────────────────
+
+
+async def test_deploy_status_reports_steps_and_onebot_defaults(panel) -> None:
+    """部署状态：四项必填逐条判出 done/缺失，并给出 OneBot 的生效监听信息。
+
+    面板要把**真正会监听的**地址与 token 交给 NapCat，所以这里断言的是
+    adapter 包解析后的结果（配置 > 环境变量 > 默认值），不是配置字段原值。
+    """
+    _, _, base, _ = panel
+    token, _csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    steps = {step["key"]: step for step in payload["steps"]}
+    assert set(steps) == {"bot_identity", "persona", "platform_key", "onebot", "admin"}
+    # 必填 / 选填要能区分开：ready 只由必填项决定
+    required = {key for key, step in steps.items() if step["required"]}
+    assert required == {"bot_identity", "persona", "platform_key", "onebot"}
+    assert steps["admin"]["required"] is False
+    # 测试用面板里 .env 已有 DeepSeek_APIKey，所以平台密钥这项应当是完成的
+    assert steps["platform_key"]["done"] is True
+    # 一个都没配的项：身份 / 人设 / OneBot
+    assert steps["bot_identity"]["done"] is False
+    assert steps["persona"]["done"] is False
+    assert steps["onebot"]["done"] is False
+    assert payload["ready"] is False
+    # 出厂占位不算配好：account 默认就是 '0'，人设默认是示例文案
+    assert payload["values"]["bot_account"] in ("", "0")
+    assert payload["defaults"]["bot_account"] == "0"
+
+    onebot = payload["onebot"]
+    # 预留接口：装 NapCat Desktop 后由它自动建连接，现在必须报「不可用 + 原因」
+    assert onebot["auto_connect"]["available"] is False
+    assert onebot["auto_connect"]["reason"]
+    # 配置里没有 [adapter] 段 -> 回落到默认监听 0.0.0.0:8080
+    assert onebot["host"] == "0.0.0.0"
+    assert onebot["port"] == 8080
+    assert onebot["url_local"] == "ws://127.0.0.1:8080"
+    assert onebot["url_lan"].startswith("ws://") and onebot["url_lan"].endswith(":8080")
+    # 未配 token 又对外监听：必须给出安全告警（而不是静默）
+    assert onebot["token_enabled"] is False
+    assert onebot["warning"]
+
+
+async def test_deploy_generate_token_writes_and_reenables(panel) -> None:
+    """生成 token：写入 [adapter] 并让适配器按新 token 重连，状态随之变为已启用。"""
+    _, _, base, config_path = panel
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+
+    async with httpx.AsyncClient() as client:
+        before = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+        generated = await client.post(
+            base + "/api/deploy/onebot-token",
+            headers=headers,
+            json={"revision": before.json()["revision"]},
+        )
+
+    assert generated.status_code == 200, generated.text
+    payload = generated.json()
+    assert payload["ok"] is True
+    new_token = payload["token"]
+    assert isinstance(new_token, str) and len(new_token) >= 20
+
+    # 落盘：配置里出现同一个 token（NapCat 侧要填的就是它）
+    written = config_path.read_text(encoding="utf-8")
+    assert new_token in written
+
+    # 测试用面板没有注入宿主重载入口（host_commands），所以这一步必然没生效 ——
+    # 端点必须**如实**说「需重启后生效」，而不是假装已生效。
+    assert payload["applied"] is False
+    assert "重启" in payload["message"]
+
+
+async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
+    """OneBot 的地址/端口/token 取**运行中配置**的生效值（NapCat 侧照抄这两样）。"""
+    from types import SimpleNamespace
+
+    class _Services:
+        def __init__(self, mapping: dict) -> None:
+            self._mapping = mapping
+
+        def get(self, name: str, default: object = None) -> object:
+            return self._mapping.get(name, default)
+
+    config = SimpleNamespace(
+        bot=SimpleNamespace(
+            account="10001",
+            nick_name="玄天",
+            bot_data="你是群里的老群友「玄天」，说话简短。",
+            alias_name=["玄天"],
+        ),
+        chat=SimpleNamespace(admin_accounts=["10002"], group_chat_chance=0.3),
+        adapter=SimpleNamespace(
+            reverse_ws_host="127.0.0.1",
+            reverse_ws_port=8091,
+            reverse_ws_access_token="fixed-token",
+        ),
+    )
+    server, _, base, _ = await _start_panel(tmp_path, services=_Services({"config": config}))
+    try:
+        token, _csrf = await _login(base)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        steps = {step["key"]: step for step in payload["steps"]}
+        assert steps["bot_identity"]["done"] is True
+        assert steps["persona"]["done"] is True
+        assert steps["admin"]["done"] is True
+        assert steps["onebot"]["done"] is True
+        # 测试面板的 .env 里有 DeepSeek_APIKey -> 必填项齐全
+        assert payload["ready"] is True
+        assert payload["values"]["bot_data"].startswith("你是群里的老群友")
+        assert payload["values"]["group_chat_chance"] == 0.3
+
+        onebot = payload["onebot"]
+        assert onebot["host"] == "127.0.0.1"
+        assert onebot["port"] == 8091
+        assert onebot["token"] == "fixed-token"
+        assert onebot["url_local"] == "ws://127.0.0.1:8091"
+        # 回环地址 + 有 token：不该报安全告警
+        assert onebot["warning"] is None
+    finally:
+        await server.stop()
+
+
+async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> None:
+    """写操作要 manage 权限：面板关闭管理功能时直接 403。"""
+    from tests.modules.builtin_plugins.test_dashboard_api import _start_panel
+
+    server, _, base, _ = await _start_panel(tmp_path)
+    try:
+        token, csrf = await _login(base)
+        # manage_plugins 是只读属性（读面板配置），所以改类属性来模拟「已禁用管理」；
+        # monkeypatch 会在用例结束后还原。
+        monkeypatch.setattr(
+            type(server), "manage_plugins", property(lambda self: False), raising=True
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/deploy/onebot-token",
+                headers={"X-Token": token, "X-CSRF-Token": csrf},
+                json={},
+            )
+        assert response.status_code == 403
+    finally:
+        await server.stop()
+
+# ── 模型/凭据变更后的「仍需重启」提示（issue #75）────────────────
+
+
+def test_model_change_appends_restart_hint(monkeypatch) -> None:
+    """机制：模型/凭据变更且**存在缺口**时，必须追加「仍需重启」。
+
+    分类表把 `models` 整体标成可热重载，所以 `needs_restart_count` 恒为 0 ——
+    不额外补一句，面板就会声称「0 项需重启」，而实际仍有组件在用启动期的 provider。
+    生产清单经审计后已清空，所以这里**打桩**一个缺口来验证机制本身：
+    以后再有组件忘了接热重载，把它写回 `MODEL_RELOAD_GAPS` 即可重新提示。
+    """
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(
+        provider_reload, "MODEL_RELOAD_GAPS", ("示例组件（未接热重载）",)
+    )
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：3 项已生效，0 项需重启",
+        {"models.registry[0].model_name": "another-model"},
+    )
+
+    assert "重启" in message
+    assert "示例组件" in message
+    assert gaps == ["示例组件（未接热重载）"]
+
+
+def test_env_change_also_appends_restart_hint(monkeypatch) -> None:
+    """平台凭据（`.env`）同样算模型类变更。"""
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(provider_reload, "MODEL_RELOAD_GAPS", ("示例组件",))
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    _message, gaps = _append_model_reload_hint("配置已重载", {"env": {}})
+
+    assert gaps
+
+
+def test_unrelated_change_keeps_message_untouched(monkeypatch) -> None:
+    """与模型无关的改动不该背这口锅：文案保持原样。"""
+    from neobot_app.runtime import provider_reload
+
+    monkeypatch.setattr(provider_reload, "MODEL_RELOAD_GAPS", ("示例组件",))
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：1 项已生效，0 项需重启",
+        {"chat.group_chat_chance": 0.3},
+    )
+
+    assert gaps == []
+    assert message.endswith("0 项需重启")
+
+
+def test_no_gaps_means_no_restart_hint() -> None:
+    """审计后清单为空：模型变更不再多嘴「需重启」，提示随缺口出现 / 消失。"""
+    from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint
+    from neobot_app.runtime.provider_reload import MODEL_RELOAD_GAPS
+
+    assert MODEL_RELOAD_GAPS == (), "缺口清空后才该为空；新发现缺口请写回清单"
+    message, gaps = _append_model_reload_hint(
+        "配置已热重载：2 项已生效，0 项需重启", {"models.registry[0].x": 1}
+    )
+
+    assert gaps == []
+    assert message.endswith("0 项需重启")

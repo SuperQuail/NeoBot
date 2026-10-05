@@ -968,6 +968,25 @@ class ReplyOrchestrator:
         if deferred is not None:
             raise deferred
 
+    def install_tts_service(self, service: Any) -> Any:
+        """换用新的 TTS 服务，返回被替换下来的旧服务。
+
+        与 `install_provider` 同一模式：TTS 服务在构造时就把模型条目
+        （api_key / base_url / 音色）固化了，改配置后必须重建才能生效。
+        同样只换引用，不负责关闭旧服务。
+
+        为什么需要它：TTS 此前在启动期一次性装配，模型没注册就直接不建服务
+        —— 于是「先在面板里补好平台 Key，再重载」这条路走不通，必须重启进程。
+        """
+        previous = self._tts_service
+        self._tts_service = service
+        self._logger.info(
+            "TTS 服务已更新",
+            model=getattr(getattr(service, "_model", None), "model_name", "") or "",
+            enabled=service is not None,
+        )
+        return previous
+
     def install_provider(self, provider: Any, error_message: str | None = None) -> Any:
         """换用新的回复 provider，返回被替换下来的旧 provider。
 

@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
+import Deploy from './pages/Deploy';
 import Plugins from './pages/Plugins';
 import ConfigManager from './pages/ConfigManager';
 import System from './pages/System';
@@ -73,6 +74,7 @@ export default function App() {
           >
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
+        <Route path="deploy" element={<Deploy />} />
             <Route path="plugins" element={<Plugins />} />
             <Route path="config" element={<ConfigManager />} />
             <Route path="system" element={<System />} />

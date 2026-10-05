@@ -8,8 +8,8 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 0decd49
-verified_hash: 045da8ee16a6
+verified_against: 259c88a
+verified_hash: b7f455eba6af
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -257,6 +257,12 @@ flowchart LR
 * **冷却不是意愿的事**：`willing/service.py` 里没有 cooldown；回复冷却在
   `orchestrator.py:619`，逐句打字冷却在 `sender.py:456`，静默超时在 `orchestrator.py:2041`。
   改「不回复」的直觉时先确认是哪一层。
+* **编排器固化的东西都要能换装**：`install_provider` 与 `install_tts_service` 是同一模式 ——
+  只换引用、不关旧对象（由调用方在确认替换成功后统一清理）。编排器在构造时把
+  provider 与 TTS 服务都固化下来，而两者都持有模型条目（模型名 / 平台密钥 / 音色），
+  所以**改配置后必须重建才能生效**；新增任何「构造期固化的模型产物」时，
+  一并提供 `install_*` 并注册成热重载消费者，否则它只会静默用旧值
+  （TTS 以前就是：模型没注册就干脆不建服务，于是补完 Key 也必须重启进程）。
 * **同会话去重与冷却都会让 `start_reply` 返回 None**：调用方（事件管道）必须把 None 当作
   「本次不回复」，而不是错误 —— 命令同步回复被拒时**不能**丢弃回复中标记。
 * **插件改写后必须重新清洗**：`reply.send.before` 之后还有一次 `_sanitize_outgoing`，

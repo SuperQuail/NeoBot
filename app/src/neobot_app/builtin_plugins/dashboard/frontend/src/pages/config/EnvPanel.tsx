@@ -74,8 +74,22 @@ function EnvPanel() {
     setDoc(result.data);
     setEdits({});
     setDeletes([]);
-    setNotice({ text: result.data.message || '已保存', warning: false });
-    toast(result.data.message || '已保存', 'ok');
+    // 环境变量里有一部分是启动期读取的（TTS / 生图 / 联网搜索等），热重载覆盖不到：
+    // 后端用 needs_restart 标出来，这里用 warning 样式呈现，别让用户以为全生效了。
+    const needsRestart = result.data.needs_restart === true;
+    setNotice({ text: result.data.message || '已保存', warning: needsRestart });
+    toast(result.data.message || '已保存', needsRestart ? 'info' : 'ok');
+  };
+
+  const restart = async () => {
+    if (!confirm('重启 NeoBot？面板会短暂不可用。环境变量里的启动期配置只会在重启后生效。')) return;
+    setBusy('restart');
+    const result = await api.restart();
+    setBusy('');
+    toast(
+      result.ok ? result.data?.message || '已请求重启' : result.error || '重启失败',
+      result.ok ? 'ok' : 'err',
+    );
   };
 
   const addCustom = () => {
@@ -115,7 +129,13 @@ function EnvPanel() {
 
       {notice && (
         <div className={'config-notice' + (notice.warning ? ' warning' : '')} role="status">
-          <Icon name="check" /> {notice.text}
+          <Icon name={notice.warning ? 'more' : 'check'} /> {notice.text}
+          {doc?.needs_restart === true && (
+            <button type="button" className="btn-sm" disabled={!!busy} onClick={restart}
+              title="这些环境变量在启动时读取，必须重启进程才生效">
+              <Icon name="refresh" /> {busy === 'restart' ? '重启中…' : '重启 NeoBot'}
+            </button>
+          )}
         </div>
       )}
 

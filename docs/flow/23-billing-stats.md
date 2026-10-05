@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/statistics/
   - app/src/neobot_app/observability/
   - app/src/neobot_app/cache/
-verified_against: 8d2b9ae
-verified_hash: ea88020bcde9
+verified_against: 5d6c775
+verified_hash: 024f819d83c9
 ---
 
 # 23 计费、用量统计与可观测性
@@ -284,7 +284,13 @@ flowchart TD
   表现为「费用突然变 0 / 变小」。先看报表的计费来源分布，别先怀疑模型价格。
 * **`registered_key` 恒空会让计价串条目**（原生视觉包装器不代理该字段，W21）——
   这是「按模型绑定计价脚本」目前唯一的漏网路径。
-* **默认 pricing 全 0**：不配脚本时 `builtin_cost` 恒为 0，「费用为 0」多半是配置缺省而不是 bug。
+* **默认 pricing 已不是全 0**：4 个默认对话模型带 DeepSeek 官方**高峰价**
+  （输入 2 / 缓存命中 0.04 / 输出 8 每百万 tokens）并挂内置峰谷脚本 `deepseek_peak_valley`。
+  仍为 0 的是没配价的模型（如默认 TTS 条目）—— 费用为 0 先看该模型有没有填 pricing，
+  而不是先怀疑计费坏了。
+* **`deepseek_peak_valley` 是内置脚本**（`billing.py::BUILTIN_SCRIPTS`）：随代码分发，
+  不需要 `<数据目录>/Billing/` 下的文件；用户放同名脚本时**用户脚本优先**。
+  面板里它的路径显示为 `<内置>`，来源仍是 `script:deepseek_peak_valley`。
 * **提示词历史不落盘**：面板看到的完整提示词重启即失；想长期留存必须另接（当前不提供）。
 * **DebugRecorder 清理是被动的**：保留期到了但进程没写入新事件就不会删文件。
 * **缓存命中是字符级估算**：不要用它去核对供应商账单。

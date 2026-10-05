@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 0decd49
-verified_hash: 989601eeb6b8
+verified_against: 93d0141
+verified_hash: e0f7a8284325
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -506,6 +506,25 @@ flowchart TD
   只是 `/api/*` 被 403 拦住。别把「未配置密码」当成「端口关闭」。
 * **`/api/auth/setup` 在已配置密码时也在公开集里**：处理器回 400「请直接登录」而不是 401。
   这是刻意设计（避免暴露「需要登录」的接口形态），不是漏配。
+* **快捷部署页要给「真正会监听的」OneBot 信息**：面板是反向 WS 的**服务端**，由 NapCat 主动连过来，
+  所以给出的地址与 token 必须来自 `ReverseWsSettings.resolve`（配置 > 环境变量 > 默认值），
+  而不是配置字段原值 —— 否则用户照着抄一个连不上的地址。监听 `0.0.0.0` 时同机地址与局域网地址
+  要**分开给**（`0.0.0.0` 是不能连的）；路径由 NapCat 侧自己配、服务端不限制（仓库文档用 `/onebot`）。
+* **引导的「必填」要能识别出厂占位**：`bot.account` 默认是 `0`、昵称与人设都是示例文案 ——
+  只看「非空」会把占位当成配好了。判定用 schema 默认值现算比对（`_deploy_field_defaults`），
+  不写死字面量；并且 `bot.account` 是 **int**，转文本别写 `x or ""`（`0` 是假值，会被吞成空串）。
+* **模型库保存/删除后要提示「仍需重启」**：分类表把 `models` 整体标成可热重载，所以
+  `needs_restart_count` 常为 0；面板要拿响应里的 `needs_restart_parts` 渲染**常驻** warning
+  （不是 toast —— 用户可能过一会儿才回来重启）。删除模型同样要带 `reload`，
+  否则运行期继续持有已删模型的 provider（issue #75）。
+* **首页承载「不报错但影响使用」的配置缺口**：`/api/overview` 的 `notices` 由后端读运行中
+  配置生成（如未配置超级管理员账号），首页按 warning 样式渲染。这类缺口不影响启动、
+  也不抛异常，只留在启动日志里很容易被忽略到最后 —— 该提示的放首页，别只 log 一行。
+* **面板提示「已保存」不等于已经生效**：面板只报后端给的 `message`。配置项分
+  「运行期读取（立即生效）」与「启动期持有快照（必须重启）」两类，而 `.env` 更特殊 ——
+  它不进配置快照、连重载的 diff 都看不见。所以保存 env 后要按 `needs_restart`
+  把「仍需重启」的意思如实呈现（警告样式 + 就地给出重启入口），别让绿色对勾
+  盖过「新 Key 还没生效」这件事（issue #74）。
 * **点「退出登录」不会结束服务端会话**：`Layout.tsx:123` 的 logout 只 `clearToken` 加跳转，
   并不调用 `/api/auth/logout`；而浏览器同源 fetch 仍会自动带上 HttpOnly Cookie，
   会话要等 `session_timeout_minutes`（默认 720 分钟）过期、进程重启或改密码才失效。
