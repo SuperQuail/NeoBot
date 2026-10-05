@@ -574,18 +574,32 @@ class BackgroundDrawingManager:
                 await queue.put(retry_msg)
 
         if not task.notified:
-            task.status = "timeout"
+            # 只记「通知超时」，**不改 `task.status`**（issue #76）：
+            # 覆盖成 "timeout" 会让失败任务丢掉状态，下面也就分不出成败了。
+            task.notification_timed_out = True
             self._logger.warning(
                 "绘图通知超时",
                 task_id=task.task_id,
                 attempts=task.notification_count,
+                task_status=task.status,
             )
-            timeout_msg = self._notification_payload(
-                task,
-                kind="draw_result_timeout",
-                status="completed",
-                message="图片已生成但未及时通知，请告知用户并可按 next 发送",
-            )
+            # 成功/失败要与重试分支（见上）用同一套判定，否则失败会被说成「图片已生成」
+            if task.status == "failed":
+                if not task.error:
+                    task.error = "未知错误（可能是 API 超时或网络异常）"
+                timeout_msg = self._notification_payload(
+                    task,
+                    kind="draw_result_timeout",
+                    status="failed",
+                    message="绘图失败且未能及时通知，请告知用户失败原因并询问是否重试",
+                )
+            else:
+                timeout_msg = self._notification_payload(
+                    task,
+                    kind="draw_result_timeout",
+                    status="completed",
+                    message="图片已生成但未及时通知，请告知用户并可按 next 发送",
+                )
             if self._notification_hub is not None:
                 await self._publish_hub_notification(task, timeout_msg)
             elif self._orchestrator is not None:

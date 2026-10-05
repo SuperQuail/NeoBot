@@ -166,6 +166,29 @@ class ImageAnalysisData(Base):
     )
 
 
+class ImageRefData(Base):
+    """图片引用摘要 -> 已解析描述（迁移 0028）。
+
+    解析结果本体存在 `images` 表（按内容哈希），但**拉不到**的图片拿不到字节、
+    算不出哈希，也就反查不到描述。这张表按「引用摘要」冗余存一份描述，专供
+    「图片已过期」时回显（见 app/src/neobot_app/image/unavailable.py）：
+
+    - `source_ref`：引用键（`file:<id>` / `url:<...>` / `msg:<id>:<index>`）的
+      sha1 前 32 位 —— 摘要而非原文，避免把临时 URL（可能带 rkey 一类的临时令牌）
+      和 file id 原样落盘；
+    - `analysis_text`：当时视觉模型给出的描述原文；
+    - `updated_at`：既用于按保留期清理，也用于「同一引用只留最新一份」。
+    """
+
+    __tablename__ = "image_refs"
+
+    source_ref: Mapped[str] = mapped_column(String, primary_key=True)
+    analysis_text: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_image_refs_updated_at", "updated_at"),)
+
+
 class EmojiData(Base):
     __tablename__ = "emojis"
 

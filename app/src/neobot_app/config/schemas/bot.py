@@ -42,9 +42,17 @@ class Bot:
         default="你是一个可爱的机器人,如果你对别人有备注,你会倾向于叫你备注对方的名字",
         metadata={"description": "描述机器人的人设"},
     )
+    # [WIP · 尚未接线] 结婚玩法本身还没实现：本开关读得到但不生效（全仓没有任何消费方，
+    # 改它不会产生任何效果）。面板与配置参考会显示 description 里的标记，提醒用户别把它
+    # 当成可用开关。后续开发计划见 TODO/待办事项.md「待办」第 12 项（好感度系统与结婚系统）。
     enable_bot_get_married: bool = field(
         default=False,
-        metadata={"description": "是否允许bot与好友结婚"},
+        metadata={
+            "description": (
+                "[WIP · 尚未接线] 是否允许 Bot 与好友结婚（互动彩蛋）；"
+                "当前不生效 —— 结婚玩法尚未实现，没有任何代码读取该开关。"
+            )
+        },
     )
 
 
@@ -1724,12 +1732,14 @@ class EnhancedChat(Chat):
         metadata={"description": "@ 时是否必回"},
     )
     at_mention_reply_delay_seconds: Optional[float] = field(
-        default=5.0,
+        default=0.0,
         metadata={
             "description": (
-                "@ 提及时的回复延迟秒数；在此期间收集后续群消息后再生成回复。"
-                "正文命中插件登记的玩法关键词（漂流瓶 / 签到 / 抽签 等）时跳过该等待，"
-                "直接触发回复事件"
+                "@ 提及时的回复延迟秒数。**默认 0：不延迟，被 @ 后立即开始回复** —— "
+                "「对方还没说要我做什么」的兜底改由提示词分区 [at_mention_wait] 交给模型自己 "
+                "wait 五秒（说清了就直接做）。大于 0 时回到旧行为：本体先等这么多秒收集后续"
+                "群消息再生成回复；正文命中插件登记的玩法关键词（漂流瓶 / 签到 / 抽签 等）时"
+                "跳过该等待，直接触发回复事件"
             )
         },
     )

@@ -7,6 +7,7 @@ system 提示词内容,见 prompts.toml 的 [native_vision] 分区;本模块只�
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -84,9 +85,14 @@ class ReplyVisionContext:
             else [{"type": "text", "text": f"{labels[key]}；图片尚未加载或加载超时，不能判断其内容。"}]
             for key, _ in selected
         }
-        for key, number in selected:
-            if any(p.get("type") == "image_url" for p in self._automatic[key]):
-                continue
+        pending = [
+            (key, number) for key, number in selected
+            if not any(p.get("type") == "image_url" for p in self._automatic[key])
+        ]
+        if not pending:
+            return
+
+        async def load(key: tuple[int, int], number: int) -> None:
             result = await loader.execute("add_image", {
                 "msg_number": number, "image_index": key[1],
                 "pipeline_key": pipeline_key, "_numbering_mapping": mapping,
@@ -96,6 +102,14 @@ class ReplyVisionContext:
             else:
                 # Failed loads are visible and may be retried on the next iteration.
                 self._automatic[key] = [{"type": "text", "text": f"{labels[key]}；加载失败，未看到图片：{result}"}]
+
+        # 并发拉取：默认一次挑 4 张，串行会把每张的超时叠起来（4 × 15 秒 = 一轮 60 秒
+        # 纯等待，正好吃掉群聊静默预算）。并发后最坏只等一次超时；每张图各自写回自己的
+        # key，外层 wait_for 取消时已加载完的不会被丢掉。
+        await asyncio.gather(
+            *(load(key, number) for key, number in pending),
+            return_exceptions=True,
+        )
 
     def request_messages(self, messages: list[dict]) -> list[dict]:
         request = list(messages)

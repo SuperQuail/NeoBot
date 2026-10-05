@@ -2,8 +2,8 @@
 flow: 15-drawing
 covers:
   - app/src/neobot_app/drawing/
-verified_against: 264696d
-verified_hash: 6698f0e4bf58
+verified_against: a5c0611
+verified_hash: 5307d836025a
 ---
 
 # 15 绘画子系统：提交判据 · 参考图接口分派 · 落盘清理 · 通知回执
@@ -35,7 +35,8 @@ verified_hash: 6698f0e4bf58
 1. **没有绘图任务队列**：管线忙时 `submit` 直接回 `status=busy`，不排队、不合并、不覆盖；
    模型要自己稍后再试。
 2. **没有任务级超时、没有取消接口**：能取消的只有冷却；在途生图只能等 httpx 超时或
-   进程 `shutdown()`。`DrawTask.status` 的 `timeout` 只在关停与通知超时时写入。
+   进程 `shutdown()`。`DrawTask.status` 的 `timeout` **只在 `shutdown()` 对在途任务时**写入；
+   通知重试耗尽不再改写状态，而是记 `notification_timed_out`（issue #76）。
 3. **默认尺寸对不上**：代码 `DEFAULT_IMAGE_SIZE="512x512"`（`config.py:15`），工具提示词里
    写的是「未指定时默认 1024x1024」（`skills/drawing_skill.py:102`）。
 4. **`draw_max_retries` 不是绘图重试次数**：它只控制**通知**重试；绘图本身失败从不自动重提。
@@ -108,7 +109,7 @@ sequenceDiagram
     HB-->>OR: 通知 JSON（含 file_path 与 next 动作）
     OR->>MD: 追加 role=user 通知后继续本轮调用
     MD->>OR: 调 image_send__send_image(file_path, group_id 或 user_id)
-    Note over MG,HB: 通知重试 30s × max_retries；仍未 poll 则 status=timeout 再推一条
+    Note over MG,HB: 通知重试 30s × max_retries；仍未 poll 则按**任务真实状态**补一条 draw_result_timeout
     Note over MG,SV: 绘图本身失败只回执失败，不自动重提；重试只发生在通知层
 ```
 
@@ -276,7 +277,7 @@ flowchart TD
     C4 --> C5["_on_failed → 通知；绝不自动重提绘图"]
     C5 --> D["重试只发生在通知层：max_attempts = draw_max_retries + 1"]
     D --> D1["30s 后队列空才补一条 draw_result_retry（attempt=1）"]
-    D1 --> D2["再 30s 仍未被 poll：status=timeout + draw_result_timeout 通知"]
+    D1 --> D2["再 30s 仍未被 poll：按真实状态补 draw_result_timeout<br/>（failed 报失败 / completed 才说已生成）"]
 ```
 
 文件级失败语义对照：**抛异常**＝上表；**降级**＝`image_api` 非法值回落 `auto`、`edits` 404 回退
@@ -417,11 +418,12 @@ flowchart TD
 
 | 状态 / 字段 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
-| `DrawTask.status` = drawing | `submit` 建任务时默认值 | `_run_draw` 改 completed/failed；`shutdown` 与通知重试改 timeout | 卡在 `drawing` 只可能是进程在途或已崩溃；无任务级超时兜底 |
+| `DrawTask.status` = drawing | `submit` 建任务时默认值 | `_run_draw` 改 completed/failed；`shutdown` 改 timeout（**通知重试不改**） | 卡在 `drawing` 只可能是进程在途或已崩溃；无任务级超时兜底 |
 | `DrawTask.status` = completed | `_run_draw` 拿到 record 后 | 无（任务只是记录） | `image_id` 为空会被 `_on_completed` 改回 failed |
 | `DrawTask.status` = failed | `_run_draw` except 分支 | 无 | error 是 JSON 字符串，最终随通知交给模型 |
-| `DrawTask.status` = timeout | `_retry_notification` 结束仍未被 poll；`shutdown()` 对在途任务 | 无 | 通知链路失败停在这里；图片其实已生成 |
-| `DrawTask.notified` / `notification_count` | `_mark_notified`（轮询取出或 hub 消费回调）；重试循环自增 | 随任务被 `_enforce_task_limit` 删除而消失 | 到达 `max_attempts` 仍未 notified → timeout |
+| `DrawTask.status` = timeout | **只有** `shutdown()` 对在途任务 | 无 | 与「通知超时」无关：失败任务保持 `failed`，另记 `notification_timed_out`（issue #76） |
+| `DrawTask.notification_timed_out` | `_retry_notification` 重试耗尽仍未 `notified` | 无 | 只表示「结果没送达 agent」；成败看 `status`，别再靠它推断图片是否生成 |
+| `DrawTask.notified` / `notification_count` | `_mark_notified`（轮询取出或 hub 消费回调）；重试循环自增 | 随任务被 `_enforce_task_limit` 删除而消失 | 到达 `max_attempts` 仍未 notified → `notification_timed_out = True`（状态不变） |
 | `_cooldowns[pipeline_key]` | `submit` 里 `_set_cooldown`（提交前） | `cancel_cooldown`：宽限期失败、`_run_draw` 失败、`cancel_draw_cooldown`、自愈钩子、`shutdown` | 成功后**不清理**，靠 60s 自然到期 |
 | `_tasks` / `_bg_tasks` / `_notification_queues` | `submit` / `_spawn_bg_task` / `_push_notification` | `_enforce_task_limit`、`shutdown`（后两者整体清空） | 内存态，重启即丢；无持久化 |
 | `creator_images` 行 + 磁盘文件 | `_save_image_bytes` → `_upsert_record` | `gallery_delete`、`_cleanup_expired_tmp_files`、`_cleanup_stale_records`、`cleanup_tmp` | 文件缺失的记录在下一轮清理被删；`_list_image_records` / `_search_single` 已先按 `is_file()` 过滤 |
@@ -434,7 +436,10 @@ flowchart TD
 1. **busy 不是排队**：`submit` 在管线已有 `drawing` 任务时直接回 `status=busy`，不创建任务、
    不进任何队列，冷却也不刷新。模型必须自己稍后再提交。
 2. **`draw_max_retries` 重试的是通知不是绘图**：默认 1 → 首次通知后 30s 补一条
-   `draw_result_retry`，再 30s 置 `timeout` 并发 `draw_result_timeout`。绘图失败从不自动重提。
+   `draw_result_retry`，再 30s 发 `draw_result_timeout`。绘图失败从不自动重提。
+   **终态通知必须按任务真实状态生成 `ok`/`status`/`message`**：早先它无条件用
+   `status="completed"` + 「图片已生成」，把 API 超时之类的失败说成成功（`ok: true`）——
+   用户侧就是「静默失败」（issue #76）。
 3. **默认尺寸对不上文档**：`DEFAULT_IMAGE_SIZE="512x512"`（`config.py:15`），而工具提示词写
    「未指定时默认 1024x1024」（`skills/drawing_skill.py:102`）。调模型别信提示词这一句。
 4. **冷却先设后跑**：`_set_cooldown` 在启动后台任务之前执行；失败会在两处被清（宽限期分支

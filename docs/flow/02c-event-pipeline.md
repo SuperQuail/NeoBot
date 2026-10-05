@@ -3,8 +3,8 @@ flow: 02c-event-pipeline
 covers:
   - app/src/neobot_app/runtime/event_pipeline.py
   - app/src/neobot_app/message/queue.py
-verified_against: 528fe18
-verified_hash: 91002c9bfdbb
+verified_against: 2d7925b
+verified_hash: fb5e5d7ad64b
 ---
 
 # 02c 事件管道：去重 · 命令 · 入队 · 挂起 · 通知
@@ -165,7 +165,7 @@ flowchart TD
       D1["queue_key：user_id vs group_id"]
       D2["命令触发：私聊直接匹配 vs 群聊需被 @bot"]
       D3["回复入口：private_reply:408 vs willing_decision:625"]
-      D4["延迟配置：private_chat_reply_delay_seconds vs at_mention_reply_delay_seconds 都是 5.0s"]
+      D4["延迟配置：private_chat_reply_delay_seconds 5.0s vs at_mention_reply_delay_seconds 0（默认不等）"]
       D5["决策：private_direct 恒 1.0 vs Quail 算术"]
       D6["私聊不走睡眠拦截、不进两条挂起队列"]
     end
@@ -178,8 +178,8 @@ flowchart TD
   （`:603`/`:615`）里。私聊消息**永远**会触发一次回复（`skip_ai_reply`、插件阻断、
   bot 自查、凭据、命令五种情况除外）。
 * 私聊延迟用的是 `chat.private_chat_reply_delay_seconds`（`config/schemas/bot.py:1875`，
-  默认 5.0），**不是** `at_mention_reply_delay_seconds`；两处默认值相同，改错配置项
-  时表现为「私聊没延迟」。
+  默认 5.0），**不是** `at_mention_reply_delay_seconds`（默认 **0**：被 @ 不再等）；两处默认值
+  不再相同，改错配置项时表现为「私聊没延迟」或「被 @ 还是等几秒」。
 * 私聊的 `WillingDecision` 在函数内部现场构造（`:484`，`manager_name="private_direct"`），
   概率恒 1.0，`reasons=("私聊直接回复（跳过意愿管理器）",)` —— 面板里看到这个 manager
   名就说明走的是私聊直通。
@@ -322,7 +322,7 @@ flowchart TD
     H -- 否 --> I["sleep_service.wake(reason=at_mention_event)"]
     I --> J{"_at_mention_instant_keyword 命中?"}
     J -- 是 --> J1["跳过 at_mention_reply_delay_seconds"]
-    J -- 否 --> J2["sleep delay 默认 5.0s"]
+    J -- 否 --> J2["被@唤醒延迟（默认 0：不等）"]
     J1 --> K["WillingDecision(wake_up, 1.0)<br/>background_content = wake_prompt()"]
     J2 --> K
     K --> L["_start_reply_with_tracking"]

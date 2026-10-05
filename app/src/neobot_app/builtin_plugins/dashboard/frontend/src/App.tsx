@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -20,35 +20,49 @@ import Login from './pages/Login';
 import { authStatus, getToken } from './api/client';
 import type { AuthStatus } from './api/client';
 
-/** 面板是否需要先设置密码；null = 尚未问到（启动中或接口失败）。 */
-const SetupRequiredContext = createContext<boolean | null>(null);
+interface AuthGate {
+  /** 面板是否需要先设置密码；null = 尚未问到（启动中或接口失败）。 */
+  setupRequired: boolean | null;
+  /** 重新探测。**改变了「面板是否已配置」的动作之后必须调用** —— 见 issue #78。 */
+  refresh: () => Promise<void>;
+}
 
-/** 启动时问一次服务端：本地 token 不能替代「面板到底配没配密码」这个事实。 */
+/** 本地 token 不能替代「面板到底配没配密码」这个事实，所以问服务端；结果可刷新。 */
+const SetupRequiredContext = createContext<AuthGate>({
+  setupRequired: null,
+  refresh: async () => {},
+});
+
+/** 供登录页等消费者读取 / 刷新探测结果。 */
+export function useAuthGate(): AuthGate {
+  return useContext(SetupRequiredContext);
+}
+
 function AuthStatusProvider({ children }: { children: ReactElement }) {
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    authStatus()
-      .then((status: AuthStatus | null) => {
-        if (!alive) return;
-        // 接口失败（null）按「已配置」处理：沿用原有的 401 兜底跳登录，
-        // 不能因为一次探测失败就把整个面板挡在门外。
-        setSetupRequired(status?.configured === false);
-      })
-      .catch(() => {
-        if (alive) setSetupRequired(false);
-      });
-    return () => {
-      alive = false;
-    };
+  const refresh = useCallback(async () => {
+    try {
+      const status: AuthStatus | null = await authStatus();
+      // 接口失败（null）按「已配置」处理：沿用原有的 401 兜底跳登录，
+      // 不能因为一次探测失败就把整个面板挡在门外。
+      setSetupRequired(status?.configured === false);
+    } catch {
+      setSetupRequired(false);
+    }
   }, []);
 
-  return <SetupRequiredContext.Provider value={setupRequired}>{children}</SetupRequiredContext.Provider>;
+  // 挂载时探一次；之后的失效由调用方负责（设置密码成功、登出等）
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const value = useMemo(() => ({ setupRequired, refresh }), [setupRequired, refresh]);
+  return <SetupRequiredContext.Provider value={value}>{children}</SetupRequiredContext.Provider>;
 }
 
 function RequireAuth({ children }: { children: ReactElement }) {
-  const setupRequired = useContext(SetupRequiredContext);
+  const { setupRequired } = useContext(SetupRequiredContext);
 
   if (!getToken()) return <Navigate to="/login" replace />;
   // 服务端说「还没设密码」，本地却留着上一轮会话的 token：那个 token 服务端早就不认了，

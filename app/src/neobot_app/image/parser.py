@@ -13,6 +13,15 @@ from typing import TYPE_CHECKING, Any
 from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS
+from neobot_app.image.unavailable import (
+    REGISTRY,
+    describe,
+    expired_inline_text,
+    image_ref_key,
+    is_expiry_failure,
+    ref_digest,
+)
 from neobot_app.utils.http import image_http_client
 from neobot_app.utils.image_bytes import IMAGE_MAGIC_PREFIXES, looks_like_image
 
@@ -132,24 +141,35 @@ class ImageParseService:
         if not segments:
             return
 
-        for i in indices:
-            if i >= len(segments):
-                continue
-            seg = segments[i]
+        async def parse_one(index: int) -> None:
+            if index >= len(segments):
+                return
+            seg = segments[index]
             seg_type = _segment_type(seg)
             if seg_type not in ("image", "cardimage"):
-                continue
+                return
             try:
                 description = await self._parse_single_image(seg)
             except Exception as exc:
                 self._logger.error("图片解析失败", error=str(exc))
                 description = "[图片解析失败]"
             # 替换为解析后的文本段
-            segments[i] = _make_text_segment(description)
+            segments[index] = _make_text_segment(description)
+
+        # 一条消息里的多张图并发解析：串行时每张各自付一次下载超时（转发多条图片时
+        # 会等比放大等待），并发后最坏只等一次超时。每张各写各的下标，互不干扰。
+        await asyncio.gather(
+            *(parse_one(index) for index in indices),
+            return_exceptions=True,
+        )
 
     async def _parse_single_image(self, segment) -> str:
-        image_bytes = await self._download_image(segment)
+        image_bytes, expired_key = await self._download_image_with_reason(segment)
         if image_bytes is None:
+            if expired_key is not None:
+                # 拉不到的图不再笼统报「解析失败」：说清是过期，并把以前留过的描述带上，
+                # 让模型知道这张图大概是什么内容（见 image/unavailable.py）。
+                return f"[图片：{expired_inline_text(await describe(expired_key))}]"
             return "[图片解析失败]"
 
         image_bytes = _resize_image_if_too_small(image_bytes, logger=self._logger)
@@ -157,6 +177,8 @@ class ImageParseService:
             return "[图片:特殊尺寸无法解析]"
 
         file_hash = hashlib.md5(image_bytes).hexdigest()
+        # 引用索引：拉不到这张图时靠它回显描述（临时 URL / file id 只以摘要落库）
+        ref = ref_digest(image_ref_key(_segment_data(segment)))
 
         # 检查数据库缓存
         if self._analysis is not None:
@@ -164,6 +186,7 @@ class ImageParseService:
                 cached = await self._analysis.get(file_hash)
                 if cached and cached.analysis_text:
                     self._logger.debug("图片描述命中缓存", hash=file_hash[:8])
+                    await self._remember_ref(ref, cached.analysis_text)
                     return f"[图片：{cached.analysis_text}]"
             except Exception:
                 pass
@@ -185,25 +208,65 @@ class ImageParseService:
                     mime_type=_detect_image_mime(image_bytes),
                     analysis_text=description,
                 )
+                await self._remember_ref(ref, description)
             except Exception as exc:
                 self._logger.warning("保存图片描述到数据库失败", error=str(exc))
 
         return f"[图片：{description}]"
 
+    async def _remember_ref(self, ref: str | None, description: str) -> None:
+        """记下「引用摘要 -> 描述」（best-effort）：图片过期时还能说出它是什么。"""
+        if not ref or not description:
+            return
+        remember = getattr(self._analysis, "remember_ref", None)
+        if not callable(remember):
+            return
+        try:
+            await remember(ref, description)
+        except Exception as exc:
+            self._logger.warning("图片引用索引写入失败", error=str(exc))
+
+    async def description_for_ref(self, source_ref: str) -> str | None:
+        """按引用摘要查历史描述（登记表的回显钩子，见 image/unavailable.py）。"""
+        if not source_ref:
+            return None
+        lookup = getattr(self._analysis, "description_for_ref", None)
+        if not callable(lookup):
+            return None
+        try:
+            return await lookup(source_ref)
+        except Exception:
+            return None
+
     async def _download_image(self, segment) -> bytes | None:
-        """从消息段下载图片数据"""
+        """从消息段下载图片数据（只关心字节的调用方用这个入口）。"""
+        content, _ = await self._download_image_with_reason(segment)
+        return content
+
+    async def _download_image_with_reason(self, segment) -> tuple[bytes | None, str | None]:
+        """从消息段下载图片数据；返回 (字节, 过期引用键)。
+
+        过期引用键非 None 表示这张图已判定「拉不到」（本次运行内不再重试）。
+        命中登记表的引用直接返回、不发请求；终端失败带「这张图没了」信号时登记。
+        """
         data = _segment_data(segment)
+        key = image_ref_key(data)
+        if REGISTRY.notice(key) is not None:
+            self._logger.debug("图片已登记为不可用，跳过下载", key=str(key)[:60])
+            return None, key
+
+        expired = False
         url = data.get("url")
         file_name = data.get("file")
 
         if url:
             try:
-                async with image_http_client(timeout=30.0, url=url) as client:
+                async with image_http_client(timeout=IMAGE_FETCH_TIMEOUT_SECONDS, url=url) as client:
                     resp = await client.get(str(url))
                     resp.raise_for_status()
                     content = resp.content
                     if _is_valid_image(content):
-                        return content
+                        return content, None
                     self._logger.warning(
                         "从URL下载的内容不是有效图片",
                         url=str(url)[:80],
@@ -211,6 +274,7 @@ class ImageParseService:
                         content_len=len(content),
                     )
             except Exception as exc:
+                expired = expired or is_expiry_failure(exc)
                 self._logger.warning("从URL下载图片失败", url=str(url)[:80], error=str(exc))
 
         if file_name:
@@ -220,19 +284,35 @@ class ImageParseService:
                 # 不再外层包 asyncio.wait_for —— 双层 wait_for 时，内层超时
                 # 与外层 cancel 互相竞争，迟到 echo 容易击中已取消 future 触发
                 # InvalidStateError，进而回收连接。单层 + 直接取图超时足够。
-                result = await get_image(str(file_name), timeout=30.0)
+                result = await get_image(str(file_name), timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
                 img_data = _response_data(result)
+                img_file = ""
                 if isinstance(img_data, dict):
-                    img_file = img_data.get("file") or img_data.get("url")
-                    if img_file:
-                        content = await _read_image_ref(str(img_file))
-                        if content is not None and _is_valid_image(content):
-                            return content
-                        self._logger.warning("get_image 返回内容不是有效图片", file=str(file_name)[:60])
+                    img_file = str(img_data.get("file") or img_data.get("url") or "")
+                if img_file:
+                    content = await _read_image_ref(img_file)
+                    if content is not None and _is_valid_image(content):
+                        return content, None
+                    self._logger.warning("get_image 返回内容不是有效图片", file=str(file_name)[:60])
+                else:
+                    # 拿不到 file/url：这个 OneBot 文件 id 已经解析不出来了（历史被清理）。
+                    expired = True
+                    self._logger.warning("get_image 返回无效数据", file=str(file_name)[:60])
+            except TimeoutError:
+                expired = True
+                self._logger.warning(
+                    "通过get_image下载超时",
+                    file=str(file_name)[:60],
+                    timeout_seconds=IMAGE_FETCH_TIMEOUT_SECONDS,
+                )
             except Exception as exc:
+                # 非超时异常不判过期：可能是适配器断线一类的瞬时故障，下次还该再试。
                 self._logger.warning("通过get_image下载失败", file=str(file_name)[:60], error=str(exc))
 
-        return None
+        if expired:
+            REGISTRY.mark(key)
+            return None, key
+        return None, None
 
     async def _call_vision_model(self, image_bytes: bytes) -> str | None:
         """调用视觉模型获取图片描述"""
@@ -332,7 +412,7 @@ async def _read_image_ref(ref: str) -> bytes | None:
         return path.read_bytes()
     if not ref.startswith(("http://", "https://")):
         return None  # 非 URL 引用无需创建 HTTP 客户端
-    async with image_http_client(timeout=30.0, url=ref) as client:
+    async with image_http_client(timeout=IMAGE_FETCH_TIMEOUT_SECONDS, url=ref) as client:
         resp = await client.get(ref)
         resp.raise_for_status()
         return resp.content

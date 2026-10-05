@@ -1109,7 +1109,7 @@ class ReplyOrchestrator:
         return 10.0
 
     def _get_private_image_wait_timeout_seconds(self) -> float:
-        # 视觉模型单次调用上限 60s；图片解析可能含下载(≤30s)+推理(≤60s)，
+        # 视觉模型单次调用上限 60s；图片解析可能含下载(≤15s)+推理(≤60s)，
         # 取 90s 作为私聊回复等待图片解析的上限，避免无限阻塞。
         return 90.0
 
@@ -1471,6 +1471,34 @@ class ReplyOrchestrator:
             return None
         return {"role": "user", "content": text}
 
+    def _at_mention_wait_message(self, event: ReplyEvent) -> dict[str, str] | None:
+        """被 @ 触发的那一轮追加的等待指引；其余情况返回 None。
+
+        分工：[at_mention_wait] 与 chat.at_mention_reply_delay_seconds 是同一件事的两半 ——
+        本体延迟默认已关（0，被 @ 立即回复），「要不要等对方补充」交给模型自己判断：
+        对方没说要我做什么才 wait 五秒。
+        走 user 块而不是 system 前缀：它只在本轮出现，混进 system 会让那段稳定前缀
+        不再逐字节相同，白白丢掉上下文缓存。
+        """
+        if not self._prompt_section_enabled("at_mention_wait"):
+            return None
+        if event.conversation_ref is None or event.conversation_ref.kind != "group":
+            return None
+        willing = self._willing_service
+        message = event.message
+        if willing is None or message is None:
+            return None
+        try:
+            mentioned = bool(willing.is_at_mentioned(message))
+        except Exception:
+            return None
+        if not mentioned:
+            return None
+        text = render_template(self._prompt_template("at_mention_wait"), {})
+        if not text:
+            return None
+        return {"role": "user", "content": text}
+
     # ── 沉默提醒(nudge) ──
 
     def _nudge_text(self) -> str:
@@ -1657,7 +1685,7 @@ class ReplyOrchestrator:
             val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
             if isinstance(val, (int, float)) and val >= 0:
                 return float(val)
-        return 5.0
+        return 0.0
 
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         self._debug_helper.record(stage, event, **extra)
@@ -4382,6 +4410,14 @@ class ReplyOrchestrator:
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
+                # 被 @ 触发的那一轮补一条等待指引（本体延迟默认已关，见 _at_mention_wait_message）
+                if context_blocks is not None:
+                    wait_hint = self._at_mention_wait_message(event)
+                    if wait_hint is not None:
+                        context_blocks.append(wait_hint)
+                        self._record_debug(
+                            "at_mention_wait_hint_injected", event, queue_key=queue_key
+                        )
                 after_prompt = await self._emit_runtime_event(
                     "prompt.build.after", event, queue_key=queue_key, prompt=prompt
                 )

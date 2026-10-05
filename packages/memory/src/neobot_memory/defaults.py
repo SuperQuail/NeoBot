@@ -1,4 +1,4 @@
-﻿"""Defaults — 开箱即用的默认实现"""
+"""Defaults — 开箱即用的默认实现"""
 
 from __future__ import annotations
 
@@ -155,12 +155,21 @@ class InMemoryImageAnalysisAccess:
     def __init__(self) -> None:
         self._storage: dict[str, ImageAnalysis] = {}
         self._id_counter = 0
+        #: 引用摘要 -> 描述：拉不到图时的回显兜底（对应 image_refs 表）
+        self._ref_texts: dict[str, str] = {}
 
     async def get(self, file_hash: str) -> Optional[ImageAnalysis]:
         entry = self._storage.get(file_hash)
         if entry is None:
             return None
         return self._clone(entry)
+
+    async def remember_ref(self, source_ref: str, analysis_text: str) -> None:
+        if source_ref and analysis_text:
+            self._ref_texts[source_ref] = analysis_text
+
+    async def get_ref_text(self, source_ref: str) -> Optional[str]:
+        return self._ref_texts.get(source_ref) if source_ref else None
 
     async def set(
         self,

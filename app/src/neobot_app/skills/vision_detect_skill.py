@@ -13,11 +13,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from neobot_app.image.source import ImageSourceResolver
+from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS, ImageSourceResolver
 from neobot_app.skills.base import SkillModule
 from neobot_app.vision_detect.service import VisionDetectService
 
-_MAX_IMAGE_TIMEOUT = 30.0
+_MAX_IMAGE_TIMEOUT = IMAGE_FETCH_TIMEOUT_SECONDS
 
 
 class VisionDetectSkill(SkillModule):

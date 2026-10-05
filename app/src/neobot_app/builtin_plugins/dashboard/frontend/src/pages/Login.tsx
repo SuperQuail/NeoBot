@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Lock, LogIn, Moon, TriangleAlert } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { apiLogin, apiSetup, authStatus, checkAuth, getToken, setToken } from '../api/client';
+import { useAuthGate } from '../App';
 
 const THEME_KEY = 'neobot-dashboard-theme';
 
@@ -20,6 +21,7 @@ export default function Login() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const { refresh: refreshAuthGate } = useAuthGate();
 
   useEffect(() => {
     let alive = true;
@@ -57,6 +59,10 @@ export default function Login() {
     setBusy(false);
     if (!result.ok) return setError(result.error || '登录失败');
     setToken(result.token || '', result.csrf);
+    // 设置密码会改变「面板是否已配置」——不刷新这份探测结果的话，
+    // RequireAuth 仍按旧值（configured=false → setupRequired=true）把我们弹回登录页，
+    // 于是在 /login 与 /dashboard 之间来回跳，看着就是「登录页闪烁」（issue #78）。
+    await refreshAuthGate();
     navigate('/dashboard', { replace: true });
   };
 

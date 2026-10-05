@@ -748,8 +748,8 @@ class EventPipeline:
                 )
                 return False
 
-            # 读取 @ 提及回复延迟配置
-            delay = 5.0
+            # 读取 @ 提及回复延迟配置（默认 0：被 @ 立即回复，等待交给模型自己决定）
+            delay = 0.0
             if self._config is not None:
                 val = getattr(self._config.chat, "at_mention_reply_delay_seconds", None)
                 if isinstance(val, (int, float)) and val >= 0:

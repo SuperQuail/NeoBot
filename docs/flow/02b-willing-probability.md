@@ -3,8 +3,8 @@ flow: 02b-willing-probability
 covers:
   - app/src/neobot_app/willing/
   - app/src/neobot_app/runtime/event_pipeline.py
-verified_against: 8e7341c
-verified_hash: b579c6787b23
+verified_against: 2d7925b
+verified_hash: 935bdead7fc9
 ---
 
 # 02b 回复意愿：概率到底怎么算出来的（逐步精确）
@@ -27,7 +27,7 @@ flowchart TD
     C -- 是 --> C1["block_reason_for_message 先判屏蔽"]
     C1 --> C2{"被屏蔽?"}
     C2 -- 是 --> C3["不回复: 屏蔽优先于@"]
-    C2 -- 否 --> C4["等 at_mention_reply_delay_seconds（默认 5.0s）"]
+    C2 -- 否 --> C4["等 at_mention_reply_delay_seconds（默认 0：不等）"]
     C4 --> C5{"命中 _at_mention_instant_keyword?"}
     C5 -- 是 --> C6["跳过等待, 立即回复"]
     C5 -- 否 --> C7["等待结束"]

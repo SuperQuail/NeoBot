@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,11 @@ from neobot_contracts.models.memory import ImageAnalysis
 from neobot_contracts.time_context import now_utc, to_utc
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 
-from neobot_storage.models import ImageAnalysisData
+from neobot_storage.models import ImageAnalysisData, ImageRefData
+
+#: 图片引用索引的保留天数：它只是「过期时还能说出图里是什么」的兜底缓存，
+#: 超过这个期限的引用记录不再有价值（对应图片本身也早已不可获取）。
+IMAGE_REF_RETENTION_DAYS = 30
 
 
 class SqlAlchemyImageAnalysisAccess:
@@ -106,6 +110,40 @@ class SqlAlchemyImageAnalysisAccess:
 
         await self._session.flush()
         return self._to_domain(row)
+
+    async def remember_ref(self, source_ref: str, analysis_text: str) -> None:
+        """记下「引用摘要 -> 描述」；同一引用只留最新一份，超保留期的顺手清掉。"""
+        if not source_ref or not analysis_text:
+            return
+        now = now_utc()
+        stmt = select(ImageRefData).where(ImageRefData.source_ref == source_ref)
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            self._session.add(
+                ImageRefData(
+                    source_ref=source_ref,
+                    analysis_text=analysis_text,
+                    updated_at=now,
+                )
+            )
+        else:
+            row.analysis_text = analysis_text
+            row.updated_at = now
+        cutoff = now - timedelta(days=IMAGE_REF_RETENTION_DAYS)
+        await self._session.execute(
+            delete(ImageRefData).where(ImageRefData.updated_at < cutoff)
+        )
+        await self._session.flush()
+
+    async def get_ref_text(self, source_ref: str) -> Optional[str]:
+        """按引用摘要取回描述；没有记录时返回 None。"""
+        if not source_ref:
+            return None
+        stmt = select(ImageRefData.analysis_text).where(
+            ImageRefData.source_ref == source_ref
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def delete(self, file_hash: str) -> bool:
         row = await self._get_optional_row(file_hash)

@@ -14,8 +14,8 @@ from neobot_app.drawing.tasks import DrawTask
 class _CapturingManager(BackgroundDrawingManager):
     """把通知截获下来，不真正推送。"""
 
-    def __init__(self) -> None:
-        super().__init__(config=DrawServiceConfig())
+    def __init__(self, config: DrawServiceConfig | None = None) -> None:
+        super().__init__(config=config or DrawServiceConfig())
         self.notifications: list[str] = []
 
     async def _push_notification(self, task, notification: str) -> None:  # type: ignore[override]
@@ -155,3 +155,74 @@ async def test_retry_notification_keeps_attempt_and_next_actions():
     assert payload["attempt"] == 2
     assert any(item.get("action") == "send_image" for item in payload["next"])
     assert not manager.notifications  # 未触发真实推送
+
+
+# ── 通知重试耗尽后的终态通知（issue #76）─────────────────────────
+
+
+class _StubHub:
+    """最小通知中心替身：终态分支只在 `_notification_hub is not None` 时才发通知。"""
+
+    def get_pipeline_status(self, _key: str) -> dict:
+        return {"background_notifications_by_source": {}}
+
+    async def publish(self, **_kwargs) -> bool:  # pragma: no cover - 被下面的覆写截住
+        return True
+
+
+def _fast_manager() -> "_CapturingManager":
+    """重试窗口压到 0：直接跑出「重试耗尽」的终态分支，不用等定时器。"""
+    manager = _CapturingManager(
+        DrawServiceConfig(draw_max_retries=0, draw_notification_retry_seconds=0)
+    )
+    manager._notification_hub = _StubHub()
+
+    async def _capture(task, notification: str) -> bool:
+        manager.notifications.append(notification)
+        return True
+
+    manager._publish_hub_notification = _capture  # type: ignore[method-assign]
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_failed_task_after_retry_exhaustion_still_reports_failure():
+    """失败任务在重试耗尽后必须**仍报失败**（issue #76）。
+
+    此前该分支无条件用 `status="completed"` + 「图片已生成」—— 绘图 API 超时之类
+    的失败会被说成成功（`ok: true`），用户侧表现为「静默失败」。
+    """
+    manager = _fast_manager()
+    task = _task(status="failed", error='{"error_type": "ReadTimeout", "message": "timed out"}')
+    task.notified = False
+
+    await manager._retry_notification(task)
+
+    payload = manager.last
+    assert payload["kind"] == "draw_result_timeout"
+    assert payload["ok"] is False
+    assert payload["status"] == "failed"
+    assert "图片已生成" not in payload["message"]
+    assert "失败" in payload["message"]
+    # 失败原因保留，任务状态**不被改写**成 timeout
+    assert payload["error"]
+    assert task.status == "failed"
+    assert task.notification_timed_out is True
+
+
+@pytest.mark.asyncio
+async def test_completed_task_after_retry_exhaustion_still_reports_success():
+    """成功任务保持原样：不能因为修失败路径把成功也说成失败。"""
+    manager = _fast_manager()
+    task = _task(status="completed", image_id="tmp_z")
+    task.record_payload = {"image_id": "tmp_z", "file_path": "/data/tmp/tmp_z.png"}
+    task.notified = False
+
+    await manager._retry_notification(task)
+
+    payload = manager.last
+    assert payload["ok"] is True
+    assert payload["status"] == "completed"
+    assert "已生成" in payload["message"]
+    assert task.status == "completed"
+    assert task.notification_timed_out is True

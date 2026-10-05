@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/reply/tools.py
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
-verified_against: 528fe18
-verified_hash: 5328f32e99f6
+verified_against: 2d7925b
+verified_hash: 1075f561d0a0
 ---
 
 # 03b 回复管线的工具面：模型看到什么工具 · 谁执行 · 结果怎么回灌
@@ -367,6 +367,10 @@ flowchart TD
   自动图 `[默认加载图片]`、工具图 `[主动加载图片]`，两者都带 `tool_call_id` 与元数据 JSON。
 * 加载失败**不静默**：占位文本写明「图片尚未加载或加载超时，不能判断其内容」，
   下一轮 `refresh_defaults` 会重试（键相同但缓存里没有 image_url 块）。
+* **同一轮的多个候选并发加载**（`vision_context.py` 的 `asyncio.gather`）：每张各写自己的 key，
+  外层 `wait_for` 取消时已加载完的不会被丢掉；单张超时 15 秒，最坏一轮只等一次超时。
+* **「拉不到」的图不再每轮重试**：进程内登记表命中即失败返回、不发请求（见 `14` 的
+  「拉不到的图片」小节），所以这里的「下一轮重试」只对**还没被判定过期**的图成立。
 * 主动加载（`image_context__add_image`）是普通工具，不是会话工具；它自己的限额是
   单图 10 MiB、单次合计 20 MiB、2000 万像素、最长边 4096（超限等比缩小）。
 * `_estimate_tokens` 用 3072/张的保守估值，避免把 base64 当成正文 token 把预算算爆。

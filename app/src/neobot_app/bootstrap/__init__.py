@@ -1086,6 +1086,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         uow_factory=uow_factory,
         logger_factory=logger_factory,
     )
+    # 「图片已过期」时回显库里留过的描述：登记表按引用摘要查询，落库在解析服务侧
+    # （见 app/src/neobot_app/image/unavailable.py）。
+    from neobot_app.image.unavailable import install_description_lookup
+
+    install_description_lookup(image_parse_service.description_for_ref)
     archive_summary_service = build_archive_summary_service(
         config=config,
         archive_memory_service=memory_svcs["archive_memory_service"],
