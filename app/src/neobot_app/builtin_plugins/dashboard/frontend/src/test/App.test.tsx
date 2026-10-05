@@ -3,10 +3,11 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
-import { clearToken, setToken } from '../api/client';
+import { apiSetup, clearToken, setToken } from '../api/client';
 import { authStatus } from '../api/client';
 
 const mockAuthStatus = vi.mocked(authStatus);
+const mockApiSetup = vi.mocked(apiSetup);
 
 vi.mock('../api/client.js', async () => {
   const actual = await vi.importActual('../api/client.js');
@@ -188,5 +189,39 @@ describe('应用外壳', () => {
 
     expect(await screen.findByText('尚未设置面板密码')).toBeInTheDocument();
     expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
+  });
+});
+
+
+describe('首次设置密码后的跳转（issue #78）', () => {
+  it('设置成功后直接进入仪表盘，不再被弹回登录页', async () => {
+    clearToken();
+    // 服务端状态：设置密码之前 configured=false，设置成功之后才变 true。
+    // 用可变状态而不是「第 N 次调用」来模拟，避免依赖探测次数。
+    let configured = false;
+    const status = () => ({
+      configured,
+      authenticated: configured,
+      setup_required: !configured,
+      setup_allowed: true,
+      loopback: true,
+    });
+    mockAuthStatus.mockImplementation(async () => status() as never);
+    mockApiSetup.mockImplementation(async () => {
+      configured = true;
+      return { ok: true, token: 'new-token', csrf: 'new-csrf' } as never;
+    });
+
+    renderAt('/login');
+
+    const password = await screen.findByPlaceholderText('至少 8 个字符');
+    fireEvent.change(password, { target: { value: 'password123' } });
+    fireEvent.change(screen.getByPlaceholderText('再次输入新密码'), { target: { value: 'password123' } });
+    fireEvent.click(screen.getByRole('button', { name: '设置面板密码' }));
+
+    // 修复前：RequireAuth 仍按挂载时的旧探测（setupRequired=true）弹回 /login，
+    // 两个 replace 跳转来回 → 这里永远等不到仪表盘。
+    expect(await screen.findByTestId('page-dashboard')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('至少 8 个字符')).not.toBeInTheDocument();
   });
 });
