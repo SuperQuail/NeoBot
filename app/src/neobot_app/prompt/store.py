@@ -60,6 +60,7 @@ KNOWN_SECTIONS = (
     "self_heal",
     "maintenance",
     "wake_up",
+    "at_mention_wait",
     "sleep_cmd",
     "awake_cmd",
 )
@@ -115,6 +116,14 @@ _FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
             "<私聊提示>\n这是私聊对话。必须先正常回复对方的消息，回复内容根据聊天内容自然决定。\n"
             "发送回复后，如果对方明显还有更多内容要说，请使用 wait 工具等待新消息进行后续回复"
             "（一般等待10秒即可），不要直接结束对话。\n</私聊提示>"
+        )
+    },
+    "at_mention_wait": {
+        "template": (
+            "<被@时的处理>\n@你的用户如果没有说明要你做什么，而且当前没有其他需要回复的内容，"
+            "你应该调用 wait 工具等待五秒左右（seconds=5），看看对方是不是还要补充；"
+            "对方补充了再一起回应。\n如果对方已经说清了要你做什么，直接照做，不要等待。\n"
+            "</被@时的处理>"
         )
     },
     "current_time": {"template": "<当前时间>{current_time}</当前时间>"},

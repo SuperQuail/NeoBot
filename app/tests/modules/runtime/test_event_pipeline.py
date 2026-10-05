@@ -921,6 +921,33 @@ async def test_at_mention_without_keyword_still_waits(monkeypatch):
     assert slept == [5.0]
 
 
+def _default_chat_config() -> BotConfig:
+    """不显式设置 @ 延迟：取 schema 默认值（0）。"""
+    return BotConfig(bot=Bot(account=0), chat=Chat(private_chat_dynamic_warmup=False))
+
+
+@pytest.mark.asyncio
+async def test_default_config_replies_without_at_mention_delay(monkeypatch):
+    """默认不再开被@延迟：@ 后立即触发回复，等待改由 [at_mention_wait] 让模型自己 wait。"""
+    from neobot_app.runtime import event_pipeline as ep
+
+    slept: list[float] = []
+    monkeypatch.setattr(ep, "asyncio", _SleepSpy(asyncio, slept))
+
+    pipeline = _pipeline_with_queue(config=_default_chat_config())
+    pipeline._reply_orchestrator = SimpleNamespace(start_reply=lambda **kw: object())
+    pipeline._willing_service = _willing_fake(at_mentioned=True)
+
+    result = await pipeline._handle_willing_decision(
+        message=_group_message(9803, text="hello"),
+        queue=MessageQueue(),
+        queue_key="42",
+    )
+
+    assert result is True
+    assert slept == [], "默认配置下被@不应再有固定延迟"
+
+
 @pytest.mark.asyncio
 async def test_sleeping_at_mention_game_keyword_skips_wake_delay(monkeypatch):
     """睡眠中被@唤醒时命中关键词，同样跳过唤醒后的收集等待。"""
