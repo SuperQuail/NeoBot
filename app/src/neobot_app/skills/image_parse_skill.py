@@ -8,6 +8,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from neobot_app.image.unavailable import (
+    DESCRIPTION_PREFIX,
+    EXPIRED_NOTICE,
+    REGISTRY,
+    describe,
+    image_ref_key,
+    is_expiry_failure,
+)
 from neobot_app.message.numbering import MessageNumbering
 from neobot_app.skills.base import SkillModule
 from neobot_app.utils.http import image_http_client
@@ -549,8 +557,14 @@ class ImageParseSkill(SkillModule):
             (image_bytes, None) 成功
             (None, error_reason) 失败 — error_reason 形如 "超时(30s)" / "URL过期且无file字段" / "下载失败"
         """
-        import httpx
+        # 命中「不可用登记表」直接失败返回：拉不到的图（设备侧历史被清理 / 过久被回收）
+        # 以前就拉不到，再试一次也只是白等一个超时窗口。见 image/unavailable.py。
+        key = image_ref_key(seg_data)
+        known = REGISTRY.notice(key)
+        if known is not None:
+            return None, await self._expired_text(key, known)
 
+        expired = False
         url = seg_data.get("url")
         if url:
             try:
@@ -560,10 +574,9 @@ class ImageParseSkill(SkillModule):
                     resp = await client.get(str(url))
                     resp.raise_for_status()
                     return resp.content, None
-            except httpx.TimeoutException:
-                pass  # fall through to file fallback
-            except Exception:
-                pass
+            except Exception as exc:
+                expired = is_expiry_failure(exc)
+                # fall through to file fallback
 
         file_name = seg_data.get("file")
         if file_name and self._adapter is not None:
@@ -572,22 +585,43 @@ class ImageParseSkill(SkillModule):
 
                 result = await get_image(str(file_name), timeout=timeout)
                 img_data = _response_data_for_get_image(result)
+                img_ref = ""
                 if isinstance(img_data, dict):
-                    img_ref = img_data.get("file") or img_data.get("url")
-                    if img_ref:
-                        content = await _read_image_ref(str(img_ref), timeout=timeout)
-                        if content is not None:
-                            return content, None
-                        return None, f"get_image 返回的图片引用下载失败(file={file_name}, timeout={timeout}s)"
-                return None, f"get_image 返回无效数据(file={file_name})"
+                    img_ref = str(img_data.get("file") or img_data.get("url") or "")
+                if img_ref:
+                    content = await _read_image_ref(img_ref, timeout=timeout)
+                    if content is not None:
+                        return content, None
+                    error = f"get_image 返回的图片引用下载失败(file={file_name}, timeout={timeout}s)"
+                else:
+                    error = f"get_image 返回无效数据(file={file_name})"
+                    expired = True
+            except TimeoutError:
+                error = f"get_image 超时(file={file_name}, timeout={timeout}s)"
+                expired = True
             except Exception as exc:
-                return None, f"get_image API 异常(file={file_name}): {exc}"
+                # 非超时异常不判过期：可能是适配器断线一类的瞬时故障，下次还该再试。
+                error = f"get_image API 异常(file={file_name}): {exc}"
+            if expired:
+                REGISTRY.mark(key)
+                return None, await self._expired_text(key, EXPIRED_NOTICE)
+            return None, error
 
+        if expired:
+            REGISTRY.mark(key)
+            return None, await self._expired_text(key, EXPIRED_NOTICE)
         if url and file_name:
             return None, f"URL下载和get_image均失败(url={str(url)[:60]}, file={file_name}, timeout={timeout}s)"
         if url:
             return None, f"URL下载失败且无file字段(url={str(url)[:60]}, timeout={timeout}s)"
         return None, "segment data 既无url也无file字段"
+
+    async def _expired_text(self, key: str | None, notice: str) -> str:
+        """过期说明 + 库里留过的描述。"""
+        description = await describe(key)
+        if description:
+            return f"{notice}{DESCRIPTION_PREFIX}{description}"
+        return notice
 
     async def _resolve_by_msg_number(
         self, pipeline_key: str, msg_number: int, image_index: int = 0,

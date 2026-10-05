@@ -22,6 +22,14 @@ import base64
 from pathlib import Path
 from typing import Any
 
+from neobot_app.image.unavailable import (
+    DESCRIPTION_PREFIX,
+    EXPIRED_NOTICE,
+    REGISTRY,
+    describe,
+    image_ref_key,
+    is_expiry_failure,
+)
 from neobot_app.message.numbering import MessageNumbering
 from neobot_app.utils.http import image_http_client
 
@@ -134,6 +142,16 @@ async def read_image_ref(
         return None
 
 
+class _DownloadFailure:
+    """get_image 分支的失败诊断：文本 + 是否属于「这张图没了」。"""
+
+    __slots__ = ("text", "expired")
+
+    def __init__(self, text: str, *, expired: bool = False) -> None:
+        self.text = text
+        self.expired = expired
+
+
 def _find_in_replied(queue: Any, conv_id: str, message_id: int) -> Any:
     """在队列所有条目的 replied_messages 中查找指定消息。"""
     from neobot_app.message.queue import QueueEntryType
@@ -171,11 +189,14 @@ class ImageSourceResolver:
         group_message_queue: Any = None,
         friend_message_queue: Any = None,
         max_bytes: int | None = None,
+        unavailable_registry: Any = None,
     ) -> None:
         self._adapter = adapter
         self._group_queue = group_message_queue
         self._friend_queue = friend_message_queue
         self._max_bytes = max_bytes
+        #: 「拉不到的图片」登记表：默认用进程级单例，测试可注入自己的。
+        self._unavailable = unavailable_registry if unavailable_registry is not None else REGISTRY
 
     async def _read_ref(self, ref: str, *, timeout: float) -> bytes | None:
         if self._max_bytes is None:
@@ -382,10 +403,26 @@ class ImageSourceResolver:
         )
 
     async def _download_image_segment(
-        self, seg_data: dict, *, timeout: float = 30.0
+        self,
+        seg_data: dict,
+        *,
+        timeout: float = 30.0,
+        message_id: Any = None,
+        image_index: Any = None,
     ) -> tuple[bytes | None, str | None]:
-        """从 segment data 下载图片字节(URL 直下,失败走 get_image API)。"""
+        """从 segment data 下载图片字节(URL 直下,失败走 get_image API)。
 
+        命中「不可用登记表」的引用直接失败返回，不发任何请求：这些图（设备侧历史记录
+        已被清理 / 图片过久被回收）以前就拉不到，再试一次也只是白等一个超时窗口。
+        终端失败且带「这张图没了」的明确信号（超时 / 403 / 404 / 410 / get_image 无数据）
+        时把引用登记下来，见 `neobot_app.image.unavailable`。
+        """
+        key = image_ref_key(seg_data, message_id=message_id, image_index=image_index)
+        known = self._unavailable.notice(key)
+        if known is not None:
+            return None, await self._with_description(key, known)
+
+        expired = False
         url = seg_data.get("url")
         if url:
             if self._max_bytes is not None:
@@ -400,8 +437,9 @@ class ImageSourceResolver:
                         resp = await client.get(str(url))
                         resp.raise_for_status()
                         return resp.content, None
-                except Exception:
-                    pass  # fall through to file fallback
+                except Exception as exc:
+                    expired = is_expiry_failure(exc)
+                    # fall through to file fallback
 
         file_name = seg_data.get("file")
         # Native context also accepts OneBot inline/file references without an Adapter.
@@ -410,27 +448,52 @@ class ImageSourceResolver:
             if content is not None:
                 return content, None
         if file_name and self._adapter is not None:
-            try:
-                from neobot_adapter.request.message import get_image
+            error = await self._download_via_get_image(str(file_name), timeout=timeout)
+            if isinstance(error, bytes):
+                return error, None
+            expired = expired or error.expired
+            if expired:
+                self._unavailable.mark(key)
+                return None, await self._with_description(key, EXPIRED_NOTICE)
+            return None, error.text
 
-                result = await get_image(str(file_name), timeout=timeout)
-                img_data = _response_data_for_get_image(result)
-                if isinstance(img_data, dict):
-                    img_ref = img_data.get("file") or img_data.get("url")
-                    if img_ref:
-                        content = await self._read_ref(str(img_ref), timeout=timeout)
-                        if content is not None:
-                            return content, None
-                        return None, f"get_image 返回的图片引用下载失败(file={file_name})"
-                return None, f"get_image 返回无效数据(file={file_name})"
-            except Exception as exc:
-                return None, f"get_image API 异常(file={file_name}): {exc}"
-
+        if expired:
+            self._unavailable.mark(key)
+            return None, await self._with_description(key, EXPIRED_NOTICE)
         if url and file_name:
             return None, f"URL下载和get_image均失败(url={str(url)[:60]}, file={file_name})"
         if url:
             return None, f"URL下载失败且无file字段(url={str(url)[:60]})"
         return None, "segment data 既无url也无file字段"
+
+    async def _download_via_get_image(self, file_name: str, *, timeout: float) -> "bytes | _DownloadFailure":
+        """走 OneBot get_image 取图；成功返回字节，失败返回带过期信号的诊断。"""
+        from neobot_adapter.request.message import get_image
+
+        try:
+            result = await get_image(str(file_name), timeout=timeout)
+        except TimeoutError:
+            return _DownloadFailure(f"get_image 超时(file={file_name}, timeout={timeout}s)", expired=True)
+        except Exception as exc:
+            # 非超时异常不判过期：可能是适配器断线一类的瞬时故障，下次还该再试。
+            return _DownloadFailure(f"get_image API 异常(file={file_name}): {exc}")
+        img_data = _response_data_for_get_image(result)
+        img_ref = ""
+        if isinstance(img_data, dict):
+            img_ref = str(img_data.get("file") or img_data.get("url") or "")
+        if not img_ref:
+            return _DownloadFailure(f"get_image 返回无效数据(file={file_name})", expired=True)
+        content = await self._read_ref(img_ref, timeout=timeout)
+        if content is not None:
+            return content
+        return _DownloadFailure(f"get_image 返回的图片引用下载失败(file={file_name})")
+
+    async def _with_description(self, key: str | None, notice: str) -> str:
+        """过期说明 + 库里留过的描述：拉不到图的这一轮，模型仍有内容可依。"""
+        description = await describe(key)
+        if description:
+            return f"{notice}{DESCRIPTION_PREFIX}{description}"
+        return notice
 
     async def _resolve_by_chat_flow(
         self,
@@ -514,7 +577,12 @@ class ImageSourceResolver:
             else:
                 seg_data = getattr(seg, "data", None)
             seg_data = self._seg_data_to_dict(seg_data)
-            return await self._download_image_segment(seg_data, timeout=timeout)
+            return await self._download_image_segment(
+                seg_data,
+                timeout=timeout,
+                message_id=getattr(message, "message_id", None),
+                image_index=image_index,
+            )
 
         return None, f"消息中找不到第 {image_index} 张图片（图片总数不足）"
 

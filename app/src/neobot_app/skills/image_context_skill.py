@@ -20,6 +20,7 @@ from typing import Any
 from PIL import Image
 
 from neobot_app.image.source import ImageSourceResolver
+from neobot_app.image.unavailable import clean_expired_text, is_expired_message
 from neobot_app.skills.base import SkillModule
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -391,11 +392,17 @@ class ImageContextSkill(SkillModule):
                         # Only a confirmed text-only reply can be silently skipped.
                         if self._resolver._image_count(replied_segments) == 0:
                             continue
-                        raw, _ = await self._resolver._download_from_segments_with_error(replied_segments, 0, timeout=30)
+                        raw, download_error = await self._resolver._download_from_segments_with_error(
+                            replied_segments, 0, timeout=30
+                        )
                     else:
                         current_image_index += 1
-                        raw, _ = await self._resolver._download_image_segment(data, timeout=30)
+                        raw, download_error = await self._resolver._download_image_segment(data, timeout=30)
                     if raw is None:
+                        if is_expired_message(download_error):
+                            # 拉不到的图（设备侧历史被清理 / 过久被回收）：说清是过期，
+                            # 不要笼统报「下载失败」让模型以为可以重试。
+                            raise ValueError(clean_expired_text(download_error))
                         raise ValueError("当前消息图片下载失败或超过大小限制")
                     part, metadata, size = await asyncio.to_thread(_normalize_image, raw, "auto")
                     total += size
@@ -433,8 +440,12 @@ class ImageContextSkill(SkillModule):
             async with asyncio.timeout(timeout):
                 for index, request in enumerate(requests):
                     resolved, source_kind = await self._source_args(request)
-                    raw, _ = await self._resolver.resolve(resolved, timeout=timeout)
+                    raw, error = await self._resolver.resolve(resolved, timeout=timeout)
                     if raw is None:
+                        if is_expired_message(error):
+                            # 已判定「拉不到」的图：只说过期（+库里留过的描述），
+                            # 诊断串里夹带的原始引用一律不回显。
+                            raise ValueError(clean_expired_text(error))
                         # Resolver diagnostics may contain a raw URL/inline base64.
                         # Never echo those into tool text, logs or model context.
                         raise ValueError("图片来源解析失败：检查编号/索引、路径/URL、base64格式及单图10 MiB限制")
