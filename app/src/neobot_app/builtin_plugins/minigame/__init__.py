@@ -41,7 +41,7 @@ from neobot_modloader.message import Message
 from .avatars import AvatarProvider
 from .config import ALL_GAME_IDS, MinigameConfig
 from .games import Game, GameRequest, build_games, find_game
-from .games.checkin import format_points_text
+from .games.checkin import READONLY_NOTICE, format_points_text
 from .migrations import DATABASE_FILENAME, build_migrations
 from .models import Base
 from .service import MinigameService
@@ -363,6 +363,125 @@ class MinigamePlugin:
                 logger.warning(f"小游戏卡片发送失败，降级为纯文本: {exc}")
             return False
 
+    # ── 命令卡片（复用本体 commands/card.py 的三级口径）─────────────
+
+    async def _send_command_card(
+        self,
+        command_ctx: Any,
+        *,
+        title: str,
+        blocks: list[dict[str, Any]],
+        fallback_text: str,
+        subtitle: str = "",
+        footer: str = "",
+        filename: str,
+    ) -> str | None:
+        """出图成功返回 None（已发送）；渲染不可用则回等价纯文本。
+
+        小游戏插件不自己截图：走本体 `commands/card.py`，与 /help、/status 同一套
+        「HTML 卡片 → 发图 → 纯文本」降级，超时/异常一律不抛给用户。
+        """
+        from neobot_app.commands import card as card_module
+
+        return await card_module.send_card(
+            command_ctx,
+            title=title,
+            subtitle=subtitle,
+            blocks=blocks,
+            footer=footer,
+            fallback_text=fallback_text,
+            filename=filename,
+        )
+
+    async def menu_card(self, command_ctx: Any) -> str | None:
+        rows = []
+        for game in self.games:
+            alias = "/".join(game.aliases[:2]) if game.aliases else game.id
+            rows.append([game.name, game.summary, f"/mg {alias}"])
+        blocks: list[dict[str, Any]] = []
+        if rows:
+            blocks.append(
+                {
+                    "kind": "rows",
+                    "columns": ["玩法", "说明", "用法"],
+                    "widths": ["16%", "50%", "34%"],
+                    "rows": rows,
+                }
+            )
+        else:
+            blocks.append(
+                {"kind": "note", "text": "当前没有启用任何玩法（检查插件配置 enabled_games）。"}
+            )
+        return await self._send_command_card(
+            command_ctx,
+            title="NeoBot 小游戏",
+            subtitle=f"共 {len(rows)} 个玩法",
+            blocks=blocks,
+            footer=MENU_FOOTER,
+            fallback_text=self.menu_text(),
+            filename="mg_menu.png",
+        )
+
+    async def points_card(self, command_ctx: Any, user_id: Any) -> str | None:
+        assert self.service is not None
+        profile = await self.service.get_profile(user_id)
+        streak = await self.service.streak(user_id)
+        score = int(profile.get("score") or 0)
+        text = format_points_text(score=score, streak=streak)
+        blocks = [
+            {
+                "kind": "stats",
+                "cols": 2,
+                "items": [
+                    ("积分", str(score), "ok"),
+                    ("连续签到", f"{int(streak)} 天"),
+                ],
+            },
+            {"kind": "note", "text": READONLY_NOTICE},
+        ]
+        return await self._send_command_card(
+            command_ctx,
+            title="我的积分",
+            blocks=blocks,
+            fallback_text=text,
+            filename="mg_points.png",
+        )
+
+    async def help_card(self, command_ctx: Any, rest: str) -> str | None:
+        if not str(rest or "").strip():
+            # 无参数时 help_command 会先复述一遍玩法菜单再堆所有规则（三千像素高的卡）：
+            # 菜单卡已经能表达这一屏，这里直接复用，规则请用 /mg help <玩法> 单独看。
+            return await self.menu_card(command_ctx)
+        text = self.help_command(rest)
+        lines = [line for line in text.splitlines() if line.strip()]
+        # note 块的换行会被 HTML 折叠，因此逐行成块；过长时截断并指向文本版
+        shown = lines[:18]
+        blocks = [{"kind": "note", "text": line} for line in shown]
+        if len(lines) > len(shown):
+            blocks.append(
+                {"kind": "note", "text": f"…还有 {len(lines) - len(shown)} 行，完整规则见 /mg help 的文本回复"}
+            )
+        return await self._send_command_card(
+            command_ctx,
+            title="玩法规则",
+            subtitle=str(rest or "").strip() or "全部玩法",
+            blocks=blocks,
+            fallback_text=text,
+            filename="mg_help.png",
+        )
+
+    @staticmethod
+    def _mask_user_id(user_id: Any) -> str:
+        """榜单里的玩家标识：**只给掩码**（前 2 后 2），不下发完整 QQ 号。
+
+        命令回复对全群可见，完整 QQ 号属于「内部状态 → 用户可见文本」的泄露面
+        （issue #85 的同一口径）；需要认人时由用户自己对照积分。
+        """
+        text = str(user_id or "").strip()
+        if len(text) <= 4:
+            return "玩家"
+        return f"{text[:2]}****{text[-2:]}"
+
     def enabled(self, game_id: str) -> bool:
         return str(game_id) in self._games_by_id
 
@@ -544,7 +663,7 @@ class MinigamePlugin:
         assert self.service is not None and self.config is not None
 
         if not raw:
-            return self.menu_text()
+            return await self.menu_card(command_ctx)
         parts = raw.split(maxsplit=1)
         head = parts[0]
         rest = parts[1].strip() if len(parts) > 1 else ""
@@ -557,9 +676,9 @@ class MinigamePlugin:
                 command_ctx, rest=rest, conversation_id=conv_id
             )
         if key in ("积分", "points", "分"):
-            return await self.points_text(user_id)
+            return await self.points_card(command_ctx, user_id)
         if key in ("help", "帮助", "?"):
-            return self.help_command(rest)
+            return await self.help_card(command_ctx, rest)
 
         game = find_game(self.games, head)
         request = self.command_request(
@@ -834,25 +953,71 @@ class MinigamePlugin:
         rows = list(data.get("rows") or [])
         if not rows:
             return "排行榜还没有数据：先玩一局（漂流瓶 / 成语接龙 / 签到）就会有记录了。"
-        lines = [
-            f"【积分排行榜 · 第 {data['page']} 页】"
-            f"（共 {data['total']} 位玩家，每页 {data['page_size']} 条）"
-        ]
+        # 榜单对全群可见：玩家标识只给掩码，不下发完整 QQ 号（issue #85 同口径）
+        page_info = (
+            f"第 {data['page']} 页 · 共 {data['total']} 位玩家 · 每页 {data['page_size']} 条"
+        )
+        lines = [f"【积分排行榜 · {page_info}】"]
         offset = (int(data["page"]) - 1) * int(data["page_size"])
+        rank_rows: list[list[str]] = []
         for index, row in enumerate(rows, start=offset + 1):
+            player = self._mask_user_id(row["user_id"])
+            rank_rows.append(
+                [
+                    str(index),
+                    player,
+                    f"{int(row['score'])} 分",
+                    f"场次 {int(row['plays'])} / 最高 {int(row['best_score'])}",
+                ]
+            )
             lines.append(
-                f"{index}. {row['user_id']} — {int(row['score'])} 分"
-                f"（场次 {int(row['plays'])}，最高 {int(row['best_score']) }）"
+                f"{index}. {player} — {int(row['score'])} 分"
+                f"（场次 {int(row['plays'])}，最高 {int(row['best_score'])}）"
             )
         group_rows = await self.service.group_leaderboard(conversation_id, limit=5)
         if group_rows:
             lines.append("")
             lines.append("【本群榜】")
             for index, row in enumerate(group_rows, start=1):
-                lines.append(f"{index}. {row['user_id']} — {int(row['score'])} 分")
+                lines.append(f"{index}. {self._mask_user_id(row['user_id'])} — {int(row['score'])} 分")
         lines.append("")
         lines.append("用 /mg rank <页码> 翻页；积分只读，本期没有消费渠道。")
-        return "\n".join(lines)
+
+        blocks: list[dict[str, Any]] = [
+            {
+                "kind": "rows",
+                "columns": ["名次", "玩家", "积分", "战绩"],
+                "widths": ["12%", "28%", "20%", "40%"],
+                "rows": rank_rows,
+            }
+        ]
+        if group_rows:
+            blocks.append(
+                {
+                    "kind": "rows",
+                    "title": "本群榜",
+                    "columns": ["名次", "玩家", "积分"],
+                    "widths": ["16%", "44%", "40%"],
+                    "rows": [
+                        [str(index), self._mask_user_id(row["user_id"]), f"{int(row['score'])} 分"]
+                        for index, row in enumerate(group_rows, start=1)
+                    ],
+                }
+            )
+        blocks.append(
+            {
+                "kind": "note",
+                "text": "玩家标识为掩码（前 2 后 2），榜单不下发完整 QQ 号；用 /mg rank <页码> 翻页。",
+            }
+        )
+        return await self._send_command_card(
+            command_ctx,
+            title="积分排行榜",
+            subtitle=page_info,
+            blocks=blocks,
+            fallback_text="\n".join(lines),
+            filename="mg_rank.png",
+        )
 
     def rank_format_fallback(self, request: GameRequest, *, token: str) -> str:
         """页码非法：交 agent 追问（置 sync_reply），不回固定错误文案。"""
