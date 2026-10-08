@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -118,7 +119,8 @@ async def test_add_admin_persists_and_survives_restart(config_file: Path) -> Non
     reply, config, service = await _run(config_file, "/add_admin 30003", SUPER)
 
     assert "已添加次级管理员" in reply
-    assert "30003" in reply
+    # 回复（卡片与纯文本降级都算）**绝不出现任何 QQ 号**：issue #85
+    assert re.search(r"\d{5,15}", reply) is None
     # 磁盘
     assert read_sub_admin_accounts(config_file) == ("30003",)
     # 内存（热重载生效）

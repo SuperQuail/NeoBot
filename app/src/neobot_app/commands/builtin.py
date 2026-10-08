@@ -6,6 +6,12 @@ import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 
+from neobot_app.commands.card import (
+    AVATAR_MARKER,
+    avatar_fragment,
+    send_card,
+    with_hint,
+)
 from neobot_app.commands.model import (
     PERM_EVERYONE,
     PERM_SUB_ADMIN,
@@ -30,6 +36,24 @@ if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
 
 _QQ_PATTERN = re.compile(r"^\d{5,15}$")
+
+
+def _display_operator(raw: Any) -> str:
+    """把 `private:10001` 这类操作者标识显示成**不含号码**的来源。
+
+    命令回复对外可见，号码只留在待机状态文件 / 面板 / 日志里做审计（issue #85）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return "未记录"
+    kind = text.split(":", 1)[0].strip().lower()
+    if kind in ("private", "friend"):
+        return "私聊管理员"
+    if kind == "group":
+        return "群聊管理员"
+    if kind in ("config", "system"):
+        return "系统(启动配置)"
+    return "管理员"
 
 
 def build_builtin_commands(service: "CommandService") -> list[Command]:
@@ -163,10 +187,13 @@ async def _handle_reload(ctx: CommandContext) -> str:
     if not result.get("ok"):
         return f"配置重载失败：{result.get('message') or '未知错误'}"
 
-    lines = [str(result.get("message") or "配置已重载")]
+    message = str(result.get("message") or "配置已重载")
     changes = result.get("changes") or {}
-    hot = changes.get("hot_reload") or []
-    restart = changes.get("needs_restart") or []
+    hot = list(changes.get("hot_reload") or [])
+    restart = list(changes.get("needs_restart") or [])
+
+    # 纯文本降级：沿用原有逐条文案（两段各最多 8 条）
+    lines = [message]
     if hot:
         lines.append("")
         lines.append("已生效：")
@@ -181,7 +208,49 @@ async def _handle_reload(ctx: CommandContext) -> str:
         )
         if len(restart) > 8:
             lines.append(f"  …还有 {len(restart) - 8} 项")
-    return "\n".join(lines)
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "kind": "kv",
+            "items": [("已生效", f"{len(hot)} 项"), ("需重启", f"{len(restart)} 项")],
+        }
+    ]
+    if hot:
+        blocks.append(
+            {
+                "kind": "rows",
+                "columns": ["配置项", "变更"],
+                "widths": ["42%", "58%"],
+                "rows": [
+                    [str(item["path"]), f"{item['before']} → {item['after']}"] for item in hot[:8]
+                ],
+            }
+        )
+        if len(hot) > 8:
+            blocks.append({"kind": "note", "text": f"…还有 {len(hot) - 8} 项已生效的变更未显示"})
+    if restart:
+        blocks.append(
+            {
+                "kind": "rows",
+                "columns": ["需重启生效", "原因"],
+                "widths": ["42%", "58%"],
+                "rows": [
+                    [str(item["path"]), str(item.get("reason") or "构建期配置")]
+                    for item in restart[:8]
+                ],
+            }
+        )
+        if len(restart) > 8:
+            blocks.append({"kind": "note", "text": f"…还有 {len(restart) - 8} 项需重启的配置未显示"})
+
+    return await send_card(
+        ctx,
+        title="配置已重载",
+        subtitle=message,
+        blocks=blocks,
+        fallback_text="\n".join(lines),
+        filename="reload.png",
+    )
 
 
 def _render_command_list_markdown(commands: list[Command]) -> str:
@@ -446,11 +515,39 @@ async def _handle_standby(ctx: CommandContext) -> str:
     if service is None:
         return "待机功能不可用(未注入待机服务)"
     reason = " ".join(part for part in ctx.args if part).strip()
-    _ok, message = await service.enter(
+    ok, _message = await service.enter(
         reason=reason or "standby_command",
         operator=f"{ctx.kind}:{ctx.user_id}",
     )
-    return message
+    status = service.status()
+    display_reason = str(status.get("reason") or reason or "未说明")
+    if not ok:
+        return f"进入待机失败：{display_reason}"
+    blocks = [
+        {
+            "kind": "kv",
+            "items": [
+                ("状态", "待机中"),
+                ("原因", display_reason),
+                ("操作来源", "群聊" if ctx.kind == "group" else "私聊"),
+            ],
+        },
+        {
+            "kind": "note",
+            "text": "回复与记忆管线已停止；面板与命令仍可用，执行 /reboot 可软重启运行。",
+        },
+    ]
+    return await send_card(
+        ctx,
+        title="已进入待机",
+        subtitle=display_reason,
+        blocks=blocks,
+        fallback_text=with_hint(
+            f"Bot 已进入待机（{display_reason}）：回复与记忆管线已停止，"
+            "面板与命令仍可用，/reboot 可软重启运行。"
+        ),
+        filename="standby.png",
+    )
 
 
 async def _handle_reboot(ctx: CommandContext) -> str:
@@ -459,11 +556,44 @@ async def _handle_reboot(ctx: CommandContext) -> str:
     if service is None:
         return "待机功能不可用(未注入待机服务)"
     reason = " ".join(part for part in ctx.args if part).strip()
-    _ok, message = await service.reboot(
+    ok, _message = await service.reboot(
         reason=reason or "reboot_command",
         operator=f"{ctx.kind}:{ctx.user_id}",
     )
-    return message
+    status = service.status()
+    display_reason = str(status.get("reason") or reason or "未说明")
+    standby_now = bool(status.get("standby"))
+    if not ok:
+        return f"软重启失败：{display_reason}"
+    blocks = [
+        {
+            "kind": "kv",
+            "items": [
+                ("状态", "待机中" if standby_now else "运行中"),
+                ("原因", display_reason),
+                ("操作来源", "群聊" if ctx.kind == "group" else "私聊"),
+            ],
+        },
+        {
+            "kind": "note",
+            "text": "已按当前配置重建并启动运行；面板不掉线。"
+            if not standby_now
+            else "重建未完成，仍停在待机；请查看日志。",
+        },
+    ]
+    fallback = (
+        f"Bot 已按当前配置软重启运行（{display_reason}）：面板不掉线。"
+        if not standby_now
+        else f"软重启未完成，Bot 仍停在待机（{display_reason}）；请查看日志。"
+    )
+    return await send_card(
+        ctx,
+        title="软重启完成" if not standby_now else "软重启未完成",
+        subtitle=display_reason,
+        blocks=blocks,
+        fallback_text=with_hint(fallback),
+        filename="reboot.png",
+    )
 
 
 async def _handle_standby_status(ctx: CommandContext) -> str:
@@ -473,13 +603,42 @@ async def _handle_standby_status(ctx: CommandContext) -> str:
         return "待机功能不可用(未注入待机服务)"
     status = service.status()
     if not status.get("standby"):
-        return "Bot 当前运行中(回复与记忆管线正常)。"
+        return await send_card(
+            ctx,
+            title="Bot 运行中",
+            subtitle="回复与记忆管线正常",
+            blocks=[{"kind": "stats", "cols": 1, "items": [("状态", "运行中", "ok")]}],
+            fallback_text="Bot 当前运行中(回复与记忆管线正常)。",
+            filename="standby_status.png",
+        )
     connect = "保持 OneBot 连接" if status.get("connect_onebot") else "已断开 OneBot 连接"
-    return (
-        f"Bot 处于待机状态(自 {status.get('since_text') or '未知时间'},"
-        f"已持续 {status.get('standby_seconds')} 秒)。"
-        f"原因:{status.get('reason') or '未说明'};操作者:{status.get('operator') or '未知'};{connect}。"
-        "执行 /reboot 可软重启运行。"
+    operator = _display_operator(status.get("operator"))
+    blocks = [
+        {
+            "kind": "kv",
+            "items": [
+                ("状态", "待机中"),
+                ("自", str(status.get("since_text") or "未知时间")),
+                ("已持续", f"{status.get('standby_seconds')} 秒"),
+                ("原因", str(status.get("reason") or "未说明")),
+                ("操作者", operator),
+                ("OneBot", connect),
+            ],
+        },
+        {"kind": "note", "text": "执行 /reboot 可软重启运行。"},
+    ]
+    return await send_card(
+        ctx,
+        title="Bot 待机中",
+        subtitle=connect,
+        blocks=blocks,
+        fallback_text=with_hint(
+            f"Bot 处于待机状态(自 {status.get('since_text') or '未知时间'},"
+            f"已持续 {status.get('standby_seconds')} 秒)。"
+            f"原因:{status.get('reason') or '未说明'};操作者:{operator};{connect}。"
+            "执行 /reboot 可软重启运行。"
+        ),
+        filename="standby_status.png",
     )
 
 
@@ -621,27 +780,32 @@ async def _handle_del_admin(ctx: CommandContext) -> str:
 
 
 async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
-    """添加/删除次级管理员:QQ 号参数或 @ 提取。"""
+    """添加/删除次级管理员:QQ 号参数或 @ 提取。
+
+    **回复里不出现任何 QQ 号**（含目标本人、其它次级管理员、超级管理员）：
+    卡片只画头像 + 人数，纯文本降级也只说人数（issue #85）。
+    """
     target_qq = _extract_target_qq(ctx)
     if target_qq is None:
+        # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (
             "请指定目标: /add_admin <QQ号> 或 /add_admin @某人\n"
             f"当前权限: {ctx.service.permissions.describe()}"
         )
 
-    supers = ctx.service.permissions.super_admins
-    if target_qq in supers:
-        return f"QQ {target_qq} 是超级管理员,超级管理员只能通过配置增减,不能通过命令修改。"
+    permissions = ctx.service.permissions
+    if target_qq in permissions.super_admins:
+        return "该用户是超级管理员,超级管理员只能通过配置增减,不能通过命令修改。"
 
-    current = set(ctx.service.permissions.sub_admins)
+    current = set(permissions.sub_admins)
     if add:
         if target_qq in current:
-            return f"QQ {target_qq} 已是次级管理员。"
+            return "该用户已是次级管理员。"
         current.add(target_qq)
         action = "添加"
     else:
         if target_qq not in current:
-            return f"QQ {target_qq} 不是次级管理员。"
+            return "该用户不是次级管理员。"
         current.discard(target_qq)
         action = "删除"
 
@@ -654,13 +818,36 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     wanted = str(target_qq)
     if (add and wanted not in persisted) or (not add and wanted in persisted):
         return (
-            f"错误: 配置写入后内容不符合预期（QQ {wanted}），"
+            "错误: 配置写入后内容不符合预期，"
             f"请检查配置文件权限与内容（{result.path or ctx.service.config_path_hint()}）"
         )
-    suffix = "" if result.applied else "\n（配置已写入文件，重启 NeoBot 后生效）"
-    return (
-        f"已{action}次级管理员 QQ {target_qq}。\n"
-        f"当前次级管理员: {'、'.join(persisted) or '(无)'}{suffix}"
+
+    applied = bool(result.applied)
+    suffix = "" if applied else "\n（配置已写入文件，重启 NeoBot 后生效）"
+    blocks = [
+        # 头像行：note 块先放占位符，渲染后替换成可信片段（见 commands/card.py）
+        {"kind": "note", "text": AVATAR_MARKER},
+        {
+            "kind": "kv",
+            "items": [
+                ("当前次级管理员", f"{len(persisted)} 人"),
+                ("超级管理员", f"{len(permissions.super_admins)} 人"),
+            ],
+        },
+    ]
+    return await send_card(
+        ctx,
+        title=f"次级管理员已{action}",
+        subtitle="已生效" if applied else "配置文件已写入，重启 NeoBot 后生效",
+        blocks=blocks,
+        footer="只显示管理员头像与人数，不列出任何 QQ 号",
+        fallback_text=with_hint(f"已{action}次级管理员（当前 {len(persisted)} 人）。{suffix}"),
+        avatars=avatar_fragment(
+            getattr(ctx.service, "avatars", None),
+            persisted,
+            highlight=wanted if add else None,
+        ),
+        filename=f"admin_{'add' if add else 'del'}.png",
     )
 
 
@@ -690,12 +877,26 @@ async def _handle_set_password(ctx: CommandContext) -> str:
         )
 
     lines = ["网页面板登录密码已更新,面板中已登录的会话已立即失效。"]
+    items: list[tuple[str, str]] = [("面板会话", "已全部失效")]
     if generated:
         lines.append(f"自动生成的密码:{password}")
         lines.append("请立即保存;如需自定义,可再次发送 /set_password <新密码>。")
+        items.append(("自动生成的密码", password))
     else:
         lines.append("新密码已生效,请妥善保存。")
-    return "\n".join(lines)
+        items.append(("新密码", "已按你指定的值生效（不在回复里回显）"))
+    # 仅私聊可达（群里会被 handler 顶回），因此卡片的可见范围与文本一致
+    return await send_card(
+        ctx,
+        title="面板密码已更新",
+        subtitle="只有私聊能看到这条回复",
+        blocks=[
+            {"kind": "kv", "items": items},
+            {"kind": "note", "text": "请立即保存；如需自定义，可再次发送 /set_password <新密码>。"},
+        ],
+        fallback_text="\n".join(lines),
+        filename="set_password.png",
+    )
 
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:

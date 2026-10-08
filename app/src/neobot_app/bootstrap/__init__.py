@@ -997,6 +997,8 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     if command_service is not None:
         # 软重启会重建浏览器实例：截图端口必须跟着换，否则 /help 会打到旧实例
         command_service.set_screenshots(browser["screenshots"])
+    # 管理员卡片只画头像、不列 QQ 号：把 AvatarStore 接进命令服务（issue #85）
+    command_service.set_avatar_store(avatar_store)
 
     # ── 凭据管理器(风险操作授权:踢人/退群需超级管理员凭据) ──
     credential_manager = build_credential_manager(
