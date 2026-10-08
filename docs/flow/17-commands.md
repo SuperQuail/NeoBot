@@ -2,8 +2,8 @@
 flow: 17-commands
 covers:
   - app/src/neobot_app/commands/
-verified_against: 528fe18
-verified_hash: cc3d84d9a43d
+verified_against: 56559c2
+verified_hash: fda378bf98f3
 ---
 
 # 17 命令系统：注册 / 解析 / 权限 / 内置命令
@@ -153,8 +153,10 @@ flowchart TD
     G --> H
 ```
 
-`返回 None` 是**命令与管线之间的契约**：`/mg`、`/help` 这类自带卡片渲染的命令用它表示
-「图我自己发了」。事件管道里对应的分支是 `_start_command_sync_reply`，
+`返回 None` 是**命令与管线之间的契约**：自带卡片渲染的命令（`/help`、`/status`、
+以及 issue #85 之后的 `/add_admin`、`/del_admin`、`/reload`、`/standby`、`/reboot`、
+`/standby_status`、`/set_password`、`/mg` 系列）用它表示「图我自己发了」；
+统一的卡片入口是 `commands/card.py`（HTML 卡片 → 发图 → 等价纯文本，且**回复里不出现 QQ 号**）。事件管道里对应的分支是 `_start_command_sync_reply`，
 注释明确写了「被拒（None）时**不** discard 回复中标记」—— 丢掉标记会把同会话另一条
 正在跑的管线一起解锁（见 `02c-event-pipeline.md` 的同类坑）。
 </details>
