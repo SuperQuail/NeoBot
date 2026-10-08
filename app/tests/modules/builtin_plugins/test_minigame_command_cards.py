@@ -32,13 +32,13 @@ class _MgService:
             "page_size": 10,
             "total": 2,
             "rows": [
-                {"user_id": "10001", "score": 320, "plays": 21, "best_score": 88},
-                {"user_id": "20002", "score": 128, "plays": 9, "best_score": 42},
+                {"user_id": "10001", "score": 320, "plays": 21, "best_score": 88, "user_name": "小红"},
+                {"user_id": "20002", "score": 128, "plays": 9, "best_score": 42, "user_name": ""},
             ],
         }
 
     async def group_leaderboard(self, conversation_id, *, limit=5):
-        return [{"user_id": "20002", "score": 128}]
+        return [{"user_id": "20002", "score": 128, "user_name": "小明"}]
 
 
 @pytest.fixture()
@@ -103,7 +103,9 @@ async def test_rank_card_masks_qq(captured: list[str]) -> None:
 
     visible = _visible(captured[-1])
     assert "积分排行榜" in visible
-    assert "10****01" in visible and "20****02" in visible
+    # 有昵称的显示昵称；没昵称的回落掩码
+    assert "小红" in visible and "小明" in visible
+    assert "20****02" in visible
     # 榜单对全群可见：完整 QQ 号一个都不许出现
     for raw in ("10001", "20002"):
         assert raw not in visible
@@ -120,6 +122,8 @@ async def test_rank_text_fallback_also_masks(captured: list[str], monkeypatch) -
     text = await plugin.rank_command(_ctx(), rest="", conversation_id="999000111")
 
     assert isinstance(text, str) and "积分排行榜" in text
+    assert "小红" in text, "文本回落同样用昵称"
+    assert "20****02" in text, "没昵称的回落掩码"
     assert "10001" not in text and "20002" not in text
     assert QQ_PATTERN.search(text) is None
 

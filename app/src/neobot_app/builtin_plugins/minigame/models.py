@@ -33,6 +33,8 @@ class Profile(Base):
     __tablename__ = "mg_profile"
 
     user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: 最近一次见到的昵称：榜单卡片用它代替 QQ 号（空串 = 还没见过名字，回落掩码）
+    user_name: Mapped[str] = mapped_column(String(128), default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
     best_score: Mapped[int] = mapped_column(Integer, default=0)
     plays: Mapped[int] = mapped_column(Integer, default=0)

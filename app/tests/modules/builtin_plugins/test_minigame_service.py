@@ -400,3 +400,37 @@ async def test_leaderboard_pages_and_group_rank(db: Any, clock: FakeClock) -> No
     group = await service.group_leaderboard("888")
     assert {row["user_id"] for row in group} == {"1000", "1001"}
     assert await service.group_leaderboard("777") == []
+
+
+async def test_remember_user_name_shows_up_in_leaderboards(db: Any, clock: FakeClock) -> None:
+    """昵称落进 mg_profile，两个榜单都带出来（issue #85：榜单不再下发 QQ 号）。"""
+    service = _service(db, clock)
+    await service.add_score("1000", 9, play=True)
+    await service.add_score("1001", 5, play=True)
+    await service.add_record(user_id="1000", game_id="chengyu", score=9, conversation_id="888")
+    await service.add_record(user_id="1001", game_id="chengyu", score=5, conversation_id="888")
+
+    # 空名 / 未知用户：不建行、不报错
+    assert await service.remember_user_name("1000", "") is False
+    assert await service.remember_user_name("", "无名") is False
+    assert await service.remember_user_name("9999", "查无此人") is False
+    assert await service.remember_user_name("1000", "  小红  ") is True
+
+    page = await service.leaderboard(page=1, page_size=3)
+    names = {row["user_id"]: row["user_name"] for row in page["rows"]}
+    assert names["1000"] == "小红", "昵称要取首尾空白后的值"
+    assert names["1001"] == "", "没报过昵称的玩家留空（由展示层回落掩码）"
+
+    group = await service.group_leaderboard("888")
+    group_names = {row["user_id"]: row["user_name"] for row in group}
+    assert group_names == {"1000": "小红", "1001": ""}
+
+
+async def test_remember_user_name_truncates_to_column_width(db: Any, clock: FakeClock) -> None:
+    service = _service(db, clock)
+    await service.add_score("1000", 1, play=True)
+
+    assert await service.remember_user_name("1000", "长" * 200) is True
+
+    row = await service.get_profile("1000")
+    assert len(row["user_name"]) == 128

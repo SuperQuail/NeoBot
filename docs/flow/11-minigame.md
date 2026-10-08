@@ -2,8 +2,8 @@
 flow: 11-minigame
 covers:
   - app/src/neobot_app/builtin_plugins/minigame/
-verified_against: 56559c2
-verified_hash: de52e13f325f
+verified_against: 37fd191
+verified_hash: 6d13b4e0179e
 ---
 
 # 11 小游戏：命令/关键词/工具三入口 · 认人窗口 · 积分账户 · 卡片渲染与降级
@@ -34,7 +34,9 @@ verified_hash: de52e13f325f
    **已卡片化（issue #85）**：四个确定性视图（`/mg` 菜单、`/mg 积分`、`/mg rank`、
    `/mg help <游戏>`）都出图，渲染不可用时回落 `menu_text()` / `points_text()` /
    `rank_command()` 的文本与 `help_command()` 原文；`/mg help` 无参数直接复用菜单卡。
-   `/mg rank` 的玩家标识同时改成**掩码**（前 2 后 2），榜单不再下发完整 QQ 号。
+   `/mg rank` 的玩家标识改成**昵称优先、取不到回落掩码**（前 2 后 2）：昵称走新增的
+   `mg_profile.user_name`（迁移 v2，每次 /mg 命令 `remember_user_name` 刷一次），
+   两个榜单查询都带出该列（本群榜 LEFT JOIN `mg_profile`），榜单不再下发完整 QQ 号。
 3. `bottle_show_sender_id` 读得到但**未接线**，普通瓶一律显示 QQ 号（`config.py:36`）。
 
 ## 流程

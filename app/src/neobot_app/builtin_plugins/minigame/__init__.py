@@ -482,6 +482,21 @@ class MinigamePlugin:
             return "玩家"
         return f"{text[:2]}****{text[-2:]}"
 
+    def _rank_player_label(self, row: Any, *, fallback_index: int) -> str:
+        """榜单里的玩家标识：**昵称优先，取不到回落掩码**。
+
+        命令回复对全群可见：完整 QQ 号一律不下发（issue #85）；昵称来自
+        `mg_profile.user_name`（每次 /mg 命令都会刷一次），从没用过命令的玩家
+        显示掩码。
+        """
+        name = ""
+        if isinstance(row, dict):
+            name = str(row.get("user_name") or "").strip()
+        if name:
+            return name
+        masked = self._mask_user_id(row.get("user_id") if isinstance(row, dict) else "")
+        return masked if masked != "玩家" else f"玩家 #{fallback_index}"
+
     def enabled(self, game_id: str) -> bool:
         return str(game_id) in self._games_by_id
 
@@ -516,6 +531,19 @@ class MinigamePlugin:
         }
         self._latest = record
         return record
+
+    async def remember_user_name(self, user_id: Any, user_name: str) -> bool:
+        """把昵称落进 mg_profile（榜单卡片用优先显示昵称）：尽力而为，失败不抛。"""
+        service = self.service
+        recorder = getattr(service, "remember_user_name", None)
+        if not callable(recorder):
+            return False
+        try:
+            return bool(await recorder(user_id, user_name))
+        except Exception as exc:  # pragma: no cover - 昵称只是展示信息
+            if self._logger is not None:
+                self._logger.warning(f"记录小游戏昵称失败（已忽略）: {exc}")
+            return False
 
     def latest_interaction(self, *, max_age: float = INTERACTION_TTL_SECONDS) -> dict[str, Any] | None:
         record = self._latest
@@ -660,6 +688,8 @@ class MinigamePlugin:
             kind=kind,
             conversation_id=conv_id,
         )
+        # 昵称落库：榜单卡片优先显示昵称，取不到才回落掩码（issue #85）
+        await self.remember_user_name(user_id, user_name)
         assert self.service is not None and self.config is not None
 
         if not raw:
@@ -961,7 +991,7 @@ class MinigamePlugin:
         offset = (int(data["page"]) - 1) * int(data["page_size"])
         rank_rows: list[list[str]] = []
         for index, row in enumerate(rows, start=offset + 1):
-            player = self._mask_user_id(row["user_id"])
+            player = self._rank_player_label(row, fallback_index=index)
             rank_rows.append(
                 [
                     str(index),
@@ -979,7 +1009,10 @@ class MinigamePlugin:
             lines.append("")
             lines.append("【本群榜】")
             for index, row in enumerate(group_rows, start=1):
-                lines.append(f"{index}. {self._mask_user_id(row['user_id'])} — {int(row['score'])} 分")
+                lines.append(
+                    f"{index}. {self._rank_player_label(row, fallback_index=index)}"
+                    f" — {int(row['score'])} 分"
+                )
         lines.append("")
         lines.append("用 /mg rank <页码> 翻页；积分只读，本期没有消费渠道。")
 
@@ -999,7 +1032,11 @@ class MinigamePlugin:
                     "columns": ["名次", "玩家", "积分"],
                     "widths": ["16%", "44%", "40%"],
                     "rows": [
-                        [str(index), self._mask_user_id(row["user_id"]), f"{int(row['score'])} 分"]
+                        [
+                            str(index),
+                            self._rank_player_label(row, fallback_index=index),
+                            f"{int(row['score'])} 分",
+                        ]
                         for index, row in enumerate(group_rows, start=1)
                     ],
                 }
@@ -1007,7 +1044,10 @@ class MinigamePlugin:
         blocks.append(
             {
                 "kind": "note",
-                "text": "玩家标识为掩码（前 2 后 2），榜单不下发完整 QQ 号；用 /mg rank <页码> 翻页。",
+                "text": (
+                    "玩家显示昵称；取不到昵称的显示掩码（前 2 后 2）—— 榜单不下发完整 QQ 号。"
+                    "用 /mg rank <页码> 翻页。"
+                ),
             }
         )
         return await self._send_command_card(
