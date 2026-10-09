@@ -253,52 +253,6 @@ async def _handle_reload(ctx: CommandContext) -> str:
     )
 
 
-def _render_command_list_markdown(commands: list[Command]) -> str:
-    """命令列表 markdown(列表)。"""
-    lines = ["# 可用命令", ""]
-    for command in commands:
-        name_part = command.display_name
-        if command.usage:
-            name_part += f" {command.usage}"
-        suffix = f" {command.source_label}" if command.source_label else ""
-        lines.append(f"- `{name_part}` — {command.description}{suffix}")
-        lines.append(f"  - 权限: **{permission_name(command.permission)}**")
-    lines.append("")
-    lines.append("> 命令以 `/` 开头,群聊中需先 @bot。")
-    return "\n".join(lines)
-
-
-def _render_command_detail_markdown(command: Command) -> str:
-    """单个命令的详细说明 markdown。"""
-    lines = [
-        f"# `{command.display_name}`",
-        "",
-        f"{command.description}",
-        "",
-        "| 项目 | 内容 |",
-        "| --- | --- |",
-        f"| 权限 | {permission_name(command.permission)} |",
-        f"| 用法 | `{command.display_name}{' ' + command.usage if command.usage else ''}` |",
-    ]
-    if command.source:
-        lines.append(f"| 来源 | {command.source} |")
-    if command.aliases:
-        lines.append(f"| 别名 | `{'`、`'.join('/' + alias for alias in command.aliases)}` |")
-    if command.params:
-        lines.extend(
-            [
-                "",
-                "## 参数",
-                "",
-                "| 参数 | 说明 |",
-                "| --- | --- |",
-            ]
-        )
-        for name, description in command.params:
-            lines.append(f"| `{name}` | {description} |")
-    return "\n".join(lines)
-
-
 async def _handle_help(ctx: CommandContext) -> str | None:
     """列出当前用户可见的命令;带参数时显示指定命令的详情。
 

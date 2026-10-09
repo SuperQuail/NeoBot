@@ -1,7 +1,7 @@
 """命令结果卡片：payload → 自包含 HTML → PNG → 纯文本降级。
 
-命令面此前只有 `/help` 与 `/status` 出图，两者的渲染逻辑各自长在自己的模块里、不可复用，
-其余命令一律回多行纯文本。这里把「渲染可用就出图、不可用就回等价文本」收敛成一个入口：
+命令面此前只有 /help 与 /status 出图（渲染逻辑各自长在模块里、不可复用），其余命令一律回
+多行纯文本。这里把「渲染可用就出图、不可用就回等价文本」收敛成一个入口：
 
     return await send_card(
         ctx,
@@ -10,7 +10,7 @@
         fallback_text="已添加次级管理员（当前 3 人）。",
     )
 
-三级口径（与 `/status` 一致；`render_card_image` 与 `send_image_bytes` 都**绝不外抛**）：
+三级口径（与 /status 一致；render_card_image 与 send_image_bytes 都**绝不外抛**）：
 
 1. 自包含 HTML 卡片 → PNG（截图端口取 `CommandService.screenshots`）；
 2. `send_image_bytes` 落盘后经适配器发送；
@@ -34,28 +34,15 @@ from neobot_app.runtime.html_card import (
     render_card_image,
 )
 
-#: 单张卡片的截图超时（秒），与 /help、/status 同档
+#: 单张卡片的截图超时（秒），与 /help、/status 同档；命令内兜底在它之上
 SCREENSHOT_TIMEOUT_SECONDS = 20.0
-#: 命令内兜底超时（秒，在截图超时之上）
 COMMAND_TIMEOUT_SECONDS = 25.0
 #: 降级提示：让用户知道这条本该是图
 FALLBACK_HINT = "（图片渲染不可用，本条为纯文本）"
-
-#: 头像行占位符（写在 note 块的文本里，渲染完成后替换为可信片段）
+#: 头像行的占位符（写在 note 块文本里，渲染完成后替换为可信片段）
 AVATAR_MARKER = "@@CMD_AVATARS@@"
-
-#: 首字母色块调色板（取不到头像时的回落；与主题无关的固定色）
-FALLBACK_COLORS: tuple[str, ...] = (
-    "#4493f8",
-    "#e2714b",
-    "#2ea043",
-    "#a371f7",
-    "#d29922",
-    "#db61a2",
-    "#1f9ea8",
-    "#8b6f47",
-)
-
+#: 一张卡片最多画几个头像（其余用 +N 表示）
+_MAX_AVATARS = 12
 #: 头像行样式（自包含，无外链）
 AVATAR_CSS = """\
 .cmd-avatars { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
@@ -73,59 +60,50 @@ AVATAR_CSS = """\
   font-size: 14px; font-weight: 700; color: var(--card-muted, #8b949e);
 }
 """
+#: 首字母色块调色板（取不到头像时的回落；与主题无关的固定色）
+_FALLBACK_COLORS: tuple[str, ...] = (
+    "#4493f8",
+    "#e2714b",
+    "#2ea043",
+    "#a371f7",
+    "#d29922",
+    "#db61a2",
+    "#1f9ea8",
+    "#8b6f47",
+)
 
 
-def build_html(
-    *,
-    title: str,
-    subtitle: str = "",
-    blocks: Any = (),
-    footer: str = "",
-    theme: str = "default",
-    width: int = 720,
-) -> str:
-    """渲染自包含 HTML 卡片（与 /help、/status 同一个渲染器）。"""
-    return render_card_html(
-        title=str(title or ""),
-        subtitle=str(subtitle or ""),
-        blocks=list(blocks or ()),
-        footer=str(footer or ""),
-        theme=theme,
-        width=int(width or 720),
-    )
-
-
-def avatar_fragment(
-    store: Any,
-    user_ids: Sequence[Any],
-    *,
-    highlight: Any = None,
-    max_shown: int = 12,
-) -> str:
+def avatar_fragment(store: Any, user_ids: Sequence[Any], *, highlight: Any = None) -> str:
     """头像行**可信片段**：每个 QQ 一个圆形头像，取不到回落首字母色块。
 
-    片段里**只有图片和色块，没有任何号码文本** —— 即使头像缺失也不泄露身份
-    （issue #85）。调用方负责把它注入卡片：`inject_marker(html, AVATAR_MARKER, 片段)`。
+    片段里**只有图片和色块，没有任何号码文本** —— 头像缺失也不泄露身份（issue #85）。
+    调用方把它注入卡片的 `AVATAR_MARKER` 占位处。
     """
+    selected = list(user_ids)
     items: list[str] = []
-    shown = list(user_ids)[: max(1, int(max_shown or 1))]
-    for raw in shown:
+    for raw in selected[:_MAX_AVATARS]:
         user_id = str(raw or "").strip()
+        css = "cmd-avatar" + (
+            " cmd-avatar--target"
+            if highlight is not None and user_id == str(highlight)
+            else ""
+        )
         uri = _avatar_uri(store, user_id)
-        css = "cmd-avatar" + (" cmd-avatar--target" if highlight is not None and user_id == str(highlight) else "")
         if uri:
             items.append(
                 f'<img class="{css}" src="{html_module.escape(uri, quote=True)}" alt="管理员头像">'
             )
             continue
-        color = _fallback_color(user_id)
+        seed = hashlib.sha256((user_id or "?").encode("utf-8")).hexdigest()
+        color = _FALLBACK_COLORS[int(seed, 16) % len(_FALLBACK_COLORS)]
         items.append(
             f'<div class="{css} cmd-avatar-fallback" style="background:{color}">管</div>'
         )
-    hidden = len(list(user_ids)) - len(shown)
-    if hidden > 0:
-        items.append(f'<div class="cmd-avatar cmd-avatar-fallback cmd-avatar-more" '
-                     f'style="background:transparent">+{hidden}</div>')
+    if len(selected) > len(items):
+        items.append(
+            '<div class="cmd-avatar cmd-avatar-fallback cmd-avatar-more" '
+            f'style="background:transparent">+{len(selected) - len(items)}</div>'
+        )
     return f'<div class="cmd-avatars">{"".join(items)}</div>'
 
 
@@ -143,30 +121,15 @@ def _avatar_uri(store: Any, user_id: str) -> str:
     return str(value or "")
 
 
-def _fallback_color(seed: str) -> str:
-    digest = hashlib.sha256(str(seed or "?").encode("utf-8")).hexdigest()
-    return FALLBACK_COLORS[int(digest, 16) % len(FALLBACK_COLORS)]
-
-
-def finalize(html: str, *, avatars: str = "") -> str:
-    """把可信头像片段注入卡片（没有头像片段时原样返回）。"""
-    if not avatars:
-        return html
-    with_style = html.replace("</style>", AVATAR_CSS + "\n</style>", 1)
-    return inject_marker(with_style, AVATAR_MARKER, avatars)
-
-
 async def send_card(
     ctx: Any,
     *,
     title: str,
-    subtitle: str = "",
-    blocks: Any = (),
-    footer: str = "",
     fallback_text: str,
+    blocks: Any = (),
+    subtitle: str = "",
+    footer: str = "",
     avatars: str = "",
-    theme: str = "default",
-    width: int = 720,
     filename: str | None = None,
 ) -> str | None:
     """出图成功返回 `None`（已自行发送）；否则返回**不含 QQ 号**的等价纯文本。"""
@@ -174,17 +137,18 @@ async def send_card(
     if service is None:
         return fallback_text
     try:
-        html = finalize(
-            build_html(
-                title=title,
-                subtitle=subtitle,
-                blocks=blocks,
-                footer=footer,
-                theme=theme,
-                width=width,
-            ),
-            avatars=avatars,
+        html = render_card_html(
+            title=str(title or ""),
+            subtitle=str(subtitle or ""),
+            blocks=list(blocks or ()),
+            footer=str(footer or ""),
         )
+        if avatars:
+            html = inject_marker(
+                html.replace("</style>", AVATAR_CSS + "\n</style>", 1),
+                AVATAR_MARKER,
+                avatars,
+            )
         png = await asyncio.wait_for(
             render_card_image(
                 html,
@@ -216,21 +180,13 @@ async def send_card(
 def with_hint(text: str) -> str:
     """给降级文本补一句「本条本该是图」。"""
     body = str(text or "").rstrip()
-    if not body:
-        return FALLBACK_HINT
-    return f"{body}\n{FALLBACK_HINT}"
+    return f"{body}\n{FALLBACK_HINT}" if body else FALLBACK_HINT
 
 
 __all__ = [
-    "AVATAR_CSS",
     "AVATAR_MARKER",
-    "COMMAND_TIMEOUT_SECONDS",
-    "FALLBACK_COLORS",
     "FALLBACK_HINT",
-    "SCREENSHOT_TIMEOUT_SECONDS",
     "avatar_fragment",
-    "build_html",
-    "finalize",
     "send_card",
     "with_hint",
 ]

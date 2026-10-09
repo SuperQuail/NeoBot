@@ -471,31 +471,20 @@ class MinigamePlugin:
         )
 
     @staticmethod
-    def _mask_user_id(user_id: Any) -> str:
-        """榜单里的玩家标识：**只给掩码**（前 2 后 2），不下发完整 QQ 号。
+    def _rank_player_label(row: Any, *, fallback_index: int) -> str:
+        """榜单里的玩家标识：**昵称优先，取不到回落掩码**（前 2 后 2）。
 
-        命令回复对全群可见，完整 QQ 号属于「内部状态 → 用户可见文本」的泄露面
-        （issue #85 的同一口径）；需要认人时由用户自己对照积分。
+        命令回复对全群可见：完整 QQ 号一律不下发（issue #85）。昵称来自
+        `mg_profile.user_name`（每次 /mg 命令刷一次），从没用过命令的玩家连掩码
+        都不成串，退化成 `玩家 #N`。
         """
-        text = str(user_id or "").strip()
-        if len(text) <= 4:
-            return "玩家"
-        return f"{text[:2]}****{text[-2:]}"
-
-    def _rank_player_label(self, row: Any, *, fallback_index: int) -> str:
-        """榜单里的玩家标识：**昵称优先，取不到回落掩码**。
-
-        命令回复对全群可见：完整 QQ 号一律不下发（issue #85）；昵称来自
-        `mg_profile.user_name`（每次 /mg 命令都会刷一次），从没用过命令的玩家
-        显示掩码。
-        """
-        name = ""
-        if isinstance(row, dict):
-            name = str(row.get("user_name") or "").strip()
+        if not isinstance(row, dict):
+            return f"玩家 #{fallback_index}"
+        name = str(row.get("user_name") or "").strip()
         if name:
             return name
-        masked = self._mask_user_id(row.get("user_id") if isinstance(row, dict) else "")
-        return masked if masked != "玩家" else f"玩家 #{fallback_index}"
+        uid = str(row.get("user_id") or "").strip()
+        return f"{uid[:2]}****{uid[-2:]}" if len(uid) > 4 else f"玩家 #{fallback_index}"
 
     def enabled(self, game_id: str) -> bool:
         return str(game_id) in self._games_by_id
@@ -533,16 +522,16 @@ class MinigamePlugin:
         return record
 
     async def remember_user_name(self, user_id: Any, user_name: str) -> bool:
-        """把昵称落进 mg_profile（榜单卡片用优先显示昵称）：尽力而为，失败不抛。"""
+        """把昵称落进 mg_profile（榜单优先显示昵称）：尽力而为，失败不抛。"""
         service = self.service
-        recorder = getattr(service, "remember_user_name", None)
-        if not callable(recorder):
+        if service is None:
             return False
         try:
-            return bool(await recorder(user_id, user_name))
+            return bool(await service.remember_user_name(user_id, user_name))
         except Exception as exc:  # pragma: no cover - 昵称只是展示信息
+            message = f"记录小游戏昵称失败（已忽略）: {exc}"
             if self._logger is not None:
-                self._logger.warning(f"记录小游戏昵称失败（已忽略）: {exc}")
+                self._logger.warning(message)
             return False
 
     def latest_interaction(self, *, max_age: float = INTERACTION_TTL_SECONDS) -> dict[str, Any] | None:

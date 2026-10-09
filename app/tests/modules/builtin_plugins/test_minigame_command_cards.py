@@ -78,10 +78,13 @@ def _visible(html: str) -> str:
     return re.sub(r"<[^>]+>", " ", without_style)
 
 
-def test_mask_user_id_keeps_only_head_and_tail() -> None:
-    assert MinigamePlugin._mask_user_id("10001") == "10****01"
-    assert MinigamePlugin._mask_user_id("123") == "玩家"
-    assert MinigamePlugin._mask_user_id("") == "玩家"
+def test_rank_player_label_prefers_name_then_masks() -> None:
+    label = MinigamePlugin._rank_player_label
+    assert label({"user_id": "10001", "user_name": "小红"}, fallback_index=1) == "小红"
+    assert label({"user_id": "10001", "user_name": "  "}, fallback_index=1) == "10****01"
+    assert label({"user_id": "123", "user_name": ""}, fallback_index=2) == "玩家 #2"
+    assert label({"user_id": ""}, fallback_index=3) == "玩家 #3"
+    assert label(None, fallback_index=4) == "玩家 #4"
 
 
 async def test_menu_card_lists_games(captured: list[str]) -> None:

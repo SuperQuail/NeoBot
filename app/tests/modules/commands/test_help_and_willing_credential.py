@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from neobot_app.commands.builtin import (
-    _render_command_detail_markdown,
-    _render_command_list_markdown,
-)
 from neobot_app.commands.model import PERM_EVERYONE, PERM_SUB_ADMIN, Command
 
 
@@ -126,26 +122,6 @@ async def test_help_list_text_fallback_on_converter_failure() -> None:
     result = await _handle_help(_ctx(service))
     assert result is not None
     assert "可用命令:" in result
-
-
-def test_render_command_detail_markdown() -> None:
-    md = _render_command_detail_markdown(
-        Command(
-            name="reboot",
-            description="重启 Bot",
-            permission=PERM_SUB_ADMIN,
-            handler=lambda ctx: "x",
-        )
-    )
-    assert "`/reboot`" in md
-    assert "次级管理员" in md
-
-
-def test_render_command_list_markdown() -> None:
-    md = _render_command_list_markdown(
-        [Command(name="help", description="查看帮助", permission=PERM_EVERYONE, handler=lambda ctx: "x")]
-    )
-    assert "`/help`" in md
 
 
 # ── 全局回复意愿凭据工具 ──

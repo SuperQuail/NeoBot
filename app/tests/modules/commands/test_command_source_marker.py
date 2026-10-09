@@ -4,10 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from neobot_app.commands.builtin import (
-    _render_command_detail_markdown,
-    _render_command_list_markdown,
-)
 from neobot_app.commands.model import Command
 
 
@@ -36,28 +32,6 @@ def test_plugin_command_help_line_keeps_permission_marker() -> None:
     assert line.startswith("/status [概况 用量 插件 错误] — 查看运行状态")
     assert "[权限:所有人]" in line
     assert "[来源: dashboard]" in line
-
-
-def test_help_list_markdown_marks_plugin_commands() -> None:
-    bt = chr(96)  # 反引号：避免在测试源码里写 markdown 定界符
-    markdown = _render_command_list_markdown([_builtin_command(), _plugin_command()])
-    assert f"{bt}/help{bt}" in markdown
-    assert "[来源: dashboard]" in markdown
-    # 本体命令那一行没有来源标记
-    builtin_line = next(
-        line for line in markdown.splitlines() if line.startswith(f"- {bt}/help{bt}")
-    )
-    assert "[来源" not in builtin_line
-    plugin_line = next(
-        line for line in markdown.splitlines() if line.startswith(f"- {bt}/status")
-    )
-    assert "[来源: dashboard]" in plugin_line
-
-
-def test_help_detail_markdown_adds_source_row() -> None:
-    detail = _render_command_detail_markdown(_plugin_command())
-    assert "| 来源 | dashboard |" in detail
-    assert "来源" not in _render_command_detail_markdown(_builtin_command())
 
 
 async def test_help_text_fallback_marks_plugin_commands() -> None:
