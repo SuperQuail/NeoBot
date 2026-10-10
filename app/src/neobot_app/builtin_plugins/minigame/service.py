@@ -119,6 +119,26 @@ class MinigameService:
             result = await session.execute(text(sql), dict(params or {}))
             return int(result.rowcount or 0)
 
+    async def remember_user_name(self, user_id: Any, user_name: Any) -> bool:
+        """把昵称记进 `mg_profile.user_name`（榜单卡片用），返回是否写到了行。
+
+        尽力而为：空名、未建过行的用户都直接跳过，**永不抛异常** —— 昵称只是展示信息，
+        不能因为它影响玩法。行只在首次加分/签到时创建（`ensure_profile`），
+        因此顺序上「先报昵称、后得分」的常见路径也能落到同一行。
+        """
+        uid = str(user_id or "").strip()
+        name = str(user_name or "").strip()[:128]
+        if not uid or not name:
+            return False
+        try:
+            changed = await self._run(
+                "UPDATE mg_profile SET user_name = :name WHERE user_id = :uid",
+                {"name": name, "uid": uid},
+            )
+        except Exception:
+            return False
+        return changed > 0
+
     # ── 积分账户（mg_profile）────────────────────────────────────
 
     async def ensure_profile(self, user_id: Any) -> dict[str, Any]:
@@ -683,7 +703,7 @@ class MinigameService:
         offset = max(0, (int(page) - 1) * int(page_size))
         rows = await self._all(
             """
-            SELECT user_id, score, best_score, plays, wins FROM mg_profile
+            SELECT user_id, user_name, score, best_score, plays, wins FROM mg_profile
              ORDER BY score DESC, updated_at ASC
              LIMIT :limit OFFSET :offset
             """,
@@ -696,9 +716,14 @@ class MinigameService:
     ) -> list[dict[str, Any]]:
         return await self._all(
             """
-            SELECT user_id, SUM(score) AS score, COUNT(*) AS plays FROM mg_record
-             WHERE conversation_id = :conv
-             GROUP BY user_id
+            SELECT r.user_id,
+                   SUM(r.score) AS score,
+                   COUNT(*) AS plays,
+                   COALESCE(p.user_name, '') AS user_name
+              FROM mg_record r
+              LEFT JOIN mg_profile p ON p.user_id = r.user_id
+             WHERE r.conversation_id = :conv
+             GROUP BY r.user_id
              ORDER BY score DESC
              LIMIT :limit
             """,

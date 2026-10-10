@@ -2,8 +2,8 @@
 flow: 11-minigame
 covers:
   - app/src/neobot_app/builtin_plugins/minigame/
-verified_against: 528fe18
-verified_hash: cc030bb1a214
+verified_against: e93fb6a
+verified_hash: 78a12ca7d414
 ---
 
 # 11 小游戏：命令/关键词/工具三入口 · 认人窗口 · 积分账户 · 卡片渲染与降级
@@ -30,7 +30,13 @@ verified_hash: cc030bb1a214
 
 1. **工具通道不发卡**：7 个工具都只返回文本，没有「已渲染好卡片、请发给用户」的句柄；
    全仓库 grep `minigame__card` 为 0 命中 —— 这个工具**不存在**，发卡只在命令入口发生。
-2. `/mg help` 与 `/mg help <游戏>` 直接返回纯文本、不出图（`help_command`:873）。
+2. ~~`/mg help` 与 `/mg help <游戏>` 直接返回纯文本、不出图~~ ——
+   **已卡片化（issue #85）**：四个确定性视图（`/mg` 菜单、`/mg 积分`、`/mg rank`、
+   `/mg help <游戏>`）都出图，渲染不可用时回落 `menu_text()` / `points_text()` /
+   `rank_command()` 的文本与 `help_command()` 原文；`/mg help` 无参数直接复用菜单卡。
+   `/mg rank` 的玩家标识改成**昵称优先、取不到回落掩码**（前 2 后 2）：昵称走新增的
+   `mg_profile.user_name`（迁移 v2，每次 /mg 命令 `remember_user_name` 刷一次），
+   两个榜单查询都带出该列（本群榜 LEFT JOIN `mg_profile`），榜单不再下发完整 QQ 号。
 3. `bottle_show_sender_id` 读得到但**未接线**，普通瓶一律显示 QQ 号（`config.py:36`）。
 
 ## 流程
@@ -44,7 +50,7 @@ flowchart TD
     end
     B --> C["remember_interaction｜:381<br/>写 _latest 认人记录"]
     C --> D{"首个子命令是什么?"}
-    D -- "stop / rank / 积分 / help" --> E["stop_command :630 · rank_command :816<br/>points_text :645 · help_command :873"]
+    D -- "stop / rank / 积分 / help" --> E["stop_command :630 · rank_command :816 → 排行榜卡片<br/>points_card · menu_card · help_card（渲染不可用回纯文本）"]
     D -- "玩法 id / 名字 / 别名" --> F["find_game｜games/__init__.py:172 → run_game :609"]
     D -- "其余一律" --> G["natural_language_fallback :614<br/>sync_reply=True，不执行动作"]
     T1 --> H{"resolve_user :409 认出用户?"}

@@ -61,6 +61,12 @@ class PermissionManager:
         return False
 
     def describe(self) -> str:
-        supers = "、".join(str(uid) for uid in sorted(self.super_admins)) or "(未配置)"
-        subs = "、".join(str(uid) for uid in sorted(self.sub_admins)) or "(无)"
-        return f"超级管理员: {supers}\n次级管理员: {subs}"
+        """权限概览：**只给人数，不给号码**。
+
+        命令回复会把它直接展示给用户（`/add_admin` 的参数缺失分支），号码属于
+        「内部状态 → 用户可见文本」的泄露面（issue #85）；需要号码时请看配置或面板。
+        """
+        return (
+            f"超级管理员 {len(self.super_admins)} 人 / "
+            f"次级管理员 {len(self.sub_admins)} 人"
+        )

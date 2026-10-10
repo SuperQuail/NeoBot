@@ -117,8 +117,9 @@ async def test_uploaded_image_segment_can_be_read_by_image_parser(tmp_path: Path
                 payload = await resp.json()
 
         parser = ImageParseService()
-        content = await parser._download_image(payload["data"]["segment"])
+        content, error = await parser._download_image_with_reason(payload["data"]["segment"])
 
+        assert error is None
         assert content == _png_bytes()
     finally:
         await fs.stop()
@@ -155,8 +156,9 @@ async def test_uploaded_image_download_bypasses_proxy_for_local_urls(
                 payload = await resp.json()
 
         parser = ImageParseService()
-        content = await parser._download_image(payload["data"]["segment"])
+        content, error = await parser._download_image_with_reason(payload["data"]["segment"])
 
+        assert error is None
         assert content == _png_bytes()
     finally:
         await fs.stop()

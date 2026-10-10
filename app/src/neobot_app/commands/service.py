@@ -45,6 +45,7 @@ class CommandService:
         screenshots: Any = None,
         image_output_dir: Any = None,
         help_cache_dir: Any = None,
+        avatar_store: Any = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -62,6 +63,8 @@ class CommandService:
         self._screenshots = screenshots
         self._image_output_dir = image_output_dir
         self._help_cache_dir = help_cache_dir
+        #: 头像存储（管理员卡片只画头像、不列号码；见 commands/card.py）
+        self._avatar_store = avatar_store
         if register_builtins:
             for command in build_builtin_commands(self):
                 self._registry.register(command)
@@ -129,6 +132,19 @@ class CommandService:
     def set_screenshots(self, port: Any) -> None:
         """注入/替换截图端口（软重启后浏览器实例被重建时刷新）。"""
         self._screenshots = port
+
+    @property
+    def avatars(self) -> Any:
+        """头像存储（命令卡片画头像用）。
+
+        未注入时为 None：卡片回落首字母色块，**任何情况下都不改用 QQ 号占位**
+        （见 commands/card.py 的 avatar_fragment）。
+        """
+        return self._avatar_store
+
+    def set_avatar_store(self, store: Any) -> None:
+        """注入/替换头像存储（软重启后 AvatarStore 被重建时刷新）。"""
+        self._avatar_store = store
 
     @property
     def help_cache_dir(self) -> Any:

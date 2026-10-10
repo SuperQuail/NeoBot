@@ -238,11 +238,6 @@ class ImageParseService:
         except Exception:
             return None
 
-    async def _download_image(self, segment) -> bytes | None:
-        """从消息段下载图片数据（只关心字节的调用方用这个入口）。"""
-        content, _ = await self._download_image_with_reason(segment)
-        return content
-
     async def _download_image_with_reason(self, segment) -> tuple[bytes | None, str | None]:
         """从消息段下载图片数据；返回 (字节, 过期引用键)。
 

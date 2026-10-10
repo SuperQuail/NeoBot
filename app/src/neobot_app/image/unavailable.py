@@ -145,7 +145,6 @@ class ImageUnavailableRegistry:
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
         self._entries: "OrderedDict[str, str]" = OrderedDict()
         self._capacity = max(1, int(capacity))
-        self._hits = 0
 
     def mark(self, key: Optional[str], notice: str = EXPIRED_NOTICE) -> None:
         """登记一个不可用引用；key 为空时什么都不做。"""
@@ -164,24 +163,13 @@ class ImageUnavailableRegistry:
         if notice is None:
             return None
         self._entries.move_to_end(key)
-        self._hits += 1
         return notice
 
     def is_marked(self, key: Optional[str]) -> bool:
         return bool(key) and key in self._entries
 
-    def snapshot(self) -> dict[str, str]:
-        """当前登记内容（诊断/测试用；按最近命中排序）。"""
-        return dict(self._entries)
-
-    @property
-    def hits(self) -> int:
-        """命中次数：等于「因为这些图不再重试而省掉的拉取次数」。"""
-        return self._hits
-
     def clear(self) -> None:
         self._entries.clear()
-        self._hits = 0
 
     def __len__(self) -> int:
         return len(self._entries)

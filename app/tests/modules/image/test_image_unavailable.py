@@ -49,12 +49,11 @@ def test_ref_digest_is_stable_and_short() -> None:
     assert ref_digest(None) is None
 
 
-def test_registry_is_lru_bounded_and_counts_hits() -> None:
+def test_registry_is_lru_bounded() -> None:
     registry = ImageUnavailableRegistry(capacity=2)
     registry.mark("a")
     registry.mark("b")
     assert registry.notice("a") == EXPIRED_NOTICE
-    assert registry.hits == 1
     registry.mark("c")  # 挤掉最久未命中的 "b"（"a" 刚命中过）
     assert registry.is_marked("a")
     assert not registry.is_marked("b")
@@ -62,7 +61,7 @@ def test_registry_is_lru_bounded_and_counts_hits() -> None:
     assert len(registry) == 2
     assert registry.notice("nope") is None
     registry.clear()
-    assert len(registry) == 0 and registry.hits == 0
+    assert len(registry) == 0
 
 
 def test_clean_expired_text_drops_raw_refs() -> None:

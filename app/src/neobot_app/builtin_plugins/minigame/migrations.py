@@ -120,11 +120,31 @@ async def create_initial_schema(connection) -> None:
     )
 
 
+async def add_profile_user_name(connection) -> None:
+    """v2：mg_profile 增加 user_name（issue #85）。
+
+    排行榜对全群可见：有昵称就显示昵称，没有昵称回落掩码，**不再下发完整 QQ 号**。
+    SQLite 的 ADD COLUMN 带 NOT NULL DEFAULT 时对既有行安全（都拿空串）。
+    """
+    await connection.execute(
+        text(
+            "ALTER TABLE mg_profile "
+            "ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
+        )
+    )
+
+
 def build_migrations() -> tuple[Migration, ...]:
     """本插件数据库的迁移列表（新增结构时追加 version）。"""
     return (
         Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
+        Migration(version=2, name="profile-user-name", upgrade=add_profile_user_name),
     )
 
 
-__all__ = ["DATABASE_FILENAME", "build_migrations", "create_initial_schema"]
+__all__ = [
+    "DATABASE_FILENAME",
+    "add_profile_user_name",
+    "build_migrations",
+    "create_initial_schema",
+]
