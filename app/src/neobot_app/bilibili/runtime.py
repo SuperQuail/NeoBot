@@ -195,6 +195,12 @@ class BilibiliRuntime:
         live._summary_every = max(
             0, int(getattr(cfg, "live_interaction_summary_every", 200) or 0)
         )
+        # @ 识别名单是文档承诺热生效的「名单类运行时读取项」，与构造逻辑保持一致
+        live._mention_names = tuple(
+            str(name).strip()
+            for name in (getattr(cfg, "live_interaction_mention_names", None) or ())
+            if str(name).strip()
+        )
         if was_auto_look != live._auto_look_enabled:
             task = getattr(live, "_auto_look_task", None)
             if task is not None and not task.done():

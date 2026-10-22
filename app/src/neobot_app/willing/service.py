@@ -475,6 +475,10 @@ class WillingService:
     @staticmethod
     def _normalize_conversation_id(conv_id: str) -> str:
         value = str(conv_id or "").strip()
+        if value.startswith("live:") and value[5:].strip():
+            # live:<room> 是 evaluate_live 的查找键（与同号 QQ 群区分）；
+            # 剥掉前缀会导致直播间系数/黑名单写进同号群聊的键上
+            return value
         if ":" in value:
             _, value = value.split(":", 1)
             value = value.strip()

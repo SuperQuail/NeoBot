@@ -2508,6 +2508,7 @@ class ReplyOrchestrator:
             return delivered
 
         async def send_emoji_handler(number: int, text: str = "") -> None:
+            nonlocal reply_sent
             if self._emoji_service is None:
                 return
             entry = self._emoji_service.get_entry(number)
@@ -2519,7 +2520,11 @@ class ReplyOrchestrator:
                 segments.append({"type": "text", "data": {"text": text.strip()}})
             segments.append(prepare_image_segment(self._file_server, entry.file_path))
             emoji_conv = event.conversation_ref
-            await self._send_with_timeout(emoji_conv, segments)
+            delivered = await self._send_with_timeout(emoji_conv, segments)
+            # 表情包发出去了就算「已回复」：否则 emoji-only 轮次会被判 CANCELLED，
+            # 回复冷却与 last_reply_position 都不推进
+            if delivered is not False:
+                reply_sent = True
             # 表情包也是「真实发出去了」的图片：文本与图片各按真实形态入队
             if emoji_conv is not None:
                 emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
@@ -2537,6 +2542,9 @@ class ReplyOrchestrator:
             max_wait = self._get_max_wait_seconds()
             wait_time = max(1, min(seconds, max_wait))
             await asyncio.sleep(wait_time)
+            # 对比基准必须在收集前取：_collect_new_entries 会把新条目灌进快照，
+            # 收集后再取会让重名提示的「新发送者」恒出现在 previous 里而不触发
+            entries_before_wait = queue_copy.entries(queue_key)
             new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
             if new_entries:
                 # 睡眠拦截:睡眠中被@则唤醒并注入唤醒提示词,其余消息忽略
@@ -2560,15 +2568,15 @@ class ReplyOrchestrator:
                         f"等待了 {wait_time} 秒,期间收到新消息,"
                         "但 Bot 正在睡觉,暂不处理。"
                     )
-                # 刷新对比基准,避免多次 wait 的重复名提示基于过期快照
-                nonlocal previous_entries
-                previous_entries = queue_copy.entries(queue_key)
                 new_text = numbering.apply_new(
                     new_entries,
                     queue_copy,
                     context_entries=queue_copy.entries(queue_key),
-                    previous_entries=previous_entries,
+                    previous_entries=entries_before_wait,
                 )
+                # 刷新对比基准，下次 wait 的重名提示不基于过期快照
+                nonlocal previous_entries
+                previous_entries = queue_copy.entries(queue_key)
                 if new_text:
                     # wait 期间首次出现的群成员:档案一并注入工具结果
                     # (登记到 rendered_user_ids 前必须真正渲染过,否则档案永远丢失)
@@ -2656,6 +2664,7 @@ class ReplyOrchestrator:
             return "\n".join(lines)
 
         async def speak_handler(text: str) -> str:
+            nonlocal reply_sent
             if self._tts_service is None:
                 return "错误：TTS 服务未配置"
             segment = await asyncio.wait_for(
@@ -2663,7 +2672,10 @@ class ReplyOrchestrator:
                 timeout=self._get_io_timeout_seconds(),
             )
             speak_conv = event.conversation_ref
-            await self._send_with_timeout(speak_conv, [segment])
+            delivered = await self._send_with_timeout(speak_conv, [segment])
+            # 与 send_reply 同语义：语音真实发出即视为已回复
+            if delivered is not False:
+                reply_sent = True
             # 语音入队：保留发送时的原始文本 + 音频文件索引
             # （暂无语音解析能力，文本原样留着；文件索引供将来取用）
             if speak_conv is not None:

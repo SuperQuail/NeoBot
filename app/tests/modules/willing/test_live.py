@@ -41,3 +41,39 @@ def test_evaluate_live_uses_live_conversation_id(monkeypatch) -> None:
 
     assert captured["conversation_id"] == "live:5440"
     assert captured["is_allowed"] is True
+
+
+def test_live_runtime_coefficient_keeps_live_prefix(monkeypatch) -> None:
+    """live:<room> 的运行时系数必须带前缀存取：剥前缀会串到同号 QQ 群。"""
+    config = BotConfig()
+    service = WillingService(config)
+
+    service.set_runtime_conversation_coefficient("live:5440", 0.5)
+
+    assert service.get_runtime_conversation_coefficient("live:5440") == 0.5
+    assert service._runtime_config.conversation_coefficients.get("live:5440") == 0.5
+    assert service._runtime_config.conversation_coefficients.get("5440") is None, (
+        "直播间的系数不得写进同号 QQ 群的键"
+    )
+
+    service.remove_runtime_conversation_coefficient("live:5440")
+    assert service.get_runtime_conversation_coefficient("live:5440") is None
+
+
+def test_live_runtime_blacklist_blocks_live_room(monkeypatch) -> None:
+    """拉黑直播间 live:<room> 后，该直播间的弹幕必须被判屏蔽。"""
+    config = BotConfig()
+    service = WillingService(config)
+
+    service.add_runtime_blacklist("live:5440")
+    decision = service.evaluate_live(
+        room_id=5440,
+        uid=9,
+        name="观众",
+        text="在吗？",
+        base_probability=1.0,
+        mentioned=True,
+    )
+
+    assert decision.should_reply is False
+    assert "runtime_blacklist: blocked" in " ".join(decision.reasons)

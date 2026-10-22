@@ -3022,3 +3022,173 @@ async def test_no_tool_call_reminder_then_cancel(monkeypatch):
     assert event.generated_text in ("", None)
     assert any(stage == "no_tool_call_reminder" for stage, _ in stages)
     await orch.shutdown()
+
+
+# ── 表情包/语音发出即视为已回复（回归：不得判 CANCELLED 或多拉模型）──
+
+
+_PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _media_tool_call(call_id: str, name: str, arguments: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+async def _run_media_only_pipeline(monkeypatch, provider, **orch_extra):
+    """驱动一次「只调媒体工具、不 send_reply」的私聊 agent 轮。"""
+    orch = ReplyOrchestrator(
+        adapter=_FakeAdapter(),
+        prompt_builder=_FakePromptBuilder(),
+        provider=provider,
+        config=_FakeConfig(),
+        **orch_extra,
+    )
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.01)
+    await orch.shutdown()
+    return event
+
+
+async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
+    """只发一张表情包就算已回复：主循环立即结束，事件进 COMPLETED。"""
+    emoji_file = tmp_path / "emoji.png"
+    emoji_file.write_bytes(_PNG_1X1)
+    emoji_service = SimpleNamespace(
+        emoji_count=1,
+        get_entry=lambda number: (
+            SimpleNamespace(file_path=emoji_file) if number == 3 else None
+        ),
+        record_usage=AsyncMock(),
+    )
+    provider = _ScriptedProvider([
+        {
+            "content": "",
+            "tool_calls": [
+                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+            ],
+        }
+    ])
+    event = await _run_media_only_pipeline(
+        monkeypatch,
+        provider,
+        emoji_service=emoji_service,
+        file_server=SimpleNamespace(_enabled=False),
+    )
+
+    assert len(provider.calls) == 1, "表情包已真实发出，不得再拉模型"
+    emoji_service.record_usage.assert_awaited_once_with(3)
+    assert event.state.name == "COMPLETED"
+    assert event.error is None
+
+
+async def test_speak_only_round_counts_as_replied(monkeypatch):
+    """只发一条语音就算已回复：主循环立即结束，事件进 COMPLETED。"""
+    tts_service = SimpleNamespace(
+        enabled=True,
+        synthesize_segment=AsyncMock(
+            return_value={"type": "record", "data": {"file": "file:///voice.wav"}}
+        )
+    )
+    provider = _ScriptedProvider([
+        {
+            "content": "",
+            "tool_calls": [
+                _media_tool_call("call-speak", "speak", json.dumps({"text": "你好"}))
+            ],
+        }
+    ])
+    event = await _run_media_only_pipeline(
+        monkeypatch, provider, tts_service=tts_service
+    )
+
+    assert len(provider.calls) == 1, "语音已真实发出，不得再拉模型"
+    tts_service.synthesize_segment.assert_awaited_once_with("你好")
+    assert event.state.name == "COMPLETED"
+    assert event.error is None
+
+
+async def test_wait_reports_duplicate_name_note_for_new_sender(monkeypatch):
+    """wait 期间收到与既有发送者同名但不同 QQ 的新消息，必须给出重名提示。
+
+    回归：此前对比基准在收集新条目之后才取，快照已被污染，
+    `之前的"X"是QQ号为Y的` 提示永远不会出现。
+    """
+    provider = _ScriptedProvider([
+        {
+            "content": "",
+            "tool_calls": [
+                _media_tool_call("call-wait", "wait", json.dumps({"seconds": 1}))
+            ],
+        },
+        _send_reply_response("收到"),
+    ])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    queue.push(
+        "123456",
+        PrivateMessage(
+            message_type=MessageTypeEnum.private,
+            message_id=100,
+            user_id=111,
+            message=[MessageSegment(type="text", data={"text": "旧消息"})],
+            raw_message="旧消息",
+            sender=PostMessageMessagesender(user_id=111, nickname="小明"),
+        ),
+    )
+    event = orch.start_reply(
+        message=_make_private_message(),
+        queue=queue,
+        queue_key="123456",
+        decision=_make_decision(),
+    )
+    assert event is not None
+    await asyncio.sleep(0.3)  # 处于 wait 的 1 秒睡眠窗口内
+    queue.push(
+        "123456",
+        PrivateMessage(
+            message_type=MessageTypeEnum.private,
+            message_id=101,
+            user_id=222,
+            message=[MessageSegment(type="text", data={"text": "新消息"})],
+            raw_message="新消息",
+            sender=PostMessageMessagesender(user_id=222, nickname="小明"),
+        ),
+    )
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.1)
+
+    tool_messages = [m for m in provider.calls[1][0] if m.get("role") == "tool"]
+    content = "\n".join(m["content"] for m in tool_messages)
+    assert '之前的"小明"是QQ号为111的' in content
+    assert event.error is None
+    await orch.shutdown()

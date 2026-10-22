@@ -125,3 +125,22 @@ async def test_diary_loop_flushes_summary_before_run(tmp_path, monkeypatch) -> N
 
     assert flushed == [True]
     assert order == ["summary", "diary"]
+
+
+def test_apply_config_updates_live_mention_names(tmp_path) -> None:
+    """热重载必须更新直播间 @ 识别名单：文档承诺名单类配置「下次读取即生效」。"""
+    runtime = _runtime(tmp_path)
+    assert runtime.live_interactor._mention_names == ()
+
+    runtime.apply_config(
+        SimpleNamespace(
+            bilibili=SimpleNamespace(
+                cookie_file=str(tmp_path / "cookies.json"),
+                live_interaction_mention_names=["前女友", "  "],
+            ),
+            bot=SimpleNamespace(nick_name="", bot_data=""),
+        )
+    )
+
+    assert runtime.live_interactor._mention_names == ("前女友",)
+    assert "前女友" in runtime.live_interactor._known_bot_names()
