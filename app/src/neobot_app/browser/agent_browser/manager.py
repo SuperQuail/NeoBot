@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import platform
 import shutil
@@ -42,6 +43,8 @@ _MAX_RETRIES = 2
 _RETRY_INTERVAL = 1.0
 
 _WINDOWS = platform.system() == "Windows"
+
+_logger = logging.getLogger("neobot.browser")
 
 # 本进程内所有存活 BrowserManager 实例的注册表（按 user_data_dir 小写分组）。
 # DrissionPage 某些版本取不到 chrome 主进程 pid，因此无法按 pid 判定归属；
@@ -174,6 +177,10 @@ class BrowserManager:
         self._page: ChromiumBase | None = None
         self._session_page: ChromiumPage | None = None
         self._chrome_pid: Optional[int] = None
+        # 最近一次 start() 的重试诊断（fix(26)）：失败定位用，不含敏感信息。
+        self._start_attempts = 0
+        self._start_first_error = ""
+        self._start_last_error = ""
         self._tab_pages: dict[str, ChromiumBase] = {}
         self._recording = False
         self._recording_frames: list[bytes] = []
@@ -196,8 +203,8 @@ class BrowserManager:
             for f in _glob.glob(str(ud / "**" / pattern), recursive=True):
                 try:
                     Path(f).unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("清理浏览器锁文件失败 %s: %s", f, exc)
 
     def _kill_orphaned_chrome(self) -> None:
         """清理使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
@@ -225,10 +232,10 @@ class BrowserManager:
                         p = _psutil.Process(proc.info["pid"])
                         p.kill()
                         p.wait(timeout=3)
-                except (_psutil.NoSuchProcess, _psutil.AccessDenied, _psutil.TimeoutExpired):
-                    pass
-        except Exception:
-            pass
+                except (_psutil.NoSuchProcess, _psutil.AccessDenied, _psutil.TimeoutExpired) as exc:
+                    _logger.debug("跳过残留浏览器进程 %s: %s", proc.info.get("pid"), exc)
+        except Exception as exc:
+            _logger.debug("清理残留浏览器进程失败: %s", exc)
 
     @property
     def user_data_dir(self) -> str:
@@ -238,6 +245,15 @@ class BrowserManager:
     def cookie_file(self) -> Path:
         return Path(self._user_data_dir) / "cookies.json"
 
+    @property
+    def start_diagnostics(self) -> dict[str, Any]:
+        """最近一次 start() 的重试诊断：attempts / first_error / last_error。"""
+        return {
+            "attempts": self._start_attempts,
+            "first_error": self._start_first_error,
+            "last_error": self._start_last_error,
+        }
+
     # ── 生命周期 ──
 
     async def start(self) -> None:
@@ -246,7 +262,11 @@ class BrowserManager:
         # 在这里就抛出带修复指引的错误，而不是等到调用某个属性才炸。
         require_drissionpage()
         self._kill_orphaned_chrome()
+        self._start_attempts = 0
+        self._start_first_error = ""
+        self._start_last_error = ""
         for attempt in range(3):
+            self._start_attempts = attempt + 1
             try:
                 self._page = await asyncio.to_thread(self._start_sync)
                 self._session_page = self._page
@@ -254,26 +274,38 @@ class BrowserManager:
                 # 浏览器就绪后自动恢复 cookie 和 localStorage
                 await self._restore_persisted_state()
                 return
-            except Exception:
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                if not self._start_first_error:
+                    self._start_first_error = error
+                self._start_last_error = error
                 if attempt < 2:
+                    _logger.warning(
+                        "浏览器启动第 %s/3 次失败，1.5s 后重试: %s", attempt + 1, error
+                    )
                     await asyncio.sleep(1.5)
                     if self._session_page:
                         try:
                             await asyncio.to_thread(self._session_page.quit)
-                        except Exception:
-                            pass
+                        except Exception as cleanup_exc:
+                            _logger.debug("浏览器重试前关闭旧实例失败: %s", cleanup_exc)
                     self._page = None
                     self._session_page = None
                     self._chrome_pid = None
                     continue
+                _logger.error("浏览器启动连续 3 次失败，最后一次: %s", error)
                 # 最后一次失败：清引用后清理孤儿进程，再抛出原异常。
                 self._page = None
                 self._session_page = None
                 self._chrome_pid = None
                 try:
                     self._kill_orphaned_chrome()
-                except Exception:
-                    pass
+                except Exception as cleanup_exc:
+                    _logger.debug("浏览器启动失败后的孤儿进程清理失败: %s", cleanup_exc)
+                exc.add_note(
+                    f"浏览器启动重试 {self._start_attempts} 次仍失败；"
+                    f"首次错误：{self._start_first_error}"
+                )
                 raise
 
     def _start_sync(self) -> ChromiumPage:

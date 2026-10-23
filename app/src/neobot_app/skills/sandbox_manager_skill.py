@@ -87,7 +87,6 @@ class SandboxManagerSkill(SkillModule):
     def __init__(
         self,
         sandbox_service: Any = None,
-        sandbox_lock: Any = None,
         adapter: Any = None,
         file_server: Any = None,
         hold_max_minutes: int = 120,
@@ -100,7 +99,6 @@ class SandboxManagerSkill(SkillModule):
         from neobot_app.runtime.agent_file_tools import AgentFileTools
         self._file_tools = AgentFileTools(sandbox_service) if sandbox_service is not None else None
         self._file_owner = f"legacy-sandbox-skill:{id(self)}"
-        self._lock = sandbox_lock
         self._adapter = adapter
         self._file_server = file_server
         self._hold_max_minutes = hold_max_minutes

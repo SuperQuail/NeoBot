@@ -5,11 +5,10 @@ covers:
   - app/src/neobot_app/skills/
   - app/src/neobot_app/bootstrap/_skills.py
   - app/src/neobot_app/runtime/sandbox_service.py
-  - app/src/neobot_app/runtime/sandbox_lock.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
 verified_against: 802eb41
-verified_hash: 1ef312e2f074
+verified_hash: 08d551196313
 ---
 
 # 06 工具运行时与技能：注册 · native/PTC · 管理员凭据 · 沙箱裁决 · 维护 Agent
@@ -23,7 +22,7 @@ verified_hash: 1ef312e2f074
 * `skills/`：内置 Python 技能（`SkillModule` / `SkillManager`）的注册、`{skill}__{tool}` 前缀路由、
   常驻 / 延后加载（`SkillToolActivation`）、`agent_tools` 五个按需工具包；
 * `packages/chat/src/neobot_chat/skills/`：Markdown 技能（`SKILL.md`）的发现、关键词命中与系统提示注入；
-* `runtime/sandbox_service.py`、`sandbox_lock.py`、`sandbox_maintenance.py`：路径裁决、原子写、临时区、
+* `runtime/sandbox_service.py`、`sandbox_maintenance.py`：路径裁决、原子写、临时区、
   维护周期的调度与执行。
 
 不在本图内：`04-agent-loop` 画 chat 侧 `Agent` 的工具调用回合；`03-reply-pipeline` 画回复编排与
@@ -32,8 +31,9 @@ provider / adapter / 浏览器 / 插件只出现在调用点，不展开。
 
 **spec 与现实的差异（读图前先知道）**：
 
-1. `SandboxLock` 全仓库**没有任何调用点**（`acquire` / `release` / `acquire_temp` / `is_owner` / `is_occupied` 均无调用者，
-   只被 `bootstrap/_runtime.py:221` 构造并注入）。「同一时间只有一个 agent 能写沙箱」目前**不成立**。
+1. `SandboxLock` 曾**没有任何调用点**（`acquire` / `release` / `acquire_temp` / `is_owner` / `is_occupied` 均无调用者，
+   只被 `bootstrap/_runtime.py` 构造并注入）。该模块已在 **fix(22)（2026-10-23）删除**；
+   沙箱的实际保护是 `SandboxService.file_lock` + `atomic_write`，不存在跨 agent 的全局互斥。
 2. `SandboxManagerSkill` 的 `hold_temp` 只调用 `ensure_temp_dir`，`minutes` 参数不产生任何计时（NO-OP）。
 3. `execute_command` 在 `runtime.py:103` 注册时被**无条件跳过**：线协议上的命令工具只有平台名 `pwsh` / `bash`。
 4. `config.agent.tools.mode=ptc` 只改变**任务型 Agent**（子 Agent / 解题 / Goal）的呈现；
@@ -490,13 +490,11 @@ flowchart TD
 </details>
 
 <details>
-### 沙箱并发与临时区：装配了却没生效的锁，以及真正的保护
+### 沙箱并发与临时区：已删除的假锁与真正的保护
 
 ```mermaid
 flowchart TD
-    A["SandboxLock｜sandbox_lock.py:10"] --> B["bootstrap/_runtime.py:221 构造，注入 SandboxService 与 SandboxManagerSkill"]
-    B --> C["全仓库没有 acquire / release / acquire_temp / is_owner 的调用点"]
-    C --> C1["结论：当前不构成任何互斥，别把它当既有保证"]
+    A["SandboxLock 已于 fix(22)（2026-10-23）删除：曾零调用点，不构成任何互斥"] --> D
     D["真正在起作用的是文件级串行"] --> E["SandboxService.file_lock：按规范化路径的 RLock，引用计数归零即回收"]
     E --> F["atomic_write：同目录 mkstemp，前缀 .neobot-write-"]
     F --> G["写入 + flush + fsync 后再 os.replace 原子替换"]
@@ -509,10 +507,9 @@ flowchart TD
     M --> N["TempCleaner：mtime 超过 1800 秒即删；清理锁忙时返回 skipped=busy"]
 ```
 
-`SandboxLock` 的类注释宣称「主持有者拥有完整写权限、临时持有者只能访问 temp/{chat_flow_id}」，
-但 `SandboxService.__init__` 把 `lock` 存进 `self._lock` 后再未使用，
-`SandboxManagerSkill` 同样只赋值不使用，全仓库也不存在任何 `acquire` 调用 ——
-**读代码时不要以为沙箱写操作被单会话互斥保护**。
+`SandboxLock` 曾宣称「主持有者拥有完整写权限、临时持有者只能访问 temp/{chat_flow_id}」，
+但 `SandboxService.__init__` 与 `SandboxManagerSkill` 都只保存 `lock` 不使用，全仓库也不存在任何 `acquire` 调用 ——
+该模块已在 **fix(22)（2026-10-23）删除**；**沙箱写操作从来没有过单会话互斥保护**。
 `hold_temp` 工具（`sandbox_manager_skill.py:873`）只调 `ensure_temp_dir` 就返回
 「已保活 N 分钟」，没有任何计时器或标记，属于纯回显。
 同一个文件的跨进程写入没有锁：`file_lock` 是进程内 `threading` 原语，
@@ -577,7 +574,6 @@ CLI 侧（`cli.py:558`）有同构的一份循环，两条路径共用同一套 
 | 已激活技能集合 | SkillToolActivation.load | 随执行器对象生命周期 | 不可见技能只回文本提示，不抛错 |
 | 沙箱临时目录 | ensure_temp_dir 幂等创建 | TempCleaner 按 1800 秒 mtime 删 | 目录被清后旧路径失效，需重新解析 |
 | `.last_maintenance` 标记 | 维护周期末尾写时间戳 | 无（只读比较） | 标记不存在时视为有变更，首跑必做 |
-| SandboxLock 持有者 | 无调用点 | 无 | 当前不参与任何裁决，不可依赖 |
 
 ## 易错点
 
@@ -586,8 +582,8 @@ CLI 侧（`cli.py:558`）有同构的一份循环，两条路径共用同一套 
   「谁实现了 `install_vision_provider` 就推给谁」扫描 `skill_manager.all_skills`
   （**property，不是方法**，写成 `all_skills()` 直接 TypeError）—— 新增会看图的技能
   只要实现同一入口就自动跟上（issue #75）。
-* **SandboxLock 是死装配**：`acquire` / `acquire_temp` / `is_owner` / `is_occupied` 全仓库零调用点，
-  `SandboxService._lock` 与 `SandboxManagerSkill._lock` 赋值后未使用。想加互斥必须自己接线。
+* **不存在全局沙箱互斥**：`SandboxLock` 已于 fix(22) 删除（此前也只是零调用点的死装配）。
+  能依赖的只有进程内 `file_lock`；跨进程/跨实例的写冲突没人管，加互斥必须自己接线。
 * **`hold_temp` 是 NO-OP**：`minutes` 只出现在返回文案里，没有保活计时，临时目录照样按 mtime 被清。
 * **`execute_command` 注册时被跳过**（`runtime.py:103`）：线协议命令工具只有 `pwsh` / `bash`；
   直接把 `execute_command` 交给 runtime 会得到 `UNKNOWN_TOOL`。

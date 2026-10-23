@@ -92,6 +92,16 @@ class BrowserAgentWrapper:
         """跨聊天流共享的页面操作锁（串行化对共享标签页的操作）。"""
         return self._operation_lock
 
+    @property
+    def start_diagnostics(self) -> dict[str, Any]:
+        """最近一次浏览器启动的重试诊断（未启动时为空）。"""
+        if self._agent is None:
+            return {}
+        manager = getattr(self._agent, "_manager", None)
+        if manager is None:
+            return {}
+        return manager.start_diagnostics
+
     # ── 生命周期 ──
 
     async def _ensure(self) -> AgentBrowser:

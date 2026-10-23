@@ -57,6 +57,23 @@ def _safe_int(value: object) -> int:
         return 0
 
 
+_CHAT_FIELD_DEFAULTS: dict[str, Any] | None = None
+
+
+def _chat_default(name: str) -> Any:
+    """Chat 配置字段的缺省值唯一来源（schema），避免 getter 手写第二份默认值。"""
+    global _CHAT_FIELD_DEFAULTS
+    if _CHAT_FIELD_DEFAULTS is None:
+        from dataclasses import MISSING, fields
+
+        from neobot_app.config.schemas.bot import Chat
+
+        _CHAT_FIELD_DEFAULTS = {
+            item.name: item.default for item in fields(Chat) if item.default is not MISSING
+        }
+    return _CHAT_FIELD_DEFAULTS[name]
+
+
 #: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
 #: 刻意只提示、不短路：部署者修好环境（例如换对 QQ 版本）之后继续调用必须
 #: 真实执行，否则工具会永久不可用。
@@ -1031,34 +1048,33 @@ class ReplyOrchestrator:
         return self._provider
 
     def _resolve_mode(self) -> str:
-        # 回退值必须与 config.schemas.bot.Chat.reply_mode 的默认值一致（agent），
-        # 否则「字段缺失」时会静默降级成 common（只有基础回复能力）。
+        # 回退值统一取自 schema（见 fix(23)），不再手写第二份默认值。
         if self._config is not None:
-            mode = getattr(self._config.chat, "reply_mode", "agent") or "agent"
+            mode = getattr(self._config.chat, "reply_mode", None)
             if mode in ("common", "agent"):
                 return mode
-        return "agent"
+        return _chat_default("reply_mode")
 
     def _get_cooldown_seconds(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "reply_cooldown_seconds", None)
             if isinstance(val, int):
                 return val
-        return 2
+        return _chat_default("reply_cooldown_seconds")
 
     def _get_wait_cooldown_seconds(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "wait_cooldown_seconds", None)
             if isinstance(val, int):
                 return val
-        return 60
+        return _chat_default("wait_cooldown_seconds")
 
     def _get_sentence_cooldown_seconds(self) -> float:
         if self._config is not None:
             val = getattr(self._config.chat, "reply_sentence_cooldown_seconds", None)
             if isinstance(val, (int, float)):
                 return float(val)
-        return 2.0
+        return float(_chat_default("reply_sentence_cooldown_seconds"))
 
     def _get_private_chat_sentence_cooldown_seconds(self) -> float:
         if self._config is not None:
@@ -1067,43 +1083,43 @@ class ReplyOrchestrator:
             )
             if isinstance(val, (int, float)):
                 return float(val)
-        return 2.0
+        return float(_chat_default("private_chat_sentence_cooldown_seconds"))
 
     def _get_max_wait_seconds(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "agent_wait_max_seconds", None)
             if isinstance(val, int) and val > 0:
                 return val
-        return 60
+        return _chat_default("agent_wait_max_seconds")
 
     def _get_private_chat_suspend_wait_seconds(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "private_chat_suspend_wait_seconds", None)
             if isinstance(val, int) and val > 0:
                 return val
-        return 300
+        return _chat_default("private_chat_suspend_wait_seconds")
 
     def _get_agent_max_iterations(self) -> int:
         if self._config is not None:
             val = getattr(self._config.chat, "agent_max_iterations", None)
             if isinstance(val, int) and val > 0:
                 return val
-        return 200
+        return _chat_default("agent_max_iterations")
 
     def _get_group_agent_silent_timeout_seconds(self) -> float:
         if self._config is not None:
             val = getattr(self._config.chat, "group_agent_silent_timeout_seconds", None)
             if isinstance(val, (int, float)):
                 return max(0.0, float(val))
-        return 120.0
+        return float(_chat_default("group_agent_silent_timeout_seconds"))
 
     def _get_silent_nudge_settings(self) -> tuple[bool, int, int, float, int]:
         """读取沉默提醒(nudge)配置,容忍缺省与 None:返回 (开关, 首次轮数, 后续轮数, 秒数, 上限)。"""
-        enabled = True
-        first_rounds = 5
-        repeat_rounds = 10
-        seconds = 45.0
-        max_emitted = 3
+        enabled = bool(_chat_default("silent_nudge_enabled"))
+        first_rounds = int(_chat_default("silent_nudge_first_rounds"))
+        repeat_rounds = int(_chat_default("silent_nudge_repeat_rounds"))
+        seconds = float(_chat_default("silent_nudge_seconds"))
+        max_emitted = int(_chat_default("silent_nudge_max"))
         if self._config is not None:
             chat = getattr(self._config, "chat", None)
             val = getattr(chat, "silent_nudge_enabled", None)
@@ -1160,7 +1176,7 @@ class ReplyOrchestrator:
             val = getattr(self._config.chat, "private_chat_max_tokens", None)
             if isinstance(val, int) and val > 0:
                 return val
-        return 50000
+        return _chat_default("private_chat_max_tokens")
 
     async def _compact_private_history(
         self,
@@ -1242,11 +1258,12 @@ class ReplyOrchestrator:
             )
             if isinstance(val, (int, float)) and val > 0:
                 return float(val)
-        return 5.0
+        return float(_chat_default("private_chat_new_message_collect_seconds"))
 
     def _get_native_vision_default_image_count(self) -> int:
-        value = getattr(getattr(self._config, "chat", None), "native_vision_default_image_count", 4)
-        return value if type(value) is int and value >= 0 else 4
+        default = _chat_default("native_vision_default_image_count")
+        value = getattr(getattr(self._config, "chat", None), "native_vision_default_image_count", None)
+        return value if type(value) is int and value >= 0 else default
 
     @staticmethod
     def _estimate_tokens(messages: list[dict]) -> int:
@@ -1259,21 +1276,23 @@ class ReplyOrchestrator:
         return int(total_chars / 0.75)
 
     def _get_ai_reply_check(self) -> bool:
+        default = bool(_chat_default("ai_reply_check"))
         if self._config is None:
-            return False
+            return default
         chat = getattr(self._config, "chat", None)
-        value = getattr(chat, "ai_reply_check", False)
-        return value if isinstance(value, bool) else False
+        value = getattr(chat, "ai_reply_check", None)
+        return value if isinstance(value, bool) else default
 
     def _get_ai_reply_check_lightweight(self) -> bool:
         """轻量检查仅在完整检查关闭时生效。"""
         if self._get_ai_reply_check():
             return False
+        default = bool(_chat_default("ai_reply_check_lightweight"))
         if self._config is None:
-            return True
+            return default
         chat = getattr(self._config, "chat", None)
-        value = getattr(chat, "ai_reply_check_lightweight", True)
-        return value if isinstance(value, bool) else True
+        value = getattr(chat, "ai_reply_check_lightweight", None)
+        return value if isinstance(value, bool) else default
 
     def _get_bot_name(self) -> str:
         if self._config is None:
@@ -1293,14 +1312,14 @@ class ReplyOrchestrator:
         if self._config is None:
             return False
         chat = getattr(self._config, "chat", None)
-        return bool(getattr(chat, "show_last_reply_markers", False))
+        return bool(getattr(chat, "show_last_reply_markers", _chat_default("show_last_reply_markers")))
 
     def _inject_member_archives(self) -> bool:
         """群聊是否注入群员个人档案（默认 False，由 agent 按需读取）。"""
         if self._config is None:
             return False
         chat = getattr(self._config, "chat", None)
-        return bool(getattr(chat, "inject_member_archives", False))
+        return bool(getattr(chat, "inject_member_archives", _chat_default("inject_member_archives")))
 
     # ── 成本计算管线(字符级缓存命中计算) ──
 
@@ -1308,7 +1327,8 @@ class ReplyOrchestrator:
         if self._config is None:
             return False
         chat = getattr(self._config, "chat", None)
-        return bool(getattr(chat, "cost_pipeline_enabled", True)) and self._cache_calculator is not None
+        enabled = bool(getattr(chat, "cost_pipeline_enabled", _chat_default("cost_pipeline_enabled")))
+        return enabled and self._cache_calculator is not None
 
     def _get_cost_pipeline_threshold(self) -> int:
         if self._config is not None:
@@ -1316,7 +1336,7 @@ class ReplyOrchestrator:
             val = getattr(chat, "cost_pipeline_threshold", None)
             if isinstance(val, int) and val >= 0:
                 return val
-        return 20
+        return _chat_default("cost_pipeline_threshold")
 
     def _provider_cache_key(self) -> str:
         if self._provider is not None:

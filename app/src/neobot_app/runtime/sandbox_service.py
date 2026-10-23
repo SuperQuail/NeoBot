@@ -118,12 +118,10 @@ class SandboxService:
     def __init__(
         self,
         sandbox_root: Path,
-        lock: Any = None,
         allowed_read_dirs: list[Path] | None = None,
         max_total_size_bytes: int = 2 * 1024 * 1024 * 1024,
     ) -> None:
         self._root = sandbox_root.resolve()
-        self._lock = lock
         self._max_total_size = max_total_size_bytes
         self._file_locks_guard = threading.Lock()
         self._file_locks: dict[str, tuple[Any, int]] = {}

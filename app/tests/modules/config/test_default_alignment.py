@@ -42,6 +42,32 @@ def test_resolve_mode_rejects_unknown_value() -> None:
     assert _bare_orchestrator(config)._resolve_mode() == "agent"
 
 
+# ── chat getter 默认值以 schema 为唯一来源（fix(23)）───────────────
+
+
+def test_chat_getters_fall_back_to_schema_defaults() -> None:
+    schema = Chat()
+    orchestrator = _bare_orchestrator(SimpleNamespace(chat=SimpleNamespace()))
+    assert orchestrator._get_cooldown_seconds() == schema.reply_cooldown_seconds == 0
+    assert orchestrator._get_private_chat_max_tokens() == schema.private_chat_max_tokens
+    assert orchestrator._get_silent_nudge_settings() == (
+        schema.silent_nudge_enabled,
+        schema.silent_nudge_first_rounds,
+        schema.silent_nudge_repeat_rounds,
+        schema.silent_nudge_seconds,
+        schema.silent_nudge_max,
+    )
+
+
+def test_chat_getters_honour_explicit_values() -> None:
+    config = SimpleNamespace(
+        chat=SimpleNamespace(reply_cooldown_seconds=0, private_chat_max_tokens=1234)
+    )
+    orchestrator = _bare_orchestrator(config)
+    assert orchestrator._get_cooldown_seconds() == 0
+    assert orchestrator._get_private_chat_max_tokens() == 1234
+
+
 # ── poll_interval_seconds ───────────────────────────────────────────
 
 

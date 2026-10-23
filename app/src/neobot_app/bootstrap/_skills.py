@@ -32,7 +32,6 @@ def build_skill_manager(
     notification_hub: Any,
     markdown_image_converter: Any,
     creator_image_service: Any,
-    sandbox_lock: Any,
     sandbox_service: Any,
     sandbox_maintenance_manager: Any,
     temp_cleaner: Any = None,
@@ -69,7 +68,6 @@ def build_skill_manager(
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         creator_image_service=creator_image_service,
-        sandbox_lock=sandbox_lock,
         sandbox_service=sandbox_service,
         sandbox_maintenance_manager=sandbox_maintenance_manager,
         temp_cleaner=temp_cleaner,
@@ -116,23 +114,11 @@ def build_plugin_runtime(
             self._fs = fs
 
         async def send_image(
-            self,
-            adapter: Any,
-            conversation: Any,
-            *,
-            path: Path | None = None,
-            data: bytes | None = None,
-            filename: str | None = None,
+            self, adapter: Any, conversation: Any, *, path: Path
         ) -> Any:
-            if path is not None:
-                return await _media_sender_module.send_image(
-                    self._fs, adapter, conversation, path
-                )
-            if data is not None:
-                raise NotImplementedError(
-                    "send_image with raw data is handled by the plugin runtime context"
-                )
-            raise ValueError("Must provide path or data+filename")
+            return await _media_sender_module.send_image(
+                self._fs, adapter, conversation, path
+            )
 
         async def send_audio(
             self, adapter: Any, conversation: Any, *, path: Path

@@ -63,7 +63,6 @@ def test_build_skill_manager_forwards_uow_factory(monkeypatch):
         notification_hub=None,
         markdown_image_converter=None,
         creator_image_service=None,
-        sandbox_lock=None,
         sandbox_service=None,
         sandbox_maintenance_manager=None,
         browser_instance=None,

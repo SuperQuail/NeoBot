@@ -6,9 +6,7 @@ from typing import Optional
 
 from neobot_contracts.models import ConversationRef, MemoryRecord
 from neobot_contracts.models.memory import ArchiveMemory, ImageAnalysis
-from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
 from neobot_contracts.time_context import now_utc
-from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 from neobot_contracts.ports.clock import SystemClock as SystemClock  # re-export
 from neobot_contracts.ports.logging import NullLogger as NullLogger  # re-export
 
@@ -128,13 +126,6 @@ class InMemoryArchiveMemoryAccess:
         rows.sort(key=lambda row: (row.updated_at, row.id), reverse=True)
         return rows[offset : offset + limit]
 
-    # Type check: ensure class implements the protocol
-    def __init_subclass__(cls) -> None:
-        super().__init_subclass__()
-        # Verify that this class implements the ArchiveMemoryAccess protocol
-        if not issubclass(cls, ArchiveMemoryAccess):  # type: ignore
-            raise TypeError(f"{cls.__name__} does not implement ArchiveMemoryAccess protocol")
-
     @staticmethod
     def _clone(entry: ArchiveMemory) -> ArchiveMemory:
         return ArchiveMemory(
@@ -249,11 +240,6 @@ class InMemoryImageAnalysisAccess:
 
         rows.sort(key=lambda row: (row.updated_at, row.id), reverse=True)
         return rows[offset : offset + limit]
-
-    def __init_subclass__(cls) -> None:
-        super().__init_subclass__()
-        if not issubclass(cls, ImageAnalysisAccess):  # type: ignore[arg-type]
-            raise TypeError(f"{cls.__name__} does not implement ImageAnalysisAccess protocol")
 
     @staticmethod
     def _clone(entry: ImageAnalysis) -> ImageAnalysis:

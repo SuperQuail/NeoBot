@@ -1014,7 +1014,6 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         creator_image_service=creator_image_service,
-        sandbox_lock=sandbox["sandbox_lock"],
         sandbox_service=sandbox["sandbox_service"],
         sandbox_maintenance_manager=sandbox["sandbox_maintenance_manager"],
         temp_cleaner=sandbox["temp_cleaner"],

@@ -8,7 +8,7 @@ covers:
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
 verified_against: 56559c2
-verified_hash: 0904ae4e9c52
+verified_hash: aba070d76bfb
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -210,7 +210,7 @@ flowchart LR
 \`app/src/neobot_app/message/queue.py\` 只负责容量、权重、时间戳与渲染成文本；
 **分发循环在适配器包内**（\`packages/adapter/src/neobot_adapter/onebot/adapter.py:384\`），
 异常保护也在那里（单个事件处理失败只记 ERROR 并继续）。
-另有一个线程版 \`listener/manager.py:246 _dispatch_loop\` 是**遗留实现**，现行适配器不引用。
+另有一个线程版 \`listener/manager.py\` 的 \`_dispatch_loop\` 是**遗留实现**，已在 fix(24)（2026-10-23）删除，现行适配器不引用。
 </details>
 
 <details>

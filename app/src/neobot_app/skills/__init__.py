@@ -83,7 +83,6 @@ def build_all_skills(
     image_pool: Any = None,
 
     sandbox_service: Any = None,
-    sandbox_lock: Any = None,
     browser_instance: Any = None,
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
@@ -387,7 +386,6 @@ def build_all_skills(
                     getattr(getattr(getattr(config, "agent", None), "tools", None), "review_timeout_seconds", 30.0)
                     or 30.0
                 ),
-                sandbox_lock=sandbox_lock,
                 adapter=adapter,
                 file_server=file_server,
                 hold_max_minutes=(
