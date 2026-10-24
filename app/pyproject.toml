@@ -1,6 +1,6 @@
 [project]
 name = "neobot-app"
-version = "2.0.2-a2"
+version = "2.0.2-a3"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -25,12 +25,12 @@ dependencies = [
     "markdownify>=1.0.0,<2",
     # 内部子包固定为同一版本：新 app + 旧 chat 混装会在 import/装配期以误导性
     # 的「配置解析失败」收场（issue #72）。抬版本时由发版流程同步改写这 6 条。
-    "neobot-adapter==2.0.2-a2",
-    "neobot-chat==2.0.2-a2",
-    "neobot-contracts==2.0.2-a2",
-    "neobot-memory==2.0.2-a2",
-    "neobot-modloader==2.0.2-a2",
-    "neobot-storage==2.0.2-a2",
+    "neobot-adapter==2.0.2-a3",
+    "neobot-chat==2.0.2-a3",
+    "neobot-contracts==2.0.2-a3",
+    "neobot-memory==2.0.2-a3",
+    "neobot-modloader==2.0.2-a3",
+    "neobot-storage==2.0.2-a3",
     "numpy>=1.26,<3",
     "onnxruntime>=1.18.0,<2",
     "openpyxl>=3.1,<4",
