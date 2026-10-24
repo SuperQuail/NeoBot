@@ -22,9 +22,21 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from .client import BilibiliClient
 from .cookie_provider import BilibiliCookieStore
 from .errors import BilibiliAuthError, BilibiliError
-from .qr_login import BilibiliQrLogin, QrCodeLogin, QrPollResult
+from .qr_login import (
+    QR_STATE_EXPIRED,
+    QR_STATE_REJECTED,
+    BilibiliQrLogin,
+    QrCodeLogin,
+    QrPollResult,
+)
 
 _DEFAULT_COOKIE_FILE = "data/bilibili/cookies.json"
+
+#: 扫码终态里「不是成功」的那些 → 给用户看的中文原因。
+_LOGIN_STATE_REASONS = {
+    QR_STATE_EXPIRED: "二维码已失效或登录超时，请重新扫码",
+    QR_STATE_REJECTED: "已在手机上取消登录，请重新扫码",
+}
 
 
 def _to_int(value: Any) -> int:
@@ -149,7 +161,10 @@ class BilibiliService:
         on_status: Callable[[QrPollResult], Any] | None = None,
         timeout: float | None = None,
     ) -> bool:
-        """走完整二维码登录；成功时保存 cookie 并激活客户端。"""
+        """走完整二维码登录；成功时保存 cookie 并激活客户端。
+
+        落盘失败不算登录失败：用内存 cookie 激活客户端，error 里提示重启后需重新登录。
+        """
         qr_login = BilibiliQrLogin(logger=self._logger)
         try:
             result = await qr_login.login(
@@ -158,35 +173,48 @@ class BilibiliService:
                 timeout=timeout if timeout is not None else self._login_timeout,
             )
         except BilibiliError as exc:
-            self._error = f"B站扫码登录失败: {exc}"
-            self._logger.warning(self._error)
-            return False
+            return await self._login_failed(f"B站扫码登录失败: {exc}")
         if not result.success:
-            self._error = result.message or f"B站扫码登录未完成（{result.state}）"
-            self._logger.warning(self._error)
-            return False
+            reason = _LOGIN_STATE_REASONS.get(result.state, "B站扫码登录未完成")
+            detail = result.message.strip()
+            return await self._login_failed(f"{reason}（{detail}）" if detail else reason)
+        save_error: Exception | None = None
         try:
             await asyncio.to_thread(
                 self._store.save, result.cookies, refresh_token=result.refresh_token
             )
         except (OSError, ValueError) as exc:
-            self._error = f"保存B站 cookie 失败: {exc}"
-            self._logger.warning(self._error)
-            return False
+            save_error = exc
+            self._logger.warning(f"B站 cookie 保存失败: {exc}")
         if self._client is not None:
             await asyncio.to_thread(self._client.close)
         self._apply_cookies(result.cookies)
         self._client = self._make_client(result.cookies)
         self._started = True
         self._valid = True
-        self._error = ""
         self._login_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        if save_error is None:
+            self._error = ""
+        else:
+            self._error = f"登录成功，但凭证保存失败，重启后需重新登录（{save_error}）"
+            self._logger.warning(self._error)
         self._logger.info(f"B站扫码登录完成: uid={self._uid}")
-        # 昵称等资料拉取失败不影响登录成功。
+        # 昵称等资料拉取失败不影响登录成功；DedeUserID 缺失时这里也能补上 uid。
         info = await asyncio.to_thread(self._client.get_my_info)
         if info:
             self._update_from_info(info)
         return True
+
+    async def _login_failed(self, reason: str) -> bool:
+        """记录可读失败原因；账号其实已登录（如轮询被提前打断）时按成功处理。"""
+        self._error = reason
+        self._logger.warning(reason)
+        if await self.verify():
+            self._logger.info("B站扫码登录未完成，但当前账号已登录，按成功处理")
+            return True
+        # verify 失败会覆盖成它自己的错误，这里恢复登录流程的真实原因。
+        self._error = reason
+        return False
 
     # ── 对外动作 ──
 

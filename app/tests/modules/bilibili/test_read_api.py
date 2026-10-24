@@ -202,6 +202,88 @@ def test_user_card_and_live_status() -> None:
     assert session.calls[1]["params"] == {"mid": 42}
 
 
+def test_user_card_detail_normalizes_card_stats() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "card": {
+                            "mid": 42,
+                            "name": "UP",
+                            "sign": "签名",
+                            "face": "https://i0.hdslb.com/bfs/face/42.jpg",
+                            "fans": 100,
+                            "attention": 3,
+                            "level_info": {"current_level": 6},
+                        },
+                        "follower": 100,
+                        "archive_count": 8,
+                        "article_count": 2,
+                        "like_num": 999,
+                    },
+                }
+            )
+        ]
+    )
+
+    result = _api(session).user_card_detail(42)
+
+    assert result == {
+        "ok": True,
+        "uid": 42,
+        "name": "UP",
+        "sign": "签名",
+        "level": 6,
+        "fans": 100,
+        "following": 3,
+        "videos": 8,
+        "articles": 2,
+        "likes": 999,
+        "face": "https://i0.hdslb.com/bfs/face/42.jpg",
+        "url": "https://space.bilibili.com/42",
+    }
+    call = session.calls[0]
+    assert call["url"].endswith("/x/web-interface/card")
+    assert call["params"] == {"mid": 42, "photo": "true"}
+
+
+def test_user_card_detail_falls_back_to_follower_and_request_mid() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "card": {"name": "UP", "level_info": {"current_level": 3}},
+                        "follower": 55,
+                    },
+                }
+            )
+        ]
+    )
+
+    result = _api(session).user_card_detail(42)
+
+    assert result["ok"] is True
+    assert result["uid"] == 42  # card.mid 缺失时回退到请求的 mid
+    assert result["fans"] == 55
+    assert result["following"] == 0 and result["videos"] == 0
+    assert result["url"] == "https://space.bilibili.com/42"
+
+
+def test_user_card_detail_passes_failure_through() -> None:
+    session = FakeSession([FakeResponse({"code": -352, "message": "风控校验失败"})])
+
+    result = _api(session).user_card_detail(42)
+
+    assert result["ok"] is False
+    assert set(result) == {"ok", "error"}
+    assert "用户名片读取失败" in result["error"]
+    assert "风控校验失败" in result["error"]
+
+
 def test_video_stream_picks_requested_quality_and_signs() -> None:
     session = FakeSession([FakeResponse(_NAV_WBI), FakeResponse(_PLAYURL_DASH)])
 
@@ -360,6 +442,7 @@ def test_invalid_arguments_do_not_request() -> None:
         api.bangumi_stream("", 1),
         api.bangumi_stream("ep1", 0),
         api.user_card(0),
+        api.user_card_detail(0),
         api.user_live_status(-1),
         api.video_stream("", 1),
         api.video_stream("BV1xx411c7mD", 0),

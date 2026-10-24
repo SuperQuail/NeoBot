@@ -10,10 +10,12 @@ from neobot_app.bilibili.errors import BilibiliApiError, BilibiliAuthError
 from neobot_app.bilibili.qr_login import (
     QR_STATE_EXPIRED,
     QR_STATE_PENDING,
+    QR_STATE_REJECTED,
     QR_STATE_SCANNED,
     QR_STATE_SUCCESS,
     BilibiliQrLogin,
     QrCodeLogin,
+    QrLoginCookieError,
     QrPollResult,
     make_qr_png,
 )
@@ -44,10 +46,36 @@ def test_generate_parses_qrcode() -> None:
     assert session.headers["User-Agent"]
 
 
-def test_generate_without_required_fields_raises() -> None:
-    session = FakeSession([FakeResponse({"code": 0, "data": {}})])
+def test_generate_without_required_fields_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("neobot_app.bilibili.qr_login.time.sleep", lambda _delay: None)
+    # 缺字段也算失败，会重试满 3 次后才抛。
+    session = FakeSession([FakeResponse({"code": 0, "data": {}})] * 3)
     with pytest.raises(BilibiliApiError):
         _login(session).generate()
+
+
+def test_generate_retries_twice_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("neobot_app.bilibili.qr_login.time.sleep", sleeps.append)
+    session = FakeSession(
+        [
+            FakeResponse({"code": -412, "message": "请求被拦截"}),
+            FakeResponse({"code": -352, "message": "风控校验失败"}),
+            FakeResponse(_GENERATE_PAYLOAD),
+        ]
+    )
+    info = _login(session).generate()
+    assert info.qrcode_key == "key-1"
+    assert sleeps == [0.5, 1.0]
+    assert len(session.calls) == 3
+
+
+def test_generate_raises_after_retries_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("neobot_app.bilibili.qr_login.time.sleep", lambda _delay: None)
+    session = FakeSession([FakeResponse({"code": -412, "message": "请求被拦截"})] * 3)
+    with pytest.raises(BilibiliApiError, match="-412"):
+        _login(session).generate()
+    assert len(session.calls) == 3
 
 
 def test_make_qr_png_matches_dependency_state() -> None:
@@ -65,6 +93,7 @@ def test_make_qr_png_matches_dependency_state() -> None:
         (86101, QR_STATE_PENDING),
         (86090, QR_STATE_SCANNED),
         (86038, QR_STATE_EXPIRED),
+        (86083, QR_STATE_REJECTED),
     ],
 )
 def test_poll_maps_bilibili_states(code: int, state: str) -> None:
@@ -118,13 +147,54 @@ def test_poll_success_collects_cookies_from_response_headers() -> None:
 
 def test_poll_success_without_required_cookies_raises() -> None:
     session = FakeSession(
-        [
-            FakeResponse({"code": 0, "data": {"code": 0, "url": "", "refresh_token": "rt"}}),
-            FakeResponse({"code": 0, "data": {}}),
-        ]
+        [FakeResponse({"code": 0, "data": {"code": 0, "url": "", "refresh_token": "rt"}})]
     )
-    with pytest.raises(BilibiliApiError):
+    with pytest.raises(BilibiliApiError, match="SESSDATA"):
         _login(session).poll("key-1")
+
+
+def test_poll_success_allows_missing_dedeuserid() -> None:
+    response = FakeResponse(
+        {"code": 0, "data": {"code": 0, "url": "", "refresh_token": "rt"}},
+        cookies={"SESSDATA": "sd", "bili_jct": "jct", "buvid3": "b3"},
+    )
+    session = FakeSession([response])
+    result = _login(session).poll("key-1")
+    assert result.success is True
+    assert "DedeUserID" not in result.cookies
+    assert result.cookies["SESSDATA"] == "sd"
+
+
+_CROSS_DOMAIN_URL = "https://passport.biligame.com/x/passport-login/web/crossDomain"
+
+
+def test_poll_success_gets_cookies_from_cross_domain_url() -> None:
+    poll = FakeResponse(
+        {"code": 0, "data": {"code": 0, "url": _CROSS_DOMAIN_URL, "refresh_token": "rt"}}
+    )
+    redirect = FakeResponse(
+        cookies={"SESSDATA": "sd", "bili_jct": "jct", "DedeUserID": "7", "buvid3": "b3"}
+    )
+    session = FakeSession([poll, redirect])
+    result = _login(session).poll("key-1")
+    assert result.cookies["SESSDATA"] == "sd"
+    assert result.cookies["bili_jct"] == "jct"
+    assert result.cookies["DedeUserID"] == "7"
+    # 必须按 crossDomain 流程真的 GET 了 data.url（同一 session）。
+    assert [call["url"] for call in session.calls] == [
+        "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
+        _CROSS_DOMAIN_URL,
+    ]
+
+
+def test_poll_success_missing_required_cookies_after_cross_domain_raises() -> None:
+    poll = FakeResponse(
+        {"code": 0, "data": {"code": 0, "url": _CROSS_DOMAIN_URL, "refresh_token": "rt"}}
+    )
+    session = FakeSession([poll, FakeResponse()])
+    with pytest.raises(BilibiliApiError, match="SESSDATA"):
+        _login(session).poll("key-1")
+    assert session.calls[-1]["url"] == _CROSS_DOMAIN_URL
 
 
 def test_poll_root_auth_error_raises_auth_error() -> None:
@@ -201,4 +271,107 @@ async def test_login_emits_qr_and_status_callbacks() -> None:
     assert result.success is True
     assert [info.qrcode_key for info in qr_codes] == ["key-1"]
     assert statuses == [QR_STATE_SUCCESS]
+
+
+async def test_async_wait_keeps_polling_after_poll_error() -> None:
+    login = _login(FakeSession())
+    outcomes: list = [
+        BilibiliApiError(-412, "请求被风控拦截"),
+        QrPollResult(state=QR_STATE_PENDING, raw_code=86101),
+        QrPollResult(
+            state=QR_STATE_SUCCESS,
+            raw_code=0,
+            cookies={"SESSDATA": "s", "bili_jct": "j"},
+        ),
+    ]
+    calls: list[int] = []
+
+    def flaky_poll(_key: str) -> QrPollResult:
+        calls.append(1)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    login.poll = flaky_poll  # type: ignore[method-assign]
+    seen: list[str] = []
+
+    async def on_status(result: QrPollResult) -> None:
+        seen.append(result.state)
+
+    final = await login.async_wait("key-1", on_status=on_status, interval=0, timeout=5)
+    assert final.success is True
+    assert len(calls) == 3  # 第一次抛错后没有提前退出
+    assert seen == [QR_STATE_PENDING, QR_STATE_SUCCESS]
+    assert outcomes == []
+
+
+async def test_async_wait_retries_unknown_state_code() -> None:
+    session = FakeSession(
+        [
+            FakeResponse({"code": 0, "data": {"code": 99999, "message": "?"}}),
+            FakeResponse(
+                {"code": 0, "data": {"code": 0, "url": "", "refresh_token": "rt"}},
+                cookies={"SESSDATA": "s", "bili_jct": "j", "buvid3": "b3"},
+            ),
+        ]
+    )
+    result = await _login(session).async_wait("key-1", interval=0, timeout=5)
+    assert result.success is True
+    assert len(session.calls) == 2
+
+
+async def test_async_wait_returns_rejected() -> None:
+    login = _login(FakeSession())
+    login.poll = lambda _key: QrPollResult(  # type: ignore[method-assign]
+        state=QR_STATE_REJECTED, raw_code=86083, message="用户拒绝登录"
+    )
+    result = await login.async_wait("key-1", interval=0, timeout=5)
+    assert result.state == QR_STATE_REJECTED
+
+
+async def test_async_wait_timeout_when_poll_keeps_failing() -> None:
+    login = _login(FakeSession())
+
+    def failing_poll(_key: str) -> QrPollResult:
+        raise BilibiliApiError(-1, "网络错误")
+
+    login.poll = failing_poll  # type: ignore[method-assign]
+    result = await login.async_wait("key-1", interval=0, timeout=0.02)
+    assert result.state == QR_STATE_EXPIRED
+    assert "超时" in result.message
+
+
+async def test_async_wait_treats_cookie_error_as_terminal() -> None:
+    login = _login(FakeSession())
+
+    def failing_poll(_key: str) -> QrPollResult:
+        raise QrLoginCookieError(-1, "登录成功但未取到 cookie: SESSDATA")
+
+    login.poll = failing_poll  # type: ignore[method-assign]
+    # 已经确认登录但拿不到凭证：直接作为终态失败，不要等到超时再报"二维码失效"。
+    with pytest.raises(QrLoginCookieError):
+        await login.async_wait("key-1", interval=0, timeout=5)
+
+
+def test_poll_skips_untrusted_cross_domain_url() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "code": 0,
+                        "url": "https://evil.example/crossDomain?SESSDATA=",
+                        "refresh_token": "",
+                    },
+                }
+            )
+        ]
+    )
+    login = _login(session)
+    with pytest.raises(QrLoginCookieError):
+        login.poll("key-1")
+    # 远端给的 URL 不可信时不去请求，避免 SSRF。
+    assert len(session.calls) == 1
 

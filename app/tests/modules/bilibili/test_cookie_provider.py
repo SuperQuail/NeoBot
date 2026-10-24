@@ -63,3 +63,39 @@ def test_clear_removes_file(tmp_path) -> None:
     store.clear()
     assert not path.exists()
     store.clear()  # 重复清除不抛错
+
+def test_save_falls_back_to_direct_write_when_atomic_fails(tmp_path, monkeypatch) -> None:
+    """原子写的临时文件被清理（实机 Errno 2）时，直写仍要能把凭证保存下来。"""
+    import neobot_app.bilibili.cookie_provider as module
+
+    calls: list[str] = []
+
+    def failing_atomic(path, text, **kwargs):
+        calls.append(str(path))
+        raise OSError(2, "No such file or directory", str(path))
+
+    monkeypatch.setattr(module, "atomic_write_text", failing_atomic)
+    path = tmp_path / "bilibili" / "cookies.json"
+    store = BilibiliCookieStore(path)
+    store.save(_COOKIES)
+
+    assert path.is_file()
+    assert len(calls) == 2  # 原子写重试一次后才降级直写
+    assert store.load()["SESSDATA"] == "sess-value"
+
+
+def test_save_error_mentions_real_path(tmp_path, monkeypatch) -> None:
+    """两种写法都失败时，异常里要有真实 cookie 路径，而不是随机 tmp 名。"""
+    import neobot_app.bilibili.cookie_provider as module
+
+    def failing_atomic(path, text, **kwargs):
+        raise OSError(2, "No such file or directory", str(path))
+
+    monkeypatch.setattr(module, "atomic_write_text", failing_atomic)
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    path = blocker / "cookies.json"
+
+    with pytest.raises(OSError) as excinfo:
+        BilibiliCookieStore(path).save(_COOKIES)
+    assert str(path) in str(excinfo.value)

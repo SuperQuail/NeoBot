@@ -19,6 +19,7 @@ from .media import BilibiliVideoService
 from .qr_login import (
     QR_STATE_EXPIRED,
     QR_STATE_PENDING,
+    QR_STATE_REJECTED,
     QR_STATE_SCANNED,
     QR_STATE_SUCCESS,
     BilibiliQrLogin,
@@ -31,6 +32,7 @@ from .service import BilibiliService
 __all__ = [
     "QR_STATE_EXPIRED",
     "QR_STATE_PENDING",
+    "QR_STATE_REJECTED",
     "QR_STATE_SCANNED",
     "QR_STATE_SUCCESS",
     "BilibiliApiError",

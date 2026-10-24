@@ -273,6 +273,30 @@ class BilibiliReadApi:
             return result
         return {"ok": True, "mid": mid, "info": result["data"]}
 
+    def user_card_detail(self, mid: int) -> dict[str, Any]:
+        """名片归一化；成功返回资料与统计，失败原样透传 user_card 的错误。"""
+        result = self.user_card(mid)
+        if not result["ok"]:
+            return result
+        info = result["info"]
+        card = info.get("card") if isinstance(info.get("card"), dict) else {}
+        level_info = card.get("level_info") if isinstance(card.get("level_info"), dict) else {}
+        uid = _int(card.get("mid")) or result["mid"]
+        return {
+            "ok": True,
+            "uid": uid,
+            "name": _text(card.get("name")),
+            "sign": _text(card.get("sign")),
+            "level": _int(level_info.get("current_level")),
+            "fans": _int(card.get("fans") or info.get("follower")),
+            "following": _int(card.get("attention")),
+            "videos": _int(info.get("archive_count")),
+            "articles": _int(info.get("article_count")),
+            "likes": _int(info.get("like_num")),
+            "face": _text(card.get("face")),
+            "url": f"https://space.bilibili.com/{uid}" if uid else "",
+        }
+
     def user_live_status(self, mid: int) -> dict[str, Any]:
         """用户直播状态；返回 {"ok", "mid", "info"}（info.live_status=1 为直播中）。"""
         mid = _int(mid)

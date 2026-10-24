@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from neobot_app.bilibili.runtime import BilibiliRuntime, build_bilibili_skills
+from neobot_app.commands.model import PERM_EVERYONE, PERM_SUPER_ADMIN
 from neobot_app.commands.registry import CommandRegistry
 from neobot_app.config.schemas.bot import BotConfig
 
@@ -41,5 +42,12 @@ def test_bilibili_runtime_registers_search_video_user_skills():
     }
     assert {"search_video", "watch_video", "linked_qq_profile"} <= tool_names
     runtime.register_commands(command_service)
-    assert command_service.registry.get("login") is not None
+    login = command_service.registry.get("login")
+    assert login is not None
+    # 登录即拿到 B站账号全站写权限，只允许超级管理员换号。
+    assert login.permission == PERM_SUPER_ADMIN
+    account = command_service.registry.get("B站账号")
+    assert account is not None
+    assert account.permission == PERM_EVERYONE
+    assert command_service.registry.get("biliaccount") is account
     assert command_service.registry.get("bili") is not None

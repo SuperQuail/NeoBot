@@ -20,7 +20,7 @@ class FakeClient:
         self.search_calls: list[tuple] = []
         self.info_calls: list[str] = []
         self.comment_calls: list[tuple] = []
-        self.video_calls: list[int] = []
+        self.my_uid = 7
         self.comment_cursor = ""
         self.comment_is_end = True
 
@@ -100,17 +100,6 @@ class FakeClient:
             "cursor": self.comment_cursor,
             "is_end": self.comment_is_end,
             "raw": {},
-        }
-
-    async def get_space_info(self, mid):
-        self.video_calls.append(int(mid))
-        return {
-            "mid": mid,
-            "name": "UP主",
-            "sign": "签名",
-            "level": 6,
-            "fans": 100,
-            "following": 3,
         }
 
     async def get_user_videos(self, mid, page=1):
@@ -205,8 +194,98 @@ def _uow_factory(links=None, profiles=None):
     return make
 
 
-def _service(client) -> SimpleNamespace:
-    return SimpleNamespace(available=True, client=client)
+def _service(client, uid: int = 0) -> SimpleNamespace:
+    return SimpleNamespace(
+        available=True,
+        client=client,
+        status=lambda: {"uid": uid or client.my_uid},
+    )
+
+
+def _card(mid: int, name: str = "UP主", **extra: object) -> dict:
+    return {
+        "ok": True,
+        "uid": mid,
+        "name": name,
+        "sign": "签名",
+        "level": 6,
+        "fans": 100,
+        "following": 3,
+        "videos": 8,
+        "articles": 2,
+        "likes": 999,
+        "face": "",
+        "url": f"https://space.bilibili.com/{mid}",
+        **extra,
+    }
+
+
+_DYNAMIC_AV = {
+    "id_str": "1001",
+    "type": "DYNAMIC_TYPE_AV",
+    "module_author": {"pub_ts": 1_700_000_000, "pub_time": "2023-11-14 22:13"},
+    "module_dynamic": {
+        "desc": {"text": "视频简介" * 100},
+        "major": {"archive": {"bvid": "BV1xx411c7mD", "title": "投稿标题"}},
+    },
+    "module_stat": {"like": {"count": 5}, "comment": {"count": 2}, "forward": {"count": 1}},
+}
+
+_DYNAMIC_FORWARD = {
+    "id_str": "1002",
+    "type": "DYNAMIC_TYPE_FORWARD",
+    "module_author": {"pub_ts": 1_700_000_100, "pub_time": "昨天 12:00"},
+    "module_dynamic": {"desc": {"text": "转发说点什么"}},
+    "module_stat": {"like": 3, "comment": 0, "forward": 4},
+}
+
+_DYNAMIC_FORWARD_EMPTY = {
+    "id_str": "1003",
+    "type": "DYNAMIC_TYPE_FORWARD",
+    "module_author": {},
+    "module_dynamic": {"desc": None},
+    "module_stat": {},
+    "orig": {"module_dynamic": {"desc": {"text": "原动态正文"}}},
+}
+
+_DYNAMIC_ARTICLE = {
+    "id_str": "2001",
+    "type": "DYNAMIC_TYPE_ARTICLE",
+    "module_author": {"pub_ts": 1_700_000_200, "pub_time": "前天"},
+    "module_dynamic": {"major": {"article": {"id": 777, "title": "专栏标题"}}},
+    "module_stat": {},
+}
+
+
+class FakeReadApi:
+    """只读扩展替身：名片按 mid 预置，动态按列表返回。"""
+
+    def __init__(
+        self,
+        cards: dict[int, dict] | None = None,
+        dynamics: list[dict] | None = None,
+        card_error: str = "",
+        dynamics_error: str = "",
+    ) -> None:
+        self.cards = dict(cards or {})
+        self.dynamics = dynamics
+        self.card_error = card_error
+        self.dynamics_error = dynamics_error
+        self.card_calls: list[int] = []
+        self.dynamics_calls: list[tuple[int, int]] = []
+
+    async def user_card_detail(self, mid):
+        self.card_calls.append(int(mid))
+        if self.card_error:
+            return {"ok": False, "error": self.card_error}
+        return self.cards.get(int(mid)) or _card(int(mid))
+
+    async def user_dynamics(self, mid, limit=20):
+        self.dynamics_calls.append((int(mid), limit))
+        if self.dynamics_error:
+            return {"ok": False, "error": self.dynamics_error}
+        items = self.dynamics if self.dynamics is not None else [_DYNAMIC_AV]
+        return {"ok": True, "mid": int(mid), "count": len(items), "items": list(items), "has_more": True}
 
 
 # ── 搜索 ──
@@ -438,8 +517,7 @@ async def test_video_comments_rejects_unknown_type_and_falls_back_for_legacy_cli
 
 
 async def test_user_info_and_legacy_user_videos() -> None:
-    client = LegacyClient()
-    skill = BilibiliUserSkill(client=client)
+    skill = BilibiliUserSkill(client=LegacyClient(), read_api=FakeReadApi())
 
     info = json.loads(
         await skill.execute("user_info", {"uid": "https://space.bilibili.com/42"})
@@ -451,10 +529,259 @@ async def test_user_info_and_legacy_user_videos() -> None:
     assert info["ok"] is True
     assert info["uid"] == 42
     assert info["name"] == "UP主"
-    assert info["fans"] == 100
+    assert info["fans"] == 100 and info["following"] == 3
     assert videos["ok"] is True
     assert videos["videos"][0]["title"] == "投稿"
     assert videos["page"] == 2
+
+
+async def test_user_info_lazily_builds_read_api_from_client() -> None:
+    class FetchClient(FakeClient):
+        def _fetch(self, method, url, params=None, headers=None):
+            return {"code": 0, "data": {"card": {"mid": 42, "name": "UP", "fans": 7}}}
+
+    result = json.loads(
+        await BilibiliUserSkill(client=FetchClient()).execute("user_info", {"uid": 42})
+    )
+
+    assert result["ok"] is True
+    assert result["uid"] == 42 and result["fans"] == 7
+
+
+async def test_user_info_accepts_nickname_and_blank_for_self() -> None:
+    client = FakeClient()
+    api = FakeReadApi(cards={7: _card(7, "我自己")})
+    skill = BilibiliUserSkill(service=_service(client), read_api=api)
+
+    by_name = json.loads(await skill.execute("user_info", {"uid": "阿猫"}))
+    by_self = json.loads(await skill.execute("user_info", {}))
+    by_me = json.loads(await skill.execute("user_info", {"uid": "我"}))
+
+    assert by_name["ok"] is True and by_name["uid"] == 42
+    assert by_name["matched_by"] == "name" and by_name["keyword"] == "阿猫"
+    assert by_name["fans"] == 100
+    assert by_self["ok"] is True and by_self["uid"] == 7
+    assert by_self["matched_by"] == "self" and by_self["name"] == "我自己"
+    assert by_me["ok"] is True and by_me["uid"] == 7
+    assert client.search_calls == [("阿猫", "bili_user", 1)]
+    assert api.card_calls == [42, 7, 7]
+
+
+async def test_user_info_falls_back_to_client_my_uid() -> None:
+    client = FakeClient()
+    skill = BilibiliUserSkill(
+        service=SimpleNamespace(available=True, client=client),
+        read_api=FakeReadApi(),
+    )
+
+    result = json.loads(await skill.execute("user_info", {"uid": ""}))
+
+    assert result["ok"] is True and result["uid"] == 7
+    assert result["matched_by"] == "self"
+
+
+async def test_user_info_without_login_uid_reports_error() -> None:
+    client = FakeClient()
+    client.my_uid = 0
+    skill = BilibiliUserSkill(
+        service=SimpleNamespace(available=True, client=client, status=lambda: {"uid": 0}),
+        read_api=FakeReadApi(),
+    )
+
+    result = json.loads(await skill.execute("user_info", {}))
+
+    assert result["ok"] is False
+    assert "无法确定当前登录账号的UID" in result["error"]
+
+
+async def test_user_info_unknown_nickname_and_card_failure() -> None:
+    class EmptySearchClient(FakeClient):
+        async def search(self, keyword, *, search_type="video", page=1):
+            return {"result": []}
+
+    missing = json.loads(
+        await BilibiliUserSkill(
+            client=EmptySearchClient(), read_api=FakeReadApi()
+        ).execute("user_info", {"uid": "查无此人"})
+    )
+    failed = json.loads(
+        await BilibiliUserSkill(
+            client=FakeClient(),
+            read_api=FakeReadApi(card_error="用户名片读取失败：-352 风控校验失败"),
+        ).execute("user_info", {"uid": 42})
+    )
+
+    assert missing["ok"] is False
+    assert "没有搜到昵称「查无此人」" in missing["error"]
+    assert failed["ok"] is False
+    assert "风控" in failed["error"] and "fans" not in failed
+
+
+async def test_search_user_by_uid_returns_full_card() -> None:
+    api = FakeReadApi()
+    skill = BilibiliSearchSkill(client=FakeClient(), read_api=api)
+
+    result = json.loads(
+        await skill.execute("search_user", {"keyword": "https://space.bilibili.com/42"})
+    )
+
+    item = result["items"][0]
+    assert result["ok"] is True
+    assert (result["page"], result["total"], result["count"]) == (1, 1, 1)
+    assert result["keyword"] == "https://space.bilibili.com/42"
+    assert item["uid"] == 42 and item["name"] == "UP主"
+    assert item["fans"] == 100 and item["following"] == 3
+    assert item["level"] == 6 and item["videos"] == 8 and item["likes"] == 999
+    assert api.card_calls == [42]
+
+
+async def test_search_user_by_nickname_keeps_keyword_search() -> None:
+    client = FakeClient()
+    api = FakeReadApi()
+
+    result = json.loads(
+        await BilibiliSearchSkill(client=client, read_api=api).execute(
+            "search_user", {"keyword": "阿猫"}
+        )
+    )
+
+    assert result["ok"] is True and result["items"][0]["uid"] == 42
+    assert client.search_calls == [("阿猫", "bili_user", 1)]
+    assert api.card_calls == []
+
+
+async def test_search_user_uid_card_failure_returns_error() -> None:
+    api = FakeReadApi(card_error="用户名片读取失败：-352 风控校验失败")
+
+    result = json.loads(
+        await BilibiliSearchSkill(client=FakeClient(), read_api=api).execute(
+            "search_user", {"keyword": "42"}
+        )
+    )
+
+    assert result["ok"] is False and "风控" in result["error"]
+
+
+async def test_user_home_self_and_others_share_one_shape() -> None:
+    client = FakeClient()
+    api = FakeReadApi(dynamics=[_DYNAMIC_AV, _DYNAMIC_FORWARD])
+    skill = BilibiliUserSkill(service=_service(client), read_api=api)
+
+    mine = json.loads(await skill.execute("user_home", {}))
+    theirs = json.loads(await skill.execute("user_home", {"uid": "阿猫"}))
+
+    assert mine["ok"] is True and mine["uid"] == 7
+    assert theirs["ok"] is True and theirs["uid"] == 42
+    assert set(mine) == set(theirs)
+    for home in (mine, theirs):
+        assert home["fans"] == 100 and home["following"] == 3
+        assert home["videos_count"] == 8
+        assert [item["type"] for item in home["dynamics"]] == ["视频", "转发"]
+        assert home["dynamics_has_more"] is True
+        assert home["videos"][0]["title"] == "投稿"
+    assert api.dynamics_calls == [(7, 5), (42, 5)]
+
+
+async def test_user_home_maps_dynamics_and_clamps_limit() -> None:
+    api = FakeReadApi(
+        dynamics=[
+            _DYNAMIC_AV,
+            _DYNAMIC_FORWARD,
+            _DYNAMIC_FORWARD_EMPTY,
+            _DYNAMIC_ARTICLE,
+            {"id_str": "3001", "type": "DYNAMIC_TYPE_NEW"},
+        ]
+    )
+    skill = BilibiliUserSkill(client=FakeClient(), read_api=api)
+
+    home = json.loads(await skill.execute("user_home", {"uid": 42, "limit": 99}))
+    video, forward, forward_empty, article, unknown = home["dynamics"]
+
+    assert api.dynamics_calls == [(42, 20)]
+    assert video["type"] == "视频"
+    assert video["url"] == "https://www.bilibili.com/video/BV1xx411c7mD"
+    assert len(video["text"]) == 200  # 正文摘要截断到 200 字
+    assert video["time"] == 1_700_000_000 and video["time_text"] == "2023-11-14 22:13"
+    assert (video["likes"], video["comments"], video["reposts"]) == (5, 2, 1)
+    assert forward["type"] == "转发" and forward["text"] == "转发说点什么"
+    assert (forward["likes"], forward["comments"], forward["reposts"]) == (3, 0, 4)
+    assert forward["url"] == "https://t.bilibili.com/1002"
+    assert forward_empty["text"] == "原动态正文"
+    assert article["type"] == "专栏"
+    assert article["url"] == "https://www.bilibili.com/read/cv777"
+    assert unknown["type"] == "DYNAMIC_TYPE_NEW"
+    assert unknown["url"] == "https://t.bilibili.com/3001"
+
+
+async def test_user_home_degrades_dynamics_and_videos_separately() -> None:
+    class BrokenVideosClient(FakeClient):
+        async def get_user_videos(self, mid, page=1):
+            raise RuntimeError("投稿接口炸了")
+
+    skill = BilibiliUserSkill(
+        client=BrokenVideosClient(),
+        read_api=FakeReadApi(dynamics_error="动态接口失败：-412 风控"),
+    )
+
+    home = json.loads(await skill.execute("user_home", {"uid": 42}))
+
+    assert home["ok"] is True
+    assert home["name"] == "UP主" and home["fans"] == 100
+    assert home["videos_count"] == 8
+    assert "dynamics" not in home and "dynamics_has_more" not in home
+    assert "动态接口失败" in home["dynamics_error"]
+    assert "videos" not in home and "投稿接口炸了" in home["videos_error"]
+
+
+async def test_user_home_requires_resolvable_user_and_card() -> None:
+    class EmptySearchClient(FakeClient):
+        async def search(self, keyword, *, search_type="video", page=1):
+            return {"result": []}
+
+    missing = json.loads(
+        await BilibiliUserSkill(
+            client=EmptySearchClient(), read_api=FakeReadApi()
+        ).execute("user_home", {"uid": "查无此人"})
+    )
+    failed = json.loads(
+        await BilibiliUserSkill(
+            client=FakeClient(), read_api=FakeReadApi(card_error="名片读取失败")
+        ).execute("user_home", {})
+    )
+
+    assert missing["ok"] is False and "没有搜到昵称「查无此人」" in missing["error"]
+    assert failed["ok"] is False and "名片读取失败" in failed["error"]
+    assert "dynamics" not in failed
+
+
+async def test_user_home_with_legacy_video_client() -> None:
+    skill = BilibiliUserSkill(client=LegacyClient(), read_api=FakeReadApi())
+
+    home = json.loads(await skill.execute("user_home", {"uid": "42"}))
+
+    assert home["ok"] is True
+    assert home["videos"][0]["title"] == "投稿"
+    assert home["dynamics"][0]["type"] == "视频"
+
+
+def test_user_tools_document_uid_search_and_home() -> None:
+    search_tools = {
+        tool["function"]["name"]: tool["function"]
+        for tool in BilibiliSearchSkill(client=FakeClient()).get_tools()
+    }
+    user_tools = {
+        tool["function"]["name"]: tool["function"]
+        for tool in BilibiliUserSkill(client=FakeClient()).get_tools()
+    }
+
+    assert "UID" in search_tools["search_user"]["description"]
+    info = user_tools["user_info"]
+    assert info["parameters"]["required"] == []
+    assert "UID" in info["description"] and "留空" in info["description"]
+    home = user_tools["user_home"]
+    assert home["parameters"]["required"] == []
+    assert home["parameters"]["properties"]["limit"]["default"] == 5
+    assert "动态" in home["description"] and "投稿" in home["description"]
 
 
 async def test_linked_qq_profile_returns_qq_data() -> None:
@@ -516,13 +843,14 @@ async def test_three_skills_register_and_route_together() -> None:
     client = FakeClient()
     manager.register(BilibiliSearchSkill(client=client))
     manager.register(BilibiliVideoSkill(client=client))
-    manager.register(BilibiliUserSkill(client=client))
+    manager.register(BilibiliUserSkill(client=client, read_api=FakeReadApi()))
 
     names = {tool["function"]["name"] for tool in manager.get_tools()}
     assert {
         "bilibili_search__search_video",
         "bilibili_video__watch_video",
         "bilibili_user__linked_qq_profile",
+        "bilibili_user__user_home",
     } <= names
 
     result = json.loads(

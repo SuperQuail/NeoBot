@@ -983,6 +983,24 @@ class BilibiliClient:
             self._logger.warning(f"B站文本下载失败: {url}（{exc}）")
             return None
 
+    def fetch_bytes(self, url: str) -> bytes | None:
+        """下载二进制资源（头像等）；失败返回 None。"""
+        if not url:
+            return None
+        response = self._request("GET", url)
+        if response is None or response.status_code >= 400:
+            self._logger.warning(f"B站二进制下载失败: {url}")
+            return None
+        try:
+            content = response.content
+        except (requests.RequestException, OSError, ValueError) as exc:
+            self._logger.warning(f"B站二进制下载失败: {url}（{exc}）")
+            return None
+        if not content:
+            self._logger.warning(f"B站二进制下载失败: {url}（空响应）")
+            return None
+        return content
+
     def download_file(self, url: str, path: Path) -> bool:
         """把 url 流式下载到 path；失败返回 False 并清理半成品。"""
         target = Path(path)

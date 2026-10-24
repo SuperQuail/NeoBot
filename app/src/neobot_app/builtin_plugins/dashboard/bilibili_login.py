@@ -88,11 +88,21 @@ class BilibiliQrLoginFlow:
             return False
         if ok:
             self._state = "success"
-            self._message = "登录成功"
+            # 成功但落盘失败等 warning 由 service 写进 error，一并展示。
+            self._message = self._service_error(service) or "登录成功"
         elif self._state not in {"expired", "error"}:
             self._state = "expired"
-            self._message = "登录未完成，请刷新二维码重试"
+            self._message = self._service_error(service) or "登录未完成"
         return bool(ok)
+
+    @staticmethod
+    def _service_error(service: Any) -> str:
+        """服务记录的最近错误/警告文本；读不到时返回空串。"""
+        try:
+            info = service.status()
+        except Exception:
+            return ""
+        return str(info.get("error") or "").strip() if isinstance(info, dict) else ""
 
     def _on_qr(self, login: Any) -> None:
         self._qr_url = str(getattr(login, "url", "") or "")
