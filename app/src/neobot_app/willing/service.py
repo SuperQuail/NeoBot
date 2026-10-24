@@ -170,7 +170,7 @@ class WillingService:
 
     def set_runtime_global_coefficient(self, value: float) -> str:
         self._runtime_config.global_coefficient = clamp_probability(value)
-        self._logger.info("runtime global coefficient updated", value=value)
+        self._logger.info(f"全局回复系数已更新：{value:.3f}")
         return f"全局回复系数已设为 {self._runtime_config.global_coefficient:.3f}"
 
     def get_runtime_conversation_coefficient(self, conv_id: str) -> float | None:
@@ -181,21 +181,21 @@ class WillingService:
         conv_id = self._normalize_conversation_id(conv_id)
         coefficient = clamp_probability(value)
         self._runtime_config.conversation_coefficients[conv_id] = coefficient
-        self._logger.info("runtime conversation coefficient updated", conv_id=conv_id, value=coefficient)
+        self._logger.info(f"会话 {conv_id} 的临时回复系数已更新：{coefficient:.3f}")
         return f"会话 {conv_id} 的回复系数已设为 {coefficient:.3f}"
 
     def set_runtime_user_global_coefficient(self, user_id: str, value: float) -> str:
         user_id = self._normalize_user_id(user_id)
         coefficient = clamp_probability(value)
         self._runtime_config.user_global_coefficients[user_id] = coefficient
-        self._logger.info("runtime user global coefficient updated", user_id=user_id, value=coefficient)
+        self._logger.info(f"用户 {user_id} 的全局回复系数已更新：{coefficient:.3f}")
         return f"用户 {user_id} 的全局回复系数已设为 {coefficient:.3f}"
 
     def remove_runtime_user_global_coefficient(self, user_id: str) -> str:
         user_id = self._normalize_user_id(user_id)
         removed = self._runtime_config.user_global_coefficients.pop(user_id, None)
         if removed is not None:
-            self._logger.info("runtime user global coefficient removed", user_id=user_id)
+            self._logger.info(f"用户 {user_id} 的全局回复系数已移除")
             return f"已移除用户 {user_id} 的全局回复系数（原值 {removed:.3f}）"
         return f"用户 {user_id} 没有全局回复系数"
 
@@ -211,10 +211,7 @@ class WillingService:
         per_conv = self._runtime_config.conversation_user_coefficients.setdefault(conv_id, {})
         per_conv[user_id] = coefficient
         self._logger.info(
-            "runtime conversation user coefficient updated",
-            conv_id=conv_id,
-            user_id=user_id,
-            value=coefficient,
+            f"会话 {conv_id} 中用户 {user_id} 的回复系数已更新：{coefficient:.3f}"
         )
         return f"会话 {conv_id} 中用户 {user_id} 的回复系数已设为 {coefficient:.3f}"
 
@@ -227,30 +224,26 @@ class WillingService:
         removed = per_conv.pop(user_id)
         if not per_conv:
             self._runtime_config.conversation_user_coefficients.pop(conv_id, None)
-        self._logger.info(
-            "runtime conversation user coefficient removed",
-            conv_id=conv_id,
-            user_id=user_id,
-        )
+        self._logger.info(f"会话 {conv_id} 中用户 {user_id} 的回复系数已移除")
         return f"已移除会话 {conv_id} 中用户 {user_id} 的回复系数（原值 {removed:.3f}）"
 
     def add_runtime_blacklist(self, conv_id: str) -> str:
         conv_id = self._normalize_conversation_id(conv_id)
         self._runtime_config.blacklisted_conversations.add(conv_id)
-        self._logger.info("runtime blacklist added", conv_id=conv_id)
+        self._logger.info(f"已加入临时黑名单：{conv_id}")
         return f"已将 {conv_id} 加入临时黑名单"
 
     def remove_runtime_blacklist(self, conv_id: str) -> str:
         conv_id = self._normalize_conversation_id(conv_id)
         self._runtime_config.blacklisted_conversations.discard(conv_id)
-        self._logger.info("runtime blacklist removed", conv_id=conv_id)
+        self._logger.info(f"已从临时黑名单移除：{conv_id}")
         return f"已将 {conv_id} 从临时黑名单移除"
 
     def remove_runtime_conversation_coefficient(self, conv_id: str) -> str:
         conv_id = self._normalize_conversation_id(conv_id)
         removed = self._runtime_config.conversation_coefficients.pop(conv_id, None)
         if removed is not None:
-            self._logger.info("runtime conversation coefficient removed", conv_id=conv_id)
+            self._logger.info(f"已移除会话 {conv_id} 的临时回复系数")
             return f"已移除会话 {conv_id} 的临时回复系数（原值 {removed:.3f}）"
         return f"会话 {conv_id} 没有临时回复系数"
 
@@ -276,7 +269,7 @@ class WillingService:
     def _sync_runtime_documents(self) -> None:
         template_path = self._README_TEMPLATE_PATH
         if not template_path.exists():
-            self._logger.warning("willing readme template missing", template_path=template_path)
+            self._logger.warning(f"意愿运行时文档模板缺失：{template_path}")
             return
 
         target_path = self._custom_dir / template_path.name
@@ -287,11 +280,7 @@ class WillingService:
             return
 
         target_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
-        self._logger.info(
-            "synced willing runtime document",
-            target_path=target_path,
-            template_path=template_path,
-        )
+        self._logger.info(f"意愿运行时文档已同步：{target_path}")
 
     def _load_manager(self, manager_name: str) -> BaseWillingManager:
         normalized = (manager_name or "").strip() or "Quail"

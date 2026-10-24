@@ -924,3 +924,22 @@ def test_live_willingness_coefficient(tmp_path: Path) -> None:
     assert interactor.get_live_willingness(5440)["coefficient"] == 0.0
     interactor.remove_live_willingness(5440)
     assert interactor._should_reply("5440", {"uid": 8}, "在吗") is True
+
+
+async def test_ensure_started_starts_listener_when_not_running(tmp_path: Path) -> None:
+    """监听器没在跑时要能原地拉起，否则登录后开监听是假成功。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    assert interactor.is_running is False
+
+    await interactor.ensure_started()
+    assert interactor.is_running is True
+
+    await interactor.ensure_started()
+    assert interactor.is_running is True
+
+    # 登录后直接开房间：ensure_started 之后 enable 会真正建监听任务。
+    assert (await interactor.enable(5440))["ok"] is True
+    assert "5440" in interactor._tasks
+
+    await interactor.stop()
+    assert interactor.is_running is False

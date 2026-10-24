@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/willing/
   - app/src/neobot_app/runtime/event_pipeline.py
 verified_against: 2d7925b
-verified_hash: e5f520fe7a76
+verified_hash: 8a59e2470e8e
 ---
 
 # 02b 回复意愿：概率到底怎么算出来的（逐步精确）
@@ -80,13 +80,13 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A["evaluate(context)"] --> B{"context.is_allowed?"}
-    B -- 否 --> B1["probability=0.0, should_reply=False<br/>reasons: blocked: &lt;block_reason&gt;"]
+    B -- 否 --> B1["probability=0.0, should_reply=False<br/>reasons: 已屏蔽：&lt;屏蔽原因&gt;"]
     B -- 是 --> C{"conversation_id 在运行时黑名单?"}
-    C -- 是 --> C1["0.0 / False<br/>reasons: runtime_blacklist: blocked"]
+    C -- 是 --> C1["0.0 / False<br/>reasons: 运行时黑名单，已屏蔽"]
     C -- 否 --> D{"is_direct_message?"}
-    D -- 是 --> D1["1.0 / True<br/>reasons: private_chat_guaranteed"]
+    D -- 是 --> D1["1.0 / True<br/>reasons: 私聊必回"]
     D -- 否 --> E{"at_guaranteed_reply 且 mentioned_bot?"}
-    E -- 是 --> E1["1.0 / True<br/>reasons: at_guaranteed_reply: mentioned_bot"]
+    E -- 是 --> E1["1.0 / True<br/>reasons: 被@或被叫名字，必回"]
     E -- 否 --> F["进入算术段（下一个小节）"]
 ```
 

@@ -22,7 +22,7 @@ def test_evaluate_live_mentions_bot_is_guaranteed(monkeypatch) -> None:
     )
 
     assert decision.should_reply is True
-    assert "at_guaranteed_reply" in " ".join(decision.reasons)
+    assert "被@或被叫名字" in " ".join(decision.reasons)
 
 
 def test_evaluate_live_uses_live_conversation_id(monkeypatch) -> None:
@@ -76,4 +76,4 @@ def test_live_runtime_blacklist_blocks_live_room(monkeypatch) -> None:
     )
 
     assert decision.should_reply is False
-    assert "runtime_blacklist: blocked" in " ".join(decision.reasons)
+    assert "运行时黑名单" in " ".join(decision.reasons)

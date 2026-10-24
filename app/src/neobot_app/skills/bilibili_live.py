@@ -383,6 +383,7 @@ class BilibiliLiveSkill(SkillModule):
 
     async def _enable(self, live: Any, args: dict[str, Any]) -> str:
         rid = _room_id(args)
+        await live.ensure_started()
         result = await live.enable(rid, auto_reply=bool(args.get("auto_reply", True)))
         payload = dict(result)
         payload["note"] = "写操作：启用后自动回复将以当前B站账号发言"

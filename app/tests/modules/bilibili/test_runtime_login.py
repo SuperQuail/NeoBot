@@ -163,6 +163,24 @@ async def test_second_login_cancels_first_and_replies_once(monkeypatch) -> None:
     assert command_service.replies == ["B站登录成功。"]
 
 
+async def test_login_success_ensures_live_listener(monkeypatch) -> None:
+    runtime, _ = _build()
+    runtime._started = True
+    started: list[bool] = []
+
+    async def _ensure() -> None:
+        started.append(True)
+
+    async def _ok(*, on_qr=None, on_status=None) -> bool:
+        return True
+
+    monkeypatch.setattr(runtime.live_interactor, "ensure_started", _ensure)
+    monkeypatch.setattr(runtime.service, "login_with_qr", _ok)
+
+    assert await runtime.login_with_qr() is True
+    assert started == [True]
+
+
 async def test_login_task_reference_cleared_after_finish(monkeypatch) -> None:
     runtime, command_service = _build()
 

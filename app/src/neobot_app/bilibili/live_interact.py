@@ -197,7 +197,13 @@ class BilibiliLiveInteractor:
             self._auto_look_task = asyncio.create_task(
                 self._auto_look_loop(), name="bilibili-live-auto-look"
             )
-        self._logger.info("B站直播交互器已启动", rooms=len(self._rooms))
+        self._logger.info(f"B站直播交互器已启动：房间数 {len(self._rooms)}")
+
+    async def ensure_started(self) -> None:
+        """监听器没在运行时拉起（登录、命令开启前调用）；幂等。"""
+        if self._running:
+            return
+        await self.start()
 
     async def stop(self) -> None:
         """停止所有监听任务；持久化状态保留，下次 start() 恢复。"""
@@ -286,7 +292,9 @@ class BilibiliLiveInteractor:
         self._rooms[str(rid)] = room
         self._save()
         self._start_task(str(rid))
-        self._logger.info("B站直播房间已启用", room_id=rid, auto_reply=room["auto_reply"])
+        self._logger.info(
+            f"B站直播房间已启用：房间 {rid}，自动回复{'开' if room['auto_reply'] else '关'}"
+        )
         return {
             "ok": True,
             "room_id": rid,
@@ -304,7 +312,7 @@ class BilibiliLiveInteractor:
         await self._cancel_task(str(rid))
         if removed:
             self._save()
-            self._logger.info("B站直播房间已停用", room_id=rid)
+            self._logger.info(f"B站直播房间已停用：房间 {rid}")
         return {"ok": removed, "room_id": rid}
 
     def list_rooms(self) -> list[dict[str, Any]]:
@@ -624,9 +632,8 @@ class BilibiliLiveInteractor:
                 raise
             except Exception as exc:
                 self._logger.warning(
-                    "B站直播弹幕连接失败，准备重连",
-                    room_id=room_id,
-                    error=f"{type(exc).__name__}: {exc}",
+                    f"B站直播弹幕连接失败，准备重连：房间 {room_id}，"
+                    f"错误 {type(exc).__name__}: {exc}"
                 )
             if not self._running:
                 return
@@ -755,7 +762,7 @@ class BilibiliLiveInteractor:
         try:
             result = self._on_event(event)
         except Exception as exc:
-            self._logger.warning("B站直播事件回调失败", error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"B站直播事件回调失败：错误 {type(exc).__name__}: {exc}")
             return
         if inspect.isawaitable(result):
             task = asyncio.create_task(self._await_event_callback(result))
@@ -768,7 +775,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.warning("B站直播事件回调失败", error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"B站直播事件回调失败：错误 {type(exc).__name__}: {exc}")
 
     # ── 自动回复 ──
 
@@ -831,11 +838,9 @@ class BilibiliLiveInteractor:
                 return
         self._record_reply(room_id)
         self._logger.info(
-            "B站直播已自动回复",
-            room_id=room_id,
-            segments=len(replies),
-            chars=sum(len(item) for item in replies),
-            reply_to=target_uid or None,
+            f"B站直播已自动回复：房间 {room_id}，{len(replies)} 段，"
+            f"共 {sum(len(item) for item in replies)} 字，"
+            f"回复给 {target_uid or '无'}"
         )
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:
@@ -878,13 +883,12 @@ class BilibiliLiveInteractor:
                 sent = await call_client(client.send_danmaku, room_id, text)
         except Exception as exc:
             self._logger.warning(
-                f"B站直播{action}发送失败",
-                room_id=room_id,
-                error=f"{type(exc).__name__}: {exc}",
+                f"B站直播{action}发送失败：房间 {room_id}，"
+                f"错误 {type(exc).__name__}: {exc}"
             )
             return False
         if not sent:
-            self._logger.warning(f"B站直播{action}发送失败", room_id=room_id)
+            self._logger.warning(f"B站直播{action}发送失败：房间 {room_id}，接口返回失败")
             return False
         self._record_history(
             str(room_id), {"uid": 0, "name": self._bot_name or "你", "text": text}
@@ -936,17 +940,14 @@ class BilibiliLiveInteractor:
             )
         except Exception as exc:
             self._logger.warning(
-                "直播回复意愿计算失败，按不回复处理",
-                room_id=room_id,
-                error=f"{type(exc).__name__}: {exc}",
+                f"直播回复意愿计算失败，按不回复处理：房间 {room_id}，"
+                f"错误 {type(exc).__name__}: {exc}"
             )
             return False
         self._logger.info(
-            "直播回复意愿",
-            room_id=room_id,
-            probability=f"{decision.probability:.3f}",
-            should_reply=decision.should_reply,
-            reasons=" | ".join(decision.reasons),
+            f"直播回复意愿：房间 {room_id}，概率 {decision.probability:.3f}，"
+            f"判定{'回复' if decision.should_reply else '不回复'}，"
+            f"依据：{'；'.join(decision.reasons)}"
         )
         return bool(decision.should_reply)
 
@@ -1107,7 +1108,7 @@ class BilibiliLiveInteractor:
                     )
                 except Exception as exc:
                     self._logger.debug("B站直播总结写档案失败", error=str(exc))
-            self._logger.info("B站直播弹幕已总结", room_id=room_id, chars=len(summary))
+            self._logger.info(f"B站直播弹幕已总结：房间 {room_id}，摘要 {len(summary)} 字")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1326,7 +1327,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.warning(error_label, error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"{error_label}：{type(exc).__name__}: {exc}")
             return ""
         content = response.get("content", "") if isinstance(response, dict) else get_field(response, "content", "")
         return str(content or "")
@@ -1340,7 +1341,9 @@ class BilibiliLiveInteractor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._logger.warning("B站直播定时弹幕检查失败", error=f"{type(exc).__name__}: {exc}")
+                self._logger.warning(
+                    f"B站直播定时弹幕检查失败：{type(exc).__name__}: {exc}"
+                )
             await asyncio.sleep(_SCHEDULE_CHECK_SECONDS)
 
     @staticmethod

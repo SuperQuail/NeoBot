@@ -9,6 +9,18 @@ def clamp_probability(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+#: 硬性屏蔽原因 → 中文（日志/工具输出都只出现中文）。
+_BLOCK_REASON_TEXT = {
+    "group_disabled": "群聊已关闭",
+    "group_blacklisted": "群在黑名单",
+    "group_not_in_whitelist": "群不在白名单",
+    "private_disabled": "私聊已关闭",
+    "friend_blacklisted": "好友在黑名单",
+    "friend_not_in_whitelist": "好友不在白名单",
+    "runtime_blacklisted": "运行时黑名单",
+}
+
+
 class QuailWillingManager(BaseWillingManager):
     name = "Quail"
 
@@ -16,7 +28,9 @@ class QuailWillingManager(BaseWillingManager):
         reasons: list[str] = []
 
         if not context.is_allowed:
-            reasons.append(f"blocked: {context.block_reason}")
+            reasons.append(
+                f"已屏蔽：{_BLOCK_REASON_TEXT.get(context.block_reason, context.block_reason)}"
+            )
             return WillingDecision(
                 manager_name=self.name,
                 probability=0.0,
@@ -26,7 +40,7 @@ class QuailWillingManager(BaseWillingManager):
 
         blocked = self._is_runtime_blocked(context)
         if blocked:
-            reasons.append("runtime_blacklist: blocked")
+            reasons.append("运行时黑名单，已屏蔽")
             return WillingDecision(
                 manager_name=self.name,
                 probability=0.0,
@@ -36,7 +50,7 @@ class QuailWillingManager(BaseWillingManager):
 
         # 私聊：百分百回复，不受任何系数影响
         if context.is_direct_message:
-            reasons.append("private_chat_guaranteed")
+            reasons.append("私聊必回")
             return WillingDecision(
                 manager_name=self.name,
                 probability=1.0,
@@ -45,7 +59,7 @@ class QuailWillingManager(BaseWillingManager):
             )
 
         if context.at_guaranteed_reply and context.mentioned_bot:
-            reasons.append("at_guaranteed_reply: mentioned_bot")
+            reasons.append("被@或被叫名字，必回")
             return WillingDecision(
                 manager_name=self.name,
                 probability=1.0,

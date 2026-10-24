@@ -210,7 +210,7 @@ async def test_runtime_blacklist_zeroes_group_probability(willing_service):
 
     assert decision.should_reply is False
     assert decision.probability == 0.0
-    assert any("runtime_blacklist" in r for r in decision.reasons)
+    assert any("运行时黑名单" in r for r in decision.reasons)
 
 
 async def test_get_status_summary_contains_all_sections(willing_service):

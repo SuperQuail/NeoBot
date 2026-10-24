@@ -351,7 +351,17 @@ class BilibiliRuntime:
         )
 
     async def login_with_qr(self, *, on_qr: Any = None, on_status: Any = None) -> bool:
-        return await self.service.login_with_qr(on_qr=on_qr, on_status=on_status)
+        ok = await self.service.login_with_qr(on_qr=on_qr, on_status=on_status)
+        if ok and self._started:
+            await self._ensure_live_listener()
+        return ok
+
+    async def _ensure_live_listener(self) -> None:
+        """登录后把可能没在跑的直播监听器拉起来，避免"登录了但要重启才监听"。"""
+        try:
+            await self.live_interactor.ensure_started()
+        except Exception:
+            self._logger.exception("B站直播交互器自动启动失败")
 
     async def publish_dynamic(self, text: str, images: Any = None) -> int:
         return await self.service.publish_dynamic(text, images)
@@ -418,6 +428,7 @@ class BilibiliRuntime:
             if action is None:
                 return "第二个参数只能是 开 或 关"
             if action:
+                await self.live_interactor.ensure_started()
                 result = await self.live_interactor.enable(room_id, auto_reply=True)
                 if not result.get("ok"):
                     return f"启用失败：{result.get('error') or '未知错误'}"
