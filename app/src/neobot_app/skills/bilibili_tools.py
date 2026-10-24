@@ -30,6 +30,8 @@ logger = get_module_logger("bilibili.tools_skill")
 _BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 _AV_RE = re.compile(r"(?:^|[^0-9A-Za-z])av(\d+)", re.IGNORECASE)
 _UID_RE = re.compile(r"space\.bilibili\.com/(\d+)", re.IGNORECASE)
+#: user_info / user_home 的留空值：等同「当前登录账号」。
+_SELF_ALIASES = frozenset({"", "me", "self", "我", "自己", "本人"})
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 
@@ -42,6 +44,17 @@ _COMMENT_TYPE_ALIASES = {
     "article": 12,
     "opus": 12,
     "bangumi": 11,
+}
+#: 动态类型码 -> 中文名；未知类型保留原值。
+_DYNAMIC_TYPES = {
+    "DYNAMIC_TYPE_AV": "视频",
+    "DYNAMIC_TYPE_DRAW": "图文",
+    "DYNAMIC_TYPE_WORD": "文字",
+    "DYNAMIC_TYPE_FORWARD": "转发",
+    "DYNAMIC_TYPE_ARTICLE": "专栏",
+    "DYNAMIC_TYPE_OPUS": "图文",
+    "DYNAMIC_TYPE_PGC": "番剧",
+    "DYNAMIC_TYPE_LIVE_RCMD": "直播",
 }
 _PROFILE_CHARS = 1500
 #: comment_tree 一轮最多补拉的楼中楼根评论数（避免大 limit 时串行请求过多）。
@@ -259,22 +272,44 @@ def _video_detail(data: Any) -> dict[str, Any]:
     }
 
 
-def _space_detail(data: Any) -> dict[str, Any]:
-    raw = _detail_node(data)
-    stat = get_field(raw, "stat") or get_field(raw, "relation") or {}
-    level = get_field(raw, "level")
-    if isinstance(level, dict):
-        level = get_field(level, "current_level", 0)
-    uid = _to_int(get_field(raw, "mid", get_field(raw, "uid", 0)))
+def _stat_count(value: Any) -> int:
+    """module_stat 的计数既可能是 {"count": n}，也可能是裸数字。"""
+    return _to_int(get_field(value, "count", 0)) if isinstance(value, dict) else _to_int(value)
+
+
+def _dynamic_item(raw: Any) -> dict[str, Any]:
+    """动态归一化：类型、正文摘要、发布时间、互动数与可点链接。"""
+    dynamic_id = _text(get_field(raw, "id_str", ""))
+    dynamic_type = _text(get_field(raw, "type", ""))
+    module = get_field(raw, "module_dynamic") or {}
+    desc = get_field(module, "desc") or {}
+    major = get_field(module, "major") or {}
+    archive = get_field(major, "archive") or {}
+    author = get_field(raw, "module_author") or {}
+    stat = get_field(raw, "module_stat") or {}
+    text = _text(get_field(desc, "text", "")) or _text(get_field(archive, "title", ""))
+    if not text and dynamic_type == "DYNAMIC_TYPE_FORWARD":  # 转发本身常无正文，借用原动态
+        orig = get_field(raw, "orig") or {}
+        orig_module = get_field(orig, "module_dynamic") or {}
+        text = _text(get_field(get_field(orig_module, "desc") or {}, "text", ""))
+    if dynamic_type == "DYNAMIC_TYPE_AV":
+        bvid = _text(get_field(archive, "bvid", ""))
+        url = f"https://www.bilibili.com/video/{bvid}" if bvid else f"https://t.bilibili.com/{dynamic_id}"
+    elif dynamic_type == "DYNAMIC_TYPE_ARTICLE":
+        cv_id = _to_int(get_field(get_field(major, "article") or {}, "id", 0)) or _to_int(dynamic_id)
+        url = f"https://www.bilibili.com/read/cv{cv_id}"
+    else:
+        url = f"https://t.bilibili.com/{dynamic_id}"
     return {
-        "uid": uid,
-        "name": _text(get_field(raw, "uname", get_field(raw, "name", ""))),
-        "sign": _text(get_field(raw, "usign", get_field(raw, "sign", "")), 500),
-        "level": _to_int(level),
-        "fans": _to_int(get_field(raw, "fans", get_field(stat, "follower", 0))),
-        "following": _to_int(get_field(raw, "following", get_field(stat, "following", 0))),
-        "face": str(get_field(raw, "face", "") or ""),
-        "url": f"https://space.bilibili.com/{uid}" if uid else "",
+        "type": _DYNAMIC_TYPES.get(dynamic_type, dynamic_type),
+        "id": dynamic_id,
+        "text": _text(text, 200),
+        "url": url,
+        "time": _to_int(get_field(author, "pub_ts")),
+        "time_text": _text(get_field(author, "pub_time", "")),
+        "likes": _stat_count(get_field(stat, "like")),
+        "comments": _stat_count(get_field(stat, "comment")),
+        "reposts": _stat_count(get_field(stat, "forward")),
     }
 
 
@@ -352,6 +387,7 @@ class _BilibiliToolBase(SkillModule):
         archive_service: Any = None,
         uow_factory: Any = None,
         task_manager: Any = None,
+        read_api: Any = None,
     ) -> None:
         self._service = service
         self._client = client
@@ -359,6 +395,7 @@ class _BilibiliToolBase(SkillModule):
         self._archive = archive_service
         self._uow_factory = uow_factory
         self._video_tasks = task_manager
+        self._read_api = read_api
 
     def reset(self) -> None:
         pass
@@ -399,6 +436,15 @@ class _BilibiliToolBase(SkillModule):
             raise _Unavailable("视频解析服务未配置，暂时不能看视频")
         return self._video_service
 
+    def _read(self) -> Any:
+        """只读扩展：优先用注入实例，否则按当前客户端懒加载。"""
+        if self._read_api is not None:
+            return self._read_api
+        # 延迟导入：skills 与 bilibili 包在模块级互相依赖。
+        from neobot_app.bilibili.read_api import BilibiliReadApi
+
+        return BilibiliReadApi(self._require_client())
+
 
 class BilibiliSearchSkill(_BilibiliToolBase):
     """B站搜索 Skill — 视频、用户、专栏。"""
@@ -409,7 +455,7 @@ class BilibiliSearchSkill(_BilibiliToolBase):
 
     @property
     def description(self) -> str:
-        return "B站搜索：按关键词搜视频、UP主、专栏"
+        return "B站搜索：按关键词搜视频、UP主（昵称/UID/空间链接）、专栏"
 
     @property
     def instructions(self) -> str:
@@ -417,10 +463,11 @@ class BilibiliSearchSkill(_BilibiliToolBase):
             "B站搜索 Skill 提供以下能力：\n\n"
             "  search_video — 按关键词搜视频，可指定排序 order（totalrank=综合，click=播放，"
             "pubdate=最新，dm=弹幕，stow=收藏）。返回标题、BV号、UP主、播放量、链接、简介。\n"
-            "  search_user — 按关键词搜用户，返回UID、昵称、签名、粉丝数、空间链接。\n"
+            "  search_user — 按昵称、UID 或空间链接搜用户，返回UID、昵称、签名、粉丝数、空间链接；"
+            "给 UID/空间链接时直接返回该用户的完整名片（含粉丝/关注/投稿/获赞）。\n"
             "  search_article — 按关键词搜专栏，返回CV号、标题、作者、阅读量、链接、摘要。\n\n"
             "搜到视频后，把 BV号 或链接交给 bilibili_video 的 video_info / watch_video 继续看；"
-            "搜到用户后，把 UID 交给 bilibili_user 继续查。"
+            "查用户资料/统计/动态/投稿时，把 UID 或昵称交给 bilibili_user 的 user_info / user_home。"
         )
 
     def get_tools(self) -> list[dict]:
@@ -452,10 +499,14 @@ class BilibiliSearchSkill(_BilibiliToolBase):
             ),
             self._tool_def(
                 "search_user",
-                "按关键词搜索B站用户（UP主），返回UID、昵称、签名、粉丝数与空间链接。",
+                "按昵称、UID 或空间链接搜B站用户（UP主），返回UID、昵称、签名、粉丝数与空间链接；"
+                "UID/空间链接直接返回完整名片（含粉丝/关注/投稿/获赞）。",
                 {
                     "properties": {
-                        "keyword": {"type": "string", "description": "搜索关键词"},
+                        "keyword": {
+                            "type": "string",
+                            "description": "搜索关键词；也可以是 UID 或空间链接",
+                        },
                         "page": page_schema,
                     },
                     "required": ["keyword"],
@@ -773,19 +824,22 @@ class BilibiliUserSkill(_BilibiliToolBase):
 
     @property
     def description(self) -> str:
-        return "B站用户：查用户资料、投稿视频、关注/取关、该用户关联的QQ主页"
+        return "B站用户：查资料与统计、统一主页（资料+动态+投稿）、投稿视频、关注/取关、该用户关联的QQ主页"
 
     @property
     def instructions(self) -> str:
         return (
             "B站用户 Skill 提供以下能力：\n\n"
-            "  user_info — 查B站用户资料：昵称、签名、等级、空间链接。\n"
+            "  user_info — 查B站用户资料与统计：昵称、签名、等级、粉丝、关注、投稿数、"
+            "专栏数、获赞数、空间链接。\n"
+            "  user_home — 查B站用户统一主页：资料+统计+最近动态（类型/正文/发布时间/互动数/链接）"
+            "+最近投稿；留空=自己，与看别人走同一条路径。\n"
             "  user_videos — 查该用户的投稿视频（标题、BV号、播放量、链接）。\n"
             "  follow_user — 关注/取消关注该 B站用户（公开写操作，确认意图后调用）。\n"
             "  linked_qq_profile — 按B站UID查该用户关联的QQ主页资料：QQ号、好友备注、"
             "你对Ta的印象，以及 user_summary / user_profile 长期档案。\n\n"
-            "uid 支持纯数字 UID 或 space.bilibili.com 空间链接。"
-            "没有关联QQ时会明确提示，不要编造QQ号或资料。"
+            "uid 支持纯数字 UID、space.bilibili.com 空间链接或昵称；user_info / user_home "
+            "留空=当前登录账号。没有关联QQ时会明确提示，不要编造QQ号或资料。"
         )
 
     def get_tools(self) -> list[dict]:
@@ -794,15 +848,35 @@ class BilibiliUserSkill(_BilibiliToolBase):
         return [
             self._tool_def(
                 "user_info",
-                "查询B站用户资料（昵称、签名、等级、空间链接）。",
+                "查询B站用户资料与统计（昵称、签名、等级、粉丝、关注、投稿数、专栏数、获赞数、"
+                "空间链接）；uid 可填 UID/空间链接/昵称，留空=自己。",
                 {
                     "properties": {
                         "uid": {
                             "type": "string",
-                            "description": "B站UID（纯数字）或空间链接",
+                            "description": "B站UID（纯数字）、空间链接或昵称；留空=当前登录账号",
                         },
                     },
-                    "required": ["uid"],
+                    "required": [],
+                },
+            ),
+            self._tool_def(
+                "user_home",
+                "查询B站用户统一主页：资料+统计+最近动态（类型/正文/发布时间/互动数/链接）"
+                "+最近投稿；uid 可填 UID/空间链接/昵称，留空=自己。",
+                {
+                    "properties": {
+                        "uid": {
+                            "type": "string",
+                            "description": "B站UID、空间链接或昵称；留空=当前登录账号",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "动态和投稿各返回多少条，默认5，范围1-20",
+                            "default": 5,
+                        },
+                    },
+                    "required": [],
                 },
             ),
             self._tool_def(
@@ -896,6 +970,30 @@ async def _handle_search_video(skill: _BilibiliToolBase, args: dict) -> str:
 
 
 async def _handle_search_user(skill: _BilibiliToolBase, args: dict) -> str:
+    keyword = str(args.get("keyword") or "").strip()
+    if not keyword:
+        return _json({"ok": False, "error": "缺少 keyword（搜索关键词）"})
+    uid = _parse_uid(keyword)
+    if uid > 0:
+        detail = await call_client(skill._read().user_card_detail, uid)
+        if not detail.get("ok"):
+            return _json(
+                {
+                    "ok": False,
+                    "keyword": keyword,
+                    "error": detail.get("error") or "用户名片读取失败",
+                }
+            )
+        return _json(
+            {
+                "ok": True,
+                "keyword": keyword,
+                "page": 1,
+                "total": 1,
+                "count": 1,
+                "items": [detail],
+            }
+        )
     return await _run_search(skill, args, "bili_user", _user_item)
 
 
@@ -1464,16 +1562,79 @@ async def _handle_favorite_folders(skill: _BilibiliToolBase, args: dict) -> str:
     return _json(payload)
 
 
+async def _resolve_user(skill: _BilibiliToolBase, raw: Any) -> tuple[int, str]:
+    """统一解析用户：留空=自己，UID/空间链接直取，否则按昵称搜索（精确同名优先）。"""
+    text = str(raw or "").strip()
+    if text.lower() in _SELF_ALIASES:
+        uid = 0
+        status = getattr(skill._service, "status", None)
+        if callable(status):
+            uid = _to_int(get_field(status(), "uid", 0))
+        if not uid:
+            uid = _to_int(get_field(skill._require_client(), "my_uid", 0))
+        if not uid:
+            raise _Unavailable("无法确定当前登录账号的UID，先发 /login bilibili 扫码登录")
+        return uid, ""
+    uid = _parse_uid(text)
+    if uid > 0:
+        return uid, ""
+    client = skill._require_client("search")
+    search = client.search
+    data = await call_client(
+        search, text, **_call_kwargs(search, {"search_type": "bili_user", "page": 1})
+    )
+    users = [item for item in (_user_item(raw_item) for raw_item in _result_items(data)) if item["uid"] > 0]
+    if not users:
+        raise _Unavailable(f"没有搜到昵称「{text}」的B站用户")
+    matched = next((user for user in users if user["name"] == text), users[0])
+    return matched["uid"], matched["name"]
+
+
 async def _handle_user_info(skill: _BilibiliToolBase, args: dict) -> str:
-    uid = _parse_uid(args.get("uid"))
-    if not uid:
-        return _json({"ok": False, "error": "缺少或无效的 uid（B站UID 或空间链接）"})
-    client = skill._require_client("get_space_info")
-    data = await call_client(client.get_space_info, uid)
-    detail = _space_detail(data)
-    if not (detail["name"] or detail["sign"]):
-        return _json({"ok": False, "error": f"没有查到B站用户 {uid} 的资料"})
-    return _json({"ok": True, **detail})
+    raw = args.get("uid")
+    uid, matched_name = await _resolve_user(skill, raw)
+    detail = await call_client(skill._read().user_card_detail, uid)
+    if not detail.get("ok"):
+        return _json(detail)
+    payload: dict[str, Any] = {"ok": True, **detail}
+    if matched_name:
+        payload["matched_by"] = "name"
+        payload["keyword"] = matched_name
+    elif str(raw or "").strip().lower() in _SELF_ALIASES:
+        payload["matched_by"] = "self"
+    else:
+        payload["matched_by"] = "uid"
+    return _json(payload)
+
+
+async def _handle_user_home(skill: _BilibiliToolBase, args: dict) -> str:
+    uid, _ = await _resolve_user(skill, args.get("uid"))
+    limit = min(max(_to_int(args.get("limit")) or 5, 1), 20)
+    api = skill._read()
+    detail = await call_client(api.user_card_detail, uid)
+    if not detail.get("ok"):
+        return _json(detail)
+    payload: dict[str, Any] = {"ok": True, **detail}
+    # 名片的 videos 是投稿数，与下面的投稿列表重名，改成 videos_count。
+    payload["videos_count"] = payload.pop("videos")
+    try:
+        dynamics = await call_client(api.user_dynamics, uid, limit=limit)
+    except Exception as exc:
+        payload["dynamics_error"] = f"动态读取失败：{exc}"
+    else:
+        if dynamics.get("ok"):
+            payload["dynamics"] = [_dynamic_item(item) for item in dynamics.get("items") or []]
+            payload["dynamics_has_more"] = bool(dynamics.get("has_more"))
+        else:
+            payload["dynamics_error"] = str(dynamics.get("error") or "动态读取失败")
+    client = skill._require_client()
+    try:
+        get_videos = client.get_user_videos
+        data = await call_client(get_videos, uid, **_call_kwargs(get_videos, {"page": 1}))
+        payload["videos"] = [_video_item(item) for item in _result_items(data)][:limit]
+    except Exception as exc:
+        payload["videos_error"] = f"投稿读取失败：{exc}"
+    return _json(payload)
 
 
 async def _handle_follow_user(skill: _BilibiliToolBase, args: dict) -> str:
@@ -1622,6 +1783,7 @@ _HANDLERS = {
     "favorite_video": _handle_favorite_video,
     "favorite_folders": _handle_favorite_folders,
     "user_info": _handle_user_info,
+    "user_home": _handle_user_home,
     "user_videos": _handle_user_videos,
     "follow_user": _handle_follow_user,
     "linked_qq_profile": _handle_linked_qq_profile,

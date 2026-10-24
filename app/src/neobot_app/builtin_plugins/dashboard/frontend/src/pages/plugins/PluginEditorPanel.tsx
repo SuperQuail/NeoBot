@@ -1,6 +1,8 @@
 // pages/plugins/PluginEditorPanel.tsx —— 插件编辑器（工具条 / 详情 / 配置体 / 页脚）
 import { api } from '../../api/endpoints';
 import Icon from '../../components/Icon';
+import Button from '../../components/ui/Button';
+import EmptyState from '../../components/ui/EmptyState';
 import SchemaForm from '../../components/SchemaForm';
 import InlineAlert from '../../components/ui/InlineAlert';
 import type { PluginEditorPanelProps } from './pluginProps';
@@ -29,8 +31,8 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
           <button className="icon-btn" aria-label="重载插件" title={isConsole ? '面板自身不能热重载' : dirty ? '请先保存或放弃修改' : '重载插件'} disabled={!canReload}
             onClick={() => act('reload', () => api.pluginReload(selectedId), '插件已重载')}><Icon name="refresh" /></button>
           <span className="toolbar-divider" />
-          <button className="btn primary" disabled={!canSave} onClick={() => save(true)}><Icon name="save" />
-            {operation === 'save' ? '保存中…' : '保存并重载'}</button>
+          <Button variant="primary" disabled={!canSave} onClick={() => save(true)}><Icon name="save" />
+            {operation === 'save' ? '保存中…' : '保存并重载'}</Button>
           {/* <details>/<summary> 是原生可交互元素，这里只补 Esc 关闭 */}
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
           <details className="plugin-more" ref={actionsRef} onKeyDown={(event) => {
@@ -83,8 +85,8 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
               {(selected.tags || []).map((tag) => <span className="meta-chip" key={tag}>{tag}</span>)}
             </div>
           </div>
-          {!permissions.manage_enabled ? <div className="workspace-empty"><Icon name="settings" /><h3>当前为只读模式</h3>
-            <p>请在「插件 → dashboard → 配置」里把 <code>manage_plugins</code> 设为 true（该配置属于面板插件自己，不在本体 <code>config.toml</code> 里）。</p></div> : <>
+          {!permissions.manage_enabled ? <EmptyState icon="settings" title="当前为只读模式">
+            <p>请在「插件 → dashboard → 配置」里把 <code>manage_plugins</code> 设为 true（该配置属于面板插件自己，不在本体 <code>config.toml</code> 里）。</p></EmptyState> : <>
             <>
               {/* 运行状态：启停是独立于配置的运行期开关，放在配置区最上方最直观 */}
               <div className={'plugin-runtime-row' + (selected.enabled === false ? ' off' : '')} role="status">
@@ -169,7 +171,7 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                 <InlineAlert
                   tone="error"
                   actions={
-                    <button className="btn-sm" disabled={!!operation} onClick={() => { if (!dirty || confirm('重新读取会放弃当前修改，是否继续？')) onRetryRead(); }}>重新读取</button>
+                    <Button size="sm" disabled={!!operation} onClick={() => { if (!dirty || confirm('重新读取会放弃当前修改，是否继续？')) onRetryRead(); }}>重新读取</Button>
                   }
                 >
                   {configError}

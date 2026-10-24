@@ -6,8 +6,10 @@ import { useMutation, useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { fmtNum } from '../utils/format';
 import Icon from '../components/Icon';
-import Modal from '../components/Modal';
+import Modal, { ModalActions } from '../components/Modal';
 import { formatDuration, powerStateLabel } from '../components/StandbyBanner';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 
 /** 把 Result<T> 信封（外层 {ok,data,error,status}）转成一句提示文案 */
 function noticeFrom<T extends { message?: string }>(result: Result<T> | null, fallback: string): string {
@@ -106,40 +108,40 @@ export default function System() {
               onChange={(event) => setReason(event.target.value)}
             />
           </label>
-          <button
-            className="btn danger"
+          <Button
+            variant="danger"
             disabled={!powerAvailable || standby || controlBusy}
             onClick={() => void doStandby.run()}
           >
             <Icon name="cpu" />{doStandby.busy ? '进入中…' : '进入待机'}
-          </button>
+          </Button>
           {standby ? (
-            <button
-              className="btn primary"
+            <Button
+              variant="primary"
               disabled={!powerAvailable || controlBusy}
               onClick={() => void doResume.run()}
             >
               {doResume.busy ? '启动中…' : '启动运行'}
-            </button>
+            </Button>
           ) : (
-            <button
-              className="btn primary"
+            <Button
+              variant="primary"
               disabled={!powerAvailable || controlBusy}
               onClick={() => void doReboot.run()}
             >
               {doReboot.busy ? '软重启中…' : '软重启运行'}
-            </button>
+            </Button>
           )}
-          <button className="btn" disabled={!!doRestart.busy} onClick={() => setRestartOpen(true)}>
+          <Button disabled={!!doRestart.busy} onClick={() => setRestartOpen(true)}>
             {doRestart.busy ? '重启中…' : '重启进程'}
-          </button>
-          <button
-            className="btn danger"
+          </Button>
+          <Button
+            variant="danger"
             disabled={!!doShutdown.busy}
             onClick={() => setShutdownOpen(true)}
           >
             {doShutdown.busy ? '关闭中…' : '关闭 NeoBot'}
-          </button>
+          </Button>
         </div>
         <label className="standby-switch">
           <input
@@ -175,12 +177,12 @@ export default function System() {
           退出后本面板与平台连接都会断开，需要由外部（桌面端、systemd、容器编排）再次启动。
         </p>
         <p className="muted small">若只想重新加载代码改动，请用「重启进程」。</p>
-        <div className="modal-actions">
-          <button className="btn" disabled={!!doShutdown.busy} onClick={() => setShutdownOpen(false)}>取消</button>
-          <button className="btn danger" disabled={!!doShutdown.busy} onClick={() => void doShutdown.run()}>
+        <ModalActions>
+          <Button disabled={!!doShutdown.busy} onClick={() => setShutdownOpen(false)}>取消</Button>
+          <Button variant="danger" disabled={!!doShutdown.busy} onClick={() => void doShutdown.run()}>
             {doShutdown.busy ? '关闭中…' : '确认关闭'}
-          </button>
-        </div>
+          </Button>
+        </ModalActions>
       </Modal>
 
       <Modal open={restartOpen} title="重启进程" onClose={() => { if (!doRestart.busy) setRestartOpen(false); }}>
@@ -188,12 +190,12 @@ export default function System() {
           重启进程用于加载代码改动，会短暂断线（面板与平台连接都会中断几秒到十几秒）。
           只想按当前配置重建运行时，请用「软重启运行」。
         </p>
-        <div className="modal-actions">
-          <button className="btn" disabled={!!doRestart.busy} onClick={() => setRestartOpen(false)}>取消</button>
-          <button className="btn danger" disabled={!!doRestart.busy} onClick={() => void doRestart.run()}>
+        <ModalActions>
+          <Button disabled={!!doRestart.busy} onClick={() => setRestartOpen(false)}>取消</Button>
+          <Button variant="danger" disabled={!!doRestart.busy} onClick={() => void doRestart.run()}>
             {doRestart.busy ? '重启中…' : '确认重启'}
-          </button>
-        </div>
+          </Button>
+        </ModalActions>
       </Modal>
 
       <section className="card">
@@ -221,7 +223,7 @@ export default function System() {
       <div className="grid two-col">
         <section className="card">
           <div className="card-head"><h3>宿主服务</h3><span className="muted small">{serviceItems.length} 项</span></div>
-          {serviceItems.length === 0 && <div className="empty muted">没有可用的服务信息</div>}
+          {serviceItems.length === 0 && <EmptyState compact>没有可用的服务信息</EmptyState>}
           <ul className="service-list">
             {serviceItems.map((item) => (
               <li key={item.name} className="service-row">
@@ -236,7 +238,7 @@ export default function System() {
         <section className="card">
           <div className="card-head"><h3>后台任务</h3>
             <span className="muted small">{scheduled.length} 定时 · {background.length} 进行中</span></div>
-          {scheduled.length === 0 && background.length === 0 && <div className="empty muted">当前没有后台任务</div>}
+          {scheduled.length === 0 && background.length === 0 && <EmptyState compact>当前没有后台任务</EmptyState>}
           {scheduled.length > 0 && (
             <table className="model-table">
               <thead><tr><th>定时任务</th><th>时间</th><th>状态</th></tr></thead>
@@ -276,9 +278,9 @@ export default function System() {
           </span>
         </div>
         {usage.data && usage.data.available === false && (
-          <div className="empty muted">用量数据库不可用{usage.data.error ? '：' + usage.data.error : ''}</div>
+          <EmptyState compact>用量数据库不可用{usage.data.error ? '：' + usage.data.error : ''}</EmptyState>
         )}
-        {usageItems.length === 0 && usage.data?.available && <div className="empty muted">该时间段没有用量记录</div>}
+        {usageItems.length === 0 && usage.data?.available && <EmptyState compact>该时间段没有用量记录</EmptyState>}
         {usageItems.length > 0 && (
           <table className="model-table">
             <thead><tr><th>模块</th><th>调用</th><th>输入 Token</th><th>输出 Token</th><th>费用</th></tr></thead>

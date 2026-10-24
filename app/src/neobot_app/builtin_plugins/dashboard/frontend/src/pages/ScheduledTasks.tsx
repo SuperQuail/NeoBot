@@ -2,7 +2,9 @@
 // 读走 ScheduledTaskManager 的投影；写全部转发给 reminder skill（与主 Agent 同一套校验）。
 import { useMemo, useState } from 'react';
 import Icon from '../components/Icon';
-import Modal from '../components/Modal';
+import Modal, { ModalActions } from '../components/Modal';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 import InlineAlert from '../components/ui/InlineAlert';
 import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
@@ -194,12 +196,12 @@ export default function ScheduledTasks() {
         <div className="card-head">
           <h3>定时任务</h3>
           <div className="spacer" />
-          <button className="btn" disabled={query.loading} onClick={() => void query.refetch()}>
+          <Button disabled={query.loading} onClick={() => void query.refetch()}>
             <Icon name="refresh" />
             {query.loading ? '读取中…' : '刷新'}
-          </button>
-          <button
-            className="btn primary"
+          </Button>
+          <Button
+            variant="primary"
             disabled={!editable || busy}
             onClick={() => {
               setFormError('');
@@ -208,7 +210,7 @@ export default function ScheduledTasks() {
           >
             <Icon name="plus" />
             新建任务
-          </button>
+          </Button>
         </div>
         {/* 管理器不可用时下面的空态已经说明了原因，这里不再重复告警 */}
         {payload?.error && payload.available !== false && (
@@ -222,13 +224,11 @@ export default function ScheduledTasks() {
       </section>
 
       {unavailable ? (
-        <div className="workspace-empty">
-          <Icon name="clock" />
-          <h3>定时任务不可用</h3>
+        <EmptyState icon="clock" title="定时任务不可用">
           <p>{payload?.error || '定时任务管理器未启用。'}</p>
-        </div>
+        </EmptyState>
       ) : tasks.length === 0 ? (
-        !query.loading && <div className="empty muted">还没有定时任务</div>
+        !query.loading && <EmptyState compact>还没有定时任务</EmptyState>
       ) : (
         <section className="card">
           <table className="model-table">
@@ -266,8 +266,8 @@ export default function ScheduledTasks() {
                     </span>
                   </td>
                   <td>
-                    <button
-                      className="btn-sm"
+                    <Button
+                      size="sm"
                       disabled={!editable || busy}
                       onClick={() => {
                         setFormError('');
@@ -275,7 +275,7 @@ export default function ScheduledTasks() {
                       }}
                     >
                       编辑
-                    </button>
+                    </Button>
                     <button
                       className={'btn-sm' + (task.enabled ? '' : ' primary')}
                       disabled={!editable || busy}
@@ -283,13 +283,14 @@ export default function ScheduledTasks() {
                     >
                       {task.enabled ? '停用' : '启用'}
                     </button>
-                    <button
-                      className="btn-sm danger"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       disabled={!editable || busy}
                       onClick={() => void remove(task)}
                     >
                       删除
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -436,9 +437,10 @@ export default function ScheduledTasks() {
                       value={binding.id}
                       onChange={(event) => updateBinding(index, { id: event.target.value })}
                     />
-                    <button
+                    <Button
                       type="button"
-                      className="btn-sm danger"
+                      variant="danger"
+                      size="sm"
                       disabled={draft.bindings.length <= 1}
                       onClick={() =>
                         updateDraft({
@@ -447,30 +449,30 @@ export default function ScheduledTasks() {
                       }
                     >
                       移除
-                    </button>
+                    </Button>
                   </div>
                 ))}
-                <button
+                <Button
                   type="button"
-                  className="btn-sm"
+                  size="sm"
                   onClick={() =>
                     updateDraft({ bindings: [...draft.bindings, { kind: 'group', id: '' }] })
                   }
                 >
                   添加绑定
-                </button>
+                </Button>
               </div>
             </div>
 
-            <div className="modal-actions">
-              <button type="button" className="btn" onClick={() => setDraft(null)}>
+            <ModalActions>
+              <Button type="button" onClick={() => setDraft(null)}>
                 取消
-              </button>
-              <button type="submit" className="btn primary" disabled={busy}>
+              </Button>
+              <Button type="submit" variant="primary" disabled={busy}>
                 <Icon name="save" />
                 {busy ? '提交中…' : '保存'}
-              </button>
-            </div>
+              </Button>
+            </ModalActions>
           </form>
         )}
       </Modal>

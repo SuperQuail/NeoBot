@@ -8,10 +8,11 @@
     result = await qr.login(on_qr=..., on_status=...)   # 完整异步流程
 
 B 站 poll 接口 data.code 状态：
-    0     = 登录成功（data.url 查询串里带 SESSDATA / bili_jct / DedeUserID）
+    0     = 登录成功（data.url 查询串或 Set-Cookie 里带 SESSDATA / bili_jct）
     86101 = 未扫码
     86090 = 已扫码待确认
     86038 = 二维码已失效
+    86083 = 用户拒绝登录
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import requests
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from .client import DEFAULT_USER_AGENT
-from .errors import BilibiliApiError, BilibiliAuthError
+from .errors import BilibiliApiError, BilibiliAuthError, BilibiliError
 
 _QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 _QRCODE_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
@@ -43,8 +44,20 @@ QR_STATE_PENDING = "pending"
 QR_STATE_SCANNED = "scanned"
 QR_STATE_SUCCESS = "success"
 QR_STATE_EXPIRED = "expired"
+QR_STATE_REJECTED = "rejected"
 
-_QR_POLL_STATES = {86101: QR_STATE_PENDING, 86090: QR_STATE_SCANNED, 86038: QR_STATE_EXPIRED}
+_QR_POLL_STATES = {
+    86101: QR_STATE_PENDING,
+    86090: QR_STATE_SCANNED,
+    86038: QR_STATE_EXPIRED,
+    86083: QR_STATE_REJECTED,
+}
+#: 只有终态才结束轮询；其余状态（含单次轮询失败）都继续等。
+_QR_TERMINAL_STATES = (QR_STATE_SUCCESS, QR_STATE_EXPIRED, QR_STATE_REJECTED)
+#: 登录成功必须拿到的 cookie；DedeUserID 允许缺失，uid 由登录后的 nav 接口补齐。
+_REQUIRED_COOKIES = ("SESSDATA", "bili_jct")
+#: generate 失败后的重试退避（秒）。
+_GENERATE_RETRY_DELAYS = (0.5, 1.0)
 
 
 @dataclass
@@ -61,7 +74,7 @@ class QrCodeLogin:
 class QrPollResult:
     """一次扫码状态轮询的结果。"""
 
-    #: pending / scanned / success / expired
+    #: pending / scanned / success / expired / rejected
     state: str
     raw_code: int = -1
     message: str = ""
@@ -98,6 +111,10 @@ async def _notify(callback: Callable[[Any], Any] | None, value: Any) -> None:
         await outcome
 
 
+class QrLoginCookieError(BilibiliApiError):
+    """B站已确认登录但拿不到可用 cookie；重试轮询没有意义，直接作为终态失败。"""
+
+
 class BilibiliQrLogin:
     """B 站网页扫码登录（同步底层 + 异步轮询包装）。"""
 
@@ -115,22 +132,42 @@ class BilibiliQrLogin:
         )
         self._timeout = timeout
         self._logger = logger or NullLogger()
+        self._last_logged_state = ""
 
     # ── 同步原子操作 ──
 
     def generate(self) -> QrCodeLogin:
-        """申请一张登录二维码。"""
+        """申请一张登录二维码；失败按 0.5s / 1s 退避重试两次，仍失败才抛出。"""
+        started = time.monotonic()
+        last_error: BilibiliError | None = None
+        for attempt in range(len(_GENERATE_RETRY_DELAYS) + 1):
+            if attempt:
+                time.sleep(_GENERATE_RETRY_DELAYS[attempt - 1])
+            try:
+                url, qrcode_key = self._generate_once()
+            except BilibiliError as exc:
+                last_error = exc
+                self._logger.warning(f"B站登录二维码生成失败（第 {attempt + 1} 次）: {exc}")
+                continue
+            png_bytes = make_qr_png(url)
+            if png_bytes is None:
+                self._logger.warning("qrcode 依赖未安装，无法生成二维码 PNG（可改用 url 展示）")
+            self._logger.info(
+                f"B站登录二维码已生成（{time.monotonic() - started:.2f}s），等待扫码"
+            )
+            return QrCodeLogin(url=url, qrcode_key=qrcode_key, png_bytes=png_bytes)
+        assert last_error is not None
+        raise last_error
+
+    def _generate_once(self) -> tuple[str, str]:
+        """申请一次二维码，返回 (url, qrcode_key)。"""
         payload = self._get_json(_QRCODE_GENERATE_URL)
         info = payload.get("data") or {}
         url = str(info.get("url") or "")
         qrcode_key = str(info.get("qrcode_key") or "")
         if not url or not qrcode_key:
             raise BilibiliApiError(-1, "二维码生成响应缺少 url/qrcode_key")
-        png_bytes = make_qr_png(url)
-        if png_bytes is None:
-            self._logger.warning("qrcode 依赖未安装，无法生成二维码 PNG（可改用 url 展示）")
-        self._logger.info("B站登录二维码已生成，等待扫码")
-        return QrCodeLogin(url=url, qrcode_key=qrcode_key, png_bytes=png_bytes)
+        return url, qrcode_key
 
     def poll(self, qrcode_key: str) -> QrPollResult:
         """轮询一次扫码状态。"""
@@ -152,6 +189,10 @@ class BilibiliQrLogin:
         state = _QR_POLL_STATES.get(code)
         if state is None:
             raise BilibiliApiError(code, message or "未知的扫码状态")
+        if state == QR_STATE_SCANNED and self._last_logged_state != state:
+            # 只在状态变化时打 INFO，避免每 2 秒刷屏。
+            self._logger.info("B站二维码已扫码，等待手机确认")
+        self._last_logged_state = state
         self._logger.debug(f"B站扫码状态: {state}（code={code}）")
         return QrPollResult(state=state, raw_code=code, message=message)
 
@@ -165,14 +206,35 @@ class BilibiliQrLogin:
         interval: float = 2.0,
         timeout: float = 180.0,
     ) -> QrPollResult:
-        """轮询到终态（success/expired）；超时按 expired 处理。"""
+        """轮询到终态（success/expired/rejected）；超时按 expired 处理。
+
+        单次 poll 失败（网络/风控/未知状态码）不结束登录：B 站侧二维码仍然有效，
+        这里记录原因后继续轮询，直到 deadline。
+        """
         deadline = time.monotonic() + max(float(timeout), 0.0)
+        last_error = ""
         while True:
-            result = await asyncio.to_thread(self.poll, qrcode_key)
-            await _notify(on_status, result)
-            if result.state in (QR_STATE_SUCCESS, QR_STATE_EXPIRED):
-                return result
+            result: QrPollResult | None
+            try:
+                result = await asyncio.to_thread(self.poll, qrcode_key)
+            except QrLoginCookieError:
+                # 已确认登录但拿不到 cookie：重新扫码才有意义，别等到超时再报迷惑文案。
+                raise
+            except BilibiliError as exc:
+                result = None
+                text = str(exc) or type(exc).__name__
+                if text != last_error:
+                    # 同一错误只记一次，避免每 2 秒刷屏。
+                    self._logger.warning(f"B站扫码状态轮询失败，继续重试: {text}")
+                    last_error = text
+            if result is not None:
+                last_error = ""
+                await _notify(on_status, result)
+                if result.state in _QR_TERMINAL_STATES:
+                    self._logger.info(f"B站扫码登录结束: {result.state}")
+                    return result
             if time.monotonic() >= deadline:
+                self._logger.info("B站扫码登录超时（未扫码或未确认）")
                 timeout_result = QrPollResult(
                     state=QR_STATE_EXPIRED, raw_code=-1, message="二维码登录超时"
                 )
@@ -230,31 +292,64 @@ class BilibiliQrLogin:
         data: dict[str, Any],
         response: requests.Response | None = None,
     ) -> dict[str, str]:
-        """从 data.url 查询串 / Set-Cookie 中收集登录 cookie，缺 buvid3 时补一次。"""
+        """从 data.url 查询串 / Set-Cookie 收集登录 cookie；必填缺失时走一次 crossDomain。
+
+        DedeUserID 允许缺失：BilibiliCookieStore 只要求 SESSDATA + bili_jct，
+        uid 由登录后的 nav 接口（get_my_info）补齐。
+        """
         cookies: dict[str, str] = {}
-        query = parse_qs(urlparse(str(data.get("url") or "")).query)
+        cross_domain_url = str(data.get("url") or "")
+        query = parse_qs(urlparse(cross_domain_url).query)
         for name in _COOKIE_NAMES:
             values = query.get(name)
             if values and values[0]:
                 cookies[name] = values[0]
-        for name in _COOKIE_NAMES:
-            if cookies.get(name):
-                continue
-            value = ""
-            if response is not None:
-                value = str(response.cookies.get(name) or "")
-            if not value:
-                value = str(self._session.cookies.get(name) or "")
-            if value:
-                cookies[name] = value
+        cookies.update(self._jar_cookies(response))
+        if cross_domain_url and any(not cookies.get(name) for name in _REQUIRED_COOKIES):
+            # B 站官方流程：success 后 GET data.url（crossDomain），Set-Cookie 才落到会话。
+            redirect = self._get_cross_domain(cross_domain_url)
+            if redirect is not None:
+                cookies.update(self._jar_cookies(redirect))
+        missing = [name for name in _REQUIRED_COOKIES if not cookies.get(name)]
+        if missing:
+            raise QrLoginCookieError(-1, f"登录成功但未取到 cookie: {', '.join(missing)}")
         if not cookies.get("buvid3"):
             buvid3 = self._fetch_buvid3()
             if buvid3:
                 cookies["buvid3"] = buvid3
-        missing = [name for name in ("SESSDATA", "bili_jct", "DedeUserID") if not cookies.get(name)]
-        if missing:
-            raise BilibiliApiError(-1, "登录成功但未取到 cookie: " + ", ".join(missing))
         return cookies
+
+    def _jar_cookies(self, response: requests.Response | None = None) -> dict[str, str]:
+        """从响应 Set-Cookie（优先）与会话 cookie 里取本次登录关心的字段。"""
+        found: dict[str, str] = {}
+        for name in _COOKIE_NAMES:
+            value = str(response.cookies.get(name) or "") if response is not None else ""
+            if not value:
+                value = str(self._session.cookies.get(name) or "")
+            if value:
+                found[name] = value
+        return found
+
+    def _get_cross_domain(self, url: str) -> requests.Response | None:
+        """GET success 返回的 crossDomain 地址，让 Set-Cookie 落到会话；失败不阻断登录。
+
+        这个 URL 来自远端响应，只允许 B站 域名的 https 地址，且不跟随跳转：
+        避免被伪造响应引去请求内网地址（SSRF）。
+        """
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not (
+            host in ("bilibili.com", "biligame.com")
+            or host.endswith(".bilibili.com")
+            or host.endswith(".biligame.com")
+        ):
+            self._logger.warning(f"B站 crossDomain 地址不可信，已跳过: {url}")
+            return None
+        try:
+            return self._session.get(url, timeout=self._timeout, allow_redirects=False)
+        except requests.RequestException as exc:
+            self._logger.warning(f"B站 crossDomain 请求失败（继续用已有 cookie）: {exc}")
+            return None
 
     def _fetch_buvid3(self) -> str:
         """游客设备标识接口；失败返回空串（不阻断登录）。"""

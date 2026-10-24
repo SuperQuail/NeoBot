@@ -538,7 +538,6 @@ async def _run_sandbox_cleanup() -> int:
     mgr = SkillManager()
     mgr.register(SandboxManagerSkill(
         sandbox_service=sandbox_service,
-        sandbox_lock=sandbox["sandbox_lock"],
         hold_max_minutes=120,
     ))
     mgr.register(SandboxMaintenanceSkill(

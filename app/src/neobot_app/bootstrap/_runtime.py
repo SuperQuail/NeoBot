@@ -10,7 +10,6 @@ from neobot_app.config.schemas.env import EnvConfig
 from neobot_app.image_pool import ImageStagingPool
 from neobot_app.runtime.notifications import BackgroundNotificationHub
 from neobot_app.runtime.scheduled_tasks import ScheduledTaskConfig, ScheduledTaskManager
-from neobot_app.runtime.sandbox_lock import SandboxLock
 from neobot_app.runtime.sandbox_service import SandboxService
 from neobot_app.runtime.sandbox_maintenance import SandboxMaintenanceManager
 from neobot_app.runtime.browser_lifecycle import BrowserLifecycleManager
@@ -227,7 +226,6 @@ def build_sandbox_components(
     """创建沙箱、临时清理、维护管理器。"""
     sandbox_cfg = getattr(config.agent, "sandbox", None)
     result: dict[str, Any] = {
-        "sandbox_lock": SandboxLock(),
         "sandbox_service": None,
         "temp_cleaner": None,
         "sandbox_maintenance_manager": None,
@@ -238,7 +236,6 @@ def build_sandbox_components(
 
     result["sandbox_service"] = SandboxService(
         sandbox_root=data_dir / "sandbox",
-        lock=result["sandbox_lock"],
         allowed_read_dirs=[
             data_dir / "emoji",
             data_dir / "creator" / "gallery",

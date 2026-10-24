@@ -13,6 +13,7 @@ import asyncio
 import base64
 import builtins
 import gc
+import logging
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -472,3 +473,69 @@ async def test_concurrent_record_start_is_serialized(
 
     mgr._recording = False
     await mgr.record_stop()
+
+
+# ── start() 重试诊断（fix(26)）────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_retry_logs_each_failure_and_exposes_diagnostics(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """前两次失败要留 warning；成功后可读 attempts / first_error / last_error。"""
+    manager = BrowserManager(user_data_dir=tmp_path / "profile")
+    monkeypatch.setattr(manager_module, "_WINDOWS", False)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    attempts = {"n": 0}
+
+    def flaky_start():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise RuntimeError(f"boot-{attempts['n']}")
+        return _FakePage()
+
+    monkeypatch.setattr(manager, "_start_sync", flaky_start)
+
+    async def _no_restore() -> None:
+        return None
+
+    monkeypatch.setattr(manager, "_restore_persisted_state", _no_restore)
+
+    caplog.set_level(logging.WARNING, logger="neobot.browser")
+    await manager.start()
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert "boot-1" in warnings[0].getMessage()
+    assert manager.start_diagnostics == {
+        "attempts": 3,
+        "first_error": "RuntimeError: boot-1",
+        "last_error": "RuntimeError: boot-2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_failure_retains_diagnostics_and_annotates_exception(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """三次都失败：抛出原异常，但诊断保留、异常带 note（日志/排障可见）。"""
+    manager = BrowserManager(user_data_dir=tmp_path / "profile")
+    monkeypatch.setattr(manager_module, "_WINDOWS", False)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    def broken_start():
+        raise RuntimeError("never boots")
+
+    monkeypatch.setattr(manager, "_start_sync", broken_start)
+
+    caplog.set_level(logging.WARNING, logger="neobot.browser")
+    with pytest.raises(RuntimeError, match="never boots") as excinfo:
+        await manager.start()
+
+    assert manager.start_diagnostics == {
+        "attempts": 3,
+        "first_error": "RuntimeError: never boots",
+        "last_error": "RuntimeError: never boots",
+    }
+    assert any("重试 3 次" in note for note in getattr(excinfo.value, "__notes__", []))

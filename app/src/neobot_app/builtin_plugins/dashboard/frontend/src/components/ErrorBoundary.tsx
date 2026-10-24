@@ -3,6 +3,7 @@ import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import Button from './ui/Button';
 import InlineAlert from './ui/InlineAlert';
+import { ModalActions } from './Modal';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -42,12 +43,12 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
           <p className="muted small">
             可以点下面的按钮重试；若持续失败，请查看浏览器控制台或面板日志。
           </p>
-          <div className="modal-actions">
+          <ModalActions>
             <Button variant="primary" onClick={this.reset}>
               重新渲染
             </Button>
             <Button onClick={() => location.reload()}>刷新页面</Button>
-          </div>
+          </ModalActions>
         </section>
       </div>
     );

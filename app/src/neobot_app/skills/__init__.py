@@ -83,7 +83,6 @@ def build_all_skills(
     image_pool: Any = None,
 
     sandbox_service: Any = None,
-    sandbox_lock: Any = None,
     browser_instance: Any = None,
     browser_lifecycle_manager: Any = None,
     problem_solver_manager: Any = None,
@@ -387,7 +386,6 @@ def build_all_skills(
                     getattr(getattr(getattr(config, "agent", None), "tools", None), "review_timeout_seconds", 30.0)
                     or 30.0
                 ),
-                sandbox_lock=sandbox_lock,
                 adapter=adapter,
                 file_server=file_server,
                 hold_max_minutes=(
@@ -442,12 +440,18 @@ def build_all_skills(
             and getattr(tools_config, "enabled", True)):
         from pathlib import Path
         from neobot_app.agent_tools.runtime import AgentToolRuntime
+        from neobot_app.agent_tools.web import (
+            build_deepseek_web_tools,
+            build_free_web_tools,
+        )
         from neobot_app.skills.agent_tools_skill import AgentToolsSkill
         runtime = AgentToolRuntime(
             sandbox_service, state_dir=Path(kwargs.get("data_dir", ".")) / "agent_tools",
             credential_manager=credential_manager, provider=agent_provider,
             vision_provider=vision_provider, skill_manager=mgr, notification_hub=notification_hub,
             config=tools_config, web_search_config=web_search_config,
+            web_tools=build_deepseek_web_tools(config),
+            free_web_tools=build_free_web_tools(config),
         )
         owner = AgentToolsSkill(runtime)
         mgr.register(owner)

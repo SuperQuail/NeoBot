@@ -6,7 +6,7 @@ import warnings
 
 NATIVE_TOOLS = frozenset({
     "read", "write", "edit", "glob", "grep", "read_image", "lsp",
-    "run_python", "pwsh", "bash", "web_search", "web_fetch",
+    "run_python", "pwsh", "bash", "web_search", "web_search_free", "web_fetch",
     "job_list", "job_output", "job_kill", "todo_write",
     "ask_user_question", "question_status", "enter_plan_mode", "exit_plan_mode", "skill",
     "bilibili_watch_video", "report_to_chat",

@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import { api } from '../api/endpoints';
 import type { LogItem } from '../api/types';
 import { mapTag } from '../utils/format';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 
 const MAX_ROWS = 2000;
 const POLL_MS = 1500;
@@ -183,16 +185,16 @@ export default function Logs() {
             onChange={(e) => setTextFilter(e.target.value.trim().toLowerCase())}
           />
           <div className="spacer" />
-          <button className="btn" onClick={download}>
+          <Button onClick={download}>
             下载
-          </button>
-          <button className="btn" onClick={clear}>
+          </Button>
+          <Button onClick={clear}>
             清屏
-          </button>
+          </Button>
         </div>
 
         <div className="log-viewport" ref={vpRef} onScroll={onScroll}>
-          {visible.length === 0 && <div className="empty muted">暂无日志</div>}
+          {visible.length === 0 && <EmptyState compact>暂无日志</EmptyState>}
           {visible.map((it) => (
             <div className="lv-row" key={it.id} title={it.datetime || it.time}>
               <span className="lv-time">{it.time}</span>
@@ -210,9 +212,9 @@ export default function Logs() {
           </span>
           <div className="spacer" />
           {!tail && pendingNew > 0 && (
-            <button className="btn-sm primary" onClick={resume}>
+            <Button variant="primary" size="sm" onClick={resume}>
               ↓ {pendingNew} 条新日志,回到底部
-            </button>
+            </Button>
           )}
           {tail ? <span className="tag ok">实时跟随</span> : <span className="tag warn">已暂停</span>}
         </div>

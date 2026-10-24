@@ -74,7 +74,7 @@
 | # | 事实 | 位置 | 影响 |
 |---|---|---|---|
 | W1 | **待机期 QQ 命令不可达**：\`stop()\` 无条件执行 \`event_ingress.stop\`，\`EventGateway.stop\` 退订全部 4 个订阅（全仓仅此一处订阅） | \`runtime/application.py:457\`、\`runtime/gateway.py:63\` | 待机后 \`/reboot\` 收不到；\`standby_service.py:274\` 的「命令仍可用」与 \`bugfixes\` 里 \`fix(3)\`「已修复」在 HEAD 上都不成立（\`retain_ingress\` 只在分支 \`feat/wip-followups\`） |
-| W2 | **\`SandboxLock\` 是死装配**：\`acquire/release/acquire_temp/is_owner/is_occupied\` 全仓零调用点 | \`runtime/sandbox_lock.py\` | 「同一时间只有一个 agent 写沙箱」实际不成立；真正的保护只有进程内 \`file_lock\` + \`atomic_write\` |
+| W2 | ~~**\`SandboxLock\` 是死装配**~~（**已修**：2026-10-23 fix(22) 删除该模块与全部注入） | ~~\`runtime/sandbox_lock.py\`~~ | 「同一时间只有一个 agent 写沙箱」实际不成立；真正的保护只有进程内 \`file_lock\` + \`atomic_write\` |
 | W3 | **\`hold_temp\` 是 NO-OP**：只回显分钟数，无计时器/标记 | \`skills/sandbox_manager_skill.py:873\` | 临时文件仍按 1800s mtime 被清理 |
 | W4 | **\`auto_compact_chars\`（默认 200）是死配置**：全仓只有定义处，无读取点 | \`config/schemas/bot.py:1171\` | 面板改了没有任何效果 |
 | W5 | **\`ConnectionTimeoutError\` 已不再抛**，\`cmd_run\` 里的 \`except\` 是死分支 | \`runtime/application.py:27-32\`、\`cli.py:297\` | 旧文档/旧图若写「等连接超时会启动失败」是过时画法 |

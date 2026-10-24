@@ -5,6 +5,7 @@ import type { ConfigSaveBody } from '../../api/endpoints';
 import type { ConfigChanges, ConfigDocument, FieldDescriptor } from '../../api/types';
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
+import Button from '../../components/ui/Button';
 import { ConfigTreePanel } from './ConfigTreePanel';
 import { getPath, setPath } from '../../utils/paths';
 import { changedLeaves, type ChangeEntry, type HistoryMap, type Notice } from './shared';
@@ -265,7 +266,7 @@ function BotConfigPanel() {
       <section className="card">
         <div className="workspace-error" role="alert">
           {notice?.text || '无法读取配置'}
-          <button className="btn-sm" onClick={read}>重试</button>
+          <Button size="sm" onClick={read}>重试</Button>
         </div>
       </section>
     );
@@ -306,22 +307,22 @@ function BotConfigPanel() {
           />
         )}
         <div className="spacer" />
-        <button className="btn" disabled={!!busy} onClick={validate}>{busy === 'validate' ? '校验中…' : '校验'}</button>
+        <Button disabled={!!busy} onClick={validate}>{busy === 'validate' ? '校验中…' : '校验'}</Button>
         {/* 撤销/重做/恢复默认留在工具栏：它们是「表单历史」，放在树面板里会让 TOML 模式下整组消失 */}
-        <button className="btn" disabled={!!busy || mode === 'toml' || !undoStack.length} title="撤销 (Ctrl+Z)" onClick={undo}>
+        <Button disabled={!!busy || mode === 'toml' || !undoStack.length} title="撤销 (Ctrl+Z)" onClick={undo}>
           <Icon name="undo" /> 撤销{undoStack.length ? ' ' + undoStack.length : ''}
-        </button>
-        <button className="btn" disabled={!!busy || mode === 'toml' || !redoStack.length} title="重做 (Ctrl+Y)" onClick={redo}>
+        </Button>
+        <Button disabled={!!busy || mode === 'toml' || !redoStack.length} title="重做 (Ctrl+Y)" onClick={redo}>
           <Icon name="refresh" /> 重做
-        </button>
-        <button className="btn" disabled={!!busy || mode === 'toml' || !doc} title="所有配置项恢复默认值" onClick={resetAllDefaults}>
+        </Button>
+        <Button disabled={!!busy || mode === 'toml' || !doc} title="所有配置项恢复默认值" onClick={resetAllDefaults}>
           全部恢复默认
-        </button>
-        <button className="btn" disabled={!!busy || !dirty} onClick={discard}>放弃修改</button>
-        <button className="btn" disabled={!!busy} onClick={reread}>{busy === 'read' ? '读取中…' : '重新读取'}</button>
-        <button className="btn primary" disabled={!!busy || !dirty} onClick={() => save(true)}>
+        </Button>
+        <Button disabled={!!busy || !dirty} onClick={discard}>放弃修改</Button>
+        <Button disabled={!!busy} onClick={reread}>{busy === 'read' ? '读取中…' : '重新读取'}</Button>
+        <Button variant="primary" disabled={!!busy || !dirty} onClick={() => save(true)}>
           <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
-        </button>
+        </Button>
       </div>
 
       {notice && (
@@ -405,10 +406,10 @@ function BotConfigPanel() {
         </span>
         <span className="muted small">{doc.path}</span>
         <div className="spacer" />
-        <button className="btn" disabled={!!busy} onClick={reloadRuntime}>
+        <Button disabled={!!busy} onClick={reloadRuntime}>
           <Icon name="refresh" /> {busy === 'reload' ? '重载中…' : '重载运行时配置'}
-        </button>
-        <button className="btn danger" disabled={!!busy} onClick={restart}>{busy === 'restart' ? '重启中…' : '重启 NeoBot'}</button>
+        </Button>
+        <Button variant="danger" disabled={!!busy} onClick={restart}>{busy === 'restart' ? '重启中…' : '重启 NeoBot'}</Button>
       </div>
     </section>
   );

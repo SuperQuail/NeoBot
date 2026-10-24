@@ -3,6 +3,8 @@
 // 保存写进 custom/prompts.toml，不会改动内置默认文件。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../components/Icon';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 import InlineAlert from '../components/ui/InlineAlert';
 import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
@@ -152,10 +154,10 @@ export default function Prompts() {
           <h3>提示词模板</h3>
           <div className="spacer" />
           <span className="muted small">{payload?.custom_file || ''}</span>
-          <button className="btn" disabled={query.loading} onClick={() => void query.refetch()}>
+          <Button disabled={query.loading} onClick={() => void query.refetch()}>
             <Icon name="refresh" />
             {query.loading ? '读取中…' : '刷新'}
-          </button>
+          </Button>
         </div>
         <p className="muted small">
           占位符写作 {'{名字}'}；需要输出字面量花括号时写成双花括号；只含空白的区块渲染后会被自动删除。
@@ -168,11 +170,9 @@ export default function Prompts() {
       </section>
 
       {unavailable && (
-        <div className="workspace-empty">
-          <Icon name="code" />
-          <h3>提示词存储不可用</h3>
+        <EmptyState icon="code" title="提示词存储不可用">
           <p>{query.data?.error || '后端未注入 prompt_store。'}</p>
-        </div>
+        </EmptyState>
       )}
 
       {sections.length > 0 && (
@@ -222,22 +222,21 @@ export default function Prompts() {
                   </h3>
                   <div className="spacer" />
                   {current.overridden && <span className="tag warn">自定义生效中</span>}
-                  <button
-                    className="btn"
+                  <Button
                     disabled={!current.overridden || saving || !editable}
                     onClick={() => void reset()}
                   >
                     <Icon name="undo" />
                     恢复默认
-                  </button>
-                  <button
-                    className="btn primary"
+                  </Button>
+                  <Button
+                    variant="primary"
                     disabled={!dirty || saving || !editable}
                     onClick={() => void save()}
                   >
                     <Icon name="save" />
                     {saving ? '保存中…' : '保存'}
-                  </button>
+                  </Button>
                 </div>
 
                 <textarea
@@ -281,7 +280,7 @@ export default function Prompts() {
                 )}
               </>
             ) : (
-              <div className="empty muted">选择左侧的一个提示词键开始编辑</div>
+              <EmptyState compact>选择左侧的一个提示词键开始编辑</EmptyState>
             )}
           </section>
         </div>

@@ -497,7 +497,7 @@ class ReplyToolExecutor(ToolExecutor):
                         "mention": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效，由 agent 自行决定是否 @ 以及 @ 谁。仅在需要提醒通知某人时使用。",
+                            "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效，由 agent 自行决定是否 @ 以及 @ 谁。仅在需要提醒通知某人时使用。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格（例如「@ 某人」）；特殊需要可自行不加。",
                         },
                         "segments": {
                             "type": "array",
@@ -562,7 +562,7 @@ class ReplyToolExecutor(ToolExecutor):
                             "mention": {
                                 "type": "array",
                                 "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。",
+                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
                             },
                             "caption": {
                                 "type": "string",

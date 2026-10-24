@@ -4,7 +4,8 @@ import { api } from '../api/endpoints';
 import type { PluginConfigSaveBody } from '../api/endpoints';
 import type { ConfigDocument, Plugin, PluginConflict, ProxyInfo, Result } from '../api/types';
 import { toast } from '../components/Toast';
-import Modal from '../components/Modal';
+import Modal, { ModalActions } from '../components/Modal';
+import Button from '../components/ui/Button';
 import Icon from '../components/Icon';
 import WorkspaceLayout from '../components/WorkspaceLayout';
 import PluginListPanel from './plugins/PluginListPanel';
@@ -392,19 +393,19 @@ export default function Plugins() {
             {installConflict.existing?.repo ? ` · 来源 ${installConflict.existing.repo}` : ' · 来源未知'}
             {installConflict.existing?.official ? ' · 官方插件（保留字）' : ''}
           </div>
-          <div className="modal-actions">
-            <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>保留现有</button>
-            <button type="button" className="btn primary" disabled={!!operation || installConflict.reserved}
-              onClick={async () => { await submitInstall(true); }}>{operation === 'install' ? '替换中…' : '替换现有插件'}</button>
-            <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>取消</button>
-          </div>
+          <ModalActions>
+            <Button type="button" disabled={!!operation} onClick={closeInstall}>保留现有</Button>
+            <Button type="button" variant="primary" disabled={!!operation || installConflict.reserved}
+              onClick={async () => { await submitInstall(true); }}>{operation === 'install' ? '替换中…' : '替换现有插件'}</Button>
+            <Button type="button" disabled={!!operation} onClick={closeInstall}>取消</Button>
+          </ModalActions>
         </div>}
         <p className="muted small">只允许从 GitHub 下载；安装后自动启用并加载。官方插件 ID 为保留字，随本体更新，不能在面板内安装或更新。</p>
         <p className="muted small">当前下载代理：{proxy.description || '跟随系统'}。网络受限时可在此切换代理模式或端口。</p>
-        <div className="modal-actions">
-          <button type="button" className="btn" disabled={!!operation} onClick={() => setProxyOpen(true)}><Icon name="settings" />代理设置</button>
-          <button type="button" className="btn" disabled={!!operation} onClick={closeInstall}>取消</button>
-          <button className="btn primary" disabled={!!operation || !installRepo.trim() || !!installConflict}>{operation === 'probe' ? '探测中…' : operation === 'install' ? '安装中…' : '下载并安装'}</button></div>
+        <ModalActions>
+          <Button type="button" disabled={!!operation} onClick={() => setProxyOpen(true)}><Icon name="settings" />代理设置</Button>
+          <Button type="button" disabled={!!operation} onClick={closeInstall}>取消</Button>
+          <button className="btn primary" disabled={!!operation || !installRepo.trim() || !!installConflict}>{operation === 'probe' ? '探测中…' : operation === 'install' ? '安装中…' : '下载并安装'}</button></ModalActions>
       </form>
     </Modal>
     <Modal open={proxyOpen} title="插件下载代理" onClose={() => { if (!operation) setProxyOpen(false); }}>
@@ -434,8 +435,8 @@ export default function Plugins() {
               onChange={(event) => setProxyDraft({ ...proxyDraft, port: Number(event.target.value) })} /></label>
         </>}
         <p className="muted small">保存后写入 <code>config.toml</code> 的 <code>[plugins]</code>，下一次下载立即生效（无需重启）。</p>
-        <div className="modal-actions"><button type="button" className="btn" disabled={!!operation} onClick={() => setProxyOpen(false)}>取消</button>
-          <button className="btn primary" disabled={!!operation}>{operation === 'proxy' ? '保存中…' : '保存代理设置'}</button></div>
+        <ModalActions><Button type="button" disabled={!!operation} onClick={() => setProxyOpen(false)}>取消</Button>
+          <button className="btn primary" disabled={!!operation}>{operation === 'proxy' ? '保存中…' : '保存代理设置'}</button></ModalActions>
       </form>
     </Modal>
   </>;

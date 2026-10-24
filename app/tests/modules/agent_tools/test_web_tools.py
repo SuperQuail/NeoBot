@@ -84,3 +84,30 @@ async def test_cross_origin_redirect_not_followed(monkeypatch):
     with pytest.raises(AgentToolError, match="Cross-origin"):
         await tools.execute("web_fetch", {"url": "https://example.com"}, CTX)
     assert len(seen) == 1
+
+
+async def test_search_kwargs_drop_tool_only_budgets():
+    """bootstrap 的 preview_pages_limit 等工具预算不能透传给 SearchSession。"""
+
+    captured: dict = {}
+
+    class Factory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def search(self, query, num_results=10):
+            return SimpleNamespace(
+                success=True,
+                results=[SimpleNamespace(url="https://example.com", title=query, snippet="")],
+            )
+
+    tools = WebTools(
+        search_factory=Factory,
+        search_kwargs={
+            "preview_pages_limit": 30,
+            "variant_result_limit": 6,
+            "engines": ["bing"],
+        },
+    )
+    await tools.execute("web_search", {"queries": ["q"]}, CTX)
+    assert captured == {"engines": ["bing"]}

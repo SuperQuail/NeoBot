@@ -6,7 +6,8 @@
 // 一屏只有一个分组的字段，滚动量与层级深度都降到 1。
 import { useMemo, useState } from 'react';
 import SchemaForm from '../../components/SchemaForm';
-import Icon from '../../components/Icon';
+import Button from '../../components/ui/Button';
+import EmptyState from '../../components/ui/EmptyState';
 import { Highlight } from '../../components/schema/Highlight';
 import { countLeafHits, gatherField, groupHasHits } from '../../components/schema/searchHit';
 import type { FieldDescriptor } from '../../api/types';
@@ -163,12 +164,10 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
             />
           </>
         ) : (
-          <div className="workspace-empty">
-            <Icon name="settings" />
-            <h3>没有匹配的配置项</h3>
+          <EmptyState icon="settings" title="没有匹配的配置项">
             <p>换个关键词，或清空搜索框看全部分区。</p>
-            {keyword && <button type="button" className="btn-sm" onClick={() => onFilterChange('')}>清空搜索</button>}
-          </div>
+            {keyword && <Button type="button" size="sm" onClick={() => onFilterChange('')}>清空搜索</Button>}
+          </EmptyState>
         )}
       </section>
     </div>

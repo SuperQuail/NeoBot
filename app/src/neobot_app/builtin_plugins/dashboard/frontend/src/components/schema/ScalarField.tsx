@@ -22,7 +22,8 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
     setText(value === undefined || value === null ? '' : String(value));
   }, [value]);
   const id = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
-  const secret = SECRET_RE.test(descriptor.name);
+  // 只有字符串才可能是密钥：max_output_tokens 这类数值字段不该出现眼睛按钮
+  const secret = descriptor.type === 'str' && SECRET_RE.test(descriptor.name);
   const locked = disabled || descriptor.readonly;
   const longText = text.length > 120 || text.includes('\n');
   /** 原生 input 事件在组字中会带 isComposing；React 的 Event 类型没声明它。 */

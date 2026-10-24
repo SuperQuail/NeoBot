@@ -155,6 +155,9 @@ class BilibiliRuntime:
             self.service, self.engine, live_interactor=self.live_interactor
         )
         self._diary_task: asyncio.Task[None] | None = None
+        #: 当前扫码登录任务与代次：新 /login 取消旧任务，旧任务不再回复消息。
+        self._login_task: asyncio.Task[None] | None = None
+        self._login_attempt = 0
 
     def apply_config(self, config: Any) -> None:
         """热重载直播间与 B 站运行期配置；不重建连接。"""
@@ -236,6 +239,12 @@ class BilibiliRuntime:
 
     async def stop(self) -> None:
         self._started = False
+        login_task = self._login_task
+        self._login_task = None
+        if login_task is not None:
+            login_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await login_task
         task = self._diary_task
         self._diary_task = None
         if task is not None:
@@ -355,6 +364,13 @@ class BilibiliRuntime:
         registry = command_service.registry
         self._register_login_command(registry, command_service)
         self._register_live_commands(registry, command_service)
+        if not _has_command(registry, "B站账号"):
+            try:
+                from neobot_app.bilibili.account_card import register_account_command
+
+                register_account_command(registry, self)
+            except Exception:
+                self._logger.exception("B站账号命令注册失败（已跳过）")
         if not _has_command(registry, "bili"):
             registry.register(
                 Command(
@@ -536,7 +552,17 @@ class BilibiliRuntime:
             )
 
     def _register_login_command(self, registry: Any, command_service: Any) -> None:
-        from neobot_app.commands.model import PERM_SUB_ADMIN, Command
+        from neobot_app.commands.model import PERM_SUPER_ADMIN, Command
+
+        async def _send(
+            kind: str, conv_id: str, text: str, *, at_user_id: int | None = None
+        ) -> None:
+            try:
+                await command_service.reply_to(
+                    kind, conv_id, text, at_user_id=at_user_id
+                )
+            except Exception:
+                self._logger.warning("B站登录结果消息发送失败")
 
         async def _handler(ctx: Any) -> None:
             args = [str(a).lower() for a in (ctx.args or [])]
@@ -547,9 +573,18 @@ class BilibiliRuntime:
                 await ctx.reply("B站已登录。如需重新登录，请先在B站 App 退出登录后重试，或删除 cookies 文件。")
                 return
 
+            # 同一时间只保留一个登录流程：旧流程的二维码和结果都不再回给用户。
+            old_task = self._login_task
+            self._login_task = None
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
+            self._login_attempt += 1
+            attempt = self._login_attempt
+
             async def _on_qr(login: Any) -> None:
                 png = getattr(login, "png_bytes", None)
                 if png:
+                    # 发图超时多是带宽问题，图片基本都能送达；不在这里做失败兜底。
                     await command_service.send_image_bytes(
                         ctx.kind,
                         ctx.conv_id,
@@ -564,25 +599,41 @@ class BilibiliRuntime:
                 ok = False
                 try:
                     ok = await self.login_with_qr(on_qr=_on_qr)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     self._logger.exception("B站扫码登录失败")
-                    await command_service.reply_to(
-                        ctx.kind, ctx.conv_id, "B站登录失败，请稍后重试", at_user_id=None
-                    )
+                if attempt != self._login_attempt:
                     return
+                # 成功优先：B站侧已经登录时，不再把旧流程的失败报给用户。
+                if not ok and self.service.available:
+                    ok = True
+                try:
+                    reason = str(self.service.status().get("error") or "").strip()
+                except Exception:
+                    reason = ""
                 if ok:
-                    await command_service.reply_to(
-                        ctx.kind, ctx.conv_id, "B站登录成功。", at_user_id=None
-                    )
+                    text = "B站登录成功。"
+                    if reason:
+                        text += f"\n注意：{reason}"
+                    await _send(ctx.kind, ctx.conv_id, text)
+                elif reason:
+                    await _send(ctx.kind, ctx.conv_id, f"B站登录未完成：{reason}")
                 else:
-                    await command_service.reply_to(
+                    await _send(
                         ctx.kind,
                         ctx.conv_id,
                         "B站登录超时或未确认，请重新发送 /login bilibili。",
-                        at_user_id=None,
                     )
 
-            asyncio.create_task(_run())
+            task = asyncio.create_task(_run())
+            self._login_task = task
+
+            def _clear(done: asyncio.Task[None]) -> None:
+                if self._login_task is done:
+                    self._login_task = None
+
+            task.add_done_callback(_clear)
             return None
 
         if not _has_command(registry, "login"):
@@ -591,7 +642,7 @@ class BilibiliRuntime:
                     name="login",
                     description="扫码登录外部平台（当前支持 bilibili）",
                     usage="bilibili",
-                    permission=PERM_SUB_ADMIN,
+                    permission=PERM_SUPER_ADMIN,
                     handler=_handler,
                     params=(("bilibili", "B站扫码登录"),),
                 )

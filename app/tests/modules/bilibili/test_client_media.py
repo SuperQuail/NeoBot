@@ -46,6 +46,12 @@ class _TextResponse(FakeResponse):
         self.text = text
 
 
+class _BytesResponse(FakeResponse):
+    def __init__(self, content: bytes, *, status_code: int = 200) -> None:
+        super().__init__(None, status_code=status_code)
+        self.content = content
+
+
 class _StreamResponse(FakeResponse):
     def __init__(self, chunks: list[bytes], *, status_code: int = 200) -> None:
         super().__init__(None, status_code=status_code)
@@ -268,6 +274,16 @@ def test_fetch_text_returns_body_or_none() -> None:
     ) == _SUBTITLE_BODY
     denied = FakeSession([_TextResponse("", status_code=403)])
     assert _client(denied).fetch_text("https://x/sub.json") is None
+
+
+def test_fetch_bytes_returns_body_or_none() -> None:
+    payload = b"\x89PNG\r\n\x1a\n avatar"
+    assert _client(FakeSession([_BytesResponse(payload)])).fetch_bytes("https://x/face.png") == payload
+    denied = FakeSession([_BytesResponse(b"", status_code=403)])
+    assert _client(denied).fetch_bytes("https://x/face.png") is None
+    empty = FakeSession([_BytesResponse(b"")])
+    assert _client(empty).fetch_bytes("https://x/face.png") is None
+    assert _client(FakeSession()).fetch_bytes("") is None
 
 
 def test_download_file_streams_and_cleans_up_on_failure(tmp_path) -> None:

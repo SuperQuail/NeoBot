@@ -6,6 +6,7 @@ import { fmtUptime, fmtNum, fmt1, mapTag } from '../utils/format';
 import StatCard from '../components/StatCard';
 import ProgressBar from '../components/ProgressBar';
 import Sparkline from '../components/Sparkline';
+import EmptyState from '../components/ui/EmptyState';
 
 export default function Dashboard() {
   // 轮询节奏沿用旧 app.js:概览/系统 较快,趋势/列表稍慢
@@ -143,7 +144,7 @@ export default function Dashboard() {
           <div className="card-head">
             <h3>机器人</h3>
           </div>
-          {botList.length === 0 && <div className="empty muted">暂无机器人</div>}
+          {botList.length === 0 && <EmptyState compact>暂无机器人</EmptyState>}
           {botList.map((b, i) => (
             <div className="bot-row" key={b.user_id || i}>
               <div className="bot-avatar">
@@ -172,7 +173,7 @@ export default function Dashboard() {
             <h3>最近日志</h3>
             <span className="muted">{logs.data?.total ?? ''}</span>
           </div>
-          {logItems.length === 0 && <div className="empty muted">暂无日志</div>}
+          {logItems.length === 0 && <EmptyState compact>暂无日志</EmptyState>}
           <div className="log-list">
             {logItems
               .slice()

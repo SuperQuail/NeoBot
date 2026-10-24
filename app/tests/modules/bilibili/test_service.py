@@ -178,7 +178,9 @@ async def test_login_with_qr_expired_keeps_dormant(tmp_path, monkeypatch) -> Non
 
     assert await service.login_with_qr() is False
     assert service.available is False
-    assert service.status()["error"]
+    error = service.status()["error"]
+    assert "二维码已失效" in error  # 保留原始错误文本
+    assert "重新扫码" in error  # 可读中文原因
     assert not _cookie_path(tmp_path).exists()
 
 
@@ -191,4 +193,71 @@ async def test_login_with_qr_error_returns_false(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("neobot_app.bilibili.service.BilibiliQrLogin.login", fake_login)
 
     assert await service.login_with_qr() is False
-    assert "网络错误" in service.status()["error"]
+    error = service.status()["error"]
+    assert "B站扫码登录失败" in error  # 可读中文前缀
+    assert "网络错误" in error  # 保留原始错误文本
+
+
+async def test_login_with_qr_save_failure_keeps_memory_login(tmp_path, monkeypatch) -> None:
+    service, fake_client, created = _make_service(
+        tmp_path, info={"isLogin": True, "mid": 42, "uname": "扫码用户"}
+    )
+
+    async def fake_login(self, **_kwargs):
+        return QrPollResult(
+            state="success",
+            raw_code=0,
+            cookies=dict(_COOKIES),
+            refresh_token="refresh-token",
+        )
+
+    def broken_save(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("neobot_app.bilibili.service.BilibiliQrLogin.login", fake_login)
+    monkeypatch.setattr(BilibiliCookieStore, "save", broken_save)
+
+    assert await service.login_with_qr() is True
+    assert service.available is True
+    assert len(created) == 1  # 内存 cookie 仍然激活了客户端
+    status = service.status()
+    assert "凭证保存失败" in status["error"]
+    assert "disk full" in status["error"]  # 保留原始错误文本
+    assert status["uid"] == 42  # uid 由 nav 接口补齐
+    assert not _cookie_path(tmp_path).exists()
+
+
+async def test_login_with_qr_without_dedeuserid_uses_nav_uid(tmp_path, monkeypatch) -> None:
+    service, _, created = _make_service(
+        tmp_path, info={"isLogin": True, "mid": 42, "uname": "扫码用户"}
+    )
+    cookies = {"SESSDATA": "sess", "bili_jct": "jct", "buvid3": "buvid"}
+
+    async def fake_login(self, **_kwargs):
+        return QrPollResult(state="success", raw_code=0, cookies=dict(cookies))
+
+    monkeypatch.setattr("neobot_app.bilibili.service.BilibiliQrLogin.login", fake_login)
+
+    # DedeUserID 缺失也能登录成功：uid 由 nav 接口（get_my_info）补齐。
+    assert await service.login_with_qr() is True
+    assert created[0][0] == ("sess", "jct", 0)
+    status = service.status()
+    assert status["available"] is True
+    assert status["uid"] == 42
+    assert BilibiliCookieStore(_cookie_path(tmp_path)).load() is not None
+
+
+async def test_login_with_qr_failure_but_account_already_logged_in(tmp_path, monkeypatch) -> None:
+    BilibiliCookieStore(_cookie_path(tmp_path)).save(_COOKIES)
+    service, _, _ = _make_service(tmp_path, info={"isLogin": True, "mid": 42})
+    await service.start()
+    assert service.available is True
+
+    async def fake_login(self, **_kwargs):
+        raise BilibiliAuthError("网络错误")
+
+    monkeypatch.setattr("neobot_app.bilibili.service.BilibiliQrLogin.login", fake_login)
+
+    # 轮询失败但账号实际已登录：先 verify 一次，按成功处理。
+    assert await service.login_with_qr() is True
+    assert service.available is True

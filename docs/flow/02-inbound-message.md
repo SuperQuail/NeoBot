@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
 verified_against: 9587891
-verified_hash: 883f483d9294
+verified_hash: 2d6a393afd9e
 ---
 
 # 02 适配器入站：反向 WS -> 事件网关 -> 队列 -> 事件管道
@@ -171,7 +171,7 @@ flowchart TD
 `app/src/neobot_app/message/queue.py:115 MessageQueue` 只是**数据结构**（分桶 + 容量 + 权重 +
 渲染成文本），**没有循环**。真正的分发循环在
 `packages/adapter/src/neobot_adapter/onebot/adapter.py:384`。
-`listener/manager.py:246` 里的线程版 `_dispatch_loop` 是遗留实现，现行适配器不引用。
+`listener/manager.py:246` 里的线程版 `_dispatch_loop` 是遗留实现，**已在 fix(24)（2026-10-23）删除**，现行适配器不引用。
 </details>
 
 <details>
@@ -288,4 +288,4 @@ flowchart LR
 * **订阅只能有一处**：`EventGateway`。任何在 `EventPipeline` 里重新 subscribe 的改动
   都会让事件被处理两遍。
 * **入站处理有 10s 依赖超时**：`_handle_inbound_raw_event` 超时只 warning，不阻断主链路。
-* **遗留实现别当现行链路**：`listener/manager.py` 的线程版分发循环已不被引用。
+* **遗留实现已删除**：`listener/manager.py` 的线程版分发循环在 fix(24)（2026-10-23）删除；现行链路只有 `EventGateway`。

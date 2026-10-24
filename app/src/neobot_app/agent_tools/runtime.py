@@ -18,7 +18,7 @@ from neobot_app.config.schemas.bot import AgentToolsConfig
 
 Dispatch = Callable[[str, dict], Awaitable[Any]]
 _PROGRAM_DISPATCH = object()
-_SAFE_READS = {"read", "glob", "grep", "web_search", "web_fetch", "read_image",
+_SAFE_READS = {"read", "glob", "grep", "web_search", "web_search_free", "web_fetch", "read_image",
                "get_goal", "question_status", "list_agents", "subagent_result",
                "job_list", "terminal_list", "lsp", "session_search",
                "session_event_read", "session_event_search", "session_event_trace", "session_trace"}
@@ -50,7 +50,8 @@ class AgentToolRuntime:
     def __init__(self, sandbox: Any, *, state_dir: Path, credential_manager: Any = None,
                  provider: Any = None, vision_provider: Any = None, skill_manager: Any = None,
                  notification_hub: Any = None, config: AgentToolsConfig | None = None,
-                 web_search_config: dict[str, Any] | None = None) -> None:
+                 web_search_config: dict[str, Any] | None = None,
+                 web_tools: Any = None, free_web_tools: Any = None) -> None:
         from neobot_app.agent_tools.delegation import ChildAgentTools
         from neobot_app.agent_tools.goal_driver import GoalDriver
         from neobot_app.agent_tools.lsp import LspTools
@@ -81,7 +82,8 @@ class AgentToolRuntime:
         self.state = StateTools(state_dir / "state", approve=self._approve_plan, max_goal_rounds=self.config.max_goal_rounds)
         self.files = AgentFileTools(sandbox)
         self.processes = ProcessTools(self.workspace, completion_callback=self._notify)
-        self.web = WebTools(search_kwargs=web_search_config or {})
+        self.web = web_tools or WebTools(search_kwargs=web_search_config or {})
+        self.free_web = free_web_tools
         self.ptc = PtcRunner()
         from neobot_app.agent_tools.lsp_defaults import default_python_lsp_servers
         servers = default_python_lsp_servers() if self.config.lsp_enabled else {}
@@ -101,6 +103,8 @@ class AgentToolRuntime:
             modules.append(self.processes)
         if self.config.web_enabled:
             modules.append(self.web)
+            if self.free_web is not None:
+                modules.append(self.free_web)
         if self.provider is not None:
             modules.append(self.children)
         if self.config.lsp_enabled:

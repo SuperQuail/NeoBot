@@ -4,6 +4,7 @@ import { api } from '../../api/endpoints';
 import type { ModelsPayload } from '../../api/types';
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
+import Button from '../../components/ui/Button';
 import type { AssignDraft } from './shared';
 function AssignPanel() {
   const [data, setData] = useState<ModelsPayload | null>(null);
@@ -97,10 +98,10 @@ function AssignPanel() {
         <h3>模型分配</h3>
         <span className="muted small">{library.length} 个可选模型</span>
         <div className="spacer" />
-        <button className="btn-sm" disabled={!!busy} onClick={read}>重新读取</button>
-        <button className="btn-sm primary" disabled={!!busy} onClick={save}>
+        <Button size="sm" disabled={!!busy} onClick={read}>重新读取</Button>
+        <Button variant="primary" size="sm" disabled={!!busy} onClick={save}>
           <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存分配'}
-        </button>
+        </Button>
       </div>
       <p className="muted small">每个调用方只保存一个模型 key；生图模型可多选，Agent 会按模型描述自行选择供应商。</p>
 

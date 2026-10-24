@@ -1,6 +1,6 @@
 # B站与跨平台
 
-> 状态：已实现（2026-10-20 增补搜索/视频/用户工具与回复池）。B站功能默认开启，但未登录时服务休眠、等同关闭。
+> 状态：已实现（2026-10-20 增补搜索/视频/用户工具与回复池；2026-10-24 增补用户查询统一入口与名片统计、`/B站账号` 卡片，及扫码登录健壮性修复）。B站功能默认开启，但未登录时服务休眠、等同关闭。
 
 ## 功能
 
@@ -21,7 +21,7 @@
 | 工具（SkillManager 前缀） | 说明 |
 |---|---|
 | bilibili_search__search_video(keyword,page,order) | 搜视频：标题、BV号、UP主、播放、链接、简介；order 支持综合/播放/最新/弹幕/收藏 |
-| bilibili_search__search_user(keyword,page) | 搜用户：UID、昵称、签名、粉丝、空间链接 |
+| bilibili_search__search_user(keyword,page) | 搜用户：keyword 支持昵称/UID/空间链接；昵称走关键词搜索，UID 或空间链接直接返回该用户一条完整资料（含粉丝/关注/投稿/获赞）；返回 UID、昵称、签名、粉丝、空间链接 |
 | bilibili_search__search_article(keyword,page) | 搜专栏：CV号、标题、作者、阅读、链接 |
 | bilibili_video__video_info(identifier) | 视频资料（BV/av/URL） |
 | bilibili_video__watch_video(identifier,max_chars,include_comments) | 看视频：站点字幕优先，无字幕走 ASR 转写；默认最多 3000 字符，返回 source=site/asr，可选热门评论；超长全文自动存档案 |
@@ -32,7 +32,8 @@
 | bilibili_video__comment_video(identifier,text,root,parent) | 以当前登录账号给视频发评论/楼中楼回复（写操作，确认意图后调用） |
 | bilibili_video__like_video(identifier) | 给视频点赞（写操作） |
 | bilibili_video__like_comment(identifier,rpid) | 给视频评论点赞（写操作） |
-| bilibili_user__user_info(uid) | B站用户资料 |
+| bilibili_user__user_info(uid) | 用户资料+统计（粉丝/关注/投稿/获赞）；uid 支持 UID/空间链接/昵称，留空=自己 |
+| bilibili_user__user_home(uid,limit) | 用户主页：资料+统计+最近动态+最近投稿；uid 同上，留空=自己，与看别人完全同一条路径；动态/投稿单项失败只降级该段（*_error） |
 | bilibili_user__user_videos(uid,page) | 用户投稿列表 |
 | bilibili_user__follow_user(uid,action) | 关注/取消关注B站用户（公开写操作） |
 | bilibili_user__linked_qq_profile(uid) | 按B站UID查关联的QQ主页：QQ号、备注、印象、user_summary/user_profile 档案；无关联明确提示 |
@@ -44,9 +45,22 @@
 
 ## 命令
 
-- /login bilibili：扫码登录（次级管理员）
+- /login bilibili：扫码登录（超级管理员）
 - /bili status：查看登录/轮询状态（次级管理员）
 - /bili dynamic <文本>：发布一条 B站纯文本动态（次级管理员）
+- /B站账号：当前登录 B站账号的 HTML 卡片（所有人）；显示头像、昵称、UID、粉丝、关注、获赞、登录状态、登录时间、空间链接，统计来自 B站名片接口（/x/web-interface/card）；截图渲染不可用时降级为等价纯文本；未登录时提示先发 /login bilibili；卡片与文本都不含任何 cookie/token。
+
+## 扫码登录的健壮性（2026-10-24）
+
+2026-10-24 按 bugfixes/fix(27) 的 P0/P0-2 修正「二维码三秒就过期」与「B站已登录但 bot 显示失败」两类现象，对外可见口径如下：
+
+- 二维码有效期 180 秒（login_timeout_seconds 默认 180），不是几秒。
+- poll 单次出错（网络、风控 -412/-352、频率限制 -799、未知状态码）不再提前结束流程：记录原因后继续轮询，直到 success、二维码过期（86038）或用户拒绝（86083）。
+- success 优先：流程收尾前再确认一次登录态，只要 B站侧已登录就回成功，不会被旧任务的失败消息推翻。
+- cookie 只要求 SESSDATA + bili_jct；DedeUserID 缺失时 uid 留 0，由登录后的 nav 补齐；三件套在 URL/Set-Cookie 里都缺时，按 B站 crossDomain 流程（GET data.url）再收一次。
+- cookie 落盘失败不再视为整体失败：仍用内存 cookie 激活客户端，并明确提示「登录成功，但凭证保存失败（重启后需重新登录）」。
+- 同一时间只保留一个登录任务：重复 /login 会取消/忽略上一个未完成任务，旧任务不再发送结果消息（避免多轮询叠加触发频率限制）。
+- 失败回复真实原因（风控/网络/二维码失效/超时），不再统一回「超时或未确认」；面板登录页同步显示。
 
 ## 直播间交互（与监听插件独立）
 
@@ -137,6 +151,8 @@ bilibili_video 新增 coin_video / share_video / favorite_video / favorite_folde
 - 扫码成功、发评论/私信/动态、搜索/看视频/查用户、直播间弹幕收发与点赞均只经 mock + 匿名接口验证，未用真实账号全面实测；写操作可能触发B站风控。ASR 路径取决于 SiliconFlow key 与视频是否有公开字幕。
 - 评论回复已记录 token 用量；@ 通知已支持（get_at_feed，与「回复我的」按 oid+parent_id 去重）。
 - B站接口为 Web 协议，存在风控/合规风险；默认关闭自动回复是安全边界。
+- **用户统计依赖名片接口**：粉丝/关注/投稿/获赞来自 /x/web-interface/card，B站风控（-352/-412 等）时取不到 → 工具按中文 error 降级，不静默填 0；主页里动态/投稿单项失败只降级该段（dynamics_error / videos_error）。投稿列表 /x/space/arc/search 匿名访问实测 -799，登录态预计可用、留待实测。
+- **/login 权限收紧（2026-10-24）**：改为超级管理员后，只有超级管理员能扫码登录/换号，次级管理员与普通用户都没有该命令，属预期行为；其它 B站命令权限不变。回滚只需把命令权限常量改回次级管理员。
 
 ## 配置
 

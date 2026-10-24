@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
 verified_against: 528fe18
-verified_hash: 4568d43569dc
+verified_hash: e794876e160a
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -115,7 +115,7 @@ sequenceDiagram
     SK->>BW: 具体动作（navigate / click / screenshot ...）
     BW->>AB: _ensure()（_init_lock 内，首次建实例）
     AB->>BM: start()——浏览器没起才走，venv 里可能耗时数秒
-    BM->>CH: ChromiumPage(ChromiumOptions)，失败重试 3 次，间隔 1.5s
+    BM->>CH: ChromiumPage(ChromiumOptions)，失败重试 3 次，间隔 1.5s（每次 warning；诊断见 start_diagnostics）
     BM->>BM: _restore_persisted_state：只回灌 cookies，不回灌 localStorage
     AB-->>BW: manager 就绪
     BW->>BM: 转发动作（每个动作再 _notify_lifecycle —— 当前是 pass）
