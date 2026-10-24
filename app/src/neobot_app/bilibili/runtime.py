@@ -577,16 +577,16 @@ class BilibiliRuntime:
 
             async def _on_qr(login: Any) -> None:
                 png = getattr(login, "png_bytes", None)
-                sent = False
                 if png:
-                    sent = await command_service.send_image_bytes(
+                    # 发图超时多是带宽问题，图片基本都能送达；不在这里做失败兜底。
+                    await command_service.send_image_bytes(
                         ctx.kind,
                         ctx.conv_id,
                         png,
                         at_user_id=ctx.user_id,
                         filename="bilibili-login.png",
                     )
-                if not png or sent is False:
+                else:
                     await ctx.reply("请用B站App扫码登录：" + str(getattr(login, "url", "")))
 
             async def _run() -> None:
