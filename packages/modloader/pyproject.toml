@@ -1,6 +1,6 @@
 [project]
 name = "neobot-modloader"
-version = "2.0.2-a5"
+version = "2.0.2-a6"
 description = "Add your description here"
 readme = "README.md"
 authors = [
