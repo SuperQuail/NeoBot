@@ -14,7 +14,9 @@
 // pipeline_key 作为副标题常驻，便于在日志 / 配置里定位。
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../components/Icon';
-import Modal from '../components/Modal';
+import Modal, { ModalActions } from '../components/Modal';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 import InlineAlert from '../components/ui/InlineAlert';
 import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
@@ -294,12 +296,12 @@ export default function ChatFlows() {
         <div className="card-head">
           <h3>聊天流</h3>
           <div className="spacer" />
-          <button className="btn" disabled={list.loading} onClick={() => void list.refetch()}>
+          <Button disabled={list.loading} onClick={() => void list.refetch()}>
             <Icon name="refresh" />
             {list.loading ? '读取中…' : '刷新'}
-          </button>
-          <button
-            className="btn danger"
+          </Button>
+          <Button
+            variant="danger"
             type="button"
             onClick={() => {
               setClearChecked(false);
@@ -308,7 +310,7 @@ export default function ChatFlows() {
           >
             <Icon name="trash" />
             清空提示词历史
-          </button>
+          </Button>
         </div>
         <p className="muted small">
           上方「快速预览」来自内存快照（重启后清空，只保留最近 80 条消息）；
@@ -323,15 +325,13 @@ export default function ChatFlows() {
       </section>
 
       {list.data && list.data.ok === false && (
-        <div className="workspace-empty">
-          <Icon name="bot" />
-          <h3>聊天流不可用</h3>
+        <EmptyState icon="bot" title="聊天流不可用">
           <p>{list.data.error || '后端未注入 chat_flow_registry。'}</p>
-        </div>
+        </EmptyState>
       )}
 
       {(!list.data || list.data.ok !== false) && flows.length === 0 && !list.loading && (
-        <div className="empty muted">还没有聊天流记录。Bot 收到消息并构建提示词后这里就会出现。</div>
+        <EmptyState compact>还没有聊天流记录。Bot 收到消息并构建提示词后这里就会出现。</EmptyState>
       )}
 
       {flows.length > 0 && (
@@ -367,7 +367,7 @@ export default function ChatFlows() {
 
           <section className="card prompt-editor" aria-label="聊天流详情">
             {!snapshot ? (
-              <div className="empty muted">{detail.loading ? '读取中…' : '选择左侧的聊天流查看详情'}</div>
+              <EmptyState compact>{detail.loading ? '读取中…' : '选择左侧的聊天流查看详情'}</EmptyState>
             ) : (
               <>
                 <div className="card-head">
@@ -421,7 +421,7 @@ export default function ChatFlows() {
                         <strong>后台任务</strong>
                       </div>
                       {background.length === 0 ? (
-                        <div className="empty muted">当前没有后台任务</div>
+                        <EmptyState compact>当前没有后台任务</EmptyState>
                       ) : (
                         <ul className="flow-tasks">
                           {background.map(([name, value]) => (
@@ -478,25 +478,25 @@ export default function ChatFlows() {
                             已跟随最新一份{latestSeq !== null ? `（#${latestSeq}）` : ''}· 每 5 秒自动刷新
                           </span>
                         ) : (
-                          <button className="btn-sm" type="button" onClick={() => setPickedSeq(null)}>
+                          <Button size="sm" type="button" onClick={() => setPickedSeq(null)}>
                             <Icon name="refresh" />
                             回到最新一份（#{latestSeq}）
-                          </button>
+                          </Button>
                         )}
                       </div>
-                      <button
-                        className="btn-sm"
+                      <Button
+                        size="sm"
                         type="button"
                         disabled={prompts.loading}
                         onClick={() => void prompts.refetch()}
                       >
                         <Icon name="refresh" />
                         {prompts.loading ? '读取中…' : '刷新'}
-                      </button>
+                      </Button>
                       {promptItems.length === 0 ? (
-                        <div className="empty muted">
+                        <EmptyState compact>
                           {prompts.loading ? '读取中…' : '还没有记录完整提示词'}
-                        </div>
+                        </EmptyState>
                       ) : (
                         <ul className="chat-history-list">
                           {promptItems.map((meta: ChatFlowPromptMeta) => {
@@ -532,26 +532,26 @@ export default function ChatFlows() {
 
                     <div className="chat-prompt-entry">
                       {prompts.loading && promptData === null ? (
-                        <div className="empty muted">读取中…</div>
+                        <EmptyState compact>读取中…</EmptyState>
                       ) : promptData === null ? (
                         <InlineAlert tone="warning" title="完整提示词历史不可用">
                           后端未注入 context_recorder，或提示词历史记录被关闭
                           （chat.chat_flow_prompt_history_enabled = false）。
                         </InlineAlert>
                       ) : activeSeq === null ? (
-                        <div className="empty muted">
+                        <EmptyState compact>
                           还没有完整提示词记录；Bot 下次调用模型后会在这里出现。
-                        </div>
+                        </EmptyState>
                       ) : entryLoading && !activeEntry ? (
-                        <div className="empty muted">读取中…</div>
+                        <EmptyState compact>读取中…</EmptyState>
                       ) : !activeEntry ? (
                         <InlineAlert
                           tone="error"
                           title={'读取完整提示词失败：seq=' + activeSeq}
                           actions={
-                            <button className="btn-sm" type="button" onClick={() => void prompts.refetch()}>
+                            <Button size="sm" type="button" onClick={() => void prompts.refetch()}>
                               重新读取
-                            </button>
+                            </Button>
                           }
                         />
                       ) : (
@@ -581,20 +581,20 @@ export default function ChatFlows() {
           />
           我已确认：清空后这些完整聊天记录无法恢复
         </label>
-        <div className="modal-actions">
-          <button className="btn" type="button" disabled={clearing} onClick={() => setClearOpen(false)}>
+        <ModalActions>
+          <Button type="button" disabled={clearing} onClick={() => setClearOpen(false)}>
             取消
-          </button>
-          <button
-            className="btn danger"
+          </Button>
+          <Button
+            variant="danger"
             type="button"
             disabled={clearing || !clearChecked}
             onClick={() => void clearHistory()}
           >
             <Icon name="trash" />
             {clearing ? '清空中…' : '确认清空'}
-          </button>
-        </div>
+          </Button>
+        </ModalActions>
       </Modal>
     </div>
   );

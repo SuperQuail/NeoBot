@@ -5,6 +5,8 @@ import type { UsagePayload, UsageRecordItem, UsageTotals } from '../api/types';
 import Icon from '../components/Icon';
 import LineChart from '../components/LineChart';
 import StatCard from '../components/StatCard';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 
 const RANGES = [
   { key: '24h', label: '近 24 小时', hours: 24, bucket: 'hour' },
@@ -144,18 +146,16 @@ export default function Usage() {
         </div>
         <div className="spacer" />
         <span className="muted small">金额单位：CNY（按模型绑定的计价脚本或价格表计算）</span>
-        <button className="btn" disabled={loading} onClick={read}>
+        <Button disabled={loading} onClick={read}>
           <Icon name="refresh" /> {loading ? '读取中…' : '刷新'}
-        </button>
+        </Button>
       </div>
 
       {error && <div className="workspace-error" role="alert">{error}</div>}
       {data && data.available === false && (
-        <div className="workspace-empty">
-          <Icon name="settings" />
-          <h3>暂无用量数据</h3>
+        <EmptyState icon="settings" title="暂无用量数据">
           <p>数据库未就绪或还没有产生 API 调用记录。</p>
-        </div>
+        </EmptyState>
       )}
 
       {data?.available && (

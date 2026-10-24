@@ -1455,11 +1455,16 @@ class DashboardApi:
                 except Exception:
                     defaults = {}
             try:
-                model.model_validate({**defaults, **values})
+                validated = model.model_validate({**defaults, **values})
             except Exception as exc:
                 return _json_error(
                     "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
                 )
+            # 校验通过的值按模型声明的类型回填（"9981" -> 9981，list 也不再是字符串），
+            # 提交里有的键才回填：未知键原样保留。否则 TOML 里会落下字符串，
+            # 插件读到的类型与声明的对不上（静默漂移）。
+            dumped = validated.model_dump()
+            values = {**values, **{key: dumped[key] for key in values if key in dumped}}
         # 保存前的生效配置：用于判断哪些改动可以在运行期原地生效（不重载插件）
         before_values = self._plugin_config_values(control, name)
         try:

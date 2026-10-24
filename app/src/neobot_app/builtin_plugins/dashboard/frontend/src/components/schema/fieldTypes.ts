@@ -53,7 +53,11 @@ export function defaultsFromFields(fields: FieldDescriptor[] = []): Record<strin
     else if (field.kind === 'model_list') value[field.name] = [];
     else if (field.kind === 'list') value[field.name] = [];
     else if (field.kind === 'dict') value[field.name] = {};
-    else value[field.name] = field.default ?? (field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '');
+    else {
+      const fallback = field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '';
+      // 后端掩码会把密钥残留成空串：数值/布尔字段回落到类型默认值
+      value[field.name] = field.default === '' ? fallback : field.default ?? fallback;
+    }
   }
   return value;
 }

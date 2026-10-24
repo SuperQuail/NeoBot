@@ -1,5 +1,6 @@
 // components/ui/FormField.tsx —— 配置表单的一行：左标签/说明 + 右控件
-// 对齐 .cfg-row 的两列网格，但把布局收到组件里，避免各面板重复拼 DOM。
+// 渲染的就是线上在用的 .cfg-row / .cfg-label / .cfg-control 三元组（panel.css:34），
+// 与各面板手写结构逐类名一致，替换后样式不变。
 import type { ReactNode } from 'react';
 import { cn } from '../../utils/cn';
 
@@ -16,8 +17,6 @@ export interface FormFieldProps {
   /** 控件下方的补充说明（错误、恢复默认等） */
   hint?: ReactNode;
   className?: string;
-  /** 单列布局（弹窗内、窄屏） */
-  stacked?: boolean;
 }
 
 export default function FormField({
@@ -28,26 +27,15 @@ export default function FormField({
   children,
   hint,
   className,
-  stacked = false,
 }: FormFieldProps) {
   return (
-    <div
-      className={cn(
-        'cfg-row grid items-center gap-8 border-t border-border-soft py-5',
-        stacked ? 'grid-cols-1 gap-1.5' : 'grid-cols-[minmax(140px,1fr)_minmax(180px,1.1fr)]',
-        className,
-      )}
-    >
-      <div className="cfg-label min-w-0">
-        {label != null && (
-          <label className="block text-xs font-semibold break-words" htmlFor={htmlFor}>
-            {label}
-          </label>
-        )}
-        {description && <p className="mt-[5px] text-[11px] leading-relaxed text-muted">{description}</p>}
+    <div className={cn('cfg-row', className)}>
+      <div className="cfg-label">
+        {label != null && <label htmlFor={htmlFor}>{label}</label>}
+        {description && <p>{description}</p>}
         {badges && <span className="cfg-badges">{badges}</span>}
       </div>
-      <div className="cfg-control min-w-0">
+      <div className="cfg-control">
         {children}
         {hint}
       </div>

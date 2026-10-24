@@ -6,16 +6,17 @@ import { api } from '../api/endpoints';
 import type { DeployStatus } from '../api/types';
 import { toast } from '../components/Toast';
 import Icon from '../components/Icon';
+import Button from '../components/ui/Button';
 
 function CopyRow(props: { label: string; value: string; hint?: string; onCopy: (v: string, l: string) => void }) {
   return (
     <div className="deploy-copy-row">
       <span className="deploy-copy-label">{props.label}</span>
       <code className="deploy-copy-value">{props.value || '—'}</code>
-      <button type="button" className="btn-sm" disabled={!props.value}
+      <Button type="button" size="sm" disabled={!props.value}
         onClick={() => props.onCopy(props.value, props.label)}>
         <Icon name="download" /> 复制
-      </button>
+      </Button>
       {props.hint && <span className="muted small">{props.hint}</span>}
     </div>
   );
@@ -211,9 +212,9 @@ export default function Deploy() {
               onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" />
           </label>
         </div>
-        <button type="button" className="btn" disabled={busy === 'key'} onClick={saveApiKey}>
+        <Button type="button" disabled={busy === 'key'} onClick={saveApiKey}>
           <Icon name="save" /> {busy === 'key' ? '保存中…' : '保存密钥'}
-        </button>
+        </Button>
       </section>
 
       <section className="card">
@@ -234,9 +235,9 @@ export default function Deploy() {
             </span>
           </label>
         </div>
-        <button type="button" className="btn" disabled={busy === 'config'} onClick={saveAll}>
+        <Button type="button" disabled={busy === 'config'} onClick={saveAll}>
           <Icon name="save" /> {busy === 'config' ? '保存中…' : '保存并重载'}
-        </button>
+        </Button>
       </section>
 
       <section className="card">
@@ -254,12 +255,12 @@ export default function Deploy() {
           hint={onebot?.token_enabled ? '填进 NapCat 的同一个字段' : '当前为空：不校验握手，建议生成一个'}
           onCopy={copy} />
         <div className="deploy-actions">
-          <button type="button" className="btn" disabled={busy === 'token'} onClick={generateToken}>
+          <Button type="button" disabled={busy === 'token'} onClick={generateToken}>
             <Icon name="refresh" /> {busy === 'token' ? '生成中…' : (onebot?.token_enabled ? '重新生成 token' : '生成 token')}
-          </button>
-          <button type="button" className="btn-sm" disabled title="装了 NapCat Desktop 后可一键创建连接（后续版本提供）">
+          </Button>
+          <Button type="button" size="sm" disabled title="装了 NapCat Desktop 后可一键创建连接（后续版本提供）">
             <Icon name="external" /> 自动连接（待 NapCat Desktop 支持）
-          </button>
+          </Button>
           <span className="muted small">
             端口与监听地址在「配置管理 → adapter」里改（当前生效：
             {onebot ? onebot.host + ':' + onebot.port : '—'}）。

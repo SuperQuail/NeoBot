@@ -6,6 +6,7 @@ import { useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { fmtUptime, fmtNum, fmtRelTime } from '../utils/format';
 import LineChart from '../components/LineChart';
+import EmptyState from '../components/ui/EmptyState';
 
 interface BarProps {
   rank: number;
@@ -130,7 +131,7 @@ export default function Bots() {
             </span>
           </div>
           {callItems.length === 0 ? (
-            <div className="empty muted">尚未捕获到 API 调用</div>
+            <EmptyState compact>尚未捕获到 API 调用</EmptyState>
           ) : (
             <ul className="rank-list">
               {callItems.map((it, i) => (
@@ -147,7 +148,7 @@ export default function Bots() {
             <span className="muted small">追踪 {usr.tracked_users || 0} 人</span>
           </div>
           {userItems.length === 0 ? (
-            <div className="empty muted">尚无消息记录</div>
+            <EmptyState compact>尚无消息记录</EmptyState>
           ) : (
             <ul className="user-list">
               {userItems.map((u, i) => (

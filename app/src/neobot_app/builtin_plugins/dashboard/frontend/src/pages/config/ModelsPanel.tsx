@@ -4,7 +4,9 @@ import { api } from '../../api/endpoints';
 import type { ModelItem, ModelProbeResult, ModelsPayload } from '../../api/types';
 import { toast } from '../../components/Toast';
 import Icon from '../../components/Icon';
-import Modal from '../../components/Modal';
+import Modal, { ModalActions } from '../../components/Modal';
+import Button from '../../components/ui/Button';
+import EmptyState from '../../components/ui/EmptyState';
 import { defaultsFromFields } from '../../components/SchemaForm';
 import { ConfigTreePanel } from './ConfigTreePanel';
 import { setPath } from '../../utils/paths';
@@ -271,10 +273,10 @@ function ModelsPanel() {
         <h3>模型库</h3>
         <span className="muted small">{library.length} 个模型</span>
         <div className="spacer" />
-        <button className="btn-sm" disabled={!!busy} onClick={read}>刷新</button>
-        <button className="btn-sm primary" disabled={!!busy || !schema.length} onClick={startNew}>
+        <Button size="sm" disabled={!!busy} onClick={read}>刷新</Button>
+        <Button variant="primary" size="sm" disabled={!!busy || !schema.length} onClick={startNew}>
           <Icon name="plus" /> 新增模型
-        </button>
+        </Button>
       </div>
       <p className="muted small">
         模型单独存储在 <code>[models.registry]</code>，主对话 / Agent / 视觉 / TTS / 生图只引用 key；
@@ -287,7 +289,7 @@ function ModelsPanel() {
         </p>
       )}
       {loading && !data && <p className="empty muted" role="status">正在读取模型库…</p>}
-      {data && library.length === 0 && <div className="empty muted">模型库为空，点击「新增模型」添加</div>}
+      {data && library.length === 0 && <EmptyState compact>模型库为空，点击「新增模型」添加</EmptyState>}
       {library.length > 0 && (
         <table className="model-table">
           <thead>
@@ -326,11 +328,11 @@ function ModelsPanel() {
                   )}
                 </td>
                 <td>
-                  <button className="btn-sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</button>
-                  <button className="btn-sm" disabled={!!busy} onClick={() => runProbe({ model_ref: item.model_ref })}>
+                  <Button size="sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</Button>
+                  <Button size="sm" disabled={!!busy} onClick={() => runProbe({ model_ref: item.model_ref })}>
                     {busy === 'test:' + item.model_ref ? '测试中…' : '测试'}
-                  </button>
-                  <button className="btn-sm danger" disabled={!!busy} onClick={() => remove(item)}>删除</button>
+                  </Button>
+                  <Button variant="danger" size="sm" disabled={!!busy} onClick={() => remove(item)}>删除</Button>
                 </td>
               </tr>
             ))}
@@ -404,23 +406,23 @@ function ModelsPanel() {
                 )
               }
             />
-            <div className="modal-actions">
-              <button className="btn" disabled={!!busy || !editing.draft?.provider}
+            <ModalActions>
+              <Button disabled={!!busy || !editing.draft?.provider}
                 onClick={() => pullProviderModels(editing.draft?.provider, editing.draft?.use_system_proxy)}>
                 <Icon name="download" /> {pulling ? '拉取中…' : '拉取供应商模型'}
-              </button>
-              <button className="btn" disabled={!!busy}
+              </Button>
+              <Button disabled={!!busy}
                 onClick={() => runProbe({ entry: editing.draft, model_ref: editing.draft?.model_ref })}>
                 {busy === 'test:' + (editing.draft?.model_ref || 'draft') ? '测试中…' : '测试连通性'}
-              </button>
-              <button className="btn" disabled={!!busy} onClick={() => setEditing(null)}>取消</button>
-              <button className="btn" disabled={!!busy} onClick={() => save(false)}>
+              </Button>
+              <Button disabled={!!busy} onClick={() => setEditing(null)}>取消</Button>
+              <Button disabled={!!busy} onClick={() => save(false)}>
                 <Icon name="save" /> {busy === 'save' ? '保存中…' : '仅保存'}
-              </button>
-              <button className="btn primary" disabled={!!busy} onClick={() => save(true)}>
+              </Button>
+              <Button variant="primary" disabled={!!busy} onClick={() => save(true)}>
                 <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
-              </button>
-            </div>
+              </Button>
+            </ModalActions>
           </>
         )}
       </Modal>
@@ -447,9 +449,9 @@ function ModelsPanel() {
                 {probe.detail && <tr><th>详情</th><td className="muted small">{probe.detail}</td></tr>}
               </tbody>
             </table>
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setProbe(null)}>关闭</button>
-            </div>
+            <ModalActions>
+              <Button onClick={() => setProbe(null)}>关闭</Button>
+            </ModalActions>
           </div>
         )}
       </Modal>

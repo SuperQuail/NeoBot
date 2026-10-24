@@ -8,6 +8,8 @@ import { POLL, QK } from '../data/queryKeys';
 import { fmt1, fmtNum } from '../utils/format';
 import Icon from '../components/Icon';
 import StatCard from '../components/StatCard';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 
 /** part.kind → 中文标签；未登记的 kind 原样显示 */
 const KIND_LABELS: Record<string, string> = {
@@ -96,7 +98,7 @@ function AgentCard({ agent }: { agent: AgentPromptReport }) {
             <StatCard label="估算 Token" value={fmt1(agent.total_tokens)} sub="按接口口径估算" />
           </div>
           {parts.length === 0 ? (
-            <div className="empty muted">该 Agent 没有可统计的提示词来源</div>
+            <EmptyState compact>该 Agent 没有可统计的提示词来源</EmptyState>
           ) : (
             <ul className="analysis-parts">
               {parts.map((part, index) => (
@@ -133,26 +135,24 @@ export default function Analysis() {
           {formatGeneratedAt(data?.generated_at) && (
             <span className="muted small">生成于 {formatGeneratedAt(data?.generated_at)}</span>
           )}
-          <button className="btn" disabled={query.loading} onClick={() => void query.refetch()}>
+          <Button disabled={query.loading} onClick={() => void query.refetch()}>
             <Icon name="refresh" />{query.loading ? '读取中…' : '刷新'}
-          </button>
+          </Button>
         </div>
         <p className="muted small analysis-rule">{data?.rule || '—'}</p>
       </section>
 
-      {query.loading && !data && <div className="empty muted">正在读取提示词分析…</div>}
+      {query.loading && !data && <EmptyState compact>正在读取提示词分析…</EmptyState>}
 
       {unavailable && (
-        <div className="workspace-empty">
-          <Icon name="code" />
-          <h3>提示词分析不可用</h3>
+        <EmptyState icon="code" title="提示词分析不可用">
           <p>{reason}</p>
-        </div>
+        </EmptyState>
       )}
 
       {!unavailable &&
         (agents.length === 0 ? (
-          !query.loading && <div className="empty muted">没有可分析的 Agent</div>
+          !query.loading && <EmptyState compact>没有可分析的 Agent</EmptyState>
         ) : (
           agents.map((agent, index) => <AgentCard key={agent.name + ':' + index} agent={agent} />)
         ))}

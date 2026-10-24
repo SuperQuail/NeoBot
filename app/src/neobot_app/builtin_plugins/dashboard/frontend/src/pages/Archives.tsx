@@ -11,7 +11,9 @@
 //   由用户选择「重新加载」或「保留我的修改」，**不自动覆盖**。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Icon from '../components/Icon';
-import Modal from '../components/Modal';
+import Modal, { ModalActions } from '../components/Modal';
+import Button from '../components/ui/Button';
+import EmptyState from '../components/ui/EmptyState';
 import InlineAlert from '../components/ui/InlineAlert';
 import { toast } from '../components/Toast';
 import { useQuery } from '../data/useQuery';
@@ -450,10 +452,10 @@ export default function Archives() {
           <span className={'tag ' + (deleteEnabled ? 'warn' : 'debug')}>
             删除开关 {deleteEnabled ? '已开启' : '已关闭'}
           </span>
-          <button className="btn" disabled={tablesQuery.loading} onClick={() => void refreshAll()}>
+          <Button disabled={tablesQuery.loading} onClick={() => void refreshAll()}>
             <Icon name="refresh" />
             {tablesQuery.loading ? '读取中…' : '刷新'}
-          </button>
+          </Button>
         </div>
         <InlineAlert tone="warning" title="档案包含隐私数据">
           这里的用户 / 群档案与记忆摘要都是高敏感内容，面板默认监听 0.0.0.0；请勿随意截图外发，生产环境建议只监听
@@ -489,15 +491,14 @@ export default function Archives() {
               value={targetChars}
               onChange={(event) => setTargetChars(event.target.value)}
             />
-            <button
-              className="btn"
+            <Button
               type="button"
               disabled={starting || taskRunning}
               onClick={() => void startBatchSummarize()}
             >
               <Icon name="archive" />
               批量压缩超限档案
-            </button>
+            </Button>
           </div>
           <p className="muted small">
             逐条串行压缩当前超限档案，一次最多 20 条，统一使用上面的目标字符数（{minTarget}–{maxTarget}）。
@@ -554,11 +555,9 @@ export default function Archives() {
       {loadError && <InlineAlert tone="error" title={loadError} />}
 
       {unavailable ? (
-        <div className="workspace-empty">
-          <Icon name="archive" />
-          <h3>档案服务不可用</h3>
+        <EmptyState icon="archive" title="档案服务不可用">
           <p>后端未注入 archive_memory_service，或数据库未就绪。</p>
-        </div>
+        </EmptyState>
       ) : (
         <div className="archives-layout">
           <section className="card archives-tables" aria-label="档案表清单">
@@ -567,7 +566,7 @@ export default function Archives() {
               <span className="muted small">{tables.length} 张</span>
             </div>
             {tables.length === 0 && !tablesQuery.loading && (
-              <div className="empty muted">库里还没有任何档案表</div>
+              <EmptyState compact>库里还没有任何档案表</EmptyState>
             )}
             <ul className="archives-table-list">
               {tables.map((entry) => {
@@ -651,20 +650,20 @@ export default function Archives() {
                 {maxTotalChars > 0 ? '（>' + maxTotalChars + ' 字符）' : ''}
               </label>
               <div className="archives-filter-actions">
-                <button className="btn-sm primary" type="submit">
+                <Button variant="primary" size="sm" type="submit">
                   <Icon name="search" />查询
-                </button>
-                <button className="btn-sm" type="button" onClick={clearFilters}>
+                </Button>
+                <Button size="sm" type="button" onClick={clearFilters}>
                   重置
-                </button>
-                <button
-                  className="btn-sm"
+                </Button>
+                <Button
+                  size="sm"
                   type="button"
                   disabled={itemsQuery.loading}
                   onClick={() => void refetchItems()}
                 >
                   <Icon name="refresh" />刷新
-                </button>
+                </Button>
               </div>
             </form>
 
@@ -724,40 +723,40 @@ export default function Archives() {
                 第 {items.length === 0 ? 0 : offset + 1}–{offset + items.length} 条 · 每页 {PAGE_SIZE}
               </span>
               <div className="spacer" />
-              <button
-                className="btn-sm"
+              <Button
+                size="sm"
                 type="button"
                 disabled={offset <= 0 || itemsQuery.loading}
                 onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
               >
                 上一页
-              </button>
-              <button
-                className="btn-sm"
+              </Button>
+              <Button
+                size="sm"
                 type="button"
                 disabled={!hasMore || itemsQuery.loading}
                 onClick={() => setOffset(offset + PAGE_SIZE)}
               >
                 下一页
-              </button>
+              </Button>
             </div>
           </section>
 
           <section className="card archives-detail" aria-label="档案详情">
             {!key ? (
-              <div className="empty muted">从中间列表选择一条档案查看全文</div>
+              <EmptyState compact>从中间列表选择一条档案查看全文</EmptyState>
             ) : detailError ? (
               <InlineAlert
                 tone="error"
                 title={detailError}
                 actions={
-                  <button className="btn-sm" type="button" onClick={() => void refetchDetail()}>
+                  <Button size="sm" type="button" onClick={() => void refetchDetail()}>
                     重新读取
-                  </button>
+                  </Button>
                 }
               />
             ) : !item ? (
-              <div className="empty muted">{detailQuery.loading ? '读取中…' : '没有该档案'}</div>
+              <EmptyState compact>{detailQuery.loading ? '读取中…' : '没有该档案'}</EmptyState>
             ) : (
               <>
                 <div className="card-head">
@@ -786,22 +785,24 @@ export default function Archives() {
                 </div>
 
                 <div className="archives-actions">
-                  <button
-                    className="btn-sm primary"
+                  <Button
+                    variant="primary"
+                    size="sm"
                     type="button"
                     disabled={editing || item.editable === false || !canManage || itemRunning}
                     onClick={startEdit}
                   >
                     <Icon name="edit" />编辑
-                  </button>
-                  <button
-                    className="btn-sm danger"
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
                     type="button"
                     disabled={editing || !deleteEnabled || !canManage || itemRunning}
                     onClick={openDelete}
                   >
                     <Icon name="trash" />删除
-                  </button>
+                  </Button>
                   <label className="cfg-label" htmlFor="archive-target">
                     目标字符数
                   </label>
@@ -815,8 +816,9 @@ export default function Archives() {
                     disabled={itemRunning}
                     onChange={(event) => setTargetChars(event.target.value)}
                   />
-                  <button
-                    className="btn-sm primary"
+                  <Button
+                    variant="primary"
+                    size="sm"
                     type="button"
                     disabled={
                       editing || itemRunning || !canManage || !summarizeAvailable || starting
@@ -825,7 +827,7 @@ export default function Archives() {
                   >
                     <Icon name="bot" />
                     {itemRunning ? '压缩中…' : 'AI 压缩'}
-                  </button>
+                  </Button>
                   {itemRunning && (
                     <span className="muted small">
                       该条目正在压缩：期间禁止编辑 / 删除（避免人工写入与模型写入互相覆盖）
@@ -848,8 +850,9 @@ export default function Archives() {
                     tone="error"
                     title="档案已被他人修改，保存未生效"
                     actions={
-                      <button
-                        className="btn-sm primary"
+                      <Button
+                        variant="primary"
+                        size="sm"
                         type="button"
                         onClick={() => {
                           // 用服务端最新内容替换草稿（放弃我的修改），版本号随详情刷新一起更新
@@ -860,7 +863,7 @@ export default function Archives() {
                         }}
                       >
                         重新加载（放弃我的修改）
-                      </button>
+                      </Button>
                     }
                   >
                     服务端当前 version={conflict.version ?? 0}
@@ -923,17 +926,18 @@ export default function Archives() {
                       onChange={(event) => setTagsDraft(event.target.value)}
                     />
                     <div className="archives-actions">
-                      <button
-                        className="btn-sm primary"
+                      <Button
+                        variant="primary"
+                        size="sm"
                         type="button"
                         disabled={saving}
                         onClick={() => void saveEdit()}
                       >
                         <Icon name="save" />
                         {saving ? '保存中…' : '保存（带 version ' + (item.version ?? 0) + '）'}
-                      </button>
-                      <button
-                        className="btn-sm"
+                      </Button>
+                      <Button
+                        size="sm"
                         type="button"
                         disabled={saving}
                         onClick={() => {
@@ -942,7 +946,7 @@ export default function Archives() {
                         }}
                       >
                         取消
-                      </button>
+                      </Button>
                     </div>
                   </>
                 ) : (
@@ -988,14 +992,14 @@ export default function Archives() {
                             <td>{row.reason === 'auto' ? '自动压缩' : '手动压缩'}</td>
                             <td className="muted small">{row.operator_ip || '—'}</td>
                             <td>
-                              <button
-                                className="btn-sm"
+                              <Button
+                                size="sm"
                                 type="button"
                                 onClick={() => void viewSnapshot(row)}
                               >
                                 <Icon name="eye" />
                                 查看全文
-                              </button>
+                              </Button>
                             </td>
                           </tr>
                         ))}
@@ -1044,20 +1048,20 @@ export default function Archives() {
               />
               我已确认：删除后无法恢复
             </label>
-            <div className="modal-actions">
-              <button className="btn" type="button" disabled={deleting} onClick={() => setDeleteOpen(false)}>
+            <ModalActions>
+              <Button type="button" disabled={deleting} onClick={() => setDeleteOpen(false)}>
                 取消
-              </button>
-              <button
-                className="btn danger"
+              </Button>
+              <Button
+                variant="danger"
                 type="button"
                 disabled={deleting || !(deleteChecked || deleteText.trim() === item.key)}
                 onClick={() => void confirmDelete()}
               >
                 <Icon name="trash" />
                 {deleting ? '删除中…' : '确认删除'}
-              </button>
-            </div>
+              </Button>
+            </ModalActions>
           </div>
         )}
       </Modal>

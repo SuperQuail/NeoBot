@@ -11,7 +11,7 @@ covers:
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
 verified_against: 264696d
-verified_hash: 1f149b6b1dfd
+verified_hash: 69d3d7a4b7dc
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流
@@ -77,8 +77,8 @@ flowchart TD
     L -- 已变 --> M["POST /api/config：revision + config 或 source + reload，先过 _require_manage"]
     M --> O{"提交的是哪一份"}
     O -- TOML 原文 --> O1["_restore_masked_source：仍是 *** 的密钥行还原磁盘原值 / :944"]
-    O -- 表单草稿 --> O2["fold_model_params_in_config + _restore_masked_secrets / :494"]
-    O1 --> P["validate：_validate_payload 查类型与未知键 → 400 + errors[] / :206"]
+    O -- 表单草稿 --> O2["fold_model_params_in_config + _coerce_payload + _restore_masked_secrets / :222"]
+    O1 --> P["validate：_validate_payload 查类型与未知键 → 400 + errors[] / :258"]
     O2 --> P
     P --> Q{"expected_revision 等于当前文件哈希"}
     Q -- 不一致 --> Q1["409 ConfigConflictError：不写盘、不备份 / :497"]
@@ -140,7 +140,7 @@ sequenceDiagram
     end
     Note over UI,CM: 插件配置是另一条通道：先写 .dashboard.bak，再就地合并写回
     UI->>API: POST /api/plugins/{name}/config revision + config 或 source
-    API->>CM: 表单模式先过插件 pydantic model_validate（TOML 模式不校验模型）
+    API->>CM: 表单模式先过 pydantic model_validate，再按 model_dump 回填类型（TOML 模式不校验模型）
     CM->>FS: 就地更新：缺键不删、表改标量静默忽略
     opt reload 且插件登记了 consumer
         API->>PCR: apply_plugin_config_change(before, after)
@@ -191,6 +191,9 @@ flowchart TD
   `applyDoc`，TOML 文本与表单草稿之间没有任何互转（`BotConfigPanel.tsx:99`）。
 * 「全部恢复默认」把每个叶子的 `default` 写进草稿（`resetAllDefaults`，可一次撤销），
   但 `default` 为 `null` 的字段会写成 `None` —— 见「易错点」第 1 条。
+* 表单回传的字符串值（数组/字典编辑器、密码框等）在保存前统一走 `_coerce_payload`
+  按 schema 做**无损**转换（`"0.5"`→0.5、`"123"`→123、`"true"`→True），校验与保存共用
+  同一转换；转换失败的值原样保留，仍由 `_validate_payload` 定位报错。
 </details>
 
 <details>
@@ -213,8 +216,8 @@ flowchart TD
     G -- 是 --> H["scalar / model_list / model_params / list / dict 各自渲染"]
     G1 --> H
     I["插件配置：describe_mapping 从字典值反推 kind，没有类型信息 / plugin_config.py:200"] --> H
-    J["官方插件另有 describe_pydantic_model / config_manager.py:344"] --> K["annotation 名字查表得 int/float/bool/str，未命中一律当 str"]
-    K --> L["嵌套 BaseModel 与 List 字段没有 group 与 list 分支，会退化成字符串输入框"]
+    J["官方插件另有 describe_pydantic_model / config_manager.py:430"] --> K["annotation 经 _type_name 得 int/float/bool/str（Union 解包）"]
+    K --> L["List 已输出 kind=list + element_type；嵌套 BaseModel 仍退化成字符串输入框"]
     K --> M["hot_reload 恒 True、restart_reason 恒空，每个字段都挂「热重载」徽标"]
     L --> H
     M --> H
@@ -448,10 +451,11 @@ flowchart TD
 * **三个占位符不是同一个**：本体原文用 `***`（`config_manager.py:905`），
   `.env` 与插件配置用八个圆点 `SECRET_PLACEHOLDER`（`security.py:55`），结构化载荷用空串。
   排查「界面显示什么」时先分清是哪条通道。
-* 掩码是**按最后一段键名**判定的（`is_sensitive_key(path[-1])`），
-  所以 `models.registry.*.settings.max_output_tokens` 这类名字里带 token 的字段
-  也会被当成密钥掩码进 `secrets_set` —— 实测该键出现在 `secrets_set` 里，
-  面板上它是个普通数字输入框，值却是空串。
+* 掩码是**按最后一段键名**判定的（`is_sensitive_key(path[-1])`），正则里 `token`
+  会命中 `max_tokens` / `max_output_tokens` 这类数值字段名；因此 `_mask_schema_defaults`
+  只对 `type == "str"` 的叶子置空并登记 `secrets_set`，`_mask_sensitive_leaves` 只掩码
+  字符串值，`_mask_toml_source` 只掩码引号字符串（`config_manager.py:1026`、`:1095`）。
+  否则数值字段的 schema 默认值会变成空串，新增模型行保存必报「类型应为 int，实际为 str」。
 * 回归风险点：结构化的空串还原只在「当前值是非空字符串」时生效
   （`_restore_masked_secrets` 的 `isinstance(existing, str) and existing`），
   密钥原本为空时，表单里的空串就是空串。
@@ -580,8 +584,8 @@ flowchart TD
 10. **两个密钥占位符**：本体原文是 `***`，`.env` 与插件配置是八个圆点；
     文档与排障时不要混用（`config_manager.py:905` 对 `security.py:55`）。
 11. **按字段名判敏感会误伤**：`is_sensitive_key` 命中键名里的 `token`，
-    于是 `models.registry.*.settings.max_output_tokens` 也被掩码并记进 `secrets_set`
-    （实测输出里能看到该路径），但它在表单里其实是普通数字框。
+    但数值字段（`max_output_tokens`、`*_per_mtokens`）不是密钥：掩码只处理字符串叶子
+    （`config_manager.py:984`），否则 schema 默认值会被清成空串、新增模型行保存必 400。
 12. **`.env` 保存后会就地改 `os.environ`**（`config_manager.py:1403`），
     但模型注册表要等 `config.reload` 才重建；`env_save` 的默认文案就是
     「环境变量已保存；模型注册表需重载后生效」。

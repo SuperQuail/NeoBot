@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api/endpoints';
 import type { BillingPayload, BillingPreviewResult } from '../../api/types';
 import { toast } from '../../components/Toast';
+import Button from '../../components/ui/Button';
+import FormField from '../../components/ui/FormField';
 
 export interface BillingSectionProps {
   modelKey?: string;
@@ -177,35 +179,32 @@ function BillingSection({
             : '全局关闭：全部模型走固定计费（[billing].enabled=false）'}
         </span>
         <div className="spacer" />
-        <button type="button" className="btn-sm" disabled={!!disabled || !!busy} onClick={reload}>
+        <Button type="button" size="sm" disabled={!!disabled || !!busy} onClick={reload}>
           {busy === 'reload' ? '重载中…' : '重载脚本'}
-        </button>
+        </Button>
       </div>
 
-      <div className="cfg-row">
-        <div className="cfg-label"><label htmlFor="billing-script">计价脚本</label></div>
-        <div className="cfg-control">
-          <select
-            id="billing-script"
-            className="input"
-            value={script || ''}
-            disabled={!!disabled}
-            onChange={(event) => onChangeScript(event.target.value)}
-          >
-            <option value="">（留空 = 固定计费）</option>
-            {options.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-            {script && !options.includes(script) && <option value={script}>{script}（文件缺失）</option>}
-          </select>
-          <p className="muted small cfg-hint">
-            对应 &lt;数据目录&gt;/Billing/&lt;名字&gt;.py；留空即按模型价格表固定计费。
-            生效需 [billing].enabled=true（全局配置页）。
-          </p>
-        </div>
-      </div>
+      <FormField label="计价脚本" htmlFor="billing-script">
+        <select
+          id="billing-script"
+          className="input"
+          value={script || ''}
+          disabled={!!disabled}
+          onChange={(event) => onChangeScript(event.target.value)}
+        >
+          <option value="">（留空 = 固定计费）</option>
+          {options.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+          {script && !options.includes(script) && <option value={script}>{script}（文件缺失）</option>}
+        </select>
+        <p className="muted small cfg-hint">
+          对应 &lt;数据目录&gt;/Billing/&lt;名字&gt;.py；留空即按模型价格表固定计费。
+          生效需 [billing].enabled=true（全局配置页）。
+        </p>
+      </FormField>
 
       {script && binding && !binding.available && (
         <p className="field-error" role="alert">
@@ -245,24 +244,25 @@ function BillingSection({
                   commitPairs(next);
                 }}
               />
-              <button
+              <Button
                 type="button"
-                className="btn-sm danger"
+                variant="danger"
+                size="sm"
                 disabled={!!disabled}
                 onClick={() => commitPairs(pairs.filter((_item, i) => i !== index))}
               >
                 删除
-              </button>
+              </Button>
             </div>
           ))}
-          <button
+          <Button
             type="button"
-            className="btn-sm"
+            size="sm"
             disabled={!!disabled}
             onClick={() => commitPairs([...pairs, { key: '', value: '' }])}
           >
             添加参数
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -296,9 +296,9 @@ function BillingSection({
               disabled={!!disabled}
               onChange={(event) => setOccurredAt(event.target.value)}
             />
-            <button type="button" className="btn-sm" disabled={!!disabled || !!busy} onClick={runPreview}>
+            <Button type="button" size="sm" disabled={!!disabled || !!busy} onClick={runPreview}>
               {busy === 'preview' ? '试算中…' : '试算'}
-            </button>
+            </Button>
           </div>
           {preview && (
             <div className="probe-result">

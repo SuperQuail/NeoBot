@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { api, type PowerState } from '../api/endpoints';
 import Icon from './Icon';
+import Button from './ui/Button';
 import { toast } from './Toast';
 
 /** 已待机时长的人话格式：未知/0 → 「—」，>1h 到小时+分，>1m 到分+秒 */
@@ -57,9 +58,9 @@ export default function StandbyBanner() {
           {state.transition ? ' · 清理完成前不能启动新实例' : ` · 已待机 ${formatDuration(state.standby_seconds)}`}
         </span>
       </div>
-      <button className="btn primary" disabled={resume.busy || !!state.transition} onClick={() => void resume.run()}>
+      <Button variant="primary" disabled={resume.busy || !!state.transition} onClick={() => void resume.run()}>
         {state.transition ? '等待清理完成' : resume.busy ? '启动中…' : '启动运行'}
-      </button>
+      </Button>
     </div>
   );
 }

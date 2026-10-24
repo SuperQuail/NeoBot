@@ -16,12 +16,13 @@ import re
 import tempfile
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from pathlib import Path
+from types import UnionType
 from typing import Any, Iterator, NamedTuple, Union, get_args, get_origin
 
 import tomlkit
 
 from neobot_app.config.loader.backup import backup_config
-from neobot_app.config.loader.converter import dict_to_dataclass
+from neobot_app.config.loader.converter import _validate_type, dict_to_dataclass
 from neobot_app.config.model_params import (
     apply_model_param_catalog,
     extra_body_reserved_keys,
@@ -94,9 +95,13 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+#: Union 的两种表现：typing.Union（Optional[int]）与 PEP 604（int | None）
+_UNION_ORIGINS = (Union, UnionType)
+
+
 def _type_name(field_type: Any) -> str:
     origin = get_origin(field_type)
-    if origin is Union:
+    if origin in _UNION_ORIGINS:
         args = [item for item in get_args(field_type) if item is not type(None)]
         if args:
             return _type_name(args[0])
@@ -111,11 +116,11 @@ def _type_name(field_type: Any) -> str:
 
 
 def _is_optional(field_type: Any) -> bool:
-    return get_origin(field_type) is Union and type(None) in get_args(field_type)
+    return get_origin(field_type) in _UNION_ORIGINS and type(None) in get_args(field_type)
 
 
 def _inner_types(field_type: Any) -> tuple[Any, ...]:
-    if get_origin(field_type) is Union:
+    if get_origin(field_type) in _UNION_ORIGINS:
         return tuple(item for item in get_args(field_type) if item is not type(None))
     return (field_type,)
 
@@ -147,7 +152,7 @@ def _matches(value: Any, expected: Any) -> bool:
     if expected is Any or expected is None:
         return True
     origin = get_origin(expected)
-    if origin is Union:
+    if origin in _UNION_ORIGINS:
         return any(_matches(value, item) for item in _inner_types(expected))
     if origin is list:
         if not isinstance(value, list):
@@ -203,6 +208,53 @@ def _resolve_actual_schema(declared: Any, data: Any) -> Any:
     return declared
 
 
+_COERCIBLE_TYPES = (int, float, bool, str)
+
+
+def _coerce_leaf(value: Any, target: Any) -> Any:
+    """把字符串值按声明类型转换；转不了就原样返回，交给校验定位报错。"""
+    if not isinstance(value, str) or target not in _COERCIBLE_TYPES:
+        return value
+    valid, converted = _validate_type(value, target)
+    return converted if valid else value
+
+
+def _coerce_payload(schema: type, data: Any) -> Any:
+    """把面板回传的字符串值转成声明类型（只转已存在的值，不补默认值、不删未知键）。
+
+    前端表单的输入框一律回传字符串（「0.5」）：保存与校验必须在同一处转换，
+    否则会出现「校验通过、保存 400」。转换失败的值原样保留，由 ``_validate_payload``
+    指出具体路径。返回新 dict，调用方必须用返回值落盘。
+    """
+    if not is_dataclass(schema) or not isinstance(data, dict):
+        return data
+    coerced = dict(data)
+    for field_obj in fields(schema):
+        if field_obj.name not in coerced:
+            continue
+        raw = coerced[field_obj.name]
+        inner = _inner_types(field_obj.type)
+        target = inner[0] if inner else field_obj.type
+        if is_dataclass(target):
+            coerced[field_obj.name] = _coerce_payload(_resolve_actual_schema(target, raw), raw)
+        elif get_origin(target) is list and isinstance(raw, list):
+            args = get_args(target)
+            element = args[0] if args else None
+            if is_dataclass(element):
+                coerced[field_obj.name] = [_coerce_payload(element, item) for item in raw]
+            elif element in _COERCIBLE_TYPES:
+                coerced[field_obj.name] = [_coerce_leaf(item, element) for item in raw]
+        elif get_origin(target) is dict and isinstance(raw, dict):
+            args = get_args(target)
+            if len(args) == 2 and args[1] in _COERCIBLE_TYPES:
+                coerced[field_obj.name] = {
+                    key: _coerce_leaf(item, args[1]) for key, item in raw.items()
+                }
+        else:
+            coerced[field_obj.name] = _coerce_leaf(raw, target)
+    return coerced
+
+
 def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str, str]]) -> None:
     """严格校验配置字典：类型不匹配立即记录错误（不会静默回退默认值）。"""
     if not is_dataclass(schema):
@@ -249,8 +301,51 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                 for index, item in enumerate(raw):
                     _validate_payload(args[0], item, f"{field_path}[{index}]", errors)
                 continue
-            if args and not all(_matches(item, args[0]) for item in raw):
-                errors.append({"path": field_path, "message": f"数组元素类型应为 {_type_name(args[0])}"})
+            if args:
+                for index, item in enumerate(raw):
+                    if not _matches(item, args[0]):
+                        errors.append(
+                            {
+                                "path": f"{field_path}[{index}]",
+                                "message": (
+                                    f"类型应为 {_type_name(args[0])}，"
+                                    f"实际为 {type(item).__name__}"
+                                ),
+                            }
+                        )
+            continue
+        if get_origin(target) is dict:
+            # 只说「类型应为 dict，实际为 dict」等于没报：容器对得上、里面某个键
+            # 的类型不对，必须指到那个键。
+            if not isinstance(raw, dict):
+                errors.append(
+                    {"path": field_path, "message": f"应为表（table），实际为 {type(raw).__name__}"}
+                )
+                continue
+            args = get_args(target)
+            if len(args) == 2:
+                for key, item in raw.items():
+                    item_path = f"{field_path}.{key}"
+                    if not _matches(key, args[0]):
+                        errors.append(
+                            {
+                                "path": item_path,
+                                "message": (
+                                    f"键类型应为 {_type_name(args[0])}，"
+                                    f"实际为 {type(key).__name__}"
+                                ),
+                            }
+                        )
+                    if not _matches(item, args[1]):
+                        errors.append(
+                            {
+                                "path": item_path,
+                                "message": (
+                                    f"类型应为 {_type_name(args[1])}，"
+                                    f"实际为 {type(item).__name__}"
+                                ),
+                            }
+                        )
             continue
         if not _matches(raw, target):
             errors.append(
@@ -332,26 +427,22 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
     return descriptors
 
 
-#: pydantic 字段类型 -> 面板字段类型
-_PYDANTIC_TYPE_NAMES = {
-    "boolean": "bool",
-    "integer": "int",
-    "number": "float",
-    "string": "str",
-}
-
-
 def describe_pydantic_model(model: Any, values: Any = None) -> list[dict[str, Any]]:
     """把 pydantic 配置模型转换为面板可渲染的字段描述（官方插件配置用）。"""
     if model is None or not hasattr(model, "model_fields"):
         return []
+    from pydantic_core import PydanticUndefined
+
     data = dict(values or {})
     descriptors: list[dict[str, Any]] = []
     for name, info in model.model_fields.items():
         annotation = getattr(info, "annotation", None)
-        type_name = _PYDANTIC_TYPE_NAMES.get(
-            str(getattr(annotation, "__name__", annotation)), "str"
-        )
+        # 类型必须来自注解本身：按 json-schema 名字映射会把 int/bool/float 一律
+        # 退化成 str，面板就把数字当文本框渲染（静默漂移）。
+        type_name = _type_name(annotation)
+        default = info.get_default(call_default_factory=True)
+        if default is PydanticUndefined:
+            default = None
         extra = getattr(info, "json_schema_extra", None) or {}
         metadata = getattr(info, "metadata", ()) or ()
         minimum = maximum = None
@@ -366,14 +457,20 @@ def describe_pydantic_model(model: Any, values: Any = None) -> list[dict[str, An
             "label": str(getattr(info, "title", "") or name),
             "description": str(getattr(info, "description", "") or ""),
             "required": bool(getattr(info, "is_required", lambda: False)()),
-            "default": _jsonable(getattr(info, "default", None)),
-            "value": _jsonable(data.get(name, getattr(info, "default", None))),
+            "default": _jsonable(default),
+            "value": _jsonable(data.get(name, default)),
             "kind": "scalar",
             "type": type_name,
             "readonly": bool(isinstance(extra, dict) and extra.get("readonly")),
             "hot_reload": True,
             "restart_reason": "",
         }
+        inner = _inner_types(annotation)
+        target = inner[0] if inner else annotation
+        if get_origin(target) is list:
+            args = get_args(target)
+            descriptor["kind"] = "list"
+            descriptor["element_type"] = _type_name(args[0]) if args else "any"
         if minimum is not None:
             descriptor["min"] = minimum
         if maximum is not None:
@@ -460,6 +557,8 @@ class BotConfigManager:
         else:
             # 面板伪字段（settings.params）先折叠回 enabled_params / extra_body / 参数值
             parsed = fold_model_params_in_config(config)
+            # 校验按钮必须与保存做同一份类型转换，否则「校验通过、保存 400」
+            parsed = _coerce_payload(BotConfig, parsed)
         errors: list[dict[str, str]] = []
         _validate_payload(BotConfig, parsed or {}, "", errors)
         return errors
@@ -479,6 +578,8 @@ class BotConfigManager:
             )
         if source is None and config is not None:
             config = fold_model_params_in_config(config)
+            # 落盘的 submitted 必须含转换结果：否则字符串 "0.5" 会写进 config.toml
+            config = _coerce_payload(BotConfig, config)
         errors = self.validate(source=source, config=config)
         if errors:
             raise ConfigValidationError(errors)
@@ -550,6 +651,9 @@ class BotConfigManager:
 
         new_config = dict(current)
         new_config[name] = merged
+        # _filter_managed 会深拷贝一份用于校验；落盘用的是 new_config，
+        # 所以必须在它上面转换，不能只转副本。
+        new_config = _coerce_payload(BotConfig, new_config)
         errors = self.validate(
             config=_filter_managed(BotConfig, new_config, strict=frozenset({(name,)}))
         )
@@ -776,6 +880,8 @@ class BotConfigManager:
             "registry": library,
             "assignments": current_assignments,
         }
+        # 同 update_section：转换后的 new_config 才是落盘依据
+        new_config = _coerce_payload(BotConfig, new_config)
         config_errors = self.validate(
             config=_filter_managed(BotConfig, new_config, strict=frozenset({("models",)}))
         )
@@ -888,12 +994,17 @@ def _mask_sensitive_leaves(data: Any, found: dict[str, bool] | None = None, path
         for key, value in data.items():
             child_path = (*path, str(key))
             if is_sensitive_key(key):
-                has_value = bool(value)
-                if isinstance(value, str) and value:
-                    has_value = True
-                if found is not None:
-                    found[".".join(child_path)] = has_value
-                masked[key] = "" if isinstance(value, str) or value is None else value
+                # 只有字符串才是真密钥。max_output_tokens / *_per_mtokens 这类数值
+                # 字段名也命中密钥正则，但它们是普通数字，既不能掩码也不能登记，
+                # 否则面板读到空串、新增模型行保存必 400。
+                if isinstance(value, str):
+                    if found is not None:
+                        found[".".join(child_path)] = bool(value)
+                    masked[key] = ""
+                else:
+                    if found is not None and value is None:
+                        found[".".join(child_path)] = False
+                    masked[key] = value
                 continue
             masked[key] = _mask_sensitive_leaves(value, found, child_path)
         return masked
@@ -912,6 +1023,11 @@ _TOML_KEY_LINE_RE = re.compile(
 )
 
 
+def _is_quoted(match: re.Match[str]) -> bool:
+    """值是否为引号字符串：数值（max_output_tokens = 2048）不是密钥，别掩码。"""
+    return match.group("value")[:1] in ('"', "'")
+
+
 def _iter_secret_lines(source: str) -> Iterator[tuple[str, re.Match[str]]]:
     """逐行产出 (当前分区名, 匹配到的密钥行)。"""
     section = ""
@@ -921,7 +1037,7 @@ def _iter_secret_lines(source: str) -> Iterator[tuple[str, re.Match[str]]]:
             section = header.group("name").strip()
             continue
         match = _TOML_KEY_LINE_RE.match(line)
-        if match and is_sensitive_key(match.group("key")):
+        if match and is_sensitive_key(match.group("key")) and _is_quoted(match):
             yield section, match
 
 
@@ -930,7 +1046,7 @@ def _mask_toml_source(source: str) -> str:
     out: list[str] = []
     for line in source.splitlines():
         match = _TOML_KEY_LINE_RE.match(line)
-        if match and is_sensitive_key(match.group("key")):
+        if match and is_sensitive_key(match.group("key")) and _is_quoted(match):
             out.append(
                 f'{match.group("indent")}{match.group("key")}{match.group("sep")}'
                 f'"{_SECRET_PLACEHOLDER}"{match.group("tail")}'
@@ -980,7 +1096,8 @@ def _mask_schema_defaults(
     item: dict[str, Any], found: dict[str, bool], path: tuple[str, ...]
 ) -> None:
     """schema 描述里的 default/value 同样不能带出密钥明文。"""
-    if path and is_sensitive_key(path[-1]):
+    # 只有字符串叶子才可能是密钥（数值字段如 max_output_tokens 只是名字像）。
+    if path and is_sensitive_key(path[-1]) and item.get("type") == "str":
         for key in ("default", "value"):
             if item.get(key):
                 found[".".join(path)] = True

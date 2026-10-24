@@ -12,6 +12,11 @@ export interface ModalProps {
   className?: string;
 }
 
+/** 弹窗页脚：收敛各处手写的 <div className="modal-actions">（渲染结果完全一致）。 */
+export function ModalActions({ children, className }: { children?: ReactNode; className?: string }) {
+  return <div className={cn('modal-actions', className)}>{children}</div>;
+}
+
 export default function Modal({ open, title, onClose, children, size = 'default', className }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef(onClose);

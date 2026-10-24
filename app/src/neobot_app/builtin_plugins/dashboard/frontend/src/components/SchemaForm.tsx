@@ -5,7 +5,7 @@
 // 结构：本文件只做编排（变更检测 + 历史弹窗 + 遍历字段）；
 //       字段渲染在 ./schema 下按 kind 拆分，并通过 fieldRegistry 注册，后端新增 kind 无需改这里。
 import { useMemo, useState } from 'react';
-import Icon from './Icon';
+import EmptyState from './ui/EmptyState';
 import Modal from './Modal';
 import { getPath, joinPath } from '../utils/paths';
 import type { FieldDescriptor } from '../api/types';
@@ -37,11 +37,9 @@ export default function SchemaForm({
 
   if (!fields.length) {
     return (
-      <div className="workspace-empty">
-        <Icon name="settings" />
-        <h3>没有可编辑的字段</h3>
+      <EmptyState icon="settings" title="没有可编辑的字段">
         <p>可以切换到 TOML 模式直接编辑原始配置。</p>
-      </div>
+      </EmptyState>
     );
   }
 
