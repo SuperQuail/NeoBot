@@ -9,6 +9,7 @@
 //   - 其余（QQ 号、短名称、开关名）      -> chip 墙（紧凑、一屏看全）
 import { useState } from 'react';
 import JsonField from './JsonField';
+import { FieldHeader } from './FieldChrome';
 import ChipList from './ChipList';
 import DragList from './DragList';
 import type { FieldDescriptor } from '../../api/types';
@@ -52,7 +53,13 @@ export function typeWillChange(values: string[], raw: unknown, elementType?: unk
   return (expected === 'int' || expected === 'float' || expected === 'bool') && values.length > 0;
 }
 
-export default function ListField({ descriptor, value, onChange, disabled, filter }: { descriptor: FieldDescriptor } & FieldCallbacks) {
+export default function ListField({
+  descriptor,
+  value,
+  onChange,
+  disabled,
+  filter,
+}: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const values = listValues(value);
   const auto = preferDragList(values) ? 'drag' : 'chip';
   const [override, setOverride] = useState<'chip' | 'drag' | null>(null);
@@ -61,50 +68,74 @@ export default function ListField({ descriptor, value, onChange, disabled, filte
   // 复杂元素：不给可视化编辑，直接落 JSON 模式并说明原因
   const complex = hasComplexItems(value);
   const forcedJson = complex || showJson;
-  const typeRisk = !complex && typeWillChange(values, value, (descriptor as { element_type?: unknown }).element_type);
+  const typeRisk =
+    !complex && typeWillChange(values, value, (descriptor as { element_type?: unknown }).element_type);
 
   if (forcedJson) {
     return (
-      <div className="cfg-collection">
-        <div className="cfg-collection-bar">
-          <span className="muted small">
-            {complex
-              ? '元素里含对象/数组，只能用 JSON 编辑'
-              : 'JSON 文本模式'}
-          </span>
-          {!complex && (
-            <button type="button" className="btn-sm" onClick={() => setShowJson(false)}>返回可视化编辑</button>
-          )}
+      <div className="cfg-row">
+        <FieldHeader descriptor={descriptor} filter={filter} />
+        <div className="cfg-control">
+          <div className="cfg-collection">
+            <div className="cfg-collection-bar">
+              <span className="muted small">
+                {complex ? '元素里含对象/数组，只能用 JSON 编辑' : 'JSON 文本模式'}
+              </span>
+              {!complex && (
+                <button type="button" className="btn-sm" onClick={() => setShowJson(false)}>
+                  返回可视化编辑
+                </button>
+              )}
+            </div>
+            <JsonField descriptor={descriptor} value={value} onChange={onChange} disabled={disabled} />
+          </div>
         </div>
-        <JsonField descriptor={descriptor} value={value} onChange={onChange} disabled={disabled} />
       </div>
     );
   }
 
   return (
-    <div className={'cfg-collection' + (disabled ? ' is-disabled' : '')}>
-      <div className="cfg-collection-bar">
-        <span className="muted small">{values.length} 项 · {mode === 'chip' ? '紧凑' : '列表（可拖排序）'}</span>
-        <div className="spacer" />
-        <button type="button" className="btn-sm" disabled={disabled}
-          title="在紧凑 chip 与可拖拽列表之间切换"
-          onClick={() => setOverride(mode === 'chip' ? 'drag' : 'chip')}>
-          {mode === 'chip' ? '切换为列表' : '切换为紧凑'}
-        </button>
-        <button type="button" className="btn-sm" disabled={disabled} title="内容嵌套时用 JSON 直接编辑"
-          onClick={() => setShowJson(true)}>JSON</button>
+    <div className="cfg-row">
+      <FieldHeader descriptor={descriptor} filter={filter} />
+      <div className="cfg-control">
+        <div className={'cfg-collection' + (disabled ? ' is-disabled' : '')}>
+          <div className="cfg-collection-bar">
+            <span className="muted small">
+              {values.length} 项 · {mode === 'chip' ? '紧凑' : '列表（可拖排序）'}
+            </span>
+            <div className="spacer" />
+            <button
+              type="button"
+              className="btn-sm"
+              disabled={disabled}
+              title="在紧凑 chip 与可拖拽列表之间切换"
+              onClick={() => setOverride(mode === 'chip' ? 'drag' : 'chip')}
+            >
+              {mode === 'chip' ? '切换为列表' : '切换为紧凑'}
+            </button>
+            <button
+              type="button"
+              className="btn-sm"
+              disabled={disabled}
+              title="内容嵌套时用 JSON 直接编辑"
+              onClick={() => setShowJson(true)}
+            >
+              JSON
+            </button>
+          </div>
+          {typeRisk && (
+            <p className="cfg-collection-warn" role="note">
+              该数组的元素不是字符串（或 schema 声明为 int/bool）。可视化编辑会把它们转成文本，
+              需要保持原类型请用 <b>JSON</b> 模式编辑。
+            </p>
+          )}
+          {mode === 'chip' ? (
+            <ChipList items={values} filter={filter} onChange={onChange} placeholder="新值" />
+          ) : (
+            <DragList items={values} filter={filter} onChange={onChange} />
+          )}
+        </div>
       </div>
-      {typeRisk && (
-        <p className="cfg-collection-warn" role="note">
-          该数组的元素不是字符串（或 schema 声明为 int/bool）。可视化编辑会把它们转成文本，
-          需要保持原类型请用 <b>JSON</b> 模式编辑。
-        </p>
-      )}
-      {mode === 'chip' ? (
-        <ChipList items={values} filter={filter} onChange={onChange} placeholder="新值" />
-      ) : (
-        <DragList items={values} filter={filter} onChange={onChange} />
-      )}
     </div>
   );
 }

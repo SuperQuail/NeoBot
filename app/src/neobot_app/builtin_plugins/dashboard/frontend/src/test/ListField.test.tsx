@@ -115,6 +115,13 @@ describe('ListField 组件渲染', () => {
     expect(onChange).toHaveBeenCalledWith(['222222']);
   });
 
+  it('渲染字段名与说明：列表类型不再只剩计数', () => {
+    renderList(['bing'], { description: '用于测试的说明' });
+
+    expect(screen.getByText('allowed_read_dirs')).toBeInTheDocument();
+    expect(screen.getByText('用于测试的说明')).toBeInTheDocument();
+  });
+
   it('空数组显示「空」占位', () => {
     renderList([]);
 
