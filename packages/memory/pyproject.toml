@@ -1,6 +1,6 @@
 [project]
 name = "neobot-memory"
-version = "2.0.2-a6"
+version = "2.0.2-a7"
 description = "Add your description here"
 readme = "README.md"
 authors = [
