@@ -33,9 +33,13 @@ def resolve_client(obj: Any) -> Any | None:
     """接受 BilibiliClient 或 BilibiliService，返回当前可用的同步 client。
 
     BilibiliService 登录状态运行期会变（二维码登录/dormant），因此调用方
-    每轮都重新 resolve，而不是在构造时缓存。
+    每轮都重新 resolve，而不是在构造时缓存。休眠的 service（available 为
+    False）返回 None：绝不回退成 service 本身，否则调用方拿到的是缺方法的
+    门面，异常被吞成空结果（"没通知"而不是"没登录"）。
     """
     if obj is None:
+        return None
+    if getattr(obj, "available", True) is False:
         return None
     inner = getattr(obj, "client", None)
     if inner is not None:

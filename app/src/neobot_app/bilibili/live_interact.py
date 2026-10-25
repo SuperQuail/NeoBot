@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import random
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -33,6 +34,7 @@ import aiohttp
 from neobot_app.bilibili._compat import RecentIds, call_client, get_field, resolve_client
 from neobot_app.bilibili.client import DEFAULT_USER_AGENT
 from neobot_app.bilibili.live_protocol import (
+    LiveAuthError,
     LiveEvent,
     check_auth_reply,
     decode_packets,
@@ -63,11 +65,20 @@ _WS_OP_MESSAGE = 5
 _WS_OP_AUTH = 7
 _WS_OP_AUTH_REPLY = 8
 _WS_HEARTBEAT_SECONDS = 30.0
+#: 收包超时 = 2×心跳：这么久收不到任何包就认为连接僵死，主动断开重连。
+_WS_RECEIVE_TIMEOUT_SECONDS = _WS_HEARTBEAT_SECONDS * 2
 _WS_RECONNECT_MAX_SECONDS = 60.0
 _WS_HEALTHY_SECONDS = 60.0
-#: 单房间每分钟最多自动回复条数（冷却之外的硬上限）。
-_MAX_REPLIES_PER_MINUTE = 3
-_REPLY_WINDOW_SECONDS = 60.0
+#: 认证连续失败这么多次后停止监听该房间（多半是登录态失效，重连也没用）。
+_WS_AUTH_MAX_FAILURES = 3
+#: 每房间同时排队处理的弹幕上限：刷屏时超出直接丢弃，任务不再无限堆积。
+_DANMU_MAX_PENDING = 8
+#: 超过这个秒数才轮到处理的弹幕不再触发自动回复（历史照记，避免回旧话）。
+_DANMU_STALE_SECONDS = 15.0
+#: 弹幕发送失败后的短冷却，避免同一条弹幕反复生成再失败。
+_SEND_FAIL_COOLDOWN_SECONDS = 30.0
+#: 观众档案任务的并发上限；与弹幕回复解耦，慢档案写入不占回复通道。
+_ARCHIVE_CONCURRENCY = 4
 #: 房间开播状态缓存时长；避免每条弹幕都打一次直播间信息接口。
 _LIVE_STATUS_TTL_SECONDS = 60.0
 #: 每房间保留的最近弹幕条数。
@@ -98,6 +109,7 @@ class BilibiliLiveInteractor:
         logger: Logger | None = None,
         cooldown_seconds: float = 5.0,
         max_reply_chars: int = MAX_LIVE_DANMAKU_CHARS,
+        # 保留参数兼容 runtime 传参；是否只回 @ 已由意愿服务（evaluate_live）统一判定。
         at_only: bool = True,
         asr_service: Any = None,
         vision_provider: Any = None,
@@ -127,7 +139,6 @@ class BilibiliLiveInteractor:
         self._max_reply_chars = min(
             MAX_LIVE_DANMAKU_CHARS, max(1, int(max_reply_chars or MAX_LIVE_DANMAKU_CHARS))
         )
-        self._at_only = bool(at_only)
         self._asr_service = asr_service
         self._vision_provider = vision_provider
         self._media: Any = media_service
@@ -170,6 +181,7 @@ class BilibiliLiveInteractor:
         self._user_memory: dict[int, str] = {}
         self._user_memory_tasks: set[asyncio.Task[None]] = set()
         self._user_archive_seen: set[int] = set()
+        self._archive_semaphore = asyncio.Semaphore(_ARCHIVE_CONCURRENCY)
         self._summary_tasks: set[asyncio.Task[None]] = set()
         self._last_auto_look = time.monotonic()
         self._live_cache: dict[str, tuple[float, bool]] = {}
@@ -177,6 +189,14 @@ class BilibiliLiveInteractor:
         self._auto_look_task: asyncio.Task[None] | None = None
         self._reply_locks: dict[str, asyncio.Lock] = {}
         self._reply_tasks: set[asyncio.Task[None]] = set()
+        #: 自己的 B站 UID 缓存：client.my_uid 是属性，未缓存时会打 nav 接口，不能在事件循环里读。
+        self._my_uid = 0
+        #: 每房间正在排队的弹幕数（_DANMU_MAX_PENDING 上限）。
+        self._pending_danmu: dict[str, int] = {}
+        #: 发送失败后的冷却截止时刻（monotonic）。
+        self._send_fail_until: dict[str, float] = {}
+        #: 状态文件解析失败且备份也失败时置 True，_save() 不再覆盖原文件。
+        self._state_broken = False
         self._loaded = False
         self._running = False
 
@@ -200,57 +220,37 @@ class BilibiliLiveInteractor:
         self._logger.info(f"B站直播交互器已启动：房间数 {len(self._rooms)}")
 
     async def ensure_started(self) -> None:
-        """监听器没在运行时拉起（登录、命令开启前调用）；幂等。"""
-        if self._running:
+        """没在跑就启动；已在跑时补上缺失/已退出的房间任务（登录、命令开启前调用，幂等）。"""
+        if not self._running:
+            await self.start()
             return
-        await self.start()
+        for room_id in list(self._rooms):
+            self._start_task(room_id)
 
     async def stop(self) -> None:
-        """停止所有监听任务；持久化状态保留，下次 start() 恢复。"""
+        """停止所有监听任务（含弹幕/事件/档案/总结后台任务）；持久化状态保留，下次 start() 恢复。"""
         self._running = False
-        tasks = list(self._tasks.items())
+        room_tasks = list(self._tasks.values())
         self._tasks.clear()
-        schedule_task = self._schedule_task
+        single_tasks = [task for task in (self._schedule_task, self._auto_look_task) if task is not None]
         self._schedule_task = None
-        auto_look_task = self._auto_look_task
         self._auto_look_task = None
-        event_tasks = list(self._event_tasks)
-        self._event_tasks.clear()
-        reply_tasks = list(self._reply_tasks)
-        self._reply_tasks.clear()
-        summary_tasks = list(self._summary_tasks)
-        self._summary_tasks.clear()
-        for _room_id, task in tasks:
-            task.cancel()
-        if schedule_task is not None:
-            schedule_task.cancel()
-        if auto_look_task is not None:
-            auto_look_task.cancel()
-        for task in event_tasks:
-            task.cancel()
-        for task in reply_tasks:
-            task.cancel()
-        for task in summary_tasks:
-            task.cancel()
-        for _room_id, task in tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        if schedule_task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await schedule_task
-        if auto_look_task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await auto_look_task
-        for task in event_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for task in reply_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for task in summary_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        groups = (self._event_tasks, self._reply_tasks, self._summary_tasks, self._user_memory_tasks)
+        extra_tasks = [task for group in groups for task in group]
+        for group in groups:
+            group.clear()
+        self._pending_danmu.clear()
+        await self._cancel_tasks(room_tasks + single_tasks + extra_tasks)
         self._logger.info("B站直播交互器已停止")
+
+    @staticmethod
+    async def _cancel_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+        """快照-取消-await 一批任务；只吞 CancelledError，其它异常交给任务自身日志。"""
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     @property
     def is_running(self) -> bool:
@@ -259,28 +259,36 @@ class BilibiliLiveInteractor:
     # ── 房间管理 ──
 
     async def enable(self, room_id: int, *, auto_reply: bool = True) -> dict[str, Any]:
-        """启用房间并写入状态；拿到房间信息时补真实房间号/主播名。"""
+        """启用房间并写入状态；未登录/不可用直接失败，不出"监听已开"的假成功。"""
         rid = _to_int(room_id)
         if rid <= 0:
             return {"ok": False, "error": "房间号无效"}
-        self._load()
-        data: dict[str, Any] = {}
         client = self._get_client()
-        if client is not None:
-            try:
-                data = await call_client(client.get_live_room_info, rid) or {}
-            except Exception as exc:
-                self._logger.warning(
-                    "B站直播间信息读取失败，先按输入房间号启用",
-                    room_id=rid,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+        if client is None:
+            return {"ok": False, "error": "B站未登录或客户端不可用，暂时无法监听直播间"}
+        self._load()
+        await self._resolve_my_uid(client)
+        data: dict[str, Any] = {}
+        try:
+            data = await call_client(client.get_live_room_info, rid) or {}
+        except Exception as exc:
+            self._logger.warning(
+                f"B站直播间信息读取失败，先按输入房间号启用：房间 {rid}，"
+                f"错误 {type(exc).__name__}: {exc}"
+            )
         room_info = data.get("room_info") if isinstance(data, dict) else None
-        real_room_id = (_to_int(room_info.get("room_id")) if isinstance(room_info, dict) else 0) or rid
         anchor = data.get("anchor_info") if isinstance(data, dict) else None
         base_info = anchor.get("base_info") if isinstance(anchor, dict) else None
-        name = str(base_info.get("uname") or "") if isinstance(base_info, dict) else ""
         existing = self._rooms.get(str(rid)) or {}
+        # 接口失败时保留上次的真实房间号/主播名，不要用输入值把已知信息覆盖成空。
+        real_room_id = (
+            (_to_int(room_info.get("room_id")) if isinstance(room_info, dict) else 0)
+            or _to_int(existing.get("real_room_id"))
+            or rid
+        )
+        name = (
+            str(base_info.get("uname") or "") if isinstance(base_info, dict) else ""
+        ) or str(existing.get("name") or "")
         room = {
             "real_room_id": real_room_id,
             "name": name,
@@ -292,9 +300,7 @@ class BilibiliLiveInteractor:
         self._rooms[str(rid)] = room
         self._save()
         self._start_task(str(rid))
-        self._logger.info(
-            f"B站直播房间已启用：房间 {rid}，自动回复{'开' if room['auto_reply'] else '关'}"
-        )
+        self._logger.info(f"B站直播房间已启用：房间 {rid}，自动回复{'开' if room['auto_reply'] else '关'}")
         return {
             "ok": True,
             "room_id": rid,
@@ -371,9 +377,7 @@ class BilibiliLiveInteractor:
             sent = await call_client(client.send_danmaku, rid, message)
         except Exception as exc:
             self._logger.warning(
-                "B站直播弹幕发送失败",
-                room_id=rid,
-                error=f"{type(exc).__name__}: {exc}",
+                f"B站直播弹幕发送失败：房间 {rid}，错误 {type(exc).__name__}: {exc}"
             )
             return {"ok": False, "error": "B站直播弹幕发送失败"}
         if not sent:
@@ -382,32 +386,38 @@ class BilibiliLiveInteractor:
 
     # ── 开播状态与房间历史 ──
 
-    async def is_live(self, room_id: int, *, refresh: bool = False) -> bool:
-        """房间是否在播；live_status 缓存 60 秒，接口不可用时按未开播处理。"""
+    async def live_status(self, room_id: int, *, refresh: bool = False) -> dict[str, Any]:
+        """房间开播三态：{live: True, error: ""} 在播；{False, ""} 明确未开播；
+        {False, 非空 error} 接口不可用（未登录/网络/返回异常，不写缓存）。"""
         rid = _to_int(room_id)
         if rid <= 0:
-            return False
+            return {"live": False, "error": "房间号无效"}
         key = str(rid)
         now = time.monotonic()
         cached = self._live_cache.get(key)
         if not refresh and cached is not None and now - cached[0] < _LIVE_STATUS_TTL_SECONDS:
-            return cached[1]
-        live = False
+            return {"live": cached[1], "error": ""}
         client = self._get_client()
-        if client is not None:
-            try:
-                data = await call_client(client.get_live_room_info, rid)
-            except Exception as exc:
-                self._logger.warning(
-                    "B站直播间开播状态读取失败",
-                    room_id=rid,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-                data = {}
-            room_info = data.get("room_info") if isinstance(data, dict) else None
-            live = _to_int(get_field(room_info, "live_status", 0)) == 1
+        if client is None:
+            return {"live": False, "error": "B站未登录或客户端不可用"}
+        try:
+            data = await call_client(client.get_live_room_info, rid)
+        except Exception as exc:
+            self._logger.warning(
+                f"B站直播间开播状态读取失败：房间 {rid}，错误 {type(exc).__name__}: {exc}"
+            )
+            return {"live": False, "error": f"读取开播状态失败：{type(exc).__name__}"}
+        room_info = data.get("room_info") if isinstance(data, dict) else None
+        if not isinstance(room_info, dict):
+            # client 读失败时返回空 dict；这时不能当成"没开播"，也不写缓存。
+            return {"live": False, "error": "读取开播状态失败：接口未返回直播间信息"}
+        live = _to_int(get_field(room_info, "live_status", 0)) == 1
         self._live_cache[key] = (now, live)
-        return live
+        return {"live": live, "error": ""}
+
+    async def is_live(self, room_id: int, *, refresh: bool = False) -> bool:
+        """兼容包装：接口不可用时按未开播处理；需要区分三态的调用方用 live_status。"""
+        return bool((await self.live_status(room_id, refresh=refresh)).get("live"))
 
     def get_history(self, room_id: int, count: int = _MAX_HISTORY) -> list[dict[str, Any]]:
         """房间最近弹幕（旧→新），默认最多 500 条。"""
@@ -470,7 +480,7 @@ class BilibiliLiveInteractor:
         try:
             result = await call_client(self._media.capture_frame, rid)
         except Exception as exc:
-            self._logger.warning("直播截帧失败", room_id=rid, error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"B站直播截帧失败：房间 {rid}，错误 {type(exc).__name__}: {exc}")
             return {"ok": False, "error": f"截帧失败：{exc}"}
         if not isinstance(result, dict) or not result.get("ok"):
             return result if isinstance(result, dict) else {"ok": False, "error": "截帧失败"}
@@ -491,7 +501,7 @@ class BilibiliLiveInteractor:
         try:
             return await call_client(self._media.record_clip, rid, seconds=seconds)
         except Exception as exc:
-            self._logger.warning("直播录制失败", room_id=rid, error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"B站直播录制失败：房间 {rid}，错误 {type(exc).__name__}: {exc}")
             return {"ok": False, "error": f"直播录制失败：{exc}"}
 
     async def transcribe(self, room_id: int, *, seconds: int = 15) -> dict[str, Any]:
@@ -506,7 +516,7 @@ class BilibiliLiveInteractor:
         try:
             return await call_client(self._media.transcribe, rid, seconds=seconds)
         except Exception as exc:
-            self._logger.warning("直播 ASR 失败", room_id=rid, error=f"{type(exc).__name__}: {exc}")
+            self._logger.warning(f"B站直播 ASR 失败：房间 {rid}，错误 {type(exc).__name__}: {exc}")
             return {"ok": False, "error": f"直播转写失败：{exc}"}
 
     async def _describe_frame(self, snapshot: dict[str, Any]) -> str:
@@ -542,7 +552,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.debug("直播画面描述失败", error=f"{type(exc).__name__}: {exc}")
+            self._logger.debug(f"B站直播画面描述失败：{type(exc).__name__}: {exc}")
             return ""
 
     # ── 定时弹幕 ──
@@ -572,14 +582,14 @@ class BilibiliLiveInteractor:
             "prompt": text,
             "last_fired_date": "",
         }
+        if rec == "weekly":
+            # 每周规则按星期几：以创建当天为准，错过一周也只等下一个同样的星期几。
+            record["weekday"] = datetime.now().astimezone().weekday()
         room.setdefault("schedules", []).append(record)
         self._save()
         self._logger.info(
-            "B站直播定时弹幕已创建",
-            room_id=rid,
-            schedule_id=record["id"],
-            time=clock,
-            recurrence=rec,
+            f"B站直播定时弹幕已创建：房间 {rid}，任务 {record['id']}，"
+            f"时间 {clock}，周期 {rec}"
         )
         return {"ok": True, "room_id": rid, "schedule": dict(record)}
 
@@ -614,7 +624,7 @@ class BilibiliLiveInteractor:
             return {"ok": False, "error": "定时弹幕不存在"}
         room["schedules"] = kept
         self._save()
-        self._logger.info("B站直播定时弹幕已删除", room_id=rid, schedule_id=sid)
+        self._logger.info(f"B站直播定时弹幕已删除：房间 {rid}，任务 {sid}")
         return {"ok": True, "room_id": rid, "schedule_id": sid}
 
     # ── WebSocket ──
@@ -622,14 +632,30 @@ class BilibiliLiveInteractor:
     async def _room_loop(self, room_id: str) -> None:
         backoff = 1.0
         attempt = 0
+        auth_failures = 0
         while self._running:
             started = time.monotonic()
             try:
-                await self._connect_once(room_id, attempt)
+                authenticated = await self._connect_once(room_id, attempt)
+                if authenticated:
+                    auth_failures = 0
                 if time.monotonic() - started >= _WS_HEALTHY_SECONDS:
                     backoff = 1.0
             except asyncio.CancelledError:
                 raise
+            except LiveAuthError as exc:
+                auth_failures += 1
+                self._logger.warning(
+                    f"B站直播弹幕认证失败（连续 {auth_failures}/{_WS_AUTH_MAX_FAILURES} 次）："
+                    f"房间 {room_id}，错误 {exc}"
+                )
+                if auth_failures >= _WS_AUTH_MAX_FAILURES:
+                    # token 连续被拒多半是登录态失效，继续重连只会刷接口：停掉本房间监听。
+                    self._logger.error(
+                        f"B站直播弹幕认证连续失败，已停止监听该房间：房间 {room_id}，"
+                        "请检查B站登录态后重新开启直播互动"
+                    )
+                    return
             except Exception as exc:
                 self._logger.warning(
                     f"B站直播弹幕连接失败，准备重连：房间 {room_id}，"
@@ -639,10 +665,11 @@ class BilibiliLiveInteractor:
                 return
             # host_list 按尝试次数轮换，避免一直撞同一个故障节点。
             attempt += 1
-            await asyncio.sleep(backoff)
+            await asyncio.sleep(_with_jitter(backoff))
             backoff = min(backoff * 2, _WS_RECONNECT_MAX_SECONDS)
 
-    async def _connect_once(self, room_id: str, attempt: int = 0) -> None:
+    async def _connect_once(self, room_id: str, attempt: int = 0) -> bool:
+        """连一次弹幕服务器并收包；正常断开返回是否成功认证过，异常向上抛给 _room_loop。"""
         client = self._get_client()
         if client is None:
             raise RuntimeError("B站未登录或客户端不可用")
@@ -660,7 +687,7 @@ class BilibiliLiveInteractor:
         host = str(server["host"])
         port = _to_int(server.get("wss_port")) or 443
         url = f"wss://{host}:{port}/sub"
-        uid = _to_int(get_field(client, "my_uid", 0))
+        uid = await self._resolve_my_uid(client)
         buvid = str(get_field(client, "buvid3", "") or get_field(client, "_buvid3", "") or "")
         auth = {
             "uid": uid,
@@ -677,8 +704,12 @@ class BilibiliLiveInteractor:
             "Origin": "https://live.bilibili.com",
             "Referer": f"https://live.bilibili.com/{real_room_id}",
         }
+        authenticated = False
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(url, headers=headers) as ws:
+            # receive_timeout：2×心跳收不到任何包就认为连接僵死，让收包循环抛超时去重连。
+            async with session.ws_connect(
+                url, headers=headers, receive_timeout=_WS_RECEIVE_TIMEOUT_SECONDS
+            ) as ws:
                 await ws.send_bytes(encode_packet(_WS_OP_AUTH, json.dumps(auth).encode("utf-8")))
                 heartbeat = asyncio.create_task(self._heartbeat(ws))
                 try:
@@ -686,6 +717,7 @@ class BilibiliLiveInteractor:
                         if message.type == aiohttp.WSMsgType.BINARY:
                             for op, body in decode_packets(message.data):
                                 if await self._handle_packet(room_id, op, body):
+                                    authenticated = True
                                     # 认证成功后立即补一次心跳，随后交给 30s 定时器。
                                     await ws.send_bytes(encode_packet(_WS_OP_HEARTBEAT))
                         elif message.type in (
@@ -694,19 +726,27 @@ class BilibiliLiveInteractor:
                             aiohttp.WSMsgType.CLOSING,
                         ):
                             break
+                except TimeoutError:
+                    raise RuntimeError(
+                        f"超过 {_WS_RECEIVE_TIMEOUT_SECONDS:.0f} 秒未收到弹幕数据包，主动断开重连"
+                    ) from None
                 finally:
                     heartbeat.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await heartbeat
+        return authenticated
 
-    @staticmethod
-    async def _heartbeat(ws: Any) -> None:
+    async def _heartbeat(self, ws: Any) -> None:
+        """定时发心跳；发送失败说明连接已坏，主动关闭并抛出，让 _room_loop 重连。"""
         while True:
             await asyncio.sleep(_WS_HEARTBEAT_SECONDS)
             try:
                 await ws.send_bytes(encode_packet(_WS_OP_HEARTBEAT))
-            except Exception:
-                return
+            except Exception as exc:
+                self._logger.warning(f"B站直播心跳发送失败，主动断开重连：{type(exc).__name__}: {exc}")
+                with contextlib.suppress(Exception):
+                    await ws.close()
+                raise
 
     async def _handle_packet(self, room_id: str, op: int, body: bytes) -> bool:
         """处理一个业务包；返回 True 表示认证成功，需要立即补心跳。"""
@@ -723,23 +763,42 @@ class BilibiliLiveInteractor:
             if event.kind == "danmaku":
                 # 生成回复可能耗时 90s；不能阻塞 WebSocket 收包，否则后续弹幕
                 # 连历史都记不上。
-                task = asyncio.create_task(
-                    self._handle_danmu(
-                        room_id,
-                        {
-                            "uid": event.uid,
-                            "name": event.name,
-                            "text": event.text,
-                            "reply_mid": getattr(event, "reply_mid", 0),
-                            "dmid": getattr(event, "dmid", ""),
-                        },
-                    )
+                self._schedule_danmu(
+                    room_id,
+                    {
+                        "uid": event.uid,
+                        "name": event.name,
+                        "text": event.text,
+                        "reply_mid": getattr(event, "reply_mid", 0),
+                        "dmid": getattr(event, "dmid", ""),
+                        # 收包时刻：排队超过 _DANMU_STALE_SECONDS 就不再自动回复。
+                        "recv_at": time.monotonic(),
+                    },
                 )
-                self._reply_tasks.add(task)
-                task.add_done_callback(self._reply_tasks.discard)
                 continue
             await self._handle_event(room_id, event)
         return False
+
+    def _schedule_danmu(self, room_id: str, danmu: dict[str, Any]) -> None:
+        """把弹幕处理丢进后台任务；每房间排队数有上限，刷屏时丢弃新的（历史也一并放弃）。"""
+        pending = self._pending_danmu.get(room_id, 0)
+        if pending >= _DANMU_MAX_PENDING:
+            self._logger.debug(
+                f"B站直播弹幕处理积压已达 {_DANMU_MAX_PENDING} 条，丢弃新弹幕：房间 {room_id}"
+            )
+            return
+        self._pending_danmu[room_id] = pending + 1
+        task = asyncio.create_task(self._handle_danmu(room_id, danmu))
+        self._reply_tasks.add(task)
+        task.add_done_callback(lambda done: self._danmu_task_done(room_id, done))
+
+    def _danmu_task_done(self, room_id: str, task: asyncio.Task[None]) -> None:
+        self._reply_tasks.discard(task)
+        pending = self._pending_danmu.get(room_id, 0) - 1
+        if pending > 0:
+            self._pending_danmu[room_id] = pending
+        else:
+            self._pending_danmu.pop(room_id, None)
 
     async def _handle_event(self, room_id: str, event: LiveEvent) -> None:
         """统一事件入口：弹幕走历史/自动回复，其余进 recent_events + on_event。"""
@@ -789,6 +848,12 @@ class BilibiliLiveInteractor:
             )
             self._user_memory_tasks.add(task)
             task.add_done_callback(self._user_memory_tasks.discard)
+        recv_at = float(danmu.get("recv_at") or 0.0)
+        if recv_at and time.monotonic() - recv_at > _DANMU_STALE_SECONDS:
+            self._logger.debug(
+                f"B站直播弹幕排队超过 {_DANMU_STALE_SECONDS:.0f} 秒，跳过自动回复：房间 {room_id}"
+            )
+            return
         lock = self._reply_locks.get(room_id)
         if lock is None:
             lock = self._reply_locks[room_id] = asyncio.Lock()
@@ -804,7 +869,8 @@ class BilibiliLiveInteractor:
         client = self._get_client()
         if client is None:
             return
-        my_uid = _to_int(get_field(client, "my_uid", 0))
+        # 只读缓存：client.my_uid 未缓存时会打网络接口，不能出现在弹幕热路径上。
+        my_uid = self._my_uid
         if my_uid and _to_int(danmu.get("uid")) == my_uid:
             return
         text = str(danmu.get("text") or "")
@@ -847,8 +913,7 @@ class BilibiliLiveInteractor:
         text = str(danmu.get("text") or "").strip()
         if not text:
             return
-        client = self._get_client()
-        my_uid = _to_int(getattr(client, "my_uid", 0)) if client is not None else 0
+        my_uid = self._my_uid
         entry = {
             "uid": _to_int(danmu.get("uid")),
             "name": str(danmu.get("name") or ""),
@@ -886,9 +951,11 @@ class BilibiliLiveInteractor:
                 f"B站直播{action}发送失败：房间 {room_id}，"
                 f"错误 {type(exc).__name__}: {exc}"
             )
+            self._record_send_failure(room_id)
             return False
         if not sent:
             self._logger.warning(f"B站直播{action}发送失败：房间 {room_id}，接口返回失败")
+            self._record_send_failure(room_id)
             return False
         self._record_history(
             str(room_id), {"uid": 0, "name": self._bot_name or "你", "text": text}
@@ -992,11 +1059,19 @@ class BilibiliLiveInteractor:
 
     def _reply_allowed(self, room_id: str) -> bool:
         now = time.monotonic()
+        if now < self._send_fail_until.get(str(room_id), 0.0):
+            return False
         last = self._last_reply_at.get(room_id)
         return last is None or now - last >= self._cooldown
 
+    def _record_send_failure(self, room_id: Any) -> None:
+        """发送失败后的短冷却：冷却期内不再为这个房间生成新回复。"""
+        # _post_danmaku 拿到的是 int 房间号，_process_danmu 用的是 str key，统一成 str。
+        self._send_fail_until[str(room_id)] = time.monotonic() + _SEND_FAIL_COOLDOWN_SECONDS
+
     def _record_reply(self, room_id: str) -> None:
         self._last_reply_at[room_id] = time.monotonic()
+        self._send_fail_until.pop(str(room_id), None)
 
     def _record_live_flow(self, room_id: int, system: str, messages: list[dict]) -> None:
         registry = self._flow_registry
@@ -1031,7 +1106,8 @@ class BilibiliLiveInteractor:
                         break
                 except Exception as exc:
                     self._logger.debug(
-                        "B站直播档案恢复失败", room_id=room_id, table=table, error=str(exc)
+                        f"B站直播档案恢复失败：房间 {room_id}，表 {table}，"
+                        f"错误 {type(exc).__name__}: {exc}"
                     )
 
     async def _ensure_user_archive(self, uid: int, name: str) -> None:
@@ -1041,17 +1117,18 @@ class BilibiliLiveInteractor:
         self._user_archive_seen.add(uid)
         key = _LIVE_USER_ARCHIVE_PREFIX + str(uid)
         try:
-            item = await self._archive_service.get("user_profile", key)
-            if str(getattr(item, "value", "") or "").strip():
-                return
-            await self._archive_service.set(
-                "user_profile",
-                key,
-                f"B站昵称：{name or '观众'}\nB站UID：{uid}",
-                ["bilibili_live"],
-            )
+            async with self._archive_semaphore:
+                item = await self._archive_service.get("user_profile", key)
+                if str(getattr(item, "value", "") or "").strip():
+                    return
+                await self._archive_service.set(
+                    "user_profile",
+                    key,
+                    f"B站昵称：{name or '观众'}\nB站UID：{uid}",
+                    ["bilibili_live"],
+                )
         except Exception as exc:
-            self._logger.debug("B站直播观众档案初始化失败", uid=uid, error=str(exc))
+            self._logger.debug(f"B站直播观众档案初始化失败：UID {uid}，错误 {type(exc).__name__}: {exc}")
 
     async def _load_user_memory(self, uid: int) -> str:
         """读取观众在 QQ 侧 user_summary/user_profile 的对应档案。"""
@@ -1070,7 +1147,8 @@ class BilibiliLiveInteractor:
                     break
             except Exception as exc:
                 self._logger.debug(
-                    "B站直播观众档案读取失败", uid=uid, table=table, error=str(exc)
+                    f"B站直播观众档案读取失败：UID {uid}，表 {table}，"
+                    f"错误 {type(exc).__name__}: {exc}"
                 )
         self._user_memory[uid] = value
         return value
@@ -1107,13 +1185,13 @@ class BilibiliLiveInteractor:
                         ["bilibili_live"],
                     )
                 except Exception as exc:
-                    self._logger.debug("B站直播总结写档案失败", error=str(exc))
+                    self._logger.debug(f"B站直播总结写档案失败：{type(exc).__name__}: {exc}")
             self._logger.info(f"B站直播弹幕已总结：房间 {room_id}，摘要 {len(summary)} 字")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._logger.warning(
-                "B站直播弹幕总结失败", room_id=room_id, error=f"{type(exc).__name__}: {exc}"
+                f"B站直播弹幕总结失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
             )
 
     async def _live_asr_context(self, room_id: int) -> str:
@@ -1126,7 +1204,9 @@ class BilibiliLiveInteractor:
         try:
             result = await self.transcribe(_to_int(room_id), seconds=10)
         except Exception as exc:
-            self._logger.debug("直播 ASR 上下文读取失败", room_id=room_id, error=str(exc))
+            self._logger.debug(
+                f"B站直播 ASR 上下文读取失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
+            )
             return ""
         if not result.get("ok"):
             return ""
@@ -1174,10 +1254,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.warning(
-                "B站直播主动观察生成失败",
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            self._logger.warning(f"B站直播主动观察生成失败：{type(exc).__name__}: {exc}")
             return None
 
     async def _save_reply_frame(self, room_id: int) -> None:
@@ -1187,12 +1264,12 @@ class BilibiliLiveInteractor:
             result = await call_client(self._media.capture_frame, _to_int(room_id))
             if isinstance(result, dict) and result.get("ok"):
                 self._logger.info(
-                    "B站直播回复截图已保留",
-                    room_id=room_id,
-                    path=result.get("path"),
+                    f"B站直播回复截图已保留：房间 {room_id}，路径 {result.get('path')}"
                 )
         except Exception as exc:
-            self._logger.debug("B站直播回复截图失败", room_id=room_id, error=str(exc))
+            self._logger.debug(
+                f"B站直播回复截图失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
+            )
 
     async def _auto_look_loop(self) -> None:
         while self._running:
@@ -1226,9 +1303,8 @@ class BilibiliLiveInteractor:
                     raise
                 except Exception as exc:
                     self._logger.warning(
-                        "B站直播主动观察失败",
-                        room_id=room_id,
-                        error=f"{type(exc).__name__}: {exc}",
+                        f"B站直播主动观察失败：房间 {room_id}，"
+                        f"错误 {type(exc).__name__}: {exc}"
                     )
 
     async def _generate_reply(
@@ -1268,10 +1344,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.warning(
-                "B站直播回复生成失败",
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            self._logger.warning(f"B站直播回复生成失败：{type(exc).__name__}: {exc}")
             return ToolReply()
         return result
 
@@ -1310,10 +1383,7 @@ class BilibiliLiveInteractor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.warning(
-                "B站直播定时弹幕生成失败",
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            self._logger.warning(f"B站直播定时弹幕生成失败：{type(exc).__name__}: {exc}")
             return []
         return result.segments or ([result.text] if result.text else [])
 
@@ -1348,7 +1418,9 @@ class BilibiliLiveInteractor:
 
     @staticmethod
     def _is_schedule_due(schedule: dict[str, Any], now: datetime) -> bool:
-        if str(schedule.get("time") or "") != now.strftime("%H:%M"):
+        """到点判定：>= HH:MM 且本时段未发过；不再要求恰好在那一分钟检查。"""
+        clock = str(schedule.get("time") or "")
+        if not clock or now.strftime("%H:%M") < clock:
             return False
         last = str(schedule.get("last_fired_date") or "")
         recurrence = str(schedule.get("recurrence") or "")
@@ -1357,29 +1429,40 @@ class BilibiliLiveInteractor:
         if recurrence == "daily":
             return last != now.date().isoformat()
         if recurrence == "weekly":
-            try:
-                last_date = date.fromisoformat(last)
-            except ValueError:
-                return True
-            return (now.date() - last_date).days >= 7
+            return now.weekday() == BilibiliLiveInteractor._schedule_weekday(schedule, now) and (
+                last != now.date().isoformat()
+            )
         return False
 
+    @staticmethod
+    def _schedule_weekday(schedule: dict[str, Any], now: datetime) -> int:
+        """每周规则的星期几：优先存下来的 weekday，其次上次执行日期，兜底今天。"""
+        value = schedule.get("weekday")
+        if isinstance(value, int) and 0 <= value <= 6:
+            return value
+        try:
+            return date.fromisoformat(str(schedule.get("last_fired_date") or "")).weekday()
+        except ValueError:
+            return now.weekday()
+
     async def _scan_schedules(self, now: datetime | None = None) -> list[dict[str, Any]]:
-        """检查到点的定时弹幕；到点即消耗本时段，下播/失败都不在同一时段重试。"""
+        """检查到点的定时弹幕：daily/weekly 到点即消耗本时段，once 发送成功后才落盘。"""
         current = now or datetime.now().astimezone()
         fired: list[dict[str, Any]] = []
         for room_id, room in list(self._rooms.items()):
             for schedule in list(room.get("schedules") or []):
                 if not self._is_schedule_due(schedule, current):
                     continue
-                schedule["last_fired_date"] = current.date().isoformat()
-                self._save()
                 rid = _to_int(room_id)
+                recurrence = str(schedule.get("recurrence") or "")
+                # daily/weekly 到点即消耗本时段：下播/失败都不在同一时段重试；
+                # once 是唯一的一条，失败不落盘，等下一次检查再试。
+                if recurrence != "once":
+                    schedule["last_fired_date"] = current.date().isoformat()
+                    self._save()
                 if not await self.is_live(rid):
                     self._logger.info(
-                        "B站直播间未开播，跳过定时弹幕",
-                        room_id=room_id,
-                        schedule_id=schedule.get("id"),
+                        f"B站直播间未开播，跳过定时弹幕：房间 {room_id}，任务 {schedule.get('id')}"
                     )
                     continue
                 texts = await self._generate_schedule_danmaku(
@@ -1401,6 +1484,9 @@ class BilibiliLiveInteractor:
                         break
                 if not sent:
                     continue
+                if recurrence == "once":
+                    schedule["last_fired_date"] = current.date().isoformat()
+                    self._save()
                 fired.append(
                     {
                         "room_id": rid,
@@ -1409,20 +1495,28 @@ class BilibiliLiveInteractor:
                     }
                 )
                 self._logger.info(
-                    "B站直播已发送定时弹幕",
-                    room_id=room_id,
-                    schedule_id=schedule.get("id"),
-                    chars=len(text),
+                    f"B站直播已发送定时弹幕：房间 {room_id}，"
+                    f"任务 {schedule.get('id')}，{len(text)} 字"
                 )
         return fired
 
-    def _format_history(self, room_id: int, count: int = 50) -> str:
-        return self.format_history(room_id, count)
-
     def _get_client(self) -> Any | None:
-        """取当前可用 client；BilibiliService 休眠时 resolve_client 会回退成 service 本身。"""
+        """取当前可用 client；service 不可用时 resolve_client 返回 None。"""
         client = resolve_client(self._service)
         return client if callable(getattr(client, "send_danmaku", None)) else None
+
+    async def _resolve_my_uid(self, client: Any) -> int:
+        """解析并缓存自己的 UID：client.my_uid 是属性，未缓存时会打 nav 接口，必须丢线程池。"""
+        if self._my_uid:
+            return self._my_uid
+        try:
+            uid = _to_int(await call_client(lambda: getattr(client, "my_uid", 0)))
+        except Exception as exc:
+            self._logger.warning(f"B站直播账号 UID 解析失败：{type(exc).__name__}: {exc}")
+            return 0
+        if uid > 0:
+            self._my_uid = uid
+        return self._my_uid
 
     def _start_task(self, room_id: str) -> None:
         if not self._running:
@@ -1447,7 +1541,24 @@ class BilibiliLiveInteractor:
         self._loaded = True
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            # 状态文件坏了：先备份再按空状态启动，绝不能拿空房间表把用户配置覆盖掉。
+            backup = self._path.with_name(self._path.name + ".bad")
+            try:
+                self._path.replace(backup)
+            except OSError as backup_exc:
+                self._state_broken = True
+                self._logger.error(
+                    f"B站直播交互状态文件解析失败且备份失败，本次不会覆盖原文件："
+                    f"错误 {type(exc).__name__}: {exc}；"
+                    f"备份错误 {type(backup_exc).__name__}: {backup_exc}"
+                )
+                return
+            self._logger.error(
+                f"B站直播交互状态文件解析失败，已备份为 {backup.name}：{type(exc).__name__}: {exc}"
+            )
             return
         rooms = raw.get("rooms") if isinstance(raw, dict) else None
         if not isinstance(rooms, dict):
@@ -1470,6 +1581,9 @@ class BilibiliLiveInteractor:
             }
 
     def _save(self) -> None:
+        if self._state_broken:
+            self._logger.warning("B站直播交互状态文件损坏且备份失败，本次不写盘以免覆盖原配置")
+            return
         rooms: dict[str, dict[str, Any]] = {}
         for room_id, room in sorted(self._rooms.items(), key=lambda item: _to_int(item[0])):
             entry: dict[str, Any] = {
@@ -1486,7 +1600,7 @@ class BilibiliLiveInteractor:
         try:
             atomic_write_text(self._path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         except OSError as exc:
-            self._logger.warning("B站直播交互状态保存失败", error=str(exc))
+            self._logger.warning(f"B站直播交互状态保存失败：{type(exc).__name__}: {exc}")
 
 
 def _client_user_agent(client: Any) -> str:
@@ -1521,13 +1635,22 @@ def _normalize_schedule(value: Any) -> dict[str, Any] | None:
     prompt = str(value.get("prompt") or "").strip()
     if clock is None or recurrence not in _RECURRENCES or not prompt:
         return None
-    return {
+    record = {
         "id": str(value.get("id") or uuid4().hex[:12]),
         "time": clock,
         "recurrence": recurrence,
         "prompt": prompt,
         "last_fired_date": str(value.get("last_fired_date") or ""),
     }
+    weekday = value.get("weekday")
+    if isinstance(weekday, int) and 0 <= weekday <= 6:
+        record["weekday"] = weekday
+    return record
+
+
+def _with_jitter(seconds: float) -> float:
+    """重连退避上下浮动 20%：多房间同时掉线时不要同一秒撞回服务器。"""
+    return max(0.0, float(seconds)) * random.uniform(0.8, 1.2)
 
 
 def _to_int(value: Any) -> int:

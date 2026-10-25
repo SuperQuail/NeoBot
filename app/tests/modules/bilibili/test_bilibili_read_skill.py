@@ -10,8 +10,6 @@ from neobot_app.bilibili.client import BilibiliClient
 from neobot_app.skills.base import SkillManager
 from neobot_app.skills.bilibili_read import BilibiliReadSkill
 
-from ._fakes import FakeResponse, FakeSession
-
 _READ_ONLY_NOTE = "只读查询：不会发评论、私信、动态或点赞。"
 _TOOL_NAMES = {
     "dynamic_detail",
@@ -109,7 +107,8 @@ async def test_article_info_merges_content() -> None:
 
     assert result["ok"] is True
     assert result["author"] == "作者"
-    assert result["content"] == "<p>正文</p>"
+    # 正文去掉 HTML 标签再回给模型。
+    assert result["content"] == "正文"
     assert api.calls[0] == ("article_info", ("cv777",), {})
     assert api.calls[1] == ("article_content", ("cv777",), {})
 
@@ -220,12 +219,98 @@ async def test_dormant_service_returns_readable_error() -> None:
 
 
 async def test_live_client_wiring() -> None:
-    session = FakeSession([FakeResponse({"code": 0, "data": {"roomid": 123, "live_status": 0}})])
-    client = BilibiliClient("sessdata", "bili-jct", 7, session=session)
+    # 真客户端 + 只替身 _fetch：断层在 HTTP 层，不依赖线程内 session 归属。
+    calls: list[dict[str, Any]] = []
 
-    result = json.loads(await BilibiliReadSkill(client=client).execute("user_live_status", {"mid": 42}))
+    class FetchClient(BilibiliClient):
+        def _fetch(self, method, url, params=None, **kwargs):  # type: ignore[override]
+            calls.append({"method": method, "url": url, "params": params})
+            return {"code": 0, "data": {"roomid": 123, "live_status": 0}}
+
+    result = json.loads(
+        await BilibiliReadSkill(client=FetchClient("sessdata", "bili-jct", 7)).execute(
+            "user_live_status", {"mid": 42}
+        )
+    )
 
     assert result["ok"] is True
     assert result["info"]["roomid"] == 123
     assert result["note"] == _READ_ONLY_NOTE
-    assert session.calls[0]["params"] == {"mid": 42}
+    assert calls[0]["params"] == {"mid": 42}
+
+
+class _FetchClient:
+    """只实现 _fetch 的客户端替身：BilibiliReadApi 只用到这一层。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def _fetch(self, method: str, url: str, params: Any = None, **kwargs: Any) -> dict:
+        self.calls.append({"method": method, "url": url, "params": params})
+        return {"code": 0, "data": {"card": {"mid": 42, "name": "UP"}, "fans": 1}}
+
+
+class _Service:
+    """按 refresh() 结果切换可用性的 service 替身。"""
+
+    def __init__(self, client: _FetchClient, *, refresh_result: bool, error: str = "") -> None:
+        self.client = client
+        self.available = False
+        self.refresh_result = refresh_result
+        self.error = error
+        self.refresh_calls = 0
+
+    async def refresh(self) -> bool:
+        self.refresh_calls += 1
+        self.available = self.refresh_result
+        return self.available
+
+    def status(self) -> dict[str, Any]:
+        return {"available": self.available, "error": self.error}
+
+
+async def test_login_gate_refreshes_service_before_reporting() -> None:
+    client = _FetchClient()
+    service = _Service(client, refresh_result=True)
+
+    result = json.loads(
+        await BilibiliReadSkill(service=service).execute("user_card", {"mid": 42})
+    )
+
+    assert result["ok"] is True
+    assert service.refresh_calls == 1
+    assert client.calls  # refresh 之后才真的发请求
+
+
+async def test_login_gate_keeps_service_reason_when_dormant() -> None:
+    service = _Service(
+        _FetchClient(),
+        refresh_result=False,
+        error="B站登录态校验失败（网络异常）：Timeout",
+    )
+
+    result = json.loads(
+        await BilibiliReadSkill(service=service).execute("user_card", {"mid": 42})
+    )
+
+    assert result["ok"] is False
+    assert "未登录" in result["error"]
+    assert "网络异常" in result["error"]
+    assert service.refresh_calls == 1
+
+
+async def test_article_body_is_stripped_and_truncated() -> None:
+    body = "<p>" + "字" * 6000 + "</p>"
+    api = FakeReadApi(
+        {
+            "article_info": {"ok": True, "cv_id": 777},
+            "article_content": {"ok": True, "content": body, "author": "作者"},
+        }
+    )
+
+    result = json.loads(await _skill(api).execute("article", {"cv_id": 777}))
+
+    assert result["content_truncated"] is True
+    assert result["content_chars"] == 6000
+    assert len(result["content"]) < 6000
+    assert "<p>" not in result["content"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -31,6 +32,13 @@ _NAV_WBI = {
 
 def _client(session: FakeSession, uid: int = 7, **kwargs: object) -> BilibiliClient:
     return BilibiliClient("sessdata", "bili-jct", uid, session=session, **kwargs)
+
+
+class _DownSession(FakeSession):
+    """网络不可用：所有请求都抛 ConnectionError。"""
+
+    def request(self, method: str, url: str, **kwargs: object) -> FakeResponse:
+        raise requests.ConnectionError("boom")
 
 
 def test_verify_auth_true_when_nav_logged_in() -> None:
@@ -126,16 +134,24 @@ def test_get_comments_signs_wbi_and_returns_cursor() -> None:
     assert len(params["w_rid"]) == 32
 
 
-def test_get_comments_dedupes_and_truncates_page_size() -> None:
+def test_get_comments_sends_page_size_and_keeps_whole_page() -> None:
+    page_with_more = _comments_page([{"rpid": index} for index in range(1, 6)])
     session = FakeSession(
         [
             FakeResponse(_NAV_WBI),
             _comments_page([{"rpid": 1}, {"rpid": 2}, {"rpid": 1}, {"rpid": 3}]),
+            page_with_more,
         ]
     )
-    page = _client(session).get_comments(1, 1, page_size=3)
+    client = _client(session)
+    page = client.get_comments(1, 1, page_size=3)
     assert [item["rpid"] for item in page["items"]] == [1, 2, 3]
+    assert session.calls[-1]["params"]["ps"] == "3"
     assert page["is_end"] is True and page["cursor"] == ""
+
+    # 接口返回条数多于 ps 时也全部保留：截断后用服务端游标翻页会丢中间的评论。
+    full = client.get_comments(170001, 1, page_size=3)
+    assert [item["rpid"] for item in full["items"]] == [1, 2, 3, 4, 5]
 
 
 def test_get_comments_returns_empty_page_on_bad_args_or_api_error() -> None:
@@ -439,3 +455,167 @@ def test_auth_error_from_write_is_not_raised() -> None:
     assert _client(session).send_comment_reply(oid=1, root=2, parent=2, text="hi") is False
     with pytest.raises(BilibiliAuthError):
         _client(FakeSession([FakeResponse({"code": -101})])).publish_dynamic("hi")
+
+
+# ── nav 三种返回：成功 data / 登录失效 / 接口失败 ──
+
+
+def test_get_my_info_returns_data_and_caches_uid() -> None:
+    client = _client(FakeSession([FakeResponse(_NAV_WBI)]))
+    info = client.get_my_info()
+    assert info["mid"] == 7 and info["isLogin"] is True
+    assert client.my_uid == 7
+
+
+def test_get_my_info_raises_auth_error_when_logged_out() -> None:
+    # -101 与 isLogin=False 都是「未登录」，不能返回空 dict 让调用方当成功。
+    for payload in (
+        {"code": -101, "message": "账号未登录"},
+        {"code": 0, "data": {"isLogin": False}},
+        {"code": 0, "data": {"isLogin": True, "mid": 0}},
+    ):
+        client = _client(FakeSession([FakeResponse(payload)]), uid=0)
+        with pytest.raises(BilibiliAuthError):
+            client.get_my_info()
+
+
+def test_get_my_info_raises_api_error_on_network_or_bad_payload(monkeypatch) -> None:
+    monkeypatch.setattr("neobot_app.bilibili.client.time.sleep", lambda _seconds: None)
+    with pytest.raises(BilibiliApiError):
+        _client(_DownSession()).get_my_info()
+    with pytest.raises(BilibiliApiError):
+        _client(FakeSession([FakeResponse(None)])).get_my_info()  # 非法 JSON
+    with pytest.raises(BilibiliApiError):
+        _client(FakeSession([FakeResponse({"code": 0, "data": []})])).get_my_info()
+
+
+def test_my_uid_returns_zero_when_nav_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr("neobot_app.bilibili.client.time.sleep", lambda _seconds: None)
+    assert _client(_DownSession(), uid=0).my_uid == 0
+    assert _client(FakeSession([FakeResponse({"code": -101})]), uid=0).my_uid == 0
+
+
+# ── 重试：只对幂等的 GET/HEAD ──
+
+
+def test_post_is_not_retried_on_5xx(monkeypatch) -> None:
+    monkeypatch.setattr("neobot_app.bilibili.client.time.sleep", lambda _seconds: None)
+    session = FakeSession([FakeResponse(None, status_code=503)])
+    assert _client(session).send_comment_reply(oid=1, root=2, parent=2, text="hi") is False
+    assert len(session.calls) == 1  # 写请求绝不重发，避免重复发评论
+
+
+# ── 风控：HTTP 412/429 ──
+
+
+def test_http_412_and_429_raise_risk_control_error() -> None:
+    for status in (412, 429):
+        session = FakeSession([FakeResponse(None, status_code=status)])
+        client = _client(session)
+        initial = client._write_interval  # type: ignore[attr-defined]
+        with pytest.raises(BilibiliApiError) as info:
+            client._fetch("GET", "https://api.bilibili.com/x/test")  # type: ignore[attr-defined]
+        assert info.value.code == -status
+        assert "风控" in str(info.value)
+        assert client._write_interval > initial  # type: ignore[attr-defined]
+        assert len(session.calls) == 1  # 风控拦截不重试
+
+
+# ── WBI：TTL 与 -352 重取 ──
+
+
+def test_wbi_keys_are_refetched_after_ttl(monkeypatch) -> None:
+    clock = {"now": 1000.0}
+    monkeypatch.setattr("neobot_app.bilibili.client.time.monotonic", lambda: clock["now"])
+    session = FakeSession(
+        [
+            FakeResponse(_NAV_WBI),
+            _comments_page([{"rpid": 1}]),
+            FakeResponse(_NAV_WBI),
+            _comments_page([{"rpid": 2}]),
+        ]
+    )
+    client = _client(session)
+    assert [item["rpid"] for item in client.get_comments(1, 1)["items"]] == [1]
+    clock["now"] += client._WBI_KEY_TTL_SECONDS + 1  # type: ignore[attr-defined]
+    assert [item["rpid"] for item in client.get_comments(1, 1)["items"]] == [2]
+    nav_calls = [call for call in session.calls if call["url"].endswith("/x/web-interface/nav")]
+    assert len(nav_calls) == 2
+
+
+def test_wbi_352_clears_keys_and_retries_once() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(_NAV_WBI),
+            FakeResponse({"code": -352, "message": "风控校验失败"}),
+            FakeResponse(_NAV_WBI),
+            _comments_page([{"rpid": 1}]),
+        ]
+    )
+    page = _client(session).get_comments(170001, 1)
+    assert [item["rpid"] for item in page["items"]] == [1]
+    nav_calls = [call for call in session.calls if call["url"].endswith("/x/web-interface/nav")]
+    assert len(nav_calls) == 2  # 清空重取一次
+    # 重试请求重新签名（不是把失效的 w_rid 原样重发）。
+    assert session.calls[-1]["url"].endswith("/x/v2/reply/wbi/main")
+    assert len(session.calls[-1]["params"]["w_rid"]) == 32
+
+
+def test_wbi_352_is_retried_only_once() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(_NAV_WBI),
+            FakeResponse({"code": -352}),
+            FakeResponse(_NAV_WBI),
+            FakeResponse({"code": -352}),
+        ]
+    )
+    assert _client(session).get_comments(170001, 1)["items"] == []
+    assert len(session.calls) == 4
+
+
+# ── 并发：Session 按线程隔离、close 只关自建 Session ──
+
+
+def test_http_session_is_per_thread_and_copies_cookies() -> None:
+    session = FakeSession()
+    client = _client(session)
+    seen: dict[str, object] = {}
+
+    def worker() -> None:
+        other = client._http  # type: ignore[attr-defined]
+        seen["session"] = other
+        seen["cookies"] = {cookie.name: cookie.value for cookie in other.cookies}
+        seen["domains"] = {cookie.name: cookie.domain for cookie in other.cookies}
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert seen["session"] is not session
+    assert seen["cookies"] == {
+        "SESSDATA": "sessdata",
+        "bili_jct": "bili-jct",
+        "DedeUserID": "7",
+    }
+    # 复制 Cookie 时要保留 domain，否则会被当成全局 cookie。
+    assert set(seen["domains"].values()) == {".bilibili.com"}
+    assert client._http is session  # type: ignore[attr-defined]  # 创建线程仍用注入的 session
+
+
+def test_close_does_not_close_injected_session(monkeypatch) -> None:
+    injected = FakeSession()
+    _client(injected).close()
+    assert injected.closed is False
+
+    created: list[FakeSession] = []
+
+    def _new_session() -> FakeSession:
+        session = FakeSession()
+        created.append(session)
+        return session
+
+    monkeypatch.setattr("neobot_app.bilibili.client.requests.Session", _new_session)
+    client = BilibiliClient("sessdata", "bili-jct", 7)
+    client.close()
+    assert created and created[0].closed is True

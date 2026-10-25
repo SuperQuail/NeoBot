@@ -88,7 +88,18 @@ class _Executor:
             text = str(args.get("text") or "").strip()
             if not text:
                 return '{"ok": false, "error": "text 不能为空"}'
-            self.text = text[: self.max_chars]
+            if len(text) > self.max_chars:
+                # 和 system 里的 <长度> 规则保持同一上限：超长让模型压缩重提，
+                # 不要静默截断（截断会把结尾半句话发出去）。
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"动态正文 {len(text)} 字，超过 {self.max_chars} 字上限，"
+                        "请压缩后再次调用 send_dynamic",
+                    },
+                    ensure_ascii=False,
+                )
+            self.text = text
             return '{"ok": true}'
         return '{"ok": false, "error": "未知工具"}'
 

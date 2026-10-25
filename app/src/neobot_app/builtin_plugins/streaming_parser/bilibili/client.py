@@ -47,21 +47,37 @@ class Transport(Protocol):
 
 
 class HttpxTransport:
-    """基于 httpx 的默认传输实现（httpx 已是 NeoBot 本体依赖）。"""
+    """基于 httpx 的默认传输实现（httpx 已是 NeoBot 本体依赖）。
 
-    def __init__(self, *, follow_redirects: bool = False) -> None:
+    复用一个 AsyncClient：轮询每轮要打 N 个房间，每次请求都新建客户端等于丢掉
+    连接池与 TLS 会话（代理下尤其慢）。插件 shutdown 时由 aclose() 关闭。
+    """
+
+    def __init__(self, *, follow_redirects: bool = False, client: Any = None) -> None:
         self._follow_redirects = follow_redirects
+        self._client = client
+
+    def _ensure_client(self) -> Any:
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.AsyncClient(follow_redirects=self._follow_redirects)
+        return self._client
+
+    async def aclose(self) -> None:
+        """关闭复用的客户端；可重复调用（插件 shutdown 会调用一次）。"""
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
 
     async def request(
         self, *, method: str, url: str, headers: dict[str, str], timeout: float
     ) -> RawResponse:
         import httpx
 
+        client = self._ensure_client()
         try:
-            async with httpx.AsyncClient(
-                timeout=timeout, follow_redirects=self._follow_redirects
-            ) as client:
-                response = await client.request(method, url, headers=headers)
+            response = await client.request(method, url, headers=headers, timeout=timeout)
         except httpx.HTTPError as exc:  # 连接/超时/TLS 等
             raise BilibiliTransportError(f"请求失败: {exc}") from exc
 
@@ -152,17 +168,9 @@ class BilibiliLiveClient:
         raw = await self._get(user_card_url(host_mid))
         return UserCard.from_payload(raw.body)
 
-    async def resolve_room_id(self, room_id: int | str) -> int:
-        """短号 → 真实房间号（P0 的 ID 互转入口）。"""
-        init = await self.fetch_live_room_init(room_id)
-        return init.room_id
-
-    async def resolve_uid_room(self, host_mid: int | str) -> tuple[int, bool]:
-        """uid → (房间号, 是否在直播)。"""
-        status = await self.fetch_user_live_status(host_mid)
-        return status.room_id, status.is_living
-
     async def aclose(self) -> None:
-        """传输层若需要释放资源，可在此扩展。"""
-        return
+        """释放传输层持有的连接（传输层没实现 aclose 就什么都不做）。"""
+        close = getattr(self._transport, "aclose", None)
+        if callable(close):
+            await close()
 

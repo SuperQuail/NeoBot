@@ -36,6 +36,4 @@ class StreamConfig(BaseModel):
     render_timeout: float = Field(default=30.0, gt=0, le=120)
     # 卡片渲染缩放倍数（2 表示 2x 高清图）。
     render_scale: float = Field(default=2.0, ge=1.0, le=4.0)
-    # 是否在开播通知里 @全体成员。
-    mention_all_on_live: bool = False
 

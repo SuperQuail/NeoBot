@@ -9,10 +9,12 @@ EventContext，定时器里必然返回 False。宿主把 reply_orchestrator 注
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from . import db
 from .bilibili.urls import live_room_page_url
+from .logs import log_at
 from .poller import EVENT_LIVE, Transition
 from .render import format_live_time, format_online, format_room_id, resolve_style
 
@@ -100,12 +102,6 @@ class Notifier:
         self._config = config
         self._logger = logger
 
-    def _log(self, level: str, message: str) -> None:
-        logger = self._logger
-        handler = getattr(logger, level, None) if logger is not None else None
-        if callable(handler):
-            handler(message)
-
     def _conversation(self, group_id: int) -> Any:
         """不直接依赖 contracts：用 ctx 自己的推断方法构造会话引用。"""
         return self._ctx.conversation_from_event(
@@ -119,7 +115,19 @@ class Notifier:
                 for row in await db.followers_of_room(session, transition.room_id)
             ]
         for subscription in followers:
-            await self._notify_one(subscription, transition)
+            try:
+                await self._notify_one(subscription, transition)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 单个群推送失败不能拖住其他群：记日志后继续下一个群。
+                # 代价是这次跳变已经落库、不会再重放（见计划文档 T6 的补偿建议）。
+                log_at(
+                    self._logger,
+                    "warning",
+                    f"群 {subscription.group_id} 推送失败"
+                    f"（房间 {transition.room_id} {transition.kind}）: {exc!r}",
+                )
 
     async def _notify_one(self, subscription: Any, transition: Transition) -> None:
         is_live = transition.kind == EVENT_LIVE
@@ -188,14 +196,14 @@ class Notifier:
             )
             return True
         except Exception as exc:
-            self._log("warning", f"发送卡片失败 (群 {group_id}): {exc!r}")
+            log_at(self._logger, "warning", f"发送卡片失败 (群 {group_id}): {exc!r}")
             return False
 
     async def _send_text(self, group_id: int, text: str) -> None:
         try:
             await self._ctx.send_group(group_id, text)
         except Exception as exc:
-            self._log("warning", f"发送通知失败 (群 {group_id}): {exc!r}")
+            log_at(self._logger, "warning", f"发送通知失败 (群 {group_id}): {exc!r}")
 
     def _service(self, name: str) -> Any:
         """按名取宿主服务；缺失返回 None。
@@ -240,13 +248,14 @@ class Notifier:
                     manager_name="streaming_parser",
                     reasons=reasons,
                 )
-                self._log(
+                log_at(
+                    self._logger,
                     "debug",
                     f"群 {group_id} 通知已投递（起新管线={bool(started)}）",
                 )
                 return True
             except Exception as exc:
-                self._log("warning", f"notification_hub 投递失败，降级直连编排器: {exc!r}")
+                log_at(self._logger, "warning", f"notification_hub 投递失败，降级直连编排器: {exc!r}")
 
         orchestrator = self._service("reply_orchestrator")
         start = getattr(orchestrator, "start_background_reply", None)
@@ -260,13 +269,13 @@ class Notifier:
                     reasons=reasons,
                 )
             except Exception as exc:
-                self._log("warning", f"触发 AI 回复失败 (群 {group_id}): {exc!r}")
+                log_at(self._logger, "warning", f"触发 AI 回复失败 (群 {group_id}): {exc!r}")
                 return False
             if result is not None:
                 return True
             # 该会话已有活跃回复管线时会被跳过，这是宿主的有意设计；
             # 至少把通知写进队列，让 agent 在后续轮次里知道这件事。
-            self._log("debug", f"群 {group_id} 已有回复管线，改为写入通知队列")
+            log_at(self._logger, "debug", f"群 {group_id} 已有回复管线，改为写入通知队列")
             record = getattr(orchestrator, "record_notification", None)
             if callable(record):
                 try:
@@ -277,8 +286,8 @@ class Notifier:
                         content=prompt,
                     )
                 except Exception as exc:
-                    self._log("warning", f"写入通知队列失败: {exc!r}")
+                    log_at(self._logger, "warning", f"写入通知队列失败: {exc!r}")
             return False
-        self._log("warning", "宿主未提供 notification_hub / reply_orchestrator，跳过 AI 回复")
+        log_at(self._logger, "warning", "宿主未提供 notification_hub / reply_orchestrator，跳过 AI 回复")
         return False
 

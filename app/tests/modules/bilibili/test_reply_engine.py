@@ -6,6 +6,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+from neobot_chat.schema.exceptions import ProviderError
+
 import neobot_app.bilibili.reply_engine as reply_engine_module
 from neobot_app.bilibili.prompts import CommentContext, CommentNode, PrivateMessageContext
 from neobot_app.bilibili.reply_engine import BilibiliReplyEngine, clean_reply
@@ -171,10 +174,25 @@ async def test_skip_returns_none() -> None:
     assert await engine.generate_comment_reply(_comment_ctx()) is None
 
 
-async def test_provider_error_returns_none() -> None:
+async def test_provider_error_is_raised_for_retry() -> None:
+    # 契约：provider 异常必须向上抛，调用方回池重试；不能伪装成「模型不回复」。
     engine = _engine(FakeProvider(error=RuntimeError("boom")))
 
-    assert await engine.generate_comment_reply(_comment_ctx()) is None
+    with pytest.raises(ProviderError) as caught:
+        await engine.generate_comment_reply(_comment_ctx())
+
+    assert isinstance(caught.value.original, RuntimeError)
+
+
+async def test_provider_timeout_is_raised_for_retry() -> None:
+    engine = _engine(FakeProvider(error=TimeoutError("provider timeout")))
+
+    with pytest.raises(ProviderError) as caught:
+        await engine.generate_private_reply(
+            PrivateMessageContext(sender_uid=55, sender_name="王五", current_message="在吗")
+        )
+
+    assert isinstance(caught.value.original, TimeoutError)
 
 
 async def test_provider_usage_is_recorded(monkeypatch) -> None:

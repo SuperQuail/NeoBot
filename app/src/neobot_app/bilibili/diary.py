@@ -2,7 +2,8 @@
 
 默认关闭（config.bilibili.dynamic_diary_enabled=false）。日记前 5 分钟刷新摘要，
 只读 group_summary（不读私聊），按上次快照做行级 diff；agent 用 read_diary_material
-分页查看，用 send_dynamic/cancel 决定发布。
+分页查看，用 send_dynamic/cancel 决定发布。素材快照只在**发布成功**后更新，
+preview/发布失败都不消费当天的 diff。
 发布只调用 BilibiliClient/BilibiliService.publish_dynamic，不碰 QQ 空间、不回复消息。
 """
 
@@ -19,6 +20,7 @@ from neobot_app.bilibili.prompts import build_diary_prompt
 from neobot_app.bilibili.diary_tools import run_diary_agent
 from neobot_app.skills.base import SkillModule
 from neobot_app.time_context import get_current_time_values, today_local, to_local
+from neobot_app.utils.atomic import atomic_write_text
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger("bilibili.diary")
@@ -66,6 +68,10 @@ class BilibiliDiaryService:
         self._max_material_chars = max(0, int(max_material_chars or 0))
         self._requirement = str(requirement or "").strip()
         self._timeout_seconds = float(timeout_seconds)
+        #: 定时任务与工具预览/发布互斥，避免两份生成共用同一份旧快照。
+        self._lock = asyncio.Lock()
+        #: 本轮素材快照，只在发布成功后落盘（预览/失败不消费今天的 diff）。
+        self._pending_snapshot: list[str] | None = None
 
     @classmethod
     def from_config(
@@ -128,10 +134,17 @@ class BilibiliDiaryService:
         if path is None:
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(lines, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            logger.debug("B站日记素材快照写入失败", path=str(path))
+            atomic_write_text(path, json.dumps(lines, ensure_ascii=False))
+        except Exception as exc:
+            logger.debug(f"B站日记素材快照写入失败：{path}（{type(exc).__name__}: {exc}）")
+
+    def _commit_snapshot(self) -> None:
+        """发布成功后落盘本次快照；预览/发布失败都不落盘，避免吃掉 diff。"""
+        lines = self._pending_snapshot
+        if lines is None:
+            return
+        self._save_snapshot(lines)
+        self._pending_snapshot = None
 
     async def _archive_material(self) -> str:
         if self._archive is None:
@@ -144,7 +157,7 @@ class BilibiliDiaryService:
                     self._archive.list, table, limit=_MAX_ARCHIVE_ITEMS
                 )
             except Exception as exc:
-                logger.debug("读取日记档案失败", table=table, error=str(exc))
+                logger.debug(f"读取日记档案失败（{table}）：{type(exc).__name__}: {exc}")
                 continue
             for item in items or []:
                 updated = get_field(item, "updated_at", None)
@@ -168,7 +181,8 @@ class BilibiliDiaryService:
         else:
             seen = set(previous)
             added = [line for line in current if line not in seen]
-        self._save_snapshot(current)
+        # 这里只记下候选快照；真正落盘等 publish() 成功后 _commit_snapshot()。
+        self._pending_snapshot = current
         return "\n".join(f"+ {line}" for line in added)
 
     # ── 生成与发布 ──
@@ -200,7 +214,7 @@ class BilibiliDiaryService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("B站日记生成失败", error=f"{type(exc).__name__}: {exc}")
+            logger.warning(f"B站日记生成失败：{type(exc).__name__}: {exc}")
             return ""
         return result.text or ""
 
@@ -215,23 +229,26 @@ class BilibiliDiaryService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("B站动态发布失败", error=f"{type(exc).__name__}: {exc}")
+            logger.warning(f"B站动态发布失败：{type(exc).__name__}: {exc}")
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        logger.info("B站动态已发布", dynamic_id=dynamic_id, chars=len(text))
+        logger.info(f"B站动态已发布（dynamic_id={dynamic_id}，{len(text)} 字）")
+        self._commit_snapshot()
         return {"ok": True, "dynamic_id": dynamic_id}
 
     async def run(self, *, preview: bool = False) -> dict:
         """生成并（非 preview 时）发布；返回结构化结果。"""
         if not self._enabled:
             return {"ok": False, "error": "B站动态日记未启用"}
-        text = await self.generate()
-        if not text:
-            return {"ok": False, "error": "生成失败或模型没有产出"}
-        if preview:
-            return {"ok": True, "preview": True, "text": text}
-        result = await self.publish(text)
-        result["text"] = text
-        return result
+        # 定时发布与工具调用互斥：素材快照/生成/发布是一整段，不能被另一个 run 插队。
+        async with self._lock:
+            text = await self.generate()
+            if not text:
+                return {"ok": False, "error": "生成失败或模型没有产出"}
+            if preview:
+                return {"ok": True, "preview": True, "text": text}
+            result = await self.publish(text)
+            result["text"] = text
+            return result
 
 
 class BilibiliDiarySkill(SkillModule):

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from neobot_app.bilibili._compat import call_client, get_field
@@ -21,10 +22,49 @@ logger = get_module_logger("bilibili.link_skill")
 _LINK_MARKER = "[B站UID:{uid}]"
 #: 合并进 QQ user_profile 的 B站档案最多多少字符（防止一条关联把档案撑爆）。
 _MAX_MERGE_CHARS = 1500
+#: QQ 号：5~12 位纯数字。
+_QQ_RE = re.compile(r"^\d{5,12}$")
 
 
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _parse_uid(value: Any) -> tuple[int, str]:
+    """校验 B站UID：只接受正整数；返回 (uid, 错误文本)。"""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return 0, "bilibili_uid 必须是正整数"
+    try:
+        uid = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0, "bilibili_uid 必须是正整数"
+    if uid <= 0:
+        return 0, "bilibili_uid 必须是正整数"
+    return uid, ""
+
+
+def _parse_qq(value: Any) -> tuple[str, str]:
+    """校验 QQ 号：5~12 位纯数字；返回 (qq, 错误文本)。"""
+    qq = str(value or "").strip()
+    if not qq:
+        return "", "缺少 qq_number"
+    if not _QQ_RE.match(qq):
+        return "", "qq_number 必须是 5~12 位纯数字"
+    return qq, ""
+
+
+def _linked_values(links: Any, field: str) -> list[str]:
+    """取关联行里的某个字段（去空、去重、保序），用于冲突提示。"""
+    values: list[str] = []
+    for link in links or []:
+        value = str(get_field(link, field, "") or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+class _ArchiveReadError(RuntimeError):
+    """读档案失败：必须中止合并，否则"空档案"会把原档案整行覆盖掉。"""
 
 
 class BilibiliLinkSkill(SkillModule):
@@ -109,7 +149,7 @@ class BilibiliLinkSkill(SkillModule):
         try:
             return await handler(self, args)
         except Exception as exc:
-            logger.warning("B站关联工具执行失败", tool=tool_name, error=str(exc))
+            logger.warning(f"B站关联工具执行失败: {tool_name}: {type(exc).__name__}: {exc}")
             return _json({"ok": False, "error": str(exc)})
 
     # ── 内部：存储与档案 ──
@@ -130,29 +170,40 @@ class BilibiliLinkSkill(SkillModule):
             result = await call_client(repo.find_by_qq, qq_number)
         return list(result or [])
 
-    async def _archive_get(self, table: str, key: str) -> str:
+    async def _archive_get(self, table: str, key: str) -> Any:
+        """读一条档案条目（没有条目返回 None）；读失败抛 _ArchiveReadError。
+
+        读失败不能当成"空档案"：合并会因此整行覆盖掉原有 QQ 档案。
+        """
         if self._archive is None:
-            return ""
+            return None
         try:
-            item = await call_client(self._archive.get, table, key)
-        except Exception:
-            return ""
-        return str(get_field(item, "value", "") or "").strip()
+            return await call_client(self._archive.get, table, key)
+        except Exception as exc:
+            raise _ArchiveReadError(f"读取档案失败 {table}/{key}: {exc}") from exc
 
     async def _merge_archive(self, bilibili_uid: int, qq_number: str) -> str:
         """把 bilibili_user/<uid> 合并进 user_profile/<qq>；返回说明文本。"""
         if self._archive is None:
             return "未配置档案服务，跳过记忆合并"
-        bili_memory = await self._archive_get("bilibili_user", str(bilibili_uid))
+        try:
+            bili_item = await self._archive_get("bilibili_user", str(bilibili_uid))
+            profile_item = await self._archive_get("user_profile", qq_number)
+        except _ArchiveReadError as exc:
+            logger.warning(f"读取B站档案失败，已中止记忆合并: {exc}")
+            return "读取档案失败，已中止记忆合并（原档案未改动）"
+        bili_memory = str(get_field(bili_item, "value", "") or "").strip()
         if not bili_memory:
             return "B站侧暂无档案"
         marker = _LINK_MARKER.format(uid=bilibili_uid)
-        existing = await self._archive_get("user_profile", qq_number)
+        existing = str(get_field(profile_item, "value", "") or "").strip()
         if marker in existing:
             return "记忆已合并过"
+        # 整行写入不能把 QQ 档案原有的 tags 清掉：读到的 tags 原样透传。
+        tags = [str(tag) for tag in (get_field(profile_item, "tags", []) or [])]
         merged = f"{existing}\n\n{marker}\n{bili_memory[:_MAX_MERGE_CHARS]}".strip()
         try:
-            await call_client(self._archive.set, "user_profile", qq_number, merged, [])
+            await call_client(self._archive.set, "user_profile", qq_number, merged, tags)
         except Exception as exc:
             return f"记忆合并失败: {exc}"
         return "已合并B站档案到QQ档案"
@@ -162,43 +213,75 @@ class BilibiliLinkSkill(SkillModule):
 
 
 async def _handle_link_account(skill: BilibiliLinkSkill, args: dict) -> str:
-    bilibili_uid = int(args.get("bilibili_uid") or 0)
-    qq_number = str(args.get("qq_number") or "").strip()
-    if not bilibili_uid or not qq_number:
-        return _json({"ok": False, "error": "缺少 bilibili_uid 或 qq_number"})
+    bilibili_uid, uid_error = _parse_uid(args.get("bilibili_uid"))
+    qq_number, qq_error = _parse_qq(args.get("qq_number"))
+    if uid_error or qq_error:
+        return _json({"ok": False, "error": uid_error or qq_error})
 
+    created = False
     async with skill._uow_factory() as uow:
         repo = getattr(uow, "bilibili_links", None)
         if repo is None:
             return _json({"ok": False, "error": "storage 未提供 bilibili_links 仓库"})
         existing = await call_client(repo.find_by_uid_and_qq, bilibili_uid, qq_number)
-        if existing:
-            return _json({"ok": True, "merged": False, "message": "该关联已存在"})
-        await call_client(repo.create, bilibili_uid, qq_number)
-        await uow.commit()
+        if not existing:
+            # 一个 B站UID / 一个 QQ 只允许一条关联，否则记忆档案不知道该并给谁。
+            other_qqs = _linked_values(
+                await call_client(repo.find_by_uid, bilibili_uid), "qq_number"
+            )
+            if other_qqs:
+                return _json(
+                    {
+                        "ok": False,
+                        "error": f"B站UID:{bilibili_uid} 已关联其他QQ（{', '.join(other_qqs)}），"
+                        "请先 unlink_account 取消旧关联再绑定",
+                    }
+                )
+            other_uids = _linked_values(
+                await call_client(repo.find_by_qq, qq_number), "bilibili_uid"
+            )
+            if other_uids:
+                return _json(
+                    {
+                        "ok": False,
+                        "error": f"QQ:{qq_number} 已关联其他B站UID（{', '.join(other_uids)}），"
+                        "请先 unlink_account 取消旧关联再绑定",
+                    }
+                )
+            await call_client(repo.create, bilibili_uid, qq_number)
+            await uow.commit()
+            created = True
 
+    # 已有重复关联也补做一次合并：上次可能因档案读失败而没并成功（合并本身幂等）。
     detail = await skill._merge_archive(bilibili_uid, qq_number)
+    prefix = "关联成功" if created else "该关联已存在"
     return _json(
         {
             "ok": True,
+            "created": created,
             "merged": detail.startswith("已合并"),
-            "message": f"关联成功 (B站UID:{bilibili_uid} ↔ QQ:{qq_number})。{detail}",
+            "message": f"{prefix} (B站UID:{bilibili_uid} ↔ QQ:{qq_number})。{detail}",
         }
     )
 
 
 async def _handle_unlink_account(skill: BilibiliLinkSkill, args: dict) -> str:
-    qq_number = str(args.get("qq_number") or "").strip()
+    qq_number, qq_error = _parse_qq(args.get("qq_number"))
+    if qq_error:
+        return _json({"ok": False, "error": qq_error})
     bilibili_uid_raw = args.get("bilibili_uid")
-    if not qq_number:
-        return _json({"ok": False, "error": "缺少 qq_number"})
+    bilibili_uid = 0
+    if bilibili_uid_raw is not None:
+        bilibili_uid, uid_error = _parse_uid(bilibili_uid_raw)
+        if uid_error:
+            return _json({"ok": False, "error": uid_error})
 
     async with skill._uow_factory() as uow:
         repo = getattr(uow, "bilibili_links", None)
         if repo is None:
             return _json({"ok": False, "error": "storage 未提供 bilibili_links 仓库"})
-        if bilibili_uid_raw is not None:
-            count = await call_client(repo.delete_one, int(bilibili_uid_raw), qq_number)
+        if bilibili_uid:
+            count = await call_client(repo.delete_one, bilibili_uid, qq_number)
         else:
             count = await call_client(repo.delete_all_for_qq, qq_number)
         await uow.commit()
@@ -208,8 +291,15 @@ async def _handle_unlink_account(skill: BilibiliLinkSkill, args: dict) -> str:
 async def _handle_get_link(skill: BilibiliLinkSkill, args: dict) -> str:
     bilibili_uid_raw = args.get("bilibili_uid")
     qq_number = str(args.get("qq_number") or "").strip()
+    if qq_number:
+        qq_number, qq_error = _parse_qq(qq_number)
+        if qq_error:
+            return _json({"ok": False, "error": qq_error})
     if bilibili_uid_raw is not None:
-        links = await skill._links_by_uid(int(bilibili_uid_raw))
+        bilibili_uid, uid_error = _parse_uid(bilibili_uid_raw)
+        if uid_error:
+            return _json({"ok": False, "error": uid_error})
+        links = await skill._links_by_uid(bilibili_uid)
     elif qq_number:
         links = await skill._links_by_qq(qq_number)
     else:

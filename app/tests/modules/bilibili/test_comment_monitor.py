@@ -367,6 +367,73 @@ def test_parse_feed_item_maps_fields() -> None:
     assert event.target_type == "视频"
 
 
+def test_business_id_maps_to_comment_type() -> None:
+    # 与 BilibiliClient.COMMENT_TYPES 对齐：11=番剧、12=专栏/opus、17=动态，不能互串。
+    assert parse_feed_item(feed_item(business_id=1)).target_type == "视频"
+    assert parse_feed_item(feed_item(business_id=11)).target_type == "番剧"
+    assert parse_feed_item(feed_item(business_id=12)).target_type == "专栏"
+    assert parse_feed_item(feed_item(business_id=17)).target_type == "动态"
+    for business_id in (1, 11, 12, 17):
+        event = parse_feed_item(feed_item(business_id=business_id))
+        assert event.comment_type == business_id
+
+
+def test_unknown_business_id_falls_back_to_video_type() -> None:
+    event = parse_feed_item(feed_item(business_id=99))
+
+    assert event.comment_type == 1
+
+
+async def test_reply_uses_business_comment_type() -> None:
+    client = FakeClient([feed_item(business_id=17)])
+    monitor = _monitor(client)
+
+    assert await monitor.poll_once() == 1
+    assert client.sent[0]["type_"] == 17
+
+
+async def test_generation_error_is_retried_next_poll() -> None:
+    class FlakyEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__("好哦")
+            self.calls = 0
+
+        async def generate_comment_reply(self, ctx):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("provider timeout")
+            self.contexts.append(ctx)
+            return self.text
+
+    client = FakeClient([feed_item(notification_id=1)])
+    engine = FlakyEngine()
+    monitor = _monitor(client, engine)
+
+    # provider 超时按契约抛出：不记 processed，回池等下一轮，并进入退避。
+    assert await monitor.poll_once() == 0
+    assert client.sent == []
+    assert monitor.status()["pending"] == 1
+    assert monitor.next_poll_interval == 3600
+
+    assert await monitor.poll_once() == 1
+    assert len(client.sent) == 1
+    assert monitor.status()["pending"] == 0
+    assert monitor.next_poll_interval == 1800
+
+
+async def test_failures_clear_on_normal_poll_without_events() -> None:
+    client = FakeClient([], fail_feed=True)
+    monitor = _monitor(client)
+
+    assert await monitor.poll_once() == 0
+    assert monitor.status()["failures"] == 1
+
+    client.fail_feed = False
+    assert await monitor.poll_once() == 0
+    assert monitor.status()["failures"] == 0
+    assert monitor.next_poll_interval == 1800
+
+
 async def test_replied_comment_is_persisted_across_restart(tmp_path) -> None:
     client = FakeClient([feed_item(notification_id=1)])
     monitor = BilibiliCommentMonitor(

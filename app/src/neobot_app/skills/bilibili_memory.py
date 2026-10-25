@@ -23,6 +23,16 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
+def _parse_tags(value: Any) -> list[str]:
+    """标签归一化：模型常把数组写成 "搞笑,合集"，按逗号拆而不是逐字符
+    （list("搞笑,合集") 会拆成 ['搞', '笑', ',', ...]）。"""
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [text for tag in value if tag is not None and (text := str(tag).strip())]
+
+
 class BilibiliMemorySkill(SkillModule):
     """B站记忆 Skill — 管理视频/专栏/用户三类 B站专属档案。"""
 
@@ -127,7 +137,7 @@ class BilibiliMemorySkill(SkillModule):
         try:
             return await handler(self, table, args)
         except Exception as exc:
-            logger.warning("B站记忆工具执行失败", tool=tool_name, error=str(exc))
+            logger.warning(f"B站记忆工具执行失败: {tool_name}: {type(exc).__name__}: {exc}")
             return _json({"ok": False, "error": str(exc)})
 
 
@@ -137,10 +147,10 @@ class BilibiliMemorySkill(SkillModule):
 async def _handle_save(skill: BilibiliMemorySkill, table: str, args: dict) -> str:
     key = str(args.get("key") or "").strip()
     value = str(args.get("value") or "").strip()
-    tags = args.get("tags") or []
+    tags = _parse_tags(args.get("tags"))
     if not key or not value:
         return _json({"ok": False, "error": "缺少 key 或 value"})
-    await call_client(skill._archive.set, table, key, value, list(tags))
+    await call_client(skill._archive.set, table, key, value, tags)
     return _json({"ok": True, "table": table, "key": key})
 
 

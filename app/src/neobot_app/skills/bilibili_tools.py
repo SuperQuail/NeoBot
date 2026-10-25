@@ -10,6 +10,10 @@
 
 所有失败都返回 {"ok": false, "error": "中文说明"}，不把异常栈丢给模型。
 可选关键字参数按目标函数签名过滤，兼容尚未冻结的客户端接口。
+
+公开写工具（评论/点赞/投币/分享/收藏/关注）必须显式传 confirm=true：Skill 这一层
+拿不到可信的调用者上下文（CURRENT_INVOCATION 只在 agent_tools 系技能里设置），
+只能要求模型在确认用户意图后再调用，属于弱门禁。
 """
 
 from __future__ import annotations
@@ -59,6 +63,28 @@ _DYNAMIC_TYPES = {
 _PROFILE_CHARS = 1500
 #: comment_tree 一轮最多补拉的楼中楼根评论数（避免大 limit 时串行请求过多）。
 _TREE_FETCH_BUDGET = 10
+#: 空结果提示：接口失败与真的没有数据在这一层看不出来，别让模型当成"没有"。
+_EMPTY_HINT = "没有取到数据：可能是真的为空，也可能是接口失败/风控/登录失效，可再试一次或先确认账号状态。"
+#: 会以当前登录账号公开操作的写工具；调用前必须显式 confirm。
+_WRITE_TOOLS = frozenset(
+    {
+        "comment_video",
+        "like_video",
+        "like_comment",
+        "coin_video",
+        "share_video",
+        "favorite_video",
+        "follow_user",
+    }
+)
+_CONFIRM_SCHEMA = {
+    "type": "boolean",
+    "description": "确认已获得用户明确授权，将以当前登录B站账号公开操作；必须传 true 才会执行",
+    "default": False,
+}
+_CONFIRM_REQUIRED = (
+    "写操作需要确认：确认用户意图后带上 confirm=true 再调用（会以当前登录B站账号公开操作）"
+)
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -248,6 +274,41 @@ def _flag(value: Any, default: bool = True) -> bool:
     return bool(value)
 
 
+def _dormant_reason(service: Any) -> str:
+    """未登录提示：带上 service 记录的真实原因（网络异常 / 凭证失效）。"""
+    base = "B站未登录（功能休眠），先发 /login bilibili 扫码登录"
+    status = getattr(service, "status", None)
+    detail = ""
+    if callable(status):
+        try:
+            detail = str(get_field(status(), "error", "") or "").strip()
+        except Exception:
+            detail = ""
+    return f"{base}；原因：{detail}" if detail else base
+
+
+def _service_error(service: Any) -> str:
+    """账号最近一次错误，写操作失败时作为真实原因回给模型。"""
+    status = getattr(service, "status", None)
+    if not callable(status):
+        return ""
+    try:
+        return str(get_field(status(), "error", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _write_failed(
+    skill: "_BilibiliToolBase", action: str, hint: str, **extra: Any
+) -> str:
+    """写操作失败：hint 是接口层原因，再补上账号状态里的真实原因。"""
+    detail = _service_error(skill._service)
+    error = f"{action}失败：{hint}"
+    if detail:
+        error = f"{error}；账号状态：{detail}"
+    return _json({"ok": False, **extra, "error": error})
+
+
 def _video_detail(data: Any) -> dict[str, Any]:
     raw = _detail_node(data)
     owner = get_field(raw, "owner")
@@ -343,14 +404,22 @@ def _aid_from_text(text: str) -> int:
     return _to_int(text) if text.isdigit() else 0
 
 
-def _comment_type(raw: Any) -> tuple[int, str]:
-    """comment_type 名称/类型码 -> (类型码, 输出名)；不认识返回 (0, "")。"""
+def _supported_comment_types(client: Any) -> set[int]:
+    """client 公开的 COMMENT_TYPES（见任务契约）优先，否则按工具文档里的五种。"""
+    table = getattr(client, "COMMENT_TYPES", None)
+    if isinstance(table, dict) and table:
+        return {_to_int(code) for code in table}
+    return set(_COMMENT_TYPE_ALIASES.values())
+
+
+def _comment_type(raw: Any, supported: set[int]) -> tuple[int, str]:
+    """comment_type 名称/类型码 -> (类型码, 输出名)；client 不支持则返回 (0, "")。"""
     text = str(raw or "").strip().lower() or "video"
     if text.isdigit():
         code = _to_int(text)
-        return (code, text) if 1 <= code <= 33 else (0, "")
+        return (code, text) if code in supported else (0, "")
     code = _COMMENT_TYPE_ALIASES.get(text, 0)
-    return code, (text if code else "")
+    return code, (text if code and code in supported else "")
 
 
 def _comment_oid_from_text(text: str) -> int:
@@ -404,15 +473,34 @@ class _BilibiliToolBase(SkillModule):
         handler = _HANDLERS.get(tool_name)
         if handler is None:
             return _json({"ok": False, "error": f"unknown tool: {tool_name}"})
+        if tool_name in _WRITE_TOOLS and not _flag((args or {}).get("confirm"), False):
+            return _json(
+                {"ok": False, "code": "CONFIRM_REQUIRED", "error": _CONFIRM_REQUIRED}
+            )
         try:
+            await self._ensure_login()
             return await handler(self, args)
         except _Unavailable as exc:
             return _json({"ok": False, "error": str(exc)})
         except Exception as exc:
-            logger.warning("B站工具执行失败", tool=tool_name, error=str(exc))
+            logger.warning(f"B站工具执行失败：{tool_name}：{type(exc).__name__}: {exc}")
             return _json(
                 {"ok": False, "error": f"B站工具执行失败：{type(exc).__name__}: {exc}"}
             )
+
+    async def _ensure_login(self) -> None:
+        """登录门禁：先让 service 自愈（refresh），仍不可用才报未登录并带原因。"""
+        service = self._service
+        if service is None:
+            return
+        refresh = getattr(service, "refresh", None)
+        if callable(refresh):
+            try:
+                await call_client(refresh)
+            except Exception as exc:
+                logger.warning(f"B站登录态刷新失败：{type(exc).__name__}: {exc}")
+        if getattr(service, "available", None) is False:
+            raise _Unavailable(_dormant_reason(service))
 
     def _has_client_source(self) -> bool:
         return self._service is not None or self._client is not None
@@ -424,7 +512,7 @@ class _BilibiliToolBase(SkillModule):
             if service is None:
                 raise _Unavailable("B站服务未配置，无法访问B站")
             if getattr(service, "available", None) is False:
-                raise _Unavailable("B站未登录（功能休眠），先发 /login bilibili 扫码登录")
+                raise _Unavailable(_dormant_reason(service))
             target = getattr(service, "client", None) or service
         for method in methods:
             if not callable(getattr(target, method, None)):
@@ -567,7 +655,8 @@ class BilibiliVideoSkill(_BilibiliToolBase):
             "identifier 支持 BV号（如 BV1xx411c7mD）、av号（如 av170001）或完整视频链接。"
             "看视频比查资料慢，先确认是不是目标视频；不要反复看同一个视频。\n"
             "写操作（评论/点赞/投币/分享/收藏）会以当前登录B站账号公开操作，"
-            "确认用户意图后再调用；失败通常是登录失效、已经操作过或触发风控，不要反复重试。"
+            "确认用户意图后再调用，并带上 confirm=true（不带会被拒绝）；"
+            "失败通常是登录失效、已经操作过或触发风控，不要反复重试。"
         )
 
     def get_tools(self) -> list[dict]:
@@ -715,21 +804,23 @@ class BilibiliVideoSkill(_BilibiliToolBase):
                             "description": "楼中楼回复的目标评论ID，0=回复根评论",
                             "default": 0,
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier", "text"],
+                    "required": ["identifier", "text", "confirm"],
                 },
             ),
             self._tool_def(
                 "like_video",
-                "点赞B站视频（会以当前登录B站账号公开点赞，确认用户意图后再调用）。",
+                "点赞B站视频（会以当前登录B站账号公开点赞，确认用户意图后再调用，必须传 confirm=true）。",
                 {
                     "properties": {
                         "identifier": {
                             "type": "string",
                             "description": "BV号、av号或视频链接",
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier"],
+                    "required": ["identifier", "confirm"],
                 },
             ),
             self._tool_def(
@@ -743,8 +834,9 @@ class BilibiliVideoSkill(_BilibiliToolBase):
                             "description": "BV号、av号或视频链接",
                         },
                         "rpid": {"type": "integer", "description": "要点赞的评论ID"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier", "rpid"],
+                    "required": ["identifier", "rpid", "confirm"],
                 },
             ),
             self._tool_def(
@@ -760,18 +852,20 @@ class BilibiliVideoSkill(_BilibiliToolBase):
                             "enum": [1, 2],
                             "default": 1,
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier"],
+                    "required": ["identifier", "confirm"],
                 },
             ),
             self._tool_def(
                 "share_video",
-                "把B站视频分享到动态（会以当前登录B站账号公开发布分享，确认用户意图后再调用）。",
+                "把B站视频分享到动态（会以当前登录B站账号公开发布分享，确认用户意图后再调用，必须传 confirm=true）。",
                 {
                     "properties": {
                         "identifier": {"type": "string", "description": "BV号、av号或视频链接"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier"],
+                    "required": ["identifier", "confirm"],
                 },
             ),
             self._tool_def(
@@ -785,8 +879,9 @@ class BilibiliVideoSkill(_BilibiliToolBase):
                             "type": "integer",
                             "description": "收藏夹ID（用 favorite_folders 查）",
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["identifier", "folder_id"],
+                    "required": ["identifier", "folder_id", "confirm"],
                 },
             ),
             self._tool_def(
@@ -835,7 +930,7 @@ class BilibiliUserSkill(_BilibiliToolBase):
             "  user_home — 查B站用户统一主页：资料+统计+最近动态（类型/正文/发布时间/互动数/链接）"
             "+最近投稿；留空=自己，与看别人走同一条路径。\n"
             "  user_videos — 查该用户的投稿视频（标题、BV号、播放量、链接）。\n"
-            "  follow_user — 关注/取消关注该 B站用户（公开写操作，确认意图后调用）。\n"
+            "  follow_user — 关注/取消关注该 B站用户（公开写操作，确认意图后带 confirm=true 调用）。\n"
             "  linked_qq_profile — 按B站UID查该用户关联的QQ主页资料：QQ号、好友备注、"
             "你对Ta的印象，以及 user_summary / user_profile 长期档案。\n\n"
             "uid 支持纯数字 UID、space.bilibili.com 空间链接或昵称；user_info / user_home "
@@ -908,8 +1003,9 @@ class BilibiliUserSkill(_BilibiliToolBase):
                             "description": "follow=关注，unfollow=取消关注",
                             "default": "follow",
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["uid"],
+                    "required": ["uid", "confirm"],
                 },
             ),
             self._tool_def(
@@ -948,16 +1044,17 @@ async def _run_search(
     )
     data = await call_client(client.search, keyword, **kwargs)
     items = [mapper(item) for item in _result_items(data)]
-    return _json(
-        {
-            "ok": True,
-            "keyword": keyword,
-            "page": page,
-            "total": _result_total(data),
-            "count": len(items),
-            "items": items,
-        }
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "keyword": keyword,
+        "page": page,
+        "total": _result_total(data),
+        "count": len(items),
+        "items": items,
+    }
+    if not items:
+        payload["note"] = _EMPTY_HINT
+    return _json(payload)
 
 
 async def _handle_search_video(skill: _BilibiliToolBase, args: dict) -> str:
@@ -1019,24 +1116,38 @@ async def _handle_watch_video(skill: _BilibiliToolBase, args: dict) -> str:
         return _json({"ok": False, "error": "缺少 identifier（BV号、av号或视频链接）"})
     max_chars = min(max(_to_int(args.get("max_chars")) or 3000, 200), 20000)
     include_comments = min(max(_to_int(args.get("include_comments")), 0), 20)
+    invocation = None
     if skill._video_tasks is not None:
-        try:
-            from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
+        from neobot_app.agent_tools.invocation import CURRENT_INVOCATION
 
-            invocation = CURRENT_INVOCATION.get()
-            context = getattr(invocation, "context", None)
-            flow_key = str(getattr(context, "chat_flow_id", "") or "")
-            if flow_key:
-                return _json(
-                    await skill._video_tasks.submit(
-                        flow_key=flow_key,
-                        identifier=identifier,
-                        max_chars=max_chars,
-                        include_comments=include_comments,
-                    )
+        invocation = CURRENT_INVOCATION.get()
+    flow_key = str(getattr(getattr(invocation, "context", None), "chat_flow_id", "") or "")
+    if skill._video_tasks is not None and flow_key:
+        # 有可信聊天流才走后台任务；提交失败直接报可重试错误，不再偷偷同步解析
+        # （同步解析会把整条回复拖住几分钟，而且失败原因被吞掉）。
+        try:
+            return _json(
+                await skill._video_tasks.submit(
+                    flow_key=flow_key,
+                    identifier=identifier,
+                    max_chars=max_chars,
+                    include_comments=include_comments,
                 )
+            )
         except Exception as exc:
-            logger.warning("B站视频后台提交失败，回退同步解析", error=str(exc))
+            logger.warning(
+                f"B站视频后台提交失败：{identifier}：{type(exc).__name__}: {exc}"
+            )
+            return _json(
+                {
+                    "ok": False,
+                    "identifier": identifier,
+                    "retryable": True,
+                    "error": f"视频后台任务提交失败（可重试）：{type(exc).__name__}: {exc}",
+                }
+            )
+    # 没有可信调用上下文（宿主/测试直调，或该技能尚未接入 invocation）时保留同步解析。
+    # shortcut: bilibili_* 技能还不在 reply 的 invocation 前缀里，后台路径要等接线后才生效。
     video = skill._require_video_service()
     kwargs = _call_kwargs(
         video.watch,
@@ -1045,20 +1156,29 @@ async def _handle_watch_video(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         result = await call_client(video.watch, identifier, **kwargs)
     except Exception as exc:
-        logger.warning("B站看视频失败", identifier=identifier, error=str(exc))
+        logger.warning(f"B站看视频失败：{identifier}：{type(exc).__name__}: {exc}")
         return _json({"ok": False, "identifier": identifier, "error": f"看视频失败：{exc}"})
     if not isinstance(result, dict):
         return _json({"ok": False, "identifier": identifier, "error": "视频解析服务返回了无法识别的结果"})
-    if not bool(get_field(result, "ok", True)):
-        reason = str(get_field(result, "error", "") or "视频解析服务未能获取该视频")
-        return _json({"ok": False, "identifier": identifier, "error": f"看视频失败：{reason}"})
     detail = _video_detail(result)
     transcript = str(get_field(result, "transcript", "") or "").strip()
+    served_ok = bool(get_field(result, "ok", True))
+    reason = str(get_field(result, "error", "") or "").strip()
+    # 只有连标题/BV 都拿不到才算失败；没有字幕或转写时仍返回标题、UP、简介。
+    if not served_ok and not (detail["title"] or detail["bvid"] or detail["aid"]):
+        return _json(
+            {
+                "ok": False,
+                "identifier": identifier,
+                "error": f"看视频失败：{reason or '视频解析服务未能获取该视频'}",
+            }
+        )
     comments = [
         _comment_item(item)
         for item in get_field(result, "comments", []) or []
         if isinstance(item, dict)
     ]
+    notes: list[str] = []
     payload: dict[str, Any] = {
         "ok": True,
         **detail,
@@ -1068,12 +1188,15 @@ async def _handle_watch_video(skill: _BilibiliToolBase, args: dict) -> str:
     }
     if bool(get_field(result, "archived", False)):
         payload["archived"] = True
-        payload["note"] = (
-            "转写超过返回上限，完整内容已存入B站视频档案；"
-            "需要全文时调用 read_video_transcript。"
+        notes.append(
+            "转写超过返回上限，完整内容已存入B站视频档案；需要全文时调用 read_video_transcript。"
         )
     if not transcript:
-        payload["note"] = "该视频没有可用的字幕或语音转写，只能根据标题和简介回答"
+        notes.append("该视频没有可用的字幕或语音转写，只能根据标题和简介回答")
+    if not served_ok and reason:
+        notes.append(f"视频解析服务报告：{reason}")
+    if notes:
+        payload["note"] = "".join(notes)
     return _json(payload)
 
 
@@ -1094,7 +1217,7 @@ async def _handle_read_video_transcript(skill: _BilibiliToolBase, args: dict) ->
     try:
         item = await call_client(skill._archive.get, "bilibili_video", bvid)
     except Exception as exc:
-        logger.warning("读取B站视频档案失败", bvid=bvid, error=str(exc))
+        logger.warning(f"读取B站视频档案失败：{bvid}：{type(exc).__name__}: {exc}")
         return _json({"ok": False, "error": f"读取视频档案失败：{exc}"})
     value = str(get_field(item, "value", "") or "").strip()
     if not value:
@@ -1126,9 +1249,10 @@ async def _resolve_comment_oid(client: Any, identifier: str, comment_type: int) 
     return _comment_oid_from_text(identifier)
 
 
-def _comment_type_error(raw: Any) -> str:
+def _comment_type_error(raw: Any, supported: set[int]) -> str:
     names = "/".join(_COMMENT_TYPE_ALIASES)
-    return f"comment_type 必须是 {names} 或 1-33 的类型码，收到 {raw!r}"
+    codes = "/".join(str(code) for code in sorted(supported))
+    return f"comment_type 必须是 {names} 或客户端支持的类型码（{codes}），收到 {raw!r}"
 
 
 async def _handle_video_comments(skill: _BilibiliToolBase, args: dict) -> str:
@@ -1142,12 +1266,15 @@ async def _handle_video_comments(skill: _BilibiliToolBase, args: dict) -> str:
         return _json(
             {"ok": False, "error": f"order 必须是 {'/'.join(_COMMENT_ORDERS)}，收到 {order!r}"}
         )
-    comment_type, type_name = _comment_type(args.get("comment_type"))
+    client = skill._require_client()
+    supported = _supported_comment_types(client)
+    comment_type, type_name = _comment_type(args.get("comment_type"), supported)
     if not comment_type:
-        return _json({"ok": False, "error": _comment_type_error(args.get("comment_type"))})
+        return _json(
+            {"ok": False, "error": _comment_type_error(args.get("comment_type"), supported)}
+        )
     limit = min(max(_to_int(args.get("limit")) or 20, 1), 50)
     cursor = str(args.get("cursor") or "").strip()
-    client = skill._require_client()
     get_comments = getattr(client, "get_comments", None)
     if callable(get_comments):
         oid = await _resolve_comment_oid(client, identifier, comment_type)
@@ -1178,18 +1305,19 @@ async def _handle_video_comments(skill: _BilibiliToolBase, args: dict) -> str:
         rows = await call_client(legacy, oid, order=order)
         next_cursor, is_end = "", True
     items = [_comment_item(item) for item in rows or [] if isinstance(item, dict)][:limit]
-    return _json(
-        {
-            "ok": True,
-            "oid": oid,
-            "comment_type": type_name,
-            "order": order,
-            "count": len(items),
-            "cursor": next_cursor,
-            "is_end": is_end,
-            "comments": items,
-        }
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "oid": oid,
+        "comment_type": type_name,
+        "order": order,
+        "count": len(items),
+        "cursor": next_cursor,
+        "is_end": is_end,
+        "comments": items,
+    }
+    if not items:
+        payload["note"] = _EMPTY_HINT
+    return _json(payload)
 
 
 async def _handle_comment_tree(skill: _BilibiliToolBase, args: dict) -> str:
@@ -1198,13 +1326,16 @@ async def _handle_comment_tree(skill: _BilibiliToolBase, args: dict) -> str:
         return _json(
             {"ok": False, "error": "缺少 identifier（BV号、av号或视频/动态/专栏的 ID/链接）"}
         )
-    comment_type, type_name = _comment_type(args.get("comment_type"))
+    client = skill._require_client("get_video_info", "get_comment_replies")
+    supported = _supported_comment_types(client)
+    comment_type, type_name = _comment_type(args.get("comment_type"), supported)
     if not comment_type:
-        return _json({"ok": False, "error": _comment_type_error(args.get("comment_type"))})
+        return _json(
+            {"ok": False, "error": _comment_type_error(args.get("comment_type"), supported)}
+        )
     root_rpid = max(0, _to_int(args.get("root_rpid")))
     limit = min(max(_to_int(args.get("limit")) or 20, 1), 50)
     cursor = str(args.get("cursor") or "").strip()
-    client = skill._require_client("get_video_info", "get_comment_replies")
     oid = await _resolve_comment_oid(client, identifier, comment_type)
     if not oid:
         return _json({"ok": False, "error": f"无法从 {identifier} 解析出评论区 oid"})
@@ -1217,18 +1348,19 @@ async def _handle_comment_tree(skill: _BilibiliToolBase, args: dict) -> str:
         comments = [
             _comment_node(item) for item in replies or [] if isinstance(item, dict)
         ][:limit]
-        return _json(
-            {
-                "ok": True,
-                "oid": oid,
-                "comment_type": type_name,
-                "root_rpid": root_rpid,
-                "count": len(comments),
-                "cursor": "",
-                "is_end": True,
-                "comments": comments,
-            }
-        )
+        payload: dict[str, Any] = {
+            "ok": True,
+            "oid": oid,
+            "comment_type": type_name,
+            "root_rpid": root_rpid,
+            "count": len(comments),
+            "cursor": "",
+            "is_end": True,
+            "comments": comments,
+        }
+        if not comments:
+            payload["note"] = _EMPTY_HINT
+        return _json(payload)
 
     get_comments = getattr(client, "get_comments", None)
     if callable(get_comments):
@@ -1275,18 +1407,19 @@ async def _handle_comment_tree(skill: _BilibiliToolBase, args: dict) -> str:
             children = [item for item in fetched or [] if isinstance(item, dict)]
         node["replies"] = [_comment_node(item) for item in children][:limit]
         comments.append(node)
-    return _json(
-        {
-            "ok": True,
-            "oid": oid,
-            "comment_type": type_name,
-            "root_rpid": 0,
-            "count": len(comments),
-            "cursor": next_cursor,
-            "is_end": is_end,
-            "comments": comments,
-        }
-    )
+    payload = {
+        "ok": True,
+        "oid": oid,
+        "comment_type": type_name,
+        "root_rpid": 0,
+        "count": len(comments),
+        "cursor": next_cursor,
+        "is_end": is_end,
+        "comments": comments,
+    }
+    if not comments:
+        payload["note"] = _EMPTY_HINT
+    return _json(payload)
 
 
 async def _handle_read_bili_messages(skill: _BilibiliToolBase, args: dict) -> str:
@@ -1345,21 +1478,19 @@ async def _handle_comment_video(skill: _BilibiliToolBase, args: dict) -> str:
             client.post_video_comment, identifier, text, root=root, parent=parent
         )
     except Exception as exc:
-        logger.warning("B站发评论失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"发评论失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站发评论失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "发评论",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not sent:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "发评论失败：B站未返回成功，可能登录失效、评论受限或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "发评论",
+            "B站未返回成功，可能登录失效、评论受限或触发风控",
+            identifier=identifier,
         )
     return _json(
         {
@@ -1380,21 +1511,19 @@ async def _handle_like_video(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         liked = await call_client(client.like_video, identifier)
     except Exception as exc:
-        logger.warning("B站视频点赞失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"点赞失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站视频点赞失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "点赞",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not liked:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "点赞失败：B站未返回成功，可能登录失效、已点赞过或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "点赞",
+            "B站未返回成功，可能登录失效、已点赞过或触发风控",
+            identifier=identifier,
         )
     return _json({"ok": True, "identifier": identifier, "liked": True})
 
@@ -1410,7 +1539,9 @@ async def _handle_like_comment(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         oid = await _resolve_oid(client, identifier)
     except Exception as exc:
-        logger.warning("B站评论点赞解析视频号失败", identifier=identifier, error=str(exc))
+        logger.warning(
+            f"B站评论点赞解析视频号失败：{identifier}：{type(exc).__name__}: {exc}"
+        )
         return _json(
             {"ok": False, "identifier": identifier, "error": f"无法解析视频号：{exc}"}
         )
@@ -1425,21 +1556,19 @@ async def _handle_like_comment(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         liked = await call_client(client.like_comment, oid, rpid, type_=1)
     except Exception as exc:
-        logger.warning("B站评论点赞失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"评论点赞失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站评论点赞失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "评论点赞",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not liked:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "评论点赞失败：B站未返回成功，可能登录失效、已点赞过或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "评论点赞",
+            "B站未返回成功，可能登录失效、已点赞过或触发风控",
+            identifier=identifier,
         )
     return _json(
         {
@@ -1461,21 +1590,19 @@ async def _handle_coin_video(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         coined = await call_client(client.coin_video, identifier, multiply=multiply)
     except Exception as exc:
-        logger.warning("B站视频投币失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"投币失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站视频投币失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "投币",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not coined:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "投币失败：B站未返回成功，可能登录失效、硬币不足或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "投币",
+            "B站未返回成功，可能登录失效、硬币不足或触发风控",
+            identifier=identifier,
         )
     return _json({"ok": True, "identifier": identifier, "multiply": multiply, "coined": True})
 
@@ -1488,21 +1615,19 @@ async def _handle_share_video(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         shared = await call_client(client.share_video, identifier)
     except Exception as exc:
-        logger.warning("B站视频分享失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"分享失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站视频分享失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "分享",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not shared:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "分享失败：B站未返回成功，可能登录失效或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "分享",
+            "B站未返回成功，可能登录失效或触发风控",
+            identifier=identifier,
         )
     return _json({"ok": True, "identifier": identifier, "shared": True})
 
@@ -1520,21 +1645,19 @@ async def _handle_favorite_video(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         favorited = await call_client(client.favorite_video, identifier, folder_id)
     except Exception as exc:
-        logger.warning("B站视频收藏失败", identifier=identifier, error=str(exc))
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": f"收藏失败：{exc}（可能登录失效或触发风控）",
-            }
+        logger.warning(f"B站视频收藏失败：{identifier}：{type(exc).__name__}: {exc}")
+        return _write_failed(
+            skill,
+            "收藏",
+            f"{exc}（可能登录失效或触发风控）",
+            identifier=identifier,
         )
     if not favorited:
-        return _json(
-            {
-                "ok": False,
-                "identifier": identifier,
-                "error": "收藏失败：B站未返回成功，可能登录失效、收藏夹无效或触发风控",
-            }
+        return _write_failed(
+            skill,
+            "收藏",
+            "B站未返回成功，可能登录失效、收藏夹无效或触发风控",
+            identifier=identifier,
         )
     return _json(
         {"ok": True, "identifier": identifier, "folder_id": folder_id, "favorited": True}
@@ -1546,7 +1669,7 @@ async def _handle_favorite_folders(skill: _BilibiliToolBase, args: dict) -> str:
     try:
         raw_folders = await call_client(client.get_favorite_folders)
     except Exception as exc:
-        logger.warning("B站收藏夹读取失败", error=str(exc))
+        logger.warning(f"B站收藏夹读取失败：{type(exc).__name__}: {exc}")
         return _json({"ok": False, "error": f"读取收藏夹失败：{exc}"})
     folders = [
         _favorite_folder_item(item) for item in raw_folders or [] if isinstance(item, dict)
@@ -1645,9 +1768,16 @@ async def _handle_follow_user(skill: _BilibiliToolBase, args: dict) -> str:
     if action not in {"follow", "unfollow"}:
         return _json({"ok": False, "error": "action 必须是 follow 或 unfollow"})
     client = skill._require_client("follow_user")
-    sent = await call_client(client.follow_user, uid, follow=action == "follow")
+    action_name = "关注" if action == "follow" else "取消关注"
+    try:
+        sent = await call_client(client.follow_user, uid, follow=action == "follow")
+    except Exception as exc:
+        logger.warning(f"B站{action_name}失败：uid={uid}：{type(exc).__name__}: {exc}")
+        return _write_failed(skill, action_name, f"{exc}（可能登录失效或触发风控）", uid=uid)
     if not sent:
-        return _json({"ok": False, "error": f"B站{'关注' if action == 'follow' else '取消关注'}失败（可能未登录或触发风控）"})
+        return _write_failed(
+            skill, action_name, "B站未返回成功，可能登录失效或触发风控", uid=uid
+        )
     return _json(
         {
             "ok": True,
@@ -1667,15 +1797,16 @@ async def _handle_user_videos(skill: _BilibiliToolBase, args: dict) -> str:
     kwargs = _call_kwargs(client.get_user_videos, {"page": page})
     data = await call_client(client.get_user_videos, uid, **kwargs)
     videos = [_video_item(item) for item in _result_items(data)]
-    return _json(
-        {
-            "ok": True,
-            "uid": uid,
-            "page": page,
-            "count": len(videos),
-            "videos": videos,
-        }
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "uid": uid,
+        "page": page,
+        "count": len(videos),
+        "videos": videos,
+    }
+    if not videos:
+        payload["note"] = _EMPTY_HINT
+    return _json(payload)
 
 
 async def _archive_get(skill: _BilibiliToolBase, table: str, key: str) -> str:
@@ -1684,7 +1815,7 @@ async def _archive_get(skill: _BilibiliToolBase, table: str, key: str) -> str:
     try:
         item = await call_client(skill._archive.get, table, key)
     except Exception as exc:
-        logger.debug("读取B站关联档案失败", table=table, key=key, error=str(exc))
+        logger.debug(f"读取B站关联档案失败：{table}/{key}：{type(exc).__name__}: {exc}")
         return ""
     return str(get_field(item, "value", "") or "").strip()
 
@@ -1699,7 +1830,7 @@ async def _load_qq_user(skill: _BilibiliToolBase, qq_number: str) -> Any:
                 return None
             return await call_client(profiles.get_user, qq_number)
     except Exception as exc:
-        logger.debug("读取QQ用户资料失败", qq_number=qq_number, error=str(exc))
+        logger.debug(f"读取QQ用户资料失败：{qq_number}：{type(exc).__name__}: {exc}")
         return None
 
 
@@ -1716,7 +1847,7 @@ async def _handle_linked_qq_profile(skill: _BilibiliToolBase, args: dict) -> str
                 return _json({"ok": False, "error": "账号关联表不可用"})
             links = await call_client(repo.find_by_uid, uid)
     except Exception as exc:
-        logger.warning("查询B站-QQ关联失败", uid=uid, error=str(exc))
+        logger.warning(f"查询B站-QQ关联失败：uid={uid}：{type(exc).__name__}: {exc}")
         return _json({"ok": False, "error": f"查询B站-QQ关联失败：{exc}"})
 
     qq_numbers: list[str] = []

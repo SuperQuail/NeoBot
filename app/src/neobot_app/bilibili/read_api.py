@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
 from ._compat import resolve_client
@@ -39,6 +39,15 @@ _SPACE_FEATURES = (
 )
 
 _CV_PATTERN = re.compile(r"(?i)cv(\d+)")
+
+#: 短链解析只允许 B 站自家域名；跳转目标同样校验，避免被短链带去访问内网/站外地址。
+_ALLOWED_LINK_HOSTS = ("bilibili.com", "b23.tv")
+_MAX_LINK_REDIRECTS = 5
+
+
+def _is_bilibili_host(host: str) -> bool:
+    host = (host or "").lower().rstrip(".")
+    return any(host == name or host.endswith(f".{name}") for name in _ALLOWED_LINK_HOSTS)
 
 
 def _int(value: Any) -> int:
@@ -385,7 +394,11 @@ class BilibiliReadApi:
     # ── 短链 ──
 
     def expand_b23(self, url: str) -> dict[str, Any]:
-        """跟随 b23.tv 短链跳转；返回 {"ok", "url", "bvid", "aid"}。"""
+        """跟随 b23.tv 短链跳转；返回 {"ok", "url", "bvid", "aid"}。
+
+        只解析 b23.tv / bilibili.com 链接：起始 host 与每一跳的 Location 都必须在白名单内，
+        手动跟跳（allow_redirects=False），被引导去站外/内网地址一律失败。
+        """
         text = _text(url)
         if not text:
             return {"ok": False, "error": "缺少 url（b23.tv 短链）"}
@@ -394,17 +407,41 @@ class BilibiliReadApi:
         parsed = urlparse(text)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             return {"ok": False, "error": f"无法识别的链接：{text}"}
-        try:
-            response = self._client._request("GET", text)
-        except Exception as exc:
-            return {"ok": False, "error": f"短链解析失败：{exc}"}
-        if response is None:
-            return {"ok": False, "error": "短链解析失败：网络请求失败"}
-        final = _text(getattr(response, "url", "")) or text
-        if final == text and parsed.netloc.lower().endswith("b23.tv"):
-            return {"ok": False, "error": "短链没有跳转（可能已失效）"}
-        bvid, aid = parse_video_id(final)
-        return {"ok": True, "url": final, "bvid": bvid, "aid": aid}
+        if not _is_bilibili_host(parsed.hostname or ""):
+            return {
+                "ok": False,
+                "error": f"只支持 b23.tv / bilibili.com 链接，收到 {parsed.hostname}",
+            }
+        current = text
+        for _ in range(_MAX_LINK_REDIRECTS + 1):
+            try:
+                response = self._client._request("GET", current, allow_redirects=False)
+            except Exception as exc:
+                return {"ok": False, "error": f"短链解析失败：{exc}"}
+            if response is None:
+                return {"ok": False, "error": "短链解析失败：网络请求失败"}
+            headers = getattr(response, "headers", None) or {}
+            location = _text(headers.get("Location") or headers.get("location") or "")
+            if not location:
+                bvid, aid = parse_video_id(current)
+                if bvid or aid:
+                    return {"ok": True, "url": current, "bvid": bvid, "aid": aid}
+                return {"ok": False, "error": "短链没有跳转（可能已失效）"}
+            target = urljoin(current, location)
+            target_parsed = urlparse(target)
+            if target_parsed.scheme not in ("http", "https") or not _is_bilibili_host(
+                target_parsed.hostname or ""
+            ):
+                return {
+                    "ok": False,
+                    "error": f"短链跳转到站外地址，已拒绝：{target_parsed.hostname or target}",
+                }
+            bvid, aid = parse_video_id(target)
+            if bvid or aid:
+                # 已经拿到作品号就不再多请求一次落地页。
+                return {"ok": True, "url": target, "bvid": bvid, "aid": aid}
+            current = target
+        return {"ok": False, "error": f"短链跳转次数过多（超过 {_MAX_LINK_REDIRECTS} 次）"}
 
     # ── 内部 ──
 

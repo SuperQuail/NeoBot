@@ -143,6 +143,27 @@ async def test_snapshot_logged_in_collects_fields_and_avatar_data_uri() -> None:
     assert base64.b64decode(uri.split(",", 1)[1]) == _PNG
 
 
+async def test_snapshot_protocol_relative_face_becomes_https() -> None:
+    detail = dict(_DETAIL, face="//i2.hdslb.com/bfs/face/relative.jpg")
+    snapshot = await build_account_snapshot(
+        _FakeService(client=_FakeClient()), read_api=_FakeReadApi(detail)
+    )
+
+    assert snapshot["face_url"] == "https://i2.hdslb.com/bfs/face/relative.jpg"
+    assert snapshot["avatar_data_uri"].startswith("data:image/png;base64,")
+
+
+async def test_status_error_surfaces_note_in_blocks_and_text() -> None:
+    reason = "登录成功，但凭证保存失败，重启后需重新登录"
+    snapshot = await build_account_snapshot(
+        _FakeService(client=_FakeClient(), error=reason),
+        read_api=_FakeReadApi(_DETAIL),
+    )
+
+    assert {"kind": "note", "text": f"注意：{reason}"} in account_card_blocks(snapshot)
+    assert f"注意：{reason}" in account_card_text(snapshot)
+
+
 async def test_snapshot_face_falls_back_to_status_face() -> None:
     detail = {key: value for key, value in _DETAIL.items() if key != "face"}
     snapshot = await build_account_snapshot(

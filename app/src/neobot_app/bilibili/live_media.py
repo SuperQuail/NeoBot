@@ -31,6 +31,9 @@ _CAPTURE_TIMEOUT_SECONDS = 20
 _TRANSCODE_GRACE_SECONDS = 20
 #: ASRService.transcribe 失败时返回的中文说明前缀（成功时是转写正文）。
 _ASR_FAILURE_PREFIXES = ("语音识别失败", "语音识别未启用")
+#: 截帧/录像产物保留策略：每个目录最多保留的文件数与最长保留时间。
+_KEEP_FILES = 200
+_KEEP_SECONDS = 7 * 24 * 3600.0
 
 
 def _to_int(value: Any) -> int:
@@ -60,6 +63,36 @@ def _stderr_tail(completed: subprocess.CompletedProcess[bytes]) -> str:
     stderr = completed.stderr or b""
     detail = stderr.decode("utf-8", errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
     return detail.splitlines()[-1][:200] if detail else "无输出"
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _prune_files(directory: Path, *, keep_files: int, keep_seconds: float) -> int:
+    """按数量/时间清理一个产物目录（新的留下、超期或超量删除）；返回删除个数。
+
+    截帧/录像会长期累积，这里每写成功一次就顺手清一次；任何 IO 失败都跳过。
+    """
+    try:
+        entries = [item for item in directory.iterdir() if item.is_file()]
+    except OSError:
+        return 0
+    entries.sort(key=_mtime, reverse=True)
+    now = time.time()
+    removed = 0
+    for index, item in enumerate(entries):
+        if index < keep_files and now - _mtime(item) <= keep_seconds:
+            continue
+        try:
+            item.unlink(missing_ok=True)
+        except OSError:
+            continue
+        removed += 1
+    return removed
 
 
 class LiveMediaService:
@@ -220,7 +253,8 @@ class LiveMediaService:
             result["error"] = f"读取截帧失败（{type(exc).__name__}）"
             return result
         result.update({"ok": True, "path": str(target), "bytes": raw})
-        self._logger.debug(f"B站直播截帧成功: room={rid} path={target}")
+        self._logger.debug(f"B站直播截帧成功：房间 {rid}，路径 {target}")
+        await self._prune(frame_dir)
         return result
 
     # ── 截音频 + 转写 ──
@@ -340,11 +374,8 @@ class LiveMediaService:
             result["error"] = str(stream.get("error") or "获取直播拉流地址失败")
             return result
         url = str(stream.get("url") or "")
-        clip_dir = self._data_dir / "live_clips" if self._data_dir is not None else None
-        if clip_dir is None:
-            from neobot_app.core import DATA_DIR as _D
-
-            clip_dir = _D / "live_clips"
+        base = self._data_dir if self._data_dir is not None else DATA_DIR
+        clip_dir = base / "live_clips"
         target = clip_dir / f"{rid}_{datetime.now():%Y%m%d_%H%M%S}.flv"
         try:
             clip_dir.mkdir(parents=True, exist_ok=True)
@@ -383,7 +414,8 @@ class LiveMediaService:
         except OSError:
             result["bytes"] = 0
         result.update({"ok": True, "path": str(target)})
-        self._logger.debug(f"B站直播录制完成: room={rid} path={target}")
+        self._logger.debug(f"B站直播录制完成：房间 {rid}，路径 {target}")
+        await self._prune(clip_dir)
         return result
 
     # ── 内部 ──
@@ -404,6 +436,18 @@ class LiveMediaService:
             return None
         # ffmpeg 一律用绝对路径，避免子进程工作目录不同导致解析不到。
         return Path(tools.ffmpeg).resolve() if tools is not None else None
+
+    async def _prune(self, directory: Path) -> None:
+        """清理超量/超期的截帧与录像；失败只记日志，不影响本次结果。"""
+        try:
+            removed = await asyncio.to_thread(
+                _prune_files, directory, keep_files=_KEEP_FILES, keep_seconds=_KEEP_SECONDS
+            )
+        except OSError as exc:
+            self._logger.debug(f"B站直播产物清理失败（{directory.name}）：{type(exc).__name__}: {exc}")
+            return
+        if removed:
+            self._logger.debug(f"B站直播产物已清理 {removed} 个：目录 {directory}")
 
     def _frames_dir(self) -> Path:
         base = self._data_dir if self._data_dir is not None else DATA_DIR

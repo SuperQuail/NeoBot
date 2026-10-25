@@ -137,3 +137,46 @@ async def test_missing_required_fields() -> None:
 
 def test_no_archive_means_no_tools() -> None:
     assert BilibiliMemorySkill().get_tools() == []
+
+
+async def test_save_memory_splits_comma_separated_tags() -> None:
+    archive = FakeArchive()
+    skill = _skill(archive)
+
+    saved = json.loads(
+        await skill.execute(
+            "save_memory",
+            {
+                "table_name": "bv_video",
+                "key": "BV1xx411c7mD",
+                "value": "鬼畜视频",
+                "tags": "鬼畜, 合集",
+            },
+        )
+    )
+    assert saved["ok"] is True
+    assert archive.entries[("bv_video", "BV1xx411c7mD")].tags == ["鬼畜", "合集"]
+
+    read = json.loads(
+        await skill.execute(
+            "read_memory", {"table_name": "bv_video", "key": "BV1xx411c7mD"}
+        )
+    )
+    assert read["item"]["tags"] == ["鬼畜", "合集"]
+
+
+async def test_save_memory_drops_unusable_tags() -> None:
+    archive = FakeArchive()
+    skill = _skill(archive)
+
+    await skill.execute(
+        "save_memory",
+        {"table_name": "bv_video", "key": "BV2", "value": "x", "tags": 123},
+    )
+    assert archive.entries[("bv_video", "BV2")].tags == []
+
+    await skill.execute(
+        "save_memory",
+        {"table_name": "bv_video", "key": "BV3", "value": "x", "tags": ["  ", None, "搞笑"]},
+    )
+    assert archive.entries[("bv_video", "BV3")].tags == ["搞笑"]

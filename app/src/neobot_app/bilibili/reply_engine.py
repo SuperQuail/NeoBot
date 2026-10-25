@@ -44,6 +44,8 @@ _VIDEO_CONTEXT_CHARS = 3000
 _VIDEO_ENRICH_TIMEOUT_SECONDS = 15.0
 
 
+#: 模型输出清理：去思考块/markdown/前后缀，超长在句读处截断。
+#: 目前只有测试直接调用；等 tool_reply 的输出清理接上它（T2）后由工具层复用。
 def clean_reply(text: Any, max_chars: int = 0) -> str:
     """清理模型输出：去思考块/markdown/前后缀，超长在句读处截断。
 
@@ -109,7 +111,11 @@ class BilibiliReplyEngine:
     # ── 对外生成入口 ──
 
     async def generate_comment_reply(self, ctx: CommentContext) -> str | None:
-        """生成评论回复；返回 None 表示不回复（跳过/生成失败）。"""
+        """生成评论回复。
+
+        只有模型显式 cancel/[SKIP] 才返回 None；provider 超时/异常向上抛，
+        由调用方（评论/私信监控器）回池稍后重试，别把生成失败当成不回复。
+        """
         ctx.bot_name = ctx.bot_name or self._bot_name
         ctx.bot_uid = ctx.bot_uid or self._bot_uid
         ctx.bot_data = ctx.bot_data or self._bot_data
@@ -127,7 +133,7 @@ class BilibiliReplyEngine:
         )
 
     async def generate_private_reply(self, ctx: PrivateMessageContext) -> str | None:
-        """生成私信回复；返回 None 表示不回复。"""
+        """生成私信回复；语义同 generate_comment_reply（只有显式 cancel 才 None）。"""
         ctx.bot_name = ctx.bot_name or self._bot_name
         ctx.bot_uid = ctx.bot_uid or self._bot_uid
         ctx.bot_data = ctx.bot_data or self._bot_data
@@ -147,7 +153,7 @@ class BilibiliReplyEngine:
     async def generate_task_reply(
         self, task: str, *, history: str = "", live: bool = False
     ) -> str | None:
-        """跨聊天任务：生成一句要发到 B站 的回复。"""
+        """跨聊天任务：生成一句要发到 B站 的回复；异常同样向上抛。"""
         system, user = build_task_prompt(
             task,
             history=history,
@@ -210,11 +216,10 @@ class BilibiliReplyEngine:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning(
-                "B站回复生成失败",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            return None
+            # 按任务间契约：provider 超时/异常要抛给调用方回池重试，
+            # 不能返回 None —— 那会被监控器记成「模型不回复」而永久跳过。
+            logger.warning(f"B站回复生成失败，本次不记已回复：{type(exc).__name__}: {exc}")
+            raise
         try:
             await self._record_usage(
                 {"extensions": {"usage": reply.usage or {}}}
@@ -241,7 +246,7 @@ class BilibiliReplyEngine:
                 cache_miss_tokens=int(usage.get("cache_miss_tokens", 0) or 0),
             )
         except Exception as exc:
-            logger.debug("B站用量记录失败", error=f"{type(exc).__name__}: {exc}")
+            logger.debug(f"B站用量记录失败：{type(exc).__name__}: {exc}")
 
     # ── 记忆档案注入 ──
 
@@ -302,7 +307,7 @@ class BilibiliReplyEngine:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.debug("B站视频上下文获取失败", identifier=identifier, error=str(exc))
+            logger.debug(f"B站视频上下文获取失败（{identifier}）：{type(exc).__name__}: {exc}")
             return ""
         if not isinstance(result, dict) or not bool(get_field(result, "ok", True)):
             return ""
@@ -357,7 +362,7 @@ class BilibiliReplyEngine:
         try:
             item = await call_client(self._archive.get, table, key)
         except Exception as exc:
-            logger.debug("读取B站档案失败", table=table, key=key, error=str(exc))
+            logger.debug(f"读取B站档案失败（{table}:{key}）：{type(exc).__name__}: {exc}")
             return ""
         return str(get_field(item, "value", "") or "").strip()
 
@@ -371,7 +376,7 @@ class BilibiliReplyEngine:
                     return ""
                 links = await call_client(repo.find_by_uid, bilibili_uid)
         except Exception as exc:
-            logger.debug("查询B站-QQ关联失败", uid=bilibili_uid, error=str(exc))
+            logger.debug(f"查询B站-QQ关联失败（uid={bilibili_uid}）：{type(exc).__name__}: {exc}")
             return ""
         for link in links or []:
             qq_number = str(get_field(link, "qq_number", "") or "").strip()
@@ -389,7 +394,7 @@ class BilibiliReplyEngine:
                     return None
                 return await call_client(profiles.get_user, qq_number)
         except Exception as exc:
-            logger.debug("读取QQ用户资料失败", qq_number=qq_number, error=str(exc))
+            logger.debug(f"读取QQ用户资料失败（qq={qq_number}）：{type(exc).__name__}: {exc}")
             return None
 
 

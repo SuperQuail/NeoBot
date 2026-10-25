@@ -70,25 +70,13 @@ class BilibiliCookieStore:
             payload["refresh_token"] = str(cookies["refresh_token"])
         payload["saved_at"] = str(int(time.time()))
         text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        # 实机日志出现过 atomic_write 的临时文件被清理（Errno 2）导致登录成功却没有
-        # 凭证：重试一次原子写，仍失败就退回同目录直写（牺牲原子性换能登录），
-        # 异常信息带真实路径，避免日志里只有一个随机 tmp 名。
-        last_error: OSError | None = None
-        for attempt in range(2):
-            try:
-                atomic_write_text(self._path, text)
-                return
-            except OSError as exc:
-                last_error = exc
-                if attempt == 0:
-                    time.sleep(0.1)
+        # atomic_write_text 自身已对 Windows 文件占用（os.replace 被拒）做短退避重试；
+        # 这里不再套第二层重试或直写兜底：直写牺牲原子性，写坏反而丢掉唯一一份凭证。
+        # 失败直接抛，异常带真实路径——调用方只把摘要给用户，路径进日志。
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(text, encoding="utf-8")
+            atomic_write_text(self._path, text)
         except OSError as exc:
-            raise OSError(
-                f"写入 {self._path} 失败（原子写: {last_error}；直写: {exc}）"
-            ) from exc
+            raise OSError(f"写入 {self._path} 失败: {exc}") from exc
 
     def clear(self) -> None:
         """删除 cookie 文件（已不存在时忽略）。"""

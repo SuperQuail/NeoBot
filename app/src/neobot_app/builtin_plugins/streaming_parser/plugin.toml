@@ -51,5 +51,3 @@ asset_cache_days = 14
 render_timeout = 30.0
 # 卡片渲染缩放倍数，2 表示 2x 高清。
 render_scale = 2.0
-# 是否在开播通知里 @全体成员。
-mention_all_on_live = false

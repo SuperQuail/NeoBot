@@ -7,10 +7,12 @@ BilibiliReadApi（复用 BilibiliClient 的 GET 与 WBI 签名）；任何失败
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from typing import Any
 
-from neobot_app.bilibili._compat import call_client
+from neobot_app.bilibili._compat import call_client, get_field
 from neobot_app.bilibili.read_api import BilibiliReadApi
 from neobot_app.skills.base import SkillModule
 from neobot_app.utils.logger import get_module_logger
@@ -18,6 +20,10 @@ from neobot_app.utils.logger import get_module_logger
 logger = get_module_logger("bilibili.read_skill")
 
 _READ_ONLY_NOTE = "只读查询：不会发评论、私信、动态或点赞。"
+#: 专栏正文：剥掉 HTML 标签后最多回给模型多少字（避免整篇灌进上下文）。
+_ARTICLE_CHARS = 5000
+_TAG_RE = re.compile(r"<[^>]+>")
+_BLANK_RE = re.compile(r"\n{3,}")
 
 
 class _Unavailable(RuntimeError):
@@ -45,6 +51,26 @@ def _flag(value: Any, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in ("", "0", "false", "no", "off")
     return bool(value)
+
+
+def _dormant_reason(service: Any) -> str:
+    """未登录提示：带上 service 记录的真实原因（网络异常 / 凭证失效）。"""
+    base = "B站未登录（功能休眠），先发 /login bilibili 扫码登录"
+    status = getattr(service, "status", None)
+    detail = ""
+    if callable(status):
+        try:
+            detail = str(get_field(status(), "error", "") or "").strip()
+        except Exception:
+            detail = ""
+    return f"{base}；原因：{detail}" if detail else base
+
+
+def _plain(value: Any) -> str:
+    """专栏正文去掉 HTML 标签与实体，压掉多余空行。"""
+    text = html.unescape(_TAG_RE.sub("", str(value or "")))
+    text = _BLANK_RE.sub("\n\n", text)
+    return "\n".join(line.strip() for line in text.splitlines()).strip()
 
 
 def _ids(value: Any) -> list[str]:
@@ -247,11 +273,12 @@ class BilibiliReadSkill(SkillModule):
         if handler is None:
             return _json({"ok": False, "error": f"未知工具: {tool_name}"})
         try:
+            await self._ensure_login()
             result = await handler(self._resolve_api(), args)
         except _Unavailable as exc:
             return _json({"ok": False, "error": str(exc)})
         except Exception as exc:
-            logger.warning("B站只读查询失败", tool=tool_name, error=str(exc))
+            logger.warning(f"B站只读查询失败：{tool_name}：{type(exc).__name__}: {exc}")
             return _json({"ok": False, "error": f"B站只读查询失败：{type(exc).__name__}: {exc}"})
         if result.get("ok"):
             result.setdefault("note", _READ_ONLY_NOTE)
@@ -263,6 +290,20 @@ class BilibiliReadSkill(SkillModule):
     def _has_source(self) -> bool:
         return self._api is not None or self._client is not None or self._service is not None
 
+    async def _ensure_login(self) -> None:
+        """登录门禁：先让 service 自愈（refresh），仍不可用才报未登录并带原因。"""
+        service = self._service
+        if service is None:
+            return
+        refresh = getattr(service, "refresh", None)
+        if callable(refresh):
+            try:
+                await call_client(refresh)
+            except Exception as exc:
+                logger.warning(f"B站只读登录态刷新失败：{type(exc).__name__}: {exc}")
+        if getattr(service, "available", None) is False:
+            raise _Unavailable(_dormant_reason(service))
+
     def _resolve_api(self) -> Any:
         if self._api is not None:
             return self._api
@@ -272,7 +313,7 @@ class BilibiliReadSkill(SkillModule):
             if service is None:
                 raise _Unavailable("B站服务未配置，无法访问B站")
             if getattr(service, "available", None) is False:
-                raise _Unavailable("B站未登录（功能休眠），先发 /login bilibili 扫码登录")
+                raise _Unavailable(_dormant_reason(service))
             client = getattr(service, "client", None)
         if client is None or not callable(getattr(client, "_fetch", None)):
             raise _Unavailable("B站客户端不可用（未登录或未配置）")
@@ -304,8 +345,12 @@ async def _handle_article(api: Any, args: dict[str, Any]) -> dict[str, Any]:
         if content.get("ok"):
             result["title"] = result.get("title") or content.get("title", "")
             result["author"] = content.get("author", "")
-            result["content"] = content.get("content", "")
+            body = _plain(content.get("content", ""))
+            result["content"] = body[:_ARTICLE_CHARS]
             result["publish_time"] = content.get("publish_time", 0)
+            if len(body) > _ARTICLE_CHARS:
+                result["content_chars"] = len(body)
+                result["content_truncated"] = True
         else:
             result["content_error"] = content.get("error", "正文读取失败")
         return result

@@ -17,6 +17,8 @@ except Exception:  # pragma: no cover
 
 #: 开播状态总览的渲染超时（渲染端口本身是串行的，给足时间但别无限等）
 OVERVIEW_TIMEOUT = 25.0
+#: /开播状态 实时查询的总体预算：超过就退回最近一次轮询结果，命令不能无限等
+STATUS_QUERY_TIMEOUT = 15.0
 OVERVIEW_FILENAME = "streaming_parser_overview.png"
 RANDOM_WORDS = ("随机", "random")
 
@@ -66,38 +68,46 @@ async def _setting_view(state: Any, group_id: int) -> Any:
         return db.setting_view(await db.get_group_setting(session, group_id))
 
 
+def group_defaults(config: Any) -> dict[str, Any]:
+    """建群设置行时用的默认值，全部取自插件配置。
+
+    任何一条建行路径都要用同一份默认值，否则 /config 里看到的值和 /监听
+    实际用的群级默认会对不上（空 defaults 会落到 db 模型自带的默认值）。
+    """
+    return {
+        "card_style": config.default_card_style,
+        "ai_reply_live": config.default_ai_reply_live,
+        "ai_reply_live_end": config.default_ai_reply_live_end,
+        "default_push_live": config.default_push_live,
+        "default_push_live_end": config.default_push_live_end,
+    }
+
+
 async def _ensure_setting(state: Any, group_id: int, config: Any) -> Any:
     async with state.database.transaction() as session:
         return db.setting_view(
-            await db.ensure_group_setting(
-                session,
-                group_id,
-                {
-                    "card_style": config.default_card_style,
-                    "ai_reply_live": config.default_ai_reply_live,
-                    "ai_reply_live_end": config.default_ai_reply_live_end,
-                    "default_push_live": config.default_push_live,
-                    "default_push_live_end": config.default_push_live_end,
-                },
-            )
+            await db.ensure_group_setting(session, group_id, group_defaults(config))
         )
 
 
 async def _set_field(state: Any, group_id: int, field: str, value: Any) -> None:
     async with state.database.transaction() as session:
-        setting = await db.ensure_group_setting(session, group_id)
+        setting = await db.ensure_group_setting(session, group_id, group_defaults(state.config))
         setattr(setting, field, value)
 
 
-async def collect_states(ctx: Any, state: Any, rows: list[Any]) -> tuple[dict[int, Any], bool]:
+async def collect_states(
+    ctx: Any, state: Any, rows: list[Any], *, query_remote: bool = True
+) -> tuple[dict[int, Any], bool]:
     """取每个直播间的状态：优先刚刚向 B 站查的实时结果，其次用最近一次轮询落库的结果。
 
+    query_remote=False 表示跳过实时查询（调用方已经等超时了），只读本地快照。
     返回 (状态映射, 是否全部来自实时查询)。
     """
     room_ids = [row.room_id for row in rows]
     fresh: dict[int, Any] = {}
     poller = getattr(state, "poller", None)
-    if poller is not None and room_ids:
+    if query_remote and poller is not None and room_ids:
         try:
             fresh = await poller.refresh(room_ids)
         except Exception as exc:
@@ -150,7 +160,17 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
             return
         config = state.config
         rows = rows[: int(config.overview_max_hosts)]
-        states, is_fresh = await collect_states(ctx, state, rows)
+        try:
+            states, is_fresh = await asyncio.wait_for(
+                collect_states(ctx, state, rows), timeout=STATUS_QUERY_TIMEOUT
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # 实时查询整体超时（风控/网络挂着）：退回库里最近一次轮询结果，
+            # 不能因为一个卡住的上游接口让 /开播状态 一直不回话。
+            ctx.logger.warning(
+                f"实时查询直播状态超过 {STATUS_QUERY_TIMEOUT:g} 秒，改用最近一次轮询结果"
+            )
+            states, is_fresh = await collect_states(ctx, state, rows, query_remote=False)
         live_count = sum(1 for view in states.values() if int(view.live_status) == 1)
         title = "本群关注的主播"
         source_note = "刚刚查询" if is_fresh else "最近一次轮询"
@@ -158,6 +178,21 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
             "共 " + str(len(rows)) + " 位，" + str(live_count) + " 位正在直播（" + source_note + "）"
         )
         hosts = await state.build_overview_hosts(rows, states)
+        table = [
+            [
+                row.name or UNNAMED,
+                status_label(int(states[row.room_id].live_status)) if row.room_id in states else "未开播",
+                str(row.room_id),
+            ]
+            for row in rows
+        ]
+        payload = cards.rows_card(
+            title=title,
+            subtitle=summary,
+            columns=["主播", "状态", "房间号"],
+            rows=table,
+            note="总览图不可用（渲染或发送失败），这里是文字版",
+        )
         style = await state.style_for(group_id)
         image = None
         try:
@@ -168,7 +203,7 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
                 timeout=OVERVIEW_TIMEOUT,
             )
         except (asyncio.TimeoutError, TimeoutError):
-            image = None
+            ctx.logger.warning("渲染开播状态总览图超时，退回文字版")
         if image is not None:
             try:
                 sent = await command_ctx.service.send_image_bytes(
@@ -182,25 +217,10 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
                 sent = False
             if sent:
                 return
-        table = [
-            [
-                row.name or UNNAMED,
-                status_label(int(states[row.room_id].live_status)) if row.room_id in states else "未开播",
-                str(row.room_id),
-            ]
-            for row in rows
-        ]
-        await cards.send_card(
-            command_ctx,
-            cards.rows_card(
-                title=title,
-                subtitle=summary,
-                columns=["主播", "状态", "房间号"],
-                rows=table,
-                note="总览图渲染不可用，这里退化成文字版",
-            ),
-            screenshots=shots(ctx),
-        )
+            ctx.logger.warning("发送开播状态总览图失败，退回文字版")
+        # 渲染或发送失败都只降级一次：不再让卡片渲染器把同一份表格重画一遍
+        # （同一端口失败时那会再等一整个渲染超时）。
+        await command_ctx.reply_plain(cards.payload_text(payload))
 
     names.append("开播状态")
 

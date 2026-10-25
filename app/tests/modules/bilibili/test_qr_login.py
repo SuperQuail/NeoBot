@@ -19,6 +19,7 @@ from neobot_app.bilibili.qr_login import (
     QrPollResult,
     make_qr_png,
 )
+from neobot_contracts.ports.logging import NullLogger
 
 from ._fakes import FakeResponse, FakeSession
 
@@ -352,6 +353,105 @@ async def test_async_wait_treats_cookie_error_as_terminal() -> None:
     # 已经确认登录但拿不到凭证：直接作为终态失败，不要等到超时再报"二维码失效"。
     with pytest.raises(QrLoginCookieError):
         await login.async_wait("key-1", interval=0, timeout=5)
+
+
+class _RecordingLogger(NullLogger):
+    """记录 warning 文案，用来断言日志里不带凭证。"""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, msg: str, **kw) -> None:  # type: ignore[override]
+        self.warnings.append(msg)
+
+
+def test_poll_success_prefers_response_cookie_over_url_parameter() -> None:
+    response = FakeResponse(
+        {
+            "code": 0,
+            "data": {
+                "code": 0,
+                "url": (
+                    "https://passport.biligame.com/x/passport-login/web/crossDomain"
+                    "?SESSDATA=from-url&bili_jct=url-jct"
+                ),
+                "refresh_token": "rt",
+            },
+        },
+        cookies={"SESSDATA": "from-set-cookie", "bili_jct": "jct", "buvid3": "b3"},
+    )
+    result = _login(FakeSession([response])).poll("key-1")
+    assert result.cookies["SESSDATA"] == "from-set-cookie"
+    assert result.cookies["bili_jct"] == "jct"
+
+
+def test_poll_success_fills_missing_cookie_from_session_jar() -> None:
+    session = FakeSession()
+    session.cookies.set("DedeUserID", "9", domain=".bilibili.com")
+    session.cookies.set("buvid3", "b3", domain=".bilibili.com")
+    session.queue(
+        FakeResponse(
+            {
+                "code": 0,
+                "data": {
+                    "code": 0,
+                    "url": "https://passport.biligame.com/x?SESSDATA=sd&bili_jct=jct",
+                    "refresh_token": "",
+                },
+            }
+        )
+    )
+    result = _login(session).poll("key-1")
+    assert result.cookies["SESSDATA"] == "sd"
+    assert result.cookies["DedeUserID"] == "9"
+    assert result.cookies["buvid3"] == "b3"
+
+
+def test_poll_success_jar_conflict_is_treated_as_missing_field() -> None:
+    """跨域登录过的会话里同名 cookie 并存：jar.get 抛 CookieConflictError，不能向上冒。"""
+    session = FakeSession()
+    session.cookies.set("SESSDATA", "old-bili", domain=".bilibili.com")
+    session.cookies.set("SESSDATA", "old-game", domain=".biligame.com")
+    session.queue(
+        FakeResponse({"code": 0, "data": {"code": 0, "url": "", "refresh_token": ""}})
+    )
+    with pytest.raises(QrLoginCookieError, match="SESSDATA"):
+        _login(session).poll("key-1")
+
+
+def test_close_keeps_external_session_open() -> None:
+    own = BilibiliQrLogin()
+    own.close()
+    own.close()  # 重复关闭不抛错
+
+    external = FakeSession()
+    BilibiliQrLogin(session=external).close()
+    assert external.closed is False
+
+
+def test_untrusted_cross_domain_warning_hides_url_query() -> None:
+    logger = _RecordingLogger()
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "code": 0,
+                        "url": (
+                            "https://evil.example/crossDomain"
+                            "?SESSDATA=&bili_jct=jct&refresh_token=secret-token"
+                        ),
+                        "refresh_token": "",
+                    },
+                }
+            )
+        ]
+    )
+    with pytest.raises(QrLoginCookieError):
+        BilibiliQrLogin(session=session, logger=logger).poll("key-1")
+    assert any("evil.example" in message for message in logger.warnings)
+    assert all("secret-token" not in message for message in logger.warnings)
 
 
 def test_poll_skips_untrusted_cross_domain_url() -> None:

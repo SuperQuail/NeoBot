@@ -6,6 +6,10 @@ session_check_count（默认 50）个会话，对每个会话里新到的、非�
 生成一次回复并调用 client.send_message。每轮最多回复 max_replies_per_poll
 （默认 50）个会话，没轮到的下一轮继续；每个会话每轮最多回一次（多条新消息
 合并进上下文），失败按指数退避。
+
+已回复的 msg_key 会落盘到 data_dir/bilibili/private_replies.json（沿用
+comment_monitor 的状态文件格式），进程重启后不会把旧私信再回一遍；data_dir
+为空时只在内存里去重（测试/纯内存用法）。
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from neobot_app.bilibili._compat import (
@@ -24,6 +29,7 @@ from neobot_app.bilibili._compat import (
     resolve_client,
 )
 from neobot_app.bilibili.prompts import PrivateMessageContext
+from neobot_app.utils.atomic import atomic_write_text
 from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger("bilibili.private_monitor")
@@ -59,6 +65,7 @@ class BilibiliPrivateMonitor:
         session_check_count: int = 50,
         message_size: int = 20,
         max_seen: int = 2000,
+        data_dir: Path | None = None,
     ) -> None:
         self._client = client
         self._engine = engine
@@ -69,6 +76,13 @@ class BilibiliPrivateMonitor:
         self._session_check_count = max(1, int(session_check_count or 50))
         self._message_size = max(1, int(message_size or 20))
         self._processed = RecentIds(max_seen)
+        #: 已回复去重落盘位置；data_dir 为空时不落盘（测试/纯内存用法）。
+        self._state_path = (
+            Path(data_dir) / "bilibili" / "private_replies.json"
+            if data_dir is not None
+            else None
+        )
+        self._load_state()
         #: 已知没处理完的会话（发送失败/异常/本轮被截断），供 status 摘要。
         self._pending_talkers: set[int] = set()
         self._processed_count = 0
@@ -81,7 +95,13 @@ class BilibiliPrivateMonitor:
 
     @classmethod
     def from_config(
-        cls, client: Any, engine: Any, config: Any, **overrides: Any
+        cls,
+        client: Any,
+        engine: Any,
+        config: Any,
+        *,
+        data_dir: Path | None = None,
+        **overrides: Any,
     ) -> "BilibiliPrivateMonitor":
         cfg = bilibili_config(config)
         values: dict[str, Any] = {
@@ -95,6 +115,7 @@ class BilibiliPrivateMonitor:
             "reply_cooldown_seconds": float(
                 getattr(cfg, "reply_cooldown_seconds", 60.0) or 0.0
             ),
+            "data_dir": data_dir,
         }
         values.update(overrides)
         return cls(client, engine, **values)
@@ -107,10 +128,11 @@ class BilibiliPrivateMonitor:
             return
         if self._task is not None and not self._task.done():
             return
+        self._load_state()
         self._running = True
         self._next_poll_at = 0.0
         self._task = asyncio.create_task(self._loop())
-        logger.info("B站私信监控器已启动", interval=self._poll_interval)
+        logger.info(f"B站私信监控器已启动，轮询间隔 {self._poll_interval} 秒")
 
     async def stop(self) -> None:
         self._running = False
@@ -122,6 +144,7 @@ class BilibiliPrivateMonitor:
                 await task
             except asyncio.CancelledError:
                 pass
+        self._save_state()
         logger.info("B站私信监控器已停止")
 
     @property
@@ -149,6 +172,37 @@ class BilibiliPrivateMonitor:
             "processed_messages": self._processed_count,
         }
 
+    # ── 去重状态 ──
+
+    def _load_state(self) -> None:
+        path = self._state_path
+        if path is None or not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning(f"B站私信已回复记忆读取失败，按空状态启动：{path}")
+            return
+        for key in data.get("processed") or []:
+            text = str(key or "").strip()
+            if text:
+                self._processed.add(text)
+
+    def _save_state(self) -> None:
+        path = self._state_path
+        if path is None:
+            return
+        try:
+            atomic_write_text(
+                path,
+                json.dumps(
+                    {"version": 1, "processed": self._processed.keys()},
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(f"B站私信已回复记忆保存失败：{path}（{type(exc).__name__}: {exc}）")
+
     # ── 轮询 ──
 
     async def _loop(self) -> None:
@@ -163,6 +217,8 @@ class BilibiliPrivateMonitor:
                 self._failures += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 logger.exception("B站私信轮询异常")
+                # 异常也要推进下一次轮询时间，否则循环会每秒重试、刷屏日志。
+                self._next_poll_at = time.monotonic() + self.next_poll_interval
             await asyncio.sleep(1.0)
 
     async def poll_once(self) -> int:
@@ -174,6 +230,10 @@ class BilibiliPrivateMonitor:
             return 0
         if self._engine is None or not getattr(self._engine, "available", False):
             return 0
+        # 拉取成功就清掉历史失败计数：即使没有新私信，也算一次正常轮询，
+        # 避免一次发送失败把退避永久顶在 1 小时。
+        self._failures = 0
+        self._last_error = ""
         try:
             sessions = await call_client(
                 client.get_sessions, count=self._session_check_count
@@ -183,7 +243,7 @@ class BilibiliPrivateMonitor:
         except Exception as exc:
             self._failures += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("B站私信会话获取失败", error=self._last_error)
+            logger.warning(f"B站私信会话获取失败：{self._last_error}")
             return 0
 
         replied = 0
@@ -192,8 +252,7 @@ class BilibiliPrivateMonitor:
             if replied >= self._max_per_poll:
                 # 没轮到的会话记入待处理摘要，下一轮继续（已回复的会被去重跳过）。
                 logger.info(
-                    "B站私信本轮达到上限，剩余会话留待下轮",
-                    remaining=len(session_list) - index,
+                    f"B站私信本轮达到上限，剩余 {len(session_list) - index} 个会话留待下轮"
                 )
                 for rest in session_list[index:]:
                     rest_id = int(get_field(rest, "talker_id", 0) or 0)
@@ -206,17 +265,19 @@ class BilibiliPrivateMonitor:
             try:
                 sent = await self._process_session(client, talker_id)
             except asyncio.CancelledError:
+                # 取消时把正在处理的会话记回待处理，别让它静默消失。
+                self._pending_talkers.add(talker_id)
                 raise
             except Exception as exc:
                 self._failures += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
-                logger.exception("B站私信处理异常", talker_id=talker_id)
+                logger.exception(
+                    f"B站私信处理异常（talker_id={talker_id}），已回池重试：{self._last_error}"
+                )
                 self._pending_talkers.add(talker_id)
                 continue
             if sent:
                 replied += 1
-        if replied:
-            self._failures = 0
         return replied
 
     async def _process_session(self, client: Any, talker_id: int) -> bool:
@@ -247,6 +308,8 @@ class BilibiliPrivateMonitor:
         )
         text = await self._engine.generate_private_reply(ctx)
         if text is None:
+            # 只有模型明确 skip/cancel 才返回 None；provider 异常由引擎抛出，
+            # 这里不记 processed，下一轮会重新生成。
             self._mark_processed(pending)
             self._pending_talkers.discard(talker_id)
             return False
@@ -254,18 +317,19 @@ class BilibiliPrivateMonitor:
         if not sent:
             self._failures += 1
             self._pending_talkers.add(talker_id)
-            logger.warning("B站私信发送失败", talker_id=talker_id)
+            logger.warning(f"B站私信发送失败（talker_id={talker_id}）")
             return False
         self._mark_processed(pending)
         self._pending_talkers.discard(talker_id)
         self._last_reply_at[talker_id] = time.monotonic()
-        logger.info("B站私信已回复", talker_id=talker_id, chars=len(text))
+        logger.info(f"B站私信已回复（talker_id={talker_id}，{len(text)} 字）")
         return True
 
     def _mark_processed(self, events: list[PrivateMessageEvent]) -> None:
         for event in events:
             if self._processed.add(event.msg_key):
                 self._processed_count += 1
+        self._save_state()
 
     def _cooldown_ok(self, talker_id: int) -> bool:
         if self._cooldown <= 0:

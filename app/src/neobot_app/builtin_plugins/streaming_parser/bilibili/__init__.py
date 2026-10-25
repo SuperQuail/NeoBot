@@ -1,7 +1,15 @@
-"""B 站协议原型（纯 Python，仅依赖标准库）。
+"""B 站直播协议层（纯 Python，仅依赖标准库；httpx 在传输实现里按需导入）。
 
-这是 `research/` 里的技术验证代码，用于把 amagi 的 TypeScript 协议逐字翻译成
-Python 并用测试固定下来；成熟后再搬进插件正式代码。
+来源与冻结策略（v1）：本包是 amagi 的 TypeScript 协议（packages/core 的
+bilibili live 三条端点 + judge/headers/urls）逐字翻译后固定在 v1 的副本，
+只服务「轮询开播状态 + 渲染卡片」这一件事，**不再跟进上游**。
+
+迁移策略（写在这里，避免下一个人再问"为什么不用 WBI / 为什么有两套 HTTP 栈"）：
+- 只需要 getRoomInfoOld / room_init / get_info / card 四个不签名接口，
+  因此不实现 WBI 签名（原 wbi.py 与它的测试已删除；需要签名的接口一律
+  走本体 `neobot_app.bilibili.client`）；
+- 长期方向是把这四条请求合回本体 B 站客户端，插件只保留模型与卡片渲染；
+  在那之前本包保持冻结，改动请只做 bug 修复，不要在这里加新协议能力。
 """
 
 from __future__ import annotations
@@ -34,7 +42,6 @@ from .urls import (
     normalize_room_id,
     user_live_status_url,
 )
-from .wbi import MIXIN_KEY_ENC_TAB, WbiSigner, encode_wbi, extract_key, get_mixin_key
 
 __all__ = [
     "ANTIBOT_PAGE",
@@ -42,7 +49,6 @@ __all__ = [
     "DEFAULT_UA",
     "LIVE_API_BASE",
     "LIVE_WEB_BASE",
-    "MIXIN_KEY_ENC_TAB",
     "NOT_FOUND",
     "PLATFORM_ERROR",
     "RATE_LIMITED",
@@ -58,10 +64,6 @@ __all__ = [
     "Transport",
     "UserLiveStatus",
     "Verdict",
-    "WbiSigner",
-    "encode_wbi",
-    "extract_key",
-    "get_mixin_key",
     "judge",
     "live_room_headers",
     "live_room_info_url",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -241,6 +242,43 @@ async def test_capture_frame_degrades_without_ffmpeg_or_stream(tmp_path: Path, m
     assert no_stream["ok"] is False
     assert "拉流地址" in no_stream["error"]
     assert fake_run.commands == []
+
+
+async def test_capture_frame_prunes_old_frames(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """截帧长期累积：超过保留时间/数量的旧图要被清掉，新图保留。"""
+    monkeypatch.setattr(live_media.subprocess, "run", _FakeRun())
+    service = LiveMediaService(_FakeClient(), data_dir=tmp_path)
+    frames = tmp_path / "live_frames"
+    frames.mkdir(parents=True)
+    stale = frames / "5050_old.jpg"
+    stale.write_bytes(b"old")
+    os.utime(stale, (1000.0, 1000.0))  # 远早于保留窗口
+
+    result = await service.capture_frame(5050)
+
+    assert result["ok"] is True
+    assert Path(result["path"]).is_file()
+    assert not stale.exists()
+
+
+async def test_record_clip_prunes_old_clips(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(live_media.subprocess, "run", _FakeRun())
+    service = LiveMediaService(_FakeClient(), data_dir=tmp_path)
+    clips = tmp_path / "live_clips"
+    clips.mkdir(parents=True)
+    stale = clips / "5050_old.flv"
+    stale.write_bytes(b"old")
+    os.utime(stale, (1000.0, 1000.0))
+
+    result = await service.record_clip(5050, seconds=5)
+
+    assert result["ok"] is True
+    assert Path(result["path"]).is_file()
+    assert not stale.exists()
 
 
 # ── 截音频 + 转写 ──

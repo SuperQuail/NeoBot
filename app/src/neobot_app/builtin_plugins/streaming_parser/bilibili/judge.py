@@ -7,6 +7,9 @@ packages/core/src/contracts/error.ts:271-306。
 有意保留的差异（改进项，见 docs/roadmap.md）：
 - amagi 只对 -412 归入可重试风控；这里把 -352 / -509 也归入可重试，
   因为它们分别是「风控校验失败」和「请求过于频繁」（见 amagi packages/typegen/src/corpus.ts:232-243）。
+- 空响应体不再判 COOKIE_EXPIRED（amagi judge.ts:23 的写法）：一次网络抖动就会
+  把用户引去重新扫码，而空体更常见的原因是 WAF 拦断或连接被截断。这里按
+  「平台暂时不可用 / 超时」处理并标为可重试（有状态码时以状态码为准）。
 """
 
 from __future__ import annotations
@@ -88,11 +91,30 @@ def _verdict_from_http_status(status: int | None) -> Verdict | None:
     return Verdict(ok=False, kind=KIND_UNKNOWN, code=PLATFORM_ERROR, http_status=status)
 
 
+def _verdict_from_empty_body(http_status: int | None) -> Verdict:
+    """空响应体：WAF 拦断或连接被截断，不是登录失效。
+
+    有明确 HTTP 状态码时按状态码判定（408 归超时、429 限流、5xx 不可用）；
+    2xx 空体按「平台暂时不可用且可重试」处理——绝不能判成 COOKIE_EXPIRED，
+    否则一次抖动就会让插件以为 cookie 失效、把用户引去重新扫码。
+    """
+    fallback = _verdict_from_http_status(http_status)
+    if fallback is not None:
+        return fallback
+    return Verdict(
+        ok=False,
+        kind=KIND_UNAVAILABLE,
+        code=PLATFORM_UNAVAILABLE,
+        message="空响应体（WAF 拦截或连接被截断）",
+        retryable=True,
+        http_status=http_status,
+    )
+
+
 def judge(raw: Any, *, http_status: int | None = 200) -> Verdict:
     """对平台响应做判定。raw 可以是解析后的对象，也可以是原始文本。"""
     if raw is None or raw == "":
-        # amagi judge.ts:23：空响应体视为 cookie 可能已失效
-        return Verdict(ok=False, kind=KIND_AUTH, code=COOKIE_EXPIRED, http_status=http_status, raw=raw)
+        return _verdict_from_empty_body(http_status)
 
     if isinstance(raw, str):
         # 非空字符串 = WAF / 反爬页，amagi 判为 risk 且可重试

@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
+from requests.cookies import CookieConflictError
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
@@ -133,6 +134,13 @@ class BilibiliQrLogin:
         self._timeout = timeout
         self._logger = logger or NullLogger()
         self._last_logged_state = ""
+        #: 会话是否由本实例创建：外部传入的 session 由调用方负责关闭。
+        self._owns_session = session is None
+
+    def close(self) -> None:
+        """关闭自己创建的 Session；调用方传入的 Session 不碰，仍由调用方管理。"""
+        if self._owns_session:
+            self._session.close()
 
     # ── 同步原子操作 ──
 
@@ -300,16 +308,22 @@ class BilibiliQrLogin:
         cookies: dict[str, str] = {}
         cross_domain_url = str(data.get("url") or "")
         query = parse_qs(urlparse(cross_domain_url).query)
+        # 优先级：data.url 查询串 < 本次响应 Set-Cookie；会话 jar 只补缺。
+        # 会话可能被复用，jar 里的旧值不能盖掉这次 success 返回的新值。
         for name in _COOKIE_NAMES:
             values = query.get(name)
             if values and values[0]:
                 cookies[name] = values[0]
-        cookies.update(self._jar_cookies(response))
+        if response is not None:
+            cookies.update(self._cookies_from(response.cookies))
+        for name, value in self._cookies_from(self._session.cookies).items():
+            cookies.setdefault(name, value)
         if cross_domain_url and any(not cookies.get(name) for name in _REQUIRED_COOKIES):
             # B 站官方流程：success 后 GET data.url（crossDomain），Set-Cookie 才落到会话。
             redirect = self._get_cross_domain(cross_domain_url)
             if redirect is not None:
-                cookies.update(self._jar_cookies(redirect))
+                for name, value in self._cookies_from(redirect.cookies).items():
+                    cookies.setdefault(name, value)
         missing = [name for name in _REQUIRED_COOKIES if not cookies.get(name)]
         if missing:
             raise QrLoginCookieError(-1, f"登录成功但未取到 cookie: {', '.join(missing)}")
@@ -319,13 +333,19 @@ class BilibiliQrLogin:
                 cookies["buvid3"] = buvid3
         return cookies
 
-    def _jar_cookies(self, response: requests.Response | None = None) -> dict[str, str]:
-        """从响应 Set-Cookie（优先）与会话 cookie 里取本次登录关心的字段。"""
+    def _cookies_from(self, jar: Any) -> dict[str, str]:
+        """从一个 cookie jar 里取本次登录关心的字段。
+
+        同名 cookie 并存于多个域时 jar.get 会抛 CookieConflictError（跨域登录过的
+        会话很常见）：无法确定用哪个，按缺字段处理，交给其它来源补齐。
+        """
         found: dict[str, str] = {}
         for name in _COOKIE_NAMES:
-            value = str(response.cookies.get(name) or "") if response is not None else ""
-            if not value:
-                value = str(self._session.cookies.get(name) or "")
+            try:
+                value = str(jar.get(name) or "")
+            except CookieConflictError:
+                self._logger.debug(f"B站 cookie 存在跨域同名冲突，按缺字段处理: {name}")
+                value = ""
             if value:
                 found[name] = value
         return found
@@ -343,7 +363,8 @@ class BilibiliQrLogin:
             or host.endswith(".bilibili.com")
             or host.endswith(".biligame.com")
         ):
-            self._logger.warning(f"B站 crossDomain 地址不可信，已跳过: {url}")
+            # 只打 host：URL 的查询串里带 SESSDATA 等凭证，不能进日志。
+            self._logger.warning(f"B站 crossDomain 地址不可信，已跳过（host={host or '空'}）")
             return None
         try:
             return self._session.get(url, timeout=self._timeout, allow_redirects=False)
@@ -356,8 +377,10 @@ class BilibiliQrLogin:
         try:
             response = self._session.get(_BUVID3_SPI_URL, timeout=self._timeout)
             payload = response.json()
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError) as exc:
+            self._logger.debug(f"B站 buvid3 设备标识获取失败（不阻断登录）: {exc}")
             return ""
         if not isinstance(payload, dict) or int(payload.get("code") or 0) != 0:
+            self._logger.debug("B站 buvid3 设备标识接口返回异常，跳过")
             return ""
         return str((payload.get("data") or {}).get("b_3") or "")

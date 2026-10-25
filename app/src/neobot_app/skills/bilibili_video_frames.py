@@ -10,6 +10,9 @@ from typing import Any
 
 from neobot_app.bilibili._compat import call_client
 from neobot_app.skills.base import SkillModule
+from neobot_app.utils.logger import get_module_logger
+
+logger = get_module_logger("bilibili.video_frames_skill")
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -111,6 +114,7 @@ class BilibiliVideoFramesSkill(SkillModule):
                 describe=describe,
             )
         except Exception as exc:
+            logger.warning(f"抽帧工具调用失败: identifier={identifier}: {type(exc).__name__}: {exc}")
             return _json(
                 {
                     "ok": False,
@@ -122,6 +126,7 @@ class BilibiliVideoFramesSkill(SkillModule):
             return _json({"ok": False, "identifier": identifier, "error": "视频画面服务返回了无法识别的结果"})
         if not result.get("ok"):
             reason = str(result.get("error") or "视频画面服务未能获取该视频")
+            logger.warning(f"抽帧服务返回失败: identifier={identifier}: {reason}")
             return _json({"ok": False, "identifier": identifier, "error": f"获取视频画面失败：{reason}"})
         return _json(
             {

@@ -37,12 +37,15 @@ class FakeClient:
         ]
         self.sent_messages: list[tuple[int, str]] = []
         self.sent_comments: list[dict] = []
+        #: 历史读取时实际用的 (oid, comment_type)
+        self.comment_calls: list[tuple[int, int]] = []
 
     def get_messages(self, talker_id, size=5):
         return self.messages
 
-    def get_video_comments(self, oid, page=1):
-        return self.comments
+    def get_comments(self, oid, comment_type=1, *, mode="hot", cursor=None, page_size=20):
+        self.comment_calls.append((oid, comment_type))
+        return {"items": self.comments, "cursor": "", "is_end": True, "raw": {}}
 
     def send_message(self, receiver_id, text):
         if self.fail_send:
@@ -137,6 +140,27 @@ async def test_channel_send_without_client_or_engine() -> None:
     assert ok is False and "引擎" in detail
 
 
+async def test_channel_dormant_service_reports_not_logged_in() -> None:
+    """休眠服务（available=False）不回退成它的 client/service，按未登录处理。"""
+
+    class DormantService:
+        available = False
+
+        def __init__(self, client: FakeClient) -> None:
+            self.client = client
+
+    client = FakeClient()
+    channel = BilibiliCrossChatChannel(DormantService(client), FakeEngine())
+
+    ok, reply, detail = await channel.send_task("private:55", "x")
+
+    assert ok is False
+    assert reply == ""
+    assert "未登录" in detail
+    assert client.sent_messages == []
+    assert await channel.get_history("private:55") == ""
+
+
 async def test_channel_skip_and_send_failure() -> None:
     channel = BilibiliCrossChatChannel(FakeClient(), FakeEngine(None))
     ok, _, detail = await channel.send_task("private:55", "x")
@@ -155,6 +179,27 @@ async def test_channel_get_history_private_and_comment() -> None:
 
     comment = await channel.get_history("comment:10:20:30")
     assert "张三" in comment and "视频不错" in comment
+
+
+async def test_channel_history_uses_target_comment_type() -> None:
+    """动态/专栏/opus 不能读视频评论区；opus 是 12（专栏）不是 11（番剧）。"""
+    client = FakeClient()
+    channel = BilibiliCrossChatChannel(client, FakeEngine())
+
+    for conversation_id in ("dynamic:10:20:30", "opus:11:20:30", "article:12:20:30"):
+        assert "视频不错" in await channel.get_history(conversation_id)
+
+    assert client.comment_calls == [(10, 17), (11, 12), (12, 12)]
+
+
+async def test_channel_send_opus_uses_article_type() -> None:
+    client = FakeClient()
+    channel = BilibiliCrossChatChannel(client, FakeEngine("来了"))
+
+    ok, _, _ = await channel.send_task("opus:10:20:30", "回应一下")
+
+    assert ok is True
+    assert client.sent_comments[0]["type_"] == 12
 
 
 async def test_channel_get_history_invalid_target() -> None:

@@ -193,13 +193,88 @@ async def test_diary_skill_unknown_tool() -> None:
 
 
 
-async def test_collect_material_uses_group_only_and_diff(tmp_path) -> None:
+async def test_collect_material_diff_is_only_consumed_after_publish(tmp_path) -> None:
     archive = FakeArchive([_item("123", "群里在聊游戏")])
-    service = _service(FakeProvider(), FakeClient(), archive_service=archive, data_dir=tmp_path)
+    service = _service(
+        FakeProvider("动态正文"), FakeClient(), archive_service=archive, data_dir=tmp_path
+    )
 
     first = await service.collect_material()
     second = await service.collect_material()
 
     assert "+ [群:123] 群里在聊游戏" in first
-    assert second == ""
+    # 只收集/预览不消费 diff：快照要等发布成功才落盘。
+    assert second == first
     assert archive.calls == ["group_summary", "group_summary"]
+
+    assert (await service.run())["ok"] is True
+    assert await service.collect_material() == ""
+
+
+async def test_preview_keeps_diff_until_publish(tmp_path) -> None:
+    archive = FakeArchive([_item("123", "群里在聊游戏")])
+    service = _service(
+        FakeProvider("草稿"), FakeClient(), archive_service=archive, data_dir=tmp_path
+    )
+
+    preview = await service.run(preview=True)
+    assert preview["ok"] is True
+    assert preview["preview"] is True
+    assert "+ [群:123] 群里在聊游戏" in await service.collect_material()
+
+    assert (await service.run())["ok"] is True
+    assert await service.collect_material() == ""
+    assert (tmp_path / "bilibili" / "diary_material.json").exists()
+
+
+async def test_publish_failure_keeps_diff(tmp_path) -> None:
+    archive = FakeArchive([_item("123", "群里在聊游戏")])
+    service = _service(
+        FakeProvider("动态"),
+        FakeClient(error=RuntimeError("风控")),
+        archive_service=archive,
+        data_dir=tmp_path,
+    )
+
+    result = await service.run()
+
+    assert result["ok"] is False
+    assert not (tmp_path / "bilibili" / "diary_material.json").exists()
+    assert "+ [群:123] 群里在聊游戏" in await service.collect_material()
+
+
+class _LengthCheckingProvider(FakeProvider):
+    """第一次提交超长正文（应被工具拒绝），之后提交合规正文。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent = 0
+
+    async def chat(self, messages, tools=None):
+        self.calls.append(messages)
+        self.sent += 1
+        text = "长" * 100 if self.sent == 1 else "短动态"
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_dynamic",
+                        "arguments": json.dumps({"text": text}, ensure_ascii=False),
+                    },
+                }
+            ],
+        }
+
+
+async def test_overlong_dynamic_is_rejected_and_retried() -> None:
+    provider = _LengthCheckingProvider()
+    service = _service(provider, FakeClient(), max_chars=10)
+
+    result = await service.run(preview=True)
+
+    assert result["ok"] is True
+    assert result["text"] == "短动态"

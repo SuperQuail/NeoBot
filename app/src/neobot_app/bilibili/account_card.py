@@ -46,6 +46,9 @@ def _text(value: Any) -> str:
 
 
 def _https(url: str) -> str:
+    # B站头像有协议相对写法（//i2.hdslb.com/...），卡片要自包含，统一补成 https。
+    if url.startswith("//"):
+        return "https:" + url
     return "https://" + url[len("http://"):] if url.startswith("http://") else url
 
 
@@ -81,9 +84,9 @@ def _stats_value(detail: dict[str, Any], key: str, stats_ok: bool) -> str:
 
 
 def _login_state(snapshot: dict[str, Any]) -> str:
-    if not snapshot.get("available"):
-        return "未登录"
-    return "有效" if snapshot.get("valid") else "待校验"
+    # service.available 已包含 valid（started and valid and client）；卡片只在
+    # available 时渲染，所以原来的"待校验"分支永远走不到，这里不再保留。
+    return "有效" if snapshot.get("available") else "未登录"
 
 
 def _avatar_fragment(snapshot: dict[str, Any]) -> str:
@@ -166,6 +169,9 @@ def account_card_blocks(
     ]
     if extra_rows:
         blocks.append({"kind": "kv", "items": list(extra_rows)})
+    if _text(snapshot.get("error")):
+        # 凭证保存失败、上次校验网络异常等：登录态可能有效，但要让用户看见。
+        blocks.append({"kind": "note", "text": f"注意：{_text(snapshot.get('error'))}"})
     if not stats_ok:
         blocks.append({"kind": "note", "text": STATS_UNAVAILABLE_NOTE})
     if snapshot.get("uid"):
@@ -194,6 +200,8 @@ def account_card_text(
         f"投稿: {_stats_value(detail, 'videos', stats_ok)}",
     ]
     lines.extend(f"{label}: {value}" for label, value in (extra_rows or []))
+    if _text(snapshot.get("error")):
+        lines.append(f"注意：{_text(snapshot.get('error'))}")
     if not stats_ok:
         lines.append(STATS_UNAVAILABLE_NOTE)
     if snapshot.get("uid"):

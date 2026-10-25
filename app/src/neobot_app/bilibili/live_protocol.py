@@ -10,16 +10,33 @@ import dataclasses
 import json
 import struct
 import zlib
+from collections import Counter
 from typing import Annotated, Any
 
 import brotli
 from pure_protobuf.annotations import Field as PbField
 from pure_protobuf.message import BaseMessage
 
+from neobot_app.utils.logger import get_module_logger
+
 #: 弹幕协议头：总长度 / 头长度 / 协议版本 / 操作码 / 序号（大端 16 字节）。
 HEADER = struct.Struct(">IHHII")
 HEADER_SIZE = HEADER.size
 _MAX_DEPTH = 4
+
+_LOGGER = get_module_logger("bilibili.live_protocol")
+#: 解包失败计数（坏帧/解压失败）：坏帧不再静默，运行期可读取定位 CDN/协议问题。
+_decode_failures: Counter[str] = Counter()
+
+
+def decode_failures() -> dict[str, int]:
+    """解包失败计数快照：frame（头/长度异常）、zlib、brotli、depth（嵌套过深）。"""
+    return dict(_decode_failures)
+
+
+def _count_failure(kind: str, detail: str) -> None:
+    _decode_failures[kind] += 1
+    _LOGGER.debug(f"B站直播弹幕包解析失败（{kind}）：{detail}，累计 {_decode_failures[kind]} 次")
 
 
 class LiveAuthError(RuntimeError):
@@ -42,27 +59,33 @@ def decode_packets(data: bytes) -> list[tuple[int, bytes]]:
 
 def _decode_packets(data: bytes, depth: int) -> list[tuple[int, bytes]]:
     if depth > _MAX_DEPTH:
+        _count_failure("depth", f"嵌套超过 {_MAX_DEPTH} 层")
         return []
     packets: list[tuple[int, bytes]] = []
     offset = 0
     while offset + HEADER_SIZE <= len(data):
         try:
             total, header_len, protover, op, _seq = HEADER.unpack_from(data, offset)
-        except struct.error:
+        except struct.error as exc:
+            _count_failure("frame", f"包头解不出（offset={offset}）：{exc}")
             break
         if header_len < HEADER_SIZE or total < header_len or offset + total > len(data):
+            _count_failure(
+                "frame",
+                f"包长度异常（total={total} header_len={header_len} 剩余={len(data) - offset}）",
+            )
             break
         body = data[offset + header_len : offset + total]
         if protover == 2:
             try:
                 packets.extend(_decode_packets(zlib.decompress(body), depth + 1))
-            except (zlib.error, ValueError):
-                pass
+            except (zlib.error, ValueError) as exc:
+                _count_failure("zlib", f"{type(exc).__name__}: {exc}")
         elif protover == 3:
             try:
                 packets.extend(_decode_packets(brotli.decompress(body), depth + 1))
-            except Exception:
-                pass
+            except Exception as exc:
+                _count_failure("brotli", f"{type(exc).__name__}: {exc}")
         else:
             packets.append((op, body))
         offset += total

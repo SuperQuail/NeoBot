@@ -181,6 +181,25 @@ async def test_login_success_ensures_live_listener(monkeypatch) -> None:
     assert started == [True]
 
 
+async def test_live_toggle_enable_requires_login(monkeypatch) -> None:
+    """未登录时 /直播互动 开 只提示，不出"监听开"的假成功卡片。"""
+    runtime, command_service = _build()
+    calls: list[str] = []
+
+    async def _refresh() -> bool:
+        calls.append("refresh")
+        return False
+
+    monkeypatch.setattr(runtime.service, "refresh", _refresh)
+    handler = command_service.registry.get("直播互动").handler
+
+    result = await handler(_ctx(["5440", "开"]))
+
+    assert calls == ["refresh"]  # 先自愈再判登录态
+    assert "未登录" in result
+    assert runtime.live_interactor.list_rooms() == []
+
+
 async def test_login_task_reference_cleared_after_finish(monkeypatch) -> None:
     runtime, command_service = _build()
 

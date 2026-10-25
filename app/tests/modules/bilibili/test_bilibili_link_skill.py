@@ -63,8 +63,15 @@ class FakeUow:
 
 
 class FakeArchive:
-    def __init__(self, entries=None, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        entries=None,
+        *,
+        error: Exception | None = None,
+        tags: dict[tuple[str, str], list[str]] | None = None,
+    ) -> None:
         self.entries = dict(entries or {})
+        self.tags = dict(tags or {})
         self.error = error
         self.writes: list[tuple] = []
 
@@ -72,11 +79,14 @@ class FakeArchive:
         if self.error is not None:
             raise self.error
         value = self.entries.get((table, key))
-        return SimpleNamespace(value=value) if value is not None else None
+        if value is None:
+            return None
+        return SimpleNamespace(value=value, tags=list(self.tags.get((table, key), [])))
 
     async def set(self, table, key, value, tags):
         self.writes.append((table, key, value, tags))
         self.entries[(table, key)] = value
+        self.tags[(table, key)] = list(tags)
 
 
 def _factory(repo: FakeRepo):
@@ -158,6 +168,8 @@ async def test_link_account_merge_failure_does_not_fail_link() -> None:
 
     assert result["ok"] is True
     assert repo.created == [(77, "10001")]
+    assert "已中止记忆合并" in result["message"]
+    assert archive.writes == []
 
 
 async def test_link_account_validation() -> None:
@@ -208,3 +220,113 @@ async def test_unlink_one_and_all() -> None:
 async def test_unknown_tool() -> None:
     result = json.loads(await _skill().execute("nope", {}))
     assert result["ok"] is False
+
+
+async def test_link_account_validates_uid_and_qq() -> None:
+    repo = FakeRepo()
+    skill = _skill(repo)
+
+    for args in (
+        {"bilibili_uid": "abc", "qq_number": "10001"},
+        {"bilibili_uid": -1, "qq_number": "10001"},
+        {"bilibili_uid": True, "qq_number": "10001"},
+        {"bilibili_uid": 77, "qq_number": "abc"},
+        {"bilibili_uid": 77, "qq_number": "1234"},
+        {"bilibili_uid": 77, "qq_number": "1234567890123"},
+    ):
+        result = json.loads(await skill.execute("link_account", args))
+        assert result["ok"] is False, args
+    assert repo.created == []
+
+    # 字符串形式的 UID 也接受，落库统一成 int。
+    ok = json.loads(
+        await skill.execute("link_account", {"bilibili_uid": "77", "qq_number": "10001"})
+    )
+    assert ok["ok"] is True
+    assert repo.created == [(77, "10001")]
+
+
+async def test_link_account_rejects_conflicting_bindings() -> None:
+    repo = FakeRepo()
+    repo.links.append({"bilibili_uid": 77, "qq_number": "20002"})
+    skill = _skill(repo)
+
+    by_uid = json.loads(
+        await skill.execute("link_account", {"bilibili_uid": 77, "qq_number": "10001"})
+    )
+    assert by_uid["ok"] is False
+    assert "已关联其他QQ" in by_uid["error"]
+    assert "unlink_account" in by_uid["error"]
+    assert repo.created == []
+
+    other = FakeRepo()
+    other.links.append({"bilibili_uid": 88, "qq_number": "10001"})
+    by_qq = json.loads(
+        await _skill(other).execute(
+            "link_account", {"bilibili_uid": 77, "qq_number": "10001"}
+        )
+    )
+    assert by_qq["ok"] is False
+    assert "已关联其他B站UID" in by_qq["error"]
+    assert other.created == []
+
+
+async def test_link_account_merge_keeps_profile_tags() -> None:
+    repo = FakeRepo()
+    archive = FakeArchive(
+        {("bilibili_user", "77"): "B站记忆", ("user_profile", "10001"): "老档案"},
+        tags={("user_profile", "10001"): ["老用户"]},
+    )
+    skill = _skill(repo, archive)
+
+    result = json.loads(
+        await skill.execute("link_account", {"bilibili_uid": 77, "qq_number": "10001"})
+    )
+
+    assert result["merged"] is True
+    table, key, value, written_tags = archive.writes[-1]
+    assert (table, key) == ("user_profile", "10001")
+    assert written_tags == ["老用户"]
+    assert "老档案" in value and "[B站UID:77]" in value
+
+
+async def test_link_account_duplicate_retries_failed_merge() -> None:
+    repo = FakeRepo()
+    repo.links.append({"bilibili_uid": 77, "qq_number": "10001"})
+    archive = FakeArchive({("bilibili_user", "77"): "B站记忆"})
+    skill = _skill(repo, archive)
+
+    result = json.loads(
+        await skill.execute("link_account", {"bilibili_uid": 77, "qq_number": "10001"})
+    )
+
+    assert result["ok"] is True
+    assert result["created"] is False
+    assert result["merged"] is True
+    assert "已存在" in result["message"]
+    assert archive.writes[-1][0] == "user_profile"
+
+
+async def test_unlink_and_get_link_validate_arguments() -> None:
+    skill = _skill()
+
+    bad_qq = json.loads(await skill.execute("unlink_account", {"qq_number": "abc"}))
+    assert bad_qq["ok"] is False
+    assert "qq_number" in bad_qq["error"]
+
+    missing_qq = json.loads(await skill.execute("unlink_account", {}))
+    assert missing_qq["ok"] is False
+
+    bad_uid = json.loads(
+        await skill.execute(
+            "unlink_account", {"qq_number": "10001", "bilibili_uid": "abc"}
+        )
+    )
+    assert bad_uid["ok"] is False
+    assert "bilibili_uid" in bad_uid["error"]
+
+    bad_query = json.loads(await skill.execute("get_link", {"qq_number": "12"}))
+    assert bad_query["ok"] is False
+
+    bad_query_uid = json.loads(await skill.execute("get_link", {"bilibili_uid": -1}))
+    assert bad_query_uid["ok"] is False

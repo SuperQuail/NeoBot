@@ -3,8 +3,9 @@
 所有方法都是同步实现（requests）。需要 async 的调用方用 asyncio.to_thread
 包一层即可（BilibiliService 已经这样做）。
 
-写操作（发评论/私信/动态）统一走 _rate_limit_wait() 限速；网络错误与 HTTP 5xx
-会退避重试 2 次，B 站业务错误码不重试。
+写操作（发评论/私信/动态）统一走 _rate_limit_wait() 限速；只有幂等的 GET/HEAD 在
+网络错误与 HTTP 5xx 时退避重试 2 次（写请求不重试，避免重复发评论/私信/投币）；
+B 站业务错误码不重试，-352（WBI 签名失效）重取密钥后再试一次。
 """
 
 from __future__ import annotations
@@ -76,7 +77,11 @@ _WBI_MIXIN_KEY_ENC_TAB = (
 _WBI_FILTERED_CHARS = frozenset("!'()*")
 
 #: 命中这些业务错误码时加大写操作冷却时间（风控/评论限流）。
-_WRITE_RETRY_CODES = frozenset({-412, -799})
+_WRITE_RETRY_CODES = frozenset({-412, -429, -799})
+#: 这些 HTTP 状态码说明请求被 B 站风控拦下（不是业务错误，也不该重试）。
+_RISK_CONTROL_STATUS = frozenset({412, 429})
+#: 只有幂等方法重试安全；POST 重发会重复发评论/私信/弹幕/投币。
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
 
 #: 评论区类型（reply/type）：视频 1、动态 17、专栏/opus 12、番剧 11；3 与 23~32 未使用。
 _COMMENT_TYPES = frozenset(
@@ -169,14 +174,14 @@ class BilibiliMessage:
         content = raw.get("content", "")
         if isinstance(content, (dict, list)):
             content = json.dumps(content, ensure_ascii=False)
-        sender_uid = int(raw.get("sender_uid") or 0)
-        talker_id = int(raw.get("receiver_id") or 0) or sender_uid
+        sender_uid = _to_int(raw.get("sender_uid"))
+        talker_id = _to_int(raw.get("receiver_id")) or sender_uid
         message = cls(
             talker_id=talker_id,
             sender_uid=sender_uid,
-            msg_type=int(raw.get("msg_type") or 1),
+            msg_type=_to_int(raw.get("msg_type")) or 1,
             content=str(content),
-            timestamp=int(raw.get("timestamp") or 0),
+            timestamp=_to_int(raw.get("timestamp")),
         )
         message.is_self = bool(my_uid and sender_uid == my_uid)
         message.msg_key = f"{message.talker_id}_{message.timestamp}_{message.content[:20]}"
@@ -192,7 +197,7 @@ class BilibiliSession:
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any]) -> BilibiliSession:
-        session = cls(talker_id=int(raw.get("talker_id") or 0))
+        session = cls(talker_id=_to_int(raw.get("talker_id")))
         last_msg = raw.get("last_msg")
         if isinstance(last_msg, dict) and last_msg:
             session.last_msg = BilibiliMessage.from_api(last_msg)
@@ -206,6 +211,8 @@ class BilibiliClient:
     _RETRY_DELAY_SECONDS = 0.5
     _DEFAULT_WRITE_INTERVAL_SECONDS = 1.0
     _MAX_WRITE_INTERVAL_SECONDS = 60.0
+    #: WBI 密钥有效期；过期后重新从 nav 接口取，避免长期用失效密钥被 -352。
+    _WBI_KEY_TTL_SECONDS = 1800.0
 
     def __init__(
         self,
@@ -227,7 +234,9 @@ class BilibiliClient:
         self._buvid3 = buvid3
         self._logger = logger or NullLogger()
         self._timeout = timeout
+        # 外部传入的 session 归调用方所有，close() 不关它。
         self._session = session if session is not None else requests.Session()
+        self._owns_session = session is None
         self._session.headers.update(
             {
                 "User-Agent": user_agent,
@@ -244,13 +253,18 @@ class BilibiliClient:
         if buvid3:
             jar.set("buvid3", buvid3, domain=".bilibili.com", path="/")
 
-        # 并发安全：任务模块可能从多个线程调用同一个客户端。
+        # 并发安全：任务模块可能从多个线程调用同一个客户端。锁只保护 cookie/限速状态，
+        # 不包网络 I/O；requests.Session 不保证跨线程安全，所以每个线程用自己的 Session
+        # （创建线程继续用 self._session，其余线程复制一份）。
         self._lock = threading.Lock()
-        # 限速：写操作之间的最小间隔，命中风控后自适应放大。
+        self._local = threading.local()
+        self._local.session = self._session
+        # 限速：写操作之间的最小间隔，命中风控后自适应放大，风控过去后逐步回落。
         self._write_interval = self._DEFAULT_WRITE_INTERVAL_SECONDS
         self._last_write_at = 0.0
-        # WBI 签名密钥缓存。
+        # WBI 签名密钥缓存（带有效期）。
         self._wbi_mixin_key = ""
+        self._wbi_key_at = 0.0
         # 私信去重缓存。
         self._seen_msg_keys: set[str] = set()
         self._last_msg_times: dict[int, int] = defaultdict(int)
@@ -259,45 +273,45 @@ class BilibiliClient:
 
     @property
     def my_uid(self) -> int:
-        """自己的 UID；构造时未给则尝试从 nav 接口取一次。"""
+        """自己的 UID；构造时未给则尝试从 nav 接口取一次（取不到返回 0）。"""
         if self._my_uid > 0:
             return self._my_uid
-        info = self.get_my_info()
         try:
-            self._my_uid = int(info.get("mid") or 0)
-        except (TypeError, ValueError):
+            self._my_uid = _to_int(self.get_my_info().get("mid"))
+        except BilibiliError as exc:
+            self._log_read_error("UID 读取", exc)
             self._my_uid = 0
         return self._my_uid
 
     def get_my_info(self) -> dict[str, Any]:
-        """nav 接口的 data 原样返回（mid/uname/face/isLogin/wbi_img 等）；失败返回空 dict。"""
-        try:
-            payload = self._fetch("GET", _NAV_URL)
-        except BilibiliError as exc:
-            self._log_read_error("账号信息读取", exc)
-            return {}
+        """nav 接口的 data 原样返回（mid/uname/face/isLogin/wbi_img 等）。
+
+        登录失效（-101 或 isLogin=False）抛 BilibiliAuthError；网络/5xx/非法 JSON
+        抛 BilibiliApiError —— 调用方必须能区分「接口失败」和「未登录」，不能靠空 dict。
+        """
+        payload = self._fetch("GET", _NAV_URL)
         data = payload.get("data")
         if not isinstance(data, dict):
-            return {}
+            raise BilibiliApiError(-1, "B站账号信息接口没有返回 data")
         wbi_img = data.get("wbi_img")
         if isinstance(wbi_img, dict):
             self._cache_wbi_keys(wbi_img)
-        try:
-            mid = int(data.get("mid") or 0)
-        except (TypeError, ValueError):
-            mid = 0
-        if mid > 0:
-            self._my_uid = mid
+        if not data.get("isLogin"):
+            raise BilibiliAuthError("B站未登录或登录态已过期")
+        mid = _to_int(data.get("mid"))
+        if mid <= 0:
+            raise BilibiliAuthError("B站账号信息缺少 mid，登录态无效")
+        self._my_uid = mid
         return data
 
     def verify_auth(self) -> bool:
-        """当前 cookie 是否仍处于登录态。"""
-        info = self.get_my_info()
+        """当前 cookie 是否仍处于登录态（网络异常也按 False 处理，bool 没有第三态）。"""
         try:
-            mid = int(info.get("mid") or 0)
-        except (TypeError, ValueError):
-            mid = 0
-        return bool(info.get("isLogin") and mid > 0)
+            self.get_my_info()
+        except BilibiliError as exc:
+            self._log_read_error("登录态校验", exc)
+            return False
+        return True
 
     # ── 评论 / 回复 ──
 
@@ -347,6 +361,7 @@ class BilibiliClient:
 
         comment_type 见 _COMMENT_TYPES（视频 1、动态 17、专栏/opus 12、番剧 11）；
         cursor 传上一页返回的 cursor，空串表示第一页。失败返回空页。
+        page_size 会作为 ps 交给接口，本地不再截断——先截断再用服务端游标翻页会丢评论。
         """
         oid = _to_int(oid)
         comment_type = _to_int(comment_type)
@@ -359,6 +374,7 @@ class BilibiliClient:
                 "type": comment_type,
                 "mode": _COMMENT_MODES.get(str(mode).strip().lower(), 3),
                 "plat": 1,
+                "ps": page_size,
                 "seek_rpid": "",
                 "web_location": "1315875",
                 "pagination_str": json.dumps(
@@ -389,7 +405,7 @@ class BilibiliClient:
         pagination = cursor_info.get("pagination_reply")
         next_offset = pagination.get("next_offset") if isinstance(pagination, dict) else ""
         return {
-            "items": items[:page_size],
+            "items": items,
             "cursor": str(next_offset or ""),
             "is_end": bool(cursor_info.get("is_end")) or not next_offset,
             "raw": data,
@@ -477,16 +493,16 @@ class BilibiliClient:
             self._logger.warning("B站评论回复参数不完整（oid/text 不能为空）")
             return False
         form: dict[str, Any] = {
-            "oid": int(oid),
-            "type": int(type_),
+            "oid": _to_int(oid),
+            "type": _to_int(type_),
             "message": message,
             "plat": 1,
             "csrf": self._bili_jct,
         }
         if root:
-            form["root"] = int(root)
+            form["root"] = _to_int(root)
         if parent:
-            form["parent"] = int(parent)
+            form["parent"] = _to_int(parent)
         self._rate_limit_wait()
         try:
             payload = self._fetch(
@@ -523,10 +539,10 @@ class BilibiliClient:
             self._logger.warning("B站评论点赞参数不完整（oid/rpid 不能为空）")
             return False
         form: dict[str, Any] = {
-            "oid": int(oid),
-            "rpid": int(rpid),
+            "oid": _to_int(oid),
+            "rpid": _to_int(rpid),
             "action": 1,
-            "type": int(type_),
+            "type": _to_int(type_),
             "csrf": self._bili_jct,
         }
         self._rate_limit_wait()
@@ -557,8 +573,8 @@ class BilibiliClient:
             {
                 "search_type": search_type or "video",
                 "keyword": text,
-                "page": max(int(page), 1),
-                "page_size": max(int(page_size), 1),
+                "page": max(_to_int(page), 1),
+                "page_size": max(_to_int(page_size), 1),
                 "order": order or "totalrank",
             }
         )
@@ -864,24 +880,23 @@ class BilibiliClient:
         except BilibiliError as exc:
             self._on_write_error("关注用户", exc)
             return False
-        self._logger.info(
-            "B站关注用户成功" if follow else "B站取消关注成功", uid=target
-        )
+        self._logger.info(f"B站{'关注用户' if follow else '取消关注'}成功: uid={target}")
         return True
 
     # ── 用户空间 ──
 
     def get_space_info(self, mid: int) -> dict[str, Any]:
         """用户空间信息（space/wbi/acc/info 的 data）；失败返回空 dict。"""
+        mid = _to_int(mid)
         if not mid:
             return {}
-        params = self._sign_wbi({"mid": int(mid)})
+        params = self._sign_wbi({"mid": mid})
         try:
             payload = self._fetch(
                 "GET",
                 _SPACE_INFO_URL,
                 params=params,
-                headers={"Referer": f"https://space.bilibili.com/{int(mid)}"},
+                headers={"Referer": f"https://space.bilibili.com/{mid}"},
             )
         except BilibiliError as exc:
             self._log_read_error("用户空间信息读取", exc)
@@ -893,12 +908,13 @@ class BilibiliClient:
         self, mid: int, *, page: int = 1, page_size: int = 20
     ) -> list[dict[str, Any]]:
         """用户投稿视频（space/arc/search 的 vlist）；失败返回空列表。"""
+        mid = _to_int(mid)
         if not mid:
             return []
         params = {
-            "mid": int(mid),
-            "ps": max(int(page_size), 1),
-            "pn": max(int(page), 1),
+            "mid": mid,
+            "ps": max(_to_int(page_size), 1),
+            "pn": max(_to_int(page), 1),
             "order": "pubdate",
         }
         try:
@@ -906,7 +922,7 @@ class BilibiliClient:
                 "GET",
                 _SPACE_VIDEOS_URL,
                 params=params,
-                headers={"Referer": f"https://space.bilibili.com/{int(mid)}"},
+                headers={"Referer": f"https://space.bilibili.com/{mid}"},
             )
         except BilibiliError as exc:
             self._log_read_error("用户投稿读取", exc)
@@ -919,9 +935,10 @@ class BilibiliClient:
     def get_player_info(self, bvid: str, cid: int) -> dict[str, Any]:
         """播放器信息（player/wbi/v2 的 data）；字幕在 data["subtitle"]["subtitles"]。"""
         bvid = (bvid or "").strip()
+        cid = _to_int(cid)
         if not bvid or not cid:
             return {}
-        params = self._sign_wbi({"bvid": bvid, "cid": int(cid)})
+        params = self._sign_wbi({"bvid": bvid, "cid": cid})
         try:
             payload = self._fetch(
                 "GET",
@@ -938,10 +955,11 @@ class BilibiliClient:
     def get_playurl_audio(self, bvid: str, cid: int) -> str | None:
         """DASH 音频流地址：取 bandwidth 最大的一条；失败返回 None。"""
         bvid = (bvid or "").strip()
+        cid = _to_int(cid)
         if not bvid or not cid:
             return None
         params = self._sign_wbi(
-            {"bvid": bvid, "cid": int(cid), "fnval": 16, "fourk": 1}
+            {"bvid": bvid, "cid": cid, "fnval": 16, "fourk": 1}
         )
         try:
             payload = self._fetch(
@@ -1002,30 +1020,31 @@ class BilibiliClient:
         return content
 
     def download_file(self, url: str, path: Path) -> bool:
-        """把 url 流式下载到 path；失败返回 False 并清理半成品。"""
+        """把 url 流式下载到 path（先写 .part 再替换）；失败返回 False 并清理半成品。"""
         target = Path(path)
+        # 先落 .part：下载中断时不会把已有文件截成半截，调用方也读不到不完整内容。
+        partial = target.with_name(f"{target.name}.part")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            # shortcut: 下载期间不持锁（长任务会卡住其它请求），同一 Session 的并发流式读取
-            # 未额外保护；需要更强并发保证时给下载单独开 Session。
-            with self._lock:
-                response = self._session.get(url, stream=True, timeout=self._timeout)
+            response = self._http.get(url, stream=True, timeout=self._timeout)
             try:
                 if response.status_code >= 400:
                     self._logger.warning(f"B站文件下载失败: HTTP {response.status_code} {url}")
                     return False
-                with target.open("wb") as handle:
+                with partial.open("wb") as handle:
                     for chunk in response.iter_content(chunk_size=1 << 16):
                         if chunk:
                             handle.write(chunk)
             finally:
                 response.close()
+            if partial.stat().st_size <= 0:
+                self._logger.warning(f"B站文件下载失败: {url}（空响应）")
+                partial.unlink(missing_ok=True)
+                return False
+            partial.replace(target)
         except (requests.RequestException, OSError) as exc:
             self._logger.warning(f"B站文件下载失败: {url}（{exc}）")
-            target.unlink(missing_ok=True)
-            return False
-        if not target.is_file() or target.stat().st_size <= 0:
-            target.unlink(missing_ok=True)
+            partial.unlink(missing_ok=True)
             return False
         return True
 
@@ -1057,15 +1076,15 @@ class BilibiliClient:
             key=lambda item: item.last_msg.timestamp if item.last_msg else 0,
             reverse=True,
         )
-        return sessions[: max(int(count), 0)]
+        return sessions[: max(_to_int(count), 0)]
 
     def get_messages(self, talker_id: int, size: int = 5) -> list[BilibiliMessage]:
         """获取指定会话的最新消息。"""
         params = {
             "sender_device_id": 1,
-            "talker_id": int(talker_id),
+            "talker_id": _to_int(talker_id),
             "session_type": 1,
-            "size": int(size),
+            "size": _to_int(size),
             "build": 0,
             "mobi_app": "web",
         }
@@ -1111,7 +1130,7 @@ class BilibiliClient:
             return False
         form: dict[str, Any] = {
             "msg[sender_uid]": sender_uid,
-            "msg[receiver_id]": int(receiver_id),
+            "msg[receiver_id]": _to_int(receiver_id),
             "msg[receiver_type]": 1,
             "msg[msg_type]": 1,
             "msg[msg_status]": 0,
@@ -1157,6 +1176,8 @@ class BilibiliClient:
             data={"category": "daily", "biz": "new_dyn", "csrf": self._bili_jct},
             files={"file_up": (path.name, content, mime_type)},
             headers={"Referer": "https://t.bilibili.com/"},
+            # 上传图片重发最多多一份附件，不会产生重复评论/私信，5xx 可以重试。
+            retry=True,
         )
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("image_url"):
@@ -1177,8 +1198,8 @@ class BilibiliClient:
             pics.append(
                 {
                     "img_src": str(info["image_url"]),
-                    "img_width": int(info.get("image_width") or 0),
-                    "img_height": int(info.get("image_height") or 0),
+                    "img_width": _to_int(info.get("image_width")),
+                    "img_height": _to_int(info.get("image_height")),
                     "img_size": info.get("img_size") or 0,
                 }
             )
@@ -1223,19 +1244,35 @@ class BilibiliClient:
     # ── 生命周期 ──
 
     def close(self) -> None:
-        """关闭底层 HTTP 会话。"""
+        """关闭本客户端自建的 HTTP 会话（外部传入的 session 归调用方所有，不关）。"""
+        if not self._owns_session:
+            return
         self._session.close()
+        session = getattr(self._local, "session", None)
+        if session is not None and session is not self._session:
+            session.close()
 
     # ── WBI 签名 ──
 
     def _ensure_wbi_keys(self) -> None:
-        if self._wbi_mixin_key:
+        """确保有未过期的 WBI 密钥；取不到就保持无签名（请求仍能发，只是可能被 -352）。"""
+        if (
+            self._wbi_mixin_key
+            and time.monotonic() - self._wbi_key_at < self._WBI_KEY_TTL_SECONDS
+        ):
             return
-        self.get_my_info()
+        try:
+            self.get_my_info()
+        except BilibiliError as exc:
+            self._log_read_error("WBI 密钥获取", exc)
+
+    def _invalidate_wbi_keys(self) -> None:
+        """签名被服务端判失效时清空缓存，下次请求重新取密钥。"""
+        with self._lock:
+            self._wbi_mixin_key = ""
+            self._wbi_key_at = 0.0
 
     def _cache_wbi_keys(self, wbi_img: Mapping[str, Any]) -> None:
-        if self._wbi_mixin_key:
-            return
         img_raw = str(wbi_img.get("img_key") or wbi_img.get("img_url") or "")
         sub_raw = str(wbi_img.get("sub_key") or wbi_img.get("sub_url") or "")
         img_key = img_raw.rsplit("/", 1)[-1].split(".")[0]
@@ -1244,9 +1281,12 @@ class BilibiliClient:
             self._logger.debug("B站 WBI 密钥提取失败，跳过签名")
             return
         combined = img_key + sub_key
-        self._wbi_mixin_key = "".join(
+        mixin_key = "".join(
             combined[index] for index in _WBI_MIXIN_KEY_ENC_TAB if index < len(combined)
         )[:32]
+        with self._lock:
+            self._wbi_mixin_key = mixin_key
+            self._wbi_key_at = time.monotonic()
 
     def _sign_wbi(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """给查询参数加 wts + w_rid（拿不到密钥时原样返回）。"""
@@ -1297,6 +1337,23 @@ class BilibiliClient:
 
     # ── 内部：HTTP / 错误处理 ──
 
+    @property
+    def _http(self) -> requests.Session:
+        """当前线程的 Session；没有就复制一份（requests.Session 不保证跨线程安全）。"""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = self._clone_session()
+            self._local.session = session
+        return session
+
+    def _clone_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(self._session.headers)
+        # 按 Cookie 对象复制，保留 domain/path，避免 cookie 被当成全局 cookie 发出去。
+        for cookie in self._session.cookies:
+            session.cookies.set_cookie(cookie)
+        return session
+
     def _fetch(
         self,
         method: str,
@@ -1307,6 +1364,8 @@ class BilibiliClient:
         json_body: Any = None,
         files: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        allow_redirects: bool | None = None,
+        retry: bool = False,
     ) -> dict[str, Any]:
         response = self._request(
             method,
@@ -1316,10 +1375,40 @@ class BilibiliClient:
             json_body=json_body,
             files=files,
             headers=headers,
+            allow_redirects=allow_redirects,
+            retry=retry,
         )
         if response is None:
             raise BilibiliApiError(-1, "B站网络请求失败")
-        return self._decode(response)
+        if response.status_code in _RISK_CONTROL_STATUS:
+            self._on_risk_control(response.status_code)
+            raise BilibiliApiError(-response.status_code, f"B站风控拦截（HTTP {response.status_code}）")
+        try:
+            return self._decode(response)
+        except BilibiliApiError as exc:
+            if exc.code != -352 or method.upper() != "GET" or "w_rid" not in (params or {}):
+                raise
+            # -352：B 站判定 WBI 签名失效。清空密钥、重取后重签一次再试。
+            self._invalidate_wbi_keys()
+            self._logger.warning("B站 WBI 签名失效（-352），重取密钥后重试一次")
+            retried = self._request(
+                method,
+                url,
+                params=self._sign_wbi(
+                    {
+                        key: value
+                        for key, value in params.items()
+                        if key not in ("wts", "w_rid")
+                    }
+                ),
+                data=data,
+                json_body=json_body,
+                files=files,
+                headers=headers,
+            )
+            if retried is None:
+                raise BilibiliApiError(-1, "B站网络请求失败") from exc
+            return self._decode(retried)
 
     def _request(
         self,
@@ -1331,28 +1420,36 @@ class BilibiliClient:
         json_body: Any = None,
         files: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        allow_redirects: bool | None = None,
+        retry: bool = False,
     ) -> requests.Response | None:
+        """发一次请求；只有幂等的 GET/HEAD（或显式 retry 安全写）会重试。
+
+        评论/私信/弹幕/投币等写请求重发会造成重复操作，一律只发一次。
+        """
+        options: dict[str, Any] = {
+            "params": params,
+            "data": data,
+            "json": json_body,
+            "files": files,
+            "headers": headers,
+            "timeout": self._timeout,
+        }
+        if allow_redirects is not None:
+            options["allow_redirects"] = allow_redirects
+        idempotent = retry or method.upper() in _IDEMPOTENT_METHODS
+        attempts = self._MAX_RETRIES + 1 if idempotent else 1
         last_error: Exception | None = None
-        for attempt in range(self._MAX_RETRIES + 1):
+        for attempt in range(attempts):
             try:
-                with self._lock:
-                    response = self._session.request(
-                        method,
-                        url,
-                        params=params,
-                        data=data,
-                        json=json_body,
-                        files=files,
-                        headers=headers,
-                        timeout=self._timeout,
-                    )
+                response = self._http.request(method, url, **options)
             except requests.RequestException as exc:
                 last_error = exc
             else:
                 if response.status_code < 500:
                     return response
                 last_error = BilibiliApiError(-1, f"B站服务异常 HTTP {response.status_code}")
-            if attempt < self._MAX_RETRIES:
+            if attempt + 1 < attempts:
                 time.sleep(self._RETRY_DELAY_SECONDS * (attempt + 1))
         self._logger.warning(f"B站请求失败: {method} {url}（{last_error}）")
         return None
@@ -1365,7 +1462,10 @@ class BilibiliClient:
             raise BilibiliApiError(-1, "B站响应不是合法 JSON") from exc
         if not isinstance(payload, dict):
             raise BilibiliApiError(-1, "B站响应不是 JSON 对象")
-        code = int(payload.get("code") or 0)
+        try:
+            code = int(payload.get("code") or 0)
+        except (TypeError, ValueError) as exc:
+            raise BilibiliApiError(-1, f"B站响应 code 不合法: {payload.get('code')!r}") from exc
         if code == 0:
             return payload
         message = str(payload.get("message") or payload.get("msg") or "")
@@ -1381,18 +1481,37 @@ class BilibiliClient:
         return False
 
     def _rate_limit_wait(self) -> None:
-        elapsed = time.monotonic() - self._last_write_at
-        if elapsed < self._write_interval:
-            time.sleep(self._write_interval - elapsed)
-        self._last_write_at = time.monotonic()
+        """在锁内预约下一个写操作时隙，锁外 sleep —— 并发写不会挤在同一个时隙。"""
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_write_at > self._write_interval * 3:
+                # 距上次写很久说明风控期已过，冷却逐步回落到默认间隔。
+                self._write_interval = max(
+                    self._DEFAULT_WRITE_INTERVAL_SECONDS, self._write_interval * 0.5
+                )
+            wait = self._last_write_at + self._write_interval - now
+            self._last_write_at = max(now, self._last_write_at + self._write_interval)
+        if wait > 0:
+            time.sleep(wait)
 
-    def _on_write_error(self, action: str, error: Exception) -> None:
-        if isinstance(error, BilibiliApiError) and error.code in _WRITE_RETRY_CODES:
+    def _bump_write_cooldown(self) -> None:
+        with self._lock:
             self._write_interval = min(
                 self._write_interval * 1.5, self._MAX_WRITE_INTERVAL_SECONDS
             )
+
+    def _on_risk_control(self, status_code: int) -> None:
+        """HTTP 412/429 是风控拦截（不是业务错误），同样放大写冷却。"""
+        self._bump_write_cooldown()
+        self._logger.warning(
+            f"B站请求命中风控（HTTP {status_code}），写操作冷却提升到 {self._write_interval:.1f}s"
+        )
+
+    def _on_write_error(self, action: str, error: Exception) -> None:
+        if isinstance(error, BilibiliApiError) and error.code in _WRITE_RETRY_CODES:
+            self._bump_write_cooldown()
             self._logger.warning(
-                f"B站{action}被限流（{error.code}），写操作冷却提升到 {self._write_interval:.1f}s"
+                f"B站{action}命中风控/限流（{error.code}），写操作冷却提升到 {self._write_interval:.1f}s"
             )
             return
         if isinstance(error, BilibiliAuthError):

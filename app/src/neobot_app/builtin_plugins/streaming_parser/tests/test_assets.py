@@ -6,7 +6,12 @@ import os
 import time
 
 import pytest
-from streaming_parser.assets import AssetCache, sniff_mime  # noqa: E402
+from streaming_parser.assets import (  # noqa: E402
+    AssetCache,
+    HttpxDownloader,
+    is_retryable_status,
+    sniff_mime,
+)
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'x' * 64
 JPEG = b'\xff\xd8\xff' + b'y' * 64
@@ -50,6 +55,102 @@ class TestSniffMime:
 
     def test_unknown_falls_back_to_jpeg(self):
         assert sniff_mime(b'unknown-bytes') == 'image/jpeg'
+
+
+class TestStatusRetryability:
+    """3xx / 408 / 429 不能当永久失败：卡片的图应该能自己恢复。"""
+
+    @pytest.mark.parametrize('status', [301, 302, 307, 408, 425, 429, 500, 503])
+    def test_transient_statuses_are_retryable(self, status):
+        assert is_retryable_status(status) is True
+
+    @pytest.mark.parametrize('status', [200, 204, 400, 401, 403, 404, 405, 410, 451])
+    def test_permanent_statuses_are_not_retryable(self, status):
+        assert is_retryable_status(status) is False
+
+    @pytest.mark.parametrize('status', [302, 408, 429])
+    async def test_transient_status_is_retried_then_succeeds(self, cache, status):
+        store, downloader = cache([(status, b''), (200, PNG)])
+        assert await store.fetch_bytes('https://cdn/retry.jpg') == PNG
+        assert len(downloader.calls) == 2
+
+    async def test_rate_limit_gives_up_after_all_attempts(self, cache):
+        store, downloader = cache([(429, b''), (429, b''), (429, b'')])
+        assert await store.fetch_bytes('https://cdn/limited.jpg') is None
+        assert len(downloader.calls) == 3
+
+    @pytest.mark.parametrize('status', [400, 403, 410])
+    async def test_permanent_status_is_not_retried(self, cache, status):
+        store, downloader = cache([(status, b'')])
+        assert await store.fetch_bytes('https://cdn/dead.jpg') is None
+        assert len(downloader.calls) == 1
+
+
+class StubHttpxClient:
+    """替身 httpx.AsyncClient：记录调用，验证复用而不是每次重建。"""
+
+    def __init__(self):
+        self.calls = []
+        self.closed = 0
+
+    async def get(self, url, *, headers=None, timeout=None, follow_redirects=None):
+        self.calls.append((url, follow_redirects))
+        return type('Resp', (), {'status_code': 200, 'content': PNG})()
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class TestDefaultDownloader:
+    async def test_reuses_one_client_and_follows_redirects(self):
+        stub = StubHttpxClient()
+        downloader = HttpxDownloader(client=stub)
+
+        await downloader('https://cdn/a.png', {}, 3.0)
+        await downloader('https://cdn/b.png', {}, 3.0)
+
+        assert [call[0] for call in stub.calls] == ['https://cdn/a.png', 'https://cdn/b.png']
+        # CDN 会 302 到真实节点：必须自己跟随重定向，否则 body 是空的重定向页
+        assert all(call[1] is True for call in stub.calls)
+        await downloader.aclose()
+        assert stub.closed == 1
+        assert downloader._client is None
+
+    async def test_aclose_is_idempotent(self):
+        stub = StubHttpxClient()
+        downloader = HttpxDownloader(client=stub)
+
+        await downloader.aclose()
+        await downloader.aclose()
+
+        assert stub.closed == 1
+
+    async def test_cache_closes_its_own_downloader(self, tmp_path):
+        store = AssetCache(tmp_path, downloader=None)
+        stub = StubHttpxClient()
+        assert isinstance(store._download, HttpxDownloader)
+        store._download._client = stub
+
+        await store.aclose()
+        await store.aclose()
+
+        assert stub.closed == 1
+
+    async def test_injected_downloader_is_left_to_its_owner(self, tmp_path):
+        class ClosableDownloader(FakeDownloader):
+            def __init__(self, script):
+                super().__init__(script)
+                self.closed = 0
+
+            async def aclose(self):
+                self.closed += 1
+
+        injected = ClosableDownloader([])
+        store = AssetCache(tmp_path, downloader=injected)
+
+        await store.aclose()
+
+        assert injected.closed == 0
 
 
 class TestFetchBytes:

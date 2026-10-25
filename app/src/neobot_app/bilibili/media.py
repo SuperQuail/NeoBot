@@ -128,7 +128,7 @@ class BilibiliVideoService:
             full_text, source = "", "none"
             reason = f"获取视频内容失败：{exc}"
             self._logger.warning(reason)
-        transcript = full_text[: max(int(max_chars), 1)]
+        transcript = full_text[: max(_to_int(max_chars), 1)]
         if transcript and len(full_text) > len(transcript):
             stored = await self._store_transcript(bvid, full_text, source)
             result["archived"] = stored
@@ -143,7 +143,7 @@ class BilibiliVideoService:
 
         if include_comments > 0:
             result["comments"] = await self._comments(
-                client, result["aid"], int(include_comments)
+                client, result["aid"], _to_int(include_comments)
             )
         return result
 

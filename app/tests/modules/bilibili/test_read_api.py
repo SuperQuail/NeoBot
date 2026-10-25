@@ -52,12 +52,22 @@ _DANMAKU_XML = (
 
 
 class _TextResponse(FakeResponse):
-    """带 text/url 的响应替身（弹幕 XML、短链跳转）。"""
+    """带 text/headers 的响应替身（弹幕 XML、短链跳转）。"""
 
-    def __init__(self, text: str = "", *, url: str = "", status_code: int = 200) -> None:
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        location: str = "",
+        status_code: int = 200,
+    ) -> None:
         super().__init__(None, status_code=status_code)
         self.text = text
-        self.url = url
+        self.headers = {"Location": location} if location else {}
+
+
+def _redirect(location: str, status_code: int = 302) -> _TextResponse:
+    return _TextResponse(location=location, status_code=status_code)
 
 
 def _api(session: FakeSession) -> BilibiliReadApi:
@@ -360,17 +370,72 @@ def test_video_danmaku_returns_all_entries_without_limit() -> None:
 
 def test_expand_b23_follows_redirect() -> None:
     final = "https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.999"
-    session = FakeSession([_TextResponse(url=final)])
+    session = FakeSession([_redirect(final)])
 
     result = _api(session).expand_b23("https://b23.tv/abc")
 
     assert result == {"ok": True, "url": final, "bvid": "BV1xx411c7mD", "aid": 0}
-    assert session.calls[0]["method"] == "GET"
-    assert session.calls[0]["url"] == "https://b23.tv/abc"
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "https://b23.tv/abc"
+    # 手动跟跳：不让 requests 自己跟随，才能在每一跳校验域名。
+    assert call["allow_redirects"] is False
+
+
+def test_expand_b23_follows_multiple_bilibili_hops() -> None:
+    session = FakeSession(
+        [
+            _redirect("https://www.bilibili.com/blackboard/activity.html"),
+            _redirect("https://m.bilibili.com/video/BV1xx411c7mD"),
+        ]
+    )
+
+    result = _api(session).expand_b23("b23.tv/abc")
+
+    assert result["ok"] is True and result["bvid"] == "BV1xx411c7mD"
+    # 拿到 BV 号就停，不再多请求一次落地页。
+    assert [call["url"] for call in session.calls] == [
+        "https://b23.tv/abc",
+        "https://www.bilibili.com/blackboard/activity.html",
+    ]
+
+
+def test_expand_b23_rejects_foreign_host_without_request() -> None:
+    session = FakeSession()
+    api = _api(session)
+
+    for url in (
+        "https://evil.example.com/x",
+        "http://127.0.0.1:8080/admin",
+        "https://b23.tv.evil.com/x",
+    ):
+        result = api.expand_b23(url)
+        assert result["ok"] is False
+        assert "b23.tv / bilibili.com" in result["error"]
+    assert session.calls == []
+
+
+def test_expand_b23_rejects_redirect_to_foreign_host() -> None:
+    session = FakeSession([_redirect("http://127.0.0.1:8080/admin")])
+
+    result = _api(session).expand_b23("https://b23.tv/abc")
+
+    assert result["ok"] is False
+    assert "站外" in result["error"] and "127.0.0.1" in result["error"]
+    assert len(session.calls) == 1  # 不跟随站外跳转
+
+
+def test_expand_b23_stops_on_redirect_loop() -> None:
+    session = FakeSession([_redirect("https://b23.tv/loop") for _ in range(6)])
+
+    result = _api(session).expand_b23("https://b23.tv/loop")
+
+    assert result["ok"] is False and "跳转次数过多" in result["error"]
+    assert len(session.calls) == 6
 
 
 def test_expand_b23_without_redirect_or_input() -> None:
-    session = FakeSession([_TextResponse(url="https://b23.tv/abc")])
+    session = FakeSession([_TextResponse()])
     api = _api(session)
 
     stale = api.expand_b23("b23.tv/abc")

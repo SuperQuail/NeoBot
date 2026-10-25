@@ -64,8 +64,10 @@ def test_clear_removes_file(tmp_path) -> None:
     assert not path.exists()
     store.clear()  # 重复清除不抛错
 
-def test_save_falls_back_to_direct_write_when_atomic_fails(tmp_path, monkeypatch) -> None:
-    """原子写的临时文件被清理（实机 Errno 2）时，直写仍要能把凭证保存下来。"""
+def test_save_failure_raises_with_real_path_and_no_partial_file(
+    tmp_path, monkeypatch
+) -> None:
+    """原子写失败时直接抛（不再直写兜底）：异常带真实路径，也不留半个文件。"""
     import neobot_app.bilibili.cookie_provider as module
 
     calls: list[str] = []
@@ -77,11 +79,14 @@ def test_save_falls_back_to_direct_write_when_atomic_fails(tmp_path, monkeypatch
     monkeypatch.setattr(module, "atomic_write_text", failing_atomic)
     path = tmp_path / "bilibili" / "cookies.json"
     store = BilibiliCookieStore(path)
-    store.save(_COOKIES)
 
-    assert path.is_file()
-    assert len(calls) == 2  # 原子写重试一次后才降级直写
-    assert store.load()["SESSDATA"] == "sess-value"
+    with pytest.raises(OSError) as excinfo:
+        store.save(_COOKIES)
+
+    assert str(path) in str(excinfo.value)
+    assert calls == [str(path)]  # 只调一次原子写：外层不再重试、也不再直写
+    assert not path.exists()
+    assert store.load() is None
 
 
 def test_save_error_mentions_real_path(tmp_path, monkeypatch) -> None:

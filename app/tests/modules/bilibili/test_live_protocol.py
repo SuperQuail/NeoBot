@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import struct
 import zlib
 
 import brotli
@@ -14,6 +15,7 @@ from neobot_app.bilibili.live_protocol import (
     SendGiftBroadcast,
     SendGiftV2GiftItem,
     check_auth_reply,
+    decode_failures,
     decode_packets,
     encode_packet,
     event_key,
@@ -39,6 +41,23 @@ def test_decode_plain_zlib_brotli_and_multi_packets() -> None:
     assert decode_packets(b"") == []
     assert decode_packets(plain[:8]) == []
     assert decode_packets(encode_packet(5, b"not-compressed", protover=3)) == []
+
+
+def test_decode_failures_are_counted_not_silent() -> None:
+    """坏帧/解压失败要计数（并打 debug 日志），不能静默吞掉。"""
+    before = decode_failures()
+
+    # total < header_len：包长度异常
+    assert decode_packets(struct.pack(">IHHII", 8, 16, 1, 5, 1)) == []
+    # protover=2 但不是 zlib 数据
+    assert decode_packets(encode_packet(5, b"not-zlib", protover=2)) == []
+    # protover=3 但不是 brotli 数据
+    assert decode_packets(encode_packet(5, b"not-brotli", protover=3)) == []
+
+    after = decode_failures()
+    assert after["frame"] - before.get("frame", 0) == 1
+    assert after["zlib"] - before.get("zlib", 0) == 1
+    assert after["brotli"] - before.get("brotli", 0) == 1
 
 
 def test_check_auth_reply() -> None:

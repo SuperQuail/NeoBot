@@ -149,13 +149,14 @@ async def run_tool_reply(
         timeout=timeout,
     )
     usage = None
+    # 取最后一条带 usage 的 assistant 消息：末尾消息可能只有工具调用，没有用量。
     for message in reversed(state.get("messages", [])):
         if message.get("role") != "assistant":
             continue
         value = (message.get("extensions") or {}).get("usage")
         if isinstance(value, dict):
             usage = value
-        break
+            break
     return ToolReply(
         text=None if executor.cancelled else executor.text,
         usage=usage,

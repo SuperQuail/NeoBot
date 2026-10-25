@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +202,66 @@ async def test_frames_splits_into_multiple_sheets(
     for sheet in sheets:
         with Image.open(sheet) as sheet_image:
             assert sheet_image.size == (4 * 320, 4 * 180)
+
+
+async def test_concurrent_frames_for_same_bvid_keep_full_output(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=2))
+    service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), data_dir=tmp_path)
+
+    first, second = await asyncio.gather(service.frames(_BVID), service.frames(_BVID))
+
+    for result in (first, second):
+        assert result["ok"] is True
+        assert all(Path(item).is_file() for item in result["frames"])
+    base = tmp_path / "bilibili_frames"
+    frames_dir = base / _BVID / "frames"
+    assert len(list(frames_dir.glob("f_*.jpg"))) == 2
+    # 没有残留的临时目录
+    assert [item.name for item in base.iterdir() if item.name.startswith(".")] == []
+
+
+async def test_frames_failure_keeps_previous_output(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=2))
+    service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), data_dir=tmp_path)
+    assert (await service.frames(_BVID))["ok"] is True
+
+    monkeypatch.setattr(
+        video_frames_module.subprocess, "run", _FakeRun(returncode=1, stderr=b"boom")
+    )
+    failed = await service.frames(_BVID)
+
+    assert failed["ok"] is False
+    out_dir = tmp_path / "bilibili_frames" / _BVID
+    assert len(list((out_dir / "frames").glob("f_*.jpg"))) == 2  # 旧结果没被拆掉
+
+
+async def test_frames_prunes_old_output_dirs(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=1))
+    base = tmp_path / "bilibili_frames"
+    expired = time.time() - video_frames_module._OUTPUT_TTL_SECONDS - 60
+    expired_dir = base / "BVexpired" / "frames"
+    expired_dir.mkdir(parents=True)
+    (expired_dir / "f_00001.jpg").write_bytes(b"old")
+    os.utime(expired_dir.parent, (expired, expired))
+    for index in range(25):
+        extra = base / f"BVstale{index:02d}" / "frames"
+        extra.mkdir(parents=True)
+        (extra / "f_00001.jpg").write_bytes(b"old")
+    service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), data_dir=tmp_path)
+
+    assert (await service.frames(_BVID))["ok"] is True
+
+    # 只保留最近 20 份；超时的旧目录即使份数没超也会被清掉
+    kept = sorted(item.name for item in base.iterdir() if item.is_dir())
+    assert len(kept) == video_frames_module._MAX_OUTPUT_DIRS
+    assert _BVID in kept
+    assert "BVexpired" not in kept
 
 
 async def test_frames_falls_back_to_wbi_playurl_and_clamps_limits(

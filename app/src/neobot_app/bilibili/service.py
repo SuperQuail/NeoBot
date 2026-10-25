@@ -83,6 +83,9 @@ class BilibiliService:
         self._face = ""
         self._login_at: str | None = None
         self._error = ""
+        #: 扫码登录单飞：整个流程（生成二维码 → 轮询 → 落盘）同一时刻只允许一路。
+        self._login_lock = asyncio.Lock()
+        self._login_in_flight = False
 
     # ── 状态 ──
 
@@ -136,29 +139,44 @@ class BilibiliService:
         self._valid = False
 
     async def refresh(self) -> bool:
-        """状态查询/工具调用前补一次：没启动就启动；有凭证但未校验时重校验。
+        """状态查询/工具调用前补一次：没启动就启动；缺客户端就补加载凭证；未校验就重校验。
 
         启动时的 nav 校验可能因网络未就绪/风控偶发失败，不能让一次失败把
         整个进程的登录态钉死成「未登录」——状态命令读之前再试一次。
         """
         if not self._started:
             await self.start()
-        elif self._client is not None and not self._valid:
+        elif self._client is None:
+            # 无凭证启动后 cookie 文件才出现（另一个进程登录/手动放入）：补加载一次。
+            cookies = await asyncio.to_thread(self._store.load)
+            if cookies:
+                self._apply_cookies(cookies)
+                self._client = self._make_client(cookies)
+                self._logger.info(f"B站服务补加载到凭证，准备校验登录态（uid={self._uid}）")
+        if self._client is not None and not self._valid:
             await self.verify()
         return self.available
 
     async def verify(self) -> bool:
-        """重新校验登录态并刷新昵称等信息；网络异常按校验失败处理，不向外抛。"""
+        """重新校验登录态并刷新昵称等信息；只把明确的未登录/失效判为无效。
+
+        网络/5xx/风控等异常不代表凭证失效：保留上一次结论，error 里写清
+        「网络异常，暂未确认」，避免一次抖动把整个进程钉死成未登录。
+        """
         if self._client is None:
             self._valid = False
             return False
         try:
             info = await asyncio.to_thread(self._client.get_my_info)
-        except Exception as exc:
+        except BilibiliAuthError as exc:
             self._valid = False
-            self._error = f"B站登录态校验失败（网络异常）：{type(exc).__name__}: {exc}"
+            self._error = f"B站登录态已失效，请重新扫码登录（{exc}）"
             self._logger.warning(self._error)
             return False
+        except Exception as exc:  # 网络/5xx/风控/未知异常都不等于凭证失效
+            self._error = f"网络异常，暂未确认B站登录态（{type(exc).__name__}: {exc}）"
+            self._logger.warning(f"{self._error}，保留上次结论: valid={self._valid}")
+            return self._valid
         valid = bool(info.get("isLogin")) and _to_int(info.get("mid")) > 0
         self._valid = valid
         if valid:
@@ -182,7 +200,30 @@ class BilibiliService:
         """走完整二维码登录；成功时保存 cookie 并激活客户端。
 
         落盘失败不算登录失败：用内存 cookie 激活客户端，error 里提示重启后需重新登录。
+        单飞：面板与聊天同时发起扫码时只跑一路二维码，后到的一路等它结束后按当前
+        登录态返回，避免两路轮询互相覆盖 cookie。
         """
+        if self._login_in_flight:
+            self._logger.info("B站已有扫码登录流程在进行，等待其结束（不再生成第二张二维码）")
+            async with self._login_lock:
+                return self.available
+        self._login_in_flight = True
+        try:
+            async with self._login_lock:
+                return await self._login_locked(
+                    on_qr=on_qr, on_status=on_status, timeout=timeout
+                )
+        finally:
+            self._login_in_flight = False
+
+    async def _login_locked(
+        self,
+        *,
+        on_qr: Callable[[QrCodeLogin], Any] | None,
+        on_status: Callable[[QrPollResult], Any] | None,
+        timeout: float | None,
+    ) -> bool:
+        """单飞持锁后的登录主体；调用方必须已经持有登录锁。"""
         qr_login = BilibiliQrLogin(logger=self._logger)
         try:
             result = await qr_login.login(
@@ -192,6 +233,9 @@ class BilibiliService:
             )
         except BilibiliError as exc:
             return await self._login_failed(f"B站扫码登录失败: {exc}")
+        finally:
+            # 会话只在这次登录里有意义；异常/取消时也要关掉，避免句柄泄漏。
+            qr_login.close()
         if not result.success:
             reason = _LOGIN_STATE_REASONS.get(result.state, "B站扫码登录未完成")
             detail = result.message.strip()
@@ -203,7 +247,8 @@ class BilibiliService:
             )
         except (OSError, ValueError) as exc:
             save_error = exc
-            self._logger.warning(f"B站 cookie 保存失败: {exc}")
+            # 服务器绝对路径只进日志，不给用户看。
+            self._logger.warning(f"B站 cookie 保存失败（{self._store.path}）: {exc}")
         if self._client is not None:
             await asyncio.to_thread(self._client.close)
         self._apply_cookies(result.cookies)
@@ -214,11 +259,15 @@ class BilibiliService:
         if save_error is None:
             self._error = ""
         else:
-            self._error = f"登录成功，但凭证保存失败，重启后需重新登录（{save_error}）"
-            self._logger.warning(self._error)
+            self._error = "登录成功，但凭证保存失败，重启后需重新登录（详情见日志）"
+            self._logger.warning(f"{self._error}（{save_error}）")
         self._logger.info(f"B站扫码登录完成: uid={self._uid}")
         # 昵称等资料拉取失败不影响登录成功；DedeUserID 缺失时这里也能补上 uid。
-        info = await asyncio.to_thread(self._client.get_my_info)
+        try:
+            info = await asyncio.to_thread(self._client.get_my_info)
+        except Exception as exc:  # 登录已经成功，资料接口失败不能把结果翻成失败
+            self._logger.warning(f"B站登录成功但账号资料拉取失败（uid 用 cookie 里的）: {exc}")
+            info = {}
         if info:
             self._update_from_info(info)
         return True

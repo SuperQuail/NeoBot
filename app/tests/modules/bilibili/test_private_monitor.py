@@ -263,3 +263,65 @@ async def test_start_stop_lifecycle() -> None:
     assert monitor.is_running is True
     await monitor.stop()
     assert monitor.is_running is False
+
+
+async def test_replied_message_persists_across_restart(tmp_path) -> None:
+    client = FakeClient([session()], {55: [message(55, "在吗", timestamp=100)]})
+    monitor = _monitor(client, data_dir=tmp_path)
+
+    assert await monitor.poll_once() == 1
+    state_file = tmp_path / "bilibili" / "private_replies.json"
+    assert state_file.exists()
+
+    # 模拟进程重启：同一份私信再拉一次，不能重复回。
+    client2 = FakeClient([session()], {55: [message(55, "在吗", timestamp=100)]})
+    restarted = _monitor(client2, data_dir=tmp_path)
+    assert await restarted.poll_once() == 0
+    assert client2.sent == []
+
+
+async def test_failures_clear_on_normal_poll_without_new_messages() -> None:
+    client = FakeClient(
+        [session()], {55: [message(55, "在吗", timestamp=100)]}, fail_send=True
+    )
+    monitor = _monitor(client)
+
+    assert await monitor.poll_once() == 0
+    assert monitor.status()["failures"] == 1
+    assert monitor.next_poll_interval == 3600
+
+    # 下一轮没有新私信（即使失败计数曾经顶格）也要清零退避。
+    client.messages[55] = []
+    client.fail_send = False
+    assert await monitor.poll_once() == 0
+    assert monitor.status()["failures"] == 0
+    assert monitor.next_poll_interval == 1800
+
+
+async def test_generation_error_is_retried_next_poll() -> None:
+    class FlakyEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__("在的")
+            self.calls = 0
+
+        async def generate_private_reply(self, ctx):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("provider timeout")
+            self.contexts.append(ctx)
+            return self.text
+
+    client = FakeClient([session()], {55: [message(55, "在吗", timestamp=100)]})
+    engine = FlakyEngine()
+    monitor = _monitor(client, engine)
+
+    # provider 超时按契约抛出：不记 processed，会话回池等下一轮。
+    assert await monitor.poll_once() == 0
+    assert client.sent == []
+    assert monitor.status()["pending_sessions"] == 1
+    assert monitor.next_poll_interval == 3600
+
+    assert await monitor.poll_once() == 1
+    assert client.sent == [(55, "在的")]
+    assert monitor.status()["pending_sessions"] == 0
+    assert monitor.next_poll_interval == 1800

@@ -78,7 +78,3 @@ def user_card_url(host_mid: int | str) -> str:
     """
     return f"{API_BASE}/x/web-interface/card?mid={normalize_host_mid(host_mid)}&photo=true"
 
-
-def user_space_url(host_mid: int | str) -> str:
-    """主播个人空间主页地址（展示用）。"""
-    return f"https://space.bilibili.com/{normalize_host_mid(host_mid)}"

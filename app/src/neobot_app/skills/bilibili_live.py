@@ -5,7 +5,22 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from neobot_app.bilibili._compat import call_client
 from neobot_app.skills.base import SkillModule
+from neobot_app.utils.logger import get_module_logger
+
+logger = get_module_logger("bilibili.live_skill")
+
+#: 写操作：会以当前登录B站账号发言或改动监听状态，必须显式 confirm。
+_WRITE_TOOLS = frozenset({"send_danmaku", "enable", "disable", "schedule", "delete_schedule"})
+_CONFIRM_SCHEMA = {
+    "type": "boolean",
+    "description": "确认已获得用户明确授权，将以当前登录B站账号公开操作；必须传 true 才会执行",
+    "default": False,
+}
+_CONFIRM_REQUIRED = (
+    "写操作需要确认：确认用户意图后带上 confirm=true 再调用（会以当前登录B站账号公开操作）"
+)
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -17,6 +32,27 @@ def _room_id(args: dict[str, Any]) -> int:
         return int(args.get("room_id") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _flag(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(value)
+
+
+def _room(args: dict[str, Any], *, optional: bool = False) -> tuple[int, str]:
+    """room_id 统一校验：返回 (房间号, 错误文案)；错误文案非空表示参数不合法。"""
+    raw = args.get("room_id")
+    rid = _room_id(args)
+    if rid > 0:
+        return rid, ""
+    if optional and raw in (None, ""):
+        return 0, ""
+    if raw in (None, ""):
+        return 0, "缺少 room_id（直播间短号或房间号）"
+    return 0, "房间号无效"
 
 
 class BilibiliLiveSkill(SkillModule):
@@ -88,13 +124,14 @@ class BilibiliLiveSkill(SkillModule):
             ),
             self._tool_def(
                 "send_danmaku",
-                "以当前登录的B站账号在直播间发一条弹幕；仅开播时发送，下播返回未开播不互动。",
+                "以当前登录的B站账号在直播间发一条弹幕（必须传 confirm=true）；仅开播时发送，下播返回未开播不互动。",
                 {
                     "properties": {
                         "room_id": {"type": "integer", "description": "直播间短号或房间号"},
                         "text": {"type": "string", "description": "弹幕正文；B站硬限制20字，一句说完，不带QQ群号/客服腔/markdown/@/链接/颜文字"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["room_id", "text"],
+                    "required": ["room_id", "text", "confirm"],
                 },
             ),
             self._tool_def(
@@ -119,18 +156,20 @@ class BilibiliLiveSkill(SkillModule):
                             "description": "是否自动回复本房间所有非空弹幕，默认 true",
                             "default": True,
                         },
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["room_id"],
+                    "required": ["room_id", "confirm"],
                 },
             ),
             self._tool_def(
                 "disable",
-                "停用直播间监听并删除其定时弹幕（写操作）。",
+                "停用直播间监听并删除其定时弹幕（写操作，必须传 confirm=true）。",
                 {
                     "properties": {
                         "room_id": {"type": "integer", "description": "直播间短号或房间号"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["room_id"],
+                    "required": ["room_id", "confirm"],
                 },
             ),
             self._tool_def(
@@ -146,8 +185,9 @@ class BilibiliLiveSkill(SkillModule):
                             "description": "once=只发一次，daily=每天，weekly=每 7 天",
                         },
                         "prompt": {"type": "string", "description": "这条弹幕要说的事或主题"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["room_id", "time", "recurrence", "prompt"],
+                    "required": ["room_id", "time", "recurrence", "prompt", "confirm"],
                 },
             ),
             self._tool_def(
@@ -167,8 +207,9 @@ class BilibiliLiveSkill(SkillModule):
                     "properties": {
                         "room_id": {"type": "integer", "description": "直播间短号或房间号"},
                         "schedule_id": {"type": "string", "description": "list_schedules 返回的任务 ID"},
+                        "confirm": _CONFIRM_SCHEMA,
                     },
-                    "required": ["room_id", "schedule_id"],
+                    "required": ["room_id", "schedule_id", "confirm"],
                 },
             ),
             self._tool_def(
@@ -220,24 +261,32 @@ class BilibiliLiveSkill(SkillModule):
         live = self._live
         if live is None:
             return _json({"ok": False, "error": "B站直播交互器不可用"})
+        if tool_name in _WRITE_TOOLS and not _flag((args or {}).get("confirm"), False):
+            return _json(
+                {"ok": False, "code": "CONFIRM_REQUIRED", "error": _CONFIRM_REQUIRED}
+            )
+        await self._refresh_service()
         try:
             if tool_name == "status":
                 return await self._status(live, args)
             if tool_name == "get_live_willingness":
-                return _json(live.get_live_willingness(_room_id(args)))
+                rid, error = _room(args, optional=True)
+                if error:
+                    return _json({"ok": False, "error": error})
+                return _json(live.get_live_willingness(rid))
             if tool_name == "set_live_willingness":
-                rid = _room_id(args)
-                if rid <= 0:
-                    return _json({"ok": False, "error": "房间号无效"})
+                rid, error = _room(args)
+                if error:
+                    return _json({"ok": False, "error": error})
                 try:
                     value = float(args.get("value"))
                 except (TypeError, ValueError):
                     return _json({"ok": False, "error": "value 必须是数字"})
                 return _json(live.set_live_willingness(rid, value))
             if tool_name == "remove_live_willingness":
-                rid = _room_id(args)
-                if rid <= 0:
-                    return _json({"ok": False, "error": "房间号无效"})
+                rid, error = _room(args)
+                if error:
+                    return _json({"ok": False, "error": error})
                 return _json(live.remove_live_willingness(rid))
             if tool_name == "send_danmaku":
                 return await self._send_danmaku(live, args)
@@ -262,13 +311,79 @@ class BilibiliLiveSkill(SkillModule):
             if tool_name == "transcribe":
                 return await self._transcribe(live, args)
         except Exception as exc:
+            logger.warning(f"B站直播操作失败：{tool_name}：{type(exc).__name__}: {exc}")
             return _json({"ok": False, "error": f"B站直播操作失败：{type(exc).__name__}: {exc}"})
         return _json({"ok": False, "error": f"未知工具: {tool_name}"})
 
+    async def _refresh_service(self) -> None:
+        """登录门禁：调用前让 service 自愈一次；失败只记日志，原因在 status 里给出。"""
+        refresh = getattr(self._service, "refresh", None)
+        if not callable(refresh):
+            return
+        try:
+            await call_client(refresh)
+        except Exception as exc:
+            logger.warning(f"B站直播登录态刷新失败：{type(exc).__name__}: {exc}")
+
+    async def _live_state(self, live: Any, rid: int) -> dict[str, Any]:
+        """开播状态三态：未登录 / 接口错误 / 开播（未开播）分开。
+
+        优先用 T3 的 live_status（{live, error}）；旧实现退回 is_live。
+        """
+        service = self._service
+        if service is not None and getattr(service, "available", None) is False:
+            detail = ""
+            status = getattr(service, "status", None)
+            if callable(status):
+                try:
+                    detail = str(status().get("error") or "").strip()
+                except Exception:
+                    detail = ""
+            return {
+                "live": False,
+                "live_state": "unauthenticated",
+                "live_error": detail or "B站未登录，先发 /login bilibili 扫码登录",
+            }
+        query = getattr(live, "live_status", None)
+        if callable(query):
+            try:
+                result = await call_client(query, rid)
+            except Exception as exc:
+                logger.warning(
+                    f"B站直播间开播状态读取失败：房间 {rid}：{type(exc).__name__}: {exc}"
+                )
+                return {
+                    "live": False,
+                    "live_state": "error",
+                    "live_error": f"开播状态读取失败：{exc}",
+                }
+            result = result if isinstance(result, dict) else {}
+            is_live = bool(result.get("live"))
+            error = str(result.get("error") or "").strip()
+            payload: dict[str, Any] = {
+                "live": is_live,
+                "live_state": "error" if error else ("live" if is_live else "offline"),
+            }
+            if error:
+                payload["live_error"] = error
+            return payload
+        try:
+            is_live = bool(await live.is_live(rid))
+        except Exception as exc:
+            logger.warning(
+                f"B站直播间开播状态读取失败：房间 {rid}：{type(exc).__name__}: {exc}"
+            )
+            return {
+                "live": False,
+                "live_state": "error",
+                "live_error": f"开播状态读取失败：{exc}",
+            }
+        return {"live": is_live, "live_state": "live" if is_live else "offline"}
+
     async def _status(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
-        if args.get("room_id") not in (None, "") and rid <= 0:
-            return _json({"ok": False, "error": "房间号无效"})
+        rid, error = _room(args, optional=True)
+        if error:
+            return _json({"ok": False, "error": error})
         rooms = {int(item.get("room_id") or 0): item for item in live.list_rooms()}
         if rid <= 0:
             result = []
@@ -279,7 +394,7 @@ class BilibiliLiveSkill(SkillModule):
                         "name": str(room.get("name") or ""),
                         "auto_reply": bool(room.get("auto_reply")),
                         "asr": bool(room.get("asr", False)),
-                        "live": await live.is_live(room_id),
+                        **(await self._live_state(live, room_id)),
                         "schedules": live.list_schedules(room_id),
                     }
                 )
@@ -293,18 +408,27 @@ class BilibiliLiveSkill(SkillModule):
                 "name": str(room.get("name") or ""),
                 "auto_reply": bool(room.get("auto_reply", False)),
                 "asr": bool(room.get("asr", False)),
-                "live": await live.is_live(rid),
+                **(await self._live_state(live, rid)),
                 "schedules": live.list_schedules(rid),
             }
         )
 
     async def _send_danmaku(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         text = str(args.get("text") or "").strip()
+        if not text:
+            return _json({"ok": False, "room_id": rid, "error": "弹幕内容不能为空"})
         result = await live.send_danmaku(rid, text)
+        sent = bool(result.get("ok"))
+        if not sent:
+            logger.warning(
+                f"B站直播弹幕发送失败：房间 {rid}：{str(result.get('error') or '未返回原因')}"
+            )
         return _json(
             {
-                "ok": bool(result.get("ok")),
+                "ok": sent,
                 "room_id": rid,
                 "text": text,
                 "error": str(result.get("error") or ""),
@@ -313,9 +437,9 @@ class BilibiliLiveSkill(SkillModule):
         )
 
     def _read_history(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
-        if rid <= 0:
-            return _json({"ok": False, "error": "房间号无效"})
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         try:
             count = int(args.get("count") or 500)
         except (TypeError, ValueError):
@@ -332,7 +456,9 @@ class BilibiliLiveSkill(SkillModule):
         )
 
     def _recent_events(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         try:
             count = max(1, min(int(args.get("count") or 20), 100))
         except (TypeError, ValueError):
@@ -353,7 +479,9 @@ class BilibiliLiveSkill(SkillModule):
         return _json({"ok": True, "room_id": rid, "count": len(payload), "events": payload})
 
     async def _record_clip(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         try:
             seconds = max(5, min(int(args.get("seconds") or 30), 300))
         except (TypeError, ValueError):
@@ -364,14 +492,18 @@ class BilibiliLiveSkill(SkillModule):
         return _json(payload)
 
     async def _snapshot(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         result = await live.snapshot(rid)
         payload = dict(result)
         payload["note"] = "画面文件保存在本机；描述由视觉模型生成，可能不准确"
         return _json(payload)
 
     async def _transcribe(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         try:
             seconds = max(5, min(int(args.get("seconds") or 15), 60))
         except (TypeError, ValueError):
@@ -382,22 +514,29 @@ class BilibiliLiveSkill(SkillModule):
         return _json(payload)
 
     async def _enable(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         await live.ensure_started()
-        result = await live.enable(rid, auto_reply=bool(args.get("auto_reply", True)))
+        # 别用 bool()："false" 也是真值。
+        result = await live.enable(rid, auto_reply=_flag(args.get("auto_reply"), True))
         payload = dict(result)
         payload["note"] = "写操作：启用后自动回复将以当前B站账号发言"
         return _json(payload)
 
     async def _disable(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         result = await live.disable(rid)
         payload = dict(result)
         payload["note"] = "写操作：停用后不再监听该房间"
         return _json(payload)
 
     async def _schedule(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         result = await live.schedule(
             rid,
             str(args.get("time") or ""),
@@ -409,14 +548,15 @@ class BilibiliLiveSkill(SkillModule):
         return _json(payload)
 
     def _list_schedules(self, live: Any, args: dict[str, Any]) -> str:
-        raw = args.get("room_id")
-        rid = _room_id(args)
-        if raw not in (None, "") and rid <= 0:
-            return _json({"ok": False, "error": "房间号无效"})
+        rid, error = _room(args, optional=True)
+        if error:
+            return _json({"ok": False, "error": error})
         return _json({"ok": True, "schedules": live.list_schedules(rid or None)})
 
     async def _delete_schedule(self, live: Any, args: dict[str, Any]) -> str:
-        rid = _room_id(args)
+        rid, error = _room(args)
+        if error:
+            return _json({"ok": False, "error": error})
         result = await live.delete_schedule(rid, str(args.get("schedule_id") or "").strip())
         payload = dict(result)
         payload["note"] = "写操作：删除后该定时弹幕不再发送"

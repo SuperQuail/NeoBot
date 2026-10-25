@@ -10,6 +10,8 @@ import asyncio
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,9 @@ _ROWS = 4
 _CELL_WIDTH = 320
 _FRAME_TIMEOUT_SECONDS = 300
 _VISION_TIMEOUT_SECONDS = 60.0
+#: 抽帧结果保留策略：只留最近这么多份、且不超过这个时长（磁盘占用有界）。
+_MAX_OUTPUT_DIRS = 20
+_OUTPUT_TTL_SECONDS = 7 * 24 * 3600
 _DESCRIBE_PROMPT = (
     "这是B站视频按每 {every} 秒抽取、从左到右从上到下排列的4x4关键帧拼图。"
     "请用中文概括画面里发生的事、场景变化和屏幕上的文字；"
@@ -46,6 +51,13 @@ def _to_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _dir_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _first_page_cid(info: dict[str, Any]) -> int:
@@ -139,7 +151,7 @@ class VideoFrameService:
         try:
             info = await call_client(client.get_video_info, text)
         except Exception as exc:
-            result["error"] = f"获取视频信息失败：{type(exc).__name__}"
+            result["error"] = f"获取视频信息失败：{type(exc).__name__}: {exc}"
             self._logger.warning(result["error"])
             return result
         if not isinstance(info, dict) or not info.get("bvid"):
@@ -164,14 +176,23 @@ class VideoFrameService:
         every = min(max(_to_int(every) or _DEFAULT_EVERY, 1), 3600)
         max_frames = min(max(_to_int(max_frames) or _MAX_FRAMES, 1), _MAX_FRAMES)
         out_dir = self._output_dir(bvid)
-        shutil.rmtree(out_dir, ignore_errors=True)
-        frames_dir = out_dir / "frames"
-        sheets_dir = out_dir / "sheets"
+        # 每次请求用独立临时目录，成功后再整体替换：并发抽同一个 bvid 不会互删对方的帧。
         try:
-            frames_dir.mkdir(parents=True)
-            sheets_dir.mkdir(parents=True)
+            out_dir.parent.mkdir(parents=True, exist_ok=True)
+            work_dir = Path(
+                tempfile.mkdtemp(prefix=f".{_safe_name(bvid)}-", dir=out_dir.parent)
+            )
         except OSError as exc:
-            result["error"] = f"创建画面目录失败（{type(exc).__name__}）"
+            result["error"] = f"创建画面目录失败（{type(exc).__name__}: {exc}）"
+            return result
+        frames_dir = work_dir / "frames"
+        sheets_dir = work_dir / "sheets"
+        try:
+            frames_dir.mkdir()
+            sheets_dir.mkdir()
+        except OSError as exc:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            result["error"] = f"创建画面目录失败（{type(exc).__name__}: {exc}）"
             return result
 
         command = [
@@ -199,26 +220,36 @@ class VideoFrameService:
         try:
             completed = await self._run_ffmpeg(command, _FRAME_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            shutil.rmtree(out_dir, ignore_errors=True)
+            shutil.rmtree(work_dir, ignore_errors=True)
             result["error"] = f"抽帧超时（{_FRAME_TIMEOUT_SECONDS} 秒）"
             return result
         except OSError as exc:
-            shutil.rmtree(out_dir, ignore_errors=True)
-            result["error"] = f"无法启动 ffmpeg（{type(exc).__name__}）"
+            shutil.rmtree(work_dir, ignore_errors=True)
+            result["error"] = f"无法启动 ffmpeg（{type(exc).__name__}: {exc}）"
             return result
         frames = sorted(frames_dir.glob("f_*.jpg"))
         if completed.returncode != 0 or not frames:
             detail = _stderr_tail(completed)
-            shutil.rmtree(out_dir, ignore_errors=True)
+            shutil.rmtree(work_dir, ignore_errors=True)
             result["error"] = f"抽帧失败（{detail}）"
             return result
 
-        sheets = self._make_sheets(frames, sheets_dir)
-        result["frames"] = [str(path) for path in frames]
-        result["sheets"] = [str(path) for path in sheets]
+        # 拼图是纯 CPU 操作，放线程池里跑，别阻塞事件循环。
+        sheets = await asyncio.to_thread(self._make_sheets, frames, sheets_dir)
+        try:
+            self._publish(work_dir, out_dir)
+        except OSError as exc:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            result["error"] = f"保存抽帧结果失败（{type(exc).__name__}: {exc}）"
+            return result
+        result["frames"] = [str(out_dir / "frames" / path.name) for path in frames]
+        result["sheets"] = [str(out_dir / "sheets" / path.name) for path in sheets]
         if describe and sheets and self._vision_provider is not None:
-            result["description"] = await self._describe(sheets, every)
+            result["description"] = await self._describe(
+                [out_dir / "sheets" / path.name for path in sheets], every
+            )
         result["ok"] = True
+        self._prune_outputs(out_dir.parent)
         self._logger.debug(f"B站视频抽帧完成: bvid={bvid} frames={len(frames)} sheets={len(sheets)}")
         return result
 
@@ -283,6 +314,40 @@ class VideoFrameService:
 
     async def _run_ffmpeg(self, command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
         return await asyncio.to_thread(subprocess.run, command, capture_output=True, timeout=timeout)
+
+    @staticmethod
+    def _publish(work_dir: Path, out_dir: Path) -> None:
+        """用临时目录整体替换结果目录；替换失败时把旧结果放回去，不丢已完成的帧。"""
+        stale = out_dir.with_name(f".{out_dir.name}.old")
+        shutil.rmtree(stale, ignore_errors=True)
+        if out_dir.exists():
+            out_dir.rename(stale)
+        try:
+            work_dir.rename(out_dir)
+        except OSError:
+            if stale.exists():
+                stale.rename(out_dir)
+            raise
+        shutil.rmtree(stale, ignore_errors=True)
+
+    def _prune_outputs(self, base: Path) -> None:
+        """按数量和时长清理旧的抽帧目录（磁盘占用有界，失败只记 debug）。"""
+        try:
+            entries = [
+                item
+                for item in base.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            ]
+        except OSError as exc:
+            self._logger.debug(f"B站抽帧目录清理跳过: {exc}")
+            return
+        cutoff = time.time() - _OUTPUT_TTL_SECONDS
+        entries.sort(key=_dir_mtime, reverse=True)
+        for index, item in enumerate(entries):
+            if index < _MAX_OUTPUT_DIRS and _dir_mtime(item) >= cutoff:
+                continue
+            self._logger.debug(f"B站抽帧目录清理: {item.name}")
+            shutil.rmtree(item, ignore_errors=True)
 
     def _make_sheets(self, frames: list[Path], sheet_dir: Path) -> list[Path]:
         """把关键帧拼成 4x4 接触印相纸；单张失败不影响已拼好的。"""

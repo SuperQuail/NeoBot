@@ -25,6 +25,7 @@ from .assets import AssetCache
 from .bilibili.client import BilibiliLiveClient, HttpxTransport
 from .bilibili.errors import BilibiliAPIError, BilibiliTransportError
 from .config import StreamConfig
+from .logs import log_at
 from .notify import Notifier
 from .poller import LivePoller
 from .render import CardRenderer, resolve_style
@@ -37,6 +38,10 @@ TEMPLATE_DIR = PLUGIN_DIR / "templates"
 
 #: 总览图并发拉头像的上限
 AVATAR_CONCURRENCY = 6
+#: 单个头像的取图预算：超时用占位头像，不能让总览图卡在一个慢 CDN 上
+AVATAR_TIMEOUT = 5.0
+#: 停止轮询时等待任务自然收尾的时间，超时就取消
+STOP_TIMEOUT = 5.0
 
 
 plugin = Plugin(
@@ -136,7 +141,18 @@ class PluginState:
 
         async def one(row: Any) -> dict[str, Any]:
             async with semaphore:
-                avatar = await assets.fetch_data_uri(row.avatar_url or "")
+                avatar = ""
+                if row.avatar_url:
+                    try:
+                        avatar = await asyncio.wait_for(
+                            assets.fetch_data_uri(row.avatar_url), timeout=AVATAR_TIMEOUT
+                        )
+                    except (asyncio.TimeoutError, TimeoutError):
+                        log_at(
+                            getattr(self.ctx, "logger", None),
+                            "debug",
+                            f"拉取主播头像超时（{AVATAR_TIMEOUT:g}s），改用占位头像: {row.avatar_url}",
+                        )
             state_row = states.get(row.room_id)
             live = state_row is not None and int(state_row.live_status) == 1
             return {
@@ -216,19 +232,46 @@ class PluginState:
         )
 
     async def stop_polling(self) -> None:
+        """停轮询：先给任务自然收尾的机会，超时则取消并等它真正结束。
+
+        这里必须等到任务结束才返回——modloader 紧接着会 close_databases()，
+        任务还活着会让它在已关闭的引擎上继续读写（之前 cancel 后直接 return
+        就是这个隐患）。
+        """
         self._stop.set()
-        task = self._task
-        self._task = None
+        task, self._task = self._task, None
         if task is None:
             return
+        logger = getattr(self.ctx, "logger", None)
         try:
-            await asyncio.wait_for(task, timeout=5.0)
+            # wait_for 超时会自己 cancel 并等任务完成，所以这里不用再 cancel 一次
+            await asyncio.wait_for(task, timeout=STOP_TIMEOUT)
         except TimeoutError:
-            task.cancel()
+            log_at(logger, "warning", f"轮询任务未在 {STOP_TIMEOUT:g} 秒内退出，已取消")
         except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
+            # 只吞「被取消的轮询任务」；外层自己被取消（关停/重载流程取消）必须继续抛，
+            # 否则关停信号会被悄悄吃掉。
+            current = asyncio.current_task()
+            if current is None or current.cancelling():
+                raise
+        except Exception as exc:
+            log_at(logger, "warning", f"轮询任务异常退出: {exc!r}")
+
+    async def aclose(self) -> None:
+        """关闭轮询用的 HTTP 连接（可重复调用）。
+
+        数据库不在这里关：modloader 会在 on_stop 的关闭处理器之后统一
+        close_databases()，这里再关一次会让热重载拿到已关闭的引擎。
+        """
+        logger = getattr(self.ctx, "logger", None)
+        for holder in (self.client, self.assets):
+            close = getattr(holder, "aclose", None)
+            if not callable(close):
+                continue
+            try:
+                await close()
+            except Exception as exc:
+                log_at(logger, "warning", f"关闭 HTTP 连接失败: {exc!r}")
 
 
 state = PluginState()
@@ -261,6 +304,9 @@ async def _on_startup(ctx: Any) -> None:
 
 @plugin.on_shutdown
 async def _on_shutdown(ctx: Any) -> None:
+    # 顺序有讲究：先等轮询任务真正结束，再关它用到的 HTTP 连接；
+    # 数据库由 modloader 在本处理器返回后统一关闭。
     await state.stop_polling()
+    await state.aclose()
     ctx.logger.info(f"{ctx.plugin_name} 已停止")
 

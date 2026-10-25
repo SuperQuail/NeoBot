@@ -24,12 +24,13 @@ from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger("bilibili.channel")
 
-#: 评论区前缀 -> reply type_（B站 CommentResourceType）。
+#: 评论区前缀 -> reply type_（B站 CommentResourceType，与 BilibiliClient 的
+#: comment_type 对齐：视频 1、动态 17、专栏/opus 12、番剧 11）。opus 不是番剧 11。
 _COMMENT_KINDS = {
     "comment": 1,
     "video": 1,
     "dynamic": 17,
-    "opus": 11,
+    "opus": 12,
     "article": 12,
 }
 _MAX_HISTORY_LINES = 30
@@ -90,9 +91,9 @@ class BilibiliCrossChatChannel:
                 type_=target["type_"],
             )
         if not sent:
-            logger.warning("B站跨聊天投递失败", conversation_id=conversation_id)
+            logger.warning(f"B站跨聊天投递失败：会话 {conversation_id}")
             return False, "", "B站发送失败（可能被风控或评论区已关闭）"
-        logger.info("B站跨聊天任务已发送", conversation_id=conversation_id, chars=len(reply))
+        logger.info(f"B站跨聊天任务已发送：会话 {conversation_id}，{len(reply)} 字")
         return True, reply, "已发送到B站"
 
     async def _send_live_task(
@@ -107,9 +108,7 @@ class BilibiliCrossChatChannel:
             live = await self._live.is_live(room_id)
         except Exception as exc:
             logger.warning(
-                "B站直播开播状态读取失败",
-                room_id=room_id,
-                error=f"{type(exc).__name__}: {exc}",
+                f"B站直播开播状态读取失败：房间 {room_id} {type(exc).__name__}: {exc}"
             )
             live = False
         if not live:
@@ -119,7 +118,7 @@ class BilibiliCrossChatChannel:
         try:
             frame_context = await self._live.frame_context(room_id)
         except Exception as exc:
-            logger.debug("B站直播跨聊天画面读取失败", room_id=room_id, error=str(exc))
+            logger.debug(f"B站直播跨聊天画面读取失败：房间 {room_id} {exc}")
         content = str(task or "")
         if frame_context:
             content += f"\n[当前直播画面]\n{frame_context}"
@@ -143,14 +142,10 @@ class BilibiliCrossChatChannel:
             result = await self._live.send_danmaku(room_id, part)
             if not result.get("ok"):
                 detail = str(result.get("error") or "B站直播弹幕发送失败")
-                logger.warning(
-                    "B站直播跨聊天投递失败", room_id=room_id, error=detail
-                )
+                logger.warning(f"B站直播跨聊天投递失败：房间 {room_id} {detail}")
                 return False, " ".join(sent_parts), detail
             sent_parts.append(part)
-        logger.info(
-            "B站直播跨聊天任务已发送", room_id=room_id, chars=len(reply)
-        )
+        logger.info(f"B站直播跨聊天任务已发送：房间 {room_id}，{len(reply)} 字")
         return True, reply, "已发送到B站直播间"
 
     async def get_history(self, conversation_id: str, count: int = 20) -> str:
@@ -168,13 +163,16 @@ class BilibiliCrossChatChannel:
             if target["kind"] == "private":
                 messages = await call_client(client.get_messages, target["uid"], size=limit)
                 return _render_private_history(messages, client)
-            comments = await call_client(client.get_video_comments, target["oid"], page=1)
-            return _render_comment_history(comments, limit)
+            # 按 target 的评论区类型取评论：动态/专栏/opus 不能读视频评论区（type=1）。
+            page = await call_client(
+                client.get_comments, target["oid"], target["type_"], page_size=limit
+            )
+            items = page.get("items") if isinstance(page, dict) else page
+            return _render_comment_history(items, limit)
         except Exception as exc:
             logger.warning(
-                "B站跨聊天历史读取失败",
-                conversation_id=conversation_id,
-                error=f"{type(exc).__name__}: {exc}",
+                f"B站跨聊天历史读取失败：会话 {conversation_id} "
+                f"{type(exc).__name__}: {exc}"
             )
             return ""
 
@@ -188,9 +186,7 @@ class BilibiliCrossChatChannel:
             items = self._live.get_history(room_id, limit)
         except Exception as exc:
             logger.warning(
-                "B站直播历史读取失败",
-                room_id=room_id,
-                error=f"{type(exc).__name__}: {exc}",
+                f"B站直播历史读取失败：房间 {room_id} {type(exc).__name__}: {exc}"
             )
             return ""
         lines: list[str] = []

@@ -9,6 +9,7 @@ from bilibili.judge import (
     COOKIE_EXPIRED,
     NOT_FOUND,
     PLATFORM_ERROR,
+    PLATFORM_UNAVAILABLE,
     RATE_LIMITED,
     RISK_CONTROL,
     judge,
@@ -74,8 +75,27 @@ class TestPlatformCodes:
 
 
 class TestNonJsonAndEmpty:
-    def test_empty_body_means_cookie_expired(self):
-        assert judge("").code == COOKIE_EXPIRED
+    """空响应体不是登录失效：一次网络抖动不该把用户引去重新扫码。"""
+
+    @pytest.mark.parametrize("raw", [None, ""])
+    def test_empty_body_is_retryable_unavailable(self, raw):
+        verdict = judge(raw)
+        assert (verdict.kind, verdict.code, verdict.retryable) == (
+            "unavailable",
+            PLATFORM_UNAVAILABLE,
+            True,
+        )
+        assert verdict.kind != "auth"
+        assert verdict.code != COOKIE_EXPIRED
+
+    def test_empty_body_with_timeout_status_is_timeout(self):
+        verdict = judge("", http_status=408)
+        assert (verdict.kind, verdict.code, verdict.retryable) == ("timeout", "TIMEOUT", True)
+
+    def test_empty_body_keeps_meaningful_http_status(self):
+        # 有明确状态码时以状态码为准：429 仍是限流、404 仍是没找到
+        assert judge("", http_status=429).code == RATE_LIMITED
+        assert judge("", http_status=404).code == NOT_FOUND
 
     def test_html_page_is_antibot_and_retryable(self):
         verdict = judge("<html>403 forbidden</html>")

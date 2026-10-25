@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import struct
+import threading
 import time
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -69,6 +71,23 @@ class _FakeClient:
         self.sent.append((room_id, text))
         self.sent_targets.append((reply_mid, reply_uname))
         return True
+
+
+class _ThreadedUidClient(_FakeClient):
+    """my_uid 走 property：真实 client 的属性在未缓存时会同步打 nav 接口。"""
+
+    def __init__(self) -> None:
+        self.uid_reads: list[int] = []
+        super().__init__()
+
+    @property
+    def my_uid(self) -> int:
+        self.uid_reads.append(threading.get_ident())
+        return self._uid
+
+    @my_uid.setter
+    def my_uid(self, value: int) -> None:
+        self._uid = int(value)
 
 
 class _FakeProvider:
@@ -183,6 +202,57 @@ async def test_disable_and_auto_reply_persist(tmp_path: Path) -> None:
     assert state == {"rooms": {}}
 
 
+async def test_enable_refuses_when_not_logged_in(tmp_path: Path) -> None:
+    """未登录时 enable 不能出"监听已开"的假成功。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    result = await interactor.enable(5440)
+    assert result["ok"] is False
+    assert "未登录" in result["error"]
+    assert interactor.list_rooms() == []
+
+
+async def test_enable_keeps_known_room_info_when_fetch_fails(tmp_path: Path) -> None:
+    interactor, client, _ = await _enabled(tmp_path, auto_reply=False)
+    client.get_live_room_info = lambda room_id: {}  # 接口失败返回空 dict
+    assert (await interactor.enable(5440))["ok"] is True
+    room = interactor.list_rooms()[0]
+    assert room["real_room_id"] == 21452505
+    assert room["name"] == "主播"
+
+
+async def test_corrupt_state_file_is_backed_up_not_overwritten(tmp_path: Path) -> None:
+    state_path = tmp_path / "bilibili" / "live_interact.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{not json", encoding="utf-8")
+
+    interactor = BilibiliLiveInteractor(_FakeClient(), data_dir=tmp_path)
+    assert interactor.list_rooms() == []
+    backup = state_path.with_name("live_interact.json.bad")
+    assert backup.read_text(encoding="utf-8") == "{not json"
+
+    assert (await interactor.enable(5440))["ok"] is True
+    assert "5440" in json.loads(state_path.read_text(encoding="utf-8"))["rooms"]
+
+
+async def test_corrupt_state_with_failed_backup_is_never_overwritten(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state_path = tmp_path / "bilibili" / "live_interact.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{not json", encoding="utf-8")
+
+    def _boom(self: Path, target: object) -> None:
+        raise OSError("备份失败")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+    interactor = BilibiliLiveInteractor(_FakeClient(), data_dir=tmp_path)
+    assert interactor.list_rooms() == []
+    assert interactor._state_broken is True
+    # 房间照常启用，只是不落盘：原文件保持原样，绝不用空房间表覆盖。
+    assert (await interactor.enable(5440))["ok"] is True
+    assert state_path.read_text(encoding="utf-8") == "{not json"
+
+
 def test_encode_and_decode_packets_including_zlib() -> None:
     heartbeat = encode_packet(2)
     total, header_len, protover, op, seq = struct.unpack(">IHHII", heartbeat)
@@ -279,10 +349,74 @@ async def test_all_danmaku_trigger_without_minute_cap(tmp_path: Path) -> None:
     assert len(client.sent) == 4
 
 
+async def test_stale_danmaku_is_kept_in_history_but_not_answered(tmp_path: Path) -> None:
+    provider = _FakeProvider()
+    interactor, client, _ = await _enabled(tmp_path, provider=provider)
+    await interactor._handle_danmu(
+        "5440",
+        {"uid": 8, "name": "观众", "text": "@小助手 hi", "recv_at": time.monotonic() - 20.0},
+    )
+    assert client.sent == []
+    assert provider.messages == []
+    assert interactor.get_history(5440)[0]["text"] == "@小助手 hi"
+
+
+async def test_pending_danmaku_is_bounded_per_room(tmp_path: Path) -> None:
+    interactor, _client, _provider = await _enabled(tmp_path, auto_reply=False)
+    blocker = asyncio.Event()
+
+    async def _hold(room_id: str, danmu: dict) -> None:
+        await blocker.wait()
+
+    interactor._handle_danmu = _hold  # type: ignore[method-assign]
+    for index in range(live_interact._DANMU_MAX_PENDING + 3):
+        interactor._schedule_danmu("5440", {"text": f"m{index}"})
+    assert interactor._pending_danmu["5440"] == live_interact._DANMU_MAX_PENDING
+
+    blocker.set()
+    await asyncio.gather(*list(interactor._reply_tasks))
+    await asyncio.sleep(0)
+    assert "5440" not in interactor._pending_danmu
+
+
+async def test_send_failure_starts_short_cooldown(tmp_path: Path) -> None:
+    provider = _FakeProvider()
+    client = _FakeClient(send_ok=False)
+    interactor = BilibiliLiveInteractor(
+        client, provider=provider, bot_name="小助手", data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+
+    await interactor._handle_danmu("5440", {"uid": 8, "name": "观众", "text": "@小助手 hi"})
+    assert provider.messages  # 第一次会生成并尝试发送
+    provider.messages.clear()
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "@小助手 hi2"})
+    assert provider.messages == []  # 短冷却内不再重复生成
+
+
+async def test_ensure_started_restarts_ended_room_task(tmp_path: Path) -> None:
+    """监听器还在跑、但某房间任务已退出（认证连续失败会退出）时要能补起来。"""
+    interactor, _client, _provider = await _enabled(tmp_path, auto_reply=False)
+    await interactor.start()
+    original = interactor._tasks["5440"]
+    original.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await original
+
+    await interactor.ensure_started()
+
+    replacement = interactor._tasks["5440"]
+    assert replacement is not original
+    assert not replacement.done()
+    await interactor.stop()
+
+
 class _FakeWS:
     def __init__(self, messages: list[object]) -> None:
         self.messages = list(messages)
         self.sent: list[bytes] = []
+        self.closed = False
 
     async def __aenter__(self) -> "_FakeWS":
         return self
@@ -292,6 +426,9 @@ class _FakeWS:
 
     async def send_bytes(self, data: bytes) -> None:
         self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
 
     def __aiter__(self) -> "_FakeWS":
         return self
@@ -307,6 +444,7 @@ class _FakeSession:
         self.ws = ws
         self.url = ""
         self.headers: dict = {}
+        self.kwargs: dict = {}
 
     async def __aenter__(self) -> "_FakeSession":
         return self
@@ -314,9 +452,10 @@ class _FakeSession:
     async def __aexit__(self, *args: object) -> None:
         return None
 
-    def ws_connect(self, url: str, *, headers: dict) -> _FakeWS:
+    def ws_connect(self, url: str, *, headers: dict, **kwargs: object) -> _FakeWS:
         self.url = url
         self.headers = headers
+        self.kwargs = dict(kwargs)
         return self.ws
 
 
@@ -345,6 +484,8 @@ async def test_websocket_auth_packet_and_danmu_flow(tmp_path: Path, monkeypatch)
 
     assert session.url == "wss://broadcastlv.chat.bilibili.com:443/sub"
     assert session.headers["Origin"] == "https://live.bilibili.com"
+    # 超过 2×心跳没收到任何包就主动断开重连。
+    assert session.kwargs["receive_timeout"] == live_interact._WS_RECEIVE_TIMEOUT_SECONDS == 60.0
     op, body = decode_packets(ws.sent[0])[0]
     assert op == 7
     assert json.loads(body) == {
@@ -414,6 +555,81 @@ async def test_host_list_rotates_by_attempt(tmp_path: Path, monkeypatch) -> None
         "wss://host-a:443/sub",
         "wss://host-b:8443/sub",
     ]
+
+
+async def test_my_uid_is_resolved_off_loop_and_cached_for_hot_path(tmp_path: Path) -> None:
+    """client.my_uid 会同步打 nav 接口：启动时丢线程池解析，弹幕热路径只读缓存。"""
+    client = _ThreadedUidClient()
+    provider = _FakeProvider()
+    interactor = BilibiliLiveInteractor(
+        client, provider=provider, bot_name="小助手", data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+
+    assert interactor._my_uid == 7
+    assert client.uid_reads
+    assert client.uid_reads[0] != threading.get_ident()  # 解析在工作线程
+    reads = len(client.uid_reads)
+
+    await interactor._handle_danmu("5440", {"uid": 8, "name": "观众", "text": "@小助手 hi"})
+    assert client.sent == [(5440, "在呢")]
+    assert len(client.uid_reads) == reads  # 热路径没有再碰属性
+
+
+async def test_ws_receive_timeout_requests_reconnect(tmp_path: Path, monkeypatch) -> None:
+    client = _FakeClient(
+        danmu_info={"token": "live-token", "host_list": [{"host": "host-a", "wss_port": 443}]}
+    )
+    interactor = BilibiliLiveInteractor(client, data_dir=tmp_path)
+    await interactor.enable(5440)
+
+    class _TimeoutWS(_FakeWS):
+        async def __anext__(self) -> object:
+            raise TimeoutError
+
+    monkeypatch.setattr(
+        live_interact.aiohttp, "ClientSession", lambda *a, **k: _FakeSession(_TimeoutWS([]))
+    )
+    with pytest.raises(RuntimeError, match="未收到弹幕数据包"):
+        await interactor._connect_once("5440")
+
+
+async def test_heartbeat_failure_closes_connection(tmp_path: Path, monkeypatch) -> None:
+    """心跳失败不能静默 return，要关闭连接让收包循环退出重连。"""
+    interactor = BilibiliLiveInteractor(_FakeClient(), data_dir=tmp_path)
+
+    class _BrokenWS(_FakeWS):
+        async def send_bytes(self, data: bytes) -> None:
+            raise ConnectionResetError("连接断了")
+
+    ws = _BrokenWS([])
+    monkeypatch.setattr(live_interact, "_WS_HEARTBEAT_SECONDS", 0.01)
+    with pytest.raises(ConnectionResetError):
+        await interactor._heartbeat(ws)
+    assert ws.closed is True
+
+
+async def test_repeated_auth_failures_stop_room(tmp_path: Path, monkeypatch) -> None:
+    """token 连续被拒（登录态失效）时停掉该房间监听，而不是无限重连。"""
+    interactor = BilibiliLiveInteractor(_FakeClient(), data_dir=tmp_path)
+    await interactor.enable(5440)
+    interactor._running = True
+    calls = 0
+
+    async def _auth_fail(room_id: str, attempt: int = 0) -> bool:
+        nonlocal calls
+        calls += 1
+        raise LiveAuthError("弹幕服务器认证失败: code=-101")
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(interactor, "_connect_once", _auth_fail)
+    monkeypatch.setattr(live_interact.asyncio, "sleep", _no_sleep)
+    await interactor._room_loop("5440")
+
+    assert calls == live_interact._WS_AUTH_MAX_FAILURES
+    assert "5440" in interactor._rooms  # 配置保留，重新登录后还能再开
 
 
 def _gift_body(index: int) -> bytes:
@@ -556,6 +772,43 @@ async def test_live_status_is_cached_for_60_seconds(tmp_path: Path) -> None:
     assert client.room_calls == [5440, 5440, 5440]
 
 
+async def test_live_status_returns_error_without_caching(tmp_path: Path) -> None:
+    class _BrokenClient(_FakeClient):
+        def get_live_room_info(self, room_id: int) -> dict:
+            raise RuntimeError("接口炸了")
+
+    interactor = BilibiliLiveInteractor(_BrokenClient(), data_dir=tmp_path)
+    await interactor.enable(5440)
+
+    assert await interactor.live_status(5440) == {
+        "live": False,
+        "error": "读取开播状态失败：RuntimeError",
+    }
+    assert interactor._live_cache == {}
+    assert await interactor.is_live(5440) is False
+    assert interactor._live_cache == {}  # 异常不写 60s 缓存
+
+
+async def test_live_status_three_states(tmp_path: Path) -> None:
+    client = _FakeClient()
+    interactor = BilibiliLiveInteractor(client, data_dir=tmp_path)
+    await interactor.enable(5440)
+
+    assert await interactor.live_status(5440) == {"live": True, "error": ""}
+    client.room_info = _OFFLINE_ROOM_INFO
+    assert await interactor.live_status(5440, refresh=True) == {"live": False, "error": ""}
+
+    client.room_info = {}  # client 读失败返回空 dict：不能当成没开播
+    empty = await interactor.live_status(5440, refresh=True)
+    assert empty["live"] is False and "未返回直播间信息" in empty["error"]
+
+    assert await interactor.live_status(0) == {"live": False, "error": "房间号无效"}
+    assert await BilibiliLiveInteractor(None, data_dir=tmp_path).live_status(5440) == {
+        "live": False,
+        "error": "B站未登录或客户端不可用",
+    }
+
+
 # ── 房间历史 ──
 
 
@@ -630,6 +883,8 @@ async def test_schedule_skips_offline_and_does_not_backfill(tmp_path: Path) -> N
 async def test_weekly_schedule_waits_seven_days(tmp_path: Path) -> None:
     interactor, client, _ = await _enabled(tmp_path, provider=_FakeProvider("周更"), auto_reply=False)
     await interactor.schedule(5440, "09:30", "weekly", "周更提醒")
+    # 每周按创建当天的星期几；测试里把记录对齐到 _NOW（星期五）再看是否到点。
+    interactor._rooms["5440"]["schedules"][0]["weekday"] = _NOW.weekday()
 
     assert len(await interactor._scan_schedules(_NOW)) == 1
     assert await interactor._scan_schedules(_NOW + timedelta(days=3)) == []
@@ -644,6 +899,38 @@ async def test_once_schedule_fires_only_once(tmp_path: Path) -> None:
     assert len(await interactor._scan_schedules(_NOW)) == 1
     assert await interactor._scan_schedules(_NOW + timedelta(days=1)) == []
     assert len(client.sent) == 1
+
+
+async def test_schedule_fires_even_when_check_is_late(tmp_path: Path) -> None:
+    """>= HH:MM 且本时段未发即可发：循环晚几十秒检查也不该让当天漏发。"""
+    interactor, client, _ = await _enabled(
+        tmp_path, provider=_FakeProvider("来啦"), auto_reply=False
+    )
+    await interactor.schedule(5440, "09:30", "daily", "宣传")
+
+    late = _NOW + timedelta(minutes=17)
+    assert len(await interactor._scan_schedules(late)) == 1
+    assert client.sent == [(5440, "来啦")]
+    # 同一天晚些时候不重复发
+    assert await interactor._scan_schedules(late + timedelta(minutes=30)) == []
+
+
+async def test_once_schedule_is_not_consumed_when_offline(tmp_path: Path) -> None:
+    """once 只有发送成功才落盘 last_fired_date，下播/失败还能重试。"""
+    client = _FakeClient(room_info=_OFFLINE_ROOM_INFO)
+    interactor = BilibiliLiveInteractor(
+        client, provider=_FakeProvider(), data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+    await interactor.schedule(5440, "09:30", "once", "只发一次")
+
+    assert await interactor._scan_schedules(_NOW) == []
+    assert interactor.list_schedules(5440)[0]["last_fired_date"] == ""
+
+    client.room_info = _ROOM_INFO
+    interactor._live_cache.clear()
+    assert len(await interactor._scan_schedules(_NOW)) == 1
+    assert interactor.list_schedules(5440)[0]["last_fired_date"] == "2026-05-01"
 
 
 async def test_schedule_validation_and_delete(tmp_path: Path) -> None:
@@ -665,6 +952,18 @@ async def test_schedule_validation_and_delete(tmp_path: Path) -> None:
         "schedule_id": schedule_id,
     }
     assert interactor.list_schedules() == []
+
+
+async def test_stop_cancels_user_memory_tasks(tmp_path: Path) -> None:
+    interactor, _client, _provider = await _enabled(tmp_path, auto_reply=False)
+    task = asyncio.create_task(asyncio.Event().wait())
+    interactor._user_memory_tasks.add(task)
+
+    await interactor.stop()
+
+    assert task.cancelled()
+    assert interactor._user_memory_tasks == set()
+    assert interactor._pending_danmu == {}
 
 
 class _FakeMedia:
@@ -928,7 +1227,7 @@ def test_live_willingness_coefficient(tmp_path: Path) -> None:
 
 async def test_ensure_started_starts_listener_when_not_running(tmp_path: Path) -> None:
     """监听器没在跑时要能原地拉起，否则登录后开监听是假成功。"""
-    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor = BilibiliLiveInteractor(_FakeClient(), data_dir=tmp_path)
     assert interactor.is_running is False
 
     await interactor.ensure_started()

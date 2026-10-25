@@ -6,6 +6,9 @@ poll_interval_seconds（默认 1800s）检查一次「回复我的」与「@我�
 本轮没轮到的进待回复池（上限 1000）下一轮继续；按通知/评论去重、同一楼中楼
 有回复冷却，接口失败按指数退避（上限 1 小时）。生成与发送分别走
 reply_engine / client。
+
+通知中心接口不支持游标：每路单次最多看 feed_limit 条（默认 20），超出部分
+这一轮看不到，靠待回复池与后续轮询补齐；长期积压要调大 feed_limit。
 """
 
 from __future__ import annotations
@@ -30,8 +33,9 @@ from neobot_app.utils.logger import get_module_logger
 
 logger = get_module_logger("bilibili.comment_monitor")
 
-#: reply_feed/at_feed 的 business_id -> 内容类型名。
-BUSINESS_TYPES = {1: "视频", 11: "动态", 12: "专栏", 17: "动态"}
+#: reply_feed/at_feed 的 business_id -> 内容类型名，数值即评论区的 type，
+#: 必须与 BilibiliClient.COMMENT_TYPES 一致（视频 1、番剧 11、专栏/opus 12、动态 17）。
+BUSINESS_TYPES = {1: "视频", 11: "番剧", 12: "专栏", 17: "动态"}
 _MAX_BACKOFF_SECONDS = 3600.0
 #: 待回复池上限；满了以后新事件留到下一轮重新拉取，避免内存无界增长。
 _PENDING_LIMIT = 1000
@@ -57,6 +61,11 @@ class CommentEvent:
     @property
     def target_type(self) -> str:
         return BUSINESS_TYPES.get(self.business_id, "动态")
+
+    @property
+    def comment_type(self) -> int:
+        """回复时提交的评论区 type；未知 business_id 落回视频(1)，不要乱投分区。"""
+        return self.business_id if self.business_id in BUSINESS_TYPES else 1
 
     @property
     def dedupe_key(self) -> str:
@@ -199,7 +208,7 @@ class BilibiliCommentMonitor:
         self._running = True
         self._next_poll_at = 0.0
         self._task = asyncio.create_task(self._loop())
-        logger.info("B站评论监控器已启动", interval=self._poll_interval)
+        logger.info(f"B站评论监控器已启动，轮询间隔 {self._poll_interval} 秒")
 
     async def stop(self) -> None:
         self._running = False
@@ -253,6 +262,8 @@ class BilibiliCommentMonitor:
                 self._failures += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 logger.exception("B站评论轮询异常")
+                # 异常也要推进下一次轮询时间，否则循环会每秒重试、刷屏日志。
+                self._next_poll_at = time.monotonic() + self.next_poll_interval
             await asyncio.sleep(1.0)
 
     def _load_state(self) -> None:
@@ -262,7 +273,7 @@ class BilibiliCommentMonitor:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            logger.warning("B站评论已回复记忆读取失败，按空状态启动", path=str(path))
+            logger.warning(f"B站评论已回复记忆读取失败，按空状态启动：{path}")
             return
         for key in data.get("processed") or []:
             text = str(key or "").strip()
@@ -282,7 +293,7 @@ class BilibiliCommentMonitor:
                 ),
             )
         except Exception as exc:
-            logger.warning("B站评论已回复记忆保存失败", path=str(path), error=str(exc))
+            logger.warning(f"B站评论已回复记忆保存失败：{path}（{type(exc).__name__}: {exc}）")
 
     async def poll_once(self) -> int:
         """轮询一次，返回本轮成功回复的条数。"""
@@ -293,6 +304,10 @@ class BilibiliCommentMonitor:
             return 0
         if self._engine is None or not getattr(self._engine, "available", False):
             return 0
+        # 拉取成功就清掉历史失败计数：即使本轮没有新通知，也是一次正常轮询。
+        # 只在成功路径清零，避免一次发送失败把退避永久顶在 1 小时。
+        self._failures = 0
+        self._last_error = ""
         try:
             events = await self._fetch_events(client)
         except asyncio.CancelledError:
@@ -300,13 +315,12 @@ class BilibiliCommentMonitor:
         except Exception as exc:
             self._failures += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("B站评论通知获取失败", error=self._last_error)
+            logger.warning(f"B站评论通知获取失败：{self._last_error}")
             return 0
 
         # 先并入池（池中的旧事件排在新事件前面），再按上限逐条处理。
         self._enqueue(events)
         if not self._pending:
-            self._failures = 0
             return 0
 
         replied = 0
@@ -315,10 +329,7 @@ class BilibiliCommentMonitor:
         for key in list(self._pending):
             if replied >= self._max_per_poll or attempts >= self._max_per_poll:
                 # 剩余事件留在池里，下一轮继续。
-                logger.info(
-                    "B站评论本轮达到上限，剩余事件留待下轮",
-                    pending=len(self._pending),
-                )
+                logger.info(f"B站评论本轮达到上限，剩余 {len(self._pending)} 条留待下轮")
                 break
             event = self._pending.pop(key)
             if my_uid and event.user_uid == my_uid:
@@ -332,11 +343,15 @@ class BilibiliCommentMonitor:
             try:
                 sent = await self._reply(event, client)
             except asyncio.CancelledError:
+                # 停机取消时事件已经 pop 出来，放回池里，别丢这条回复。
+                self._pending.setdefault(key, event)
                 raise
             except Exception as exc:
                 self._failures += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
-                logger.exception("B站评论回复异常", oid=event.oid, rpid=event.parent_id)
+                logger.exception(
+                    f"B站评论回复异常（oid={event.oid} rpid={event.parent_id}），已回池重试：{self._last_error}"
+                )
                 self._pending[key] = event
                 continue
             if sent:
@@ -344,20 +359,20 @@ class BilibiliCommentMonitor:
             elif event.dedupe_key not in self._processed:
                 # 发送失败/暂时不满足条件：回池，下一轮重试。
                 self._pending[key] = event
-        if replied:
-            self._failures = 0
         return replied
 
     async def _fetch_events(self, client: Any) -> list[CommentEvent]:
         events: list[CommentEvent] = []
         get_reply_feed = getattr(client, "get_reply_feed", None)
         if callable(get_reply_feed):
-            items = await call_client(get_reply_feed, limit=self._feed_limit)
+            items = list(await call_client(get_reply_feed, limit=self._feed_limit) or [])
+            self._warn_if_truncated(items, "回复我的")
             events.extend(_parse_items(items, "reply_feed"))
         # 「@我的」通知是独立接口；client 没实现时只处理「回复我的」。
         get_at_feed = getattr(client, "get_at_feed", None)
         if callable(get_at_feed):
-            items = await call_client(get_at_feed, limit=self._feed_limit)
+            items = list(await call_client(get_at_feed, limit=self._feed_limit) or [])
+            self._warn_if_truncated(items, "提到我的")
             events.extend(_parse_items(items, "at_feed"))
         batch_keys: set[str] = set()
         unique: list[CommentEvent] = []
@@ -367,6 +382,14 @@ class BilibiliCommentMonitor:
             batch_keys.add(event.dedupe_key)
             unique.append(event)
         return unique
+
+    def _warn_if_truncated(self, items: list[Any], source: str) -> None:
+        """水位线提示：接口没有游标，拉满 feed_limit 说明可能有更旧的通知没看到。"""
+        if len(items) >= self._feed_limit:
+            logger.warning(
+                f"B站「{source}」通知达到单次拉取上限 {self._feed_limit} 条，"
+                "更旧的通知可能延迟；必要时调大 feed_limit"
+            )
 
     def _enqueue(self, events: list[CommentEvent]) -> None:
         """合并本轮新事件；池满时新事件跳过，下一轮会重新拉到。"""
@@ -382,9 +405,7 @@ class BilibiliCommentMonitor:
             self._pending[key] = event
         if dropped:
             logger.warning(
-                "B站评论待回复池已满，新事件留待下轮",
-                limit=_PENDING_LIMIT,
-                dropped=dropped,
+                f"B站评论待回复池已满（上限 {_PENDING_LIMIT}），{dropped} 条新事件留待下轮"
             )
 
     def _cooldown_ok(self, event: CommentEvent) -> bool:
@@ -400,10 +421,11 @@ class BilibiliCommentMonitor:
         ctx = event.to_context()
         text = await self._engine.generate_comment_reply(ctx)
         if text is None:
-            # 模型明确不回复/生成失败：这条通知直接记掉，避免每轮重复生成烧 token。
+            # 只有模型明确 skip/cancel 才返回 None：这条通知记掉，避免每轮重复生成
+            # 烧 token；provider 异常由引擎抛出，会走回池重试，不在这里吞掉。
             self._processed.add(event.dedupe_key)
             self._save_state()
-            logger.debug("B站评论跳过回复", oid=event.oid, rpid=event.parent_id)
+            logger.debug(f"B站评论跳过回复（oid={event.oid} rpid={event.parent_id}）")
             return False
         sent = await call_client(
             client.send_comment_reply,
@@ -411,21 +433,16 @@ class BilibiliCommentMonitor:
             root=event.root_id,
             parent=event.parent_id,
             text=text,
-            type_=event.business_id,
+            type_=event.comment_type,
         )
         if not sent:
             self._failures += 1
-            logger.warning("B站评论回复发送失败", oid=event.oid, rpid=event.parent_id)
+            logger.warning(f"B站评论回复发送失败（oid={event.oid} rpid={event.parent_id}）")
             return False
         self._processed.add(event.dedupe_key)
         self._save_state()
         self._last_reply_at[f"{event.oid}:{event.root_id}"] = time.monotonic()
-        logger.info(
-            "B站评论已回复",
-            oid=event.oid,
-            rpid=event.parent_id,
-            chars=len(text),
-        )
+        logger.info(f"B站评论已回复（oid={event.oid} rpid={event.parent_id}，{len(text)} 字）")
         return True
 
 
@@ -435,7 +452,7 @@ def _parse_items(items: Any, source: str) -> list[CommentEvent]:
         try:
             event = parse_feed_item(item, source)
         except Exception:
-            logger.debug("跳过无法解析的B站通知条目", source=source)
+            logger.debug(f"跳过无法解析的B站通知条目（source={source}）")
             continue
         if event is not None:
             events.append(event)

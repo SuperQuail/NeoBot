@@ -83,6 +83,20 @@ def shots(ctx: Any) -> Any:
     return getattr(ctx, "screenshots", None)
 
 
+async def push_defaults(state: Any, group_id: int) -> tuple[bool, bool]:
+    """新订阅的默认推送开关：优先用本群设置，没有设置才用插件全局配置。
+
+    群设置由 /config 开播推送默认|下播推送默认 写入。这条接线以前是断的：
+    /config 展示并写入群级默认，/监听 却只读全局配置，用户改了没效果。
+    """
+    config = state.config
+    async with state.database.session() as session:
+        setting = db.setting_view(await db.get_group_setting(session, group_id))
+    if setting is None:
+        return bool(config.default_push_live), bool(config.default_push_live_end)
+    return bool(setting.default_push_live), bool(setting.default_push_live_end)
+
+
 def usage_card(title: str, lines: list[str]) -> dict[str, Any]:
     return cards.message_card(title=title, lines=lines, note="群聊里需要先 @机器人 再发命令")
 
@@ -158,7 +172,10 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
         except ValueError as exc:
             await fail(command_ctx, ctx, "没有找到直播间", str(exc))
             return
-        config = state.config
+        # 监听即自动建好开播与下播两条推送；默认值取本群设置（/config 可改），
+        # 没有群设置时回落到插件全局配置。已经监听过的房间只刷新主播信息，
+        # 不动用户手动改过的开关（upsert_subscription 对已存在的行不改 flags）。
+        default_live, default_live_end = await push_defaults(state, group_id)
         async with state.database.transaction() as session:
             row, created = await db.upsert_subscription(
                 session,
@@ -168,17 +185,15 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
                 uid=resolved.get("uid", 0),
                 name=resolved.get("name", ""),
                 avatar_url=resolved.get("avatar_url", ""),
-                # 监听即自动建好开播与下播两条推送（默认都为开）；
-                # 已经监听过的房间只刷新主播信息，不动用户手动改过的开关。
-                push_live=config.default_push_live,
-                push_live_end=config.default_push_live_end,
+                push_live=default_live,
+                push_live_end=default_live_end,
             )
             view = db.sub_view(row)
         title = "已开始监听" if created else "已更新监听信息"
         name = resolved.get("name") or UNNAMED
         room_id = view.room_id if view is not None else resolved["room_id"]
-        push_live = view.push_live if view is not None else config.default_push_live
-        push_live_end = view.push_live_end if view is not None else config.default_push_live_end
+        push_live = view.push_live if view is not None else default_live
+        push_live_end = view.push_live_end if view is not None else default_live_end
         await cards.send_card(
             command_ctx,
             cards.kv_card(
@@ -190,7 +205,8 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
                     ("下播推送", "开" if push_live_end else "关"),
                     ("直播间", live_room_page_url(room_id)),
                 ],
-                note="开播与下播都会推卡片；不想要哪个就用 /开播推送 或 /下播推送 关掉，AI 回复用 /config 调整",
+                note="新订阅按本群默认建推送（/config 开播推送默认、下播推送默认 可改）；"
+                "单个直播间用 /开播推送、/下播推送 关掉，AI 回复也用 /config 调",
             ),
             screenshots=shots(ctx),
         )

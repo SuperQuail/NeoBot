@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 modloader = pytest.importorskip('neobot_modloader')
@@ -648,4 +650,187 @@ class TestSubscribeEnablesBothPushes:
         assert len(rows) == 1
         assert rows[0].push_live_end is False
         assert '下播推送: 关' in second.plain[0]
+
+
+class TestSubscribeUsesGroupDefaults:
+    """/config 写入的群级默认必须真的影响 /监听——之前只读全局配置，是死配置。"""
+
+    async def test_group_default_overrides_global_config(self, database):
+        from streaming_parser.commands import register_commands
+        from streaming_parser.config import StreamConfig
+
+        async with database.transaction() as session:
+            setting = await pdb.ensure_group_setting(session, 123, {})
+            setting.default_push_live = False
+            setting.default_push_live_end = True
+        ctx = TestSubscribeEnablesBothPushes._make_ctx()
+        state = TestSubscribeEnablesBothPushes._make_state(database, StreamConfig())
+        register_commands(ctx, state)
+        command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx(['392669996'])
+
+        await ctx.app_commands.commands['监听'](command_ctx)
+
+        async with database.session() as session:
+            rows = [pdb.sub_view(row) for row in await pdb.list_group_subscriptions(session, 123)]
+        assert rows[0].push_live is False
+        assert rows[0].push_live_end is True
+        assert '开播推送: 关' in command_ctx.plain[0]
+        assert '下播推送: 开' in command_ctx.plain[0]
+
+    async def test_global_config_is_used_without_group_setting(self, database):
+        from streaming_parser.commands import register_commands
+        from streaming_parser.config import StreamConfig
+
+        ctx = TestSubscribeEnablesBothPushes._make_ctx()
+        config = StreamConfig(default_push_live=False, default_push_live_end=True)
+        state = TestSubscribeEnablesBothPushes._make_state(database, config)
+        register_commands(ctx, state)
+        command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx(['392669996'])
+
+        await ctx.app_commands.commands['监听'](command_ctx)
+
+        async with database.session() as session:
+            rows = [pdb.sub_view(row) for row in await pdb.list_group_subscriptions(session, 123)]
+        assert rows[0].push_live is False
+        assert rows[0].push_live_end is True
+
+    async def test_config_writes_the_same_defaults_used_by_listen(self, database):
+        """/config 建行时的默认值要和 /监听 的回退值一致，否则显示与实际不符。"""
+        from streaming_parser.config import StreamConfig
+        from streaming_parser.settings_commands import group_defaults
+
+        config = StreamConfig(default_push_live=False, default_push_live_end=True)
+        assert group_defaults(config) == {
+            'card_style': config.default_card_style,
+            'ai_reply_live': config.default_ai_reply_live,
+            'ai_reply_live_end': config.default_ai_reply_live_end,
+            'default_push_live': False,
+            'default_push_live_end': True,
+        }
+
+
+class FlakyAssets(FakeAssets):
+    """对某个头像 URL 抛异常，用来验证单群失败不拖累其他群。"""
+
+    async def fetch_data_uri(self, url):
+        if url == 'https://cdn/bad':
+            raise RuntimeError('头像服务挂了')
+        return await super().fetch_data_uri(url)
+
+
+class TestNotifierPerGroupIsolation:
+    async def test_one_group_failure_does_not_block_other_groups(self, database):
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(
+                session, group_id=100, room_id=10, name='甲', avatar_url='https://cdn/bad'
+            )
+            await pdb.upsert_subscription(
+                session, group_id=200, room_id=10, name='乙', avatar_url='https://cdn/good'
+            )
+        ctx = FakeCtx()
+        notifier = build_notifier(database, ctx, assets=FlakyAssets())
+
+        await notifier.handle_transition(await make_transition())
+
+        # 群 100 取头像时炸了：只记日志，群 200 必须照常收到卡片
+        assert [conversation for conversation, *_ in ctx.sent_images] == ['conv:200']
+
+
+class FakeSlowPoller:
+    """refresh 永远卡住，用来验证 /开播状态 的总超时回退。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def refresh(self, room_ids):
+        self.calls += 1
+        await asyncio.sleep(5)
+        return {}
+
+
+class FakeOverviewRenderer:
+    def __init__(self):
+        self.calls = 0
+
+    async def render_overview(self, hosts, *, style, title_text, summary_text):
+        self.calls += 1
+        return b'OVERVIEW'
+
+
+def build_overview_state(database, *, poller=None):
+    from streaming_parser.config import StreamConfig
+
+    class State:
+        def __init__(self):
+            self.database = database
+            self.config = StreamConfig()
+            self.poller = poller
+            self.renderer = FakeOverviewRenderer()
+            self.logger = FakeLogger()
+
+        async def style_for(self, group_id):
+            return 'sakura'
+
+        async def build_overview_hosts(self, rows, states):
+            return [
+                {
+                    'avatar_src': '',
+                    'name': row.name or 'x',
+                    'live': row.room_id in states and int(states[row.room_id].live_status) == 1,
+                }
+                for row in rows
+            ]
+
+    return State()
+
+
+class TestOverviewCommand:
+    @staticmethod
+    def _register(database, state):
+        from streaming_parser.commands import register_commands
+
+        ctx = TestSubscribeEnablesBothPushes._make_ctx()
+        register_commands(ctx, state)
+        return ctx, ctx.app_commands.commands['开播状态']
+
+    async def test_status_query_timeout_falls_back_to_stored(self, database, monkeypatch):
+        from streaming_parser import settings_commands
+
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(session, group_id=123, room_id=10, name='甲')
+            await pdb.upsert_room_state(session, 10, live_status=1, title='库里的标题')
+        state = build_overview_state(database, poller=FakeSlowPoller())
+        ctx, handler = self._register(database, state)
+        monkeypatch.setattr(settings_commands, 'STATUS_QUERY_TIMEOUT', 0.01)
+        command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx([])
+
+        await handler(command_ctx)
+
+        text = command_ctx.plain[0]
+        assert '最近一次轮询' in text
+        assert '直播中' in text
+
+    async def test_image_send_failure_does_not_render_again(self, database, monkeypatch):
+        from streaming_parser import cards
+
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(session, group_id=123, room_id=10, name='甲')
+        state = build_overview_state(database)
+        ctx, handler = self._register(database, state)
+        renders = []
+
+        async def fake_render(*args, **kwargs):
+            renders.append(1)
+            return None
+
+        monkeypatch.setattr(cards, 'render_payload_png', fake_render)
+        command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx([])
+
+        await handler(command_ctx)
+
+        # 图片发不出去就发文字：不能再用卡片渲染器把同一份表格重画一遍
+        assert state.renderer.calls == 1
+        assert renders == []
+        assert len(command_ctx.plain) == 1
+        assert '本群关注的主播' in command_ctx.plain[0]
 

@@ -107,7 +107,7 @@ python research/tools/render_samples.py <UID>
 | `user_agent` | 空 | 自定义 UA |
 | `poll_concurrency` | 4 | 同时轮询的房间数 |
 | `default_card_style` | random | 默认卡片风格 |
-| `default_push_live` / `default_push_live_end` | true / true | 监听新直播间时自动开启的推送（两个都默认开） |
+| `default_push_live` / `default_push_live_end` | true / true | 监听新直播间时自动开启的推送（两个都默认开）；本群可用 `/config 开播推送默认|下播推送默认` 覆盖 |
 | `default_ai_reply_live` / `default_ai_reply_live_end` | true / false | 推送后是否默认触发 AI 回复 |
 | `overview_max_hosts` | 30 | 总览图最多显示多少位 |
 | `asset_cache_days` | 14 | 头像/封面本地缓存天数 |
@@ -134,6 +134,7 @@ python research/tools/render_samples.py <UID>
 ├── notify.py              # 推送：卡片 + 可选 AI 回复
 ├── render.py              # 模板填充与截图端口调用
 ├── assets.py              # 头像/封面下载与本地缓存
+├── logs.py                # 统一的按级别日志分发（禁止 kwargs 写法）
 ├── bilibili/              # B 站协议层（URL / 请求头 / 判定 / 模型 / 客户端）
 ├── templates/             # 6 个 HTML 模板 + 随包字体（零构建）
 ├── tests/                 # 单元测试（含模板契约测试）
@@ -148,7 +149,7 @@ cd app/data/plugins/streaming_parser
 <python> -m pytest -m network      # 真实 B 站接口冒烟测试
 ```
 
-测试覆盖协议 URL 与请求头基线、WBI 签名向量、业务码判定、响应模型归一化、重试退避、数据表读写、跳变判定、模板占位符契约与降级路径。没有 NeoBot 依赖的环境（如 CI）会用一个最小 modloader 替身跑纯逻辑用例，需要真实数据库的用例显式跳过而不是假装通过。
+测试覆盖协议 URL 与请求头基线、业务码判定（含空响应体不判登录失效）、响应模型归一化、重试退避、HTTP 客户端复用与关停、图片重试状态分类、数据表读写、跳变判定、单群失败隔离、模板占位符契约与降级路径。没有 NeoBot 依赖的环境（如 CI）会用一个最小 modloader 替身跑纯逻辑用例，需要真实数据库的用例显式跳过而不是假装通过。
 
 ## 已知限制
 

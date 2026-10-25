@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from conftest import json_response, text_response
 
-from bilibili.client import BilibiliLiveClient
+from bilibili.client import BilibiliLiveClient, HttpxTransport
 from bilibili.errors import BilibiliAPIError, BilibiliTransportError
 
 
@@ -170,31 +170,7 @@ class TestRetry:
         assert slept == []
 
 
-class TestIdResolution:
-    async def test_resolve_room_id_from_short_id(self, load_fixture, fake_transport, sleep_recorder):
-        slept, sleep = sleep_recorder
-        payload = load_fixture("live_room_init.json")
-        client, transport = make_client(fake_transport, [json_response(payload)], slept, sleep)
-
-        assert await client.resolve_room_id(5440) == 21452505
-        assert transport.calls[0]["url"].endswith("room_init?id=5440")
-
-    async def test_resolve_uid_room_living(self, load_fixture, fake_transport, sleep_recorder):
-        slept, sleep = sleep_recorder
-        payload = load_fixture("user_live_status.json")
-        client, _ = make_client(fake_transport, [json_response(payload)], slept, sleep)
-
-        assert await client.resolve_uid_room(401742377) == (21452505, True)
-
-    async def test_resolve_uid_room_offline(
-        self, load_fixture, fake_transport, sleep_recorder
-    ):
-        slept, sleep = sleep_recorder
-        payload = load_fixture("user_live_status_offline.json")
-        client, _ = make_client(fake_transport, [json_response(payload)], slept, sleep)
-
-        assert await client.resolve_uid_room(1) == (0, False)
-
+class TestRequestValidation:
     async def test_invalid_room_id_fails_before_any_request(
         self, fake_transport, sleep_recorder
     ):
@@ -205,4 +181,72 @@ class TestIdResolution:
             await client.fetch_live_room_init("abc")
 
         assert transport.calls == []
+
+
+class StubHttpResponse:
+    status_code = 200
+    text = '{"code": 0, "data": {}}'
+    headers: dict[str, str] = {}
+    url = "https://api.live.bilibili.com/"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+
+class StubHttpClient:
+    """替身 httpx.AsyncClient：记录调用，验证连接被复用而不是每次重建。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, float | None]] = []
+        self.closed = 0
+
+    async def request(self, method, url, *, headers=None, timeout=None):  # noqa: ANN001
+        self.calls.append((method, url, timeout))
+        return StubHttpResponse()
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+class TestTransportReuse:
+    async def test_one_client_is_reused_across_requests(self):
+        stub = StubHttpClient()
+        transport = HttpxTransport(client=stub)
+
+        first = await transport.request(method="GET", url="https://x/1", headers={}, timeout=3.0)
+        second = await transport.request(method="GET", url="https://x/2", headers={}, timeout=7.0)
+
+        assert first.status == second.status == 200
+        assert [call[1] for call in stub.calls] == ["https://x/1", "https://x/2"]
+        # 超时按请求传，复用客户端不改变 per-request 超时
+        assert [call[2] for call in stub.calls] == [3.0, 7.0]
+        await transport.aclose()
+        assert stub.closed == 1
+
+    async def test_aclose_is_idempotent(self):
+        stub = StubHttpClient()
+        transport = HttpxTransport(client=stub)
+
+        await transport.aclose()
+        await transport.aclose()
+
+        assert stub.closed == 1
+
+    async def test_bilibili_client_aclose_delegates_to_transport(self):
+        class ClosingTransport:
+            def __init__(self) -> None:
+                self.closed = 0
+
+            async def request(self, **kwargs):  # noqa: ANN003
+                raise AssertionError("不该发请求")
+
+            async def aclose(self) -> None:
+                self.closed += 1
+
+        transport = ClosingTransport()
+        client = BilibiliLiveClient(transport)
+
+        await client.aclose()
+
+        assert transport.closed == 1
 

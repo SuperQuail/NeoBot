@@ -19,6 +19,7 @@ from . import db
 from .bilibili.client import BilibiliLiveClient
 from .bilibili.errors import BilibiliAPIError, BilibiliTransportError
 from .bilibili.models import LiveRoomInfo
+from .logs import log_at
 
 EVENT_LIVE = "live"
 EVENT_LIVE_END = "live_end"
@@ -105,23 +106,15 @@ class LivePoller:
         self._concurrency = max(1, int(concurrency))
         self._logger = logger
 
-    def _log(self, level: str, message: str) -> None:
-        logger = self._logger
-        if logger is None:
-            return
-        handler = getattr(logger, level, None)
-        if callable(handler):
-            handler(message)
-
     async def _fetch(self, room_id: int, semaphore: asyncio.Semaphore) -> RoomSnapshot | None:
         async with semaphore:
             try:
                 info = await self._client.fetch_live_room_info(room_id)
             except (BilibiliAPIError, BilibiliTransportError) as exc:
-                self._log("warning", f"轮询直播间 {room_id} 失败: {exc}")
+                log_at(self._logger, "warning", f"轮询直播间 {room_id} 失败: {exc}")
                 return None
             except Exception as exc:
-                self._log("warning", f"轮询直播间 {room_id} 异常: {exc!r}")
+                log_at(self._logger, "warning", f"轮询直播间 {room_id} 异常: {exc!r}")
                 return None
         return RoomSnapshot.from_room_info(info)
 
@@ -204,10 +197,11 @@ class LivePoller:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._log("warning", f"轮询周期异常: {exc!r}")
+                log_at(self._logger, "warning", f"轮询周期异常: {exc!r}")
                 transitions, stats = [], PollStats()
             if stats.checked or stats.failed:
-                self._log(
+                log_at(
+                    self._logger,
                     "debug",
                     f"轮询完成: 成功 {stats.checked} 失败 {stats.failed} 跳变 {stats.transitions}",
                 )
@@ -217,7 +211,11 @@ class LivePoller:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    self._log("warning", f"处理跳变失败 ({transition.kind} {transition.room_id}): {exc!r}")
+                    log_at(
+                        self._logger,
+                        "warning",
+                        f"处理跳变失败 ({transition.kind} {transition.room_id}): {exc!r}",
+                    )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=self._interval)
             except TimeoutError:

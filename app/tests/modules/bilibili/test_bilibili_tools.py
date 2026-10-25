@@ -968,12 +968,20 @@ async def test_comment_video_posts_top_level_and_reply() -> None:
     skill = BilibiliVideoSkill(client=client)
 
     top = json.loads(
-        await skill.execute("comment_video", {"identifier": _VIDEO_URL, "text": "好看"})
+        await skill.execute(
+            "comment_video", {"identifier": _VIDEO_URL, "text": "好看", "confirm": True}
+        )
     )
     reply = json.loads(
         await skill.execute(
             "comment_video",
-            {"identifier": "av170001", "text": "同意", "root": 9, "parent": 10},
+            {
+                "identifier": "av170001",
+                "text": "同意",
+                "root": 9,
+                "parent": 10,
+                "confirm": True,
+            },
         )
     )
 
@@ -992,19 +1000,23 @@ async def test_comment_video_posts_top_level_and_reply() -> None:
 async def test_comment_video_failure_and_missing_capability() -> None:
     failing = BilibiliVideoSkill(client=WriteClient(result=False))
     failed = json.loads(
-        await failing.execute("comment_video", {"identifier": "av170001", "text": "好"})
+        await failing.execute(
+            "comment_video", {"identifier": "av170001", "text": "好", "confirm": True}
+        )
     )
     assert failed["ok"] is False
     assert "风控" in failed["error"]
 
     missing_text = json.loads(
-        await failing.execute("comment_video", {"identifier": "av170001"})
+        await failing.execute("comment_video", {"identifier": "av170001", "confirm": True})
     )
     assert missing_text["ok"] is False and "text" in missing_text["error"]
 
     legacy = BilibiliVideoSkill(client=FakeClient())
     missing = json.loads(
-        await legacy.execute("comment_video", {"identifier": "av170001", "text": "好"})
+        await legacy.execute(
+            "comment_video", {"identifier": "av170001", "text": "好", "confirm": True}
+        )
     )
     assert missing["ok"] is False
     assert "post_video_comment" in missing["error"]
@@ -1014,12 +1026,18 @@ async def test_like_video_and_like_comment() -> None:
     client = WriteClient()
     skill = BilibiliVideoSkill(client=client)
 
-    video = json.loads(await skill.execute("like_video", {"identifier": _VIDEO_URL}))
+    video = json.loads(
+        await skill.execute("like_video", {"identifier": _VIDEO_URL, "confirm": True})
+    )
     comment = json.loads(
-        await skill.execute("like_comment", {"identifier": "av170001", "rpid": "9"})
+        await skill.execute(
+            "like_comment", {"identifier": "av170001", "rpid": "9", "confirm": True}
+        )
     )
     resolved = json.loads(
-        await skill.execute("like_comment", {"identifier": _VIDEO_URL, "rpid": 9})
+        await skill.execute(
+            "like_comment", {"identifier": _VIDEO_URL, "rpid": 9, "confirm": True}
+        )
     )
 
     assert video["ok"] is True and video["liked"] is True
@@ -1033,23 +1051,31 @@ async def test_like_video_and_like_comment() -> None:
 async def test_like_failure_missing_rpid_and_missing_capability() -> None:
     failing = BilibiliVideoSkill(client=WriteClient(result=False))
     video = json.loads(
-        await failing.execute("like_video", {"identifier": "av170001"})
+        await failing.execute("like_video", {"identifier": "av170001", "confirm": True})
     )
     comment = json.loads(
-        await failing.execute("like_comment", {"identifier": "av170001", "rpid": 9})
+        await failing.execute(
+            "like_comment", {"identifier": "av170001", "rpid": 9, "confirm": True}
+        )
     )
     assert video["ok"] is False and "风控" in video["error"]
     assert comment["ok"] is False and "风控" in comment["error"]
 
     bad_rpid = json.loads(
-        await failing.execute("like_comment", {"identifier": "av170001", "rpid": 0})
+        await failing.execute(
+            "like_comment", {"identifier": "av170001", "rpid": 0, "confirm": True}
+        )
     )
     assert bad_rpid["ok"] is False and "rpid" in bad_rpid["error"]
 
     legacy = BilibiliVideoSkill(client=FakeClient())
-    missing = json.loads(await legacy.execute("like_video", {"identifier": "av170001"}))
+    missing = json.loads(
+        await legacy.execute("like_video", {"identifier": "av170001", "confirm": True})
+    )
     missing_comment = json.loads(
-        await legacy.execute("like_comment", {"identifier": "av170001", "rpid": 9})
+        await legacy.execute(
+            "like_comment", {"identifier": "av170001", "rpid": 9, "confirm": True}
+        )
     )
     assert missing["ok"] is False and "like_video" in missing["error"]
     assert missing_comment["ok"] is False and "like_comment" in missing_comment["error"]
@@ -1074,9 +1100,13 @@ async def test_coin_video_defaults_to_one_and_takes_two() -> None:
     client = WriteClient()
     skill = BilibiliVideoSkill(client=client)
 
-    one = json.loads(await skill.execute("coin_video", {"identifier": _VIDEO_URL}))
+    one = json.loads(
+        await skill.execute("coin_video", {"identifier": _VIDEO_URL, "confirm": True})
+    )
     two = json.loads(
-        await skill.execute("coin_video", {"identifier": "av170001", "multiply": "2"})
+        await skill.execute(
+            "coin_video", {"identifier": "av170001", "multiply": "2", "confirm": True}
+        )
     )
 
     assert one["ok"] is True
@@ -1089,10 +1119,13 @@ async def test_share_and_favorite_video_call_client() -> None:
     client = WriteClient()
     skill = BilibiliVideoSkill(client=client)
 
-    shared = json.loads(await skill.execute("share_video", {"identifier": _VIDEO_URL}))
+    shared = json.loads(
+        await skill.execute("share_video", {"identifier": _VIDEO_URL, "confirm": True})
+    )
     favorited = json.loads(
         await skill.execute(
-            "favorite_video", {"identifier": "av170001", "folder_id": "101"}
+            "favorite_video",
+            {"identifier": "av170001", "folder_id": "101", "confirm": True},
         )
     )
 
@@ -1121,31 +1154,41 @@ async def test_favorite_folders_lists_ids_and_degrades() -> None:
 
 async def test_interaction_tools_fail_and_require_capability() -> None:
     failing = BilibiliVideoSkill(client=WriteClient(result=False))
-    coin = json.loads(await failing.execute("coin_video", {"identifier": "av170001"}))
-    share = json.loads(await failing.execute("share_video", {"identifier": "av170001"}))
+    coin = json.loads(
+        await failing.execute("coin_video", {"identifier": "av170001", "confirm": True})
+    )
+    share = json.loads(
+        await failing.execute("share_video", {"identifier": "av170001", "confirm": True})
+    )
     favorite = json.loads(
-        await failing.execute("favorite_video", {"identifier": "av170001", "folder_id": 1})
+        await failing.execute(
+            "favorite_video", {"identifier": "av170001", "folder_id": 1, "confirm": True}
+        )
     )
     assert coin["ok"] is False and "风控" in coin["error"]
     assert share["ok"] is False and "风控" in share["error"]
     assert favorite["ok"] is False and "风控" in favorite["error"]
 
     bad_folder = json.loads(
-        await failing.execute("favorite_video", {"identifier": "av170001", "folder_id": 0})
+        await failing.execute(
+            "favorite_video", {"identifier": "av170001", "folder_id": 0, "confirm": True}
+        )
     )
     assert bad_folder["ok"] is False and "folder_id" in bad_folder["error"]
 
     broken = BilibiliVideoSkill(client=WriteClient(error=RuntimeError("接口炸了")))
-    raised = json.loads(await broken.execute("coin_video", {"identifier": "av170001"}))
+    raised = json.loads(
+        await broken.execute("coin_video", {"identifier": "av170001", "confirm": True})
+    )
     assert raised["ok"] is False and "接口炸了" in raised["error"]
     broken_folders = json.loads(await broken.execute("favorite_folders", {}))
     assert broken_folders["ok"] is False and "接口炸了" in broken_folders["error"]
 
     legacy = BilibiliVideoSkill(client=FakeClient())
     cases = {
-        "coin_video": {"identifier": "av170001"},
-        "share_video": {"identifier": "av170001"},
-        "favorite_video": {"identifier": "av170001", "folder_id": 1},
+        "coin_video": {"identifier": "av170001", "confirm": True},
+        "share_video": {"identifier": "av170001", "confirm": True},
+        "favorite_video": {"identifier": "av170001", "folder_id": 1, "confirm": True},
         "favorite_folders": {},
     }
     for name, args in cases.items():
@@ -1453,9 +1496,272 @@ async def test_follow_user_tool_passes_action() -> None:
     skill = BilibiliUserSkill(client=client)
 
     result = json.loads(
-        await skill.execute("follow_user", {"uid": "42", "action": "unfollow"})
+        await skill.execute(
+            "follow_user", {"uid": "42", "action": "unfollow", "confirm": True}
+        )
     )
 
     assert result["ok"] is True
     assert result["action"] == "unfollow"
     assert client.follow_calls == [(42, False)]
+
+
+# ── 登录门禁 / 写操作确认 / 后台任务 ──
+
+
+class RefreshService:
+    """按 refresh() 结果切换可用性的 service 替身。"""
+
+    def __init__(self, client, *, becomes_available: bool, error: str = "") -> None:
+        self.client = client
+        self.available = False
+        self.becomes_available = becomes_available
+        self.error = error
+        self.refresh_calls = 0
+
+    async def refresh(self) -> bool:
+        self.refresh_calls += 1
+        self.available = self.becomes_available
+        return self.available
+
+    def status(self) -> dict:
+        return {"available": self.available, "error": self.error}
+
+
+async def test_login_gate_refreshes_before_reporting_dormant() -> None:
+    client = FakeClient()
+    service = RefreshService(client, becomes_available=True)
+    skill = BilibiliSearchSkill(service=service)
+
+    result = json.loads(await skill.execute("search_video", {"keyword": "猫"}))
+
+    assert result["ok"] is True and result["count"] == 1
+    assert service.refresh_calls == 1
+    assert client.search_calls == [("猫", "video", 1)]
+
+
+async def test_login_gate_reports_real_reason_when_still_dormant() -> None:
+    client = FakeClient()
+    service = RefreshService(
+        client,
+        becomes_available=False,
+        error="B站登录态校验失败（网络异常）：Timeout",
+    )
+    skill = BilibiliSearchSkill(service=service)
+
+    result = json.loads(await skill.execute("search_video", {"keyword": "猫"}))
+
+    assert result["ok"] is False
+    assert "未登录" in result["error"]
+    assert "网络异常" in result["error"]  # 网络失败 vs 凭证失效要分清
+    assert service.refresh_calls == 1
+    assert client.search_calls == []
+
+
+def test_public_write_tools_require_confirm_parameter() -> None:
+    video_tools = {
+        tool["function"]["name"]: tool["function"]
+        for tool in BilibiliVideoSkill(client=FakeClient()).get_tools()
+    }
+    user_tools = {
+        tool["function"]["name"]: tool["function"]
+        for tool in BilibiliUserSkill(client=FakeClient()).get_tools()
+    }
+    for name in (
+        "comment_video",
+        "like_video",
+        "like_comment",
+        "coin_video",
+        "share_video",
+        "favorite_video",
+    ):
+        params = video_tools[name]["parameters"]
+        assert params["properties"]["confirm"]["type"] == "boolean"
+        assert "confirm" in params["required"]
+    assert "confirm" in user_tools["follow_user"]["parameters"]["required"]
+
+
+async def test_write_tool_without_confirm_does_not_reach_client() -> None:
+    client = WriteClient()
+    skill = BilibiliVideoSkill(client=client)
+
+    blocked = json.loads(
+        await skill.execute("comment_video", {"identifier": _VIDEO_URL, "text": "好看"})
+    )
+    assert blocked["ok"] is False
+    assert blocked["code"] == "CONFIRM_REQUIRED"
+    assert "confirm" in blocked["error"]
+    assert client.comment_calls == []
+
+    # 模型常把布尔写成字符串，按 _flag 解析；"false" 仍然拒绝。
+    refused = json.loads(
+        await skill.execute("like_video", {"identifier": _VIDEO_URL, "confirm": "false"})
+    )
+    assert refused["code"] == "CONFIRM_REQUIRED"
+    assert client.like_calls == []
+
+    allowed = json.loads(
+        await skill.execute(
+            "comment_video",
+            {"identifier": _VIDEO_URL, "text": "好看", "confirm": "true"},
+        )
+    )
+    assert allowed["ok"] is True
+    assert client.comment_calls == [("BV1xx411c7mD", "好看", 0, 0)]
+
+
+async def test_watch_video_without_transcript_keeps_video_info() -> None:
+    video = FakeVideoService(
+        {
+            "ok": False,
+            "error": "没有可用字幕",
+            "bvid": "BV1xx411c7mD",
+            "title": "视频标题",
+            "owner": "UP主",
+            "desc": "简介",
+        }
+    )
+    skill = BilibiliVideoSkill(video_service=video)
+
+    result = json.loads(
+        await skill.execute("watch_video", {"identifier": "BV1xx411c7mD"})
+    )
+
+    assert result["ok"] is True
+    assert result["title"] == "视频标题"
+    assert result["bvid"] == "BV1xx411c7mD"
+    assert result["up"] == "UP主"
+    assert result["transcript"] == ""
+    assert "字幕" in result["note"]
+    assert "没有可用字幕" in result["note"]
+
+
+class FakeVideoTasks:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def submit(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return {"ok": True, "task_id": "t1"}
+
+
+def _invocation(chat_flow: str):
+    from neobot_app.agent_tools.contracts import ToolContext
+    from neobot_app.agent_tools.invocation import CURRENT_INVOCATION, ToolInvocation
+
+    context = ToolContext(owner=f"{chat_flow}:main", chat_flow_id=chat_flow)
+    return CURRENT_INVOCATION, CURRENT_INVOCATION.set(ToolInvocation(context))
+
+
+async def test_watch_video_submits_to_background_with_flow() -> None:
+    tasks = FakeVideoTasks()
+    video = FakeVideoService({"ok": True, "title": "视频标题"})
+    skill = BilibiliVideoSkill(video_service=video, task_manager=tasks)
+
+    var, token = _invocation("group:1")
+    try:
+        result = json.loads(
+            await skill.execute("watch_video", {"identifier": "BV1xx411c7mD"})
+        )
+    finally:
+        var.reset(token)
+
+    assert result["ok"] is True and result["task_id"] == "t1"
+    assert tasks.calls[0]["flow_key"] == "group:1"
+    assert video.calls == []  # 后台任务路径不再同步解析
+
+
+async def test_watch_video_reports_retryable_error_instead_of_sync_fallback() -> None:
+    video = FakeVideoService({"ok": True, "title": "视频标题"})
+    broken = BilibiliVideoSkill(
+        video_service=video, task_manager=FakeVideoTasks(error=RuntimeError("队列满了"))
+    )
+
+    var, token = _invocation("group:1")
+    try:
+        failed = json.loads(
+            await broken.execute("watch_video", {"identifier": "BV1xx411c7mD"})
+        )
+    finally:
+        var.reset(token)
+
+    assert failed["ok"] is False
+    assert failed["retryable"] is True
+    assert "队列满了" in failed["error"]
+    assert video.calls == []  # 提交失败不再偷偷同步解析
+
+
+async def test_watch_video_without_invocation_stays_host_only_sync() -> None:
+    video = FakeVideoService({"ok": True, "title": "视频标题"})
+    skill = BilibiliVideoSkill(video_service=video, task_manager=FakeVideoTasks())
+
+    result = json.loads(
+        await skill.execute("watch_video", {"identifier": "BV1xx411c7mD"})
+    )
+
+    # 没有可信聊天流（宿主直调）：沿用同步解析，不提交后台任务。
+    assert result["ok"] is True and result["title"] == "视频标题"
+    assert video.calls == [("BV1xx411c7mD", 3000, 0)]
+
+
+async def test_empty_search_and_comments_carry_note() -> None:
+    class EmptySearchClient(FakeClient):
+        async def search(self, keyword, *, search_type="video", page=1):
+            self.search_calls.append((keyword, search_type, page))
+            return {}
+
+    searched = json.loads(
+        await BilibiliSearchSkill(client=EmptySearchClient()).execute(
+            "search_video", {"keyword": "猫"}
+        )
+    )
+    assert searched["ok"] is True and searched["count"] == 0
+    assert "接口失败" in searched["note"]
+
+    class QuietCommentsClient(FakeClient):
+        async def get_comments(
+            self, oid, comment_type=1, *, mode="hot", cursor=None, page_size=20
+        ):
+            self.comment_calls.append((oid, comment_type, mode, cursor, page_size))
+            return {"items": [], "cursor": "", "is_end": True, "raw": {}}
+
+    comments = json.loads(
+        await BilibiliVideoSkill(client=QuietCommentsClient()).execute(
+            "video_comments", {"identifier": "av170001"}
+        )
+    )
+    assert comments["ok"] is True and comments["count"] == 0
+    assert "接口失败" in comments["note"]
+
+
+async def test_comment_type_only_accepts_client_supported_codes() -> None:
+    client = FakeClient()
+    rejected = json.loads(
+        await BilibiliVideoSkill(client=client).execute(
+            "video_comments", {"identifier": "av170001", "comment_type": "2"}
+        )
+    )
+    assert rejected["ok"] is False and "comment_type" in rejected["error"]
+    assert client.comment_calls == []
+
+    class TypedClient(FakeClient):
+        # 与 client 契约一致：公开 COMMENT_TYPES 决定可用类型码。
+        COMMENT_TYPES = {1: "视频", 2: "特殊评论区"}
+
+        async def get_comments(
+            self, oid, comment_type=1, *, mode="hot", cursor=None, page_size=20
+        ):
+            self.comment_calls.append((oid, comment_type, mode, cursor, page_size))
+            return {"items": [], "cursor": "", "is_end": True, "raw": {}}
+
+    typed = TypedClient()
+    accepted = json.loads(
+        await BilibiliVideoSkill(client=typed).execute(
+            "video_comments", {"identifier": "av170001", "comment_type": "2"}
+        )
+    )
+    assert accepted["ok"] is True and accepted["comment_type"] == "2"
+    assert typed.comment_calls == [(170001, 2, "hot", "", 20)]
