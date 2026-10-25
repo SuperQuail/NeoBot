@@ -1,12 +1,59 @@
 // pages/Deploy.tsx —— 快捷部署：只填必填项就能把 Bot 跑起来
 // 必填：机器人 QQ 号 + 昵称 + 人设 + 平台密钥 + OneBot 连接；超管选填。
 // 最后一步给出 OneBot 反向 WS 的**生效**地址与 access token —— NapCat 侧要填的就是这两样。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/endpoints';
 import type { DeployStatus } from '../api/types';
 import { toast } from '../components/Toast';
 import Icon from '../components/Icon';
 import Button from '../components/ui/Button';
+
+// 快捷部署草稿：用户填到一半切到别的页面（例如配置编辑页）再回来时，
+// 未点「保存并重载」的输入不能丢。只存非敏感字段，API Key 不落浏览器存储。
+const DRAFT_KEY = 'neobot.deploy.draft.v1';
+
+interface DeployDraft {
+  account: string;
+  nickName: string;
+  aliases: string;
+  persona: string;
+  adminQq: string;
+  chance: string;
+}
+
+function loadDraft(): DeployDraft | null {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DeployDraft>;
+    return {
+      account: String(parsed.account ?? ''),
+      nickName: String(parsed.nickName ?? ''),
+      aliases: String(parsed.aliases ?? ''),
+      persona: String(parsed.persona ?? ''),
+      adminQq: String(parsed.adminQq ?? ''),
+      chance: String(parsed.chance ?? '0.3'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveDraft(draft: DeployDraft): void {
+  try {
+    sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // 隐私模式/storage 满：草稿丢失不影响主流程
+  }
+}
+
+function clearDraft(): void {
+  try {
+    sessionStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // 同上
+  }
+}
 
 function CopyRow(props: { label: string; value: string; hint?: string; onCopy: (v: string, l: string) => void }) {
   return (
@@ -33,8 +80,13 @@ export default function Deploy() {
   const [adminQq, setAdminQq] = useState('');
   const [chance, setChance] = useState('0.3');
   const [apiKey, setApiKey] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [restored, setRestored] = useState(false);
+  const draftChecked = useRef(false);
 
-  const read = useCallback(async () => {
+  // applyValues=false：只刷新步骤/OneBot 状态与 revision，不回填表单。
+  // 「保存密钥 / 生成 token」不应把用户还没点「保存并重载」的身份/人设草稿冲掉。
+  const read = useCallback(async (applyValues = true) => {
     setLoading(true);
     const result = await api.deployStatus();
     setLoading(false);
@@ -42,8 +94,23 @@ export default function Deploy() {
       toast(result.error || '读取部署状态失败', 'err');
       return;
     }
-    const values = result.data.values || {};
     setDoc(result.data);
+    if (!applyValues) return;
+    const values = result.data.values || {};
+    // 首次加载优先恢复本 tab 的未保存草稿；之后（保存并重载）才按服务端值回填。
+    const draft = draftChecked.current ? null : loadDraft();
+    draftChecked.current = true;
+    if (draft) {
+      setAccount(draft.account);
+      setNickName(draft.nickName);
+      setAliases(draft.aliases);
+      setPersona(draft.persona);
+      setAdminQq(draft.adminQq);
+      setChance(draft.chance);
+      setRestored(true);
+      setDirty(true);
+      return;
+    }
     setAccount(values.bot_account || '');
     setNickName(values.bot_nick_name || '');
     setAliases((values.alias_name || []).join('、'));
@@ -53,8 +120,21 @@ export default function Deploy() {
   }, []);
 
   useEffect(() => {
-    read();
+    read(true);
   }, [read]);
+
+  // 用户改过才写草稿：避免保存后 read(true) 把服务端值又写回草稿。
+  useEffect(() => {
+    if (!dirty) return;
+    saveDraft({ account, nickName, aliases, persona, adminQq, chance });
+  }, [dirty, account, nickName, aliases, persona, adminQq, chance]);
+
+  const discardDraft = async () => {
+    clearDraft();
+    setRestored(false);
+    setDirty(false);
+    await read(true);
+  };
 
   /** 保存身份 / 人设 / 别名 / 超管 / 回复意愿：先读当前配置再深合并 ——
    *  只发改动的那几段会误删同段其它字段。 */
@@ -93,8 +173,11 @@ export default function Deploy() {
       toast(result.error || '保存失败', 'err');
       return;
     }
+    clearDraft();
+    setRestored(false);
+    setDirty(false);
     toast('配置已保存并重载', 'ok');
-    await read();
+    await read(true);
   };
 
   const saveApiKey = async () => {
@@ -116,7 +199,8 @@ export default function Deploy() {
     }
     toast(result.data?.message || '密钥已保存并重载', 'ok');
     setApiKey('');
-    await read();
+    // 只刷新状态：身份/人设等未保存草稿必须保留（用户可能还没点「保存并重载」）。
+    await read(false);
   };
 
   const generateToken = async () => {
@@ -128,7 +212,7 @@ export default function Deploy() {
       return;
     }
     toast(result.data?.message || '已生成并写入 access token', 'ok');
-    await read();
+    await read(false);
   };
 
   const copy = async (value: string, label: string) => {
@@ -153,6 +237,12 @@ export default function Deploy() {
           最后一步的 OneBot 地址与 access token 直接填进 NapCat 的反向 WS 配置。
         </p>
         {loading && <p className="muted">读取中…</p>}
+        {restored && (
+          <p className="config-notice">
+            已恢复上次未保存的快捷部署输入（只在本标签页有效）；点下方「保存并重载」会写入并清除草稿。
+            <Button type="button" size="sm" onClick={discardDraft}>放弃草稿</Button>
+          </p>
+        )}
         <ul className="deploy-steps">
           {steps.map((step) => (
             <li key={step.key} className={step.done ? 'done' : ''}>
@@ -173,17 +263,17 @@ export default function Deploy() {
         <div className="deploy-form">
           <label>
             <span>机器人 QQ 号 <em className="deploy-req">必填</em></span>
-            <input className="input" value={account} onChange={(e) => setAccount(e.target.value)}
+            <input className="input" value={account} onChange={(e) => { setAccount(e.target.value); setDirty(true); }}
               placeholder={defaults.bot_account ? '出厂占位：' + defaults.bot_account : '例如 123456789'} />
           </label>
           <label>
             <span>机器人昵称 <em className="deploy-req">必填</em></span>
-            <input className="input" value={nickName} onChange={(e) => setNickName(e.target.value)}
+            <input className="input" value={nickName} onChange={(e) => { setNickName(e.target.value); setDirty(true); }}
               placeholder={defaults.bot_nick_name || '例如 NeoBot'} />
           </label>
           <label>
             别名（可留空，多个用「、」分隔）
-            <input className="input" value={aliases} onChange={(e) => setAliases(e.target.value)}
+            <input className="input" value={aliases} onChange={(e) => { setAliases(e.target.value); setDirty(true); }}
               placeholder="别人怎么称呼它，例如：玄天" />
           </label>
         </div>
@@ -196,7 +286,7 @@ export default function Deploy() {
           出厂那段只是示例文案，请替换成你自己的。想深度定制提示词模板，去「提示词」页。
         </p>
         <textarea className="input deploy-persona" rows={6} value={persona}
-          onChange={(e) => setPersona(e.target.value)}
+          onChange={(e) => { setPersona(e.target.value); setDirty(true); }}
           placeholder="例如：你是群里的老群友「玄天」，说话简短、偶尔毒舌，不主动聊敏感话题…" />
       </section>
 
@@ -222,13 +312,13 @@ export default function Deploy() {
         <div className="deploy-form">
           <label>
             超级管理员 QQ（选填）
-            <input className="input" value={adminQq} onChange={(e) => setAdminQq(e.target.value)}
+            <input className="input" value={adminQq} onChange={(e) => { setAdminQq(e.target.value); setDirty(true); }}
               placeholder="接收余额不足等系统通知；留空也能正常跑" />
           </label>
           <label>
             群聊回复意愿系数
             <input className="input" type="number" min="0" max="1" step="0.05" value={chance}
-              onChange={(e) => setChance(e.target.value)} />
+              onChange={(e) => { setChance(e.target.value); setDirty(true); }} />
             <span className="muted small">
               约等于回复概率，具体概率受聊天流场景浮动（有人 @ 你、话题相关时更高）。
               默认 0.3；填 0 表示不主动回复。
