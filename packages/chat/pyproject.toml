@@ -1,6 +1,6 @@
 [project]
 name = "neobot-chat"
-version = "2.0.2-a8"
+version = "2.0.2-a9"
 description = "Add your description here"
 readme = "README.md"
 authors = [
