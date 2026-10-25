@@ -95,6 +95,9 @@ MAX_OVERFLOW_PROMPT_CHARS = 60_000
 _ARCHIVE_PROMPT_OMITTED = "\n...[档案中间部分已省略，仅保留首尾用于压缩]...\n"
 #: 失败退避表最多保留的条目数（防止长时间运行后无界增长）。
 MAX_OVERFLOW_BACKOFF_ENTRIES = 512
+#: 自动「档案超限压缩」的目标字符数：压缩到该值而非存储上限本身，给下一次写入
+#: 留出余量；否则 agent 严格按上限压缩后会立刻再次超限。上限低于该值时以实际上限为准。
+AUTO_COMPRESSION_TARGET_CHARS = 10_000
 
 # ── 面板触发的手动 / 批量压缩（spec(4) Part C）──
 #: 手动压缩目标字符数下限：低于它必然丢关键事实（R15 / §4.10.2）。
@@ -952,13 +955,17 @@ class ArchiveMemoryAutoSummaryService:
                 key=key,
             )
             return False
+        # 自动压缩目标 ≤ 存储上限：上限 15000 时压到 10000，留出 5000 字余量。
+        target_chars = min(
+            self._overflow_max_total_chars, AUTO_COMPRESSION_TARGET_CHARS
+        )
         try:
             task = asyncio.create_task(
                 self._run_compression_job(
                     table_name,
                     key,
                     task_key,
-                    target_chars=self._overflow_max_total_chars,
+                    target_chars=target_chars,
                     source="auto",
                 )
             )
@@ -1104,7 +1111,7 @@ class ArchiveMemoryAutoSummaryService:
         """对单条档案跑一轮「压缩」工具循环，并把结果落库。
 
         ``target_chars`` 是**本次压缩**的目标，不再直接读全局字段（spec(4) §4.10.3）：
-        自动路径传 ``self._overflow_max_total_chars``（source="auto"），手动路径传
+        自动路径传 min(max_total_chars, 10000)（source="auto"），手动路径传
         面板输入（source="manual"）。复用总结的预算与保护：max_tool_rounds /
         max_summary_seconds / 单次调用超时 / 用量统计 / 工具连续失败熔断 / 失败指数退避。
 
@@ -1139,11 +1146,17 @@ class ArchiveMemoryAutoSummaryService:
         if state is not None:
             state["snapshot_id"] = snapshot_id
 
+        # 自动压缩：hard_limit 用存储硬上限（可能大于本次目标，例如 15000 上限压到
+        # 10000），target_chars 才是本次必须达到的目标；手动压缩的 target 本身就是
+        # 运维要求的硬目标，hard_limit 与目标一致。
+        hard_limit = (
+            self._overflow_max_total_chars or limit if source == "auto" else limit
+        )
         prompt = self._build_overflow_compression_prompt(
             table_name=table_name,
             key=key,
             value=value,
-            limit=limit,
+            limit=hard_limit,
             trigger=source,
             target_chars=limit,
         )
@@ -1867,7 +1880,7 @@ class ArchiveMemoryAutoSummaryService:
         """构造「压缩单条超限档案」的提示词（要求保留事实、只丢冗余）。
 
         ``trigger`` 区分两条触发路径（spec(4) §4.10.3）：
-        - ``"auto"``：写路径超限自动压缩，目标 = 全局 ``max_total_chars``；
+        - ``"auto"``：写路径超限自动压缩，目标 = min(max_total_chars, 10000)；
         - ``"manual"``：面板 / 批量手动触发，目标 = 本次请求的目标，必须写明这是
           「运维主动要求的目标」，且要求压缩后自证 ``total_chars <= target``。
         """

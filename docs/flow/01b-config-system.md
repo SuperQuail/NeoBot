@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
 verified_against: 2a86224
-verified_hash: 5b4d41e91714
+verified_hash: 61f03ab52b10
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -134,7 +134,7 @@ flowchart TD
     C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色｜:633"]
     E --> E1["agent 下 11 个子段：creator / memory / problem_solver / sandbox / tools…｜:1517"]
     E1 --> E2["AgentMemoryTrigger｜:1123 group_interval=500 private_interval=200"]
-    E1 --> E3["AgentMemoryArchive｜:1162 max_chars=500 max_total_chars=10000"]
+    E1 --> E3["AgentMemoryArchive｜:1162 max_chars=500 max_total_chars=15000"]
     E1 --> E4["AgentToolsConfig｜:1499 mode=native max_agent_iterations=20 max_goal_rounds=8"]
     D --> D1["adapter 内含密钥字段：local_auth_token / reverse_ws_access_token"]
     A --> F["文件末尾重绑：Chat = EnhancedChat｜:1968，BotConfig = EnhancedBotConfig｜:1969"]
@@ -311,7 +311,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["AgentMemoryArchive.auto_compact_chars=200｜bot.py:1171"] --> A1["全仓只有声明这一处引用"]
-    A1 --> A2["真正生效的是 max_chars=500 与 max_total_chars=10000｜:1175 / :1183"]
+    A1 --> A2["真正生效的是 max_chars=500 与 max_total_chars=15000｜:1175 / :1183"]
     B["AgentProblemSolver 文档称路由看 agent_model.problem_solver｜:1255"] --> B1["AgentModelRouting 根本没有 problem_solver 字段｜:656"]
     B1 --> B2["_pipeline.py:198 传 agent_name=problem_solver，getattr 落回 default_index=1"]
     B2 --> B3["在 TOML 写 problem_solver 无效果，且下次补全写回会把该键抹掉"]

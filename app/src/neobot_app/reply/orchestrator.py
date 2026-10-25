@@ -2598,42 +2598,15 @@ class ReplyOrchestrator:
                 nonlocal previous_entries
                 previous_entries = queue_copy.entries(queue_key)
                 if new_text:
-                    # wait 期间首次出现的群成员:档案一并注入工具结果
-                    # (登记到 rendered_user_ids 前必须真正渲染过,否则档案永远丢失)
                     if is_group:
-                        from neobot_app.message.queue import QueueEntryType as _QET_W
-
-                        new_user_ids: list[str] = []
-                        for entry in new_entries:
-                            if (
-                                entry.kind == _QET_W.MESSAGE
-                                and entry.message is not None
-                            ):
-                                uid = getattr(entry.message, "user_id", None)
-                                if uid is not None:
-                                    uid_str = str(uid)
-                                    if uid_str not in rendered_user_ids:
-                                        rendered_user_ids.add(uid_str)
-                                        new_user_ids.append(uid_str)
-                        if new_user_ids:
-                            profile_service = getattr(
-                                self._prompt_builder, "_profile_service", None
-                            )
-                            if profile_service is not None:
-                                try:
-                                    member_profiles = (
-                                        await profile_service.render_specific_members(
-                                            new_user_ids,
-                                            include_archives=self._inject_member_archives(),
-                                        )
-                                    )
-                                except Exception:
-                                    member_profiles = ""
-                                if member_profiles:
-                                    new_text += (
-                                        f"\n\n[新出现的群友档案]\n{member_profiles}"
-                                    )
-                    return f"等待了 {wait_time} 秒，期间收到新消息：\n{new_text}"
+                        member_block = await self._render_new_member_block(
+                            new_entries, rendered_user_ids
+                        )
+                        if member_block:
+                            new_text += f"\n\n{member_block}"
+                    return (
+                        f"等待了 {wait_time} 秒，期间收到新消息：\n{new_text}"
+                    )
             return f"等待了 {wait_time} 秒，期间没有收到新消息。"
 
         async def react_emoji_handler(message_number: int, emoji_id: int) -> str:
@@ -3539,7 +3512,6 @@ class ReplyOrchestrator:
                 # 注入此期间的新消息
                 new_entries = self._collect_new_entries(queue, queue_copy, queue_key)
                 if new_entries:
-                    from neobot_app.message.queue import QueueEntryType as _QET3
                     from neobot_app.prompt.role_messages import (
                         build_role_messages_from_entries,
                     )
@@ -3552,7 +3524,19 @@ class ReplyOrchestrator:
                         bot_account=self._get_bot_account(),
                         include_boundary_markers=self._show_boundary_markers(),
                     )
+                    member_block = ""
+                    if is_group:
+                        member_block = await self._render_new_member_block(
+                            new_entries, rendered_user_ids
+                        )
                     if new_role_messages:
+                        if member_block:
+                            messages.append({"role": "user", "content": member_block})
+                            self._record_debug(
+                                "agent_new_member_profiles_injected",
+                                event,
+                                queue_key=queue_key,
+                            )
                         messages.extend(new_role_messages)
                         self._record_debug(
                             "agent_new_messages_injected",
@@ -3560,16 +3544,6 @@ class ReplyOrchestrator:
                             queue_key=queue_key,
                             injected_count=len(new_role_messages),
                         )
-                    # 登记新消息中的用户ID,避免后续挂起恢复时重复渲染其档案
-                    if is_group:
-                        for entry in new_entries:
-                            if (
-                                entry.kind == _QET3.MESSAGE
-                                and entry.message is not None
-                            ):
-                                uid = getattr(entry.message, "user_id", None)
-                                if uid is not None:
-                                    rendered_user_ids.add(str(uid))
 
             # 保存编号映射（每轮更新）
             event.message_number_map = numbering.mapping
@@ -3676,17 +3650,7 @@ class ReplyOrchestrator:
                             numbering,
                             queue_copy,
                         )
-                        # 更新已渲染用户ID集合
-                        from neobot_app.message.queue import QueueEntryType as _QET2
 
-                        for entry in new_entries:
-                            if (
-                                entry.kind == _QET2.MESSAGE
-                                and entry.message is not None
-                            ):
-                                uid = getattr(entry.message, "user_id", None)
-                                if uid is not None:
-                                    rendered_user_ids.add(str(uid))
                         for resume_message in resume_messages:
                             messages.append(resume_message)
                         if resume_messages:
@@ -4470,6 +4434,55 @@ class ReplyOrchestrator:
         )
         return [], None, None
 
+    async def _render_new_member_block(
+        self, new_entries: list, rendered_user_ids: set[str]
+    ) -> str:
+        """渲染「新出现的群友档案」块；渲染成功才登记 uid，失败留给下次重试。"""
+        if self._prompt_builder is None or not new_entries:
+            return ""
+        profile_service = getattr(self._prompt_builder, "_profile_service", None)
+        if profile_service is None:
+            return ""
+        from neobot_app.message.queue import QueueEntryType
+
+        new_user_ids: list[str] = []
+        for entry in new_entries:
+            if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
+                continue
+            uid = getattr(entry.message, "user_id", None)
+            if uid is None:
+                continue
+            uid_str = str(uid)
+            if uid_str not in rendered_user_ids and uid_str not in new_user_ids:
+                new_user_ids.append(uid_str)
+        if not new_user_ids:
+            return ""
+        include_archives = self._inject_member_archives()
+        try:
+            member_profiles = await profile_service.render_specific_members(
+                new_user_ids, include_archives=include_archives
+            )
+        except Exception as exc:
+            self._logger.warning(
+                f"新出现的群友档案渲染失败（下次重试）：{type(exc).__name__}: {exc}"
+            )
+            return ""
+        if not member_profiles:
+            return ""
+        render = getattr(self._prompt_builder, "build_new_member_profiles_text", None)
+        block = (
+            render(member_profiles)
+            if callable(render)
+            else f"[新出现的群友档案]\n{member_profiles}"
+        )
+        if not include_archives:
+            hint = getattr(self._prompt_builder, "member_archive_hint", None)
+            if callable(hint):
+                hint_text = hint()
+                if hint_text:
+                    block = f"{block}\n{hint_text}"
+        rendered_user_ids.update(new_user_ids)
+        return block
     async def _build_group_chat_resume_messages(
         self,
         new_entries: list,
@@ -4483,21 +4496,8 @@ class ReplyOrchestrator:
         新消息按发送者拆分为 user/assistant 角色消息;
         新成员档案与当前时间渲染为一条 user 说明消息,附在新消息之前。
         """
-        from neobot_app.message.queue import QueueEntryType
         from neobot_app.prompt.role_messages import build_role_messages_from_entries
 
-        # 收集新消息中的用户ID
-        new_user_ids: list[str] = []
-        seen: set[str] = set()
-        for entry in new_entries:
-            if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
-                uid = getattr(entry.message, "user_id", None)
-                if uid is not None:
-                    uid_str = str(uid)
-                    if uid_str not in seen:
-                        seen.add(uid_str)
-                        if uid_str not in rendered_user_ids:
-                            new_user_ids.append(uid_str)
 
         # 新消息 -> 角色消息
         role_messages = build_role_messages_from_entries(
@@ -4509,32 +4509,10 @@ class ReplyOrchestrator:
             include_boundary_markers=self._show_boundary_markers(),
         )
 
-        # 新成员档案(user 块内容,不插入 system 提示词)
-        new_member_text = ""
-        group_name = ""
-        if new_user_ids and self._prompt_builder is not None:
-            profile_service = getattr(self._prompt_builder, "_profile_service", None)
-            if profile_service is not None:
-                member_profiles = await profile_service.render_specific_members(
-                    new_user_ids,
-                    include_archives=self._inject_member_archives(),
-                )
-                if member_profiles:
-                    try:
-                        group_name = await profile_service.get_group_name(queue_key)
-                    except Exception:
-                        group_name = ""
-                    render_profiles = getattr(
-                        self._prompt_builder, "build_new_member_profiles_text", None
-                    )
-                    if callable(render_profiles):
-                        new_member_text = render_profiles(
-                            member_profiles,
-                            group_name=group_name,
-                            group_id=queue_key,
-                        )
-                    else:
-                        new_member_text = member_profiles
+        # 新成员档案(user 块内容,不插入 system 提示词)；渲染成功才登记 uid。
+        new_member_text = await self._render_new_member_block(
+            new_entries, rendered_user_ids
+        )
 
         resume_messages: list[dict[str, str]] = []
 

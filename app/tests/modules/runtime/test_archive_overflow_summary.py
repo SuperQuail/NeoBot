@@ -418,3 +418,30 @@ async def test_summary_prompt_has_no_cap_note_when_disabled() -> None:
     assert "storage cap" not in prompt
 
 
+# ── 上限 15000 / 压缩目标 10000：压缩后留余量 ─────────────────────
+
+
+async def test_auto_compression_target_keeps_headroom_below_storage_cap() -> None:
+    """存储上限 15000、自动压缩目标仍为 10000，压完留 5000 字余量。"""
+    compressed = "关键事实: 甲喜欢豆浆\n" + "y" * 9000
+    provider = _CompressingProvider(compressed)
+    service, archive_service, _ = _build(provider=provider, max_total_chars=15000)
+
+    outcome = await archive_service.set_with_outcome("user_profile", "1", "x" * 16000, [])
+    assert outcome.over_limit is True
+    assert outcome.scheduled is True
+    await service.wait_pending_overflow_tasks()
+
+    stored = await archive_service.get("user_profile", "1")
+    assert stored is not None
+    assert len(stored.value) <= 10000
+    prompt = provider.calls[0][-1]["content"]
+    assert "target_chars: 10000" in prompt
+    assert "hard_limit: 15000" in prompt
+
+
+def test_default_archive_storage_cap_is_15000() -> None:
+    from neobot_app.config.schemas.bot import BotConfig
+
+    assert BotConfig().agent.memory.archive.max_total_chars == 15000
+

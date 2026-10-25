@@ -3192,3 +3192,111 @@ async def test_wait_reports_duplicate_name_note_for_new_sender(monkeypatch):
     assert '之前的"小明"是QQ号为111的' in content
     assert event.error is None
     await orch.shutdown()
+
+# ── 新出现的群友档案注入（agent 循环中途 / 挂起恢复）──
+
+_NEW_USER_PROFILE = "<群友_1>昵称:新人,QQ号:20002</群友_1>"
+_NEW_MEMBER_ARCHIVE_HINT = "<群友记忆>档案未注入，用 archive_crud__read_archive 按需读取。</群友记忆>"
+
+
+class _FakeMemberProfileService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], bool]] = []
+
+    async def render_specific_members(self, ids, include_archives: bool = False) -> str:
+        self.calls.append((list(ids), include_archives))
+        return _NEW_USER_PROFILE
+
+    async def get_group_name(self, group_id: str) -> str:
+        return "测试群"
+
+
+class _MemberAwarePromptBuilder(_FakePromptBuilder):
+    def __init__(self, service) -> None:
+        self._profile_service = service
+
+    def build_new_member_profiles_text(
+        self, member_profiles: str, *, group_name: str = "", group_id: str = ""
+    ) -> str:
+        return f"[新出现的群友档案]\n{member_profiles}"
+
+    def member_archive_hint(self) -> str:
+        return _NEW_MEMBER_ARCHIVE_HINT
+
+    def build_group_chat_resume_text(
+        self, *, new_member_profiles: str = "", current_time: str = ""
+    ) -> str:
+        return f"{new_member_profiles}\n这是群聊对话的续接。"
+
+
+def _new_user_group_message(message_id: int = 2) -> GroupMessage:
+    return GroupMessage(
+        message_type=MessageTypeEnum.group,
+        message_id=message_id,
+        user_id=20002,
+        message=[MessageSegment(type="text", data={"text": "新人报到"})],
+        raw_message="新人报到",
+        group_id=888888,
+        sender=PostMessageMessagesender(user_id=20002, nickname="新人"),
+    )
+
+
+async def test_render_new_member_block_marks_rendered_and_adds_archive_hint() -> None:
+    service = _FakeMemberProfileService()
+    orch = _make_orchestrator(prompt_builder=_MemberAwarePromptBuilder(service))
+    queue = MessageQueue()
+    queue.push("888888", _new_user_group_message())
+    entries = [e for e in queue.entries("888888") if e.message is not None]
+    rendered: set[str] = set()
+
+    block = await orch._render_new_member_block(entries, rendered)
+
+    assert "[新出现的群友档案]" in block
+    assert "QQ号:20002" in block
+    assert _NEW_MEMBER_ARCHIVE_HINT in block
+    assert rendered == {"20002"}
+    assert service.calls == [(["20002"], False)]
+
+
+async def test_agent_loop_injects_new_member_profiles_for_mid_pipeline_message(
+    monkeypatch,
+) -> None:
+    """管线执行中到达的新用户消息：档案块必须和新消息一起注入，而不是只登记 uid。"""
+    service = _FakeMemberProfileService()
+    queue = MessageQueue()
+    first = _make_group_message(1)
+    queue.push("888888", first)
+
+    class _Provider:
+        def __init__(self) -> None:
+            self.calls: list[list[dict]] = []
+
+        async def chat(self, messages, tools=None):
+            self.calls.append(list(messages))
+            if len(self.calls) == 1:
+                queue.push("888888", _new_user_group_message())
+                return {"content": "", "tool_calls": [_poke_call("p0")]}
+            return _send_reply_response("好")
+
+        async def close(self) -> None:
+            pass
+
+    provider = _Provider()
+    orch = _make_orchestrator(
+        provider=provider, prompt_builder=_MemberAwarePromptBuilder(service)
+    )
+    monkeypatch.setattr(orch, "_suspend_group_chat", AsyncMock(return_value=([], None, None)))
+    event = orch.start_reply(
+        message=first, queue=queue, queue_key="888888", decision=_make_decision()
+    )
+    assert event is not None
+    for _ in range(200):
+        if not orch._active_pipelines:
+            break
+        await asyncio.sleep(0.01)
+    await orch.shutdown()
+
+    assert len(provider.calls) >= 2
+    contents = [str(m.get("content") or "") for m in provider.calls[1]]
+    assert any("[新出现的群友档案]" in content for content in contents)
+    assert any("QQ号:20002" in content for content in contents)

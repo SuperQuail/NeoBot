@@ -450,6 +450,10 @@ class PromptBuilder:
             },
         )
 
+    def member_archive_hint(self) -> str:
+        """群员档案未注入时给模型的按需读取提示（增量新成员块复用）。"""
+        return _MEMBER_ARCHIVE_HINT
+
     def build_group_chat_resume_text(
         self,
         *,

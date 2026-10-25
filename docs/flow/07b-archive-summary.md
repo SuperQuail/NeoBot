@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/runtime/archive_memory_summary.py
   - packages/memory/src/neobot_memory/archive_service.py
 verified_against: 528fe18
-verified_hash: a6d42c32db0f
+verified_hash: f95728640dd0
 ---
 
 # 07b 档案自动总结与压缩：计数触发 · 手写工具循环 · 溢出压缩 · 面板手动/批量入口
@@ -305,7 +305,7 @@ flowchart TD
 不会被拦（没有事实保真校验）；反过来「模型只写了一部分、长度已达标」会被当成功保留。
 与总结循环的差别：这里预算耗尽 / 超时**不写失败退避**（不算异常），由外层按「未达标」统一收口，
 所以不会重复记两次失败。
-自动路径的 target 恒为 `max_total_chars`，手动路径是面板传入并经 `normalize_manual_target` 校验的值。
+自动路径的 target 恒为 `min(max_total_chars, 10000)`（上限 15000 时压到 10000，留出余量），手动路径是面板传入并经 `normalize_manual_target` 校验的值。
 </details>
 
 <details>

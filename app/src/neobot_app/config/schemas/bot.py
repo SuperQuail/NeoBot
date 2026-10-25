@@ -1232,8 +1232,8 @@ class AgentMemoryArchive:
         metadata={"description": "群聊记忆渲染进提示词时的展示长度上限(截取开头部分)；超出部分由模型用 archive_crud 分页查阅；group_summary 条目也以此为准"},
     )
     max_total_chars: Optional[int] = field(
-        default=10000,
-        metadata={"description": "单条档案的存储硬上限(字符)；超过后按 overflow_action 处理；0表示禁用(不限制)。与渲染上限 max_chars 无关"},
+        default=15000,
+        metadata={"description": "单条档案的存储硬上限(字符)；超过后按 overflow_action 处理，自动压缩目标固定为 10000（留出余量）；0表示禁用(不限制)。与渲染上限 max_chars 无关"},
     )
     overflow_action: Optional[str] = field(
         default="summarize",

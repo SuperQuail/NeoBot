@@ -14,7 +14,7 @@ covers:
   - packages/storage/src/neobot_storage/repositories/archive.py
   - packages/storage/src/neobot_storage/repositories/archive_snapshot.py
 verified_against: d37eae4
-verified_hash: c83fce402a56
+verified_hash: 1875db3dd684
 ---
 
 # 07 档案记忆：自动总结触发 · 三种写入结果 · 溢出压缩与快照
@@ -46,7 +46,7 @@ verified_hash: c83fce402a56
    在**全仓只有定义处**（`config/schemas/bot.py:1171`）出现过，没有任何读取点 —— 真正生效的
    只有 `max_total_chars` + `overflow_action` 这一组。
 2. `max_chars`（500）与 `group_profile_max_chars`（1500）是**渲染／摘要长度上限**，不是存储上限；
-   存储上限只有 `max_total_chars`（10000）。三者互不相干，见细节 4 与细节 9。
+   存储上限只有 `max_total_chars`（15000，自动压缩目标固定 10000）。三者互不相干，见细节 4 与细节 9。
 3. 自动总结的工具循环是**手写循环**（直接调 `provider.chat`），不走 `neobot_chat` 的 Agent 类；
    轮次、预算、单次调用超时都是这个服务自己的常量（细节见 07b 待补）。
 
@@ -415,7 +415,7 @@ flowchart TD
   是 `max_total_chars` + `overflow_action` + `overflow_summary_cooldown_seconds`。
 * **两个「上限」不是一回事**：`max_chars`（500）／`group_profile_max_chars`（1500）只决定
   渲染与摘要长度（`_summary_limits` 把它们当作 `user_summary`／`group_summary` 的硬限制），
-  与存储上限 `max_total_chars`（10000）无关。
+  与存储上限 `max_total_chars`（15000）无关。
 * **`memory_counter` 必须无条件豁免容量治理**：若对它 reject，自动总结连计数都写不进去；
   若对它 summarize，压缩器会去「压缩」待总结消息队列，把尚未总结的消息吃掉。
   误伤的表现是「档案自动总结整体失效」，比超限严重得多。
