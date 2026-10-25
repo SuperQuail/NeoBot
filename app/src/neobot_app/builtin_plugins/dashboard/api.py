@@ -463,6 +463,13 @@ class DashboardApi:
         blocked = self._require_bilibili_login(request)
         if blocked is not None:
             return blocked
+        service = self._service("bilibili_service")
+        refresh = getattr(service, "refresh", None)
+        if callable(refresh):
+            try:
+                await refresh()
+            except Exception:
+                pass
         return _json_ok(self.console.bilibili_login.snapshot())
 
     async def bilibili_login_start(self, request: web.Request) -> web.Response:

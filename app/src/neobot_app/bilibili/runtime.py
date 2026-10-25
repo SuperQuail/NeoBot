@@ -334,22 +334,6 @@ class BilibiliRuntime:
 
     # ── 对外门面 ──
 
-    def status_text(self) -> str:
-        try:
-            st = self.service.status()
-        except Exception as exc:
-            self._logger.warning("B站状态读取失败", error=str(exc))
-            return "B站状态读取失败，请稍后重试"
-        if not st.get("available"):
-            return "B站未登录（功能等同关闭）。发送 /login bilibili 扫码登录。"
-        state = "有效" if st.get("valid") else "登录态待校验"
-        return (
-            f"B站已登录：{st.get('uname') or '(未命名)'} (UID {st.get('uid') or 0})\n"
-            f"登录态：{state}；登录时间：{st.get('login_at') or '未知'}\n"
-            f"评论回复：{'开' if getattr(getattr(self._config, 'bilibili', None), 'comment_reply_enabled', False) else '关'}；"
-            f"私信回复：{'开' if getattr(getattr(self._config, 'bilibili', None), 'private_message_enabled', False) else '关'}"
-        )
-
     async def login_with_qr(self, *, on_qr: Any = None, on_status: Any = None) -> bool:
         ok = await self.service.login_with_qr(on_qr=on_qr, on_status=on_status)
         if ok and self._started:
@@ -369,28 +353,21 @@ class BilibiliRuntime:
     # ── 命令注册 ──
 
     def register_commands(self, command_service: Any) -> None:
-        from neobot_app.commands.model import PERM_SUB_ADMIN, Command
+        from neobot_app.commands.model import PERM_EVERYONE, Command
 
         registry = command_service.registry
         self._register_login_command(registry, command_service)
         self._register_live_commands(registry, command_service)
-        if not _has_command(registry, "B站账号"):
-            try:
-                from neobot_app.bilibili.account_card import register_account_command
-
-                register_account_command(registry, self)
-            except Exception:
-                self._logger.exception("B站账号命令注册失败（已跳过）")
         if not _has_command(registry, "bili"):
             registry.register(
                 Command(
                     name="bili",
-                    description="B站状态/发动态（登录用 /login bilibili）",
+                    description="B站账号状态卡片/发动态（登录用 /login bilibili）",
                     usage="[status|dynamic <文本>]",
-                    permission=PERM_SUB_ADMIN,
+                    permission=PERM_EVERYONE,
                     handler=self._handle_bili,
                     params=(
-                        ("status", "查看B站登录与轮询状态"),
+                        ("status", "查看B站账号状态卡片"),
                         ("dynamic <文本>", "发布一条B站纯文本动态"),
                     ),
                 )
@@ -663,8 +640,39 @@ class BilibiliRuntime:
         args = list(ctx.args or [])
         sub = str(args[0]).lower() if args else "status"
         if sub in ("status", "状态", ""):
-            return self.status_text()
+            from neobot_app.bilibili.account_card import send_account_card
+
+            await self.service.refresh()
+            bilibili_cfg = getattr(self._config, "bilibili", None)
+            return await send_account_card(
+                ctx,
+                self.service,
+                extra_rows=[
+                    (
+                        "评论回复",
+                        "开"
+                        if getattr(bilibili_cfg, "comment_reply_enabled", False)
+                        else "关",
+                    ),
+                    (
+                        "私信回复",
+                        "开"
+                        if getattr(bilibili_cfg, "private_message_enabled", False)
+                        else "关",
+                    ),
+                ],
+            )
         if sub in ("dynamic", "动态"):
+            # 状态卡片对所有人开放；发动态仍是写操作，保持次级管理员门槛。
+            from neobot_app.commands.model import PERM_SUB_ADMIN
+
+            permissions = getattr(getattr(ctx, "service", None), "permissions", None)
+            allowed = (
+                permissions is not None
+                and permissions.can(ctx.user_id, PERM_SUB_ADMIN)
+            )
+            if not allowed:
+                return "发B站动态需要次级管理员权限。"
             text = " ".join(str(a) for a in args[1:]).strip()
             if not text:
                 return "用法：/bili dynamic <文本>"

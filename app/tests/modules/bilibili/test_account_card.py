@@ -1,4 +1,4 @@
-"""spec(28)：/B站账号 卡片命令。
+"""B站账号卡片：/bili status 的数据收集、卡片块与降级文本。
 
 所有外部数据（service / 名片接口 / 头像下载）都用 fake 注入；ctx.service 为空，
 send_card 走纯文本降级——测试不截图、不发消息。
@@ -7,7 +7,6 @@ send_card 走纯文本降级——测试不截图、不发消息。
 from __future__ import annotations
 
 import base64
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,12 +18,9 @@ from neobot_app.bilibili.account_card import (
     account_card_blocks,
     account_card_text,
     build_account_snapshot,
-    register_account_command,
     send_account_card,
 )
 from neobot_app.commands.card import AVATAR_MARKER
-from neobot_app.commands.model import PERM_EVERYONE
-from neobot_app.commands.registry import CommandRegistry
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"fake-avatar"
 _LOGIN_AT = "2026-10-24T12:00:00+08:00"
@@ -55,6 +51,7 @@ class _FakeService:
         uid: int = 12345,
         uname: str = "测试UP",
         face: str = _STATUS_FACE,
+        error: str = "",
         client: Any = None,
     ) -> None:
         self._available = available
@@ -64,7 +61,7 @@ class _FakeService:
             "uname": uname,
             "face": face,
             "login_at": _LOGIN_AT,
-            "error": "",
+            "error": error,
         }
         self.client = client
 
@@ -113,30 +110,16 @@ class _FakeCtx:
         self.service = service
 
 
-async def test_register_account_command_exposes_everyone_command() -> None:
-    registry = CommandRegistry()
-    register_account_command(registry, SimpleNamespace(service=_FakeService()))
+async def test_extra_rows_appear_in_blocks_and_text() -> None:
+    snapshot = await build_account_snapshot(
+        _FakeService(client=_FakeClient()), read_api=_FakeReadApi(_DETAIL)
+    )
 
-    command = registry.get("B站账号")
-    assert command is not None
-    assert command.permission == PERM_EVERYONE
-    assert command.aliases == ("biliaccount", "bili_account")
-    assert registry.get("biliaccount") is command
-    assert registry.get("bili_account") is command
-    assert command.description
+    blocks = account_card_blocks(snapshot, extra_rows=[("评论回复", "开")])
+    text = account_card_text(snapshot, extra_rows=[("评论回复", "开")])
 
-
-async def test_registered_handler_sends_card_text_fallback() -> None:
-    registry = CommandRegistry()
-    register_account_command(registry, SimpleNamespace(service=_FakeService(client=_FakeClient())))
-    command = registry.get("B站账号")
-    assert command is not None
-
-    text = await command.handler(_FakeCtx())
-
-    assert text is not None
-    assert "@测试UP" in text
-    assert "UID: 12345" in text
+    assert {"kind": "kv", "items": [("评论回复", "开")]} in blocks
+    assert "评论回复: 开" in text
 
 
 async def test_snapshot_logged_in_collects_fields_and_avatar_data_uri() -> None:
@@ -312,3 +295,18 @@ async def test_send_account_card_unlogged_returns_hint_without_network() -> None
     assert await send_account_card(_FakeCtx(), service) == LOGIN_HINT
     assert account_card_text(await build_account_snapshot(service)) == LOGIN_HINT
     assert client.calls == []
+
+
+async def test_send_account_card_unlogged_reports_last_error() -> None:
+    service = _FakeService(
+        available=False,
+        uid=0,
+        uname="",
+        error="B站登录态校验失败（网络异常）：TimeoutError: timed out",
+    )
+
+    text = await send_account_card(_FakeCtx(), service)
+
+    assert LOGIN_HINT in text
+    assert "最近错误：" in text
+    assert "TimeoutError" in text

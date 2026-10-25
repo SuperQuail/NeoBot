@@ -1,4 +1,4 @@
-"""B 站账号卡片：/B站账号 把当前登录账号渲染成自包含 HTML 卡片。
+"""B 站账号卡片：/bili status 把当前登录账号渲染成自包含 HTML 卡片。
 
 数据只来自两处，都不碰凭证：
 - `BilibiliService.status()`：登录态 / 昵称 / 头像 URL（零额外请求）；
@@ -114,6 +114,7 @@ async def build_account_snapshot(service: Any, *, read_api: Any = None) -> dict[
         "avatar_data_uri": None,
         "login_at": status.get("login_at"),
         "valid": bool(status.get("valid")),
+        "error": _text(status.get("error")),
         "detail": {},
         "stats_ok": False,
     }
@@ -135,8 +136,10 @@ async def build_account_snapshot(service: Any, *, read_api: Any = None) -> dict[
     return snapshot
 
 
-def account_card_blocks(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    """卡片块：头像行 / 三列统计 / 账号信息 / 空间链接。"""
+def account_card_blocks(
+    snapshot: dict[str, Any], *, extra_rows: list[tuple[str, str]] | None = None
+) -> list[dict[str, Any]]:
+    """卡片块：头像行 / 三列统计 / 账号信息 / 额外运行时状态 / 空间链接。"""
     detail = snapshot.get("detail") or {}
     stats_ok = bool(snapshot.get("stats_ok"))
     blocks: list[dict[str, Any]] = [
@@ -161,6 +164,8 @@ def account_card_blocks(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             ],
         },
     ]
+    if extra_rows:
+        blocks.append({"kind": "kv", "items": list(extra_rows)})
     if not stats_ok:
         blocks.append({"kind": "note", "text": STATS_UNAVAILABLE_NOTE})
     if snapshot.get("uid"):
@@ -170,7 +175,9 @@ def account_card_blocks(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return blocks
 
 
-def account_card_text(snapshot: dict[str, Any]) -> str:
+def account_card_text(
+    snapshot: dict[str, Any], *, extra_rows: list[tuple[str, str]] | None = None
+) -> str:
     """与卡片信息等价的多行纯文本（渲染不可用时的降级，同样不含凭证）。"""
     if not snapshot.get("available"):
         return LOGIN_HINT
@@ -186,6 +193,7 @@ def account_card_text(snapshot: dict[str, Any]) -> str:
         f"获赞: {_stats_value(detail, 'likes', stats_ok)}",
         f"投稿: {_stats_value(detail, 'videos', stats_ok)}",
     ]
+    lines.extend(f"{label}: {value}" for label, value in (extra_rows or []))
     if not stats_ok:
         lines.append(STATS_UNAVAILABLE_NOTE)
     if snapshot.get("uid"):
@@ -193,39 +201,26 @@ def account_card_text(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def send_account_card(ctx: Any, service: Any) -> str | None:
+async def send_account_card(
+    ctx: Any,
+    service: Any,
+    *,
+    extra_rows: list[tuple[str, str]] | None = None,
+) -> str | None:
     """未登录回提示文本；已登录出卡片（失败时由 send_card 降级为纯文本）。"""
     snapshot = await build_account_snapshot(service)
     if not snapshot["available"]:
-        return LOGIN_HINT
+        error = _text(snapshot.get("error"))
+        return f"{LOGIN_HINT}\n最近错误：{error}" if error else LOGIN_HINT
     uname = _text(snapshot.get("uname"))
     return await send_card(
         ctx,
         title="B站账号",
         subtitle=f"@{uname}" if uname else "已登录",
-        blocks=account_card_blocks(snapshot),
+        blocks=account_card_blocks(snapshot, extra_rows=extra_rows),
         avatars=_avatar_fragment(snapshot),
-        fallback_text=account_card_text(snapshot),
+        fallback_text=account_card_text(snapshot, extra_rows=extra_rows),
         filename="bilibili-account.png",
-    )
-
-
-def register_account_command(registry: Any, runtime: Any) -> None:
-    """注册 /B站账号（所有人可见；只展示公开资料与统计）。"""
-    from neobot_app.commands.model import PERM_EVERYONE, Command
-
-    async def _handle(ctx: Any) -> str | None:
-        return await send_account_card(ctx, runtime.service)
-
-    registry.register(
-        Command(
-            name="B站账号",
-            aliases=("biliaccount", "bili_account"),
-            permission=PERM_EVERYONE,
-            description="查看当前登录的B站账号（头像/昵称/UID/粉丝/关注）",
-            usage="",
-            handler=_handle,
-        )
     )
 
 
@@ -235,6 +230,5 @@ __all__ = [
     "account_card_blocks",
     "account_card_text",
     "build_account_snapshot",
-    "register_account_command",
     "send_account_card",
 ]

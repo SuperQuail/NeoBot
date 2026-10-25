@@ -261,3 +261,35 @@ async def test_login_with_qr_failure_but_account_already_logged_in(tmp_path, mon
     # 轮询失败但账号实际已登录：先 verify 一次，按成功处理。
     assert await service.login_with_qr() is True
     assert service.available is True
+
+
+async def test_verify_network_failure_keeps_client_and_refresh_recovers(tmp_path) -> None:
+    """启动时 nav 校验网络异常不能把登录态钉死成「未登录」。"""
+    BilibiliCookieStore(_cookie_path(tmp_path)).save(_COOKIES)
+    service, fake_client, _ = _make_service(tmp_path)
+
+    def _boom() -> dict:
+        raise RuntimeError("网络未就绪")
+
+    fake_client.get_my_info = _boom  # type: ignore[method-assign]
+    await service.start()  # 不向外抛
+    assert service.available is False
+    assert "校验失败" in service.status()["error"]
+    assert service.client is fake_client
+
+    fake_client.get_my_info = lambda: {"isLogin": True, "mid": 42, "uname": "tester"}  # type: ignore[method-assign]
+    assert await service.refresh() is True
+    assert service.available is True
+    assert service.status()["uname"] == "tester"
+    await service.stop()
+
+
+async def test_refresh_starts_service_and_verifies(tmp_path) -> None:
+    BilibiliCookieStore(_cookie_path(tmp_path)).save(_COOKIES)
+    service, _, created = _make_service(tmp_path, info={"isLogin": True, "mid": 42})
+    assert service.available is False  # 尚未 start
+
+    assert await service.refresh() is True
+    assert len(created) == 1
+    assert service.status()["uid"] == 42
+    await service.stop()

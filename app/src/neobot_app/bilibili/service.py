@@ -135,12 +135,30 @@ class BilibiliService:
         self._started = False
         self._valid = False
 
+    async def refresh(self) -> bool:
+        """状态查询/工具调用前补一次：没启动就启动；有凭证但未校验时重校验。
+
+        启动时的 nav 校验可能因网络未就绪/风控偶发失败，不能让一次失败把
+        整个进程的登录态钉死成「未登录」——状态命令读之前再试一次。
+        """
+        if not self._started:
+            await self.start()
+        elif self._client is not None and not self._valid:
+            await self.verify()
+        return self.available
+
     async def verify(self) -> bool:
-        """重新校验登录态并刷新昵称等信息。"""
+        """重新校验登录态并刷新昵称等信息；网络异常按校验失败处理，不向外抛。"""
         if self._client is None:
             self._valid = False
             return False
-        info = await asyncio.to_thread(self._client.get_my_info)
+        try:
+            info = await asyncio.to_thread(self._client.get_my_info)
+        except Exception as exc:
+            self._valid = False
+            self._error = f"B站登录态校验失败（网络异常）：{type(exc).__name__}: {exc}"
+            self._logger.warning(self._error)
+            return False
         valid = bool(info.get("isLogin")) and _to_int(info.get("mid")) > 0
         self._valid = valid
         if valid:

@@ -144,3 +144,52 @@ def test_apply_config_updates_live_mention_names(tmp_path) -> None:
 
     assert runtime.live_interactor._mention_names == ("前女友",)
     assert "前女友" in runtime.live_interactor._known_bot_names()
+
+
+async def test_handle_bili_status_refreshes_and_sends_card(tmp_path, monkeypatch) -> None:
+    import neobot_app.bilibili.account_card as account_card
+
+    runtime = _runtime(tmp_path)
+    calls: list[object] = []
+
+    async def _refresh() -> bool:
+        calls.append("refresh")
+        return True
+
+    async def _card(ctx, service, *, extra_rows=None):
+        calls.append(("card", extra_rows))
+        return "卡片"
+
+    monkeypatch.setattr(runtime.service, "refresh", _refresh)
+    monkeypatch.setattr(account_card, "send_account_card", _card)
+
+    result = await runtime._handle_bili(SimpleNamespace(args=["status"], permission=0))
+
+    assert result == "卡片"
+    assert calls[0] == "refresh"
+    rows = dict(calls[1][1])
+    assert rows["评论回复"] == "关"
+    assert rows["私信回复"] == "关"
+
+
+def _bili_ctx(allowed: bool) -> SimpleNamespace:
+    permissions = SimpleNamespace(can=lambda user_id, level: allowed)
+    return SimpleNamespace(
+        args=["dynamic", "hi"],
+        user_id=1,
+        service=SimpleNamespace(permissions=permissions),
+    )
+
+
+async def test_handle_bili_dynamic_requires_sub_admin(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+
+    assert "次级管理员" in await runtime._handle_bili(_bili_ctx(False))
+
+
+async def test_handle_bili_dynamic_allows_sub_admin(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+
+    result = await runtime._handle_bili(_bili_ctx(True))
+
+    assert "次级管理员" not in result

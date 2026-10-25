@@ -46,8 +46,8 @@ def test_bilibili_runtime_registers_search_video_user_skills():
     assert login is not None
     # 登录即拿到 B站账号全站写权限，只允许超级管理员换号。
     assert login.permission == PERM_SUPER_ADMIN
-    account = command_service.registry.get("B站账号")
-    assert account is not None
-    assert account.permission == PERM_EVERYONE
-    assert command_service.registry.get("biliaccount") is account
-    assert command_service.registry.get("bili") is not None
+    # 账号卡片合并进 /bili status；独立的 /B站账号 命令不再注册。
+    assert command_service.registry.get("B站账号") is None
+    bili = command_service.registry.get("bili")
+    assert bili is not None
+    assert bili.permission == PERM_EVERYONE
