@@ -71,7 +71,7 @@ class _MutationMixin:
                 )
                 await uow.commit()
 
-        await self._scan_folder()
+        await self._scan_safe()
         for number, entry in self.list_entries():
             if entry.file_path == target_path:
                 return EmojiImportResult(number=number, entry=entry)
@@ -98,7 +98,7 @@ class _MutationMixin:
 
         entry.file_path.unlink(missing_ok=True)
         entry.file_path.with_suffix(".txt").unlink(missing_ok=True)
-        await self._scan_folder()
+        await self._scan_safe()
         return True
 
     async def update_entry_description(self, number: int, analysis_text: str) -> EmojiEntry:
@@ -126,7 +126,7 @@ class _MutationMixin:
             )
             await uow.commit()
 
-        await self._scan_folder()
+        await self._scan_safe()
         refreshed = self.get_entry(number)
         if refreshed is not None:
             return refreshed

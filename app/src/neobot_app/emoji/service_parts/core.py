@@ -104,9 +104,9 @@ class _CoreMixin:
     async def start(self) -> None:
         """启动时扫描表情包文件夹"""
         self._emoji_dir.mkdir(parents=True, exist_ok=True)
-        await self._scan_folder()
-        with self._disk_sync_lock:
-            self._last_dir_snapshot = self._dir_snapshot()
+        # _scan_folder 自己会在「扫描前快照」上盖章；这里不能再取一次最新快照，
+        # 否则启动扫描期间新写入的表情包会被误标为已处理。
+        await self._scan_safe()
         self._refresh_task = asyncio.create_task(self._refresh_loop())
 
     async def stop(self) -> None:

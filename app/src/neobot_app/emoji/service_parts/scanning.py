@@ -15,6 +15,10 @@ from neobot_app.emoji.service_parts.models import _read_sidecar_text
 class _ScanningMixin:
     async def _scan_folder(self) -> None:
         """扫描表情包文件夹，并同步 txt、数据库与视觉解析结果。"""
+        # 快照必须在「列出文件之前」取：如果扫描期间有新文件写入，列表里没有它，
+        # 但扫描结束若用最新目录快照盖章，下一次读取会误判「没有变化」而永久漏掉
+        # 这个文件（A 群保存、B 群扫描并发时就是这样丢新表情包的）。
+        snapshot_before = self._dir_snapshot()
         if not self._emoji_dir.exists():
             self._logger.warning(f"表情包目录不存在: {self._emoji_dir}")
             with self._disk_sync_lock:
@@ -26,7 +30,7 @@ class _ScanningMixin:
             self._logger.info("表情包目录为空")
             self._entries.clear()
             with self._disk_sync_lock:
-                self._last_dir_snapshot = self._dir_snapshot()
+                self._last_dir_snapshot = snapshot_before
             await self._cleanup_stale_emoji_records({})
             return
 
@@ -150,7 +154,7 @@ class _ScanningMixin:
             records_by_hash,
         )
         with self._disk_sync_lock:
-            self._last_dir_snapshot = self._dir_snapshot()
+            self._last_dir_snapshot = snapshot_before
         await self._cleanup_stale_emoji_records(hash_to_path)
 
     async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
