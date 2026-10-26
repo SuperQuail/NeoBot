@@ -1,8 +1,8 @@
 name: PR 标题
 
-# 仓库 squash 设置为 PR_TITLE + PR_BODY：main 上的标题永远取 PR 标题、正文永远取 PR 描述，
+# 仓库 squash 设置为 PR_TITLE + PR_BODY：目标分支上的标题永远取 PR 标题、正文永远取 PR 描述，
 # 所以 PR 标题必须符合 commit message 规范（它会被永久留在 git log 与 release notes 里）。
-# 提交信息不进 main，不在这里校验。
+# 提交信息不进目标分支，不在这里校验。
 # 编辑标题（edited）会重新触发，改名后立刻能看到结果。
 on:
   pull_request:

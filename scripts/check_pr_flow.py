@@ -20,12 +20,30 @@ MAIN = "main"
 RELEASE = "release"
 
 
-def evaluate(base: str, head: str) -> tuple[bool, str]:
-    """纯判定：返回 (是否允许, 说明)。"""
+def evaluate(
+    base: str,
+    head: str,
+    head_repo: str = "",
+    base_repo: str = "",
+) -> tuple[bool, str]:
+    """纯判定：返回 (是否允许, 说明)。
+
+    head_repo/base_repo 用于拦 fork 里的同名 dev/main 分支：
+    往 main/release 提 PR 时，源分支必须来自本仓库。
+    """
     base = str(base or "").strip()
     head = str(head or "").strip()
+    head_repo = str(head_repo or "").strip()
+    base_repo = str(base_repo or "").strip()
     if not base or not head:
         return False, "无法读取 PR 的 base/head 分支名。"
+    if (
+        base in (MAIN, RELEASE)
+        and head_repo
+        and base_repo
+        and head_repo.casefold() != base_repo.casefold()
+    ):
+        return False, f"{base} 只接收本仓库的分支，当前源仓库是 {head_repo}。"
     if base == MAIN:
         if head != DEV:
             return False, f"main 只接收来自 {DEV} 的 PR，当前源分支是 {head}。"
@@ -46,9 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default=os.environ.get("GITHUB_BASE_REF", ""))
     parser.add_argument("--head", default=os.environ.get("GITHUB_HEAD_REF", ""))
+    parser.add_argument("--head-repo", default=os.environ.get("PR_HEAD_REPO", ""))
+    parser.add_argument("--base-repo", default=os.environ.get("PR_BASE_REPO", ""))
     args = parser.parse_args(argv)
 
-    ok, message = evaluate(args.base, args.head)
+    ok, message = evaluate(args.base, args.head, args.head_repo, args.base_repo)
     if ok:
         print(message)
         return 0

@@ -9,8 +9,9 @@
 
 - **`dev`**：默认分支，功能/修复 PR 默认提到这里；
 - **`main`**：发布候选，只接收来自 `dev` 的 PR；
-- **`release`**：发布分支，只接收来自 `main` 的 PR；`main → release` 的 PR 必须提升版本号
-  （8 个 `pyproject.toml` 统一提升并更新 `uv.lock`），合并后自动触发 PyPI 发布。
+- **`release`**：发布分支，只接收来自 `main` 的 PR；`main → release` 的 PR 版本号必须高于
+  release 当前版本（在 `dev` 上统一提升 8 个 `pyproject.toml` 并更新 `uv.lock`，随 `dev→main` 带入），
+  合并后自动触发 PyPI 发布。
 
 功能分支从 `dev` 切出，禁止跨级 PR（功能分支直接提到 `main`/`release` 会被 CI 拦下）。
 ## Pull Request 流程
@@ -68,7 +69,7 @@ PR 创建后还要过 **CI 硬门禁**（[.github/workflows/pr-gates.yml](.githu
 - 发现 bug 或 CI 因 bug 变红：**先发 issue**，修复 PR 描述里用 `Closes #NN` 关联；
   标题以 `fix` 开头的 PR 没关联 issue 会直接红；
 - PR 流向必须是 `功能分支 → dev`、`dev → main`、`main → release`；
-  `main → release` 还必须提升版本号并更新 `uv.lock`。
+  版本号在 `dev` 上提升并随 `dev → main` 带入，`main → release` 的版本必须高于 release。
 
 ## 开发规范
 

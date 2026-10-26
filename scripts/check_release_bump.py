@@ -54,7 +54,7 @@ def compare_versions(base_version: str, head_version: str) -> tuple[bool, str]:
     if head <= base:
         return False, (
             f"release PR 必须提升版本号：当前 HEAD 为 {head_version}，"
-            f"未高于 main 上的 {base_version}。"
+            f"未高于 release 基线 {base_version}。"
         )
     return True, f"版本号已提升：{base_version} → {head_version}。"
 

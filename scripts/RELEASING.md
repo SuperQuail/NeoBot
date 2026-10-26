@@ -10,7 +10,8 @@
 ### 分支与发布流程（2026-10-26 起）
 
 - 日常 PR → `dev`；发布候选 `dev → main`；正式发布 `main → release`。
-- `main → release` 的 PR **必须提升版本号**（见下节），CI 用 `scripts/check_release_bump.py` 阻断未提升的 PR；
+- 版本号在 `dev` 上提升（见下节，8 个 `pyproject.toml` + `uv.lock`），随 `dev → main` 带入；
+  `main → release` 的 PR 版本必须高于 release 当前版本，CI 用 `scripts/check_release_bump.py` 阻断未提升的 PR；
   合并到 `release` 后才触发发布。
 
 ### 首次配置
@@ -20,7 +21,7 @@
 
 ### 手动更新版本
 
-1. 在 **`main → release` 的发布 PR** 中手动把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，例如 `1.0.0-alpha.23`：
+1. 在 **`dev` 分支**（发布准备，`dev → main` 之前）手动把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，例如 `1.0.0-alpha.23`；主分支保护禁止直推，因此不要在 release PR 里提交版本：
    - `pyproject.toml`
    - `app/pyproject.toml`
    - `packages/adapter/pyproject.toml`

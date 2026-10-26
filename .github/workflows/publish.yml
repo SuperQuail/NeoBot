@@ -43,9 +43,10 @@ jobs:
               ...context.repo,
               commit_sha: context.sha,
             });
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
             let found = prs.some(pr => pr.merged_at &&
               pr.base.ref === 'release' && pr.head.ref === 'main' &&
-              pr.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+              pr.base.repo.full_name === repoFullName && pr.head.repo.full_name === repoFullName &&
               pr.merge_commit_sha === context.sha);
             // 关联 API 在 push 刚发生时可能短暂查不到 squash 合并的 PR。
             // 回退到 squash 标题里的 (#NN)，再向 PR API 核实 merged/release 与 main 来源。
@@ -58,7 +59,8 @@ jobs:
                 found = Boolean(pr.data.merged_at) &&
                   pr.data.base.ref === 'release' &&
                   pr.data.head.ref === 'main' &&
-                  pr.data.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+                  pr.data.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                  pr.data.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
               }
             }
             core.setOutput('merged', String(found));

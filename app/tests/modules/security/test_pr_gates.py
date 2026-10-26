@@ -131,6 +131,9 @@ def test_flow_rejects_wrong_source_branches() -> None:
     assert FLOW.evaluate("release", "dev")[0] is False
     assert FLOW.evaluate("dev", "main")[0] is False
     assert FLOW.evaluate("dev", "release")[0] is False
+    assert FLOW.evaluate("main", "dev", "fork/repo", "owner/repo")[0] is False
+    assert FLOW.evaluate("release", "main", "fork/repo", "owner/repo")[0] is False
+    assert FLOW.evaluate("main", "dev", "owner/repo", "owner/repo")[0] is True
 
 
 def test_release_bump_requires_strictly_newer_version() -> None:

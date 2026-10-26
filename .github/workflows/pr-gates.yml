@@ -68,10 +68,15 @@ jobs:
           persist-credentials: false
 
       - name: 校验 dev / main / release 的 PR 流向
+        env:
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
         run: |
           python3 scripts/check_pr_flow.py \
             --base "${{ github.base_ref }}" \
-            --head "${{ github.head_ref }}"
+            --head "${{ github.head_ref }}" \
+            --head-repo "$PR_HEAD_REPO" \
+            --base-repo "$PR_BASE_REPO"
 
   release-bump:
     name: 发布版本号（阻断）

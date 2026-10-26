@@ -17,8 +17,9 @@
 
 - **`dev`**：默认分支，日常功能/修复 PR 都提到这里；
 - **`main`**：只接收来自 `dev` 的 PR（发布候选）；
-- **`release`**：只接收来自 `main` 的 PR；`main → release` 的 PR **必须提升版本号**
-  （8 个 `pyproject.toml` 统一提升并更新 `uv.lock`），合并后由 release 推送触发 PyPI 发布；
+- **`release`**：只接收来自 `main` 的 PR；`main → release` 的 PR **版本号必须高于 release 当前版本**
+  （建议在 `dev` 上统一提升 8 个 `pyproject.toml` 并更新 `uv.lock`，随 `dev → main` 带入），
+  合并后由 release 推送触发 PyPI 发布；
 - 功能分支从 `dev` 切出；禁止跨级 PR（例如功能分支直接 PR 到 `main`/`release`）。
 
 PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）与 release PR 的版本号
@@ -142,7 +143,7 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
 4. **分支流向**：`dev` 是默认分支；`main` 只接收 `dev`；`release` 只接收 `main`。
-   `main → release` 的 PR 必须提升版本号（8 个 `pyproject.toml` + `uv.lock`），否则红。
+   `main → release` 的 PR 版本号必须高于 release 基线（在 dev 上提升后随 dev→main 带入），否则红。
 
 本地可先自检：
 
