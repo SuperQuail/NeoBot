@@ -24,6 +24,8 @@ def _load(name: str):
 SIZE = _load("check_pr_size")
 REVIEW = _load("check_pr_review")
 ISSUE = _load("check_pr_issue_link")
+FLOW = _load("check_pr_flow")
+BUMP = _load("check_release_bump")
 
 
 def _ts(value: str) -> datetime:
@@ -114,3 +116,25 @@ def test_issue_link_requires_issue_for_fix_pr() -> None:
 def test_issue_script_reads_event_pr_number() -> None:
     assert ISSUE.resolve_pr_number({"pull_request": {"number": 3}}) == 3
     assert ISSUE.resolve_pr_number({"issue": {"number": 4, "pull_request": {}}}) == 4
+
+# ── 分支流向 / 发布版本号 ──
+
+
+def test_flow_allows_expected_paths() -> None:
+    assert FLOW.evaluate("dev", "feat/x")[0] is True
+    assert FLOW.evaluate("main", "dev")[0] is True
+    assert FLOW.evaluate("release", "main")[0] is True
+
+
+def test_flow_rejects_wrong_source_branches() -> None:
+    assert FLOW.evaluate("main", "feat/x")[0] is False
+    assert FLOW.evaluate("release", "dev")[0] is False
+    assert FLOW.evaluate("dev", "main")[0] is False
+    assert FLOW.evaluate("dev", "release")[0] is False
+
+
+def test_release_bump_requires_strictly_newer_version() -> None:
+    assert BUMP.compare_versions("2.0.2a9", "2.0.2a10")[0] is True
+    assert BUMP.compare_versions("2.0.2a9", "2.0.2a9")[0] is False
+    assert BUMP.compare_versions("2.0.2a10", "2.0.2a9")[0] is False
+    assert BUMP.compare_versions("2.0.1", "2.0.2")[0] is True

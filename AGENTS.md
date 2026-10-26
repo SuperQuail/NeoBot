@@ -4,14 +4,25 @@
 
 > 本仓库用 **squash 合并**，仓库设置为 `PR_TITLE` + `PR_BODY`：
 >
-> - main 上的**标题 = PR 标题**（永远，与提交数无关）
-> - main 上的**正文 = PR 描述**
-> - **提交信息不进 main**（除非有人改用 rebase 合并）
+> - 目标分支上的**标题 = PR 标题**（永远，与提交数无关）
+> - 目标分支上的**正文 = PR 描述**
+> - **提交信息不进目标分支**（除非有人改用 rebase 合并）
 >
 > 所以：**标题写 PR 标题，正文写 PR 描述**——这两处就是永久历史，
 > commit message 的规矩一字不差地适用。
 >
 > 合并对话框里会预填最终落地的那条 squash 信息，合并前看一眼——那是最后一次人工把关。
+
+### 0. 分支模型（2026-10-26 起）
+
+- **`dev`**：默认分支，日常功能/修复 PR 都提到这里；
+- **`main`**：只接收来自 `dev` 的 PR（发布候选）；
+- **`release`**：只接收来自 `main` 的 PR；`main → release` 的 PR **必须提升版本号**
+  （8 个 `pyproject.toml` 统一提升并更新 `uv.lock`），合并后由 release 推送触发 PyPI 发布；
+- 功能分支从 `dev` 切出；禁止跨级 PR（例如功能分支直接 PR 到 `main`/`release`）。
+
+PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）与 release PR 的版本号
+（`scripts/check_release_bump.py`）。
 
 ### 速查
 
@@ -47,7 +58,7 @@ refactor(modloader)!: 插件 API 改为能力注册制
 
 CI 用 [scripts/check_pr_title.py](scripts/check_pr_title.py) 校验 **PR 标题**
 （见 [.github/workflows/pr-title.yml](.github/workflows/pr-title.yml)）；
-提交信息不进 main，不在校验范围内，但**建议同样写合规**——仓库也允许 rebase 合并。
+提交信息不进目标分支，不在校验范围内，但**建议同样写合规**——仓库也允许 rebase 合并。
 
 - 显示宽度 ≤ 72（中文/全角按 2 计）
 - 结尾不加句号
@@ -87,9 +98,9 @@ CI 用 [scripts/check_pr_title.py](scripts/check_pr_title.py) 校验 **PR 标题
 | 中 | `feat` `refactor`、新配置、新接口 | 需求、实现、验证、行为变化 |
 | 重 | bug 修复、并发与生命周期、破坏性变更、发版 | 现象、根因、修复、验证（+ 迁移） |
 
-- **PR 描述**：按下面三档写全——**它就是 main 上的正文**
-- **PR 标题**：概括（见第 1 节）——**它就是 main 上的标题**
-- **提交信息**：不进 main，但仍要写清楚——评审时会看，而且仓库允许 rebase 合并，那时它会原样进历史
+- **PR 描述**：按下面三档写全——**它就是目标分支上的正文**
+- **PR 标题**：概括（见第 1 节）——**它就是目标分支上的标题**
+- **提交信息**：不进目标分支，但仍要写清楚——评审时会看，而且仓库允许 rebase 合并，那时它会原样进历史
 - 不要出现「见 PR 描述」「WIP」「临时提交」——这些话只在分支上有意义
 
 ### 3. 验证段
@@ -110,7 +121,7 @@ uv run ruff check .            # CI 的门禁就是这一条
 uv run pytest -m "not browser and not network and not slow and not llm"
 uv lock --check                # 改过依赖时
 
-# 标题自查（CI 也会校验；它将成为 main 上的提交标题）
+# 标题自查（CI 也会校验；它将成为 目标分支上的提交标题）
 python scripts/check_pr_title.py --title "<PR 标题>" --strict
 ```
 
@@ -120,7 +131,7 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
 
 ### 4.1 CI 硬门禁（2026-10-26 起）
 
-三道 PR 门禁由 [.github/workflows/pr-gates.yml](.github/workflows/pr-gates.yml) 执行：
+以下 PR 门禁由 [.github/workflows/pr-gates.yml](.github/workflows/pr-gates.yml) 与刷新工作流共同执行：
 
 1. **体积上限**：单个代码文件在本次 PR 中**新增** ≥ 500 行 → 警告（耦合风险）；≥ 800 行 → 直接红。
    只统计代码文件的新增行，跳过文档、锁文件与 `web/assets` 构建产物。超限请拆分文件或拆 PR，
@@ -130,11 +141,13 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
    禁止把开发上下文带进评审；评审意见要具体到可执行项。
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
+4. **分支流向**：`dev` 是默认分支；`main` 只接收 `dev`；`release` 只接收 `main`。
+   `main → release` 的 PR 必须提升版本号（8 个 `pyproject.toml` + `uv.lock`），否则红。
 
 本地可先自检：
 
 ```bash
-python scripts/check_pr_size.py --base main --head HEAD
+python scripts/check_pr_size.py --base dev --head HEAD
 python scripts/check_pr_issue_link.py --pr <PR号>
 ```
 
@@ -142,7 +155,7 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 
 下面每一条都是**禁止项**，不是建议：
 
-- **禁止**直推 main，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
+- **禁止**直推 `dev` / `main` / `release`，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
 - **禁止**为了让检查通过而改 CI 门禁、放宽断言、删除或跳过失败用例、用 `xfail` 掩盖失败
 - **禁止**夹带与本 PR 无关的重构或格式化
 - **禁止**提交 `.env`、密钥、token、真实用户数据（占位符要登记到 `.secretsignore`）
@@ -203,7 +216,7 @@ gh api graphql -f query='{ repository(owner:"OWNER",name:"REPO") {
 - **PR 描述与 issue 不是一对一**：一个 PR 修多个 issue 就写多个 `Closes`；
   一个 issue 被多个 PR 分步修完，只有**最后一个**写 `Closes`，前面的写 `Refs`。
 - 关**别的仓库**的 issue 要写全限定名：`Closes owner/repo#123`。
-- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `main`）时生效；
+- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `dev`）时生效；
   指向其它分支时关键字被直接忽略——既不建立关联，合并也不会关 issue。
 - 没有对应 issue 的改动（文档、依赖、纯内部重构）不必硬凑一个——**别为此新建 issue**。
 

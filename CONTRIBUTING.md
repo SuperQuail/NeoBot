@@ -5,6 +5,14 @@
 
 感谢你对 NeoBot 的关注！我们欢迎所有形式的贡献。
 
+## 分支模型
+
+- **`dev`**：默认分支，功能/修复 PR 默认提到这里；
+- **`main`**：发布候选，只接收来自 `dev` 的 PR；
+- **`release`**：发布分支，只接收来自 `main` 的 PR；`main → release` 的 PR 必须提升版本号
+  （8 个 `pyproject.toml` 统一提升并更新 `uv.lock`），合并后自动触发 PyPI 发布。
+
+功能分支从 `dev` 切出，禁止跨级 PR（功能分支直接提到 `main`/`release` 会被 CI 拦下）。
 ## Pull Request 流程
 
 ### 1. Fork 并克隆仓库
@@ -17,7 +25,8 @@ cd NeoBot
 ### 2. 创建分支
 
 ```bash
-git checkout -b feat/your-feature-name
+git switch dev
+git switch -c feat/your-feature-name
 ```
 
 分支命名规范：
@@ -43,7 +52,7 @@ git commit -m "feat: 添加新功能描述"
 
 ### 4. 推送并创建 PR
 
-在 GitHub 上创建 Pull Request，填写：
+在 GitHub 上创建 Pull Request（默认目标是 `dev`），填写：
 - 标题
 - 变更说明
 - 关联 issue（如有）：用关闭关键字写进描述，例如 `Closes #59`。
@@ -57,7 +66,9 @@ PR 创建后还要过 **CI 硬门禁**（[.github/workflows/pr-gates.yml](.githu
 - PR 下必须有评审评论（允许 AI/自评），且最后一次 review 必须晚于最后一次 commit；
   推送新提交后旧评论失效，需要重新评审。AI 自评必须由独立子代理完成、不带开发上下文；
 - 发现 bug 或 CI 因 bug 变红：**先发 issue**，修复 PR 描述里用 `Closes #NN` 关联；
-  标题以 `fix` 开头的 PR 没关联 issue 会直接红。
+  标题以 `fix` 开头的 PR 没关联 issue 会直接红；
+- PR 流向必须是 `功能分支 → dev`、`dev → main`、`main → release`；
+  `main → release` 还必须提升版本号并更新 `uv.lock`。
 
 ## 开发规范
 
