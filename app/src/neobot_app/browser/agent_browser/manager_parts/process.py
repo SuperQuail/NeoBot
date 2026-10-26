@@ -90,8 +90,16 @@ def _other_live_instances(manager: "BrowserManager") -> bool:
 def _playwright_chromium_path() -> str:
     """查找 Playwright 下载的 Chromium 路径。"""
     home = Path.home()
+    env_cache = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    windows_cache = (
+        Path(env_cache)
+        if env_cache and env_cache != "0"
+        else home / "AppData" / "Local" / "ms-playwright"
+    )
     if _windows():
-        candidates = list((home / "AppData" / "Local" / "ms-playwright").glob("chromium-*/chrome-win/chrome.exe"))
+        # 新版 Playwright 在 Windows 上把完整浏览器放进 chrome-win64；
+        # 只匹配 chrome-win 会让「刚下载完也被判定为没下载」，重启后反复重下。
+        candidates = list(windows_cache.glob("chromium-*/chrome-win*/chrome.exe"))
     elif platform.system() == "Linux":
         browser_cache = home / ".cache" / "ms-playwright"
         candidates = list(browser_cache.glob("chromium-*/chrome-linux/chrome"))
@@ -106,6 +114,32 @@ def _playwright_chromium_path() -> str:
     return ""
 
 
+def _windows_registry_browser_paths() -> list[str]:
+    """Windows App Paths 里登记的 chrome.exe / msedge.exe（不依赖固定安装盘符）。"""
+    if not _windows():
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    paths: list[str] = []
+    for exe in ("msedge.exe", "chrome.exe"):
+        for hive, view in (
+            (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
+            (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
+            (winreg.HKEY_CURRENT_USER, 0),
+        ):
+            key_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}"
+            try:
+                with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | view) as key:
+                    value, _ = winreg.QueryValueEx(key, "")
+            except OSError:
+                continue
+            text = str(value or "").strip().strip('"')
+            if text and Path(text).is_file():
+                paths.append(text)
+    return paths
+
 def _find_chrome_binary() -> str:
     """跨平台查找 Chrome/Chromium 可执行路径。"""
     if path := os.getenv("CHROME_PATH"):
@@ -119,15 +153,18 @@ def _find_chrome_binary() -> str:
     candidates = []
     if system == "Windows":
         local_appdata = os.getenv("LOCALAPPDATA", "")
+        program_files = os.getenv("ProgramFiles", r"C:\Program Files")
+        program_files_x86 = os.getenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
         chrome_local = Path(local_appdata) / "Google" / "Chrome" / "Application" / "chrome.exe" if local_appdata else None
         edge_local = Path(local_appdata) / "Microsoft" / "Edge" / "Application" / "msedge.exe" if local_appdata else None
         candidates = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            *_windows_registry_browser_paths(),
+            str(Path(program_files) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+            str(Path(program_files_x86) / "Google" / "Chrome" / "Application" / "chrome.exe"),
             str(chrome_local) if chrome_local else "",
-            r"C:\Program Files\Chromium\Application\chrome.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            str(Path(program_files) / "Chromium" / "Application" / "chrome.exe"),
+            str(Path(program_files) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+            str(Path(program_files_x86) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
             str(edge_local) if edge_local else "",
         ]
         # 也尝试通过 PATH 查找

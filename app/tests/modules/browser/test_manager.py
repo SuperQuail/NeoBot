@@ -80,6 +80,31 @@ def test_playwright_chromium_path_supports_linux_chrome_linux64(
     assert manager_module._playwright_chromium_path() == str(chromium)
 
 
+
+
+def test_playwright_chromium_path_supports_windows_chrome_win64(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """新版 Playwright 在 Windows 上使用 chrome-win64，不能被判定为未下载。"""
+    chromium = (
+        tmp_path
+        / "AppData"
+        / "Local"
+        / "ms-playwright"
+        / "chromium-1234"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    chromium.parent.mkdir(parents=True)
+    chromium.touch()
+
+    monkeypatch.setattr(manager_module, "_WINDOWS", True)
+    monkeypatch.setattr(manager_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(manager_module.Path, "home", classmethod(lambda cls: tmp_path))
+
+    assert manager_module._playwright_chromium_path() == str(chromium)
+
+
 def test_auto_install_chromium_uses_current_python(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

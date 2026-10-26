@@ -152,10 +152,19 @@ def build_browser_components(
         )
         return result
 
-    if not _find_chrome_binary():
+    configured_browser = str(getattr(browser_cfg, "browser_path", "") or "").strip()
+    configured_available = False
+    if configured_browser:
+        try:
+            configured_available = Path(configured_browser).is_file()
+        except OSError:
+            configured_available = False
+
+    # 已显式配置可用浏览器时不要再下载内嵌 Chromium（Windows 上通常直接复用 Edge/Chrome）。
+    if not configured_available and not _find_chrome_binary():
         _auto_install_chromium()
 
-    if not _find_chrome_binary():
+    if not configured_available and not _find_chrome_binary():
         logger.warning("浏览器已启用但未能找到或下载 Chromium，浏览器功能不可用")
         return result
 
@@ -168,7 +177,7 @@ def build_browser_components(
         data_dir=data_dir / "browser",
         headless=getattr(browser_cfg, "headless", True),
         port=getattr(browser_cfg, "port", 0),
-        browser_path=getattr(browser_cfg, "browser_path", ""),
+        browser_path=configured_browser,
         lifecycle_manager=lifecycle_manager,
     )
     lifecycle_manager.set_browser_instance(browser_instance)
