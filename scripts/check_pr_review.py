@@ -7,10 +7,13 @@
 - AI 自评必须由独立子代理完成，且不得带入开发上下文（流程要求，机器只能校验
   「有评论 + 时间晚于提交」，评论内容由人/AI 自行负责）。
 
-评论来源合并三类：Issue 评论、Review 行内评论、Review 正文（非空）。
+评论来源合并三类：Issue 评论、Review 行内评论、Review 正文（非空、未被 dismiss）。
+编辑过的评论按 updated_at 计，避免「编辑旧评论冒充新评审」；dismissed review 不计。
 时区统一按 UTC 比较；严格「晚于」：评论时间 <= 最后提交时间即失败。
 
 事件支持：pull_request / issue_comment / pull_request_review(_comment)。
+评论事件重跑本工作流由 .github/workflows/pr-gates-refresh.yml 负责（check 必须挂在 PR head）。
+
 用法::
 
     GITHUB_TOKEN=... python scripts/check_pr_review.py
@@ -24,12 +27,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 API_ROOT = "https://api.github.com"
+_NEXT_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
 def parse_time(value: str | None) -> datetime | None:
@@ -82,7 +87,7 @@ def evaluate(
     )
 
 
-def _request(url: str, token: str) -> object:
+def _request_page(url: str, token: str) -> tuple[object, str]:
     request = urllib.request.Request(
         url,
         headers={
@@ -93,43 +98,55 @@ def _request(url: str, token: str) -> object:
         },
     )
     with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+        payload = json.loads(response.read().decode("utf-8"))
+        return payload, response.headers.get("Link", "")
 
 
-def _get_all(path: str, token: str) -> list[dict]:
+def _get_all(url: str, token: str) -> list[dict]:
+    """按 Link 头完整翻页（最多 50 页，防止异常数据把 CI 拖死）。"""
     items: list[dict] = []
-    for page in range(1, 11):
-        separator = "&" if "?" in path else "?"
-        batch = _request(f"{API_ROOT}{path}{separator}per_page=100&page={page}", token)
-        if not isinstance(batch, list):
+    for _ in range(50):
+        payload, link = _request_page(url, token)
+        if not isinstance(payload, list):
             break
-        items.extend(item for item in batch if isinstance(item, dict))
-        if len(batch) < 100:
+        items.extend(item for item in payload if isinstance(item, dict))
+        match = _NEXT_LINK_RE.search(link)
+        if match is None:
             break
+        url = match.group(1)
     return items
 
 
 def collect_comment_times(repo: str, pr: int, token: str) -> list[datetime | None]:
     times: list[datetime | None] = []
-    for item in _get_all(f"/repos/{repo}/issues/{pr}/comments", token):
-        times.append(parse_time(item.get("created_at")))
-    for item in _get_all(f"/repos/{repo}/pulls/{pr}/comments", token):
-        times.append(parse_time(item.get("created_at")))
-    for item in _get_all(f"/repos/{repo}/pulls/{pr}/reviews", token):
-        if str(item.get("body") or "").strip():
-            times.append(parse_time(item.get("submitted_at")))
+    for item in _get_all(
+        f"{API_ROOT}/repos/{repo}/issues/{pr}/comments?sort=created&direction=desc",
+        token,
+    ):
+        times.append(parse_time(item.get("updated_at") or item.get("created_at")))
+    for item in _get_all(
+        f"{API_ROOT}/repos/{repo}/pulls/{pr}/comments?sort=created&direction=desc",
+        token,
+    ):
+        times.append(parse_time(item.get("updated_at") or item.get("created_at")))
+    for item in _get_all(f"{API_ROOT}/repos/{repo}/pulls/{pr}/reviews", token):
+        if str(item.get("state") or "").upper() == "DISMISSED":
+            continue
+        if not str(item.get("body") or "").strip():
+            continue
+        times.append(parse_time(item.get("submitted_at")))
     return times
 
 
 def fetch_last_commit_time(repo: str, pr: int, token: str) -> datetime | None:
-    pull = _request(f"{API_ROOT}/repos/{repo}/pulls/{pr}", token)
+    pull, _ = _request_page(f"{API_ROOT}/repos/{repo}/pulls/{pr}", token)
     if not isinstance(pull, dict):
         return None
     head = pull.get("head") or {}
     sha = str(head.get("sha") or "")
     if not sha:
         return None
-    commit = _request(f"{API_ROOT}/repos/{repo}/commits/{sha}", token)
+    commit, _ = _request_page(f"{API_ROOT}/repos/{repo}/commits/{sha}", token)
     if not isinstance(commit, dict):
         return None
     inner = commit.get("commit") or {}

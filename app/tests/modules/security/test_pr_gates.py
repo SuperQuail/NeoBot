@@ -62,6 +62,12 @@ def test_size_code_suffixes() -> None:
     assert not SIZE.is_code_path("web/assets/x.js")
 
 
+def test_size_rename_uses_new_path() -> None:
+    assert SIZE._target_path("old.py => new.py") == "new.py"
+    assert SIZE._target_path("dir/{old.py => new.py}") == "dir/new.py"
+    assert SIZE._target_path("dir/{old => new}/x.py") == "dir/new/x.py"
+
+
 # ── 评审 ──
 
 

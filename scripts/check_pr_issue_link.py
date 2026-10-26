@@ -109,8 +109,15 @@ def main(argv: list[str] | None = None) -> int:
     owner, name = repo.split("/", 1)
     try:
         payload = _graphql(token, _QUERY, {"owner": owner, "name": name, "number": pr})
+        if payload.get("errors"):
+            print(f"::error::读取 PR 信息失败：{payload['errors']}")
+            return 1
         data = payload.get("data") or {}
-        pull = ((data.get("repository") or {}).get("pullRequest")) or {}
+        repository = data.get("repository")
+        pull = repository.get("pullRequest") if isinstance(repository, dict) else None
+        if not isinstance(pull, dict):
+            print(f"::error::读取 PR 信息失败：PR #{pr} 不存在或无权限。")
+            return 1
         title = str(pull.get("title") or "")
         linked = int(((pull.get("closingIssuesReferences") or {}).get("totalCount")) or 0)
     except urllib.error.HTTPError as exc:

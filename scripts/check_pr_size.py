@@ -53,6 +53,18 @@ def is_code_path(path: str) -> bool:
     return any(normalized.endswith(suffix) for suffix in CODE_SUFFIXES)
 
 
+def _target_path(path: str) -> str:
+    """把 numstat 的重命名写法归一成新路径（git 的 => / {a => b} 两种）。"""
+    if " => " not in path:
+        return path
+    if "{" in path and "}" in path:
+        prefix, rest = path.split("{", 1)
+        inner, suffix = rest.split("}", 1)
+        _old, new = inner.split(" => ", 1)
+        return prefix + new + suffix
+    return path.split(" => ")[-1]
+
+
 def parse_numstat(numstat: str) -> dict[str, int]:
     """把 git diff --numstat 输出解析成 {路径: 新增行数}（二进制跳过）。"""
     added: dict[str, int] = {}
@@ -60,7 +72,8 @@ def parse_numstat(numstat: str) -> dict[str, int]:
         parts = line.split("\t")
         if len(parts) != 3:
             continue
-        raw_added, _raw_deleted, path = parts
+        raw_added, _raw_deleted, raw_path = parts
+        path = _target_path(raw_path)
         if raw_added == "-" or not is_code_path(path):
             continue
         added[path] = int(raw_added)
@@ -86,9 +99,10 @@ def evaluate(added: dict[str, int]) -> tuple[list[str], list[str]]:
 
 
 def _git_numstat(base: str, head: str) -> str:
-    # --no-renames：重命名按「删除旧文件 + 新增新文件」计，新增行归属清晰。
+    # 保留重命名检测：只是移动文件不应按「整文件新增」判超限；
+    # core.quotePath=false 保证中文路径不被 git 转义后漏检。
     result = subprocess.run(
-        ["git", "diff", "--numstat", "--no-renames", f"{base}...{head}"],
+        ["git", "-c", "core.quotePath=false", "diff", "--numstat", f"{base}...{head}"],
         check=True,
         capture_output=True,
         text=True,

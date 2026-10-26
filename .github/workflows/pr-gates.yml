@@ -5,17 +5,13 @@ name: PR 门禁
 # 2) 评审：PR 下必须有评论（允许 AI / 自评），最后一次 review 必须晚于最后一次 commit；
 # 3) 修复类 PR 必须关联 issue（标题 fix 开头时，描述里用 Closes #NN）。
 #
-# 评审评论新增/删除/编辑会重新触发本工作流，避免「评论后仍红」或「评论过期仍绿」。
+# 评论/评审事件不直接跑本工作流：那类 run 挂在默认分支上，check 不会更新到 PR head。
+# 评论新增/删除/编辑由 pr-gates-refresh.yml 重跑本工作流（run 的 head_sha 仍是 PR head），
+# 真正把「PR 评审（阻断）」检查刷新绿/红。
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize, ready_for_review]
-  issue_comment:
-    types: [created, edited, deleted]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
 
 permissions:
   contents: read
