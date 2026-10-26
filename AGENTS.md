@@ -118,6 +118,26 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
 - 自己改过的文件保持 `ruff format` 干净即可
 - **不要顺手全量重排**：全仓库 `ruff format --check` 目前过不了（存量文件未统一格式化），重排会让 diff 无法审
 
+### 4.1 CI 硬门禁（2026-10-26 起）
+
+三道 PR 门禁由 [.github/workflows/pr-gates.yml](.github/workflows/pr-gates.yml) 执行：
+
+1. **体积上限**：单个代码文件在本次 PR 中**新增** ≥ 500 行 → 警告（耦合风险）；≥ 800 行 → 直接红。
+   只统计代码文件的新增行，跳过文档、锁文件与 `web/assets` 构建产物。超限请拆分文件或拆 PR，
+   不要用删注释/压行绕过。
+2. **评审评论**：PR 下必须有评审评论（允许 AI 评论、允许自评）；**最后一次 review 必须晚于最后一次 commit**。
+   推送新提交后旧评论自动失效，必须重新评审并留言。AI 自评必须由**独立子代理**完成，
+   禁止把开发上下文带进评审；评审意见要具体到可执行项。
+3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
+   CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
+
+本地可先自检：
+
+```bash
+python scripts/check_pr_size.py --base main --head HEAD
+python scripts/check_pr_issue_link.py --pr <PR号>
+```
+
 ### 5. 注意事项
 
 下面每一条都是**禁止项**，不是建议：

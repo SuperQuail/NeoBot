@@ -51,6 +51,14 @@ git commit -m "feat: 添加新功能描述"
   多个 issue 要各自带关键字（`Closes #59` 与 `Closes #60` 各一行，或
   `Resolves #10, resolves #123`）。详见 [AGENTS.md](AGENTS.md) 第 7 节。
 
+PR 创建后还要过 **CI 硬门禁**（[.github/workflows/pr-gates.yml](.github/workflows/pr-gates.yml)）：
+
+- 单个代码文件本次新增 ≥ 500 行给警告、≥ 800 行直接红（拆分文件/PR，不要压行）；
+- PR 下必须有评审评论（允许 AI/自评），且最后一次 review 必须晚于最后一次 commit；
+  推送新提交后旧评论失效，需要重新评审。AI 自评必须由独立子代理完成、不带开发上下文；
+- 发现 bug 或 CI 因 bug 变红：**先发 issue**，修复 PR 描述里用 `Closes #NN` 关联；
+  标题以 `fix` 开头的 PR 没关联 issue 会直接红。
+
 ## 开发规范
 
 - 添加必要的注释

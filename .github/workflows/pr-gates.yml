@@ -1,0 +1,75 @@
+name: PR 门禁
+
+# 2026-10-26 用户要求接入的三道 PR 硬门禁：
+# 1) 体积：单个代码文件本次新增 500 行警告、800 行直接红（过耦合）；
+# 2) 评审：PR 下必须有评论（允许 AI / 自评），最后一次 review 必须晚于最后一次 commit；
+# 3) 修复类 PR 必须关联 issue（标题 fix 开头时，描述里用 Closes #NN）。
+#
+# 评审评论新增/删除/编辑会重新触发本工作流，避免「评论后仍红」或「评论过期仍绿」。
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: pr-gates-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  size:
+    name: 体积限制（阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 校验单文件新增行数
+        run: |
+          python3 scripts/check_pr_size.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}"
+
+  review:
+    name: PR 评审（阻断）
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 校验评论存在且晚于最后一次提交
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_pr_review.py
+
+  issue-link:
+    name: 修复 PR 关联 issue（阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 校验 fix PR 已关联 issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_pr_issue_link.py
