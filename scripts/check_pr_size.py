@@ -60,8 +60,9 @@ def _target_path(path: str) -> str:
     if "{" in path and "}" in path:
         prefix, rest = path.split("{", 1)
         inner, suffix = rest.split("}", 1)
-        _old, new = inner.split(" => ", 1)
-        return prefix + new + suffix
+        if " => " in inner:
+            _old, new = inner.split(" => ", 1)
+            return prefix + new + suffix
     return path.split(" => ")[-1]
 
 

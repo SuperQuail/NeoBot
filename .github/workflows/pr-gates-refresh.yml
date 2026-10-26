@@ -11,7 +11,7 @@ on:
   pull_request_review_comment:
     types: [created, edited, deleted]
   pull_request_review:
-    types: [submitted, edited, dismissed]
+    types: [submitted, dismissed]
 
 permissions:
   actions: write
@@ -33,6 +33,7 @@ jobs:
       - name: 找到 PR 门禁 run 并重跑
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
           set -euo pipefail

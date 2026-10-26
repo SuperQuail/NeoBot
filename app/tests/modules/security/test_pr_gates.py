@@ -66,6 +66,7 @@ def test_size_rename_uses_new_path() -> None:
     assert SIZE._target_path("old.py => new.py") == "new.py"
     assert SIZE._target_path("dir/{old.py => new.py}") == "dir/new.py"
     assert SIZE._target_path("dir/{old => new}/x.py") == "dir/new/x.py"
+    assert SIZE._target_path("{weird} => dest.py") == "dest.py"
 
 
 # ── 评审 ──
