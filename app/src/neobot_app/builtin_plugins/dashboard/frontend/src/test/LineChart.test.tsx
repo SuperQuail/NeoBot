@@ -29,6 +29,55 @@ function wrapper(container: HTMLElement): HTMLElement {
 }
 
 describe('LineChart 悬停提示', () => {
+  it('负金额位于绘图区内，面积回到零基线，完整时间不受轴格式化影响', () => {
+    stubRect(600, 180);
+    const { container } = render(
+      <LineChart
+        fit
+        showXAxis
+        values={[-0.4, 0.8]}
+        labels={['2026-09-27 13:00', '2026-09-27 14:00']}
+        xTickFormatter={(label) => label.slice(11)}
+        fmtTick={(value) => '¥' + value.toFixed(2)}
+      />,
+    );
+    expect(screen.getByText('13:00')).toBeInTheDocument();
+    expect(screen.getByText('¥-0.50')).toBeInTheDocument();
+    fireEvent.mouseMove(wrapper(container), { clientX: 40, clientY: 100 });
+    const pointY = Number(container.querySelector('.lc-dot')?.getAttribute('cy'));
+    expect(pointY).toBeGreaterThanOrEqual(20);
+    expect(pointY).toBeLessThanOrEqual(160);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('2026-09-27 13:00');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('¥-0.40');
+    const path = container.querySelector('.lc-area')?.getAttribute('d') || '';
+    expect(path).not.toMatch(/,160 Z$/);
+  });
+
+  it('全为负值或小额花费也使用有效量级绘图', () => {
+    stubRect();
+    const negative = render(<LineChart fit values={[-4, -2]} />);
+    fireEvent.mouseMove(wrapper(negative.container), { clientX: 40, clientY: 100 });
+    expect(Number(negative.container.querySelector('.lc-dot')?.getAttribute('cy'))).toBeLessThanOrEqual(160);
+    negative.unmount();
+    const small = render(<LineChart fit values={[0.01, 0.03]} fmtTick={(value) => '¥' + value.toFixed(2)} />);
+    expect(screen.getByText('¥0.04')).toBeInTheDocument();
+    fireEvent.mouseMove(wrapper(small.container), { clientX: 580, clientY: 100 });
+    expect(Number(small.container.querySelector('.lc-dot')?.getAttribute('cy'))).toBeLessThan(100);
+  });
+
+  it('工作区图表按实际高度绘制，并显示日期刻度', () => {
+    stubRect(800, 260);
+    const { container } = render(
+      <LineChart fit showXAxis values={[10, 20, 30]} labels={['2026-10-01', '2026-10-02', '2026-10-03']} />,
+    );
+    expect(screen.getByRole('img')).toHaveAttribute('viewBox', '0 0 800 260');
+    expect(screen.getByText('10/01')).toBeInTheDocument();
+    expect(screen.getByText('10/03')).toBeInTheDocument();
+    fireEvent.mouseMove(wrapper(container), { clientX: 780, clientY: 160 });
+    expect(screen.getByRole('tooltip')).toHaveTextContent('2026-10-03');
+    expect(container.querySelector('.lc-guide')).toHaveAttribute('y2', '240');
+  });
+
   it('悬停到数据点上显示该点的时间与数值', () => {
     stubRect();
     const { container } = render(

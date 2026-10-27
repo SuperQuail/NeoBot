@@ -19,23 +19,11 @@ export interface InlineAlertProps {
   className?: string;
 }
 
-const TONE: Record<AlertTone, { wrap: string; icon: LucideIcon }> = {
-  error: {
-    wrap: 'bg-err/8 text-err border border-err/20',
-    icon: XCircle,
-  },
-  warning: {
-    wrap: 'bg-warn/10 text-warn border border-warn/25',
-    icon: AlertTriangle,
-  },
-  success: {
-    wrap: 'bg-ok/8 text-ok border border-ok/20',
-    icon: CheckCircle2,
-  },
-  info: {
-    wrap: 'bg-brand-soft text-brand-hover border border-brand/25',
-    icon: Info,
-  },
+const TONE: Record<AlertTone, LucideIcon> = {
+  error: XCircle,
+  warning: AlertTriangle,
+  success: CheckCircle2,
+  info: Info,
 };
 
 export default function InlineAlert({
@@ -46,25 +34,25 @@ export default function InlineAlert({
   items,
   className,
 }: InlineAlertProps) {
-  const { wrap, icon: Glyph } = TONE[tone];
+  const Glyph = TONE[tone];
   return (
     <div
-      className={cn('flex flex-wrap items-center gap-2.5 rounded-[7px] px-3 py-3 text-xs', wrap, className)}
+      className={cn('inline-alert', `inline-alert--${tone}`, className)}
       role={tone === 'error' ? 'alert' : 'status'}
     >
-      <Glyph size={16} strokeWidth={2} aria-hidden="true" />
-      <span className="min-w-0 break-words">
-        {title}
-        {children}
-      </span>
-      {items && items.length > 0 && (
-        <ul className="cfg-errors m-0 w-full pl-[18px] text-xs leading-relaxed">
-          {items.map((item, index) => (
-            <li key={index}>{item}</li>
-          ))}
-        </ul>
-      )}
-      {actions && <span className="ml-auto flex items-center gap-2">{actions}</span>}
+      <Glyph className="inline-alert-icon" size={17} strokeWidth={1.8} aria-hidden="true" />
+      <div className="inline-alert-content">
+        {title && <div className="inline-alert-title">{title}</div>}
+        {children && <div className="inline-alert-description">{children}</div>}
+        {items && items.length > 0 && (
+          <ul className="cfg-errors">
+            {items.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {actions && <div className="inline-alert-actions">{actions}</div>}
     </div>
   );
 }

@@ -36,6 +36,14 @@ class PasswordPolicyError(ValueError):
     """密码不符合策略。"""
 
 
+class PasswordVerificationError(ValueError):
+    """当前密码校验失败。"""
+
+
+class PasswordRevisionError(ValueError):
+    """发起改密的会话已因密码变化失效。"""
+
+
 def validate_password(password: Any) -> str:
     """校验并返回密码明文；不合规抛出 PasswordPolicyError。"""
     if not isinstance(password, str):
@@ -121,22 +129,46 @@ class PanelPasswordStore:
         value = validate_password(password)
         with self._lock:
             self._load_if_changed()
-            salt = os.urandom(SALT_BYTES)
-            payload = {
-                "version": STATE_VERSION,
-                "algorithm": ALGORITHM,
-                "iterations": PBKDF2_ITERATIONS,
-                "salt": salt.hex(),
-                "hash": _hash_password(
-                    value, salt=salt, iterations=PBKDF2_ITERATIONS
-                ),
-                "revision": self._revision + 1,
-                "updated_at": int(time.time()),
-            }
-            self._write(payload)
-            self._apply(payload)
-            self._signature = self._stat_signature()
-            return self._revision
+            return self._set_password_locked(value)
+
+    def change_password(
+        self, current_password: Any, new_password: Any, *, expected_revision: int
+    ) -> int:
+        """校验会话版本、旧密码并更新；与同进程的重置操作共用一把锁。"""
+        value = validate_password(new_password)
+        with self._lock:
+            self._load_if_changed()
+            if not self._configured or self._revision != expected_revision:
+                raise PasswordRevisionError("登录已失效，请重新登录")
+            if (
+                not isinstance(current_password, str)
+                or not current_password
+                or len(current_password) > MAX_PASSWORD_LENGTH
+            ):
+                raise PasswordVerificationError("当前密码不正确")
+            candidate = _hash_password(
+                current_password, salt=self._salt, iterations=self._iterations
+            )
+            if not hmac.compare_digest(candidate, self._digest):
+                raise PasswordVerificationError("当前密码不正确")
+            return self._set_password_locked(value)
+
+    def _set_password_locked(self, value: str) -> int:
+        """调用方持有 _lock；写盘成功后才更新内存中的密码与版本。"""
+        salt = os.urandom(SALT_BYTES)
+        payload = {
+            "version": STATE_VERSION,
+            "algorithm": ALGORITHM,
+            "iterations": PBKDF2_ITERATIONS,
+            "salt": salt.hex(),
+            "hash": _hash_password(value, salt=salt, iterations=PBKDF2_ITERATIONS),
+            "revision": self._revision + 1,
+            "updated_at": int(time.time()),
+        }
+        self._write(payload)
+        self._apply(payload)
+        self._signature = self._stat_signature()
+        return self._revision
 
     def clear(self) -> None:
         """清除密码（下一次访问将重新进入设置流程）。"""

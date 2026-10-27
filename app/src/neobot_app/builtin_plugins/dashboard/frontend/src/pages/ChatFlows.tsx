@@ -12,203 +12,62 @@
 //
 // 名称：列表与详情标题都用后端解析好的 display_name（群名 / 昵称），
 // pipeline_key 作为副标题常驻，便于在日志 / 配置里定位。
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Info } from 'lucide-react';
 import Icon from '../components/Icon';
-import Modal, { ModalActions } from '../components/Modal';
 import Button from '../components/ui/Button';
 import EmptyState from '../components/ui/EmptyState';
+import { PanelSkeleton } from '../components/ui/PageSkeleton';
 import InlineAlert from '../components/ui/InlineAlert';
-import { toast } from '../components/Toast';
+import { notify } from '../notifications/infoBar';
 import { useQuery } from '../data/useQuery';
 import { QK, POLL } from '../data/queryKeys';
 import { api } from '../api/endpoints';
-import type {
-  ChatFlowLatestPrompt,
-  ChatFlowMessage,
-  ChatFlowPromptEntry,
-  ChatFlowPromptMeta,
-} from '../api/types';
-
-type RawMessage = Record<string, unknown>;
-
-function formatAge(seconds?: number | null): string {
-  if (seconds === undefined || seconds === null) return '—';
-  if (seconds < 60) return Math.max(0, Math.round(seconds)) + ' 秒前';
-  if (seconds < 3600) return Math.round(seconds / 60) + ' 分钟前';
-  return Math.round(seconds / 3600) + ' 小时前';
-}
-
-function formatTime(value?: string | null): string {
-  if (!value) return '—';
-  return value.replace('T', ' ').slice(0, 19);
-}
-
-function formatBytes(value?: number): string {
-  const bytes = Number(value || 0);
-  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return bytes + ' B';
-}
-
-function roleLabel(role?: string): string {
-  switch (role) {
-    case 'system':
-      return 'system';
-    case 'user':
-      return 'user';
-    case 'assistant':
-      return 'assistant';
-    case 'tool':
-      return 'tool';
-    default:
-      return role || '未知';
-  }
-}
-
-/** 内存快照里的消息（可能已被裁剪 / 截断） */
-function QuickMessageRow({ message, index }: { message: ChatFlowMessage; index: number }) {
-  const calls = message.tool_calls || [];
-  return (
-    <li className={'flow-message role-' + (message.role || 'unknown')}>
-      <div className="flow-message-head">
-        <span className={'tag ' + (message.role === 'assistant' ? 'ok' : 'info')}>
-          {roleLabel(message.role)}
-        </span>
-        <span className="muted small">
-          #{index} · {message.chars ?? (message.content || '').length} 字符
-          {message.truncated ? ' · 已截断' : ''}
-          {message.images ? ' · ' + message.images + ' 张图片' : ''}
-        </span>
-      </div>
-      {message.content && <pre className="flow-message-body">{message.content}</pre>}
-      {calls.length > 0 && (
-        <ul className="flow-tool-calls">
-          {calls.map((call, callIndex) => (
-            <li key={(call.id || '') + callIndex}>
-              <code>{call.name || '未知工具'}</code>
-              {call.arguments && <span className="muted small">{call.arguments}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-/** 完整提示词里的消息：content 原样渲染，另附原始 JSON（tool_calls 参数不丢；图片只留哈希） */
-function FullMessageRow({ message, index }: { message: RawMessage; index: number }) {
-  const role = typeof message.role === 'string' ? message.role : '';
-  const content = message.content;
-  const isText = typeof content === 'string';
-  const text = isText ? content : JSON.stringify(content ?? '', null, 2);
-  return (
-    <li className={'flow-message role-' + (role || 'unknown')}>
-      <div className="flow-message-head">
-        <span className={'tag ' + (role === 'assistant' ? 'ok' : 'info')}>{roleLabel(role)}</span>
-        <span className="muted small">
-          #{index} · {text.length} 字符 · 完整未截断
-        </span>
-      </div>
-      {isText ? (
-        <pre className="flow-message-body">{text}</pre>
-      ) : (
-        <pre className="flow-message-body chat-raw-body">{text}</pre>
-      )}
-      <details className="chat-raw">
-        <summary className="muted small">原始 JSON（含 tool_calls 参数；图片部件只保留 sha256 哈希）</summary>
-        <pre className="flow-message-body chat-raw-body">{JSON.stringify(message, null, 2)}</pre>
-      </details>
-    </li>
-  );
-}
-
-/**
- * 一份完整提示词（= 一次模型请求的完整 messages + response + usage），全部原样展示。
- *
- * memo：提示词历史按轮询刷新，只要 seq 与内容没变就复用上一次的渲染结果——
- * 一份提示词动辄上百条消息（每条还要 `JSON.stringify` 原始 JSON），无谓重渲染很贵。
- */
-const PromptEntryView = memo(function PromptEntryView({
-  seq,
-  entry,
-}: {
-  seq: number;
-  entry: ChatFlowPromptEntry;
-}) {
-  const messages = useMemo(() => (Array.isArray(entry.messages) ? entry.messages : []), [entry.messages]);
-  const extra = useMemo(
-    () => ({
-      stage: entry.stage ?? '',
-      mode: entry.mode ?? '',
-      event_id: entry.event_id ?? '',
-      conversation_kind: entry.conversation_kind ?? '',
-      conversation_id: entry.conversation_id ?? '',
-      output_estimated_tokens: entry.output_estimated_tokens ?? null,
-      cache_hit_tokens: entry.cache_hit_tokens ?? null,
-      cache_miss_tokens: entry.cache_miss_tokens ?? null,
-      cache_hit_rate: entry.cache_hit_rate ?? null,
-      usage: entry.usage ?? null,
-    }),
-    [entry],
-  );
-  return (
-    <div className="chat-entry">
-      <div className="chat-entry-meta">
-        <span className="tag info">#{seq}</span>
-        <span className="tag debug">{formatTime(entry.recorded_at)}</span>
-        <span className="tag debug">{entry.model || '未知模型'}</span>
-        <span className="tag debug">迭代 {entry.iteration ?? 0}</span>
-        <span className="tag debug">{entry.messages_count ?? messages.length} 条消息</span>
-        <span className="tag debug">{entry.total_chars ?? 0} 字符</span>
-        <span className="tag debug">≈{entry.estimated_tokens ?? 0} tokens</span>
-        <span className="tag debug">输出 {entry.output_chars ?? 0} 字符</span>
-        {entry.pipeline_key && <span className="tag debug">{entry.pipeline_key}</span>}
-      </div>
-
-      <details className="chat-collapse" open>
-        <summary>
-          messages（{messages.length} 条，完整未截断）
-        </summary>
-        <ul className="flow-messages">
-          {messages.map((message, index) => (
-            <FullMessageRow key={index} message={message} index={index + 1} />
-          ))}
-        </ul>
-      </details>
-
-      <details className="chat-collapse">
-        <summary>response（模型原始返回）</summary>
-        <pre className="prompt-preview-body">{JSON.stringify(entry.response ?? null, null, 2)}</pre>
-      </details>
-
-      <details className="chat-collapse">
-        <summary>usage 与其它元数据</summary>
-        <pre className="prompt-preview-body">{JSON.stringify(extra, null, 2)}</pre>
-      </details>
-    </div>
-  );
-});
-
-/**
- * 轮询每次都返回新对象，但只要「最新那一份 + 列表规模」没变就沿用旧对象，
- * 让 PromptEntryView 的 memo 真正生效（否则每 5s 整份提示词重渲染一次）。
- */
-function samePromptPayload(a: ChatFlowLatestPrompt, b: ChatFlowLatestPrompt): boolean {
-  return (
-    // seq 全局唯一（清空后也继续递增），相同即同一份记录，正文必然一致
-    a.seq === b.seq &&
-    (a.items || []).length === (b.items || []).length &&
-    a.limit === b.limit &&
-    a.storage_bytes === b.storage_bytes &&
-    a.image_refs === b.image_refs
-  );
-}
+import type { ChatFlowLatestPrompt } from '../api/types';
+import PageHeader from '../components/ui/PageHeader';
+import { useAuthGate } from '../auth/AuthContext';
+import { samePromptPayload } from './chat-flows/chatFlowUtils';
+import { ChatFlowList } from './chat-flows/ChatFlowList';
+import { QuickPreview } from './chat-flows/QuickPreview';
+import { PromptHistory, PromptReader } from './chat-flows/PromptHistory';
+import {
+  ChatFlowHelpDialog,
+  ChatFlowContextDialog,
+  ClearPromptHistoryDialog,
+  type ChatContextPanel,
+} from './chat-flows/ChatFlowDialogs';
 
 export default function ChatFlows() {
+  const { canManage } = useAuthGate();
+  const readOnly = canManage === false;
   const list = useQuery(QK.chatFlows, () => api.chatFlows(), { interval: POLL.chatFlows });
   const flows = useMemo(() => list.data?.items || [], [list.data]);
   const [selected, setSelected] = useState('');
+  const [showDetail, setShowDetail] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [tab, setTab] = useState<'full' | 'quick'>('quick');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [contextPanel, setContextPanel] = useState<ChatContextPanel>(null);
+  const flowListRef = useRef<HTMLUListElement>(null);
+  const flowDetailRef = useRef<HTMLElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const promptEntryRef = useRef<HTMLDivElement>(null);
+  const previousDetailMode = useRef(showDetail);
+  const previousHistoryMode = useRef(showHistory);
+
+  useEffect(() => {
+    if (previousDetailMode.current === showDetail) return;
+    previousDetailMode.current = showDetail;
+    if (!window.matchMedia?.('(max-width: 760px)').matches) return;
+    (showDetail ? flowDetailRef.current : flowListRef.current)?.focus({ preventScroll: true });
+  }, [showDetail]);
+
+  useEffect(() => {
+    if (previousHistoryMode.current === showHistory) return;
+    previousHistoryMode.current = showHistory;
+    if (tab !== 'full' || !window.matchMedia?.('(max-width: 1100px)').matches) return;
+    (showHistory ? historyRef.current : promptEntryRef.current)?.focus({ preventScroll: true });
+  }, [showHistory, tab]);
   /** 历史列表是否只看当前聊天流 */
   const [onlyCurrent, setOnlyCurrent] = useState(true);
   /** 历史里被手动切换到的 seq；null = 跟随最新一份 */
@@ -235,10 +94,6 @@ export default function ChatFlows() {
     { interval: POLL.chatFlows, deps: [selected] },
   );
   const snapshot = detail.data || null;
-  const background = useMemo(() => {
-    const tasks = snapshot?.background_tasks || {};
-    return Object.entries(tasks).filter(([, value]) => value !== null && value !== undefined);
-  }, [snapshot]);
 
   // 完整提示词历史：「元数据列表 + 最新一份全文」，**每 5s 轮询一次**
   // —— 一轮对话（回复发出 / 被取消）跑完后，面板上立刻就是那一轮最后一份提示词，
@@ -272,18 +127,19 @@ export default function ChatFlows() {
     () => (activeSeq === null || showingLatest ? Promise.resolve(null) : api.chatFlowPrompt(activeSeq)),
     { deps: [activeSeq, showingLatest] },
   );
-  const activeEntry = showingLatest ? promptData?.entry ?? null : entry.data?.entry ?? null;
+  const activeEntry = showingLatest ? (promptData?.entry ?? null) : (entry.data?.entry ?? null);
   const entryLoading = showingLatest ? prompts.loading : entry.loading;
 
   async function clearHistory() {
+    if (readOnly) return;
     setClearing(true);
     const result = await api.chatFlowPromptClear();
     setClearing(false);
     if (!result.ok) {
-      toast(result.error || '清空提示词历史失败', 'err');
+      notify(result.error || '清空提示词历史失败', 'err');
       return;
     }
-    toast(result.data?.message || '已清空完整提示词历史', 'ok');
+    notify(result.data?.message || '已清空完整提示词历史', 'ok');
     setClearOpen(false);
     setClearChecked(false);
     setPickedSeq(null);
@@ -291,38 +147,52 @@ export default function ChatFlows() {
   }
 
   return (
-    <div className="page chat-flows-page">
-      <section className="card">
-        <div className="card-head">
-          <h3>聊天流</h3>
-          <div className="spacer" />
-          <Button disabled={list.loading} onClick={() => void list.refetch()}>
-            <Icon name="refresh" />
-            {list.loading ? '读取中…' : '刷新'}
-          </Button>
-          <Button
-            variant="danger"
-            type="button"
-            onClick={() => {
-              setClearChecked(false);
-              setClearOpen(true);
-            }}
-          >
-            <Icon name="trash" />
-            清空提示词历史
-          </Button>
-        </div>
-        <p className="muted small">
-          上方「快速预览」来自内存快照（重启后清空，只保留最近 80 条消息）；
-          「完整提示词」每 5 秒自动跟随最新一份——一轮对话结束（回复发出或取消）后，
-          这里显示的就是该轮最后一次模型调用的完整提示词；
-          <strong>完整提示词也只存在内存里</strong>（重启即清空），全局保留最近 
-          {limit > 0 ? limit : '—'} 份，逐份只存相对上一份的 diff
-          {storageBytes > 0 ? `（当前常驻约 ${formatBytes(storageBytes)}）` : ''}
-          ，图片只保留 sha256 哈希、不保留 base64。记录的是完整聊天内容（含私聊），
-          <strong>属隐私数据</strong>，请谨慎分享。
-        </p>
-      </section>
+    <div className="page page--viewport chat-flows-page">
+      <PageHeader
+        title="聊天流"
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              className="chat-help-button"
+              aria-label="隐私与记录说明"
+              onClick={() => setHelpOpen(true)}
+            >
+              <Icon name="eye" size={15} />
+              <span className="chat-help-long">隐私与记录</span>
+              <span className="chat-help-short">隐私</span>
+            </Button>
+            <Button
+              variant="danger"
+              type="button"
+              className="chat-clear-history"
+              aria-label="清空提示词历史"
+              title="清空提示词历史"
+              disabled={readOnly || clearing}
+              onClick={() => {
+                setClearChecked(false);
+                setClearOpen(true);
+              }}
+            >
+              <Icon name="trash" />
+              <span className="chat-clear-label">清空历史</span>
+            </Button>
+          </>
+        }
+      />
+      {readOnly && (
+        <InlineAlert tone="info" title="当前会话只读">
+          可以查看聊天流与提示词历史，清空历史需要管理权限。
+        </InlineAlert>
+      )}
+      {list.loading && !list.data && <EmptyState compact>正在读取聊天流…</EmptyState>}
+      {list.error && (
+        <InlineAlert
+          tone="error"
+          title="读取聊天流失败"
+          actions={<Button onClick={() => void list.refetch()}>重新读取</Button>}
+        />
+      )}
 
       {list.data && list.data.ok === false && (
         <EmptyState icon="bot" title="聊天流不可用">
@@ -330,234 +200,146 @@ export default function ChatFlows() {
         </EmptyState>
       )}
 
-      {(!list.data || list.data.ok !== false) && flows.length === 0 && !list.loading && (
+      {(!list.data || list.data.ok !== false) && flows.length === 0 && !list.loading && !list.error && (
         <EmptyState compact>还没有聊天流记录。Bot 收到消息并构建提示词后这里就会出现。</EmptyState>
       )}
 
       {flows.length > 0 && (
-        <div className="prompt-layout">
-          <section className="card prompt-list" aria-label="聊天流列表">
-            <ul>
-              {flows.map((flow) => {
-                const active = flow.pipeline_key === selected;
-                return (
-                  <li key={flow.pipeline_key}>
-                    <button
-                      type="button"
-                      className={'prompt-key' + (active ? ' active' : '')}
-                      aria-current={active}
-                      onClick={() => setSelected(flow.pipeline_key)}
-                    >
-                      <span className="chat-flow-label">
-                        <span className="chat-flow-name">
-                          {flow.display_name || flow.pipeline_key}
-                          {flow.active && <span className="tag ok">运行中</span>}
-                        </span>
-                        <span className="muted small chat-flow-key">
-                          <code>{flow.pipeline_key}</code>
-                        </span>
-                      </span>
-                      <span className="muted small">{formatAge(flow.age_seconds)}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+        <div className={'viewer-layout chat-viewer-layout' + (showDetail ? ' show-detail' : '')}>
+          <ChatFlowList
+            flows={flows}
+            selected={selected}
+            flowListRef={flowListRef}
+            onSelect={(key) => {
+              setSelected(key);
+              setShowDetail(true);
+              setShowHistory(false);
+            }}
+          />
 
-          <section className="card prompt-editor" aria-label="聊天流详情">
+          <section
+            ref={flowDetailRef}
+            className="card viewer-detail chat-flow-detail"
+            aria-label="聊天流详情"
+            tabIndex={-1}
+          >
+            {!snapshot && (
+              <Button
+                className="chat-empty-back"
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowDetail(false)}
+              >
+                <Icon name="back" size={15} />
+                返回会话列表
+              </Button>
+            )}
             {!snapshot ? (
-              <EmptyState compact>{detail.loading ? '读取中…' : '选择左侧的聊天流查看详情'}</EmptyState>
+              detail.loading ? (
+                <PanelSkeleton label="正在读取聊天流详情" kind="text" rows={5} />
+              ) : (
+                <EmptyState compact>选择左侧的聊天流查看详情</EmptyState>
+              )
             ) : (
               <>
-                <div className="card-head">
-                  <h3>{snapshot.display_name || snapshot.pipeline_key}</h3>
-                  <div className="spacer" />
-                  <span className="tag info">{snapshot.model || '未知模型'}</span>
-                  <span className="tag info">迭代 {snapshot.iterations ?? 0}</span>
-                  <span className="tag info">{snapshot.message_count ?? 0} 条消息</span>
-                </div>
-                <p className="muted small chat-flow-subtitle">
-                  <span className="tag debug">pipeline_key</span>
-                  <code>{snapshot.pipeline_key}</code>
-                  <span className="muted small">（用于在日志 / 配置里定位该聊天流）</span>
-                </p>
-
-                <div className="config-tabs chat-flow-tabs">
-                  <div role="tablist" aria-label="聊天流视图">
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={tab === 'full'}
-                      className={tab === 'full' ? 'active' : ''}
-                      onClick={() => setTab('full')}
-                    >
-                      完整提示词
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={tab === 'quick'}
-                      className={tab === 'quick' ? 'active' : ''}
-                      onClick={() => setTab('quick')}
-                    >
-                      快速预览（内存）
-                    </button>
+                <header className="chat-detail-toolbar">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="chat-inline-back"
+                    aria-label="返回会话列表"
+                    onClick={() => setShowDetail(false)}
+                  >
+                    <Icon name="back" size={15} />
+                  </Button>
+                  <div className="chat-detail-identity">
+                    <h3 title={snapshot.display_name || snapshot.pipeline_key}>
+                      {snapshot.display_name || snapshot.pipeline_key}
+                    </h3>
+                    <div>
+                      <code title={snapshot.pipeline_key}>{snapshot.pipeline_key}</code>
+                      <span title={snapshot.model}>{snapshot.model || '未知模型'}</span>
+                    </div>
                   </div>
-                </div>
-
-                {tab === 'quick' ? (
-                  <>
-                    <div className="prompt-preview">
-                      <div className="prompt-preview-head">
-                        <strong>最新 system 提示词</strong>
-                        <span className="muted small">{snapshot.prompt_chars ?? 0} 字符</span>
-                      </div>
-                      <pre className="prompt-preview-body">{snapshot.system_prompt || '（空）'}</pre>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="chat-session-info"
+                    aria-label="查看会话信息"
+                    onClick={() => setContextPanel('info')}
+                  >
+                    <Info size={15} aria-hidden="true" />
+                  </Button>
+                  <div className="config-tabs chat-flow-tabs">
+                    <div role="tablist" aria-label="聊天流视图">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === 'full'}
+                        className={tab === 'full' ? 'active' : ''}
+                        onClick={() => setTab('full')}
+                      >
+                        完整提示词
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === 'quick'}
+                        className={tab === 'quick' ? 'active' : ''}
+                        onClick={() => setTab('quick')}
+                      >
+                        快速预览
+                      </button>
                     </div>
-
-                    <div className="prompt-preview">
-                      <div className="prompt-preview-head">
-                        <strong>后台任务</strong>
-                      </div>
-                      {background.length === 0 ? (
-                        <EmptyState compact>当前没有后台任务</EmptyState>
-                      ) : (
-                        <ul className="flow-tasks">
-                          {background.map(([name, value]) => (
-                            <li key={name}>
-                              <code>{name}</code>
-                              <span className="muted small">{JSON.stringify(value)}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="prompt-preview">
-                      <div className="prompt-preview-head">
-                        <strong>最近一次模型请求（内存快照，不读盘）</strong>
-                        <span className="muted small">
-                          共 {snapshot.total_messages ?? 0} 条，快照只保留最近 {snapshot.message_count ?? 0} 条
-                          （单条上限 4000 字符，可能有截断）
-                        </span>
-                      </div>
-                      <ul className="flow-messages">
-                        {(snapshot.messages || []).map((message, index) => (
-                          <QuickMessageRow key={index} message={message} index={index + 1} />
-                        ))}
-                      </ul>
-                      <p className="muted small">
-                        需要完整、未截断的内容（188 条全在、图片部件与 tool_calls 参数原样）请切到「完整提示词」。
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  <div className="chat-prompt-layout">
-                    <div className="chat-prompt-history">
-                      <div className="chat-prompt-history-head">
-                        <strong>提示词历史</strong>
-                        <span className="muted small">
-                          最近 {limit > 0 ? limit : '—'} 份
-                          {storageBytes > 0 ? ` · 常驻 ${formatBytes(storageBytes)}` : ''}
-                          {imageRefs > 0 ? ` · 图片哈希 ${imageRefs}` : ''}
-                        </span>
-                      </div>
-                      <label className="inline-check muted small">
-                        <input
-                          type="checkbox"
-                          checked={onlyCurrent}
-                          onChange={(event) => setOnlyCurrent(event.target.checked)}
-                        />
-                        只看当前聊天流
-                      </label>
-                      <div className="chat-follow-latest">
-                        {showingLatest || latestSeq === null ? (
-                          <span className="muted small">
-                            <span className="tag ok">实时</span>
-                            已跟随最新一份{latestSeq !== null ? `（#${latestSeq}）` : ''}· 每 5 秒自动刷新
-                          </span>
-                        ) : (
-                          <Button size="sm" type="button" onClick={() => setPickedSeq(null)}>
-                            <Icon name="refresh" />
-                            回到最新一份（#{latestSeq}）
-                          </Button>
-                        )}
-                      </div>
+                    {tab === 'full' && (
                       <Button
                         size="sm"
-                        type="button"
-                        disabled={prompts.loading}
-                        onClick={() => void prompts.refetch()}
+                        className="viewer-history-toggle"
+                        aria-expanded={showHistory}
+                        aria-label={showHistory ? '返回正文' : '历史记录'}
+                        onClick={() => setShowHistory((value) => !value)}
                       >
-                        <Icon name="refresh" />
-                        {prompts.loading ? '读取中…' : '刷新'}
+                        <Icon name={showHistory ? 'back' : 'clock'} size={15} />
+                        <span className="viewer-history-label">{showHistory ? '返回正文' : '历史记录'}</span>
                       </Button>
-                      {promptItems.length === 0 ? (
-                        <EmptyState compact>
-                          {prompts.loading ? '读取中…' : '还没有记录完整提示词'}
-                        </EmptyState>
-                      ) : (
-                        <ul className="chat-history-list">
-                          {promptItems.map((meta: ChatFlowPromptMeta) => {
-                            const active = meta.seq === activeSeq;
-                            return (
-                              <li key={meta.seq}>
-                                <button
-                                  type="button"
-                                  className={'prompt-key chat-history-key' + (active ? ' active' : '')}
-                                  aria-current={active}
-                                  onClick={() => setPickedSeq(meta.seq)}
-                                >
-                                  <span className="chat-history-meta">
-                                    <span>
-                                      <code>#{meta.seq}</code> {formatTime(meta.recorded_at)}
-                                      {meta.seq === latestSeq && <span className="tag ok">最新</span>}
-                                    </span>
-                                    <span className="muted small">
-                                      {meta.pipeline_key || '—'} · 迭代 {meta.iteration ?? 0} ·{' '}
-                                      {meta.total_messages ?? 0} 条 · {formatBytes(meta.bytes)}
-                                      {meta.patch_bytes !== undefined &&
-                                        ` （驻留 ${formatBytes(meta.patch_bytes)}）`}
-                                      {meta.images ? ` · 图片 ${meta.images}` : ''}
-                                    </span>
-                                  </span>
-                                </button>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-                    </div>
+                    )}
+                  </div>
+                </header>
 
-                    <div className="chat-prompt-entry">
-                      {prompts.loading && promptData === null ? (
-                        <EmptyState compact>读取中…</EmptyState>
-                      ) : promptData === null ? (
-                        <InlineAlert tone="warning" title="完整提示词历史不可用">
-                          后端未注入 context_recorder，或提示词历史记录被关闭
-                          （chat.chat_flow_prompt_history_enabled = false）。
-                        </InlineAlert>
-                      ) : activeSeq === null ? (
-                        <EmptyState compact>
-                          还没有完整提示词记录；Bot 下次调用模型后会在这里出现。
-                        </EmptyState>
-                      ) : entryLoading && !activeEntry ? (
-                        <EmptyState compact>读取中…</EmptyState>
-                      ) : !activeEntry ? (
-                        <InlineAlert
-                          tone="error"
-                          title={'读取完整提示词失败：seq=' + activeSeq}
-                          actions={
-                            <Button size="sm" type="button" onClick={() => void prompts.refetch()}>
-                              重新读取
-                            </Button>
-                          }
-                        />
-                      ) : (
-                        <PromptEntryView seq={activeSeq} entry={activeEntry} />
-                      )}
-                    </div>
+                {tab === 'quick' ? (
+                  <QuickPreview snapshot={snapshot} onOpenContext={setContextPanel} />
+                ) : (
+                  <div
+                    className={
+                      'chat-prompt-layout viewer-prompt-layout' + (showHistory ? ' show-history' : '')
+                    }
+                  >
+                    <PromptHistory
+                      historyRef={historyRef}
+                      promptItems={promptItems}
+                      limit={limit}
+                      onlyCurrent={onlyCurrent}
+                      showingLatest={showingLatest}
+                      latestSeq={latestSeq}
+                      loading={prompts.loading}
+                      activeSeq={activeSeq}
+                      onOnlyCurrentChange={setOnlyCurrent}
+                      onFollowLatest={() => setPickedSeq(null)}
+                      onPick={(seq) => {
+                        setPickedSeq(seq);
+                        setShowHistory(false);
+                      }}
+                    />
+
+                    <PromptReader
+                      promptEntryRef={promptEntryRef}
+                      promptData={promptData}
+                      loading={prompts.loading}
+                      activeSeq={activeSeq}
+                      entryLoading={entryLoading}
+                      activeEntry={activeEntry}
+                      onRetry={() => void (showingLatest ? prompts.refetch() : entry.refetch())}
+                    />
                   </div>
                 )}
               </>
@@ -566,36 +348,30 @@ export default function ChatFlows() {
         </div>
       )}
 
-      <Modal open={clearOpen} title="清空提示词历史" onClose={() => setClearOpen(false)}>
-        <InlineAlert tone="error" title="清空后不可恢复">
-          将丢弃内存里的全部提示词历史（当前 {promptItems.length} 份，全局上限 
-          {limit > 0 ? limit : '—'} 份），并顺带删除旧版本遗留的落盘文件
-          <code>{'<DATA_DIR>/chat_flows/prompts/'}</code>。
-          正在进行的对话不受影响，之后的新请求会重新开始记录。
-        </InlineAlert>
-        <label className="inline-check">
-          <input
-            type="checkbox"
-            checked={clearChecked}
-            onChange={(event) => setClearChecked(event.target.checked)}
-          />
-          我已确认：清空后这些完整聊天记录无法恢复
-        </label>
-        <ModalActions>
-          <Button type="button" disabled={clearing} onClick={() => setClearOpen(false)}>
-            取消
-          </Button>
-          <Button
-            variant="danger"
-            type="button"
-            disabled={clearing || !clearChecked}
-            onClick={() => void clearHistory()}
-          >
-            <Icon name="trash" />
-            {clearing ? '清空中…' : '确认清空'}
-          </Button>
-        </ModalActions>
-      </Modal>
+      <ChatFlowHelpDialog
+        helpOpen={helpOpen}
+        limit={limit}
+        promptCount={promptItems.length}
+        storageBytes={storageBytes}
+        imageRefs={imageRefs}
+        onClose={() => setHelpOpen(false)}
+      />
+      <ChatFlowContextDialog
+        contextPanel={contextPanel}
+        snapshot={snapshot}
+        onClose={() => setContextPanel(null)}
+      />
+      <ClearPromptHistoryDialog
+        clearOpen={clearOpen}
+        clearing={clearing}
+        clearChecked={clearChecked}
+        readOnly={readOnly}
+        promptCount={promptItems.length}
+        limit={limit}
+        onClose={() => setClearOpen(false)}
+        onCheckedChange={setClearChecked}
+        onConfirm={() => void clearHistory()}
+      />
     </div>
   );
 }

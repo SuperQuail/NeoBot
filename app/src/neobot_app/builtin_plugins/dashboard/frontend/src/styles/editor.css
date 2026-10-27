@@ -1,0 +1,418 @@
+.toml-code-editor {
+  --editor-key: #365777;
+  --editor-string: #2e7353;
+  --editor-number: #9a542d;
+  --editor-atom: #8b4c85;
+  --editor-comment: var(--muted);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  container: toml-editor / inline-size;
+}
+[data-theme='dark'] .toml-code-editor {
+  --editor-key: #acc9ee;
+  --editor-string: #98cfb0;
+  --editor-number: #edb785;
+  --editor-atom: #d4afe0;
+  --editor-comment: var(--muted);
+}
+.toml-editor-toolbar {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.toml-file-info {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-right: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+}
+.toml-file-info code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 11px/1.5 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toml-file-info > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.toml-toolbar-secondary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.toml-toolbar-custom {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.toml-editor-toolbar .toml-more-toggle {
+  display: none;
+}
+.toml-editor-toolbar .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 30px;
+  min-height: 30px;
+  margin: 0;
+  padding: 5px 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+.toml-editor-toolbar .btn-sm:hover:not(:disabled),
+.toml-editor-toolbar .btn-sm[aria-expanded='true'] {
+  border-color: var(--border-soft);
+  background: var(--panel-2);
+}
+.toml-toolbar-separator {
+  width: 1px;
+  height: 18px;
+  margin-inline: 3px;
+  background: var(--border-soft);
+}
+.toml-editor-toolbar .toml-help-toggle {
+  flex-shrink: 0;
+}
+.toml-shortcuts {
+  flex: 0 0 auto;
+  max-height: 190px;
+  padding: 12px 16px;
+  overflow: auto;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  font-size: 11px;
+}
+.toml-shortcuts dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  margin: 0;
+}
+.toml-shortcuts dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.toml-shortcuts dt {
+  color: var(--text-secondary);
+}
+.toml-shortcuts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+}
+.toml-shortcuts p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.toml-editor-surface {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.toml-editor-surface .cm-editor {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  color: var(--text);
+  background: var(--panel);
+  font-size: 12px;
+}
+.toml-editor-surface .cm-editor.cm-focused {
+  outline: none;
+}
+.toml-editor-surface .cm-scroller {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  font-family: var(--font-mono);
+  line-height: 1.7;
+}
+.toml-editor-surface .cm-content {
+  min-height: 100%;
+  padding-block: 6px;
+  caret-color: var(--brand);
+}
+.toml-editor-surface .cm-line {
+  padding-inline: 14px;
+}
+.toml-editor-surface .cm-gutters {
+  padding: 0;
+  border-right: 1px solid var(--border-soft);
+  color: var(--muted);
+  background: var(--panel-2);
+}
+@container toml-editor (max-width: 620px) {
+  .toml-tool-label {
+    display: none;
+  }
+  .toml-editor-toolbar .toml-more-toggle {
+    display: inline-flex;
+  }
+  .toml-toolbar-secondary {
+    display: none;
+  }
+  .toml-toolbar-secondary[data-open='true'] {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 4px);
+    right: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    width: max-content;
+    max-width: calc(100% - 16px);
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: var(--shadow-elevated);
+  }
+}
+.toml-editor-surface .cm-lineNumbers .cm-gutterElement {
+  min-width: 38px;
+  padding-inline: 8px;
+}
+.toml-editor-surface .cm-activeLine,
+.toml-editor-surface .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--brand) 5%, transparent);
+}
+.toml-editor-surface .cm-focused .cm-selectionBackground,
+.toml-editor-surface .cm-selectionBackground,
+.toml-editor-surface .cm-content ::selection {
+  background: color-mix(in srgb, var(--brand) 18%, transparent);
+}
+.toml-editor-surface .cm-cursor,
+.toml-editor-surface .cm-dropCursor {
+  border-left-color: var(--brand);
+}
+.toml-editor-surface .cm-matchingBracket {
+  outline: 1px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  background: var(--brand-soft);
+}
+.toml-editor-surface .cm-searchMatch,
+.toml-editor-surface .cm-selectionMatch {
+  background: color-mix(in srgb, var(--warning, #ad7b34) 18%, transparent);
+}
+.toml-editor-surface .cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--brand) 28%, transparent);
+}
+.toml-token-key {
+  color: var(--editor-key);
+}
+.toml-token-string {
+  color: var(--editor-string);
+}
+.toml-token-number {
+  color: var(--editor-number);
+}
+.toml-token-atom {
+  color: var(--editor-atom);
+}
+.toml-token-comment {
+  color: var(--editor-comment);
+  font-style: italic;
+}
+.toml-token-punctuation {
+  color: var(--text-secondary);
+}
+.toml-code-editor[data-language='text'] .cm-editor {
+  font-size: 13px;
+}
+.toml-code-editor[data-language='text'] .cm-scroller {
+  line-height: 1.8;
+}
+.editor-template-placeholder {
+  border-radius: 3px;
+  color: var(--brand-hover);
+  background: var(--brand-soft);
+  font-weight: 500;
+}
+.toml-editor-surface .cm-panels {
+  border-color: var(--border-soft);
+  color: var(--text);
+  background: var(--panel-2);
+}
+.toml-editor-surface .cm-search,
+.toml-editor-surface .cm-dialog {
+  position: relative;
+  padding: 10px 40px 10px 12px;
+  font-size: 12px;
+}
+.toml-editor-surface .cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.toml-editor-surface .cm-search br {
+  flex-basis: 100%;
+}
+.toml-editor-surface .cm-search > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 3px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.toml-editor-surface .cm-search input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--brand);
+}
+.toml-editor-surface .cm-textfield,
+.toml-editor-surface .cm-button {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: none;
+  font: inherit;
+}
+.toml-editor-surface .cm-textfield {
+  min-width: 0;
+  max-width: 100%;
+}
+.toml-editor-surface .cm-search .cm-textfield {
+  flex: 1 1 170px;
+  width: 170px;
+}
+.toml-editor-surface .cm-button {
+  cursor: pointer;
+}
+.toml-editor-surface .cm-button:hover {
+  border-color: var(--brand);
+}
+.toml-editor-surface .cm-search > button[name='close'],
+.toml-editor-surface .cm-dialog-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+}
+.toml-editor-surface .cm-goto-line form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.toml-editor-surface .cm-goto-line label {
+  font-size: 12px;
+}
+.toml-code-editor[data-readonly='true']
+  .cm-search
+  :is(input[name='replace'], button[name='replace'], button[name='replaceAll']) {
+  display: none;
+}
+.toml-editor-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.toml-editor-loading {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.toml-fallback-input {
+  flex: 1;
+  width: 100%;
+  min-height: 120px;
+  padding: 14px 20px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text);
+  background: var(--panel);
+  resize: none;
+  font: 12px/1.8 var(--font-mono);
+}
+@media (max-width: 740px) {
+  .toml-editor-toolbar {
+    padding: 5px 8px;
+  }
+  .toml-editor-toolbar .btn-sm {
+    min-width: 40px;
+    min-height: 40px;
+    padding-inline: 8px;
+  }
+  .toml-toolbar-separator {
+    display: none;
+  }
+  .toml-shortcuts {
+    padding-inline: 12px;
+  }
+  .toml-shortcuts dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .toml-editor-status {
+    padding-inline: 12px;
+  }
+  .toml-editor-tab-hint {
+    display: none;
+  }
+  .toml-editor-surface .cm-search,
+  .toml-editor-surface .cm-dialog {
+    padding-right: 48px;
+  }
+  .toml-editor-surface .cm-button,
+  .toml-editor-surface .cm-textfield {
+    min-height: 40px;
+  }
+  .toml-editor-surface .cm-textfield {
+    font-size: 16px;
+  }
+  .toml-editor-surface .cm-search > label {
+    min-height: 32px;
+  }
+  .toml-editor-surface .cm-search > button[name='close'],
+  .toml-editor-surface .cm-dialog-close {
+    width: 36px;
+    height: 40px;
+    right: 6px;
+  }
+}

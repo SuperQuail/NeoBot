@@ -1,0 +1,8 @@
+/* Schema 表单共享触控输入规则；在各字段控件后加载。 */
+
+@media (pointer: coarse) {
+  .cfg-root .input,
+  .cfg-root .btn-sm {
+    min-height: 44px;
+  }
+}

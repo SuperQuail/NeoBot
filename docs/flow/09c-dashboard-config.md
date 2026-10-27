@@ -11,7 +11,7 @@ covers:
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
 verified_against: 264696d
-verified_hash: 69d3d7a4b7dc
+verified_hash: f39100a96c6b
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流

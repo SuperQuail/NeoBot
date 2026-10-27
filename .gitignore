@@ -164,3 +164,7 @@ scripts/flow/_commit_msg.txt
 # 本地临时提交信息文件（不入库）
 .commit-msg.tmp
 
+
+# Split package dirs under app/src are source, not sdist artifacts
+!app/src/**/parts/
+!app/src/**/parts/**

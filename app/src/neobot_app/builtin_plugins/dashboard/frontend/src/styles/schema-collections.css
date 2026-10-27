@@ -1,0 +1,409 @@
+/* Schema 数组、字典、条目、拖拽与集合操作。 */
+
+.cfg-collection.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.cfg-collection-bar .spacer {
+  flex: 1;
+}
+.cfg-chips-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cfg-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfg-chip-remove {
+  border: none;
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--err);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  line-height: 1;
+  font-size: 11px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.cfg-chip-remove:disabled {
+  background: transparent;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.cfg-draglist {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cfg-draglist-row:first-child {
+  border-top: none;
+}
+.cfg-draglist-row.over {
+  background: var(--brand-soft);
+  box-shadow: inset 0 2px 0 var(--brand);
+}
+.cfg-draglist-row.add {
+  border-top-style: dashed;
+}
+.cfg-draglist-grip {
+  color: var(--muted);
+  cursor: grab;
+  text-align: center;
+  user-select: none;
+}
+.cfg-draglist-input:focus {
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.cfg-row-remove {
+  border: none;
+  background: transparent;
+  color: var(--err);
+  opacity: 0.7;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.cfg-row-remove:hover {
+  opacity: 1;
+}
+.cfg-kv {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  width: 100%;
+}
+.cfg-kv-row:first-child {
+  border-top: none;
+}
+.cfg-kv-row.empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cfg-kv-row.add {
+  border-top-style: dashed;
+}
+.cfg-kv-input.mono {
+  font-family: var(--font-mono);
+}
+.cfg-kv-input:focus {
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.cfg-kv-hit {
+  display: none;
+}
+.cfg-draglist-input {
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 2px;
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.cfg-collection-warn {
+  margin: 0;
+  color: var(--warn);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.cfg-collection-warn b {
+  font-weight: 700;
+}
+.cfg-kv-input {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  padding: 3px 2px;
+  min-width: 0;
+}
+
+.cfg-collection .input:focus-visible,
+.cfg-chip-input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.cfg-chip-remove:focus-visible,
+.cfg-row-remove:focus-visible,
+.cfg-row-move:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.cfg-collection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.cfg-collection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.cfg-collection-bar .btn-sm {
+  min-height: 27px;
+  font-size: 11px;
+}
+
+.cfg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cfg-chip {
+  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.cfg-chip-remove,
+.cfg-row-remove,
+.cfg-row-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, var(--muted));
+  font: inherit;
+  opacity: 1;
+  cursor: pointer;
+}
+
+.cfg-chip-remove:hover:not(:disabled),
+.cfg-row-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+  color: var(--err);
+}
+
+.cfg-row-move:hover:not(:disabled) {
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+}
+
+.cfg-chip-remove:disabled,
+.cfg-row-remove:disabled,
+.cfg-row-move:disabled {
+  color: var(--muted);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cfg-chip-add {
+  padding: 0 4px 0 8px;
+  font-family: var(--font-sans);
+  border-style: dashed;
+  background: transparent;
+}
+
+.cfg-chip-input {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  width: 100px;
+  min-width: 0;
+  min-height: 26px;
+  border-radius: 3px;
+  font-family: var(--font-sans);
+}
+
+.cfg-draglist,
+.cfg-kv {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.cfg-draglist-row {
+  display: grid;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border-color: var(--border-soft);
+}
+
+.cfg-draglist-grip,
+.cfg-draglist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cfg-draglist-row[draggable='false'] .cfg-draglist-grip {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.cfg-root .cfg-draglist-input,
+.cfg-root .cfg-kv-input {
+  min-height: 32px;
+  border: 1px solid transparent;
+  padding: 4px 6px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.cfg-root .cfg-draglist-input:focus,
+.cfg-root .cfg-kv-input:focus {
+  border-color: var(--brand);
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+
+.cfg-kv-row {
+  display: grid;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 28px;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border-color: var(--border-soft);
+}
+
+.cfg-kv-row.head {
+  padding: 8px 12px;
+  background: var(--panel-2);
+  color: var(--text-secondary, var(--muted));
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.cfg-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-bottom: 12px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.cfg-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.cfg-item-head strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.cfg-item > .cfg-group {
+  padding: 16px 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.cfg-item-head + .cfg-group {
+  border-top: 0;
+}
+
+.cfg-item > .cfg-field:has(.model-params) {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 16px;
+}
+
+.cfg-item-head .icon-btn {
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.cfg-collection-warn {
+  padding: 8px 10px;
+  border-left: 2px solid var(--warn);
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+@media (max-width: 640px) {
+  .cfg-draglist-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .cfg-draglist-grip {
+    display: none;
+  }
+
+  .cfg-item-head .icon-btn,
+  .cfg-chip-remove,
+  .cfg-row-remove,
+  .cfg-row-move {
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+}
+
+@media (pointer: coarse) {
+  .cfg-item-head .icon-btn,
+  .cfg-chip-remove,
+  .cfg-row-remove,
+  .cfg-row-move {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    flex-basis: 44px;
+  }
+
+  .cfg-kv-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 44px;
+  }
+
+  .cfg-chip-input {
+    min-height: 44px;
+  }
+}

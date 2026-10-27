@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: 93d0141
-verified_hash: 2e3981c88beb
+verified_hash: 1c6bdc8e811e
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -143,6 +143,10 @@ error 在外层，所以鉴权中间件里抛出的任何非 HTTPException 也�
 `default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; base-uri 'none'; form-action 'none'`。
 路径以 `/api/` 开头时额外加 `Cache-Control: no-store`（`server.py:534`），静态资源不加。
 
+所有响应另带 `X-Robots-Tag: noindex, nofollow, nosnippet, noimageindex`；
+根路径及 `base_path` 下的 `GET/HEAD /robots.txt` 公开返回 `User-agent: *`、`Disallow: /`，
+不依赖登录会话。它只表达拒绝抓取/收录的意愿，不能阻止不遵守规则的客户端。
+
 观测点：500 一定伴随 `logger.exception`，日志里带 `path=`；400 基本等价于「请求体不是 JSON 对象」
 （`_read_json` 抛 ValueError，`api.py:179`）。
 </details>
@@ -213,6 +217,32 @@ Cookie 属性（`server.py:633`）：`HttpOnly=True`、`SameSite=Lax`、`Secure=
 CSRF 比较走 `secrets_equal` → `hmac.compare_digest`（恒定时间，`security.py:118`）。
 
 观测点：`GET /api/system`（或 `describe`）里的 `sessions` 数组，token 只显示前 6 位 + `…`。
+</details>
+
+<details>
+### 面板内改密：校验旧密码、原子更新与撤销会话
+
+```mermaid
+flowchart TD
+    A["POST /api/auth/password"] --> B["中间件校验会话与 CSRF"]
+    B --> C["AuthMixin.auth_password 校验管理权限"]
+    C --> D{"IP 是否处于失败锁定窗口?"}
+    D -- 是 --> E["429，保留旧密码"]
+    D -- 否 --> F["检查字符串类型、两次新密码与密码策略"]
+    F --> G["PanelPasswordStore.change_password 持有同一把锁"]
+    G --> H{"会话 revision 与密码版本一致?"}
+    H -- 否 --> I["401，清除过期会话 Cookie"]
+    H -- 是 --> J{"旧密码恒定时间比较通过?"}
+    J -- 否 --> K["403，计入登录失败限流"]
+    J -- 是 --> L["随机盐与 PBKDF2，原子写盘后更新内存"]
+    L -- 写盘失败 --> M["500，不撤销旧会话"]
+    L -- 成功 --> N["撤销全部会话，重置该 IP 失败计数"]
+    N --> O["清除 Cookie，前端清除本地 token 并重新登录"]
+```
+
+改密与 `/set_password` 的密码重置共用 `PanelPasswordStore` 的锁和版本号。
+接口不返回新密码，也不签发替代会话。插件开关另支持显式 `enabled` 与
+`expected_enabled`：按插件串行校验旧状态，不匹配返回 409，避免旧页面覆盖新选择。
 </details>
 
 <details>

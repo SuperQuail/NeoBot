@@ -1,17 +1,24 @@
 // pages/config/ModelsPanel.tsx —— 模型库增删改 + 连通性测试 + 供应商模型拉取
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Info } from 'lucide-react';
 import { api } from '../../api/endpoints';
-import type { ModelItem, ModelProbeResult, ModelsPayload } from '../../api/types';
-import { toast } from '../../components/Toast';
+import type { FieldDescriptor, ModelItem, ModelProbeResult, ModelsPayload } from '../../api/types';
+import { infoBar, notify } from '../../notifications/infoBar';
 import Icon from '../../components/Icon';
 import Modal, { ModalActions } from '../../components/Modal';
 import Button from '../../components/ui/Button';
 import EmptyState from '../../components/ui/EmptyState';
+import { PanelSkeleton } from '../../components/ui/PageSkeleton';
 import { defaultsFromFields } from '../../components/SchemaForm';
 import { ConfigTreePanel } from './ConfigTreePanel';
 import { setPath } from '../../utils/paths';
 import { BillingSection } from './BillingSection';
-import { bindValues } from './shared';
+import ModelProbeDetails from './ModelProbeDetails';
+import { bindValues, useConfigAutoRead, useEditorGuard, useEditorOperation } from './shared';
+import { confirmAction } from '../../components/ui/ConfirmDialog';
+
+const EMPTY_LIBRARY: ModelItem[] = [];
+const EMPTY_SCHEMA: FieldDescriptor[] = [];
 
 /** 列表行上的计费标签：从完整条目里取 billing_script（留空 = 固定计费）。 */
 function billingScriptOf(item: ModelItem): string {
@@ -31,10 +38,7 @@ interface ModelParamsPayload {
  * settings.params -> enabled_params / extra_body / 各可选参数值，并删除 params。
  * 未列入目录的参数名不落盘（后端只记 warning 忽略），避免写成未知配置项。
  */
-function syncModelParams(
-  entry: Record<string, any>,
-  catalogNames: Set<string>,
-): Record<string, any> {
+function syncModelParams(entry: Record<string, any>, catalogNames: Set<string>): Record<string, any> {
   const settings = entry?.settings;
   if (!settings || typeof settings !== 'object' || !('params' in settings)) return entry;
   const params = (settings as Record<string, any>).params as ModelParamsPayload | undefined;
@@ -61,32 +65,72 @@ function syncModelParams(
 }
 
 function ModelsPanel() {
+  const [helpOpen, setHelpOpen] = useState(false);
   const [data, setData] = useState<ModelsPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState('');
-  const [editing, setEditing] = useState<{ isNew: boolean; draft: Record<string, any> } | null>(null);
-  const [probe, setProbe] = useState<ModelProbeResult | null>(null);
+  const [readError, setReadError] = useState('');
+  const [editorError, setEditorError] = useState('');
+  const [billingBusy, setBillingBusy] = useState(false);
+  const { busy, runOperation } = useEditorOperation();
+  const [editing, setEditing] = useState<{
+    isNew: boolean;
+    draft: Record<string, any>;
+    baseline: Record<string, any>;
+  } | null>(null);
   const [providerModels, setProviderModels] = useState<string[]>([]);
   const [pulledProvider, setPulledProvider] = useState('');
   const [pulling, setPulling] = useState('');
   const pulledRef = useRef('');
+  const pullRequest = useRef(0);
+  useEffect(
+    () => () => {
+      pullRequest.current++;
+    },
+    [],
+  );
   // 模型/凭据变更后仍有组件必须重启才会用新模型（issue #75）：这是**常驻提示**，
-  // 不能只用 toast —— 用户可能过一会儿才回来配 NapCat/重启。
+  // 不能只用 notify —— 用户可能过一会儿才回来配 NapCat/重启。
   const [restartParts, setRestartParts] = useState<string[]>([]);
   // 模型条目表单与本体配置同款（左树 + 右区）：搜索词与分组折叠状态各自独立
   const [formFilter, setFormFilter] = useState('');
   const [formCollapse, setFormCollapse] = useState<Record<string, boolean>>({});
+  const dirty = !!editing && JSON.stringify(editing.draft) !== JSON.stringify(editing.baseline);
+  useEditorGuard(dirty, loading || !!busy || billingBusy);
+  const invalidateAutoRead = useConfigAutoRead({
+    // 打开编辑器时即固定模型库和 revision，包括尚未向父级提交的 JSON/计费草稿。
+    enabled: !editing && !busy && !billingBusy && !loading,
+    identity: data,
+    read: api.configModels,
+    apply: (payload) => {
+      setData(payload);
+      setReadError('');
+    },
+    onError: setReadError,
+    fallback: '自动读取模型库失败',
+  });
 
-  const read = useCallback(async () => {
-    setLoading(true);
-    const result = await api.configModels();
-    setLoading(false);
-    if (!result.ok || !result.data) {
-      toast(result.error || '读取模型库失败', 'err');
-      return;
-    }
-    setData(result.data);
-  }, []);
+  const read = useCallback(
+    () =>
+      runOperation('read', async () => {
+        setLoading(true);
+        let result;
+        try {
+          result = await api.configModels();
+        } catch (error) {
+          setReadError(error instanceof Error ? error.message : '读取模型库失败');
+          return;
+        } finally {
+          setLoading(false);
+        }
+        if (!result.ok || !result.data) {
+          setReadError(result.error || '读取模型库失败');
+          return;
+        }
+        setData(result.data);
+        setReadError('');
+      }),
+    [runOperation],
+  );
 
   useEffect(() => {
     read();
@@ -95,8 +139,8 @@ function ModelsPanel() {
   // 兜底：library 必须是数组。后端契约是「视图对象里带 library 数组」，
   // 一旦上游误把对象塞进来，直接渲染会抛 "library.filter is not a function" 整页崩掉
   // （issue #65），这里退化成空列表而不是白屏。
-  const library = Array.isArray(data?.library) ? data.library : [];
-  const schema = Array.isArray(data?.entry_schema) ? data.entry_schema : [];
+  const library = Array.isArray(data?.library) ? data.library : EMPTY_LIBRARY;
+  const schema = Array.isArray(data?.entry_schema) ? data.entry_schema : EMPTY_SCHEMA;
 
   // 参数目录里的可选参数名（保存时只把目录内的值写回 settings.<name>）
   const catalogNames = useMemo(() => {
@@ -117,97 +161,157 @@ function ModelsPanel() {
     ? library.find((item) => item.model_ref && item.model_ref === editing.draft?.model_ref)
     : undefined;
 
-  const startNew = () => setEditing({ isNew: true, draft: defaultsFromFields(schema) });
-
-  const startEdit = (item: any) => setEditing({ isNew: false, draft: structuredClone(item.entry || {}) });
-
-  const save = async (reload = false) => {
-    if (!editing) return;
-    setBusy('save');
-    const result = await api.modelsLibrarySave({
-      action: 'upsert',
-      entry: syncModelParams(editing.draft, catalogNames),
-      revision: data?.revision,
-      reload,
-    });
-    setBusy('');
-    if (!result.ok) {
-      toast(result.error || '保存模型失败', 'err');
-      return;
-    }
-    // 后端的 models 是「模型视图对象」{library, assignments, roles, …}，不是数组；
-    // 直接塞进 library 会让随后的 library.filter(...) 抛 TypeError（issue #65）。
-    if (result.data?.models?.library) {
-      setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
-    } else await read();
-    setEditing(null);
-    setRestartParts(result.data?.needs_restart_parts || []);
-    const savedRef = result.data?.saved_model_ref;
-    const baseMessage = result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
-    toast(savedRef ? baseMessage + '（引用名 ' + savedRef + '）' : baseMessage, 'ok');
+  const startNew = () => {
+    const draft = defaultsFromFields(schema);
+    setEditing({ isNew: true, draft, baseline: draft });
+    pulledRef.current = '';
+    setFormFilter('');
+    setEditorError('');
   };
+
+  const startEdit = (item: ModelItem) => {
+    const draft = structuredClone((item.entry || {}) as Record<string, any>);
+    setEditing({ isNew: false, draft, baseline: draft });
+    pulledRef.current = '';
+    setFormFilter('');
+    setEditorError('');
+  };
+  const closeEditor = async () => {
+    if (busy || billingBusy) return;
+    if (
+      dirty &&
+      !(await confirmAction({
+        title: '放弃模型修改？',
+        description: '尚未保存的模型配置会丢失。',
+        confirmLabel: '放弃修改',
+        danger: true,
+      }))
+    )
+      return;
+    pullRequest.current++;
+    setEditing(null);
+  };
+
+  const save = (reload = false) =>
+    runOperation('save', async () => {
+      if (!editing) return;
+      const result = await api.modelsLibrarySave({
+        action: 'upsert',
+        entry: syncModelParams(editing.draft, catalogNames),
+        revision: data?.revision,
+        reload,
+      });
+      if (!result.ok) {
+        if (result.status === 409) setReadError('模型库版本已变化，请重新读取后继续编辑。');
+        setEditorError(
+          result.status === 409
+            ? '配置已被其他会话修改。请备份当前修改，关闭编辑器后重新读取模型库，再重新编辑。'
+            : result.error || '保存模型失败',
+        );
+        notify(result.error || '保存模型失败', 'err');
+        return;
+      }
+      // 后端的 models 是「模型视图对象」{library, assignments, roles, …}，不是数组；
+      // 直接塞进 library 会让随后的 library.filter(...) 抛 TypeError（issue #65）。
+      if (result.data?.models?.library) {
+        setData((prev) => ({ ...(prev || {}), ...result.data, ...result.data?.models }));
+      } else {
+        const fresh = await api.configModels();
+        if (fresh.ok && fresh.data) setData(fresh.data);
+      }
+      setEditing(null);
+      setRestartParts(result.data?.needs_restart_parts || []);
+      const savedRef = result.data?.saved_model_ref;
+      const baseMessage =
+        result.data?.message || (reload ? '模型已保存并重载' : '模型已保存；重载配置后生效');
+      notify(savedRef ? baseMessage + '（引用名 ' + savedRef + '）' : baseMessage, 'ok');
+    });
 
   const remove = async (item: any) => {
-    if (!confirm('确认从模型库删除 ' + item.model_ref + '？')) return;
-    setBusy('delete');
-    const result = await api.modelsLibrarySave({
-      action: 'delete',
-      model_ref: item.model_ref,
-      revision: data?.revision,
-      // 删除同样要重载：不重载的话运行期继续持有已删模型的 provider（issue #75）
-      reload: true,
-    });
-    setBusy('');
-    if (!result.ok) {
-      toast(result.error || '删除失败', 'err');
+    if (
+      !(await confirmAction({
+        title: '删除模型 ' + item.model_ref + '？',
+        description: '仍被调用方引用的模型不能删除。删除后会重载运行配置。',
+        confirmLabel: '删除模型',
+        danger: true,
+      }))
+    )
       return;
-    }
-    setRestartParts(result.data?.needs_restart_parts || []);
-    if (result.data?.models?.library) {
-      setData((prev) => ({ ...(prev || {}), library: result.data?.models?.library }));
-    }
-    toast('已删除 ' + item.model_ref, 'ok');
-  };
-
-  const pullProviderModels = useCallback(async (provider: string, useSystemProxy?: boolean, { silent = false }: { silent?: boolean } = {}) => {
-    const name = String(provider || '').trim();
-    if (!name) return;
-    setPulling(name);
-    setPulledProvider(name);
-    const result = await api.modelsProviderModels({
-      provider: name,
-      use_system_proxy: !!useSystemProxy,
-    });
-    setPulling('');
-    const payload = result.data || {};
-    if (!result.ok || !payload.ok) {
-      // 拉取失败：回落到「该供应商在模型库中用过的模型」（等同于未拉取）
-      setProviderModels([]);
-      setPulledProvider('');
-      if (!silent) toast(payload.message || result.error || '拉取供应商模型列表失败', 'err');
-      return;
-    }
-    setProviderModels(payload.models || []);
-    if (!silent) toast('已拉取 ' + (payload.models || []).length + ' 个模型', 'ok');
-  }, []);
-
-  const runProbe = async (target: any) => {
-    const label = target.model_ref || target.entry?.model_ref || 'draft';
-    setBusy('test:' + label);
-    const result = await api.modelsTest(target);
-    setBusy('');
-    const payload = result.data || {};
-    if (!result.ok && !payload.message) {
-      toast(result.error || '测试失败', 'err');
-      return;
-    }
-    setProbe({
-      ...payload,
-      model_ref: payload.model_ref || target.model_ref || target.entry?.model_ref || '',
-      provider: payload.provider || target.entry?.provider || '',
-      model_name: payload.model_name || target.entry?.model_name || '',
+    await runOperation('delete', async () => {
+      const result = await api.modelsLibrarySave({
+        action: 'delete',
+        model_ref: item.model_ref,
+        revision: data?.revision,
+        // 删除同样要重载：不重载的话运行期继续持有已删模型的 provider（issue #75）
+        reload: true,
+      });
+      if (!result.ok) {
+        notify(result.error || '删除失败', 'err');
+        return;
+      }
+      setRestartParts(result.data?.needs_restart_parts || []);
+      if (result.data?.models?.library) {
+        setData((prev) => ({ ...(prev || {}), ...result.data, ...result.data?.models }));
+      }
+      notify('已删除 ' + item.model_ref, 'ok');
     });
   };
+
+  const pullProviderModels = useCallback(
+    async (provider: string, useSystemProxy?: boolean, { silent = false }: { silent?: boolean } = {}) => {
+      const name = String(provider || '').trim();
+      if (!name) return;
+      const ticket = ++pullRequest.current;
+      setPulling(name);
+      setPulledProvider(name);
+      let result;
+      try {
+        result = await api.modelsProviderModels({ provider: name, use_system_proxy: !!useSystemProxy });
+      } catch (error) {
+        if (ticket !== pullRequest.current) return;
+        setProviderModels([]);
+        setPulledProvider('');
+        if (!silent) notify(error instanceof Error ? error.message : '拉取模型失败', 'err');
+        return;
+      } finally {
+        if (ticket === pullRequest.current) setPulling('');
+      }
+      if (ticket !== pullRequest.current) return;
+      const payload = result.data || {};
+      if (!result.ok || !payload.ok) {
+        // 拉取失败：回落到「该供应商在模型库中用过的模型」（等同于未拉取）
+        setProviderModels([]);
+        setPulledProvider('');
+        if (!silent) notify(payload.message || result.error || '拉取供应商模型列表失败', 'err');
+        return;
+      }
+      setProviderModels(payload.models || []);
+      if (!silent) notify('已拉取 ' + (payload.models || []).length + ' 个模型', 'ok');
+    },
+    [],
+  );
+
+  const runProbe = (target: any) =>
+    runOperation('test:' + (target.model_ref || target.entry?.model_ref || 'draft'), async () => {
+      const result = await api.modelsTest(target);
+      const payload = result.data || {};
+      if (!result.ok && !payload.message) {
+        notify(result.error || '测试失败', 'err');
+        return;
+      }
+      const probe: ModelProbeResult = {
+        ...payload,
+        model_ref: payload.model_ref || target.model_ref || target.entry?.model_ref || '',
+        provider: payload.provider || target.entry?.provider || '',
+        model_name: payload.model_name || target.entry?.model_name || '',
+      };
+      infoBar({
+        title: probe.ok ? '模型连接正常' : '模型测试未通过',
+        tone: probe.ok ? 'ok' : 'err',
+        message: probe.model_ref || probe.model_name || '未保存的模型草稿',
+        details: <ModelProbeDetails probe={probe} />,
+      });
+    });
 
   const currentProvider = String(editing?.draft?.provider || '').trim();
 
@@ -219,7 +323,9 @@ function ModelsPanel() {
     const names = library
       .filter(
         (item) =>
-          String(item.provider || '').trim().toLowerCase() === currentProvider.toLowerCase()
+          String(item.provider || '')
+            .trim()
+            .toLowerCase() === currentProvider.toLowerCase(),
       )
       .map((item) => String(item.model_name || '').trim())
       .filter(Boolean);
@@ -242,7 +348,8 @@ function ModelsPanel() {
       .map((field) => {
         if (field.name === 'provider') return { ...field, options: data?.provider_options || [] };
         if (field.name === 'model_name') return { ...field, options: modelNameOptions };
-        if (field.name === 'model_type') return { ...field, options: Object.keys(data?.model_type_labels || {}) };
+        if (field.name === 'model_type')
+          return { ...field, options: Object.keys(data?.model_type_labels || {}) };
         return field;
       });
   }, [editing, schema, data, modelNameOptions]);
@@ -251,6 +358,8 @@ function ModelsPanel() {
   useEffect(() => {
     if (!editing) return;
     if (pulledProvider && pulledProvider.toLowerCase() !== currentProvider.toLowerCase()) {
+      pullRequest.current++;
+      setPulling('');
       setProviderModels([]);
       setPulledProvider('');
     }
@@ -268,86 +377,161 @@ function ModelsPanel() {
   }, [editing, pullProviderModels]);
 
   return (
-    <section className="card config-card">
-      <div className="card-head">
-        <h3>模型库</h3>
-        <span className="muted small">{library.length} 个模型</span>
-        <div className="spacer" />
-        <Button size="sm" disabled={!!busy} onClick={read}>刷新</Button>
-        <Button variant="primary" size="sm" disabled={!!busy || !schema.length} onClick={startNew}>
-          <Icon name="plus" /> 新增模型
-        </Button>
+    <section
+      className="card config-card model-library-panel"
+      onClickCapture={invalidateAutoRead}
+      onInputCapture={invalidateAutoRead}
+      onChangeCapture={invalidateAutoRead}
+    >
+      <div className="config-panel-scroll">
+        <div className="card-head model-library-heading">
+          <h3>模型库</h3>
+          <span className="muted small">{library.length} 个模型</span>
+          <div className="spacer" />
+          <Button variant="ghost" size="sm" onClick={() => setHelpOpen(true)} aria-label="模型库说明">
+            <Info size={15} aria-hidden="true" /> 说明
+          </Button>
+          <Button variant="primary" size="sm" disabled={!!busy || !schema.length} onClick={startNew}>
+            <Icon name="plus" /> 新增模型
+          </Button>
+        </div>
+        {restartParts.length > 0 && (
+          <p className="config-notice warning" role="status">
+            <Icon name="more" /> 模型/密钥已生效，但以下部分<b>需要重启进程</b>后才会用新模型：
+            {restartParts.join('、')}
+          </p>
+        )}
+        {readError && (
+          <div className="workspace-error" role="alert">
+            {readError}
+            <Button size="sm" disabled={!!busy || billingBusy} onClick={read}>
+              重试
+            </Button>
+          </div>
+        )}
+        {loading && !data && <PanelSkeleton label="正在读取模型库…" kind="list" rows={5} />}
+        {data && library.length === 0 && <EmptyState compact>模型库为空，点击「新增模型」添加</EmptyState>}
+        {library.length > 0 && (
+          <div className="config-table-scroll">
+            <table className="model-table model-library-table">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>供应商 / 型号</th>
+                  <th>运行与计费</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {library.map((item) => (
+                  <tr key={item.model_ref}>
+                    <td className="model-library-name">
+                      <div className="model-library-title">
+                        <strong>{item.display_name || item.model_ref}</strong>
+                        <span className="model-library-type">
+                          {item.type_label || item.model_type || '—'}
+                        </span>
+                      </div>
+                      <code>{item.model_ref}</code>
+                      {(item.native_vision || item.use_system_proxy) && (
+                        <span className="model-library-capabilities">
+                          {[item.native_vision && '原生视觉', item.use_system_proxy && '系统代理']
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <strong className="model-library-provider">{item.provider || '未指定供应商'}</strong>
+                      <code className="model-library-model">{item.model_name || '—'}</code>
+                    </td>
+                    <td className="model-library-status">
+                      <div className="model-library-state-line">
+                        <span className={'model-library-registration' + (item.registered ? ' is-ready' : '')}>
+                          <i aria-hidden="true" />
+                          {item.registered === true
+                            ? '已注册'
+                            : item.registered === false
+                              ? '未注册'
+                              : '注册待确认'}
+                        </span>
+                        <span>{item.assigned ? '已引用' : '未引用'}</span>
+                      </div>
+                      <div className="model-library-status-detail">
+                        <span
+                          className={item.api_key_configured === false ? 'model-library-warning' : undefined}
+                          title={'密钥在环境变量 ' + item.provider + '_APIKey 中管理'}
+                        >
+                          {item.api_key_configured === true
+                            ? '密钥已配置'
+                            : item.api_key_configured === false
+                              ? '缺少密钥'
+                              : '密钥待确认'}
+                        </span>
+                        {item.url_configured === false && (
+                          <span className="model-library-warning">缺少地址</span>
+                        )}
+                        <span
+                          title={
+                            billingScriptOf(item) ? '计价脚本：' + billingScriptOf(item) : '按模型价格表计费'
+                          }
+                        >
+                          {billingScriptOf(item) ? '脚本：' + billingScriptOf(item) : '固定计费'}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="model-library-actions">
+                        <Button size="sm" disabled={!!busy || billingBusy} onClick={() => startEdit(item)}>
+                          编辑
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={!!busy || billingBusy}
+                          onClick={() => runProbe({ model_ref: item.model_ref })}
+                        >
+                          {busy === 'test:' + item.model_ref ? '测试中…' : '测试'}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          disabled={!!busy || billingBusy}
+                          onClick={() => remove(item)}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
-      <p className="muted small">
-        模型单独存储在 <code>[models.registry]</code>，主对话 / Agent / 视觉 / TTS / 生图只引用 key；
-        同一个模型可被多个调用方复用，改一处全局生效。
-      </p>
-      {restartParts.length > 0 && (
-        <p className="config-notice warning" role="status">
-          <Icon name="more" /> 模型/密钥已生效，但以下部分<b>需要重启进程</b>后才会用新模型：
-          {restartParts.join('、')}
+      <Modal open={helpOpen} title="模型库说明" onClose={() => setHelpOpen(false)}>
+        <p>
+          在「模型分配」中将模型用于对话、推理、视觉或创作。同一个模型可以被多个用途复用，修改后会一起更新。
         </p>
-      )}
-      {loading && !data && <p className="empty muted" role="status">正在读取模型库…</p>}
-      {data && library.length === 0 && <EmptyState compact>模型库为空，点击「新增模型」添加</EmptyState>}
-      {library.length > 0 && (
-        <table className="model-table">
-          <thead>
-            <tr><th>引用名</th><th>类型</th><th>描述</th><th>供应商 / 模型</th><th>状态</th><th>操作</th></tr>
-          </thead>
-          <tbody>
-            {library.map((item) => (
-              <tr key={item.model_ref}>
-                <td><code>{item.model_ref}</code></td>
-                <td><span className="tag info">{item.type_label || item.model_type || '—'}</span></td>
-                <td>{item.display_name || '—'}</td>
-                <td>
-                  <div>{item.provider}</div>
-                  <div className="muted small">{item.model_name}</div>
-                </td>
-                <td>
-                  <span className={'tag ' + (item.api_key_configured ? 'ok' : 'err')}
-                    title={'API Key 来自供应商环境变量 ' + item.provider + '_APIKey，模型本身不保存密钥'}>
-                    {item.api_key_configured ? '供应商 Key 已配置' : '供应商缺 Key'}
-                  </span>
-                  {!item.url_configured && (
-                    <span className="tag err" title={'请在环境变量中配置 ' + item.provider + '_URL'}>
-                      供应商缺 URL
-                    </span>
-                  )}
-                  {item.registered && <span className="tag ok">已注册</span>}
-                  {item.assigned && <span className="tag info">已引用</span>}
-                  {item.native_vision && <span className="tag info">原生视觉</span>}
-                  {item.use_system_proxy && <span className="tag info">系统代理</span>}
-                  {billingScriptOf(item) ? (
-                    <span className="tag info" title={'计价脚本 ' + billingScriptOf(item)}>
-                      脚本: {billingScriptOf(item)}
-                    </span>
-                  ) : (
-                    <span className="tag" title="未绑定计价脚本：按模型价格表固定计费">固定计费</span>
-                  )}
-                </td>
-                <td>
-                  <Button size="sm" disabled={!!busy} onClick={() => startEdit(item)}>编辑</Button>
-                  <Button size="sm" disabled={!!busy} onClick={() => runProbe({ model_ref: item.model_ref })}>
-                    {busy === 'test:' + item.model_ref ? '测试中…' : '测试'}
-                  </Button>
-                  <Button variant="danger" size="sm" disabled={!!busy} onClick={() => remove(item)}>删除</Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
+        <p className="muted small">
+          供应商密钥在「环境变量」中管理；已注册表示运行时已加载，连通性可通过「测试」确认。
+        </p>
+      </Modal>
       <Modal
         open={!!editing}
         size="wide"
         title={editing?.isNew ? '新增模型' : '编辑模型 ' + (editing?.draft?.model_ref || '')}
-        onClose={() => setEditing(null)}
+        onClose={() => {
+          void closeEditor();
+        }}
       >
         {editing && (
           <>
+            {editorError && (
+              <div className="workspace-error" role="alert">
+                {editorError}
+              </div>
+            )}
             <p className="muted small model-key-hint">
               引用名（model_ref）：
               <code>{editing.draft?.model_ref || '保存时按模型名自动生成'}</code>
@@ -372,13 +556,11 @@ function ModelsPanel() {
               schema={fields}
               draft={editing.draft}
               baseline={
-                editing.isNew
-                  ? undefined
-                  : (editingLibraryItem?.entry as Record<string, any> | undefined)
+                editing.isNew ? undefined : (editingLibraryItem?.entry as Record<string, any> | undefined)
               }
               history={{}}
               collapse={formCollapse}
-              disabled={!!busy}
+              disabled={!!busy || billingBusy}
               filter={formFilter}
               onFilterChange={setFormFilter}
               onChange={(path, value) =>
@@ -391,10 +573,11 @@ function ModelsPanel() {
               }
             />
             <BillingSection
+              onBusyChange={setBillingBusy}
               modelKey={editing.draft?.model_ref}
               script={String(editing.draft?.billing_script || '')}
               config={(editing.draft?.billing_config || {}) as Record<string, unknown>}
-              disabled={!!busy}
+              disabled={!!busy || billingBusy}
               onChangeScript={(value) =>
                 setEditing((previous) =>
                   previous ? { ...previous, draft: { ...previous.draft, billing_script: value } } : previous,
@@ -407,57 +590,38 @@ function ModelsPanel() {
               }
             />
             <ModalActions>
-              <Button disabled={!!busy || !editing.draft?.provider}
-                onClick={() => pullProviderModels(editing.draft?.provider, editing.draft?.use_system_proxy)}>
+              <Button
+                disabled={!!busy || !editing.draft?.provider}
+                onClick={() => pullProviderModels(editing.draft?.provider, editing.draft?.use_system_proxy)}
+              >
                 <Icon name="download" /> {pulling ? '拉取中…' : '拉取供应商模型'}
               </Button>
-              <Button disabled={!!busy}
-                onClick={() => runProbe({ entry: editing.draft, model_ref: editing.draft?.model_ref })}>
+              <Button
+                disabled={!!busy || billingBusy}
+                onClick={() => runProbe({ entry: editing.draft, model_ref: editing.draft?.model_ref })}
+              >
                 {busy === 'test:' + (editing.draft?.model_ref || 'draft') ? '测试中…' : '测试连通性'}
               </Button>
-              <Button disabled={!!busy} onClick={() => setEditing(null)}>取消</Button>
-              <Button disabled={!!busy} onClick={() => save(false)}>
+              <Button
+                disabled={!!busy || billingBusy}
+                onClick={() => {
+                  void closeEditor();
+                }}
+              >
+                取消
+              </Button>
+              <Button disabled={!!busy || billingBusy} onClick={() => save(false)}>
                 <Icon name="save" /> {busy === 'save' ? '保存中…' : '仅保存'}
               </Button>
-              <Button variant="primary" disabled={!!busy} onClick={() => save(true)}>
+              <Button variant="primary" disabled={!!busy || billingBusy} onClick={() => save(true)}>
                 <Icon name="save" /> {busy === 'save' ? '保存中…' : '保存并重载'}
               </Button>
             </ModalActions>
           </>
         )}
       </Modal>
-
-      <Modal open={!!probe} size="wide" title="模型连通性测试" onClose={() => setProbe(null)}>
-        {probe && (
-          <div className="probe-result">
-            <p className={'probe-headline ' + (probe.ok ? 'ok' : 'err')}>
-              <Icon name={probe.ok ? 'check' : 'more'} /> {probe.message || (probe.ok ? '连接正常' : '测试未通过')}
-            </p>
-            <table className="model-table">
-              <tbody>
-                <tr><th>模型引用名</th><td><code>{probe.model_ref || '（未保存草稿）'}</code></td></tr>
-                <tr><th>供应商 / 模型名</th><td>{probe.provider || '—'} / <code>{probe.model_name || '—'}</code></td></tr>
-                <tr><th>请求地址</th><td className="muted small">{probe.url || '—'}</td></tr>
-                <tr><th>代理</th><td>{probe.proxy ? '跟随系统代理' : '直连（不使用代理）'}</td></tr>
-                <tr><th>网络可达</th><td>{probe.reachable ? '是' : '否'}</td></tr>
-                <tr><th>鉴权</th><td>{probe.authorized ? '通过' : '未通过'}</td></tr>
-                <tr>
-                  <th>模型是否存在</th>
-                  <td>{probe.model_found === true ? '已找到' : probe.model_found === false ? '未在模型列表中' : '未检查'}</td>
-                </tr>
-                <tr><th>HTTP / 耗时</th><td>{probe.status ?? '—'} / {probe.latency_ms != null ? probe.latency_ms + ' ms' : '—'}</td></tr>
-                {probe.detail && <tr><th>详情</th><td className="muted small">{probe.detail}</td></tr>}
-              </tbody>
-            </table>
-            <ModalActions>
-              <Button onClick={() => setProbe(null)}>关闭</Button>
-            </ModalActions>
-          </div>
-        )}
-      </Modal>
     </section>
   );
 }
-
 
 export { ModelsPanel };

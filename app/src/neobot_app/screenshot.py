@@ -301,6 +301,12 @@ class ScreenshotService:
         self, page: object, options: RenderOptions
     ) -> tuple[str, ...]:
         verified_fonts: tuple[str, ...] = ()
+        if options.ready_script is not None:
+            ready = await asyncio.to_thread(
+                page.run_js, options.ready_script, timeout=options.timeout
+            )
+            if ready is not True:
+                raise ScreenshotError("application resource readiness failed")
         if options.wait_for_fonts:
             try:
                 await asyncio.to_thread(

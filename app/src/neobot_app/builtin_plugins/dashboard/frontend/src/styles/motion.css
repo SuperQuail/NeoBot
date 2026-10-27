@@ -1,0 +1,10 @@
+/* Motion 仅改变视觉属性，页面高度和滚动归属保持稳定。 */
+.route-stage {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+}
+.content--viewport > .route-stage {
+  height: 100%;
+  min-height: 0;
+}

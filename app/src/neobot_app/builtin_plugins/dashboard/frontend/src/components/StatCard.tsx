@@ -14,12 +14,25 @@ export interface StatCardProps {
   className?: string;
 }
 
-export default function StatCard({ label, value, sub, accent, icon, iconAccent, children, className }: StatCardProps) {
+export default function StatCard({
+  label,
+  value,
+  sub,
+  accent,
+  icon,
+  iconAccent,
+  children,
+  className,
+}: StatCardProps) {
   return (
     <div className={cn('card stat-card', className)}>
       {icon && <div className={cn('stat-icon', iconAccent && 'accent')}>{icon}</div>}
       <div className="stat-label">{label}</div>
-      <div className="stat-value" style={accent ? { color: accent } : undefined}>
+      <div
+        className="stat-value"
+        title={typeof value === 'string' || typeof value === 'number' ? String(value) : undefined}
+        style={accent ? { color: accent } : undefined}
+      >
         {value ?? '—'}
       </div>
       {sub != null && <div className="stat-sub">{sub}</div>}

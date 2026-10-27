@@ -1,8 +1,10 @@
 <!--
-本仓库 squash 设置为 PR_TITLE + PR_BODY，落到 main 上的就是下面这两处：
-  · PR 标题 → main 上的提交标题（永远，与提交数无关）
-  · PR 描述 → main 上的提交正文（永远）
-  · 提交信息不进 main（除非改用 rebase 合并），但评审会看，也请写清楚
+本仓库 squash 设置为 PR_TITLE + PR_BODY，落到目标分支上的就是下面这两处：
+  · PR 标题 → 目标分支上的提交标题（永远，与提交数无关）
+  · PR 描述 → 目标分支上的提交正文（永远）
+  · 提交信息不进目标分支（除非改用 rebase 合并），但评审会看，也请写清楚
+
+默认目标分支是 dev；main 只接收 dev 的 PR；release 只接收 main 的 PR 且版本号必须高于 release。
 
 格式：<type>(<scope>): <中文简述>，破坏性变更加 !，不要自带 (#NN)。
 CI 会校验 PR 标题（scripts/check_pr_title.py）：标题概括，不要把子改动写成清单。

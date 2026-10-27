@@ -23,7 +23,13 @@ function JsonField({
   value,
   onChange,
   disabled,
-}: { descriptor: FieldDescriptor } & Pick<FieldCallbacks, 'onChange' | 'disabled' | 'value'>) {
+  hideLabel = false,
+}: { descriptor: FieldDescriptor; hideLabel?: boolean } & Pick<
+  FieldCallbacks,
+  'onChange' | 'disabled' | 'value'
+>) {
+  const locked = !!disabled || !!descriptor.readonly;
+  const id = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
   const [text, setText] = useState(() => stringify(value, descriptor.kind));
   const [error, setError] = useState('');
   // 记住「自己最后一次提交出去的文本」：只有外部值与它不同时才算真的被外部改过，
@@ -50,11 +56,15 @@ function JsonField({
       }
       return { ok: true, parsed, message: '' };
     } catch {
-      return { ok: false, message: descriptor.kind === 'list' ? '请输入有效的 JSON 数组' : '请输入有效的 JSON 对象' };
+      return {
+        ok: false,
+        message: descriptor.kind === 'list' ? '请输入有效的 JSON 数组' : '请输入有效的 JSON 对象',
+      };
     }
   };
 
   const handleChange = (raw: string) => {
+    if (locked) return;
     setText(raw);
     const result = validate(raw);
     if (!result.ok) {
@@ -67,6 +77,7 @@ function JsonField({
   };
 
   const format = () => {
+    if (locked) return;
     const result = validate(text);
     if (!result.ok) {
       setError(result.message);
@@ -80,17 +91,22 @@ function JsonField({
   };
 
   return (
-    <div className="cfg-row">
-      <div className="cfg-label">
-        <label htmlFor={'cfg-' + descriptor.path.map(encodeURIComponent).join('-')}>{descriptor.name}</label>
-        <p>{descriptor.description || 'JSON 格式'}</p>
-        <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
-      </div>
+    <div className={hideLabel ? 'cfg-json-field' : 'cfg-row'}>
+      {!hideLabel && (
+        <div className="cfg-label">
+          <label htmlFor={id}>{descriptor.name}</label>
+          <p>{descriptor.description || 'JSON 格式'}</p>
+          <span className="cfg-badges">
+            <HotBadge descriptor={descriptor} />
+          </span>
+        </div>
+      )}
       <div className="cfg-control">
         <LongTextField
+          id={id}
           value={text}
           onChange={handleChange}
-          disabled={disabled}
+          disabled={locked}
           minRows={6}
           maxRows={24}
           monospace
@@ -98,10 +114,16 @@ function JsonField({
           ariaInvalid={!!error}
         />
         <div className="cfg-json-actions">
-          <button type="button" className="btn-sm" disabled={disabled} onClick={format}>格式化</button>
+          <button type="button" className="btn-sm" disabled={locked} onClick={format}>
+            格式化
+          </button>
           <span className="muted small">改完即时校验，格式错误不会写进配置</span>
         </div>
-        {error && <span className="field-error" role="alert">{error}</span>}
+        {error && (
+          <span className="field-error" role="alert">
+            {error}
+          </span>
+        )}
       </div>
     </div>
   );

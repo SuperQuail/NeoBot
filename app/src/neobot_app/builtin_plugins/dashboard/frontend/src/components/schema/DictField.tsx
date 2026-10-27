@@ -1,8 +1,8 @@
 // DictField.tsx —— 字典编辑器：键值表 + JSON 兜底
 import { useState } from 'react';
 import JsonField from './JsonField';
-import { FieldHeader } from './FieldChrome';
 import KeyValueList from './KeyValueList';
+import { FieldHeader } from './FieldChrome';
 import type { FieldDescriptor } from '../../api/types';
 import type { FieldCallbacks } from './fieldTypes';
 
@@ -31,56 +31,59 @@ export default function DictField({
 }: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const entries = dictEntries(value);
   const [showJson, setShowJson] = useState(false);
+  const [jsonVisited, setJsonVisited] = useState(false);
+  const locked = !!disabled || !!descriptor.readonly;
   const complex = hasComplexValues(value);
   const forcedJson = complex || showJson;
 
-  if (forcedJson) {
-    return (
-      <div className="cfg-row">
-        <FieldHeader descriptor={descriptor} filter={filter} />
-        <div className="cfg-control">
-          <div className="cfg-collection">
-            <div className="cfg-collection-bar">
-              <span className="muted small">
-                {complex ? '值是对象/数组，只能用 JSON 编辑' : 'JSON 文本模式'}
-              </span>
-              {!complex && (
-                <button type="button" className="btn-sm" onClick={() => setShowJson(false)}>
-                  返回可视化编辑
-                </button>
-              )}
-            </div>
-            <JsonField descriptor={descriptor} value={value} onChange={onChange} disabled={disabled} />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="cfg-row">
+    <div className={'cfg-row cfg-row--collection' + (locked ? ' is-readonly' : '')}>
       <FieldHeader descriptor={descriptor} filter={filter} />
-      <div className="cfg-control">
-        <div className={'cfg-collection' + (disabled ? ' is-disabled' : '')}>
-          <div className="cfg-collection-bar">
-            <span className="muted small">{entries.length} 条 · 键值表</span>
-            <div className="spacer" />
+      <div className="cfg-collection">
+        <div className="cfg-collection-bar">
+          <span className="muted small">
+            {forcedJson
+              ? complex
+                ? '值是对象/数组，只能用 JSON 编辑'
+                : 'JSON 文本模式'
+              : entries.length + ' 条 · 键值表'}
+          </span>
+          <div className="spacer" />
+          {!complex && (
             <button
               type="button"
               className="btn-sm"
-              disabled={disabled}
-              title="值是对象/数组时用 JSON 直接编辑"
-              onClick={() => setShowJson(true)}
+              title="切换编辑视图不会提交配置"
+              onClick={() => {
+                setJsonVisited(true);
+                setShowJson(!showJson);
+              }}
             >
-              JSON
+              {showJson ? '返回可视化编辑' : 'JSON'}
             </button>
-          </div>
-          <KeyValueList
-            entries={entries}
-            filter={filter}
-            onChange={(next) => onChange(Object.fromEntries(next))}
-          />
+          )}
         </div>
+        {!complex && (
+          <div hidden={forcedJson}>
+            <KeyValueList
+              entries={entries}
+              filter={filter}
+              disabled={locked}
+              onChange={(next) => onChange(Object.fromEntries(next))}
+            />
+          </div>
+        )}
+        {(jsonVisited || forcedJson) && (
+          <div hidden={!forcedJson}>
+            <JsonField
+              descriptor={descriptor}
+              value={value}
+              onChange={onChange}
+              disabled={locked}
+              hideLabel
+            />
+          </div>
+        )}
       </div>
     </div>
   );

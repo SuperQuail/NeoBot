@@ -5,7 +5,7 @@ import StandbyBanner, { formatDuration } from '../components/StandbyBanner';
 import { api } from '../api/endpoints';
 import { clearQueries } from '../data/queryCore';
 
-vi.mock('../api/endpoints.js', () => ({
+vi.mock('../api/endpoints', () => ({
   api: { powerStatus: vi.fn(), resume: vi.fn() },
 }));
 
@@ -41,8 +41,13 @@ describe('StandbyBanner', () => {
 
   it('清理未完成时展示真实阶段且禁止再次启动', async () => {
     powerStatus.mockResolvedValue({
-      ok: true, available: true, state: 'stopping', phase: 'stopping',
-      standby: true, transition: true, reason: '停止超时：清理仍在进行',
+      ok: true,
+      available: true,
+      state: 'stopping',
+      phase: 'stopping',
+      standby: true,
+      transition: true,
+      reason: '停止超时：清理仍在进行',
     });
     render(<StandbyBanner />);
     expect(await screen.findByText('Bot 正在停止')).toBeInTheDocument();
@@ -53,8 +58,12 @@ describe('StandbyBanner', () => {
 
   it('失败但清理已结束时允许重试，不把失败显示成运行中', async () => {
     powerStatus.mockResolvedValue({
-      ok: true, available: true, state: 'failed', standby: true,
-      transition: false, reason: '启动失败，已清理',
+      ok: true,
+      available: true,
+      state: 'failed',
+      standby: true,
+      transition: false,
+      reason: '启动失败，已清理',
     });
     render(<StandbyBanner />);
     expect(await screen.findByText('Bot 运行时操作失败')).toBeInTheDocument();

@@ -1,0 +1,91 @@
+.starship-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.starship-setting-copy {
+  min-width: 0;
+}
+.starship-setting-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.starship-setting-title label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+}
+.starship-setting-title > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.starship-setting-copy p,
+.starship-setting-hint {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.starship-setting-switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 7px 0;
+  cursor: pointer;
+}
+.starship-setting-switch input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.starship-setting-switch input:disabled {
+  cursor: not-allowed;
+}
+.starship-setting-switch > span {
+  display: block;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 20px;
+  background: var(--border);
+}
+.starship-setting-switch > span::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+.starship-setting-switch input:checked + span {
+  background: var(--brand);
+}
+.starship-setting-switch input:checked + span::after {
+  transform: translateX(16px);
+}
+.starship-setting-switch input:focus-visible + span {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+.starship-setting-switch input:disabled + span {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+@media (max-width: 640px) {
+  .starship-setting-row {
+    align-items: flex-start;
+    gap: 16px;
+  }
+}

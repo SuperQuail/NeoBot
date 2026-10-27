@@ -10,12 +10,40 @@ import Modal from './Modal';
 import { getPath, joinPath } from '../utils/paths';
 import type { FieldDescriptor } from '../api/types';
 import Field from './schema/Field';
+import { ReloadSummary } from './schema/FieldChrome';
 import { defaultsFromFields, formatValue, pathKey, type SchemaFormProps } from './schema/fieldTypes';
 
 export default function SchemaForm({
-  fields = [], values, onChange, disabled, filter, globallyFiltered, baseline, history = {}, onRestore, onToggleCollapse, collapse = {},
+  fields = [],
+  showReloadSummary = true,
+  hideRootGroupHeader = false,
+  values,
+  onChange,
+  disabled,
+  filter,
+  globallyFiltered,
+  baseline,
+  history = {},
+  onRestore,
+  onToggleCollapse,
+  collapse = {},
 }: SchemaFormProps) {
   const [historyTarget, setHistoryTarget] = useState<FieldDescriptor | null>(null);
+  const readonlyPaths = useMemo(() => {
+    const paths = new Set<string>();
+    const walk = (list: FieldDescriptor[], inherited = false) => {
+      for (const field of list) {
+        const locked = inherited || !!field.readonly;
+        if (locked) paths.add(pathKey(field.path));
+        if (field.fields) walk(field.fields, locked);
+      }
+    };
+    walk(fields);
+    return paths;
+  }, [fields]);
+  const restore = (path: string[], value: unknown) => {
+    if (!disabled && !readonlyPaths.has(pathKey(path))) onRestore?.(path, value);
+  };
 
   const changedPaths = useMemo(() => {
     const changed = new Set<string>();
@@ -43,20 +71,33 @@ export default function SchemaForm({
     );
   }
 
-  const entries = historyTarget ? (history[pathKey(historyTarget.path)] || []) : [];
+  const entries = historyTarget ? history[pathKey(historyTarget.path)] || [] : [];
 
   return (
-    <div className="cfg-root">
+    <div className="cfg-root" role="group" aria-label="配置表单">
+      {showReloadSummary && <ReloadSummary fields={fields} />}
       {fields.map((descriptor) => (
-        <Field key={descriptor.path.join('.')} descriptor={descriptor} disabled={disabled} filter={filter}
+        <Field
+          key={descriptor.path.join('.')}
+          descriptor={descriptor}
+          hideGroupHeader={hideRootGroupHeader}
+          disabled={disabled}
+          filter={filter}
           globallyFiltered={globallyFiltered}
-          changedPaths={changedPaths} history={history} collapse={collapse}
+          changedPaths={changedPaths}
+          history={history}
+          collapse={collapse}
           onToggleCollapse={onToggleCollapse}
-          onRestore={onRestore} onShowHistory={showHistory}
-          onChange={(next) => onChange(descriptor.path, next)} />
+          onRestore={restore}
+          onShowHistory={showHistory}
+          onChange={(next) => onChange(descriptor.path, next)}
+        />
       ))}
-      <Modal open={!!historyTarget} title={'历史数值 · ' + (historyTarget?.name || '')}
-        onClose={() => setHistoryTarget(null)}>
+      <Modal
+        open={!!historyTarget}
+        title={'历史数值 · ' + (historyTarget?.name || '')}
+        onClose={() => setHistoryTarget(null)}
+      >
         {entries.length === 0 && <p className="empty muted">暂无历史记录</p>}
         {entries.length > 0 && (
           <ul className="cfg-history">
@@ -64,11 +105,17 @@ export default function SchemaForm({
               <li key={index}>
                 <code>{formatValue(entry.value)}</code>
                 <span className="muted small">{entry.at}</span>
-                <button type="button" className="btn-sm" disabled={disabled}
+                <button
+                  type="button"
+                  className="btn-sm"
+                  disabled={disabled || (!!historyTarget && readonlyPaths.has(pathKey(historyTarget.path)))}
                   onClick={() => {
-                    if (historyTarget) onRestore?.(historyTarget.path, entry.value);
+                    if (historyTarget) restore(historyTarget.path, entry.value);
                     setHistoryTarget(null);
-                  }}>恢复</button>
+                  }}
+                >
+                  恢复
+                </button>
               </li>
             ))}
           </ul>

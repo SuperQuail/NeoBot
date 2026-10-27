@@ -50,7 +50,7 @@ describe('SchemaForm', () => {
       <SchemaForm
         fields={fields}
         values={{ bot: { account: '0' } }}
-        collapse={{ 'bot': true }}
+        collapse={{ bot: true }}
         onToggleCollapse={() => {}}
         onChange={() => {}}
       />,
@@ -80,5 +80,113 @@ describe('SchemaForm', () => {
     render(<SchemaForm fields={fields} values={{ mystery: 'keep-me' }} onChange={() => {}} />);
     expect(screen.getByDisplayValue('keep-me')).toBeInTheDocument();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('深层对象数组的重载方式只说明一次，不在每个字段重复贴标', () => {
+    const settings = makeField({
+      name: 'settings',
+      path: ['models', '0', 'settings'],
+      kind: 'group',
+      hot_reload: true,
+      fields: ['temperature', 'max_tokens'].map((name) =>
+        makeField({
+          name,
+          path: ['models', '0', 'settings', name],
+          hot_reload: true,
+        }),
+      ),
+    });
+    render(
+      <SchemaForm
+        fields={[
+          makeField({
+            name: 'models',
+            path: ['models'],
+            kind: 'model_list',
+            hot_reload: true,
+            value: [{ settings: {} }],
+            items: [{ index: 0, fields: [settings] }],
+          }),
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('生效方式')).toHaveLength(1);
+    expect(screen.getByText('保存后重载配置生效，无需重启')).toBeInTheDocument();
+    expect(screen.queryByText('热重载', { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'temperature' })).toBeInTheDocument();
+  });
+
+  it('混合分区保留具体需重启项和原因，折叠时仍能识别分区的例外', () => {
+    const fields = [
+      makeField({
+        name: 'adapter',
+        path: ['adapter'],
+        kind: 'group',
+        hot_reload: false,
+        partial_hot_reload: true,
+        fields: [
+          makeField({ name: 'retry', path: ['adapter', 'retry'], hot_reload: true }),
+          makeField({
+            name: 'port',
+            path: ['adapter', 'port'],
+            hot_reload: false,
+            restart_reason: '监听端口在启动时绑定',
+          }),
+        ],
+      }),
+    ];
+    const props = { fields, onChange: vi.fn(), onToggleCollapse: vi.fn() };
+    const { rerender } = render(<SchemaForm {...props} />);
+    expect(screen.getByText('支持重载配置；需重启项已单独标注')).toBeInTheDocument();
+    expect(screen.getByText('需重启', { exact: true })).toHaveAttribute('title', '监听端口在启动时绑定');
+    rerender(<SchemaForm {...props} collapse={{ adapter: true }} />);
+    expect(screen.getByText('部分需重启')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'port' })).not.toBeInTheDocument();
+  });
+
+  it('缺少生效能力的字段不被当成支持重载', () => {
+    const { rerender } = render(<SchemaForm fields={[makeField({})]} onChange={vi.fn()} />);
+    expect(screen.queryByText('生效方式')).not.toBeInTheDocument();
+    rerender(
+      <SchemaForm
+        fields={[
+          makeField({ name: 'known', path: ['known'], hot_reload: true }),
+          makeField({ name: 'unknown', path: ['unknown'] }),
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('已声明支持重载的配置，保存后重载生效')).toBeInTheDocument();
+    expect(screen.queryByText('保存后重载配置生效，无需重启')).not.toBeInTheDocument();
+  });
+
+  it('插件配置可使用插件的能力声明，避免通用 schema 错误承诺无需重启', () => {
+    render(
+      <SchemaForm fields={[makeField({ hot_reload: true })]} showReloadSummary={false} onChange={vi.fn()} />,
+    );
+    expect(screen.queryByText('生效方式')).not.toBeInTheDocument();
+    expect(screen.queryByText('保存后重载配置生效，无需重启')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'f' })).toBeInTheDocument();
+  });
+
+  it('对象数组的整体修改策略不会被子字段的可重载能力覆盖', () => {
+    const fields = [
+      makeField({
+        name: 'models',
+        path: ['models'],
+        kind: 'model_list',
+        hot_reload: false,
+        value: [{ name: 'demo' }],
+        item_fields: [makeField({ hot_reload: true })],
+        items: [{ index: 0, fields: [makeField({ hot_reload: true })] }],
+      }),
+    ];
+    const { rerender } = render(<SchemaForm fields={fields} onChange={vi.fn()} />);
+    expect(screen.getByText('支持重载配置；需重启项已单独标注')).toBeInTheDocument();
+    expect(screen.getByText('需重启', { exact: true })).toBeInTheDocument();
+    rerender(<SchemaForm fields={[{ ...fields[0], hot_reload: undefined }]} onChange={vi.fn()} />);
+    expect(screen.getByText('已声明支持重载的配置，保存后重载生效')).toBeInTheDocument();
+    expect(screen.queryByText('保存后重载配置生效，无需重启')).not.toBeInTheDocument();
   });
 });

@@ -228,6 +228,175 @@ async def _login(base: str, password: str = PASSWORD) -> tuple[str, str]:
     return payload["token"], payload["csrf_token"]
 
 
+def _password_change_body(**overrides) -> dict:
+    return {
+        "current_password": PASSWORD,
+        "new_password": "Next-Password-2026",
+        "confirm": "Next-Password-2026",
+        **overrides,
+    }
+
+
+async def test_password_change_requires_session_csrf_and_manage_permission(panel) -> None:
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+    async with httpx.AsyncClient() as client:
+        no_session = await client.post(base + "/api/auth/password", json=_password_change_body())
+        no_csrf = await client.post(
+            base + "/api/auth/password", headers={"X-Token": token}, json=_password_change_body()
+        )
+        server._manage_plugins = False
+        readonly = await client.post(base + "/api/auth/password", headers=headers, json=_password_change_body())
+    assert no_session.status_code == 401
+    assert no_csrf.status_code == 403
+    assert readonly.status_code == 403
+    assert server.passwords.revision == 1
+    assert server.passwords.verify(PASSWORD)
+
+
+async def test_password_change_respects_remote_manage_policy(tmp_path: Path) -> None:
+    server, _, base, _ = await _start_panel(tmp_path, trust_proxy=True)
+    try:
+        token, csrf = await _login(base)
+        server._allow_remote_manage = False
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                base + "/api/auth/password",
+                headers={"X-Token": token, "X-CSRF-Token": csrf, "X-Forwarded-For": "203.0.113.9"},
+                json=_password_change_body(),
+            )
+        assert response.status_code == 403
+        assert "远程管理已关闭" in response.json()["error"]
+        assert server.passwords.revision == 1
+    finally:
+        await server.stop()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"confirm": "Different-Password-2026"},
+        {"new_password": "short", "confirm": "short"},
+        {"new_password": " " + PASSWORD, "confirm": " " + PASSWORD},
+        {"new_password": "!" * 8, "confirm": "!" * 8},
+        {"new_password": "x" * 129, "confirm": "x" * 129},
+        {"current_password": 12345678},
+        {"new_password": None, "confirm": None},
+    ],
+)
+async def test_password_change_rejects_invalid_fields_without_mutation(panel, overrides) -> None:
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/password",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json=_password_change_body(**overrides),
+        )
+        me = await client.get(base + "/api/auth/me", headers={"X-Token": token})
+    assert response.status_code == 400
+    assert me.status_code == 200
+    assert server.passwords.revision == 1
+    assert server.passwords.verify(PASSWORD)
+    assert PASSWORD not in response.text
+
+
+async def test_password_change_wrong_current_preserves_session_and_rate_limits(panel) -> None:
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+    server.limiter.max_failures = 1
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+    async with httpx.AsyncClient() as client:
+        wrong = await client.post(
+            base + "/api/auth/password",
+            headers=headers,
+            json=_password_change_body(current_password="Incorrect-Password-2026"),
+        )
+        me = await client.get(base + "/api/auth/me", headers={"X-Token": token})
+        limited = await client.post(base + "/api/auth/password", headers=headers, json=_password_change_body())
+    assert wrong.status_code == 403
+    assert wrong.json()["error"] == "当前密码不正确"
+    assert me.status_code == 200
+    assert limited.status_code == 429
+    assert server.passwords.revision == 1
+    assert server.passwords.verify(PASSWORD)
+
+
+async def test_password_change_revokes_every_session_and_requires_new_login(panel) -> None:
+    server, _, base, _ = panel
+    first, csrf = await _login(base)
+    second, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        changed = await client.post(
+            base + "/api/auth/password",
+            headers={"X-Token": first, "X-CSRF-Token": csrf},
+            json=_password_change_body(),
+        )
+        old_sessions = [
+            await client.get(base + "/api/auth/me", headers={"X-Token": token}) for token in (first, second)
+        ]
+        old_login = await client.post(base + "/api/auth/login", json={"password": PASSWORD})
+        new_login = await client.post(base + "/api/auth/login", json={"password": "Next-Password-2026"})
+        setup = await client.post(base + "/api/auth/setup", json={"password": PASSWORD, "confirm": PASSWORD})
+    assert changed.status_code == 200
+    assert changed.json() == {"ok": True, "reauthenticate": True, "message": "密码已修改，请重新登录"}
+    assert "max-age=0" in changed.headers["set-cookie"].lower()
+    assert changed.headers["cache-control"] == "no-store"
+    assert [response.status_code for response in old_sessions] == [401, 401]
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200
+    assert setup.status_code == 400
+    assert server.passwords.revision == 2
+    assert PASSWORD not in changed.text
+    assert "Next-Password-2026" not in changed.text
+
+
+async def test_password_change_detects_revision_change_while_reading_body(panel, monkeypatch) -> None:
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+    original_read = server.api._read_json
+
+    async def read_then_reset(request):
+        body = await original_read(request)
+        server.passwords.set_password("External-Reset-2026")
+        return body
+
+    monkeypatch.setattr(server.api, "_read_json", read_then_reset)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/password",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json=_password_change_body(),
+        )
+    assert response.status_code == 401
+    assert server.passwords.revision == 2
+    assert server.passwords.verify("External-Reset-2026")
+    assert not server.passwords.verify("Next-Password-2026")
+
+
+async def test_password_change_write_failure_does_not_revoke_session_or_echo_secrets(panel, monkeypatch) -> None:
+    server, _, base, _ = panel
+    token, csrf = await _login(base)
+
+    def fail_write(_payload):
+        raise OSError("private storage path or secret must not reach the response")
+
+    monkeypatch.setattr(server.passwords, "_write", fail_write)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            base + "/api/auth/password",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json=_password_change_body(),
+        )
+        me = await client.get(base + "/api/auth/me", headers={"X-Token": token})
+    assert response.status_code == 500
+    assert response.json()["error"] == "密码保存失败，请稍后重试"
+    assert me.status_code == 200
+    assert server.passwords.revision == 1
+    assert server.passwords.verify(PASSWORD)
+
+
 async def test_healthz_and_auth_status(panel) -> None:
     _, _, base, _ = panel
     async with httpx.AsyncClient() as client:

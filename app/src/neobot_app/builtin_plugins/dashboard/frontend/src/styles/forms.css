@@ -1,0 +1,469 @@
+/* Schema 字段、分组、标签、开关与只读状态。 */
+
+.cfg-section-heading span {
+  color: var(--muted, #889);
+  font-size: 12px;
+}
+.cfg-hint {
+  margin: 0 0 4px;
+}
+.cfg-row:last-child {
+  border-bottom: none;
+}
+.cfg-label label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.cfg-control .input {
+  width: 100%;
+}
+.cfg-list {
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .cfg-row {
+    grid-template-columns: 1fr;
+  }
+}
+.cfg-badges {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.hot-badge.cold {
+  color: var(--warn, #d9822b);
+  border-color: var(--warn, #d9822b);
+}
+.hot-badge.partial {
+  color: var(--accent, #4a90e2);
+  border-color: var(--accent, #4a90e2);
+}
+.cfg-collapse svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+.cfg-collapse[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+.cfg-match-hint {
+  display: none;
+}
+.cfg-label p mark {
+  font-weight: 600;
+}
+.config-input-wrap {
+  display: flex;
+  gap: 6px;
+}
+.config-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.config-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.switch-track {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  background: var(--border);
+  border-radius: 20px;
+}
+.switch-track::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  left: 3px;
+  top: 3px;
+  background: white;
+  transition: transform 0.15s;
+}
+.config-switch input:checked + .switch-track {
+  background: var(--brand-hover);
+}
+.config-switch input:checked + .switch-track::before {
+  transform: translateX(14px);
+}
+.config-switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+.config-switch input:disabled + .switch-track {
+  opacity: 0.4;
+}
+.field-error {
+  display: block;
+  margin-top: 5px;
+  color: var(--err);
+  font-size: 11px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch-track::before {
+    transition: none;
+  }
+}
+.cfg-root {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+.cfg-root > :is(.cfg-group, .cfg-field) + .cfg-group {
+  margin-top: 24px;
+}
+.cfg-root > .cfg-group + .cfg-field {
+  margin-top: 12px;
+}
+
+.cfg-reload-policy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cfg-reload-policy > span {
+  color: var(--text-secondary, var(--muted));
+  font-weight: 500;
+}
+
+.cfg-root [hidden],
+.cfg-group-content[hidden] {
+  display: none !important;
+}
+
+.cfg-field,
+.cfg-group-content,
+.cfg-control {
+  min-width: 0;
+}
+
+.cfg-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.cfg-section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.cfg-section-heading::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  flex: 0 0 3px;
+  border-radius: 2px;
+  background: var(--brand);
+  opacity: 0.7;
+}
+
+.cfg-section-heading:has(.cfg-collapse)::before {
+  display: none;
+}
+
+.cfg-section-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cfg-section-heading > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cfg-tree-body .cfg-group > .cfg-section-heading {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  position: static;
+  top: auto;
+  z-index: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.cfg-group-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-left: 16px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.cfg-group-content-only > .cfg-group-content {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.cfg-group-content > .cfg-group {
+  padding: 12px 0;
+}
+
+.cfg-list > .cfg-group-content {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.cfg-field + .cfg-field {
+  border-top: 1px solid var(--border-soft);
+}
+
+.cfg-row {
+  border-bottom: 1px dashed var(--border);
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.6fr);
+  gap: 12px 24px;
+  align-items: start;
+  min-width: 0;
+  padding: 14px 0;
+  border: 0;
+}
+
+.cfg-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.cfg-label label,
+.cfg-field-name,
+.cfg-label > span:not(.cfg-badges) {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cfg-label p {
+  max-width: 48ch;
+  margin: 0;
+  color: var(--text-secondary, var(--muted));
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.cfg-path-prefix {
+  font-weight: 500;
+  display: inline;
+  color: var(--muted);
+  font: 10.5px/1.5 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.cfg-field.is-changed > .cfg-row > .cfg-label > label::after,
+.cfg-field.is-changed > .cfg-row > .cfg-label > .cfg-field-name::after {
+  content: '未保存';
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--brand-hover);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.cfg-readonly {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.cfg-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cfg-control .input,
+.cfg-root .input {
+  min-width: 0;
+  width: 100%;
+  min-height: var(--control-height);
+  border-radius: var(--radius-control);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.cfg-root .input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.cfg-root .input[aria-invalid='true'] {
+  border-color: var(--err);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
+}
+
+.cfg-root input:disabled,
+.cfg-root textarea:disabled,
+.cfg-root select:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.cfg-field-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.cfg-field-actions .btn-sm {
+  min-height: 26px;
+  padding: 3px 7px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary, var(--muted));
+  font-size: 11px;
+}
+
+.cfg-field-actions .btn-sm:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.cfg-badges:empty {
+  display: none;
+}
+
+.hot-badge {
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.hot-badge.hot {
+  border-color: var(--ok, #2f9e44);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+
+.hot-badge.cold,
+.hot-badge.partial {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.cfg-collapse {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--text-secondary, var(--muted));
+}
+
+.cfg-collapse:hover {
+  background: var(--panel-2);
+  color: var(--brand-hover);
+}
+
+.cfg-collapse:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+@container (max-width: 620px) {
+  .cfg-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .cfg-label {
+    padding-top: 0;
+  }
+
+  .cfg-group-content {
+    padding-left: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .cfg-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+  .cfg-label {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .cfg-label > :is(label, .cfg-field-name) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .cfg-label > p {
+    grid-column: 1 / -1;
+  }
+  .cfg-label > .cfg-badges {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cfg-root .input,
+  .cfg-collapse svg {
+    transition: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .cfg-collapse {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    flex-basis: 44px;
+  }
+}

@@ -8,9 +8,13 @@ import type { FieldDescriptor } from '../../api/types';
 
 /** 纯文本包含判定：大小写不敏感，两侧都做 trim。 */
 export function matchesText(text: unknown, keyword: string): boolean {
-  const needle = String(keyword || '').trim().toLowerCase();
+  const needle = String(keyword || '')
+    .trim()
+    .toLowerCase();
   if (!needle) return true;
-  return String(text ?? '').toLowerCase().includes(needle);
+  return String(text ?? '')
+    .toLowerCase()
+    .includes(needle);
 }
 
 /**

@@ -4,7 +4,8 @@ import { POLL, QK } from '../data/queryKeys';
 import { api, type PowerState } from '../api/endpoints';
 import Icon from './Icon';
 import Button from './ui/Button';
-import { toast } from './Toast';
+import { notify } from '../notifications/infoBar';
+import { useAuthGate } from '../auth/AuthContext';
 
 /** 已待机时长的人话格式：未知/0 → 「—」，>1h 到小时+分，>1m 到分+秒 */
 export function formatDuration(seconds?: number | null): string {
@@ -35,11 +36,12 @@ export function powerStateLabel(state?: PowerState | null): string {
 }
 
 export default function StandbyBanner() {
+  const readOnly = useAuthGate().canManage === false;
   const status = useQuery(QK.power, () => api.powerStatus(), { interval: POLL.power });
   const resume = useMutation(() => api.resume(), {
     invalidate: [QK.power],
     onSuccess: (result) => {
-      if (result?.ok === false) toast(result.error || '启动运行失败', 'err');
+      if (result?.ok === false) notify(result.error || '启动运行失败', 'err');
     },
   });
   const state = status.data;
@@ -49,17 +51,26 @@ export default function StandbyBanner() {
     <div className="standby-banner" role="status">
       <Icon name="cpu" />
       <div className="standby-banner-text">
-        <strong>{state.transition || state.state === 'failed'
-          ? `Bot ${powerStateLabel(state)}` : 'Bot 处于待机状态'}</strong>
+        <strong>
+          {state.transition || state.state === 'failed'
+            ? `Bot ${powerStateLabel(state)}`
+            : 'Bot 处于待机状态'}
+        </strong>
         <span className="muted small">
           {state.reason ? `原因：${state.reason}` : '原因：未说明'}
           {state.operator ? ` · 操作者 ${state.operator}` : ''}
           {state.since_text ? ` · 始于 ${state.since_text}` : ''}
-          {state.transition ? ' · 清理完成前不能启动新实例' : ` · 已待机 ${formatDuration(state.standby_seconds)}`}
+          {state.transition
+            ? ' · 清理完成前不能启动新实例'
+            : ` · 已待机 ${formatDuration(state.standby_seconds)}`}
         </span>
       </div>
-      <Button variant="primary" disabled={resume.busy || !!state.transition} onClick={() => void resume.run()}>
-        {state.transition ? '等待清理完成' : resume.busy ? '启动中…' : '启动运行'}
+      <Button
+        variant="primary"
+        disabled={readOnly || resume.busy || !!state.transition}
+        onClick={() => void resume.run()}
+      >
+        {readOnly ? '只读模式' : state.transition ? '等待清理完成' : resume.busy ? '启动中…' : '启动运行'}
       </Button>
     </div>
   );

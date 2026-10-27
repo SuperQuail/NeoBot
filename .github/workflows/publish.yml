@@ -2,7 +2,7 @@ name: Publish to PyPI
 
 on:
   push:
-    branches: [main]
+    branches: [release]
   workflow_dispatch:
     inputs:
       base_ref:
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   merged-pr:
-    name: 确认发布来源可信（已合并 PR 或 main 手动触发）
+    name: 确认发布来源可信（已合并 PR 或 release 手动触发）
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,26 +28,28 @@ jobs:
       merged: ${{ steps.pr.outputs.merged }}
     steps:
       # Use push rather than pull_request.closed so merged fork PRs also receive
-      # the trusted main-branch token/secrets. Direct pushes do not publish.
-      # 手动触发是对 main 的显式动作：只有 ref 确为 main 时才视为可信，
-      # 其他分支的手动触发一律跳过发布。
+      # the trusted release-branch token/secrets. Direct pushes do not publish.
+      # 新分支设计：只有 main → release 的合并 PR 才可信；
+      # 手动触发是对 release 的显式动作：ref 不是 release 一律跳过。
       - uses: actions/github-script@v8
         id: pr
         with:
           script: |
             if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('merged', String(context.ref === 'refs/heads/main'));
+              core.setOutput('merged', String(context.ref === 'refs/heads/release'));
               return;
             }
             const prs = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
               ...context.repo,
               commit_sha: context.sha,
             });
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
             let found = prs.some(pr => pr.merged_at &&
-              pr.base.ref === 'main' && pr.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+              pr.base.ref === 'release' && pr.head.ref === 'main' &&
+              pr.base.repo.full_name === repoFullName && pr.head.repo.full_name === repoFullName &&
               pr.merge_commit_sha === context.sha);
             // 关联 API 在 push 刚发生时可能短暂查不到 squash 合并的 PR。
-            // 回退到 squash 标题里的 (#NN)，再向 PR API 核实 merged/main。
+            // 回退到 squash 标题里的 (#NN)，再向 PR API 核实 merged/release 与 main 来源。
             if (!found) {
               const commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.sha });
               const message = commit.data.commit.message || '';
@@ -55,8 +57,10 @@ jobs:
               if (match) {
                 const pr = await github.rest.pulls.get({ ...context.repo, pull_number: Number(match[1]) });
                 found = Boolean(pr.data.merged_at) &&
-                  pr.data.base.ref === 'main' &&
-                  pr.data.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+                  pr.data.base.ref === 'release' &&
+                  pr.data.head.ref === 'main' &&
+                  pr.data.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                  pr.data.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
               }
             }
             core.setOutput('merged', String(found));
@@ -93,7 +97,7 @@ jobs:
             ARGS=(--base-ref "$INPUT_BASE_REF")
           else
             # 手动触发没有 github.event.before：默认不看 Git 基线，
-            # 只把 main 当前版本里 PyPI 还缺的包补齐。
+            # 只把 release 当前版本里 PyPI 还缺的包补齐。
             ARGS=(--publish-missing)
           fi
           echo "prepare_release ${ARGS[*]}"

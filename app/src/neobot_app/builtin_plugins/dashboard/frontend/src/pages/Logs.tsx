@@ -7,9 +7,15 @@ import type { LogItem } from '../api/types';
 import { mapTag } from '../utils/format';
 import Button from '../components/ui/Button';
 import EmptyState from '../components/ui/EmptyState';
+import PageHeader from '../components/ui/PageHeader';
+import InlineAlert from '../components/ui/InlineAlert';
+import Icon from '../components/Icon';
+import SelectControl from '../components/ui/SelectControl';
+import { PanelSkeleton } from '../components/ui/PageSkeleton';
+import { startAutoRefresh } from '../data/autoRefresh';
+import { POLL } from '../data/queryKeys';
 
 const MAX_ROWS = 2000;
-const POLL_MS = 1500;
 const NEAR_BOTTOM = 12;
 
 const LEVELS = [
@@ -34,7 +40,7 @@ function highlight(text?: string, kw?: string): ReactNode {
     out.push(
       <span className="lv-mark" key={i++}>
         {m[0]}
-      </span>
+      </span>,
     );
     last = m.index + m[0].length;
     if (m.index === re.lastIndex) re.lastIndex++;
@@ -46,11 +52,20 @@ function highlight(text?: string, kw?: string): ReactNode {
 export default function Logs() {
   const [logs, setLogs] = useState<LogItem[]>([]);
   // DEBUG 默认开启（保持与旧行为一致的可视范围），需要降噪时点掉这个 pill 即可。
-  const [levelOn, setLevelOn] = useState<Record<string, boolean>>({ debug: true, info: true, ok: true, warn: true, err: true });
+  const [levelOn, setLevelOn] = useState<Record<string, boolean>>({
+    debug: true,
+    info: true,
+    ok: true,
+    warn: true,
+    err: true,
+  });
   const [moduleFilter, setModuleFilter] = useState('');
   const [textFilter, setTextFilter] = useState('');
   const [tail, setTail] = useState(true);
   const [pendingNew, setPendingNew] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [retry, setRetry] = useState(0);
 
   const lastIdRef = useRef(0);
   const tailRef = useRef(true);
@@ -61,8 +76,9 @@ export default function Logs() {
   const modules = useMemo(() => {
     const s = new Set<string>();
     logs.forEach((it) => it.module && s.add(it.module));
+    if (moduleFilter) s.add(moduleFilter);
     return Array.from(s).sort();
-  }, [logs]);
+  }, [logs, moduleFilter]);
 
   const passes = useCallback(
     (it: LogItem) => {
@@ -74,7 +90,7 @@ export default function Logs() {
       }
       return true;
     },
-    [levelOn, moduleFilter, textFilter]
+    [levelOn, moduleFilter, textFilter],
   );
 
   const visible = useMemo(() => {
@@ -85,33 +101,60 @@ export default function Logs() {
   // 初次拉取 + 增量轮询
   useEffect(() => {
     let alive = true;
+    let initialComplete = false;
+    setLoading(true);
     (async () => {
-      const data = await api.logs(500);
-      if (!alive || !data) return;
-      const items = data.items || [];
-      setLogs(items);
-      lastIdRef.current = data.last_id || (items.length ? items[items.length - 1].id || 0 : 0);
+      try {
+        const data = await api.logs(500);
+        if (!alive) return;
+        if (!data) {
+          setLoadError('暂时无法连接日志服务');
+          return;
+        }
+        setLoadError('');
+        const items = data.items || [];
+        setLogs(items);
+        lastIdRef.current = data.last_id || (items.length ? items[items.length - 1].id || 0 : 0);
+      } catch {
+        if (alive) setLoadError('暂时无法连接日志服务');
+      } finally {
+        initialComplete = true;
+        if (alive) setLoading(false);
+      }
     })();
 
-    const id = setInterval(async () => {
-      const data = await api.logsSince(lastIdRef.current, 500);
-      if (!data) return;
-      const items = data.items || [];
-      if (data.last_id) lastIdRef.current = data.last_id;
-      else if (items.length) lastIdRef.current = items[items.length - 1].id || lastIdRef.current;
-      if (items.length) {
-        setLogs((prev) => {
-          const merged = [...prev, ...items];
-          return merged.length > MAX_ROWS * 2 ? merged.slice(-MAX_ROWS) : merged;
-        });
-        if (!tailRef.current) setPendingNew((n) => n + items.length);
-      }
-    }, POLL_MS);
+    const stop = startAutoRefresh(
+      async () => {
+        try {
+          const data = await api.logsSince(lastIdRef.current, 500);
+          if (!alive) return;
+          if (!data) {
+            setLoadError('日志连接已中断，正在自动重试');
+            return;
+          }
+          setLoadError('');
+          const items = data.items || [];
+          if (data.last_id) lastIdRef.current = data.last_id;
+          else if (items.length) lastIdRef.current = items[items.length - 1].id || lastIdRef.current;
+          if (items.length) {
+            setLogs((prev) => {
+              const merged = [...prev, ...items];
+              return merged.length > MAX_ROWS * 2 ? merged.slice(-MAX_ROWS) : merged;
+            });
+            if (!tailRef.current) setPendingNew((n) => n + items.length);
+          }
+        } catch {
+          if (alive) setLoadError('日志连接已中断，正在自动重试');
+        }
+      },
+      POLL.liveLogs,
+      () => initialComplete,
+    );
     return () => {
       alive = false;
-      clearInterval(id);
+      stop();
     };
-  }, []);
+  }, [retry]);
 
   // tail:渲染后滚到底
   useLayoutEffect(() => {
@@ -138,7 +181,10 @@ export default function Logs() {
   const download = () => {
     const lines = logs
       .filter(passes)
-      .map((it) => `[${it.datetime || it.time}] [${(it.level || '').toUpperCase()}] [${it.module || '-'}] ${it.message}`);
+      .map(
+        (it) =>
+          `[${it.datetime || it.time}] [${(it.level || '').toUpperCase()}] [${it.module || '-'}] ${it.message}`,
+      );
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -156,45 +202,70 @@ export default function Logs() {
   };
 
   return (
-    <div className="page">
-      <section className="card log-card">
+    <div className="page page--viewport logs-page">
+      <PageHeader
+        title="运行日志"
+        actions={
+          <>
+            <Button onClick={download} disabled={visible.length === 0}>
+              <Icon name="download" />
+              下载
+            </Button>
+            <Button onClick={clear} disabled={logs.length === 0}>
+              清屏
+            </Button>
+          </>
+        }
+      />
+      {loadError && (
+        <InlineAlert
+          tone="warning"
+          title={loadError}
+          actions={<Button onClick={() => setRetry((value) => value + 1)}>重新连接</Button>}
+        >
+          已保留当前日志。
+        </InlineAlert>
+      )}
+      <section className="card log-card viewer-log-card">
         <div className="log-toolbar">
           <div className="log-levels">
             {LEVELS.map((l) => (
               <button
                 key={l.key}
                 className={'level-pill ' + l.key + (levelOn[l.key] ? ' active' : '')}
+                type="button"
+                aria-pressed={levelOn[l.key]}
                 onClick={() => setLevelOn((s) => ({ ...s, [l.key]: !s[l.key] }))}
               >
                 {l.label}
               </button>
             ))}
           </div>
-          <select className="input" value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)}>
-            <option value="">全部模块</option>
-            {modules.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          <SelectControl
+            label="日志模块"
+            value={moduleFilter}
+            onValueChange={setModuleFilter}
+            options={[
+              { value: '', label: '全部模块' },
+              ...modules.map((module) => ({ value: module, label: module })),
+            ]}
+          />
           <input
             className="input"
+            aria-label="搜索日志"
             placeholder="搜索日志…"
             value={textFilter}
             onChange={(e) => setTextFilter(e.target.value.trim().toLowerCase())}
           />
-          <div className="spacer" />
-          <Button onClick={download}>
-            下载
-          </Button>
-          <Button onClick={clear}>
-            清屏
-          </Button>
         </div>
 
-        <div className="log-viewport" ref={vpRef} onScroll={onScroll}>
-          {visible.length === 0 && <EmptyState compact>暂无日志</EmptyState>}
+        <div className="log-viewport" ref={vpRef} onScroll={onScroll} role="region" aria-label="日志内容">
+          {loading && logs.length === 0 && <PanelSkeleton label="正在读取日志" kind="list" rows={6} />}
+          {visible.length === 0 && !(loading && logs.length === 0) && (
+            <EmptyState compact>
+              {textFilter || moduleFilter ? '没有匹配的日志，试试调整筛选条件' : '暂无日志'}
+            </EmptyState>
+          )}
           {visible.map((it) => (
             <div className="lv-row" key={it.id} title={it.datetime || it.time}>
               <span className="lv-time">{it.time}</span>
@@ -211,9 +282,10 @@ export default function Logs() {
             显示 {visible.length} / 缓冲 {logs.length} 条
           </span>
           <div className="spacer" />
-          {!tail && pendingNew > 0 && (
-            <Button variant="primary" size="sm" onClick={resume}>
-              ↓ {pendingNew} 条新日志,回到底部
+          {!tail && (
+            <Button variant={pendingNew > 0 ? 'primary' : 'default'} size="sm" onClick={resume}>
+              <Icon name="play" size={14} />
+              {pendingNew > 0 ? `${pendingNew} 条新日志，回到底部` : '恢复跟随'}
             </Button>
           )}
           {tail ? <span className="tag ok">实时跟随</span> : <span className="tag warn">已暂停</span>}

@@ -5,10 +5,31 @@ import { Highlight } from './Highlight';
 import { fieldMatches } from './searchHit';
 import { resolveFieldComponent } from './fieldRegistry';
 import { pathKey, type FieldProps } from './fieldTypes';
+import type { FieldDescriptor } from '../../api/types';
+
+function retainsCollectionDraft(field: FieldDescriptor): boolean {
+  if (field.kind === 'scalar') return false;
+  if (field.kind === 'group') return !!field.fields?.some(retainsCollectionDraft);
+  return true;
+}
 
 export default function Field(props: FieldProps) {
-  const { descriptor, disabled, onChange, filter, globallyFiltered, changedPaths, onRestore, onShowHistory, history, collapse, onToggleCollapse } = props;
+  const {
+    descriptor,
+    disabled,
+    onChange,
+    filter,
+    globallyFiltered,
+    changedPaths,
+    onRestore,
+    onShowHistory,
+    history,
+    collapse,
+    onToggleCollapse,
+    hideGroupHeader,
+  } = props;
   const key = pathKey(descriptor.path);
+  const locked = !!disabled || !!descriptor.readonly;
   const changed = changedPaths ? changedPaths.has(key) : false;
   const historyCount = history?.[key]?.length || 0;
   // 命中高亮：搜索时把路径里命中的片段标出来，用户能一眼看到「命中在哪」。
@@ -17,7 +38,13 @@ export default function Field(props: FieldProps) {
   // 判定必须与 ConfigTreePanel 的 gatherField 一致（路径 / 说明 / 集合值），
   // 否则「只命中说明」的字段会在标题统计里算命中、渲染时又被这里丢掉。
   // force_visible：父级（model_list 条目）已判定命中，不再二次过滤。
-  if (filter && !descriptor.force_visible && descriptor.kind === 'scalar' && !fieldMatches(descriptor, filter)) return null;
+  if (
+    filter &&
+    !descriptor.force_visible &&
+    descriptor.kind === 'scalar' &&
+    !fieldMatches(descriptor, filter)
+  )
+    return null;
 
   // 分组不是「一种控件」，而是递归容器，因此不放进注册表
   if (descriptor.kind === 'group') {
@@ -31,34 +58,68 @@ export default function Field(props: FieldProps) {
         !(paramCatalog && field.hidden),
     );
     if (filter && visible.length === 0) return null;
-    const collapsed = collapse?.[key] ?? false;
+    const collapsed = !hideGroupHeader && (collapse?.[key] ?? false);
     return (
-      <section className="cfg-group">
-        <div className="cfg-section-heading">
-          {onToggleCollapse && (
-            <button type="button" className="cfg-collapse" aria-expanded={!collapsed}
-              aria-label={collapsed ? '展开分组' : '折叠分组'}
-              onClick={() => onToggleCollapse(key)}><Icon name="chevron" /></button>
-          )}
-          <h3><Highlight text={descriptor.name} keyword={showHit ? filter : undefined} /></h3>
-          <span>{visible.length} 项</span>
-          <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
+      <section
+        className={
+          'cfg-group' + (hideGroupHeader ? ' cfg-group-content-only' : '') + (locked ? ' is-readonly' : '')
+        }
+        data-field-path={key}
+      >
+        {!hideGroupHeader && (
+          <div className="cfg-section-heading">
+            {onToggleCollapse && (
+              <button
+                type="button"
+                className="cfg-collapse"
+                aria-expanded={!collapsed}
+                aria-label={collapsed ? '展开分组' : '折叠分组'}
+                onClick={() => onToggleCollapse(key)}
+              >
+                <Icon name="chevron" />
+              </button>
+            )}
+            <h3>
+              <Highlight text={descriptor.name} keyword={showHit ? filter : undefined} />
+            </h3>
+            {descriptor.readonly && <span className="cfg-readonly">只读</span>}
+            <span>{visible.length} 项</span>
+            <span className="cfg-badges">
+              <HotBadge descriptor={descriptor} />
+            </span>
+          </div>
+        )}
+        {!hideGroupHeader && descriptor.description && (
+          <p className="muted small cfg-hint">{descriptor.description}</p>
+        )}
+        <div className="cfg-group-content" hidden={collapsed}>
+          {visible
+            .filter((field) => !collapsed || retainsCollectionDraft(field))
+            .map((field) => (
+              <Field
+                key={field.path.join('.')}
+                descriptor={inherited ? { ...field, force_visible: true } : field}
+                disabled={locked}
+                filter={filter}
+                globallyFiltered={globallyFiltered}
+                changedPaths={changedPaths}
+                onRestore={onRestore}
+                onShowHistory={onShowHistory}
+                history={history}
+                collapse={collapse}
+                onToggleCollapse={onToggleCollapse}
+                onChange={(next) => {
+                  if (locked) return;
+                  const path = field.path.slice(descriptor.path.length);
+                  const node: Record<string, any> = structuredClone(descriptor.value ?? {});
+                  let cursor: Record<string, any> = node;
+                  for (const key of path.slice(0, -1)) cursor = cursor[key as string];
+                  cursor[path[path.length - 1] as string] = next;
+                  onChange(node);
+                }}
+              />
+            ))}
         </div>
-        {descriptor.description && <p className="muted small cfg-hint">{descriptor.description}</p>}
-        {!collapsed && visible.map((field) => (
-          <Field key={field.path.join('.')} descriptor={inherited ? { ...field, force_visible: true } : field} disabled={disabled} filter={filter}
-            globallyFiltered={globallyFiltered}
-            changedPaths={changedPaths} onRestore={onRestore} onShowHistory={onShowHistory}
-            history={history} collapse={collapse} onToggleCollapse={onToggleCollapse}
-            onChange={(next) => {
-              const path = field.path.slice(descriptor.path.length);
-              const node: Record<string, any> = structuredClone(descriptor.value ?? {});
-              let cursor: Record<string, any> = node;
-              for (const key of path.slice(0, -1)) cursor = cursor[key as string];
-              cursor[path[path.length - 1] as string] = next;
-              onChange(node);
-            }} />
-        ))}
       </section>
     );
   }
@@ -66,9 +127,23 @@ export default function Field(props: FieldProps) {
   // 其余 kind 交给注册表：未知 kind 由 resolveFieldComponent 兜底为标量展示
   const Component = resolveFieldComponent(descriptor.kind);
   return (
-    <Component descriptor={descriptor} value={descriptor.value} disabled={disabled}
-      filter={globallyFiltered ? undefined : filter}
-      changed={changed} onRestore={onRestore} onShowHistory={onShowHistory}
-      historyCount={historyCount} onChange={onChange} />
+    <div
+      className={'cfg-field' + (changed ? ' is-changed' : '') + (locked ? ' is-readonly' : '')}
+      data-field-path={key}
+    >
+      <Component
+        descriptor={descriptor}
+        value={descriptor.value}
+        disabled={locked}
+        filter={globallyFiltered ? undefined : filter}
+        changed={changed}
+        onRestore={onRestore}
+        onShowHistory={onShowHistory}
+        historyCount={historyCount}
+        onChange={(next) => {
+          if (!locked) onChange(next);
+        }}
+      />
+    </div>
   );
 }

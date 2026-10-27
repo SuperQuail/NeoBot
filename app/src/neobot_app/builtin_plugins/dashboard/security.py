@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import re
 import secrets
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -145,6 +147,107 @@ def is_loopback(ip: str) -> bool:
     if normalized in {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}:
         return True
     return normalized.startswith("127.")
+
+
+def _strip_scope(text: str) -> str:
+    """去掉 IPv6 的 zone id（``fe80::1%eth0``）：ipaddress 只接受纯地址。"""
+    return str(text or "").strip().split("%", 1)[0]
+
+
+def parse_client_address(ip: str) -> Any:
+    """把客户端地址解析成 ip_address；无法解析返回 None。
+
+    双栈套接字（``host = "::"``）上，IPv4 客户端会以 ``::ffff:a.b.c.d`` 出现。
+    这里统一还原成 IPv4，否则白名单里写 ``192.168.1.5`` 永远匹配不上。
+    """
+    text = _strip_scope(ip)
+    if not text:
+        return None
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def parse_ip_network(entry: str) -> Any:
+    """把白名单条目解析成网络；裸 IP 等价于单主机前缀（/32 或 /128）。
+
+    用 ``strict=False``：允许写 ``192.168.1.5/24`` 这类「主机位非零」的简写，
+    按 ``192.168.1.0/24`` 处理 —— 用户写它的意图显然是「这个网段」。
+    """
+    text = _strip_scope(entry)
+    if not text:
+        return None
+    try:
+        return ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class IpAllowList:
+    """面板的客户端来源 IP 白名单。
+
+    语义有三条，改动时别破任何一条：
+
+    1. ``entries`` 为空 => **不限制**（默认行为，升级后老部署表现不变）；
+    2. 回环地址**始终放行** —— 白名单是能把自己锁在门外的配置，而面板正是修复入口，
+       所以本机永远是逃生通道；
+    3. 解析不了的条目**不等于放行**：它只是永远匹配不上。于是「白名单写成乱码」
+       的结果是除本机外全拒（fail-closed）。
+
+    第 3 条与 ``validate_plugin_config`` 的「非法配置回落默认值」叠加时会翻转成
+    fail-open（整个字段被丢弃 => 空列表 => 放行所有），所以配置模型的校验器
+    **刻意不因条目不可解析而抛错**，只在 ``invalid`` 里记账、由启动日志告警。
+    """
+
+    entries: tuple[str, ...] = ()
+    networks: tuple[Any, ...] = ()
+    invalid: tuple[str, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.entries)
+
+    def allows(self, ip: str) -> bool:
+        if not self.enabled:
+            return True
+        if is_loopback(ip):
+            return True
+        address = parse_client_address(ip)
+        if address is None:
+            return False
+        return any(address in network for network in self.networks)
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "entries": list(self.entries),
+            "invalid": list(self.invalid),
+        }
+
+
+def build_ip_allow_list(entries: Iterable[Any] | None) -> IpAllowList:
+    """把配置条目编译成可匹配的网络列表：去空白、按出现顺序去重、分开记账非法项。"""
+    kept: list[str] = []
+    networks: list[Any] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for entry in entries or ():
+        text = str(entry or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        kept.append(text)
+        network = parse_ip_network(text)
+        if network is None:
+            invalid.append(text)
+            continue
+        networks.append(network)
+    return IpAllowList(tuple(kept), tuple(networks), tuple(invalid))
 
 
 @dataclass(slots=True)

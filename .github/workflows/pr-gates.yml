@@ -1,0 +1,116 @@
+name: PR 门禁
+
+# 2026-10-26 用户要求接入的 PR 硬门禁：
+# 1) 体积：单个代码文件本次新增 500 行警告、800 行直接红（过耦合）；
+# 2) 评审：PR 下必须有评论（允许 AI / 自评），最后一次 review 必须晚于最后一次 commit；
+# 3) 修复类 PR 必须关联 issue（标题 fix 开头时，描述里用 Closes #NN）；
+# 4) 分支流向：功能分支→dev、dev→main、main→release；
+# 5) main→release 的 PR 必须提升版本号（8 个 pyproject + uv.lock）。
+#
+# 评论/评审事件不直接跑本工作流：那类 run 挂在默认分支上，check 不会更新到 PR head。
+# 评论新增/删除/编辑由 pr-gates-refresh.yml 重跑本工作流（run 的 head_sha 仍是 PR head），
+# 真正把「PR 评审（阻断）」检查刷新绿/红。
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: pr-gates-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  size:
+    name: 体积限制（阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 校验单文件新增行数
+        run: |
+          python3 scripts/check_pr_size.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}"
+
+  review:
+    name: PR 评审（阻断）
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 校验评论存在且晚于最后一次提交
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_pr_review.py
+
+  branch-flow:
+    name: 分支流向（阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 校验 dev / main / release 的 PR 流向
+        env:
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
+        run: |
+          python3 scripts/check_pr_flow.py \
+            --base "${{ github.base_ref }}" \
+            --head "${{ github.head_ref }}" \
+            --head-repo "$PR_HEAD_REPO" \
+            --base-repo "$PR_BASE_REPO"
+
+  release-bump:
+    name: 发布版本号（阻断）
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: 校验 release PR 已提升版本号
+        run: |
+          uv run --no-project --python 3.13 --with packaging python scripts/check_release_bump.py \
+            --base "${{ github.event.pull_request.base.sha }}"
+
+      - name: 校验锁文件与版本一致
+        run: uv lock --check
+
+  issue-link:
+    name: 修复 PR 关联 issue（阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 校验 fix PR 已关联 issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_pr_issue_link.py

@@ -1,0 +1,177 @@
+/* 模型库的编辑、参数提示、计费区与连通性测试结果。 */
+
+.model-library-heading {
+  margin-bottom: 20px;
+}
+.model-library-panel .model-library-table {
+  min-width: 720px;
+  line-height: 1.6;
+}
+.model-library-table th {
+  padding: 10px 14px;
+  background: var(--panel-2);
+  font-weight: 500;
+}
+.model-library-table th:first-child {
+  width: 28%;
+  border-radius: var(--radius-control) 0 0 0;
+}
+.model-library-table th:nth-child(2) {
+  width: 25%;
+}
+.model-library-table th:last-child {
+  width: 184px;
+  border-radius: 0 var(--radius-control) 0 0;
+}
+.model-library-table td {
+  padding: 16px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.model-library-table tbody tr:hover {
+  background: var(--panel-2);
+}
+.model-library-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: 4px;
+}
+.model-library-title strong,
+.model-library-provider {
+  font-size: 13px;
+  font-weight: 600;
+}
+.model-library-type {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 500;
+}
+.model-library-name > code,
+.model-library-model,
+.model-library-capabilities {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-library-provider {
+  display: block;
+  margin-bottom: 4px;
+}
+.model-library-capabilities {
+  margin-top: 4px;
+}
+.model-library-state-line,
+.model-library-status-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-library-status-detail {
+  margin-top: 5px;
+  gap: 4px 10px;
+  font-size: 11px;
+}
+.model-library-registration {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-library-registration i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.model-library-registration.is-ready {
+  color: var(--ok);
+}
+.model-library-status-detail .model-library-warning {
+  color: var(--err);
+}
+.model-library-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.model-library-actions .danger {
+  border-color: transparent;
+  background: transparent;
+}
+.model-library-actions .danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+@media (max-width: 700px) {
+  .model-library-heading {
+    margin-bottom: 14px;
+  }
+  .model-library-table td {
+    padding-block: 14px;
+  }
+}
+
+.probe-result .probe-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+.probe-result .probe-headline.ok {
+  color: var(--ok, #2f9e44);
+}
+.probe-result .probe-headline.err {
+  color: var(--err, #d9534f);
+}
+.probe-result .model-table th {
+  width: 150px;
+  white-space: nowrap;
+}
+.model-key-hint code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.1));
+}
+.billing-section .cfg-section-heading h3 {
+  font-size: 13px;
+}
+.billing-kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.billing-kv .input {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+.billing-section .probe-result {
+  margin-top: 6px;
+}
+.model-key-hint {
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--panel-2);
+  border-radius: var(--radius-control);
+  overflow-wrap: anywhere;
+}
+.billing-section {
+  padding-top: 20px;
+  margin-top: 24px;
+  border-top: 1px solid var(--border-soft);
+}

@@ -7,7 +7,17 @@ import { FieldActions, HotBadge } from './FieldChrome';
 import { Highlight } from './Highlight';
 import LongTextField from './LongTextField';
 import { SECRET_RE, type FieldCallbacks } from './fieldTypes';
-function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount, filter }: { descriptor: FieldDescriptor } & FieldCallbacks) {
+function ScalarField({
+  descriptor,
+  value,
+  onChange,
+  disabled,
+  changed,
+  onRestore,
+  onShowHistory,
+  historyCount,
+  filter,
+}: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const [reveal, setReveal] = useState(false);
   const [text, setText] = useState(value === undefined || value === null ? '' : String(value));
   const [error, setError] = useState('');
@@ -32,6 +42,7 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
 
   /** LongTextField 的提交口：本地状态与草稿一起更新。 */
   const setTextAndEmit = (next: string) => {
+    if (locked) return;
     setText(next);
     onChange(next);
   };
@@ -43,6 +54,7 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
     },
     onCompositionEnd: (event: { currentTarget: { value: string } }) => {
       composing.current = false;
+      if (locked) return;
       const next = event.currentTarget.value;
       setText(next);
       onChange(next);
@@ -59,8 +71,14 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
         <Highlight text={descriptor.name} keyword={filter} />
         {descriptor.readonly && <span className="muted small"> · 只读</span>}
       </label>
-      {descriptor.description && <p><Highlight text={descriptor.description} keyword={filter} /></p>}
-      <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
+      {descriptor.description && (
+        <p>
+          <Highlight text={descriptor.description} keyword={filter} />
+        </p>
+      )}
+      <span className="cfg-badges">
+        <HotBadge descriptor={descriptor} />
+      </span>
     </div>
   );
 
@@ -70,13 +88,26 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
         {header}
         <div className="cfg-control">
           <label className="config-switch">
-            <input id={id} type="checkbox" checked={!!value} disabled={disabled}
-              onChange={(event) => onChange(event.target.checked)} />
+            <input
+              id={id}
+              type="checkbox"
+              checked={!!value}
+              disabled={locked}
+              onChange={(event) => {
+                if (!locked) onChange(event.target.checked);
+              }}
+            />
             <span className="switch-track" />
             <span>{value ? '已开启' : '已关闭'}</span>
           </label>
-          <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
-            onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+          <FieldActions
+            descriptor={descriptor}
+            disabled={locked}
+            changed={changed}
+            onRestore={onRestore}
+            onShowHistory={onShowHistory}
+            historyCount={historyCount}
+          />
         </div>
       </div>
     );
@@ -85,8 +116,16 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
   const options = Array.isArray(descriptor.options) ? descriptor.options : null;
   if (options && options.length && !descriptor.options_strict) {
     return (
-      <ComboboxField descriptor={descriptor} value={value} onChange={onChange} disabled={disabled}
-        changed={changed} onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+      <ComboboxField
+        descriptor={descriptor}
+        value={value}
+        onChange={onChange}
+        disabled={locked}
+        changed={changed}
+        onRestore={onRestore}
+        onShowHistory={onShowHistory}
+        historyCount={historyCount}
+      />
     );
   }
   if (options && options.length && descriptor.options_strict) {
@@ -94,14 +133,29 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
       <div className="cfg-row">
         {header}
         <div className="cfg-control">
-          <select id={id} className="input" disabled={locked} value={value ?? ''}
-            onChange={(event) => onChange(event.target.value)}>
+          <select
+            id={id}
+            className="input"
+            disabled={locked}
+            value={value ?? ''}
+            onChange={(event) => {
+              if (!locked) onChange(event.target.value);
+            }}
+          >
             {options.map((option) => (
-              <option key={option} value={option}>{option}</option>
+              <option key={option} value={option}>
+                {option}
+              </option>
             ))}
           </select>
-          <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
-            onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+          <FieldActions
+            descriptor={descriptor}
+            disabled={locked}
+            changed={changed}
+            onRestore={onRestore}
+            onShowHistory={onShowHistory}
+            historyCount={historyCount}
+          />
         </div>
       </div>
     );
@@ -118,6 +172,7 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
         {header}
         <div className="cfg-control">
           <LongTextField
+            id={id}
             value={text}
             onChange={setTextAndEmit}
             disabled={locked}
@@ -129,8 +184,14 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
             ariaLabel={descriptor.name}
             ariaInvalid={!!error}
           />
-          <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
-            onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+          <FieldActions
+            descriptor={descriptor}
+            disabled={locked}
+            changed={changed}
+            onRestore={onRestore}
+            onShowHistory={onShowHistory}
+            historyCount={historyCount}
+          />
         </div>
       </div>
     );
@@ -140,14 +201,21 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
       {header}
       <div className="cfg-control">
         <div className="config-input-wrap">
-          <input id={id} className="input" disabled={locked}
+          <input
+            id={id}
+            className="input"
+            disabled={locked}
             type={numeric ? 'number' : secret && !reveal ? 'password' : 'text'}
             step={descriptor.type === 'float' ? 'any' : undefined}
-            min={descriptor.min} max={descriptor.max}
-            autoComplete="off" spellCheck={false} aria-invalid={!!error}
+            min={descriptor.min}
+            max={descriptor.max}
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={!!error}
             value={text}
             {...compositionProps}
             onChange={(event) => {
+              if (locked) return;
               const raw = event.target.value;
               setText(raw);
               if (numeric) {
@@ -159,16 +227,35 @@ function ScalarField({ descriptor, value, onChange, disabled, changed, onRestore
               // 同上：组字中的中间态不提交
               if (composing.current || isComposingEvent(event)) return;
               onChange(raw);
-            }} />
+            }}
+          />
           {secret && (
-            <button type="button" className="icon-btn" aria-label={reveal ? '隐藏' : '显示'}
-              aria-pressed={reveal} onClick={() => setReveal(!reveal)}><Icon name="eye" /></button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={reveal ? '隐藏' : '显示'}
+              disabled={locked}
+              aria-pressed={reveal}
+              onClick={() => setReveal(!reveal)}
+            >
+              <Icon name="eye" />
+            </button>
           )}
         </div>
 
-        {error && <span className="field-error" role="alert">{error}</span>}
-        <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
-          onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+        {error && (
+          <span className="field-error" role="alert">
+            {error}
+          </span>
+        )}
+        <FieldActions
+          descriptor={descriptor}
+          disabled={locked}
+          changed={changed}
+          onRestore={onRestore}
+          onShowHistory={onShowHistory}
+          historyCount={historyCount}
+        />
       </div>
     </div>
   );

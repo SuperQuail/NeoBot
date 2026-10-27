@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 56559c2
-verified_hash: 989d3c3b1675
+verified_against: 6233322
+verified_hash: e6987964cdbc
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -118,6 +118,10 @@ flowchart LR
 
 顺序就是生效顺序：**存储先于业务**、**适配器先于管线**，因为入站事件一旦开始流动，
 下游组件必须已经就绪（\`bootstrap/__init__.py:655 create_application\`）。
+
+Markdown 图片转换器在 `bootstrap/parts/core_services.py` 中接收浏览器组件提供的
+`screenshots`，与卡片和浏览器技能共用操作锁。`send_long_reply` 的公式经本地 KaTeX
+排版、等待字体后截 PNG；浏览器失败时保留公式源码降级。详见 `13-render-cards.md`。
 </details>
 
 <details>

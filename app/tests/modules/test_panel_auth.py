@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from neobot_app.panel_auth import (
     MIN_PASSWORD_LENGTH,
     PanelPasswordStore,
     PasswordPolicyError,
+    PasswordRevisionError,
+    PasswordVerificationError,
     generate_password,
     get_panel_password_store,
     validate_password,
@@ -133,3 +136,63 @@ def test_get_panel_password_store_is_cached_per_path(tmp_path: Path) -> None:
     assert get_panel_password_store(path) is not get_panel_password_store(
         tmp_path / "other.json"
     )
+
+
+def test_change_password_verifies_current_and_preserves_state_on_failure(tmp_path: Path) -> None:
+    store = PanelPasswordStore(tmp_path / "auth.json")
+    revision = store.set_password(PASSWORD)
+    original = store.path.read_bytes()
+    with pytest.raises(PasswordVerificationError, match="当前密码不正确"):
+        store.change_password("wrong-password", "Next-Password-2026", expected_revision=revision)
+    with pytest.raises(PasswordPolicyError):
+        store.change_password(PASSWORD, "short", expected_revision=revision)
+    assert store.path.read_bytes() == original
+    assert store.revision == revision
+    assert store.verify(PASSWORD)
+
+
+def test_change_password_rejects_stale_session_after_reset(tmp_path: Path) -> None:
+    store = PanelPasswordStore(tmp_path / "auth.json")
+    revision = store.set_password(PASSWORD)
+    current_revision = store.set_password("Reset-Password-2026")
+    with pytest.raises(PasswordRevisionError):
+        store.change_password("Reset-Password-2026", "Next-Password-2026", expected_revision=revision)
+    assert store.revision == current_revision
+    assert store.verify("Reset-Password-2026")
+
+
+def test_change_password_concurrent_requests_cannot_overwrite_each_other(tmp_path: Path) -> None:
+    store = PanelPasswordStore(tmp_path / "auth.json")
+    revision = store.set_password(PASSWORD)
+
+    def attempt(password: str) -> str | None:
+        try:
+            store.change_password(PASSWORD, password, expected_revision=revision)
+            return password
+        except PasswordRevisionError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, ["First-Password-2026", "Second-Password-2026"]))
+    winners = [value for value in results if value is not None]
+    assert len(winners) == 1
+    assert store.revision == revision + 1
+    assert store.verify(winners[0])
+    assert not store.verify(PASSWORD)
+    assert winners[0] not in store.path.read_text(encoding="utf-8")
+
+
+def test_change_password_write_failure_keeps_original_password(tmp_path: Path, monkeypatch) -> None:
+    store = PanelPasswordStore(tmp_path / "auth.json")
+    revision = store.set_password(PASSWORD)
+    original = store.path.read_bytes()
+
+    def fail_write(_payload) -> None:
+        raise OSError("test disk full")
+
+    monkeypatch.setattr(store, "_write", fail_write)
+    with pytest.raises(OSError):
+        store.change_password(PASSWORD, "Next-Password-2026", expected_revision=revision)
+    assert store.path.read_bytes() == original
+    assert store.revision == revision
+    assert store.verify(PASSWORD)

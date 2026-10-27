@@ -78,6 +78,24 @@ export interface SimpleMessage {
   [key: string]: unknown;
 }
 
+/** 指定插件目标启停状态；省略请求体时兼容旧的反转操作。 */
+export interface PluginToggleBody {
+  enabled: boolean;
+  /** 页面读取到的旧状态，不一致时服务端返回 409。 */
+  expected_enabled?: boolean;
+}
+
+export interface ChangePasswordBody {
+  current_password: string;
+  new_password: string;
+  confirm: string;
+}
+
+export interface ChangePasswordResult {
+  reauthenticate: boolean;
+  message?: string;
+}
+
 /** 运行状态（/api/admin/power，待机 / 软重启） */
 export interface PowerState {
   ok?: boolean;
@@ -130,10 +148,12 @@ export function archiveItemsQuery(query: ArchiveItemQuery): string {
 
 export const api = {
   // 鉴权
-  login: (password: string) => postJSON<{ token?: string; csrf_token?: string }>('/api/auth/login', { password }),
+  login: (password: string) =>
+    postJSON<{ token?: string; csrf_token?: string }>('/api/auth/login', { password }),
   setup: (password: string, confirm: string) =>
     postJSON<{ token?: string; csrf_token?: string }>('/api/auth/setup', { password, confirm }),
   logout: () => postJSON<SimpleMessage>('/api/auth/logout'),
+  changePassword: (body: ChangePasswordBody) => postJSON<ChangePasswordResult>('/api/auth/password', body),
   me: () => getResult<{ authenticated?: boolean }>('/api/auth/me'),
 
   // 概览 / 统计
@@ -144,7 +164,8 @@ export const api = {
   tasks: () => getJSON<TasksPayload>('/api/tasks'),
   botDetail: () => getJSON<BotSummary>('/api/bot/detail'),
   logs: (limit = 80) => getJSON<LogPayload>('/api/logs?limit=' + limit),
-  logsSince: (since: number, limit = 500) => getJSON<LogPayload>('/api/logs?since=' + since + '&limit=' + limit),
+  logsSince: (since: number, limit = 500) =>
+    getJSON<LogPayload>('/api/logs?since=' + since + '&limit=' + limit),
   seriesMessages: (days = 30) => getJSON<SeriesPayload>('/api/series/messages?days=' + days),
   seriesLatency: () => getJSON<SeriesPayload>('/api/series/latency'),
   statsApiCalls: (limit = 10) => getJSON<RankPayload>('/api/stats/api-calls?limit=' + limit),
@@ -176,8 +197,12 @@ export const api = {
 
   // 提示词模板（data/prompts）
   prompts: () => getResult<PromptsPayload>('/api/prompts'),
-  promptsPreview: (body: { template?: string; section?: string; path?: string; values?: Record<string, string> }) =>
-    postJSON<PromptPreviewPayload>('/api/prompts/preview', body),
+  promptsPreview: (body: {
+    template?: string;
+    section?: string;
+    path?: string;
+    values?: Record<string, string>;
+  }) => postJSON<PromptPreviewPayload>('/api/prompts/preview', body),
   promptsSave: (body: { section: string; path: string; value: string }) =>
     postJSON<SimpleMessage>('/api/prompts/save', body),
   promptsReset: (body: { section: string; path: string }) =>
@@ -262,9 +287,12 @@ export const api = {
 
   // 插件
   plugins: () => getJSON<PluginListPayload>('/api/plugins'),
-  pluginToggle: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/toggle'),
-  pluginReload: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/reload'),
-  pluginUpdate: (name: string) => postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/update'),
+  pluginToggle: (name: string, body?: PluginToggleBody) =>
+    postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/toggle', body),
+  pluginReload: (name: string) =>
+    postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/reload'),
+  pluginUpdate: (name: string) =>
+    postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/update'),
   pluginUninstall: (name: string) =>
     postJSON<SimpleMessage>('/api/plugins/' + encodeURIComponent(name) + '/uninstall'),
   /**
@@ -274,11 +302,16 @@ export const api = {
   pluginInstall: (repo: string, branch = 'main', replace = false, dryRun = false) =>
     postJSON<SimpleMessage>('/api/plugins/install', { repo, branch, replace, dry_run: dryRun }),
   pluginsProbe: (name: string) =>
-    getJSON<{ conflict?: boolean; existing?: PluginConflictSide | null; official?: boolean; message?: string }>(
-      '/api/plugins/probe?name=' + encodeURIComponent(name)),
+    getJSON<{
+      conflict?: boolean;
+      existing?: PluginConflictSide | null;
+      official?: boolean;
+      message?: string;
+    }>('/api/plugins/probe?name=' + encodeURIComponent(name)),
   pluginsCheckUpdates: () => getResult<SimpleMessage>('/api/plugins/check-updates'),
   pluginsProxySave: (body: ProxyInfo) => postJSON<{ proxy?: ProxyInfo }>('/api/plugins/proxy', body),
-  pluginConfig: (name: string) => getResult<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config'),
+  pluginConfig: (name: string) =>
+    getResult<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config'),
   pluginConfigSave: (name: string, body: PluginConfigSaveBody) =>
     postJSON<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config', body),
 

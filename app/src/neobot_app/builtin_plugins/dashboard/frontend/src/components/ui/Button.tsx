@@ -4,6 +4,7 @@
 // 用法：<Button variant="primary" size="sm" onClick={...}>保存</Button>
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { cn } from '../../utils/cn';
+import { cva } from 'class-variance-authority';
 
 export type ButtonVariant = 'default' | 'primary' | 'danger' | 'ghost';
 export type ButtonSize = 'sm' | 'md';
@@ -19,8 +20,13 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   default: '',
   primary: 'primary',
   danger: 'danger',
-  ghost: '',
+  ghost: 'ghost',
 };
+
+const buttonClasses = cva('', {
+  variants: { size: { sm: 'btn-sm', md: 'btn' } },
+  defaultVariants: { size: 'md' },
+});
 
 export default function Button({
   variant = 'default',
@@ -31,11 +37,7 @@ export default function Button({
   ...props
 }: ButtonProps) {
   return (
-    <button
-      type={type}
-      className={cn(size === 'sm' ? 'btn-sm' : 'btn', VARIANT_CLASS[variant], className)}
-      {...props}
-    >
+    <button type={type} className={cn(buttonClasses({ size }), VARIANT_CLASS[variant], className)} {...props}>
       {children}
     </button>
   );

@@ -1,0 +1,199 @@
+/* 长文本、JSON、模型参数和历史记录编辑。 */
+
+.cfg-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow: auto;
+}
+.model-params {
+  margin-top: 8px;
+}
+.model-params .cfg-section-heading h3 {
+  font-size: 13px;
+}
+.model-params-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.model-params-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.model-params-add .input {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+.model-params-warning {
+  margin: 2px 0;
+}
+/* textarea 的高度由内容决定，避免继承 .input 的固定控件高度。 */
+.cfg-longtext-area {
+  height: auto;
+  min-height: 33px;
+  width: 100%;
+  resize: vertical;
+  line-height: 21px;
+  padding: 6px 9px;
+  font-family: var(--font-sans);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cfg-longtext-area.mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.cfg-longtext-modal {
+  min-height: 52vh;
+  resize: none;
+}
+.cfg-longtext-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cfg-longtext-bar .btn-sm {
+  margin-left: auto;
+}
+
+.cfg-json-field {
+  min-width: 0;
+}
+
+.cfg-json-field .input[aria-invalid='true'] {
+  border-color: var(--err);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
+}
+
+.cfg-longtext-bar:empty {
+  display: none;
+}
+
+.cfg-longtext {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 5px;
+}
+
+.cfg-root .cfg-longtext-area,
+.cfg-longtext .cfg-longtext-area {
+  height: auto;
+  min-height: 36px;
+  padding: 7px 10px;
+  line-height: 21px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cfg-longtext .cfg-longtext-modal {
+  min-height: 52vh;
+}
+
+.cfg-longtext-bar,
+.cfg-json-actions {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.cfg-longtext-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.cfg-json-actions {
+  display: flex;
+  align-items: flex-start;
+}
+
+.cfg-json-actions > span {
+  flex: 1 1 160px;
+  padding-top: 5px;
+  line-height: 1.6;
+}
+
+.model-params-warning {
+  padding: 8px 10px;
+  border-left: 2px solid var(--warn);
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.model-params-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 6px;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.model-params-row .input {
+  flex: 1 1 160px;
+  width: auto;
+  min-width: 0;
+}
+
+.model-params-name {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-params-row:last-child {
+  border-bottom: 0;
+}
+
+.model-params-row .icon-btn {
+  width: auto;
+  min-width: 38px;
+  height: 30px;
+  padding: 0 7px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 11px;
+}
+
+.cfg-control.model-params-add {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-control.model-params-add > .input {
+  width: auto;
+  min-width: 0;
+}
+
+.model-params-add > .muted {
+  flex-basis: 100%;
+  line-height: 1.65;
+}
+
+.cfg-history li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.cfg-history code {
+  font-size: 12px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

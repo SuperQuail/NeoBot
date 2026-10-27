@@ -20,6 +20,8 @@ export interface FieldCallbacks {
 
 export interface FieldProps extends FieldCallbacks {
   descriptor: FieldDescriptor;
+  /** 外层工作区已呈现根分区头时，仅省略这一层标题与说明。 */
+  hideGroupHeader?: boolean;
   /** 父级（ConfigTreePanel）已经按关键词筛过字段：这里不再二次过滤，只做高亮 */
   globallyFiltered?: boolean;
   changedPaths?: Set<string>;
@@ -30,6 +32,10 @@ export interface FieldProps extends FieldCallbacks {
 
 export interface SchemaFormProps {
   fields?: FieldDescriptor[];
+  /** 插件配置使用插件自身的重载声明，不采用通用字段元数据汇总。 */
+  showReloadSummary?: boolean;
+  /** 分区导航已呈现根分区元信息；子组仍保留自己的标题。 */
+  hideRootGroupHeader?: boolean;
   values?: Record<string, FieldValue>;
   onChange: (path: string[], value: FieldValue) => void;
   disabled?: boolean;
@@ -54,9 +60,10 @@ export function defaultsFromFields(fields: FieldDescriptor[] = []): Record<strin
     else if (field.kind === 'list') value[field.name] = [];
     else if (field.kind === 'dict') value[field.name] = {};
     else {
-      const fallback = field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '';
+      const fallback =
+        field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '';
       // 后端掩码会把密钥残留成空串：数值/布尔字段回落到类型默认值
-      value[field.name] = field.default === '' ? fallback : field.default ?? fallback;
+      value[field.name] = field.default === '' ? fallback : (field.default ?? fallback);
     }
   }
   return value;

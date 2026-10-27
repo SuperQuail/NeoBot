@@ -3,18 +3,25 @@
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：PR 的 Python 静态检查/测试、前端 lint/类型/测试/构建及入库产物一致性检查；同时可由发布工作流复用。
-- `.github/workflows/pr-title.yml`：PR 标题规范检查（`scripts/check_pr_title.py`）。仓库 squash 设置为 `PR_TITLE` + `PR_BODY`，PR 标题会成为 main 上的提交标题，因此按 commit message 规范阻断：格式、长度、`(#NN)`、空话、「主题 —— 明细」清单写法；「疑似罗列」只警告，加 `--strict` 才阻断。
-- `.github/workflows/publish.yml`：main 推送后通过 GitHub API 确认该提交来自合并 PR，直接推送不发布。也可在 Actions 页面手动对 main 触发（`workflow_dispatch`）：手动触发是对 main 的显式发布动作，仅当 ref 就是 main 时才可信，从其他分支手动触发一律跳过。两种情况都会先重跑 CI，通过后才检测版本、构建和上传。
-- CI 和发布流程只读检查源码版本及锁文件，不自动改版本、不更新锁文件，也不提交或推送代码；无需 main 写权限。
+- `.github/workflows/pr-title.yml`：PR 标题规范检查（`scripts/check_pr_title.py`）。仓库 squash 设置为 `PR_TITLE` + `PR_BODY`，PR 标题会成为目标分支上的提交标题，因此按 commit message 规范阻断：格式、长度、`(#NN)`、空话、「主题 —— 明细」清单写法；「疑似罗列」只警告，加 `--strict` 才阻断。
+- `.github/workflows/publish.yml`：**release 推送**后通过 GitHub API 确认该提交来自 `main → release` 的合并 PR，直接推送不发布。也可在 Actions 页面手动对 release 触发（`workflow_dispatch`）：手动触发是对 release 的显式发布动作，仅当 ref 就是 release 时才可信，从其他分支手动触发一律跳过。两种情况都会先重跑 CI，通过后才检测版本、构建和上传。
+- CI 和发布流程只读检查源码版本及锁文件，不自动改版本、不更新锁文件，也不提交或推送代码；无需保护分支写权限。
+
+### 分支与发布流程（2026-10-26 起）
+
+- 日常 PR → `dev`；发布候选 `dev → main`；正式发布 `main → release`。
+- 版本号在 `dev` 上提升（见下节，8 个 `pyproject.toml` + `uv.lock`），随 `dev → main` 带入；
+  `main → release` 的 PR 版本必须高于 release 当前版本，CI 用 `scripts/check_release_bump.py` 阻断未提升的 PR；
+  合并到 `release` 后才触发发布。
 
 ### 首次配置
 
-1. 创建 GitHub environment `pypi`（可配置审批、仅允许 main 部署）。
+1. 创建 GitHub environment `pypi`（可配置审批、仅允许 `release` 分支部署）。
 2. 在该 environment 或仓库 Secrets 中添加 `UV_PUBLISH_TOKEN`，需有全部 7 个工作区发布包的上传权限。根项目 `neobot` 没有 build-system，不上传。
 
 ### 手动更新版本
 
-1. 在同一个 PR 中手动把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，例如 `1.0.0-alpha.23`：
+1. 在 **`dev` 分支**（发布准备，`dev → main` 之前）手动把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，例如 `1.0.0-alpha.23`；主分支保护禁止直推，因此不要在 release PR 里提交版本：
    - `pyproject.toml`
    - `app/pyproject.toml`
    - `packages/adapter/pyproject.toml`
@@ -24,7 +31,7 @@
    - `packages/modloader/pyproject.toml`
    - `packages/storage/pyproject.toml`
 2. 在仓库根目录手动执行 `uv lock`，将更新后的 `uv.lock` 与上述版本变更一起提交到同一 PR。CI 使用锁定依赖，发布流程只执行 `uv lock --check`，锁文件过期会失败。
-3. 合并 PR 后自动检测是否需要发布；普通代码 PR 无需修改版本。
+3. 该 PR 合并到 `release` 后自动检测是否需要发布；普通 dev/main PR 无需修改版本。
 
 ### SemVer 校验
 
@@ -47,7 +54,7 @@
 - PyPI 的 PEP 440 规范化仅用于版本比较和构建/发布，例如 `1.0.0-alpha.23` 对应 `1.0.0a23`；不会回写或改变仓库中的 SemVer 拼写。
 - PyPI 只有 404 视为新包；网络错误、鉴权/服务错误或无效响应均中止，不猜测版本。
 
-若上传部分失败，且仍有包缺失当前版本，可重跑该版本变更对应的工作流，或在 Actions 页面手动对 main 触发补齐发布：留空 `base_ref` 即按 PyPI 缺失情况补发，不需要知道版本变更提交是哪一个。若所有包的当前版本均已建立，但个别 wheel/sdist 文件缺失，自动流程会跳过，需使用下方本地 `publish.ps1` 补齐同一版本的文件。后续无版本变更的 PR 不会触发补发。不要用旧版本运行覆盖新发布；多个 main 推送的等待运行仍受 GitHub concurrency 队列规则影响。
+若上传部分失败，且仍有包缺失当前版本，可重跑该版本变更对应的工作流，或在 Actions 页面手动对 release 触发补齐发布：留空 `base_ref` 即按 PyPI 缺失情况补发，不需要知道版本变更提交是哪一个。若所有包的当前版本均已建立，但个别 wheel/sdist 文件缺失，自动流程会跳过，需使用下方本地 `publish.ps1` 补齐同一版本的文件。后续无版本变更的 PR 不会触发补发。不要用旧版本运行覆盖新发布；多个 release 推送的等待运行仍受 GitHub concurrency 队列规则影响。
 
 ## 本地发布
 

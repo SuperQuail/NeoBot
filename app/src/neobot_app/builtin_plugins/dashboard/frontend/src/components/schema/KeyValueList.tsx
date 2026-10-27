@@ -11,21 +11,29 @@ export interface KeyValueListProps {
   filter?: string;
   keyPlaceholder?: string;
   valuePlaceholder?: string;
+  disabled?: boolean;
   onChange: (next: Array<[string, string]>) => void;
 }
 
 export default function KeyValueList({
-  entries, filter, keyPlaceholder = '键', valuePlaceholder = '值', onChange,
+  entries,
+  filter,
+  keyPlaceholder = '键',
+  valuePlaceholder = '值',
+  disabled,
+  onChange,
 }: KeyValueListProps) {
   const [pendingKey, setPendingKey] = useState('');
   const [pendingValue, setPendingValue] = useState('');
 
   const commit = (index: number, key: string, value: string) => {
+    if (disabled) return;
     const next = entries.map((entry, i) => (i === index ? ([key, value] as [string, string]) : entry));
     onChange(next);
   };
 
   const add = () => {
+    if (disabled) return;
     const key = pendingKey.trim();
     if (!key) return;
     onChange([...entries, [key, pendingValue]]);
@@ -41,24 +49,37 @@ export default function KeyValueList({
         <span />
       </div>
       {entries.length === 0 && (
-        <div className="cfg-kv-row empty"><span>暂无条目</span><span /><span /></div>
+        <div className="cfg-kv-row empty">
+          <span>暂无条目</span>
+          <span />
+          <span />
+        </div>
       )}
       {entries.map(([key, value], index) => (
         <div className="cfg-kv-row" key={index}>
           <input
             className="input cfg-kv-input mono"
+            disabled={disabled}
             value={key}
             aria-label={'第 ' + (index + 1) + ' 行键'}
             onChange={(event) => commit(index, event.target.value, value)}
           />
           <input
             className="input cfg-kv-input"
+            disabled={disabled}
             value={value}
             aria-label={'第 ' + (index + 1) + ' 行值'}
             onChange={(event) => commit(index, key, event.target.value)}
           />
-          <button type="button" className="cfg-row-remove" aria-label={'删除 ' + key}
-            onClick={() => onChange(entries.filter((_, i) => i !== index))}>×</button>
+          <button
+            type="button"
+            className="cfg-row-remove"
+            disabled={disabled}
+            aria-label={'删除 ' + key}
+            onClick={() => onChange(entries.filter((_, i) => i !== index))}
+          >
+            ×
+          </button>
           {filter && (
             <span className="cfg-kv-hit">
               <Highlight text={key + ' ' + value} keyword={filter} />
@@ -69,23 +90,33 @@ export default function KeyValueList({
       <div className="cfg-kv-row add">
         <input
           className="input cfg-kv-input mono"
+          disabled={disabled}
+          aria-label="新增条目的键"
           value={pendingKey}
           placeholder={keyPlaceholder}
           onChange={(event) => setPendingKey(event.target.value)}
         />
         <input
           className="input cfg-kv-input"
+          disabled={disabled}
+          aria-label="新增条目的值"
           value={pendingValue}
           placeholder={valuePlaceholder}
           onChange={(event) => setPendingValue(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
               event.preventDefault();
               add();
             }
           }}
         />
-        <button type="button" className="btn-sm" disabled={!pendingKey.trim()} onClick={add}>
+        <button
+          type="button"
+          className="btn-sm"
+          aria-label="添加键值条目"
+          disabled={disabled || !pendingKey.trim()}
+          onClick={add}
+        >
           <Icon name="plus" />
         </button>
       </div>

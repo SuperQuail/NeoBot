@@ -1,6 +1,7 @@
 // components/schema/ModelList.tsx —— 对象数组编辑（如多个生图模型）：增删改、上移下移、复制
 import { useState } from 'react';
 import Icon from '../Icon';
+import { confirmAction } from '../ui/ConfirmDialog';
 import type { FieldDescriptor } from '../../api/types';
 import { HotBadge } from './FieldChrome';
 import { matchPath } from '../../utils/paths';
@@ -13,12 +14,24 @@ function ModelList({
   filter,
 }: { descriptor: FieldDescriptor; filter?: string } & Pick<FieldCallbacks, 'onChange' | 'disabled'>) {
   const [collapsed, setCollapsed] = useState(false);
+  const locked = !!disabled || !!descriptor.readonly;
   const list: any[] = Array.isArray(descriptor.value) ? descriptor.value : [];
   const items: Array<{ index: number; fields: FieldDescriptor[] }> = (descriptor.items as any) || [];
-  const setList = (next: any[]) => onChange(next);
+  const setList = (next: any[]) => {
+    if (!locked) onChange(next);
+  };
   const add = () => setList([...list, defaultsFromFields(descriptor.item_fields)]);
-  const remove = (index: number) => {
-    if (!confirm('确认删除该配置项？')) return;
+  const remove = async (index: number) => {
+    if (
+      locked ||
+      !(await confirmAction({
+        title: '删除配置项',
+        description: '该配置项将从当前草稿中移除，保存后生效。',
+        confirmLabel: '删除',
+        danger: true,
+      }))
+    )
+      return;
     setList(list.filter((_, i) => i !== index));
   };
   const duplicate = (index: number) => {
@@ -61,22 +74,22 @@ function ModelList({
           <Icon name="chevron" />
         </button>
         <h3>{descriptor.name}</h3>
+        {descriptor.readonly && <span className="cfg-readonly">只读</span>}
         <span>{list.length} 项</span>
         <span className="cfg-badges">
           <HotBadge descriptor={descriptor} />
         </span>
         <div className="spacer" />
-        <button type="button" className="btn-sm primary" disabled={disabled} onClick={add}>
+        <button type="button" className="btn-sm primary" disabled={locked} onClick={add}>
           <Icon name="plus" /> 新增
         </button>
       </div>
       {descriptor.description && <p className="muted small cfg-hint">{descriptor.description}</p>}
       {!collapsed && list.length === 0 && <div className="empty muted">还没有配置项，点击「新增」添加</div>}
-      {!collapsed &&
-        (filter ? visible : items).map((entry) => {
+      <div className="cfg-group-content" hidden={collapsed}>
+        {(filter ? visible : items).map((entry) => {
           const index = entry.index;
           const item = list[index] || {};
-          // 模型库条目没有 name 字段，优先显示 display_name / model_name，别让标题退化成供应商名。
           const title =
             item.display_name ||
             item.description ||
@@ -95,7 +108,7 @@ function ModelList({
                   type="button"
                   className="icon-btn"
                   title="上移"
-                  disabled={disabled || index === 0}
+                  disabled={locked || index === 0}
                   onClick={() => move(index, -1)}
                 >
                   ↑
@@ -104,7 +117,7 @@ function ModelList({
                   type="button"
                   className="icon-btn"
                   title="下移"
-                  disabled={disabled || index === list.length - 1}
+                  disabled={locked || index === list.length - 1}
                   onClick={() => move(index, 1)}
                 >
                   ↓
@@ -113,7 +126,7 @@ function ModelList({
                   type="button"
                   className="icon-btn"
                   title="复制"
-                  disabled={disabled}
+                  disabled={locked}
                   onClick={() => duplicate(index)}
                 >
                   <Icon name="save" />
@@ -122,7 +135,7 @@ function ModelList({
                   type="button"
                   className="icon-btn danger"
                   title="删除"
-                  disabled={disabled}
+                  disabled={locked}
                   onClick={() => remove(index)}
                 >
                   <Icon name="trash" />
@@ -134,7 +147,7 @@ function ModelList({
                 <Field
                   key={field.path.join('.')}
                   descriptor={{ ...field, force_visible: true }}
-                  disabled={disabled}
+                  disabled={locked}
                   filter={filter}
                   onChange={(next) => {
                     const cloned: Record<string, any>[] = structuredClone(list);
@@ -149,6 +162,7 @@ function ModelList({
             </div>
           );
         })}
+      </div>
     </section>
   );
 }

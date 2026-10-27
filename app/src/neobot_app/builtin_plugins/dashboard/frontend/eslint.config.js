@@ -44,7 +44,14 @@ export default tseslint.config(
   },
   {
     // 测试与构建脚本放宽
-    files: ['src/**/*.test.{ts,tsx}', 'src/test/**', '*.config.ts', 'vite.config.ts', 'vitest.config.ts'],
+    files: [
+      'src/**/*.test.{ts,tsx}',
+      'src/test/**',
+      '*.config.ts',
+      'vite.config.ts',
+      'vitest.config.ts',
+      'scripts/**/*.mjs',
+    ],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
     rules: { 'no-console': 'off' },
   },

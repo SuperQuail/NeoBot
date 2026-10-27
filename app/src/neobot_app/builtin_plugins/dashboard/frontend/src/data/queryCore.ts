@@ -1,3 +1,5 @@
+import { startAutoRefresh } from './autoRefresh';
+
 // data/queryCore.ts —— 轻量查询缓存：同 key 并发去重、结果缓存、失效重取
 // 目标：替换散落各页的 useApi + 手写 setInterval，做到
 //   1) 同一接口在任何时刻最多一个在途请求（Dashboard 与 System 不再各拉一份 /api/system）；
@@ -15,12 +17,16 @@ export interface QueryState<T> {
 
 interface Entry<T = unknown> {
   state: QueryState<T>;
+  /** 写操作读回后的提交版本，阻止更早的轮询覆盖已确认状态。 */
+  revision: number;
   promise: Promise<T | null> | null;
+  /** 在途读取期间的失效合并为一次尾部读取，避免复用写操作之前的请求。 */
+  pendingInvalidate: boolean;
   listeners: Set<() => void>;
   fetcher: () => Promise<T | null>;
   /** 轮询订阅者数量：归零后可停止轮询 */
   pollers: number;
-  timer: ReturnType<typeof setInterval> | null;
+  stopPolling: (() => void) | null;
   intervalMs: number;
 }
 
@@ -38,17 +44,13 @@ function setState<T>(entry: Entry<T>, patch: Partial<QueryState<T>>): void {
 }
 
 function startPolling(queryKey: string, entry: Entry<any>): void {
-  if (entry.timer || entry.intervalMs <= 0 || entry.pollers <= 0) return;
-  entry.timer = setInterval(() => {
-    void fetchQuery(queryKey, { force: true });
-  }, entry.intervalMs);
+  if (entry.stopPolling || entry.intervalMs <= 0 || entry.pollers <= 0) return;
+  entry.stopPolling = startAutoRefresh(() => fetchQuery(queryKey, { force: true }), entry.intervalMs);
 }
 
 function stopPolling(entry: Entry<any>): void {
-  if (entry.timer) {
-    clearInterval(entry.timer);
-    entry.timer = null;
-  }
+  entry.stopPolling?.();
+  entry.stopPolling = null;
 }
 
 /** 读取（不存在则注册）一个查询条目 */
@@ -57,11 +59,13 @@ export function getEntry<T>(queryKey: string, fetcher: () => Promise<T | null>, 
   if (!entry) {
     entry = {
       state: { ...EMPTY },
+      revision: 0,
       promise: null,
+      pendingInvalidate: false,
       listeners: new Set(),
       fetcher,
       pollers: 0,
-      timer: null,
+      stopPolling: null,
       intervalMs,
     };
     entries.set(queryKey, entry);
@@ -82,21 +86,32 @@ export async function fetchQuery<T>(queryKey: string, options: { force?: boolean
   if (fresh && entry.state.data !== null) return entry.state.data;
 
   setState(entry, { loading: entry.state.data === null, error: null });
+  const revision = entry.revision;
   entry.promise = (async () => {
     try {
       const data = await entry.fetcher();
+      if (entry.revision !== revision) return entry.state.data;
+      if (data == null) {
+        setState(entry, { error: 'no-data', loading: false });
+        return null;
+      }
       setState(entry, {
         data,
-        error: data == null ? 'no-data' : null,
+        error: null,
         loading: false,
         updatedAt: Date.now(),
       });
       return data;
     } catch (e) {
+      if (entry.revision !== revision) return entry.state.data;
       setState(entry, { error: (e as Error).message || String(e), loading: false });
       return null;
     } finally {
       entry.promise = null;
+      if (entry.pendingInvalidate && entries.get(queryKey) === entry) {
+        entry.pendingInvalidate = false;
+        void fetchQuery(queryKey, { force: true });
+      }
     }
   })();
   return entry.promise;
@@ -120,14 +135,18 @@ export function addPoller(queryKey: string, entry: Entry<any>): () => void {
 export function setQueryData<T>(queryKey: string, data: T): void {
   const entry = entries.get(queryKey) as Entry<T> | undefined;
   if (!entry) return;
+  entry.revision++;
   setState(entry, { data, error: null, loading: false, updatedAt: Date.now() });
 }
 
 /** 让若干 key 立即重新取数（写操作后调用） */
 export function invalidateQueries(prefixes: string[]): void {
-  for (const queryKey of entries.keys()) {
+  for (const [queryKey, entry] of entries) {
     if (prefixes.some((prefix) => queryKey.startsWith(prefix))) {
-      void fetchQuery(queryKey, { force: true });
+      // 旧成功响应与旧错误都不能跨越这次写后失效；已有请求结束后再读服务端。
+      entry.revision++;
+      if (entry.promise) entry.pendingInvalidate = true;
+      else void fetchQuery(queryKey, { force: true });
     }
   }
 }
@@ -136,6 +155,8 @@ export function invalidateQueries(prefixes: string[]): void {
 export function clearQueries(): void {
   for (const entry of entries.values()) {
     stopPolling(entry);
+    entry.revision++;
+    entry.pendingInvalidate = false;
     entry.listeners.clear();
   }
   entries.clear();

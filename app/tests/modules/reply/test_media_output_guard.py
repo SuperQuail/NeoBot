@@ -131,3 +131,12 @@ def test_media_descriptions_no_longer_promise_unsanitized_output(media):
         assert "原样发出" not in description
         assert "不做任何清洗" not in description
         assert "输出安全清洗" in description
+
+
+async def test_math_source_survives_render_and_history_guard(media):
+    executor, converter, handler = media
+    source = r"行内 \(x^2\) 与 $$\begin{pmatrix}a&b\\c&d\end{pmatrix}$$"
+    result = json.loads(await executor.execute("send_long_reply", {"markdown": source}))
+    assert result["ok"] is True
+    converter.convert.assert_awaited_once_with(source)
+    assert handler.await_args.kwargs["markdown"] == source

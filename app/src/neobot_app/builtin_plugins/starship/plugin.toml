@@ -1,4 +1,6 @@
 name = "starship"
+# 娱乐扩展默认不加载；系统页开关将显式选择持久保存到 data/plugin_state.json。
+enabled = false
 version = "1.0.0"
 description = "NeoBot 星舰：把控制台搬进一艘可自由探索的 3D 科幻战舰（three.js 第一人称）"
 author = "NeoBot"

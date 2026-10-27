@@ -1,0 +1,114 @@
+/* 环境变量和供应商的对齐表格与新增行。 */
+
+.env-table-scroll {
+  min-width: 0;
+  margin-top: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.env-table {
+  min-width: 900px;
+}
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.9fr) minmax(300px, 1.6fr) minmax(180px, 1fr) 112px;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.env-row:last-child {
+  border-bottom: 0;
+}
+.env-head {
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.env-head > span:last-child {
+  text-align: right;
+}
+.env-row.removed {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.env-key,
+.env-value,
+.env-desc {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.env-key {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.env-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 8px;
+}
+.env-value .tag {
+  justify-self: start;
+  white-space: nowrap;
+}
+.env-row .input {
+  width: 100%;
+  min-width: 0;
+}
+.env-desc {
+  line-height: 1.6;
+}
+.env-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+.env-add {
+  background: var(--panel-2);
+}
+.env-platform-heading {
+  margin-top: 28px;
+}
+.env-platform-scroll {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+.env-panel .env-platform-table {
+  min-width: 760px;
+  table-layout: fixed;
+}
+.env-platform-name-column {
+  width: 24%;
+}
+.env-platform-key-column {
+  width: 112px;
+}
+.env-platform-action-column {
+  width: 128px;
+}
+.env-platform-table :is(th, td) {
+  padding: 14px 16px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-soft);
+}
+.env-platform-table th {
+  background: var(--panel-2);
+}
+.env-platform-table :is(th, td):last-child {
+  text-align: right;
+}
+.env-platform-table tr:last-child td {
+  border-bottom: 0;
+}
+.env-platform-url {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}

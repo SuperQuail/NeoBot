@@ -1,0 +1,605 @@
+/* 配置页面、模式、工具栏、同步状态与保存操作。 */
+
+.cfg-top-tabs {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.config-toolbar .config-tabs {
+  margin-bottom: 0;
+}
+.config-toolbar .btn {
+  min-height: 34px;
+  height: auto;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.config-body {
+  display: block;
+}
+
+.config-page {
+  padding: 0;
+}
+.config-page > .page-header {
+  align-items: center;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+.config-page > .page-header > .page-heading {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.config-page > .page-header > .page-actions {
+  flex: 0 0 auto;
+  max-width: 100%;
+  margin-left: auto;
+}
+.config-page .cfg-top-tabs {
+  flex-shrink: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface-sidebar, var(--panel));
+}
+.config-page .cfg-top-tabs > div {
+  gap: 4px;
+}
+.config-page .cfg-top-tabs button {
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: var(--radius-control);
+  font-weight: 550;
+}
+.config-page .cfg-top-tabs button.active {
+  color: var(--brand-hover);
+  background: var(--panel);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 7%, transparent);
+}
+.config-page .config-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-large);
+}
+.config-panel-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.config-panel-scroll > .card-head {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.config-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.config-toolbar > .config-tabs {
+  margin: 0;
+  border: 0;
+}
+.config-toolbar > .config-tabs > div {
+  gap: 4px;
+}
+.config-toolbar > .config-tabs button {
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  border: 0;
+  min-height: 36px;
+}
+.config-toolbar > .config-tabs button.active {
+  background: var(--brand-soft);
+}
+.config-history-action {
+  min-width: 36px;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+.config-history-action > span {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.config-more-actions .config-secondary-action {
+  min-height: 30px;
+  padding: 5px 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.config-more-actions .config-secondary-action:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.cfg-search {
+  flex: 1 1 220px;
+  max-width: 400px;
+}
+.config-card-editor > .config-toolbar {
+  flex-shrink: 0;
+  padding: 12px 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.config-more-actions {
+  flex: 0 0 auto;
+  position: relative;
+  margin-left: auto;
+}
+.config-action-disclosure > summary,
+.config-mobile-action-label {
+  display: none;
+}
+.config-disclosure-content {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.config-more-actions > summary {
+  display: list-item;
+  list-style-position: inside;
+  padding: 8px 10px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.config-more-actions > summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+.config-more-actions .config-disclosure-content {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 208px;
+  max-width: calc(100vw - 64px);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-elevated);
+}
+.config-more-actions .config-disclosure-content > .btn {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.config-more-actions .config-mobile-action-label {
+  display: inline;
+  font-size: 12px;
+}
+.config-card-editor > :is(.config-notice, .workspace-error) {
+  flex-shrink: 0;
+  margin: 12px 24px 0;
+  max-height: 25vh;
+  overflow: auto;
+}
+.config-card-editor > .config-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.config-card-editor > .config-source-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+.source-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 12px;
+  min-height: 42px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+.source-editor-heading > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+.source-editor-heading code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.source-editor-heading > span:last-child {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.source-editor-hint {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 20px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-sidebar, var(--panel-2));
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.config-footer {
+  padding-top: 12px;
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.config-footer > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.config-footer > .small {
+  max-width: 26%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-card-editor > .config-main-toolbar {
+  position: relative;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.config-card-editor > .config-main-toolbar > .config-tabs {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.config-main-toolbar > .config-tabs button {
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.config-card-editor > .config-main-toolbar > .cfg-search {
+  flex: 1 1 130px;
+  order: 0;
+  width: 0;
+  min-width: 96px;
+  max-width: none;
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.config-toolbar-spacer {
+  flex: 1;
+  min-width: 0;
+}
+.config-sync-status {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 118px;
+  font-size: 11px;
+}
+.config-sync-status > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-main-toolbar > .btn-sm,
+.config-runtime-inline > .btn-sm {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.config-runtime-inline {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.config-main-toolbar > .config-more-actions {
+  margin: 0;
+}
+.config-main-toolbar > .config-more-actions > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 8px;
+  list-style: none;
+}
+.config-main-toolbar > .config-more-actions > summary::-webkit-details-marker {
+  display: none;
+}
+.config-main-toolbar > .config-more-actions > summary > svg {
+  display: none;
+}
+.config-main-toolbar .config-disclosure-content > :is(.btn, .btn-sm) {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+.config-main-toolbar .config-disclosure-content {
+  max-height: min(540px, calc(100dvh - 200px));
+  overflow-y: auto;
+}
+.config-main-toolbar .config-disclosure-content > .input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  font-size: 12px;
+}
+.config-menu-divider {
+  height: 1px;
+  margin-block: 4px;
+  background: var(--border-soft);
+}
+.config-card-editor > .config-main-toolbar[data-compact='true'] {
+  padding: 8px 10px;
+}
+.config-main-toolbar[data-compact='true'] > .config-sync-status {
+  display: none;
+}
+.config-main-toolbar[data-compact='true'] > .config-tabs button,
+.config-main-toolbar[data-compact='true'] > .config-save-button {
+  min-height: 40px;
+  padding-inline: 8px;
+}
+.config-main-toolbar[data-compact='true'] > .config-more-actions {
+  position: static;
+}
+.config-main-toolbar[data-compact='true'] > .config-more-actions > summary {
+  width: 40px;
+  min-height: 40px;
+  padding: 8px;
+  font-size: 0;
+}
+.config-main-toolbar[data-compact='true'] > .config-more-actions > summary > svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.config-main-toolbar[data-compact='true'] .config-disclosure-content {
+  right: 10px;
+  width: 260px;
+  max-width: calc(100% - 20px);
+}
+.config-main-toolbar[data-compact='true'] .config-disclosure-content > :is(.btn, .btn-sm) {
+  min-height: 40px;
+}
+.config-page .model-table {
+  min-width: 0;
+}
+.config-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.prompts-page > .panel-skeleton {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .config-footer > .small {
+    display: none;
+  }
+}
+
+@media (max-width: 740px) {
+  .config-page > .page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .config-page > .page-header > .page-heading,
+  .config-page > .page-header > .page-actions {
+    flex: initial;
+    width: 100%;
+    margin-left: 0;
+  }
+  .config-page .cfg-top-tabs {
+    width: 100%;
+  }
+  .config-page .cfg-top-tabs > div {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+  }
+  .config-page .cfg-top-tabs button {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+  .config-panel-scroll {
+    padding: 18px;
+  }
+  .config-page .config-toolbar {
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .config-card-editor > .config-toolbar {
+    padding: 14px 16px 12px;
+    margin-bottom: 0;
+  }
+  .config-toolbar > .cfg-search {
+    max-width: none;
+    flex-basis: 100%;
+    order: -1;
+  }
+  .config-toolbar .spacer {
+    display: none;
+  }
+  .config-toolbar > .config-tabs {
+    margin-right: auto;
+  }
+  .config-toolbar > .config-tabs button {
+    padding: 8px;
+    font-size: 12px;
+  }
+  .config-history-action {
+    width: 34px;
+    min-width: 34px;
+    padding-inline: 0;
+  }
+  .config-card-editor > :is(.config-notice, .workspace-error) {
+    margin: 10px 16px 0;
+  }
+  .config-footer {
+    padding: 12px 16px;
+    gap: 8px;
+  }
+  .config-footer > .btn {
+    flex: 1;
+    min-height: 36px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .config-footer > span {
+    flex-basis: 100%;
+  }
+  .config-footer .spacer {
+    display: none;
+  }
+  .config-card-editor > .config-source-body {
+    padding: 0;
+  }
+  .source-editor-heading,
+  .source-editor-hint {
+    padding-inline: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .config-more-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  .config-action-disclosure {
+    position: relative;
+  }
+  .config-action-disclosure > summary {
+    display: list-item;
+    list-style-position: inside;
+    padding: 8px 10px;
+    min-height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--panel);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .config-action-disclosure > summary:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 3px;
+  }
+  .config-action-disclosure .config-disclosure-content {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    width: 208px;
+    max-width: calc(100vw - 64px);
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+    box-shadow: var(--shadow-elevated);
+  }
+  .config-action-disclosure .config-disclosure-content > .btn {
+    justify-content: flex-start;
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .config-mobile-action-label {
+    display: inline;
+  }
+  .config-editor-footer {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+  .config-editor-footer > span {
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .config-editor-footer > .small,
+  .config-editor-footer > .spacer {
+    display: none;
+  }
+  .config-editor-footer .config-runtime-actions {
+    position: static;
+  }
+  .config-editor-footer .config-runtime-actions .config-disclosure-content {
+    top: auto;
+    bottom: calc(100% + 8px);
+    right: 14px;
+    max-width: calc(100% - 28px);
+  }
+  .config-editor-footer > .btn {
+    padding: 8px 10px;
+  }
+}

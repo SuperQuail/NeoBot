@@ -23,13 +23,10 @@ function descriptor(overrides: Partial<FieldDescriptor> = {}): FieldDescriptor {
 }
 
 // 必须超过 ScalarField 的长文本阈值（> 120 字符）才会渲染成多行 textarea
-const LONG_TEXT =
-  '这是一段足够长的配置文本，用来触发多行输入框；阈值是超过 120 个字符，'.repeat(4);
+const LONG_TEXT = '这是一段足够长的配置文本，用来触发多行输入框；阈值是超过 120 个字符，'.repeat(4);
 
 function renderField(value: string, onChange = vi.fn()) {
-  const view = render(
-    <ScalarField descriptor={descriptor({ value })} value={value} onChange={onChange} />,
-  );
+  const view = render(<ScalarField descriptor={descriptor({ value })} value={value} onChange={onChange} />);
   const box = view.container.querySelector('textarea') as HTMLTextAreaElement;
   return { view, box, onChange };
 }
@@ -97,7 +94,11 @@ describe('多行输入框的 IME 组字（issue #67）', () => {
     // 所以 element 类型会变，这里按「实际渲染出来的输入控件」断言。
     act(() => {
       view.rerender(
-        <ScalarField descriptor={descriptor({ value: '恢复后的值' })} value="恢复后的值" onChange={onChange} />,
+        <ScalarField
+          descriptor={descriptor({ value: '恢复后的值' })}
+          value="恢复后的值"
+          onChange={onChange}
+        />,
       );
     });
     const control = view.container.querySelector('textarea, input') as HTMLTextAreaElement | HTMLInputElement;

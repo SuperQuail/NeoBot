@@ -1,0 +1,152 @@
+/* 共享分段标签与 SelectControl；页面内的宽度和排列由页面样式维护。 */
+
+.config-tabs {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 26px;
+  gap: 10px;
+}
+.config-tabs > div {
+  display: flex;
+  gap: 20px;
+}
+.config-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.config-tabs button svg {
+  width: 15px;
+}
+.config-tabs button.active {
+  color: var(--brand-hover);
+  border-bottom-color: var(--brand-hover);
+  font-weight: 600;
+}
+@media (max-width: 740px) {
+  .config-tabs > .small {
+    display: none;
+  }
+}
+.select-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  height: var(--control-height);
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: var(--surface-field);
+  font: 500 12px var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.select-control > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-control-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.select-control:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+.select-control:focus-visible,
+.select-control[data-state='open'] {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.select-control:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.select-control-menu {
+  z-index: calc(var(--z-modal) + 10);
+  width: max-content;
+  min-width: var(--radix-select-trigger-width);
+  max-width: min(440px, calc(100vw - 24px));
+  max-height: min(320px, var(--radix-select-content-available-height));
+  overflow: hidden;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: 0 8px 24px #00000016;
+}
+.select-control-options {
+  padding: 5px;
+}
+.select-control-group + .select-control-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.select-control-group-label {
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.select-control-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 8px 32px 8px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+}
+.select-control-option[data-highlighted] {
+  background: var(--panel-2);
+}
+.select-control-option[data-state='checked'] {
+  color: var(--brand);
+  background: var(--brand-soft);
+  font-weight: 600;
+}
+.select-control-option[data-disabled] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.select-control-check {
+  position: absolute;
+  right: 10px;
+  display: flex;
+}
+.select-control-scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  color: var(--muted);
+}
+@media (max-width: 760px) {
+  .select-control-option {
+    min-height: 40px;
+  }
+}

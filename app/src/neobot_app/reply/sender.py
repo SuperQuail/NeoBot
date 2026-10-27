@@ -165,12 +165,17 @@ class ReplySender:
 
     @staticmethod
     def _leave_sending(event: Any, conversation_kind: str) -> None:
-        """发送完成后回到群聊终态 / 私聊继续生成；非 SENDING 时保持不变。"""
+        """发送完成后回到生成态；只有 agent 管线真正结束才进入 COMPLETED。
+
+        普通模式仍按原样：群聊发送后即可结束（由 ModesMixin 收尾）。
+        agent 模式下 send_reply 只是普通工具，发出消息后还要继续执行工具，
+        因此不能先把事件标成 COMPLETED。
+        """
         if event.state is not ReplyState.SENDING:
             return
         target = (
             ReplyState.GENERATING
-            if conversation_kind == "private"
+            if conversation_kind == "private" or getattr(event, "mode", "") == "agent"
             else ReplyState.COMPLETED
         )
         try:

@@ -1,0 +1,282 @@
+/* 配置分区导航、分组内容与说明入口。 */
+
+.cfg-tree {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--panel);
+  min-height: 420px;
+}
+.cfg-tree-side {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+.cfg-tree-cap {
+  padding: 10px 12px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.cfg-tree-cap b {
+  color: var(--brand);
+}
+.cfg-tree-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+.cfg-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  border-radius: 9px;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.cfg-tree-item:hover {
+  background: var(--brand-soft);
+}
+.cfg-tree-item.on {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  font-weight: 600;
+}
+.cfg-tree-item .cfg-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfg-tree-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.cfg-tree-badge {
+  font-size: 9.5px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 5px;
+  padding: 0 4px;
+}
+.cfg-tree-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 10px;
+  margin: 0;
+}
+.cfg-tree-side-foot {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.cfg-tree-body {
+  padding: 12px 16px;
+  min-width: 0;
+  overflow-x: hidden;
+}
+.cfg-tree-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.cfg-tree-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.cfg-tree-body .cfg-root {
+  gap: 0;
+}
+.cfg-tree-body .cfg-group {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+:is(.config-page, .modal) .cfg-tree {
+  border-color: var(--border-soft);
+  border-radius: var(--radius);
+  grid-template-columns: 224px minmax(0, 1fr);
+}
+.config-card-editor .cfg-tree {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+:is(.config-page, .modal) .cfg-tree-side {
+  min-height: 0;
+  background: var(--surface-sidebar, var(--panel-2));
+  border-color: var(--border-soft);
+}
+.cfg-tree-select {
+  display: none;
+}
+:is(.config-page, .modal) .cfg-tree-cap {
+  flex-shrink: 0;
+  padding: 18px 20px 12px;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+:is(.config-page, .modal) .cfg-tree-nav {
+  min-height: 0;
+  gap: 4px;
+  padding: 0 12px 18px;
+  overscroll-behavior: contain;
+}
+:is(.config-page, .modal) .cfg-tree-item {
+  min-height: 40px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  border-radius: var(--radius-control);
+}
+:is(.config-page, .modal) .cfg-tree-item.on {
+  border-color: transparent;
+  color: var(--brand-hover);
+}
+:is(.config-page, .modal) .cfg-tree-body {
+  min-height: 0;
+  padding: 20px 24px;
+}
+.config-card-editor .cfg-tree-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+:is(.config-page, .modal) .cfg-tree-head {
+  align-items: center;
+  min-height: 32px;
+  margin-bottom: 8px;
+}
+:is(.config-page, .modal) .cfg-tree-head h3 {
+  font-size: 16px;
+}
+.cfg-section-help {
+  position: relative;
+  margin-left: auto;
+}
+.cfg-section-help > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  list-style: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cfg-section-help > summary::-webkit-details-marker {
+  display: none;
+}
+.cfg-section-help > summary:hover,
+.cfg-section-help[open] > summary {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+.cfg-section-help-content {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  top: calc(100% + 4px);
+  right: 0;
+  width: min(320px, calc(100vw - 80px));
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.cfg-section-help-content > p {
+  margin: 8px 0 0;
+}
+.cfg-section-help-content .cfg-reload-policy {
+  margin-bottom: 0;
+}
+.config-card-editor .cfg-tree-body > .cfg-root > .cfg-group > .cfg-group-content {
+  padding-left: 0;
+  border-left: 0;
+}
+
+@media (max-width: 1100px) {
+  :is(.config-page, .modal) .cfg-tree {
+    grid-template-columns: 188px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 740px) {
+  :is(.config-page, .modal) .cfg-tree {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  :is(.config-page, .modal) .cfg-tree-side {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  :is(.config-page, .modal) .cfg-tree-cap {
+    padding: 10px 16px 6px;
+  }
+  :is(.config-page, .modal) .cfg-tree-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    padding: 0 10px 10px;
+  }
+  :is(.config-page, .modal) .cfg-tree-item {
+    width: auto;
+    min-width: max-content;
+    min-height: 36px;
+    padding: 8px 10px;
+  }
+  :is(.config-page, .modal) .cfg-tree-body {
+    padding: 20px 18px;
+  }
+  .cfg-section-help > summary {
+    min-height: 40px;
+  }
+}
+
+@media (max-width: 640px) {
+  :is(.config-page, .modal) .cfg-tree-select {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .cfg-tree-select > span {
+    flex-shrink: 0;
+  }
+  .cfg-tree-select > select {
+    flex: 1;
+    width: 0;
+    min-width: 0;
+  }
+  :is(.config-page, .modal) .cfg-tree-cap,
+  :is(.config-page, .modal) .cfg-tree-nav {
+    display: none;
+  }
+}

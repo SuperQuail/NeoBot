@@ -21,6 +21,14 @@ if (!window.matchMedia) {
 if (!Element.prototype.scrollTo) Element.prototype.scrollTo = () => {};
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
+// jsdom 没有原生 top layer。nwsapi 对 :modal 的“原生探测”会再次调用
+// Element.matches 并递归到栈溢出，Floating UI 每次定位都会触发它。
+const matchesSelector = Element.prototype.matches;
+Element.prototype.matches = function (selector: string) {
+  if (selector === ':modal' || selector === ':popover-open') return false;
+  return matchesSelector.call(this, selector);
+};
+
 // 统一抑制组件里用于提示的 console.warn（api client 会在拿不到数据时告警）
 vi.spyOn(console, 'warn').mockImplementation(() => {});
 

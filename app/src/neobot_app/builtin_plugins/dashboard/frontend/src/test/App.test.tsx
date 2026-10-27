@@ -1,16 +1,17 @@
-// 路由与侧栏回归测试 —— 一级导航、当前项高亮、工作区页隐藏全局头部
+// 路由与侧栏回归测试 —— 一级导航、当前项高亮、统一页头与工作区滚动归属
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
 import { apiSetup, clearToken, setToken } from '../api/client';
 import { authStatus } from '../api/client';
+import { clearQueries } from '../data/queryCore';
 
 const mockAuthStatus = vi.mocked(authStatus);
 const mockApiSetup = vi.mocked(apiSetup);
 
-vi.mock('../api/client.js', async () => {
-  const actual = await vi.importActual('../api/client.js');
+vi.mock('../api/client', async () => {
+  const actual = await vi.importActual('../api/client');
   return {
     ...actual,
     // 登录页在未登录分支渲染，避免测试里发真实请求
@@ -20,20 +21,33 @@ vi.mock('../api/client.js', async () => {
   };
 });
 
-vi.mock('../pages/Dashboard.jsx', () => ({ default: () => <div data-testid="page-dashboard" /> }));
-vi.mock('../pages/Plugins.jsx', () => ({ default: () => <div data-testid="page-plugins" /> }));
-vi.mock('../pages/ConfigManager.jsx', () => ({ default: () => <div data-testid="page-config" /> }));
-vi.mock('../pages/System.jsx', () => ({ default: () => <div data-testid="page-system" /> }));
-vi.mock('../pages/Usage.jsx', () => ({ default: () => <div data-testid="page-usage" /> }));
-vi.mock('../pages/Analysis.jsx', () => ({ default: () => <div data-testid="page-analysis" /> }));
-vi.mock('../pages/Bots.jsx', () => ({ default: () => <div data-testid="page-bots" /> }));
-vi.mock('../pages/Logs.jsx', () => ({ default: () => <div data-testid="page-logs" /> }));
-vi.mock('../pages/Prompts.jsx', () => ({ default: () => <div data-testid="page-prompts" /> }));
-vi.mock('../pages/ChatFlows.jsx', () => ({ default: () => <div data-testid="page-chat-flows" /> }));
-vi.mock('../pages/ScheduledTasks.jsx', () => ({
+vi.mock('../api/endpoints', async () => {
+  const actual = await vi.importActual<typeof import('../api/endpoints')>('../api/endpoints');
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      extensions: vi.fn(async () => ({ items: [] })),
+      powerStatus: vi.fn(async () => null),
+    },
+  };
+});
+
+vi.mock('../pages/Dashboard', () => ({ default: () => <div data-testid="page-dashboard" /> }));
+vi.mock('../pages/Plugins', () => ({ default: () => <div data-testid="page-plugins" /> }));
+vi.mock('../pages/ConfigManager', () => ({ default: () => <div data-testid="page-config" /> }));
+vi.mock('../pages/System', () => ({ default: () => <div data-testid="page-system" /> }));
+vi.mock('../pages/Usage', () => ({ default: () => <div data-testid="page-usage" /> }));
+vi.mock('../pages/Analysis', () => ({ default: () => <div data-testid="page-analysis" /> }));
+vi.mock('../pages/Bots', () => ({ default: () => <div data-testid="page-bots" /> }));
+vi.mock('../pages/Deploy', () => ({ default: () => <div data-testid="page-deploy" /> }));
+vi.mock('../pages/Logs', () => ({ default: () => <div data-testid="page-logs" /> }));
+vi.mock('../pages/Prompts', () => ({ default: () => <div data-testid="page-prompts" /> }));
+vi.mock('../pages/ChatFlows', () => ({ default: () => <div data-testid="page-chat-flows" /> }));
+vi.mock('../pages/ScheduledTasks', () => ({
   default: () => <div data-testid="page-scheduled-tasks" />,
 }));
-vi.mock('../pages/Archives.jsx', () => ({ default: () => <div data-testid="page-archives" /> }));
+vi.mock('../pages/Archives', () => ({ default: () => <div data-testid="page-archives" /> }));
 
 const NAV_LABELS = [
   '主页',
@@ -60,6 +74,7 @@ function renderAt(path: string) {
 }
 
 beforeEach(() => {
+  clearQueries();
   setToken('test-token', 'test-csrf');
   document.documentElement.dataset.theme = 'light';
   // 默认「已配置密码」：绝大多数用例只关心路由与导航，不应被鉴权探测干扰。
@@ -68,63 +83,114 @@ beforeEach(() => {
 });
 
 describe('应用外壳', () => {
-  it('侧栏渲染全部一级导航', () => {
+  it('侧栏渲染全部一级导航', async () => {
     renderAt('/dashboard');
+    await screen.findByTestId('page-dashboard');
 
     for (const label of NAV_LABELS) {
       expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: label })).toHaveClass('nav-item');
     }
-    expect(screen.getAllByRole('link')).toHaveLength(NAV_LABELS.length);
+    expect(within(screen.getByRole('navigation', { name: '主导航' })).getAllByRole('link')).toHaveLength(
+      NAV_LABELS.length,
+    );
   });
 
-  it('非工作区页面渲染全局头部与面包屑', () => {
-    renderAt('/system');
+  it('非工作区页面渲染全局头部与面包屑', async () => {
+    renderAt('/scheduled-tasks');
+    await screen.findByTestId('page-scheduled-tasks');
 
     expect(screen.getByText('NeoBot 面板')).toBeInTheDocument();
-    expect(screen.getByText('系统状态')).toBeInTheDocument();
+    expect(within(screen.getByLabelText('当前位置')).getByText('定时任务')).toBeInTheDocument();
+    expect(screen.getByRole('main')).not.toHaveClass('content--viewport');
   });
 
-  it('工作区页面（配置）不渲染全局头部', () => {
-    renderAt('/config');
+  it.each(['/scheduled-tasks/', '/SCHEDULED-TASKS', '/scheduled%2Dtasks'])(
+    '路径 %s 的布局元信息与 Router 的匹配规则一致',
+    async (path) => {
+      renderAt(path);
+      await screen.findByTestId('page-scheduled-tasks');
+      expect(within(screen.getByLabelText('当前位置')).getByText('定时任务')).toBeInTheDocument();
+      expect(screen.getByRole('main')).not.toHaveClass('content--viewport');
+      expect(screen.getByRole('link', { name: '定时' })).toHaveClass('active');
+    },
+  );
 
-    expect(screen.queryByText('NeoBot 面板')).not.toBeInTheDocument();
-    expect(screen.getByTestId('page-config')).toBeInTheDocument();
+  it.each([
+    ['/dashboard', 'dashboard', '仪表盘'],
+    ['/bots', 'bots', '机器人'],
+    ['/deploy', 'deploy', '快捷部署'],
+    ['/config', 'config', '配置管理'],
+    ['/plugins', 'plugins', '插件管理'],
+    ['/prompts', 'prompts', '提示词模板'],
+    ['/chat-flows', 'chat-flows', '聊天流'],
+    ['/archives', 'archives', '档案管理'],
+    ['/logs', 'logs', '日志'],
+    ['/usage', 'usage', '用量统计'],
+    ['/analysis', 'analysis', '提示词分析'],
+    ['/system', 'system', '系统状态'],
+  ])('工作区 %s 保留统一页头并由内部区域滚动', async (route, page, title) => {
+    renderAt(route);
+    expect(await screen.findByTestId(`page-${page}`)).toBeInTheDocument();
+    expect(screen.getByText('NeoBot 面板')).toBeInTheDocument();
+    expect(within(screen.getByLabelText('当前位置')).getByText(title)).toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveClass('content--viewport');
   });
 
-  it('配置忙碌时阻止侧栏离开，干净状态允许离开', () => {
+  it('配置忙碌时阻止侧栏离开，干净状态允许离开', async () => {
     renderAt('/config');
+    await screen.findByTestId('page-config');
     window.dispatchEvent(new CustomEvent('dashboard-editor-state', { detail: { dirty: false, busy: true } }));
     fireEvent.click(screen.getByRole('link', { name: '系统' }));
     expect(screen.getByTestId('page-config')).toBeInTheDocument();
-    window.dispatchEvent(new CustomEvent('dashboard-editor-state', { detail: { dirty: false, busy: false } }));
+    window.dispatchEvent(
+      new CustomEvent('dashboard-editor-state', { detail: { dirty: false, busy: false } }),
+    );
     fireEvent.click(screen.getByRole('link', { name: '系统' }));
-    expect(screen.getByTestId('page-system')).toBeInTheDocument();
+    expect(await screen.findByTestId('page-system')).toBeInTheDocument();
   });
 
-  it('未保存修改离开侧栏需要确认', () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('未保存修改离开侧栏需要确认', async () => {
     renderAt('/config');
+    await screen.findByTestId('page-config');
     window.dispatchEvent(new CustomEvent('dashboard-editor-state', { detail: { dirty: true, busy: false } }));
     fireEvent.click(screen.getByRole('link', { name: '系统' }));
-    expect(confirm).toHaveBeenCalledOnce();
+    const dialog = await screen.findByRole('dialog', { name: '放弃未保存的修改？' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
     expect(screen.getByTestId('page-config')).toBeInTheDocument();
-    confirm.mockReturnValue(true);
     fireEvent.click(screen.getByRole('link', { name: '系统' }));
-    expect(screen.getByTestId('page-system')).toBeInTheDocument();
-    confirm.mockRestore();
+    fireEvent.click(await screen.findByRole('button', { name: '放弃并离开' }));
+    expect(await screen.findByTestId('page-system')).toBeInTheDocument();
   });
 
-  it('分析路由渲染分析页并高亮侧栏', () => {
+  it('跳到主内容只移动焦点，保留配置路由', async () => {
+    renderAt('/config');
+    await screen.findByTestId('page-config');
+    expect(fireEvent.click(screen.getByRole('link', { name: '跳到主内容' }))).toBe(false);
+    expect(screen.getByRole('main')).toHaveFocus();
+    expect(screen.getByTestId('page-config')).toBeInTheDocument();
+  });
+
+  it('折叠侧栏保留所有导航并持久化偏好', async () => {
+    renderAt('/dashboard');
+    await screen.findByTestId('page-dashboard');
+    fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    expect(localStorage.getItem('neobot-dashboard-sidebar')).toBe('collapsed');
+    expect(screen.getByRole('button', { name: '展开侧栏' })).toBeInTheDocument();
+    for (const label of NAV_LABELS) expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
+  });
+
+  it('分析路由渲染分析页并高亮侧栏', async () => {
     renderAt('/analysis');
 
-    expect(screen.getByTestId('page-analysis')).toBeInTheDocument();
+    expect(await screen.findByTestId('page-analysis')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '分析' })).toHaveClass('active');
   });
 
-  it('未知路由回落到仪表盘', () => {
+  it('未知路由回落到仪表盘', async () => {
     renderAt('/not-a-page');
 
-    expect(screen.getByTestId('page-dashboard')).toBeInTheDocument();
+    expect(await screen.findByTestId('page-dashboard')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '主页' })).toHaveClass('active');
   });
 
@@ -153,7 +219,7 @@ describe('应用外壳', () => {
     renderAt('/dashboard');
 
     expect(await screen.findByPlaceholderText('至少 8 个字符')).toBeInTheDocument();
-    expect(screen.getByText('设置面板密码')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '设置面板密码' })).toBeInTheDocument();
     expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '主页' })).not.toBeInTheDocument();
   });
@@ -191,7 +257,6 @@ describe('应用外壳', () => {
     expect(screen.queryByTestId('page-dashboard')).not.toBeInTheDocument();
   });
 });
-
 
 describe('首次设置密码后的跳转（issue #78）', () => {
   it('设置成功后直接进入仪表盘，不再被弹回登录页', async () => {

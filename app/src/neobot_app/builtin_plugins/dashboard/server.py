@@ -2,7 +2,8 @@
 
 与旧内置控制台不同，本面板是官方插件：配置来自插件数据目录的 config.toml
 （``plugins_data/dashboard/config.toml``，见 DashboardConfig），
-默认监听 0.0.0.0:9981（对网络开放），可通过 host/port/base_path 调整。
+默认监听 0.0.0.0:9981（对网络开放），可通过 host/port/base_path 调整，
+并用 allowed_ips 把可访问的**来源 IP** 收敛到白名单（回环地址始终放行）。
 """
 
 from __future__ import annotations
@@ -26,8 +27,10 @@ from .config import DashboardConfig
 from .config_manager import BotConfigManager, EnvFileManager
 from .metrics import Metrics, latency_sample_capacity
 from .security import (
+    IpAllowList,
     LoginLimiter,
     SessionStore,
+    build_ip_allow_list,
     client_ip,
     is_loopback,
     secrets_equal,
@@ -39,6 +42,11 @@ _STATIC_DIR = Path(__file__).resolve().parent / "web"
 _INDEX_FILE = _STATIC_DIR / "index.html"
 _API_PREFIX = "/api/"
 _PORT_SEARCH_LIMIT = 10
+#: 白名单拒绝日志的去重窗口（秒）
+_DENIED_LOG_INTERVAL = 300.0
+
+#: 白名单不拦的健康检查端点：反向代理/监控常从白名单外的机器探活
+_ALLOW_LIST_EXEMPT_PATHS = frozenset({"/healthz"})
 
 #: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
 _PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
@@ -118,6 +126,12 @@ class DashboardServer:
         self._allow_remote_manage = bool(config.allow_remote_manage)
         self.secure_cookies = bool(config.secure_cookies)
         self.trust_proxy = bool(config.trust_proxy_headers)
+
+        # 来源 IP 白名单（请求期判定，保存后原地生效；见 apply_runtime_config）
+        self.ip_allow_list: IpAllowList = build_ip_allow_list(config.allowed_ips)
+        self._warn_invalid_allow_entries(self.ip_allow_list)
+        #: 拒绝日志去重：ip -> 上次记录时间戳（避免公网扫描把日志刷爆）
+        self._denied_logged: dict[str, float] = {}
 
         self.sessions = SessionStore(timeout_seconds=config.session_timeout_minutes * 60)
         self.limiter = LoginLimiter(
@@ -331,11 +345,14 @@ class DashboardServer:
         )
         app.on_response_prepare.append(self._security_headers)
 
+        self._route(app, "GET", "/robots.txt", self._robots)
+        self._route(app, "HEAD", "/robots.txt", self._robots)
         self._route(app, "GET", "/healthz", self._healthz)
         self._route(app, "GET", "/api/auth/status", self.api.auth_status)
         self._route(app, "POST", "/api/auth/setup", self.api.auth_setup)
         self._route(app, "POST", "/api/auth/login", self.api.auth_login)
         self._route(app, "POST", "/api/auth/logout", self.api.auth_logout)
+        self._route(app, "POST", "/api/auth/password", self.api.auth_password)
         self._route(app, "GET", "/api/auth/me", self.api.auth_me)
 
         self._route(app, "GET", "/api/overview", self.api.overview)
@@ -468,10 +485,26 @@ class DashboardServer:
 
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
+        # robots 规则须公开读取；根路径与前缀别名均不依赖会话或扩展鉴权声明。
+        if request.method in {"GET", "HEAD"} and request.path in {
+            "/robots.txt",
+            f"{self.base_path}/robots.txt",
+        }:
+            return await handler(request)
         path = self._strip_base(request.path)
         ip = self.request_ip(request)
         loopback = is_loopback(ip)
         configured = self.passwords.configured
+
+        # 来源 IP 白名单：**最先**判定，连静态资源与 SPA 外壳都不放给名单外的来源。
+        # 回环地址由 IpAllowList.allows() 永久放行（白名单配错时的逃生通道）。
+        if path not in _ALLOW_LIST_EXEMPT_PATHS and not self.ip_allow_list.allows(ip):
+            self._note_denied(ip, path)
+            return _json_error(
+                "来源 IP 不在面板白名单（dashboard.allowed_ips）内",
+                status=403,
+                allowed_ips=False,
+            )
 
         if (
             path in _PRE_SESSION_STATE_CHANGE_PATHS
@@ -545,6 +578,7 @@ class DashboardServer:
         return await handler(request)
 
     async def _security_headers(self, request: web.Request, response: web.StreamResponse) -> None:
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, nosnippet, noimageindex"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
@@ -565,6 +599,14 @@ class DashboardServer:
     # ------------------------------------------------------------------
     # 静态资源
     # ------------------------------------------------------------------
+
+    async def _robots(self, request: web.Request) -> web.StreamResponse:
+        return web.Response(
+            text="User-agent: *\nDisallow: /\n",
+            content_type="text/plain",
+            charset="utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _index(self, request: web.Request) -> web.StreamResponse:
         if not _INDEX_FILE.is_file():
@@ -717,11 +759,35 @@ class DashboardServer:
             info["avatar_url"] = f"https://q1.qlogo.cn/g?b=qq&nk={info['user_id']}&s=640"
         return info
 
+    def _warn_invalid_allow_entries(self, allow_list: IpAllowList) -> None:
+        """白名单里有解析不了的条目时告警。
+
+        这些条目**不会**被当成放行：它们永远匹配不上，所以最终效果是除本机外全拒。
+        这条日志是用户唯一的线索，必须说清「不是没生效，而是把门关得更紧了」。
+        """
+        if not allow_list.invalid:
+            return
+        self.logger.warning(
+            "面板白名单含无法解析的条目，已忽略（除本机外将全部拒绝访问）: "
+            + ", ".join(allow_list.invalid)
+        )
+
+    def _note_denied(self, ip: str, path: str) -> None:
+        """记录一次白名单拒绝；同一来源 5 分钟内只记一条，防止公网扫描刷屏。"""
+        now = time.monotonic()
+        if now - self._denied_logged.get(ip, 0.0) < _DENIED_LOG_INTERVAL:
+            return
+        if len(self._denied_logged) >= 128:
+            self._denied_logged.clear()
+        self._denied_logged[ip] = now
+        self.logger.warning(f"面板拒绝白名单外的来源: ip={ip} path={path}")
+
     def apply_runtime_config(self, config: DashboardConfig) -> None:
         """让「运行期安全」的插件配置字段原地生效。
 
         只刷新不涉及监听端口 / 会话 / 安全开关的部分：
         - log_buffer_size / history_max_days：立刻重建内存缓冲与历史裁剪；
+        - allowed_ips：重新编译白名单，下一次请求立即按新名单判定；
         - bot_info_cache_ttl、延迟探针四项：由读取方按 runtime_config 按需取用。
 
         绑定期字段（host / port / base_path）与安全类字段**不在这里处理** —— 它们仍以
@@ -730,6 +796,8 @@ class DashboardServer:
         self.runtime_config = config
         self.metrics.set_log_buffer_capacity(config.log_buffer_size)
         self.metrics.set_history_max_days(config.history_max_days)
+        self.ip_allow_list = build_ip_allow_list(config.allowed_ips)
+        self._warn_invalid_allow_entries(self.ip_allow_list)
 
     async def probe_latency(self) -> float | None:
         """测量一次 API 往返延迟并写入指标。"""
@@ -759,6 +827,7 @@ class DashboardServer:
             "manage_plugins": self.manage_plugins,
             "allow_remote_manage": self.allow_remote_manage,
             "loopback_only": is_loopback(self.config.host),
+            "allowed_ips": self.ip_allow_list.describe(),
             "sessions": self.sessions.describe(),
             "system": system_module.snapshot(data_dir=self.data_dir),
             "extensions": self.describe_extensions(),

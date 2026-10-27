@@ -1,12 +1,18 @@
-import { useEffect, useId, useRef } from 'react';
-import type { ReactNode } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { X } from 'lucide-react';
+import { m, useAnimationControls } from 'motion/react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { cn } from '../utils/cn';
+import { useReducedEffects } from '../hooks/useReducedEffects';
 
 export interface ModalProps {
   open?: boolean;
   title?: ReactNode;
   onClose: () => void;
   children?: ReactNode;
+  /** 固定在滚动内容之外的操作区。 */
+  footer?: ReactNode;
+  closeDisabled?: boolean;
   size?: 'default' | 'wide';
   /** 额外类名（Tailwind 迁移期用于覆盖内边距等） */
   className?: string;
@@ -17,86 +23,103 @@ export function ModalActions({ children, className }: { children?: ReactNode; cl
   return <div className={cn('modal-actions', className)}>{children}</div>;
 }
 
-export default function Modal({ open, title, onClose, children, size = 'default', className }: ModalProps) {
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-  const closeRef = useRef(onClose);
-  const titleId = useId();
-  closeRef.current = onClose;
+export default function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  closeDisabled = false,
+  size = 'default',
+  className,
+}: ModalProps) {
+  const reducedMotion = useReducedEffects();
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const frame = useAnimationControls();
+  const slide = useAnimationControls();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    const previous = document.activeElement as HTMLElement | null;
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const focusable = (): HTMLElement[] => [
-      ...dialog.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [href], [tabindex="0"]',
-      ),
-    ];
-    // 优先聚焦显式声明的 [data-autofocus]，否则聚焦第一个可用控件。
-    // （不用原生 autoFocus：它由 React 在挂载时直接聚焦，这里的时序更可控）
-    (dialog.querySelector<HTMLElement>('[data-autofocus]') || focusable()[0] || dialog).focus();
-
-    function keyboard(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeRef.current();
-      }
-      if (event.key !== 'Tab') return;
-      const targets = focusable();
-      if (!targets.length) {
-        event.preventDefault();
-        dialog?.focus();
-        return;
-      }
-      const first = targets[0];
-      const last = targets[targets.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
-        event.preventDefault();
-        first.focus();
-      }
+    let disposed = false;
+    frame.stop();
+    slide.stop();
+    if (reducedMotion) {
+      frame.set({ opacity: 1 });
+      slide.set({ y: 0 });
+    } else {
+      // Radix Portal 在挂载后的布局更新才接上动画节点，避免首次打开时丢失 start。
+      queueMicrotask(() => {
+        if (disposed) return;
+        const transition = { duration: 0.18, ease: 'easeOut' as const };
+        void frame.start({ opacity: 1 }, transition);
+        void slide.start({ y: 0 }, transition);
+      });
     }
-
-    dialog.addEventListener('keydown', keyboard);
     return () => {
-      dialog.removeEventListener('keydown', keyboard);
-      previous?.focus();
+      disposed = true;
+      frame.stop();
+      slide.stop();
     };
-  }, [open]);
-
-  if (!open) return null;
+  }, [open, reducedMotion, frame, slide]);
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      // 点击遮罩自身关闭；点击对话框内部不冒泡到关闭逻辑（原先靠内部 stopPropagation）
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-      onKeyDown={(event) => {
-        // 背景可点击关闭，因此也需要键盘等价操作（Esc 在对话框内部另行处理）
-        if (event.key === 'Escape') onClose();
+    <Dialog.Root
+      open={!!open}
+      onOpenChange={(next) => {
+        if (!next && !closeDisabled) onClose();
       }}
     >
-      <div
-        className={cn('modal', size !== 'default' && `modal-${size}`, className)}
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        tabIndex={-1}
-      >
-        <div className="modal-head">
-          <h3 id={titleId}>{title}</h3>
-          <button className="icon-btn" aria-label="关闭对话框" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="modal-body">{children}</div>
-      </div>
-    </div>
+      <Dialog.Portal>
+        <Dialog.Overlay asChild>
+          <m.div className="modal-backdrop" initial={{ opacity: reducedMotion ? 1 : 0 }} animate={frame} />
+        </Dialog.Overlay>
+        <Dialog.Content
+          asChild
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => {
+            const active = document.activeElement;
+            // 多步设置返回此弹窗时，保留页内入口，避免记住即将卸载的上一步按钮。
+            if (
+              active instanceof HTMLElement &&
+              active !== document.body &&
+              (!returnFocusRef.current?.isConnected || !active.closest('[role="dialog"]'))
+            ) {
+              returnFocusRef.current = active;
+            }
+            const target = event.currentTarget as HTMLElement;
+            const preferred = target.querySelector<HTMLElement>('[data-autofocus]');
+            if (preferred) {
+              event.preventDefault();
+              preferred.focus();
+            }
+          }}
+          onCloseAutoFocus={(event) => {
+            const target = returnFocusRef.current;
+            if (target?.isConnected && target !== document.body) {
+              event.preventDefault();
+              target.focus({ preventScroll: true });
+            }
+          }}
+        >
+          <m.div
+            className={cn('modal', size !== 'default' && `modal-${size}`, className)}
+            initial={{ opacity: reducedMotion ? 1 : 0.85 }}
+            animate={frame}
+          >
+            <m.div className="modal-head" initial={{ y: reducedMotion ? 0 : 4 }} animate={slide}>
+              <Dialog.Title asChild>
+                <h3>{title}</h3>
+              </Dialog.Title>
+              <Dialog.Close className="icon-btn" aria-label="关闭对话框" disabled={closeDisabled}>
+                <X size={17} aria-hidden="true" />
+              </Dialog.Close>
+            </m.div>
+            <m.div className="modal-body" initial={{ y: reducedMotion ? 0 : 6 }} animate={slide}>
+              {children}
+            </m.div>
+            {footer != null && <div className="modal-footer">{footer}</div>}
+          </m.div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

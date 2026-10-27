@@ -1,0 +1,240 @@
+/* 会话、档案表和档案条目共享轻量记录列表，不再叠加大块卡片边框。 */
+.record-list-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.record-list-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--brand);
+  opacity: 0;
+}
+.record-list-item:hover {
+  background: var(--panel-2);
+}
+.record-list-item[aria-current='true'] {
+  border-color: transparent;
+  background: var(--brand-soft);
+}
+.record-list-item[aria-current='true']::before {
+  opacity: 1;
+}
+.record-list-item:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+.record-list-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  background: transparent;
+}
+.record-list-item[aria-current='true'] .record-list-icon {
+  color: var(--brand-hover);
+  background: var(--panel);
+}
+.record-list-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.record-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 18px;
+}
+.record-list-title > :is(strong, code) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.record-list-item[aria-current='true'] .record-list-title > :is(strong, code) {
+  color: var(--brand-hover);
+}
+.record-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--ok);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.record-running i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.record-list-subtitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.record-list-subtitle code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+}
+.record-list-subtitle time {
+  flex-shrink: 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.record-list-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.record-list-flags .tag {
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.record-list-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.chat-flow-list .viewer-list-scroll {
+  padding: 8px;
+}
+.chat-flow-list .viewer-list-scroll > li + li,
+.archives-table-list > li + li,
+.archive-entry-list > li + li {
+  margin-top: 3px;
+}
+.archive-workspace .archives-table-key.record-list-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  padding: 12px;
+}
+.archives-table-key .record-list-icon {
+  width: 24px;
+  height: 24px;
+}
+.archives-table-key .record-list-title {
+  flex-wrap: nowrap;
+}
+.archives-table-key .record-list-title code {
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.archives-table-key .record-list-subtitle {
+  font-size: 11px;
+}
+.archive-table-count {
+  flex-shrink: 0;
+  min-width: 22px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.archive-entry.record-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  padding: 16px;
+  gap: 12px;
+}
+.archive-entry-list > li + li::before {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: 4px 16px;
+  background: var(--border-soft);
+}
+.archive-entry .record-list-copy {
+  gap: 8px;
+}
+.archive-entry.record-list-item .archive-entry-heading {
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+.archive-entry.record-list-item .archive-entry-heading code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.archive-entry.record-list-item .archives-preview {
+  font-size: 13px;
+  line-height: 1.75;
+}
+.archive-entry.record-list-item .archive-entry-meta {
+  gap: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.archive-entry-length {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.archive-entry-length > span {
+  color: var(--text-secondary);
+}
+.archive-entry-chevron {
+  display: flex;
+  color: var(--muted);
+}
+.archive-entry[aria-current='true'] .archive-entry-chevron {
+  color: var(--brand-hover);
+}
+@media (pointer: coarse) {
+  .record-list-item {
+    min-height: 64px;
+  }
+}

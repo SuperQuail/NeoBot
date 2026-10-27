@@ -11,6 +11,16 @@ import {
   subscribe,
 } from '../data/queryCore';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 afterEach(() => {
   clearQueries();
   vi.useRealTimers();
@@ -50,9 +60,13 @@ describe('queryCore', () => {
   });
 
   it('失败时记录 error 且不抛异常', async () => {
-    getEntry<string>('k3', async () => {
-      throw new Error('boom');
-    }, 0);
+    getEntry<string>(
+      'k3',
+      async () => {
+        throw new Error('boom');
+      },
+      0,
+    );
     await expect(fetchQuery<string>('k3')).resolves.toBeNull();
     expect(getQuerySnapshot<string>('k3').error).toBe('boom');
   });
@@ -60,11 +74,143 @@ describe('queryCore', () => {
   it('订阅者能收到状态变化；setQueryData 直接落缓存', async () => {
     getEntry<number>('k4', async () => 1, 0);
     const listener = vi.fn();
-    const unsubscribe = subscribe(getEntry<number>('k4', async () => 1, 0), listener);
+    const unsubscribe = subscribe(
+      getEntry<number>('k4', async () => 1, 0),
+      listener,
+    );
     setQueryData<number>('k4', 7);
     expect(listener).toHaveBeenCalled();
     expect(getQuerySnapshot<number>('k4').data).toBe(7);
     unsubscribe();
+  });
+
+  it('自动读取返回空响应时保留上次数据和时间，之后可恢复', async () => {
+    const fetcher = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValueOnce('recent')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('recovered');
+    getEntry('retain', fetcher);
+    await fetchQuery('retain');
+    const updatedAt = getQuerySnapshot('retain').updatedAt;
+    await fetchQuery('retain', { force: true });
+    expect(getQuerySnapshot('retain')).toMatchObject({
+      data: 'recent',
+      updatedAt,
+      error: 'no-data',
+      loading: false,
+    });
+    await fetchQuery('retain', { force: true });
+    expect(getQuerySnapshot('retain')).toMatchObject({ data: 'recovered', error: null });
+  });
+
+  it.each(['success', 'error'] as const)(
+    '权威写回后忽略旧请求的 %s 结果，失效会在其结束后自动重新读取',
+    async (outcome) => {
+      const stale = deferred<string>();
+      const fresh = deferred<string>();
+      const fetcher = vi
+        .fn<() => Promise<string>>()
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(fresh.promise);
+      const entry = getEntry<string>('authoritative', fetcher, 0);
+      const earlier = fetchQuery<string>('authoritative');
+
+      setQueryData('authoritative', 'confirmed');
+      invalidateQueries(['authoritative']);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      if (outcome === 'success') stale.resolve('stale');
+      else stale.reject(new Error('stale error'));
+
+      await expect(earlier).resolves.toBe('confirmed');
+      expect(getQuerySnapshot<string>('authoritative')).toMatchObject({
+        data: 'confirmed',
+        error: null,
+        loading: false,
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(entry.promise).not.toBeNull();
+
+      const followup = entry.promise;
+      fresh.resolve('next');
+      await expect(followup).resolves.toBe('next');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(getQuerySnapshot<string>('authoritative')).toMatchObject({
+        data: 'next',
+        error: null,
+        loading: false,
+      });
+      expect(entry.promise).toBeNull();
+    },
+  );
+
+  it.each(['success', 'error'] as const)(
+    '没有权威写回时，重复失效合并成一次尾读并丢弃旧 %s 结果',
+    async (outcome) => {
+      const stale = deferred<string>();
+      const fresh = deferred<string>();
+      const fetcher = vi
+        .fn<() => Promise<string>>()
+        .mockResolvedValueOnce('before')
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(fresh.promise);
+      const entry = getEntry('write:pending', fetcher);
+      await fetchQuery('write:pending');
+      const snapshots: Array<{ data: unknown; error: string | null }> = [];
+      subscribe(entry, () => {
+        snapshots.push({ data: entry.state.data, error: entry.state.error });
+      });
+      const earlier = fetchQuery('write:pending', { force: true });
+
+      invalidateQueries(['write:']);
+      invalidateQueries(['write:pending']);
+      invalidateQueries(['write:', 'write:pending']);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(entry.pendingInvalidate).toBe(true);
+      if (outcome === 'success') stale.resolve('stale');
+      else stale.reject(new Error('stale error'));
+
+      await expect(earlier).resolves.toBe('before');
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(entry.pendingInvalidate).toBe(false);
+      expect(getQuerySnapshot('write:pending')).toMatchObject({ data: 'before', error: null });
+      const followup = entry.promise;
+      fresh.resolve('after-write');
+      await expect(followup).resolves.toBe('after-write');
+      expect(getQuerySnapshot('write:pending')).toMatchObject({
+        data: 'after-write',
+        error: null,
+        loading: false,
+      });
+      expect(snapshots.every((snapshot) => snapshot.data !== 'stale' && snapshot.error === null)).toBe(true);
+      expect(entry.promise).toBeNull();
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('清空缓存取消待补读取，旧请求结束不能读写同 key 的新会话', async () => {
+    const stale = deferred<string>();
+    const oldFetcher = vi.fn(() => stale.promise);
+    const oldEntry = getEntry('session', oldFetcher);
+    const listener = vi.fn();
+    subscribe(oldEntry, listener);
+    const earlier = fetchQuery('session');
+    invalidateQueries(['session']);
+    expect(oldEntry.pendingInvalidate).toBe(true);
+
+    clearQueries();
+    listener.mockClear();
+    const newFetcher = vi.fn(async () => 'new-session');
+    getEntry('session', newFetcher);
+    await fetchQuery('session');
+    stale.resolve('old-session');
+    await expect(earlier).resolves.toBeNull();
+
+    expect(oldEntry.pendingInvalidate).toBe(false);
+    expect(oldFetcher).toHaveBeenCalledTimes(1);
+    expect(newFetcher).toHaveBeenCalledTimes(1);
+    expect(listener).not.toHaveBeenCalled();
+    expect(getQuerySnapshot('session')).toMatchObject({ data: 'new-session', error: null, loading: false });
   });
 
   it('invalidateQueries 按前缀匹配并强制重取', async () => {

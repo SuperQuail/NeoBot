@@ -126,32 +126,77 @@ LOGIN_PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>B站扫码登录 · NeoBot 面板</title>
 <style>
-body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: #f5f6f8; color: #1f2329; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { width: min(92vw, 380px); box-sizing: border-box; padding: 28px; border-radius: 16px;
-  background: #fff; box-shadow: 0 12px 36px rgba(0, 0, 0, .08); text-align: center; }
-h1 { margin: 0 0 18px; font-size: 18px; }
-#qr { width: 220px; height: 220px; margin: 0 auto 14px; box-sizing: border-box;
+:root { color-scheme: light; --canvas: #f6fcff; --panel: #fff; --inset: #eef9ff;
+  --ink: #1f3a4d; --secondary: #526e80; --line: #d2e5f0; --brand: #0369a1;
+  --brand-hover: #075985; --brand-soft: #e0f2fe; --danger: #b43c36;
+  --shadow: 0 12px 40px rgba(15, 34, 56, .06); }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center;
+  padding: 28px 20px; background: var(--canvas); color: var(--ink);
+  font: 14px/1.65 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased; }
+main { width: min(100%, 440px); }
+.page-nav { display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 0 2px 20px; }
+.wordmark { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; }
+.wordmark span { display: grid; place-items: center; width: 29px; height: 29px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--brand-soft);
+  color: var(--brand); font-size: 15px; }
+.login-panel { padding: 30px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); box-shadow: var(--shadow); text-align: center; }
+h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.4; font-weight: 650; letter-spacing: -.02em; }
+.intro { margin: 0 auto 26px; max-width: 30ch; color: var(--secondary); font-size: 13px; }
+#qr { width: 232px; height: 232px; max-width: 100%; margin: 0 auto 20px; padding: 12px;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
-  border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; }
-#qr img { width: 100%; height: 100%; object-fit: contain; }
-#qr.placeholder { padding: 20px; color: #8a919f; font-size: 13px; }
-#status { min-height: 22px; margin: 0 0 18px; font-size: 14px; line-height: 1.5; color: #4e5969; }
-button { padding: 10px 22px; border: 0; border-radius: 10px; background: #00a1d6;
-  color: #fff; font-size: 14px; cursor: pointer; }
-button:disabled { opacity: .55; cursor: default; }
-a { display: block; margin-top: 14px; color: #8a919f; font-size: 13px; text-decoration: none; }
-a:hover { color: #00a1d6; }
-a.qr-link { display: inline; margin: 0; color: #00a1d6; }
+  border: 1px solid #d2e5f0; border-radius: 7px; background: #fff; color: #526e80; }
+#qr img { display: block; width: 100%; height: 100%; object-fit: contain; }
+#qr.placeholder { padding: 24px; font-size: 13px; }
+#status { min-height: 48px; margin: 0 0 20px; color: var(--secondary); font-size: 13px;
+  line-height: 1.7; overflow-wrap: anywhere; }
+#status.is-error { color: var(--danger); }
+button { min-height: 40px; width: 100%; padding: 9px 20px; border: 1px solid transparent;
+  border-radius: 5px; background: var(--brand); color: #fff; font: inherit; font-weight: 550;
+  cursor: pointer; transition: background-color .15s ease, transform .15s ease; }
+button:hover:not(:disabled) { background: var(--brand-hover); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { background: var(--inset); border-color: var(--line); color: var(--secondary);
+  cursor: not-allowed; }
+a { color: var(--secondary); font-size: 12px; text-decoration: none; }
+a:hover { color: var(--brand); text-decoration: underline; text-underline-offset: 4px; }
+a.qr-link { display: inline; color: var(--brand); font-size: 13px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; }
+.privacy-note { margin: 16px 12px 0; color: var(--secondary); font-size: 11px; text-align: center; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; --canvas: #0f2238; --panel: #19304c; --inset: #122a43;
+    --ink: #e7f6ff; --secondary: #9cb7cb; --line: #2a3d5e; --brand: #7dd3fc;
+    --brand-hover: #bae6fd; --brand-soft: #143c5a; --danger: #ffaaa2;
+    --shadow: 0 12px 40px rgba(0, 0, 0, .18); }
+  :root:not([data-theme="light"]) button:not(:disabled) { color: #0f2238; }
+}
+:root[data-theme="dark"] { color-scheme: dark; --canvas: #0f2238; --panel: #19304c; --inset: #122a43;
+  --ink: #e7f6ff; --secondary: #9cb7cb; --line: #2a3d5e; --brand: #7dd3fc;
+  --brand-hover: #bae6fd; --brand-soft: #143c5a; --danger: #ffaaa2;
+  --shadow: 0 12px 40px rgba(0, 0, 0, .18); }
+:root[data-theme="dark"] button:not(:disabled) { color: #0f2238; }
+@media (max-width: 480px) { body { padding: 24px 16px; }
+  .login-panel { padding: 24px 20px; } button { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>B站扫码登录</h1>
+  <nav class="page-nav" aria-label="页面导航">
+    <div class="wordmark"><span aria-hidden="true">N</span>NeoBot</div>
+    <a href="../">返回面板</a>
+  </nav>
+  <section class="login-panel" aria-labelledby="login-title">
+  <h1 id="login-title">B站扫码登录</h1>
+  <p class="intro">使用 B站 App 扫码，并在手机上确认登录。</p>
   <div id="qr" class="placeholder">正在准备二维码…</div>
   <p id="status" role="status">读取登录状态…</p>
   <button id="refresh" type="button" disabled>刷新二维码</button>
-  <a href="../">← 返回面板</a>
+  </section>
+  <p class="privacy-note">登录后，NeoBot 将使用此账号访问 B站内容。</p>
 </main>
 <script src="login.js" defer></script>
 </body>
@@ -160,6 +205,12 @@ a.qr-link { display: inline; margin: 0; color: #00a1d6; }
 
 LOGIN_SCRIPT = """(function () {
   "use strict";
+  try {
+    var theme = window.localStorage.getItem("neobot-dashboard-theme");
+    if (theme === "light" || theme === "dark") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  } catch (error) { /* 浏览器禁用存储时跟随系统主题。 */ }
   var API = "../api/bilibili/login/";
   var qrBox = document.getElementById("qr");
   var statusText = document.getElementById("status");
@@ -176,7 +227,7 @@ LOGIN_SCRIPT = """(function () {
 
   function setStatus(text, isError) {
     statusText.textContent = text;
-    statusText.style.color = isError ? "#d4380d" : "";
+    statusText.classList.toggle("is-error", !!isError);
   }
 
   function placeholder(text) {

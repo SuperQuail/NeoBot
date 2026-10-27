@@ -7,7 +7,7 @@ import type { ConfigDocument, Plugin, ProxyInfo, Result } from '../../api/types'
 export type ActResult = Result<any> | undefined;
 
 export interface PluginActionHandlers {
-  /** 执行一次受管操作：内部维护 operation/busyRef 并 toast 结果 */
+  /** 执行一次受管操作：内部维护 operation/busyRef 并 notify 结果 */
   act: (key: string, fn: () => Promise<Result<any>>, success: string) => Promise<ActResult>;
   load: () => Promise<void>;
   read: (id: string) => Promise<void>;
@@ -39,10 +39,8 @@ export interface PluginListPanelProps {
   listLoading: boolean;
   listError: string;
   operation: string;
-  permissions: PluginPermissions;
   proxy: ProxyInfo;
   onSelect: (plugin: Plugin) => void;
-  onOpenInstall: () => void;
   onOpenProxy: () => void;
   onReload: () => void;
 }
@@ -50,6 +48,7 @@ export interface PluginListPanelProps {
 /** 右侧编辑器（工具条 + 详情 + 配置体 + 页脚） */
 export interface PluginEditorPanelProps extends PluginActionHandlers {
   selected?: Plugin;
+  selectedPresent: boolean;
   selectedId: string;
   itemsCount: number;
   statusLabels: Record<string, string>;
@@ -61,7 +60,6 @@ export interface PluginEditorPanelProps extends PluginActionHandlers {
   draft: Record<string, any>;
   errors: Array<{ path?: string; message?: string }>;
   configError: string;
-  notice: { text?: string; warning?: boolean } | null;
   loading: boolean;
   operation: string;
   dirty: boolean;

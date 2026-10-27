@@ -1,5 +1,89 @@
 // pages/config/shared.ts —— 配置管理各面板共用的小工具与类型
+import { useCallback, useEffect, useRef, useState } from 'react';
+export { useEditorGuard } from '../../hooks/useEditorGuard';
 import type { FieldDescriptor } from '../../api/types';
+import { notify } from '../../notifications/infoBar';
+import { isEditingSurfaceActive, useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { POLL } from '../../data/queryKeys';
+
+/** 自动读取不占用写操作锁；回包前重新检查草稿、基线与期间发生的交互。 */
+export function useConfigAutoRead<T>({
+  enabled,
+  identity,
+  read,
+  apply,
+  onError,
+  fallback,
+}: {
+  enabled: boolean;
+  identity: unknown;
+  read: () => Promise<{ ok: boolean; data: T | null; error: string | null }>;
+  apply: (data: T) => void;
+  onError: (message: string) => void;
+  fallback: string;
+}) {
+  const latest = useRef({ enabled, identity, read, apply, onError, fallback });
+  latest.current = { enabled, identity, read, apply, onError, fallback };
+  const generation = useRef(0);
+  const mounted = useRef(false);
+  const invalidate = useCallback(() => {
+    generation.current++;
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      invalidate();
+    };
+  }, [invalidate]);
+
+  useAutoRefresh(
+    async () => {
+      const started = latest.current;
+      if (!started.enabled) return;
+      const ticket = generation.current;
+      const canApply = () =>
+        mounted.current &&
+        ticket === generation.current &&
+        latest.current.enabled &&
+        latest.current.identity === started.identity &&
+        !isEditingSurfaceActive();
+      try {
+        const result = await started.read();
+        if (!canApply()) return;
+        if (result.ok && result.data) latest.current.apply(result.data);
+        else latest.current.onError(result.error || started.fallback);
+      } catch (error) {
+        if (canApply()) latest.current.onError(error instanceof Error ? error.message : started.fallback);
+      }
+    },
+    { enabled, interval: POLL.editor },
+  );
+
+  return invalidate;
+}
+
+export function useEditorOperation() {
+  const [busy, setBusy] = useState('');
+  const active = useRef(false);
+  const runOperation = useCallback(
+    async <T>(name: string, action: () => Promise<T>): Promise<T | undefined> => {
+      if (active.current) return;
+      active.current = true;
+      setBusy(name);
+      try {
+        return await action();
+      } catch (error) {
+        notify(error instanceof Error ? error.message : '操作失败，请重试', 'err');
+      } finally {
+        active.current = false;
+        setBusy('');
+      }
+    },
+    [],
+  );
+  return { busy, runOperation };
+}
 
 export interface Leaf {
   path: string[];

@@ -47,8 +47,6 @@ export function useQuery<T>(
     void fetchQuery(queryKey, { force: changed || refetchOnMount });
     if (interval > 0) return addPoller(queryKey, entry);
     return undefined;
-    // depsKey 已覆盖 deps 的全部语义
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryKey, depsKey, interval, entry, refetchOnMount]);
 
   const refetch = useCallback(() => fetchQuery<T>(queryKey, { force: true }), [queryKey]);
@@ -76,43 +74,41 @@ export interface UseMutationResult<T, A extends unknown[]> {
 
 export function useMutation<T, A extends unknown[] = []>(
   action: (...args: A) => Promise<T | null>,
-  { invalidate, onSuccessData, onSuccess, onError }: UseMutationOptions<T> = {},
+  options: UseMutationOptions<T> = {},
 ): UseMutationResult<T, A> {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<T | null>(null);
   const actionRef = useRef(action);
   actionRef.current = action;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
-  const run = useCallback(
-    async (...args: A) => {
-      setBusy(true);
-      setError(null);
-      try {
-        const result = await actionRef.current(...args);
-        if (result == null) {
-          setError('no-data');
-          onError?.('no-data');
-          return null;
-        }
-        setData(result);
-        if (invalidate?.length) invalidateQueries(invalidate);
-        onSuccessData?.(result);
-        onSuccess?.(result);
-        return result;
-      } catch (e) {
-        const message = (e as Error).message || String(e);
-        setError(message);
-        onError?.(message);
+  const run = useCallback(async (...args: A) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await actionRef.current(...args);
+      if (result == null) {
+        setError('no-data');
+        optionsRef.current.onError?.('no-data');
         return null;
-      } finally {
-        setBusy(false);
       }
-    },
-    // invalidate 为字面量数组时每次渲染都会新建，用 JSON 做稳定依赖
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(invalidate ?? [])],
-  );
+      setData(result);
+      const currentOptions = optionsRef.current;
+      if (currentOptions.invalidate?.length) invalidateQueries(currentOptions.invalidate);
+      currentOptions.onSuccessData?.(result);
+      currentOptions.onSuccess?.(result);
+      return result;
+    } catch (e) {
+      const message = (e as Error).message || String(e);
+      setError(message);
+      optionsRef.current.onError?.(message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const reset = useCallback(() => {
     setError(null);

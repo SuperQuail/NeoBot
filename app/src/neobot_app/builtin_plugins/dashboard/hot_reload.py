@@ -24,6 +24,10 @@ if TYPE_CHECKING:  # pragma: no cover - 仅类型检查
 #: 运行期安全：这些字段的改动保存后立即生效，无需重启、无需重载插件
 _RUNTIME_SAFE: tuple[tuple[str, str], ...] = (
     (
+        "allowed_ips",
+        "白名单在每次请求时判定，保存后下一个请求即按新名单放行/拒绝",
+    ),
+    (
         "latency_probe_interval_seconds",
         "延迟探针每轮重读插件配置，保存后下一轮生效（interval=0 会立即关闭探针）",
     ),

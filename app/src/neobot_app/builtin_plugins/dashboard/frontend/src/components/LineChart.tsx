@@ -4,9 +4,9 @@
 // 悬停：鼠标进入绘图区时按最近的数据点画一条竖直参考线 + 高亮点，
 // 并在光标旁弹出「x 轴标签 + 数值」的详细提示（labels / name / fmtValue），
 // 另可用 extraRows 追加该点的其它指标（用量页就是把同一时间档的调用 / Token / 花费一起列出）。
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 
-const H = 140; // 高度仍固定
+const DEFAULT_H = 140;
 const PAD = { l: 40, r: 20, t: 20, b: 20 };
 const DEFAULT_W = 600; // SSR / 首帧兜底宽度
 
@@ -24,6 +24,12 @@ export interface LineChartProps {
   fmtValue?: (value: number) => string;
   /** 数据列名称（悬停提示的第一行与无障碍描述里使用） */
   name?: string;
+  /** 工作台图表随可用空间伸缩；其它页面保持原有高度。 */
+  fit?: boolean;
+  /** 在图内显示稀疏日期刻度，完整标签仍显示在提示中。 */
+  showXAxis?: boolean;
+  /** 独立格式化轴标签，悬停仍保留完整时间。 */
+  xTickFormatter?: (label: string, index: number) => string;
   /**
    * 悬停提示里、主数值之外的附加明细（如该时间桶的调用次数 / 其它 Token 口径）。
    * 只在真正悬停时调用，参数是数据点序号。
@@ -53,11 +59,16 @@ export default function LineChart({
   labels,
   fmtValue,
   name,
+  fit = false,
+  showXAxis = false,
+  xTickFormatter,
   extraRows,
 }: LineChartProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(DEFAULT_W);
+  const [height, setHeight] = useState(DEFAULT_H);
+  const gradientId = useId().replace(/:/g, '');
   const [hover, setHover] = useState<HoverState | null>(null);
   // 提示框实测尺寸：用它决定往上还是往下弹、以及贴左 / 贴右 / 居中
   const [tipSize, setTipSize] = useState({ w: 0, h: 0 });
@@ -76,29 +87,35 @@ export default function LineChart({
     const el = wrapRef.current;
     if (!el) return;
 
-    const apply = (w: number) => {
+    const apply = (w: number, h: number) => {
       if (w > 0) setWidth(Math.round(w));
+      if (fit && h > 0) setHeight(Math.max(64, Math.round(h)));
     };
 
     // 首帧先量一次（useLayoutEffect 中，paint 之前完成，不会闪）
-    apply(el.getBoundingClientRect().width);
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      apply(rect.width, rect.height);
+    };
+    measure();
 
     if (typeof ResizeObserver === 'undefined') {
       // 极老环境兜底
-      const onResize = () => apply(el.getBoundingClientRect().width);
+      const onResize = measure;
       window.addEventListener('resize', onResize);
       return () => window.removeEventListener('resize', onResize);
     }
 
     const ro = new ResizeObserver((entries) => {
-      apply(entries[0].contentRect.width);
+      apply(entries[0].contentRect.width, entries[0].contentRect.height);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [fit]);
 
   // 保证 innerW 不为负
   const W = Math.max(PAD.l + PAD.r + 1, width);
+  const H = fit ? height : DEFAULT_H;
   const innerW = W - PAD.l - PAD.r;
   const innerH = H - PAD.t - PAD.b;
 
@@ -120,15 +137,7 @@ export default function LineChart({
       return -1;
     })();
     const last = lastIndex >= 0 ? formatValue(numeric[lastIndex] as number) : '—';
-    return (
-      series +
-      '：共 ' +
-      n +
-      ' 个数据点，最新 ' +
-      last +
-      '，峰值 ' +
-      formatValue(peak)
-    );
+    return series + '：共 ' + n + ' 个数据点，最新 ' + last + '，峰值 ' + formatValue(peak);
   })();
 
   const svgProps = {
@@ -162,7 +171,7 @@ export default function LineChart({
 
   if (valid.length === 0) {
     return (
-      <div ref={wrapRef} className="lc-wrap" style={{ width: '100%' }}>
+      <div ref={wrapRef} className={'lc-wrap' + (fit ? ' lc-wrap--fit' : '')} style={{ width: '100%' }}>
         <svg {...svgProps}>
           <text x={W / 2} y={H / 2} textAnchor="middle" className="lc-empty-text">
             暂无数据
@@ -172,8 +181,20 @@ export default function LineChart({
     );
   }
 
-  const min = 0;
-  const max = Math.max(1, ...valid) * 1.1;
+  const rawMin = Math.min(0, ...valid);
+  const rawMax = Math.max(fit ? 0 : 1, ...valid);
+  const extent = Math.max(rawMax, -rawMin) || 1;
+  const tickPower = 10 ** Math.floor(Math.log10(extent / 2));
+  const tickStep = ([1, 2, 2.5, 5, 10].find((step) => step * tickPower >= extent / 2) || 10) * tickPower;
+  const min = rawMin < 0 ? (fit ? Math.floor(rawMin / tickStep) * tickStep : rawMin * 1.1) : 0;
+  const max = fit
+    ? rawMax > 0
+      ? Math.ceil(rawMax / tickStep) * tickStep
+      : rawMin < 0
+        ? 0
+        : tickStep * 2
+    : rawMax * 1.1;
+  const zeroY = PAD.t + (1 - (0 - min) / (max - min || 1)) * innerH;
 
   const pts: Array<[number, number] | null> = numeric.map((v, i) => {
     if (v == null) return null;
@@ -197,10 +218,10 @@ export default function LineChart({
   // 面积
   const vpts = pts.filter((p): p is [number, number] => p != null);
   let dArea = 'M' + vpts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' L');
-  dArea += ` L${vpts[vpts.length - 1][0].toFixed(1)},${H - PAD.b}`;
-  dArea += ` L${vpts[0][0].toFixed(1)},${H - PAD.b} Z`;
+  dArea += ` L${vpts[vpts.length - 1][0].toFixed(1)},${zeroY}`;
+  dArea += ` L${vpts[0][0].toFixed(1)},${zeroY} Z`;
 
-  const yTicks = [0, max / 2, max];
+  const yTicks = min < 0 ? Array.from(new Set([min, 0, max])) : [0, max / 2, max];
 
   // 悬停：数值刷新后旧序号可能越界，一律以当前长度为准
   const hoverIndex = hover && hover.index < n ? hover.index : null;
@@ -241,12 +262,18 @@ export default function LineChart({
   return (
     <div
       ref={wrapRef}
-      className="lc-wrap"
+      className={'lc-wrap' + (fit ? ' lc-wrap--fit' : '')}
       style={{ width: '100%' }}
       onMouseMove={handleMove}
       onMouseLeave={clearHover}
     >
       <svg {...svgProps}>
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--chart-color, var(--brand))" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="var(--chart-color, var(--brand))" stopOpacity="0.015" />
+          </linearGradient>
+        </defs>
         <g className="lc-grid">
           {yTicks.map((v, i) => {
             const y = PAD.t + (1 - (v - min) / (max - min || 1)) * innerH;
@@ -260,17 +287,28 @@ export default function LineChart({
             );
           })}
         </g>
-        <path className="lc-area" d={dArea} />
+        <path className="lc-area" d={dArea} style={fit ? { fill: `url(#${gradientId})` } : undefined} />
         <path className="lc-line" d={dLine.trim()} />
+        {showXAxis &&
+          labels &&
+          Array.from(new Set([0, Math.floor((n - 1) / 2), n - 1])).map((index) => (
+            <text
+              key={index}
+              className="lc-x-label"
+              x={xOf(index)}
+              y={H - 3}
+              textAnchor={index === 0 ? 'start' : index === n - 1 ? 'end' : 'middle'}
+            >
+              {xTickFormatter
+                ? xTickFormatter(labels[index], index)
+                : labels[index]?.match(/^\d{4}-\d{2}-\d{2}/)
+                  ? labels[index].slice(5, 10).replace('-', '/')
+                  : labels[index]}
+            </text>
+          ))}
         {hoverIndex !== null && (
           <g className="lc-cursor">
-            <line
-              className="lc-guide"
-              x1={xOf(hoverIndex)}
-              y1={PAD.t}
-              x2={xOf(hoverIndex)}
-              y2={H - PAD.b}
-            />
+            <line className="lc-guide" x1={xOf(hoverIndex)} y1={PAD.t} x2={xOf(hoverIndex)} y2={H - PAD.b} />
             {hoverPoint && <circle className="lc-dot" cx={hoverPoint[0]} cy={hoverPoint[1]} r={3.5} />}
           </g>
         )}

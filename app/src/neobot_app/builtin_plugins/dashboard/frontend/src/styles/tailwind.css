@@ -37,7 +37,7 @@
   --color-info: var(--info);
 
   --radius-card: var(--radius);
-  --radius-control: 9px;
+  --radius-control: 8px;
 
   --shadow-panel: var(--shadow);
 
@@ -46,8 +46,10 @@
    * 若值仍指向 `--font-sans` 就成了自引用，浏览器会判定为无效值把字体族置空。
    * 这里的清单必须与 theme.css 的 --font-sans / --font-mono 保持一致。
    */
-  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans:
+    'Inter Variable', 'Noto Sans SC', 'Microsoft YaHei UI', 'PingFang SC', 'Microsoft YaHei',
+    'Noto Sans CJK SC', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', Consolas, 'Microsoft YaHei UI', monospace;
 }
 
 /* Preflight 会重置部分元素样式，这里补回面板依赖的细节 */

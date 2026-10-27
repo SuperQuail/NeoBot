@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -29,6 +31,13 @@ class DashboardConfig(BaseModel):
     base_path: str = Field(
         default="",
         description="访问前缀，用于反向代理子路径部署（如 /neobot），留空表示根路径。",
+    )
+    allowed_ips: list[str] = Field(
+        default=[],
+        description=(
+            "仅允许这些来源 IP 或 CIDR 访问面板（如 192.168.1.0/24），留空表示不限制。"
+            "回环地址（本机）始终放行；条目解析失败只表示该条永不匹配，不会放开限制。"
+        ),
     )
     manage_plugins: bool = Field(
         default=True,
@@ -127,6 +136,33 @@ class DashboardConfig(BaseModel):
         if not normalized.startswith("/"):
             raise ValueError("dashboard.base_path 必须以 / 开头")
         return normalized.rstrip("/")
+
+    @field_validator("allowed_ips", mode="before")
+    @classmethod
+    def _normalize_allowed_ips(cls, value: Any) -> list[str]:
+        """去空白、丢空项、按出现顺序去重；单个字符串也当成一项。
+
+        **故意不校验条目能否解析、也不要求元素是字符串**：这里抛错会让
+        ``validate_plugin_config`` 把整个字段回落到默认值（空列表 = 不限制），
+        一处笔误反而把白名单整体关掉（fail-open）。解析失败交给
+        ``build_ip_allow_list`` 记成 invalid —— 它永不匹配，结果是除本机外全拒
+        （fail-closed），面板仍能在本机修回来。
+        """
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            value = [value]
+        items: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            text = str(raw or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            items.append(text)
+        return items
 
     @property
     def prefix(self) -> str:

@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
 verified_against: 2d7925b
-verified_hash: 8ff1428b9fa6
+verified_hash: 5c90378f651b
 ---
 
 # 03b 回复管线的工具面：模型看到什么工具 · 谁执行 · 结果怎么回灌
@@ -389,7 +389,7 @@ flowchart TD
     D -- 否 --> E["_start_session_tool 起 asyncio task"]
     D -- 是 --> F{"已有排队项?"}
     F -- 是 --> F1["ok=false status=queue_full（上限 1 运行 + 1 排队）"]
-    F -- 否 --> F2["入队；返回 status=queued，要求立即结束本轮"]
+    F -- 否 --> F2["入队；返回 status=queued，可继续聊天/做其他事"]
     E --> G["_run_session_tool：wait_for(execute, timeout_seconds + 10)"]
     G --> H{"_classify_session_result"}
     H -- 成功 --> H1["status=completed + 会话工具结果通知"]

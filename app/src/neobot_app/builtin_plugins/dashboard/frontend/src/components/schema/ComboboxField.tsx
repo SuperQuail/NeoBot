@@ -3,7 +3,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FieldDescriptor } from '../../api/types';
 import { FieldActions, HotBadge } from './FieldChrome';
 import type { FieldCallbacks } from './fieldTypes';
-function ComboboxField({ descriptor, value, onChange, disabled, changed, onRestore, onShowHistory, historyCount }: { descriptor: FieldDescriptor } & FieldCallbacks) {
+function ComboboxField({
+  descriptor,
+  value,
+  onChange,
+  disabled,
+  changed,
+  onRestore,
+  onShowHistory,
+  historyCount,
+}: { descriptor: FieldDescriptor } & FieldCallbacks) {
   const options = useMemo(
     () => (Array.isArray(descriptor.options) ? descriptor.options : []),
     [descriptor.options],
@@ -14,6 +23,7 @@ function ComboboxField({ descriptor, value, onChange, disabled, changed, onResto
   const [custom, setCustom] = useState(options.length === 0);
   const previousCount = useRef(options.length);
   const fieldId = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
+  const locked = !!disabled || !!descriptor.readonly;
 
   useEffect(() => {
     const had = previousCount.current;
@@ -31,10 +41,13 @@ function ComboboxField({ descriptor, value, onChange, disabled, changed, onResto
   const header = (
     <div className="cfg-label">
       <label htmlFor={fieldId}>
-        {descriptor.name}{descriptor.readonly && <span className="muted small"> · 只读</span>}
+        {descriptor.name}
+        {descriptor.readonly && <span className="muted small"> · 只读</span>}
       </label>
       {descriptor.description && <p>{descriptor.description}</p>}
-      <span className="cfg-badges"><HotBadge descriptor={descriptor} /></span>
+      <span className="cfg-badges">
+        <HotBadge descriptor={descriptor} />
+      </span>
     </div>
   );
 
@@ -44,35 +57,59 @@ function ComboboxField({ descriptor, value, onChange, disabled, changed, onResto
       <div className="cfg-control">
         {custom ? (
           <div className="config-input-wrap">
-            <input id={fieldId} className="input" disabled={disabled} spellCheck={false} autoComplete="off"
-              value={current} placeholder="输入自定义值"
-              onChange={(event) => onChange(event.target.value)} />
+            <input
+              id={fieldId}
+              className="input"
+              disabled={locked}
+              spellCheck={false}
+              autoComplete="off"
+              value={current}
+              placeholder="输入自定义值"
+              onChange={(event) => {
+                if (!locked) onChange(event.target.value);
+              }}
+            />
             {options.length > 0 && (
-              <button type="button" className="btn-sm" disabled={disabled}
-                onClick={() => setCustom(false)}>从列表选择</button>
+              <button type="button" className="btn-sm" disabled={locked} onClick={() => setCustom(false)}>
+                从列表选择
+              </button>
             )}
           </div>
         ) : (
-          <select id={fieldId} className="input" disabled={disabled}
-            value={inOptions ? current : (current ? '__current__' : '')}
+          <select
+            id={fieldId}
+            className="input"
+            disabled={locked}
+            value={inOptions ? current : current ? '__current__' : ''}
             onChange={(event) => {
+              if (locked) return;
               const next = event.target.value;
-              if (next === '__custom__') { setCustom(true); return; }
+              if (next === '__custom__') {
+                setCustom(true);
+                return;
+              }
               if (next === '__current__') return;
               onChange(next);
-            }}>
-            {!inOptions && current !== '' && (
-              <option value="__current__">{current}（自定义）</option>
-            )}
+            }}
+          >
+            {!inOptions && current !== '' && <option value="__current__">{current}（自定义）</option>}
             <option value="">（未选择）</option>
             {options.map((option) => (
-              <option key={option} value={option}>{option}</option>
+              <option key={option} value={option}>
+                {option}
+              </option>
             ))}
             <option value="__custom__">自定义…</option>
           </select>
         )}
-        <FieldActions descriptor={descriptor} disabled={disabled} changed={changed}
-          onRestore={onRestore} onShowHistory={onShowHistory} historyCount={historyCount} />
+        <FieldActions
+          descriptor={descriptor}
+          disabled={locked}
+          changed={changed}
+          onRestore={onRestore}
+          onShowHistory={onShowHistory}
+          historyCount={historyCount}
+        />
       </div>
     </div>
   );

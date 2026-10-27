@@ -1,0 +1,263 @@
+/* 模型用量的图表组织、分页明细与调用详情。 */
+
+.usage-page .linechart {
+  height: 200px;
+}
+.analytics-page .usage-workbench {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  gap: 14px;
+}
+.usage-token-chart {
+  --chart-color: var(--info);
+}
+.usage-token-chart[data-token='output'] {
+  --chart-color: var(--accent);
+}
+.analytics-page .usage-details {
+  grid-column: 1 / -1;
+  padding-block: 10px;
+  gap: 0;
+}
+.analytics-table-tabs {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.analytics-table-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 7px 0 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.analytics-table-tabs button[aria-pressed='true'] {
+  color: var(--brand);
+  border-color: var(--brand);
+  font-weight: 600;
+}
+.analytics-records-error {
+  margin-left: 6px;
+  color: var(--err);
+  font-size: 10px;
+}
+.analytics-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+}
+.analytics-table-region {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.analytics-table-region > .empty {
+  display: grid;
+  place-content: center;
+  min-height: 100%;
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+}
+.analytics-table table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.analytics-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 34px;
+  padding: 6px 10px;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-soft);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+.analytics-table td {
+  height: 42px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+.analytics-table tr:last-child td {
+  border-bottom: 0;
+}
+.analytics-table tbody tr:hover {
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+}
+.analytics-table td > strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics-table td > span:not(.tag):not(.analytics-cell-text) {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics-cell-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics-aggregate-table th:first-child {
+  width: 36%;
+}
+.analytics-aggregate-table :is(th, td):not(:first-child) {
+  text-align: right;
+}
+.analytics-records-table th:first-child {
+  width: 25%;
+}
+.analytics-records-table th:nth-child(3) {
+  width: 24%;
+}
+.analytics-records-table th:nth-child(4) {
+  width: 15%;
+}
+.analytics-records-table th:last-child {
+  width: 90px;
+}
+.analytics-records-table :is(th, td):nth-child(n + 4) {
+  text-align: right;
+}
+.analytics-records-table .btn-sm {
+  min-height: 26px;
+  padding: 4px 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.analytics-source {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.analytics-credit {
+  color: var(--ok);
+}
+.analytics-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding-top: 6px;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.analytics-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.analytics-pagination > div > span {
+  margin-right: 8px;
+}
+.analytics-pagination .icon-btn {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+}
+.usage-detail-total {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.usage-detail-total > strong {
+  font: 600 30px var(--font-display);
+}
+.usage-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+.usage-detail-meta dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.usage-detail-meta dd {
+  margin: 5px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.usage-detail-breakdown {
+  padding-top: 18px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+.usage-detail-breakdown h4 {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.usage-detail-breakdown dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding-block: 8px;
+}
+.usage-detail-breakdown dd {
+  font-variant-numeric: tabular-nums;
+}
+.usage-detail-breakdown p {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px), (max-height: 740px) {
+  .analytics-page .usage-workbench {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+  }
+  .usage-workbench > .analytics-card {
+    display: none;
+  }
+  .usage-page[data-view='cost'] .usage-cost-chart,
+  .usage-page[data-view='tokens'] .usage-token-chart,
+  .usage-page[data-view='details'] .usage-details {
+    display: flex;
+  }
+}
+@media (max-width: 540px) {
+  .analytics-page .usage-details {
+    padding: 6px 12px;
+    gap: 0;
+  }
+  .usage-details .analytics-card-head > span {
+    display: none;
+  }
+  .analytics-table-tabs {
+    gap: 16px;
+  }
+  .analytics-table table {
+    min-width: 510px;
+  }
+}

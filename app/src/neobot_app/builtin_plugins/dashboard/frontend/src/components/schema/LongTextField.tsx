@@ -16,6 +16,7 @@ import Icon from '../Icon';
 import Modal from '../Modal';
 
 export interface LongTextFieldProps {
+  id?: string;
   value: string;
   onChange: (next: string) => void;
   disabled?: boolean;
@@ -38,6 +39,7 @@ export interface LongTextFieldProps {
 const LINE_HEIGHT = 21;
 
 export default function LongTextField({
+  id,
   value,
   onChange,
   disabled,
@@ -66,8 +68,8 @@ export default function LongTextField({
   // 自动增高：必须实测 scrollHeight —— 折行后的高度只有浏览器算得准，
   // 按 \n 计数正是原实现的错处。
   useLayoutEffect(() => {
-    for (const el of [inlineRef.current, modalRef.current]) {
-      if (!el) continue;
+    const measure = (el: HTMLTextAreaElement) => {
+      if (el.closest('[hidden]')) return;
       el.style.height = 'auto';
       // scrollHeight = 内容 + padding，**不含边框**；而全局是 box-sizing: border-box，
       // 直接把它当高度会少 2px（上下各 1px 边框）→ 明明只占一行也冒出滚动条。
@@ -77,7 +79,23 @@ export default function LongTextField({
       const next = expanded ? needed : Math.min(needed, max);
       el.style.height = next + 'px';
       el.style.overflowY = needed > next + 1 ? 'auto' : 'hidden';
+    };
+    const observers: ResizeObserver[] = [];
+    for (const el of [inlineRef.current, modalRef.current]) {
+      if (!el) continue;
+      measure(el);
+      if (typeof ResizeObserver === 'undefined' || !el.parentElement) continue;
+      // 展开分组与窄屏换行都改变可用宽度；保留挂载的草稿也要重新测量高度。
+      let previousWidth = el.parentElement.getBoundingClientRect().width;
+      const observer = new ResizeObserver(([entry]) => {
+        const width = entry?.contentRect.width ?? 0;
+        if (width !== previousWidth && width > 0) measure(el);
+        previousWidth = width;
+      });
+      observer.observe(el.parentElement);
+      observers.push(observer);
     }
+    return () => observers.forEach((observer) => observer.disconnect());
   }, [text, maxRows, expanded]);
 
   const allowNewline = minRows > 1 || text.includes('\n');
@@ -86,6 +104,7 @@ export default function LongTextField({
     (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
 
   const handleChange = (raw: string) => {
+    if (disabled) return;
     setText(raw);
     // 组字中间态只留在本地，不写草稿、不触发受控回写
     if (composing.current) return;
@@ -98,6 +117,7 @@ export default function LongTextField({
     },
     onCompositionEnd: (event: { currentTarget: { value: string } }) => {
       composing.current = false;
+      if (disabled) return;
       const next = event.currentTarget.value;
       setText(next);
       onChange(next);
@@ -115,6 +135,7 @@ export default function LongTextField({
   return (
     <div className="cfg-longtext">
       <textarea
+        id={id}
         ref={inlineRef}
         className={'input cfg-longtext-area' + (monospace ? ' mono' : '')}
         spellCheck={false}
@@ -137,17 +158,29 @@ export default function LongTextField({
       <div className="cfg-longtext-bar">
         {count}
         {expandable && (
-          <button type="button" className="btn-sm" disabled={disabled}
-            title="在更大的窗口里编辑" onClick={() => setExpanded(true)}>
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={disabled}
+            title="在更大的窗口里编辑"
+            onClick={() => setExpanded(true)}
+          >
             <Icon name="external" /> 放大
           </button>
         )}
       </div>
-      <Modal open={expanded} size="wide" title={'编辑 ' + (ariaLabel || '文本')} onClose={() => setExpanded(false)}>
+      <Modal
+        open={expanded}
+        size="wide"
+        title={'编辑 ' + (ariaLabel || '文本')}
+        onClose={() => setExpanded(false)}
+      >
         <textarea
           ref={modalRef}
           className={'input cfg-longtext-area cfg-longtext-modal' + (monospace ? ' mono' : '')}
           spellCheck={false}
+          disabled={disabled}
+          aria-invalid={ariaInvalid}
           aria-label={(ariaLabel || '文本') + '（放大）'}
           value={text}
           {...compositionProps}
@@ -159,7 +192,9 @@ export default function LongTextField({
         <div className="cfg-longtext-bar">
           {count}
           <div style={{ flex: 1 }} />
-          <button type="button" className="btn primary" onClick={() => setExpanded(false)}>完成</button>
+          <button type="button" className="btn primary" onClick={() => setExpanded(false)}>
+            完成
+          </button>
         </div>
       </Modal>
     </div>

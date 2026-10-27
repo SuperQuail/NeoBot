@@ -4,11 +4,13 @@
 // `agent` 子树 109 项、`models` 里还套着 registry 列表（三层盒子）。
 // 叠盒子在大分区上既难定位也难看清层级；改为「左树定位 + 右区渲染」后，
 // 一屏只有一个分组的字段，滚动量与层级深度都降到 1。
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import SchemaForm from '../../components/SchemaForm';
 import Button from '../../components/ui/Button';
 import EmptyState from '../../components/ui/EmptyState';
+import { Info } from 'lucide-react';
 import { Highlight } from '../../components/schema/Highlight';
+import { ReloadSummary } from '../../components/schema/FieldChrome';
 import { countLeafHits, gatherField, groupHasHits } from '../../components/schema/searchHit';
 import type { FieldDescriptor } from '../../api/types';
 import { bindValues, type HistoryMap } from './shared';
@@ -41,8 +43,17 @@ export const LOOSE_SECTION = '（顶层）';
 
 export function ConfigTreePanel(props: ConfigTreePanelProps) {
   const {
-    schema, draft, baseline, history, collapse, disabled, filter,
-    onFilterChange, onChange, onToggleCollapse, onRestore,
+    schema,
+    draft,
+    baseline,
+    history,
+    collapse,
+    disabled,
+    filter,
+    onFilterChange,
+    onChange,
+    onToggleCollapse,
+    onRestore,
   } = props;
 
   const keyword = filter.trim();
@@ -55,6 +66,7 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
       : real;
   }, [schema]);
   const [selected, setSelected] = useState<string>(() => groups[0]?.name || '');
+  const bodyRef = useRef<HTMLElement>(null);
 
   // 搜索态：左侧树只留「有命中」的分区，并各自带命中数
   const tree = useMemo(
@@ -74,6 +86,10 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
     return wanted?.group;
   }, [tree, selected]);
 
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [active?.name, keyword]);
+
   /**
    * 右侧要渲染的字段。
    *
@@ -92,7 +108,7 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
       return [
         {
           ...gathered,
-          value: {},
+          value: draft,
           fields: (gathered.fields || []).map((field) => ({
             ...field,
             value: draft && field.name in draft ? draft[field.name] : field.value,
@@ -111,9 +127,28 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
   return (
     <div className="cfg-tree">
       <aside className="cfg-tree-side">
+        <label className="cfg-tree-select">
+          <span>{keyword ? `命中 ${totalHits} 项` : '配置分区'}</span>
+          <select
+            className="input"
+            aria-label="选择配置分区"
+            value={active?.name || ''}
+            disabled={disabled || tree.length === 0}
+            onChange={(event) => setSelected(event.target.value)}
+          >
+            {tree.length === 0 && <option value="">没有匹配的分区</option>}
+            {tree.map(({ group, hits }) => (
+              <option key={group.name} value={group.name}>
+                {group.name}（{keyword ? hits : countLeafHits(group.fields, '')} 项）
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="cfg-tree-cap">
           {keyword ? (
-            <span>命中 <b>{totalHits}</b> 项 / {tree.length} 个分区</span>
+            <span>
+              命中 <b>{totalHits}</b> 项 / {tree.length} 个分区
+            </span>
           ) : (
             <span>{groups.length} 个分区</span>
           )}
@@ -123,8 +158,13 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
             <button
               type="button"
               key={group.name}
-              className={'cfg-tree-item' + (group.name === active?.name ? ' on' : '') + (keyword && hits > 0 ? ' hit' : '')}
+              className={
+                'cfg-tree-item' +
+                (group.name === active?.name ? ' on' : '') +
+                (keyword && hits > 0 ? ' hit' : '')
+              }
               aria-current={group.name === active?.name}
+              disabled={disabled}
               onClick={() => setSelected(group.name)}
             >
               <span className="cfg-tree-name">
@@ -138,18 +178,32 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
         </nav>
       </aside>
 
-      <section className="cfg-tree-body">
+      <section className="cfg-tree-body" ref={bodyRef}>
         {active ? (
           <>
             <header className="cfg-tree-head">
-              <h3><Highlight text={active.name} keyword={keyword || undefined} /></h3>
+              <h3>
+                <Highlight text={active.name} keyword={keyword || undefined} />
+              </h3>
               <span className="muted small">
                 {countLeafHits(active.fields, keyword)} 项{keyword ? '命中' : ''}
               </span>
+              <details className="cfg-section-help" key={active.name}>
+                <summary aria-label={`查看 ${active.name} 分区说明`} title="分区说明与生效方式">
+                  <Info size={15} aria-hidden="true" />
+                </summary>
+                <div className="cfg-section-help-content">
+                  <strong>{active.name}</strong>
+                  {active.description && <p>{active.description}</p>}
+                  {active.readonly && <p>此分区只读。</p>}
+                  <ReloadSummary fields={activeFields} />
+                </div>
+              </details>
             </header>
-            {active.description && <p className="muted small cfg-hint">{active.description}</p>}
             <SchemaForm
               fields={activeFields}
+              showReloadSummary={false}
+              hideRootGroupHeader
               values={draft}
               baseline={baseline}
               disabled={disabled}
@@ -166,7 +220,11 @@ export function ConfigTreePanel(props: ConfigTreePanelProps) {
         ) : (
           <EmptyState icon="settings" title="没有匹配的配置项">
             <p>换个关键词，或清空搜索框看全部分区。</p>
-            {keyword && <Button type="button" size="sm" onClick={() => onFilterChange('')}>清空搜索</Button>}
+            {keyword && (
+              <Button type="button" size="sm" onClick={() => onFilterChange('')}>
+                清空搜索
+              </Button>
+            )}
           </EmptyState>
         )}
       </section>

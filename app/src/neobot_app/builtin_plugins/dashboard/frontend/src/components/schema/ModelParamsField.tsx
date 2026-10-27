@@ -50,7 +50,10 @@ const GROUP_TAGS: Record<string, string> = {
 
 /** provider 归一（与后端 _normalize_provider_kind 同判据） */
 function normalizeProvider(value: unknown): string {
-  const text = String(value ?? '').trim().toLowerCase().replace(/-/g, '_');
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_');
   if (text === 'anthropic') return 'anthropic';
   if (text === 'deepseek' || text === 'deepseek_offical' || text === 'deepseek_official') return 'deepseek';
   if (text === 'openai') return 'openai';
@@ -59,14 +62,21 @@ function normalizeProvider(value: unknown): string {
 
 /** model_type 归一（与后端 normalize_model_type 同判据） */
 function normalizeModelType(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase() || 'chat';
+  return (
+    String(value ?? '')
+      .trim()
+      .toLowerCase() || 'chat'
+  );
 }
 
 function scopeApplies(entry: ParamEntry, provider: unknown, modelType: unknown): boolean {
   const scope = entry.scope;
   if (!scope || typeof scope !== 'object') return true;
   const providers = Array.isArray(scope.providers) ? scope.providers : [];
-  if (providers.length && !providers.some((item) => normalizeProvider(item) === normalizeProvider(provider))) {
+  if (
+    providers.length &&
+    !providers.some((item) => normalizeProvider(item) === normalizeProvider(provider))
+  ) {
     return false;
   }
   const types = Array.isArray(scope.model_types) ? scope.model_types : [];
@@ -120,6 +130,7 @@ function ModelParamsField({
     [descriptor.catalog],
   );
   const current = paramsValue(descriptor, value);
+  const locked = !!disabled || !!descriptor.readonly;
   const provider = descriptor.provider;
   const modelType = descriptor.model_type;
   const [pending, setPending] = useState('');
@@ -141,7 +152,9 @@ function ModelParamsField({
     ? (descriptor.base_param_names as unknown[]).map(String)
     : [];
 
-  const emit = (next: ParamsValue) => onChange(next);
+  const emit = (next: ParamsValue) => {
+    if (!locked) onChange(next);
+  };
 
   const setEnabled = (names: string[]) => emit({ ...current, enabled_params: names });
   const setParamValue = (name: string, next: unknown) =>
@@ -199,6 +212,7 @@ function ModelParamsField({
   }, [candidates]);
 
   const addPending = () => {
+    if (locked) return;
     const name = pending.trim();
     if (!name) return;
     setError('');
@@ -214,12 +228,14 @@ function ModelParamsField({
   };
 
   const removeParam = (name: string) => {
+    if (locked) return;
     setError('');
     setEnabled(enabled.filter((item) => item !== name));
     setNotice('已从启用清单移除「' + name + '」：值已保留，重新添加即恢复。');
   };
 
   const addCustom = () => {
+    if (locked) return;
     const key = customKey.trim();
     if (!key) return;
     if (key.startsWith('__')) {
@@ -243,6 +259,7 @@ function ModelParamsField({
   };
 
   const commitExtraValue = (key: string, text: string) => {
+    if (locked) return;
     setDrafts((previous) => ({ ...previous, ['extra:' + key]: text }));
     const parsed = parseJsonValue(text);
     if (!parsed.ok) {
@@ -254,6 +271,7 @@ function ModelParamsField({
   };
 
   const commitParamText = (name: string, entry: ParamEntry, text: string) => {
+    if (locked) return;
     setDrafts((previous) => ({ ...previous, [name]: text }));
     const type = entry.type;
     if (type === 'int' || type === 'float') {
@@ -276,12 +294,15 @@ function ModelParamsField({
       return (
         <select
           className="input"
-          disabled={!!disabled}
+          aria-label={(entry.label || name) + '的值'}
+          disabled={locked}
           value={toText(current.values[name] ?? entry.default)}
           onChange={(event) => setParamValue(name, event.target.value)}
         >
           {options.map((option) => (
-            <option key={option} value={option}>{option}</option>
+            <option key={option} value={option}>
+              {option}
+            </option>
           ))}
         </select>
       );
@@ -291,9 +312,10 @@ function ModelParamsField({
     return (
       <input
         className="input"
+        aria-label={(entry.label || name) + '的值'}
         type={type === 'int' || type === 'float' ? 'number' : 'text'}
         step={type === 'float' ? 'any' : undefined}
-        disabled={!!disabled}
+        disabled={locked}
         value={text}
         onChange={(event) => commitParamText(name, entry, event.target.value)}
         onBlur={() =>
@@ -311,16 +333,21 @@ function ModelParamsField({
     <section className="cfg-group model-params">
       <div className="cfg-section-heading">
         <h3>{String(descriptor.label || descriptor.name || '模型参数')}</h3>
+        {descriptor.readonly && <span className="cfg-readonly">只读</span>}
         <span className="muted small">{enabled.length} 项已添加</span>
       </div>
       {descriptor.description && <p className="muted small cfg-hint">{String(descriptor.description)}</p>}
 
       <div className="cfg-row model-params-base">
-        <div className="cfg-label"><span>基础参数（常显）</span></div>
+        <div className="cfg-label">
+          <span>基础参数（常显）</span>
+        </div>
         <div className="cfg-control">
           <div className="model-params-tags">
             {baseNames.map((name) => (
-              <span className="tag" key={name}>{name}</span>
+              <span className="tag" key={name}>
+                {name}
+              </span>
             ))}
           </div>
           <p className="muted small cfg-hint">基础参数始终下发，不在此处增删（在上方设置组里编辑）。</p>
@@ -333,13 +360,25 @@ function ModelParamsField({
         </p>
       ))}
 
-      {notice && <p className="muted small" role="status">{notice}</p>}
-      {error && <p className="field-error" role="alert">{error}</p>}
+      {notice && (
+        <p className="muted small" role="status">
+          {notice}
+        </p>
+      )}
+      {error && (
+        <p className="field-error" role="alert">
+          {error}
+        </p>
+      )}
 
       <div className="cfg-row">
-        <div className="cfg-label"><span>已添加参数</span></div>
+        <div className="cfg-label">
+          <span>已添加参数</span>
+        </div>
         <div className="cfg-control">
-          {enabled.length === 0 && <p className="muted small">还没有添加可选参数；未添加的可选参数不会下发到请求体。</p>}
+          {enabled.length === 0 && (
+            <p className="muted small">还没有添加可选参数；未添加的可选参数不会下发到请求体。</p>
+          )}
           {enabled.map((name) => {
             const entry = byName.get(name);
             return (
@@ -353,7 +392,7 @@ function ModelParamsField({
                   type="button"
                   className="icon-btn danger"
                   title="移除（只从启用清单删名，值保留）"
-                  disabled={!!disabled}
+                  disabled={locked}
                   onClick={() => removeParam(name)}
                 >
                   移除
@@ -368,11 +407,13 @@ function ModelParamsField({
               <input
                 className="input"
                 type="text"
-                disabled={!!disabled}
+                aria-label={key + '自定义参数值'}
+                disabled={locked}
                 value={drafts['extra:' + key] ?? toText(item)}
                 onChange={(event) => commitExtraValue(key, event.target.value)}
                 onBlur={() =>
                   setDrafts((previous) => {
+                    if (!parseJsonValue(previous['extra:' + key] ?? toText(item)).ok) return previous;
                     const next = { ...previous };
                     delete next['extra:' + key];
                     return next;
@@ -383,7 +424,7 @@ function ModelParamsField({
                 type="button"
                 className="icon-btn danger"
                 title="删除自定义参数"
-                disabled={!!disabled}
+                disabled={locked}
                 onClick={() => {
                   const next = { ...current.extra_body };
                   delete next[key];
@@ -398,15 +439,20 @@ function ModelParamsField({
       </div>
 
       <div className="cfg-row">
-        <div className="cfg-label"><span>添加参数</span></div>
+        <div className="cfg-label">
+          <span>添加参数</span>
+        </div>
         <div className="cfg-control model-params-add">
           <select
             className="input"
-            disabled={!!disabled || candidates.length === 0}
+            aria-label="待添加的模型参数"
+            disabled={locked || candidates.length === 0}
             value={pending}
             onChange={(event) => setPending(event.target.value)}
           >
-            <option value="">{candidates.length ? '选择要添加的参数…' : '当前模型没有可添加的可选参数'}</option>
+            <option value="">
+              {candidates.length ? '选择要添加的参数…' : '当前模型没有可添加的可选参数'}
+            </option>
             {grouped.map(([group, entries]) => (
               <optgroup key={group} label={GROUP_LABELS[group] || group}>
                 {entries.map((entry) => (
@@ -417,7 +463,7 @@ function ModelParamsField({
               </optgroup>
             ))}
           </select>
-          <button type="button" className="btn-sm" disabled={!!disabled || !pending} onClick={addPending}>
+          <button type="button" className="btn-sm" disabled={locked || !pending} onClick={addPending}>
             添加
           </button>
           <span className="muted small">候选按当前模型的 model_type / provider 过滤（归一化后比较）</span>
@@ -425,30 +471,29 @@ function ModelParamsField({
       </div>
 
       <div className="cfg-row">
-        <div className="cfg-label"><span>添加自定义参数</span></div>
+        <div className="cfg-label">
+          <span>添加自定义参数</span>
+        </div>
         <div className="cfg-control model-params-add">
           <input
             className="input"
             type="text"
+            aria-label="自定义参数键名"
             placeholder="键名（如 top_k，不得以 __ 开头）"
-            disabled={!!disabled}
+            disabled={locked}
             value={customKey}
             onChange={(event) => setCustomKey(event.target.value)}
           />
           <input
             className="input"
             type="text"
+            aria-label="自定义参数 JSON 值"
             placeholder={'值（JSON，如 40 或 "high"）'}
-            disabled={!!disabled}
+            disabled={locked}
             value={customValue}
             onChange={(event) => setCustomValue(event.target.value)}
           />
-          <button
-            type="button"
-            className="btn-sm"
-            disabled={!!disabled || !customKey.trim()}
-            onClick={addCustom}
-          >
+          <button type="button" className="btn-sm" disabled={locked || !customKey.trim()} onClick={addCustom}>
             添加自定义
           </button>
           <span className="muted small">
@@ -456,7 +501,6 @@ function ModelParamsField({
           </span>
         </div>
       </div>
-
     </section>
   );
 }

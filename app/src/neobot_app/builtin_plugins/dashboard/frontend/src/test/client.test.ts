@@ -1,6 +1,7 @@
 // api/client.ts 回归测试 —— 鉴权头、CSRF、401 跳登录、base_path 前缀
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { getJSON, postJSON, getResult, setToken, getToken, getCsrf, clearToken } from '../api/client';
+import { api } from '../api/endpoints';
 
 /** 构造一个足够像 Response 的对象，供 fetch mock 返回 */
 function jsonResponse(body: unknown, status = 200) {
@@ -12,9 +13,12 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 /** 取出 fetch mock 的第 n 次调用参数，避免 tsc 对 vi.fn() 的元组推断报错 */
-function callArgs(fetchMock: ReturnType<typeof vi.fn>, index = 0): { url: string; headers: Headers } {
+function callArgs(
+  fetchMock: ReturnType<typeof vi.fn>,
+  index = 0,
+): { url: string; headers: Headers; body: RequestInit['body'] } {
   const [url, init] = fetchMock.mock.calls[index] as [string, RequestInit | undefined];
-  return { url, headers: new Headers(init?.headers) };
+  return { url, headers: new Headers(init?.headers), body: init?.body };
 }
 
 describe('api/client 鉴权与错误处理', () => {
@@ -61,8 +65,34 @@ describe('api/client 鉴权与错误处理', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('改密复用会话和 CSRF，当前密码错误的 403 不清空会话', async () => {
+    setToken('old-session', 'old-csrf');
+    const fetchMock = vi.fn(async () => jsonResponse({ error: '当前密码不正确' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+    const body = {
+      current_password: 'Original-Password-2026',
+      new_password: 'Next-Password-2026',
+      confirm: 'Next-Password-2026',
+    };
+    const result = await api.changePassword(body);
+    const { url, headers, body: requestBody } = callArgs(fetchMock);
+    expect(url).toBe('/api/auth/password');
+    expect(headers.get('X-Token')).toBe('old-session');
+    expect(headers.get('X-CSRF-Token')).toBe('old-csrf');
+    expect(requestBody).toBe(JSON.stringify(body));
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+    expect(getToken()).toBe('old-session');
+    expect(getCsrf()).toBe('old-csrf');
+  });
+
   it('网络异常时 getJSON 返回 null 而不是抛出', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down'); }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    );
     await expect(getJSON('/api/overview')).resolves.toBeNull();
   });
 

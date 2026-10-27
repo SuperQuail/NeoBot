@@ -5,9 +5,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api/endpoints';
 import type { BillingPayload, BillingPreviewResult } from '../../api/types';
-import { toast } from '../../components/Toast';
+import { notify } from '../../notifications/infoBar';
 import Button from '../../components/ui/Button';
 import FormField from '../../components/ui/FormField';
+import { useEditorOperation } from './shared';
 
 export interface BillingSectionProps {
   modelKey?: string;
@@ -16,6 +17,7 @@ export interface BillingSectionProps {
   disabled?: boolean;
   onChangeScript: (value: string) => void;
   onChangeConfig: (value: Record<string, unknown>) => void;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 interface ConfigPair {
@@ -80,10 +82,15 @@ function BillingSection({
   disabled,
   onChangeScript,
   onChangeConfig,
+  onBusyChange,
 }: BillingSectionProps) {
   const [overview, setOverview] = useState<BillingPayload | null>(null);
   const [pairs, setPairs] = useState<ConfigPair[]>(() => toPairs(config));
-  const [busy, setBusy] = useState('');
+  const { busy, runOperation } = useEditorOperation();
+  useEffect(() => {
+    onBusyChange?.(!!busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
   const [inputTokens, setInputTokens] = useState('1000000');
   const [outputTokens, setOutputTokens] = useState('1000000');
   const [occurredAt, setOccurredAt] = useState('');
@@ -92,7 +99,7 @@ function BillingSection({
   const load = useCallback(async () => {
     const result = await api.configBilling();
     if (!result.ok || !result.data) {
-      toast(result.error || '读取计费脚本清单失败', 'err');
+      notify(result.error || '读取计费脚本清单失败', 'err');
       return;
     }
     setOverview(result.data);
@@ -124,50 +131,48 @@ function BillingSection({
     onChangeConfig(pairsToConfig(next));
   };
 
-  const runPreview = async () => {
-    setBusy('preview');
-    const usage: Record<string, unknown> = {};
-    const input = Number(inputTokens);
-    const output = Number(outputTokens);
-    if (!Number.isNaN(input) && inputTokens.trim() !== '') usage.input_tokens = input;
-    if (!Number.isNaN(output) && outputTokens.trim() !== '') usage.output_tokens = output;
-    const body: {
-      model_key?: string;
-      billing_script?: string;
-      billing_config?: Record<string, unknown>;
-      usage?: Record<string, unknown>;
-      occurred_at?: string;
-    } = {
-      billing_script: script,
-      billing_config: pairsToConfig(pairs),
-      usage,
-    };
-    if (modelKey) body.model_key = modelKey;
-    if (occurredAt) body.occurred_at = new Date(occurredAt).toISOString();
-    const result = await api.configBillingPreview(body);
-    setBusy('');
-    if (!result.ok || !result.data) {
-      toast(result.error || '试算失败', 'err');
-      return;
-    }
-    setPreview(result.data);
-  };
+  const runPreview = () =>
+    runOperation('preview', async () => {
+      const usage: Record<string, unknown> = {};
+      const input = Number(inputTokens);
+      const output = Number(outputTokens);
+      if (!Number.isNaN(input) && inputTokens.trim() !== '') usage.input_tokens = input;
+      if (!Number.isNaN(output) && outputTokens.trim() !== '') usage.output_tokens = output;
+      const body: {
+        model_key?: string;
+        billing_script?: string;
+        billing_config?: Record<string, unknown>;
+        usage?: Record<string, unknown>;
+        occurred_at?: string;
+      } = {
+        billing_script: script,
+        billing_config: pairsToConfig(pairs),
+        usage,
+      };
+      if (modelKey) body.model_key = modelKey;
+      if (occurredAt) body.occurred_at = new Date(occurredAt).toISOString();
+      const result = await api.configBillingPreview(body);
+      if (!result.ok || !result.data) {
+        notify(result.error || '试算失败', 'err');
+        return;
+      }
+      setPreview(result.data);
+    });
 
-  const reload = async () => {
-    setBusy('reload');
-    const result = await api.configBillingReload();
-    setBusy('');
-    if (!result.ok) {
-      toast(result.error || '重载计费脚本失败', 'err');
-      return;
-    }
-    const errors = Object.keys(result.data?.errors || {});
-    toast(
-      errors.length ? '重载完成，但有脚本加载失败: ' + errors.join('、') : '计费脚本已重载',
-      errors.length ? 'err' : 'ok',
-    );
-    load();
-  };
+  const reload = () =>
+    runOperation('reload', async () => {
+      const result = await api.configBillingReload();
+      if (!result.ok) {
+        notify(result.error || '重载计费脚本失败', 'err');
+        return;
+      }
+      const errors = Object.keys(result.data?.errors || {});
+      notify(
+        errors.length ? '重载完成，但有脚本加载失败: ' + errors.join('、') : '计费脚本已重载',
+        errors.length ? 'err' : 'ok',
+      );
+      load();
+    });
 
   return (
     <section className="cfg-group billing-section">
@@ -201,8 +206,8 @@ function BillingSection({
           {script && !options.includes(script) && <option value={script}>{script}（文件缺失）</option>}
         </select>
         <p className="muted small cfg-hint">
-          对应 &lt;数据目录&gt;/Billing/&lt;名字&gt;.py；留空即按模型价格表固定计费。
-          生效需 [billing].enabled=true（全局配置页）。
+          对应 &lt;数据目录&gt;/Billing/&lt;名字&gt;.py；留空即按模型价格表固定计费。 生效需
+          [billing].enabled=true（全局配置页）。
         </p>
       </FormField>
 
@@ -213,11 +218,11 @@ function BillingSection({
       )}
 
       <div className="cfg-row">
-        <div className="cfg-label"><span>脚本参数</span></div>
+        <div className="cfg-label">
+          <span>脚本参数</span>
+        </div>
         <div className="cfg-control">
-          {pairs.length === 0 && (
-            <p className="muted small">暂无参数；按次计费模板需要 price_per_call</p>
-          )}
+          {pairs.length === 0 && <p className="muted small">暂无参数；按次计费模板需要 price_per_call</p>}
           {pairs.map((pair, index) => (
             <div className="billing-kv" key={index}>
               <input
@@ -267,7 +272,9 @@ function BillingSection({
       </div>
 
       <div className="cfg-row">
-        <div className="cfg-label"><span>试算</span></div>
+        <div className="cfg-label">
+          <span>试算</span>
+        </div>
         <div className="cfg-control">
           <div className="billing-kv">
             <input
@@ -302,11 +309,19 @@ function BillingSection({
           </div>
           {preview && (
             <div className="probe-result">
-              <p className={preview.source && preview.source.startsWith('script:') ? 'probe-headline ok' : 'probe-headline'}>
+              <p
+                className={
+                  preview.source && preview.source.startsWith('script:')
+                    ? 'probe-headline ok'
+                    : 'probe-headline'
+                }
+              >
                 金额 <strong>{fmtCost(preview.cost_cny)}</strong>
                 {' · 来源 '}
                 <code>{sourceLabel(preview.source)}</code>
-                {preview.elapsed_ms != null && <span className="muted small"> · {preview.elapsed_ms} ms</span>}
+                {preview.elapsed_ms != null && (
+                  <span className="muted small"> · {preview.elapsed_ms} ms</span>
+                )}
                 {preview.note && <span className="muted small"> · {preview.note}</span>}
               </p>
               {preview.error && <p className="field-error">{preview.error}</p>}

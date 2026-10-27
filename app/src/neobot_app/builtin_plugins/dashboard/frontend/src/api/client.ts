@@ -71,7 +71,11 @@ export async function apiLogin(password: string): Promise<LoginResult> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    const data = (await r.json().catch(() => ({}))) as { token?: string; csrf_token?: string; error?: string };
+    const data = (await r.json().catch(() => ({}))) as {
+      token?: string;
+      csrf_token?: string;
+      error?: string;
+    };
     if (!r.ok || !data.token) {
       return { ok: false, error: data.error || '登录失败 (HTTP ' + r.status + ')' };
     }
@@ -89,7 +93,11 @@ export async function apiSetup(password: string, confirm: string): Promise<Login
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password, confirm }),
     });
-    const data = (await r.json().catch(() => ({}))) as { token?: string; csrf_token?: string; error?: string };
+    const data = (await r.json().catch(() => ({}))) as {
+      token?: string;
+      csrf_token?: string;
+      error?: string;
+    };
     if (!r.ok || !data.token) {
       return { ok: false, error: data.error || '设置密码失败 (HTTP ' + r.status + ')' };
     }

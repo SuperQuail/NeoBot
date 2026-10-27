@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: 528fe18
-verified_hash: 93e3c1dafcc7
+verified_hash: 0027469ee19c
 ---
 
 # 19 凭据、面板鉴权与安全边界
@@ -159,6 +159,11 @@ flowchart LR
 两者**不通兑**：拿到面板登录态不等于能在群里执行危险动作；反之亦然。
 `panel_web.py` 只负责静态资源/Web 扩展的鉴权判定（哪些路径公开、哪些需要登录），
 真正的中间件在 `server.py:448`（见 `09-dashboard.md`）。
+
+面板内改密由 `api_parts/auth.py::AuthMixin.auth_password` 执行管理权限与 CSRF 校验；
+`PanelPasswordStore.change_password` 在锁内核对会话 revision 和旧密码，写盘成功后才更新内存。
+成功会撤销全部会话并要求重新登录；旧密码错误计入原有 IP 限流，写盘失败保留原密码。
+完整分支见 `09-dashboard.md` 的改密流程。
 </details>
 
 <details>
@@ -207,7 +212,7 @@ flowchart TD
 |---|---|---|---|
 | 凭据项 | `create` | `consume` / `revoke` / `cleanup` | 过期与已消费都按无效处理 |
 | 签发失败计数 | `_record_issue_failure` | `_clear_issue_failures`（成功签发时） | 达 5 次进入冷却，冷却按 chat_flow 维度 |
-| 面板登录态 | `panel_auth` 登录 | 登出/过期（前端登出不调后端，见 09c） | 未登录 401 / 无权限 403 |
+| 面板登录态 | `panel_auth` 登录 | 登出、过期或成功改密后撤销全部会话 | 未登录/版本过期 401，无权限/旧密码错误 403 |
 | 密钥 | `.env` + `EnvConfig` | 改 `.env` 需 reload 才重建注册表 | 平台名/密钥缺一即不注册该模型 |
 
 ## 易错点

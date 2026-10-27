@@ -1,191 +1,188 @@
-import { api } from '../api/endpoints';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Bot as BotGlyph, Clock, MessageSquare, Package } from 'lucide-react';
+import { api } from '../api/endpoints';
 import { useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
-import { fmtUptime, fmtNum, fmt1, mapTag } from '../utils/format';
+import { fmtUptime, fmtNum, mapTag } from '../utils/format';
 import StatCard from '../components/StatCard';
-import ProgressBar from '../components/ProgressBar';
-import Sparkline from '../components/Sparkline';
-import EmptyState from '../components/ui/EmptyState';
+import SystemResourceCard from '../components/SystemResourceCard';
+import MessageTrendCard from '../components/MessageTrendCard';
+import MonitorList from '../components/MonitorList';
+import PageHeader from '../components/ui/PageHeader';
+import Button from '../components/ui/Button';
+import InlineAlert from '../components/ui/InlineAlert';
+import Icon from '../components/Icon';
 
 export default function Dashboard() {
-  // 轮询节奏沿用旧 app.js:概览/系统 较快,趋势/列表稍慢
   const overview = useQuery(QK.overview, () => api.overview(), { interval: POLL.overview });
   const system = useQuery(QK.system, () => api.system(), { interval: POLL.system });
   const series = useQuery(QK.messages, () => api.seriesMessages(30), { interval: POLL.messages });
   const bots = useQuery(QK.bots, () => api.bots(), { interval: POLL.bots });
   const plugins = useQuery(QK.plugins, () => api.plugins(), { interval: POLL.plugins });
   const logs = useQuery(QK.logs, () => api.logs(8), { interval: POLL.logs });
-
+  const [view, setView] = useState('trend');
   const d = overview.data || {};
-  const sys = system.data || {};
   const botList = Array.isArray(bots.data) ? bots.data : [];
   const pluginItems = plugins.data?.items || [];
-  const logItems = logs.data?.items || [];
-
-  const pluginLoaded = pluginItems.filter((p) => p.status === 'loaded').length;
-  // 配置缺口（未配超级管理员等）：不报错也不影响启动，但会影响实际使用，
-  // 所以放在首页而不是只留在启动日志里。
+  const logItems = [...(logs.data?.items || [])].reverse();
+  const pluginLoaded = pluginItems.filter((plugin) => plugin.status === 'loaded').length;
   const notices = Array.isArray(d.notices) ? d.notices : [];
+  const queries = [overview, system, series, bots, plugins, logs];
 
   return (
-    <div className="page">
-      {/* Hero */}
-      <section className="hero card">
-        <div className="hero-grid" />
-        <img
-          className="hero-bg-character"
-          src={import.meta.env.BASE_URL + 'image/background.webp'}
-          alt=""
-          aria-hidden="true"
-          onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
-        />
-        <div className="hero-inner">
-          <h1>欢迎使用 NeoBot</h1>
-          <p>
-            NeoBot 正在运行。今日已处理 <b>{fmtNum(d.today_messages)}</b> 条消息,共加载{' '}
-            <b>{d.plugins_loaded ?? pluginLoaded}</b> 个插件。
-          </p>
-          <div className="hero-meta">
-            <span><i className="pulse" /> 运行状态 <b>{d.online ? '正常' : '离线'}</b></span>
-            <span>● 已运行 <b>{fmtUptime(d.uptime_seconds)}</b></span>
-            <span>● OneBot <b>{d.app_name && d.app_name !== '—' ? `${d.app_name} ${d.app_version || ''}`.trim() : '—'}</b></span>
-            <span>● Python <b>{sys.python_version || '—'}</b></span>
+    <div className="page page--viewport monitor-page dashboard-page" data-view={view}>
+      <PageHeader title="运行概览" />
+      {queries.some((query) => query.error) && (
+        <InlineAlert
+          tone="warning"
+          title="部分运行数据暂时无法读取"
+          actions={
+            <Button
+              size="sm"
+              disabled={queries.some((query) => query.loading)}
+              onClick={() =>
+                void Promise.all(queries.filter((query) => query.error).map((query) => query.refetch()))
+              }
+            >
+              重试读取
+            </Button>
+          }
+        >
+          已保留最近一次数据，稍后会自动重试。
+        </InlineAlert>
+      )}
+      {notices.length > 0 && (
+        <details className="monitor-notices">
+          <summary>{notices.length} 项配置提示</summary>
+          <div className="monitor-notices-body">
+            {notices.map((notice, index) => (
+              <p key={index}>
+                <strong>{notice.text || '配置提示'}</strong>
+                {notice.hint && <span>{notice.hint}</span>}
+              </p>
+            ))}
           </div>
-        </div>
-      </section>
-
-      {/* 配置缺口提示：不报错也不拦启动，但会影响实际使用 */}
-      {notices.map((notice, index) => (
-        <section className="card config-notice warning" role="status" key={index}>
-          <b>{notice.text || '配置提示'}</b>
-          {notice.hint && <span className="muted small"> · {notice.hint}</span>}
-        </section>
-      ))}
-
-      {/* 统计卡 */}
-      <section className="grid stats">
-        <StatCard
-          label="已加载插件"
-          value={d.plugins_loaded ?? pluginLoaded ?? '—'}
-          sub={`共 ${d.plugins_total ?? pluginItems.length} 个`}
-          icon={
-            <Package size={18} strokeWidth={2} aria-hidden="true" />
-          }
-        />
-        <StatCard
-          label="机器人状态"
-          value={d.bot_nickname || '—'}
-          sub={d.bot_user_id ? `QQ ${d.bot_user_id}` : '未连接'}
-          icon={
-            <BotGlyph size={18} strokeWidth={2} aria-hidden="true" />
-          }
-        />
+        </details>
+      )}
+      <section className="monitor-stats" aria-label="核心运行指标">
         <StatCard
           label="今日消息"
           value={fmtNum(d.today_messages)}
           sub={`累计 ${fmtNum(d.total_messages)}`}
-          iconAccent
-          icon={
-            <MessageSquare size={18} strokeWidth={2} aria-hidden="true" />
-          }
-        >
-          <div className="stat-spark">
-            <Sparkline series={series.data?.series || []} />
-          </div>
-        </StatCard>
+          icon={<MessageSquare size={16} />}
+        />
+        <StatCard
+          label="机器人"
+          value={d.bot_nickname || '等待连接'}
+          sub={d.bot_user_id ? `QQ ${d.bot_user_id}` : '尚未连接 OneBot'}
+          icon={<BotGlyph size={16} />}
+        />
+        <StatCard
+          label="已加载插件"
+          value={d.plugins_loaded ?? pluginLoaded}
+          sub={`共 ${d.plugins_total ?? pluginItems.length} 个插件`}
+          icon={<Package size={16} />}
+        />
         <StatCard
           label="运行时长"
-          value={fmtUptime(d.uptime_seconds)}
-          sub={d.online ? '在线' : '离线'}
-          accent={d.online ? 'var(--ok)' : 'var(--err)'}
-          icon={
-            <Clock size={18} strokeWidth={2} aria-hidden="true" />
-          }
+          value={d.uptime_seconds == null ? '—' : fmtUptime(d.uptime_seconds)}
+          sub={d.online ? 'NeoBot 在线' : '等待机器人连接'}
+          accent={d.online ? 'var(--ok)' : undefined}
+          icon={<Clock size={16} />}
         />
       </section>
-
-      <div className="grid two-col">
-        {/* 消息趋势 */}
-        <section className="card">
-          <div className="card-head">
-            <h3>消息趋势</h3>
-            <span className="muted">近 30 个采样点</span>
-          </div>
-          <Sparkline series={series.data?.series || []} />
-        </section>
-
-        {/* 系统资源 */}
-        <section className="card">
-          <div className="card-head">
-            <h3>系统资源</h3>
-            <span className="muted">{sys.hostname || ''}</span>
-          </div>
-          <ProgressBar label="CPU" text={sys.cpu_percent != null ? fmt1(sys.cpu_percent, '%') : '—'} pct={sys.cpu_percent} />
-          <ProgressBar
-            label="内存"
-            text={sys.mem_used_mb != null ? `${Math.round(sys.mem_used_mb)} / ${Math.round(sys.mem_total_mb as number)} MB` : '—'}
-            pct={sys.mem_percent}
-          />
-          <ProgressBar
-            label="磁盘"
-            text={sys.disk_used_gb != null ? `${sys.disk_used_gb.toFixed(1)} / ${(sys.disk_total_gb as number).toFixed(1)} GB` : '—'}
-            pct={sys.disk_percent}
-          />
-          <div className="sys-meta muted">
-            {sys.os || '—'} · Python {sys.python_version || '—'}
-          </div>
-        </section>
+      <div className="monitor-mobile-tabs" aria-label="仪表盘视图">
+        <button aria-pressed={view === 'trend'} onClick={() => setView('trend')}>
+          消息趋势
+        </button>
+        <button aria-pressed={view === 'resources'} onClick={() => setView('resources')}>
+          系统资源
+        </button>
+        <button aria-pressed={view === 'bots'} onClick={() => setView('bots')}>
+          机器人
+        </button>
+        <button aria-pressed={view === 'logs'} onClick={() => setView('logs')}>
+          日志
+        </button>
       </div>
-
-      <div className="grid two-col">
-        {/* 机器人 */}
-        <section className="card">
-          <div className="card-head">
-            <h3>机器人</h3>
+      <div className="monitor-grid dashboard-grid">
+        <div className="monitor-overview monitor-trend">
+          <MessageTrendCard series={series.data?.series} />
+        </div>
+        <SystemResourceCard
+          data={system.data}
+          loading={system.loading}
+          error={system.error}
+          updatedAt={system.updatedAt}
+        />
+        <section className="card monitor-card monitor-activity monitor-bots">
+          <div className="monitor-card-head">
+            <h3>
+              机器人连接 <span className="monitor-count">{botList.length}</span>
+            </h3>
+            <Link className="section-link" to="/bots">
+              查看详情 <Icon name="chevron" />
+            </Link>
           </div>
-          {botList.length === 0 && <EmptyState compact>暂无机器人</EmptyState>}
-          {botList.map((b, i) => (
-            <div className="bot-row" key={b.user_id || i}>
-              <div className="bot-avatar">
-                {b.avatar_initial || 'N'}
-                {b.avatar_url && (
-                  <img src={b.avatar_url} alt="" referrerPolicy="no-referrer" onError={(e) => e.currentTarget.remove()} />
-                )}
-              </div>
-              <div className="bot-body">
-                <div className="bot-name">{b.name}</div>
-                <div className="muted small">{b.platform}</div>
-              </div>
-              <div className="bot-side">
-                <span className={'tag ' + (b.status === 'on' ? 'ok' : 'err')}>
-                  {b.status === 'on' ? '在线' : '离线'}
-                </span>
-                {b.latency_ms != null && <span className="muted small">{b.latency_ms} ms</span>}
-              </div>
-            </div>
-          ))}
-        </section>
-
-        {/* 最近日志 */}
-        <section className="card">
-          <div className="card-head">
-            <h3>最近日志</h3>
-            <span className="muted">{logs.data?.total ?? ''}</span>
-          </div>
-          {logItems.length === 0 && <EmptyState compact>暂无日志</EmptyState>}
-          <div className="log-list">
-            {logItems
-              .slice()
-              .reverse()
-              .map((it, i) => (
-                <div className="log-row" key={it.id ?? i}>
-                  <span className={'tag ' + mapTag(it.level)}>{it.level}</span>
-                  <span className="log-msg">{it.message}</span>
-                  <span className="muted small log-time">{it.time}</span>
+          <MonitorList
+            items={botList}
+            label="机器人连接"
+            empty="暂无机器人连接"
+            rowHeight={52}
+            renderItem={(bot) => (
+              <>
+                <div className="bot-avatar">
+                  {bot.avatar_initial || 'N'}
+                  {bot.avatar_url && (
+                    <img
+                      src={bot.avatar_url}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      onError={(event) => event.currentTarget.remove()}
+                    />
+                  )}
                 </div>
-              ))}
+                <div className="monitor-item-main">
+                  <strong title={bot.name}>{bot.name}</strong>
+                  <span>
+                    {bot.platform || 'OneBot'}
+                    {bot.user_id ? ` · ${bot.user_id}` : ''}
+                  </span>
+                </div>
+                <div className="monitor-item-side">
+                  <span className={'monitor-connection ' + (bot.status === 'on' ? 'online' : '')}>
+                    <i />
+                    {bot.status === 'on' ? '在线' : '离线'}
+                  </span>
+                  <span>{bot.latency_ms != null ? `${bot.latency_ms} ms` : '—'}</span>
+                </div>
+              </>
+            )}
+          />
+        </section>
+        <section className="card monitor-card monitor-activity monitor-logs">
+          <div className="monitor-card-head">
+            <h3>最近日志</h3>
+            <Link className="section-link" to="/logs">
+              查看日志 <Icon name="chevron" />
+            </Link>
           </div>
+          <MonitorList
+            items={logItems}
+            label="最近日志"
+            empty="暂无日志"
+            rowHeight={36}
+            renderItem={(log) => (
+              <>
+                <span className={'tag ' + mapTag(log.level)}>{log.level}</span>
+                <span className="monitor-log-message" title={log.message}>
+                  {log.message}
+                </span>
+                <time className="monitor-log-time">{log.time}</time>
+              </>
+            )}
+          />
         </section>
       </div>
     </div>

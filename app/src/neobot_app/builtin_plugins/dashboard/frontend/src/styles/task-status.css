@@ -1,0 +1,190 @@
+/* 后台任务的语义状态、真实进度、队列摘要与原始数据详情。 */
+
+.task-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.task-state i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.task-state--running {
+  color: var(--info);
+}
+.task-state--waiting {
+  color: var(--warn);
+}
+.task-state--ok {
+  color: var(--ok);
+}
+.task-state--error {
+  color: var(--err);
+}
+.task-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.task-queue-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 32px;
+  margin: 0;
+}
+.task-queue-summary dt,
+.task-facts dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-queue-summary dd {
+  margin: 5px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.task-notification-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.task-notification-sources strong {
+  margin-left: 6px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.task-group {
+  padding-block: 16px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.task-group-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.task-group-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.task-group-heading > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-details {
+  min-width: 0;
+}
+.task-details-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.task-details-heading h4 {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.task-description {
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 24px;
+  margin: 14px 0;
+}
+.task-facts dd {
+  margin: 4px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.task-progress {
+  margin-block: 16px;
+}
+.task-progress > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.task-progress progress {
+  display: block;
+  width: 100%;
+  height: 5px;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  accent-color: var(--brand);
+  background: var(--panel-2);
+}
+.task-progress progress::-webkit-progress-bar {
+  background: var(--panel-2);
+}
+.task-progress progress::-webkit-progress-value {
+  background: var(--brand);
+}
+.task-recent {
+  margin-top: 20px;
+}
+.task-recent > h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.task-recent > h4 span {
+  margin-left: 6px;
+}
+.task-recent .task-details {
+  padding-block: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.task-raw-data {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.task-raw-data summary {
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding-block: 4px;
+}
+.task-raw-data pre {
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  font: 11px/1.7 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 540px) {
+  .task-facts {
+    gap: 12px;
+  }
+  .task-raw-data summary {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+  }
+}

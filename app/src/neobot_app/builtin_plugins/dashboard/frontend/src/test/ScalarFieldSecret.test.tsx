@@ -51,7 +51,12 @@ describe('ScalarField 的密钥判定', () => {
 
 describe('defaultsFromFields 的掩码残留兜底', () => {
   it('int/float 空串回落 0，bool 回落 false，str 保持空串', () => {
-    const fields = [field('i', 'int', ''), field('f', 'float', ''), field('b', 'bool', ''), field('s', 'str', '')];
+    const fields = [
+      field('i', 'int', ''),
+      field('f', 'float', ''),
+      field('b', 'bool', ''),
+      field('s', 'str', ''),
+    ];
     expect(defaultsFromFields(fields)).toEqual({ i: 0, f: 0, b: false, s: '' });
   });
 

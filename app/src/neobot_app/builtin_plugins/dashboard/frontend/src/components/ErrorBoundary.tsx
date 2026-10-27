@@ -40,9 +40,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
             <h3>页面渲染出错</h3>
           </div>
           <InlineAlert tone="error">{error.message || String(error)}</InlineAlert>
-          <p className="muted small">
-            可以点下面的按钮重试；若持续失败，请查看浏览器控制台或面板日志。
-          </p>
+          <p className="muted small">可以点下面的按钮重试；若持续失败，请查看浏览器控制台或面板日志。</p>
           <ModalActions>
             <Button variant="primary" onClick={this.reset}>
               重新渲染
