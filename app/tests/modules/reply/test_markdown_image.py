@@ -113,6 +113,7 @@ def test_cleanup_expired_removes_only_old_files(tmp_path):
     assert not old.exists()
     assert new.exists()
 
+
 # ── 画布裁剪：不得把浏览器视口高度当成内容高度（fix(10)） ────────
 
 
@@ -132,36 +133,29 @@ class _FakeBrowser:
         self.viewports: list[tuple[int, int]] = []
         self.scripts: list[str] = []
 
-    async def navigate(self, url: str) -> dict:
-        return {"success": True, "url": url}
+    async def save(self, *, html, path, options, base_url=None):
+        from neobot_app.screenshot import ScreenshotResult, ScreenshotTargetNotFound
 
-    async def execute_js(self, script: str) -> dict:
-        self.scripts.append(script)
-        if "getBoundingClientRect" in script:
-            if self._broken_element:
-                return {"success": True, "result": "0"}
-            return {"success": True, "result": str(self._content_height)}
-        # 旧的「整页高度」口径：被视口高度托底
-        return {"success": True, "result": str(max(self._content_height, self._viewport[1]))}
-
-    async def set_viewport(
-        self, width: int, height: int, device_scale_factor: float = 1.0
-    ) -> dict:
-        self._viewport = (width, height)
+        # Element capture must be requested: viewport capture would retain its
+        # probe/window height and fail these content-height regressions.
+        assert options.screenshot.mode == "element"
+        assert options.screenshot.selector == "article.markdown-body"
+        assert options.screenshot.height == 320
+        assert options.ready_script
+        if self._broken_element:
+            raise ScreenshotTargetNotFound("article missing")
+        width = options.screenshot.width
+        height = max(self._content_height, 200)
         self.viewports.append((width, height))
-        return {"success": True}
-
-    async def screenshot(self) -> dict:
-        width, height = self._viewport
-        path = self._shot_dir / f"shot_{len(self.viewports)}.jpg"
-        Image.new("RGB", (width, height), "white").save(str(path), "JPEG")
-        return {"success": True, "path": str(path)}
+        self.scripts.append(options.ready_script)
+        Image.new("RGB", (width, min(height, 8193)), "white").save(path, "PNG")
+        return ScreenshotResult(b"", "png", width, height, width, height, 1)
 
 
 def _converter_with_browser(tmp_path: Path, browser: _FakeBrowser) -> MarkdownImageConverter:
     browser._shot_dir = tmp_path / "shots"
     browser._shot_dir.mkdir(parents=True, exist_ok=True)
-    return MarkdownImageConverter(output_dir=tmp_path, browser_instance=browser)
+    return MarkdownImageConverter(output_dir=tmp_path, screenshots=browser)
 
 
 async def test_short_markdown_canvas_is_not_window_height(tmp_path: Path) -> None:
@@ -201,24 +195,22 @@ async def test_tall_markdown_canvas_follows_content(tmp_path: Path) -> None:
         assert image.size == (840, 1500)
 
 
-async def test_canvas_height_is_clamped_to_max(tmp_path: Path) -> None:
-    """异常超长内容钳到上限，避免造出超大图。"""
+async def test_canvas_height_over_limit_is_explicit_error(tmp_path: Path) -> None:
+    """异常超长内容明确报错，不能交付裁掉下半部分的图片。"""
     browser = _FakeBrowser(content_height=200_000)
     converter = _converter_with_browser(tmp_path, browser)
 
-    path = await converter.convert("# 标题")
+    with pytest.raises(MarkdownImageError, match="dimensions exceed limit"):
+        await converter.convert("# 标题")
+    assert not list(tmp_path.glob("*.png"))
 
-    with Image.open(path) as image:
-        assert image.size == (840, 8192)
 
-
-async def test_page_height_fallback_used_when_element_missing(tmp_path: Path) -> None:
-    """内容元素量不到时退回整页高度；此时视口已被压到探针高度，结果仍是内容高度。"""
+async def test_pillow_fallback_used_when_element_missing(tmp_path: Path) -> None:
+    """截图元素缺失时使用文字降级，不能交付空白整页。"""
     browser = _FakeBrowser(content_height=430, broken_element=True)
     converter = _converter_with_browser(tmp_path, browser)
 
     path = await converter.convert("# 标题\n\n正文")
 
     with Image.open(path) as image:
-        assert image.size == (840, 430)
-
+        assert image.width > 0 and image.height > 0

@@ -97,6 +97,7 @@ class _LongReplyToolsMixin:
                     "如果已有预渲染的图片文件，可提供 image_path 直接发送，"
                     "此时 markdown 仅用于日志记录（仍建议提供以便追溯）。"
                     "适用于包含代码块、表格、数学公式等复杂格式的长文本回复。"
+                    r"短公式也可使用；行内公式用 $...$ 或 \(...\)，独立公式用 $$...$$ 或 \[...\]。"
                     "也用于发送解题结果、跨聊天通信结果等需要格式化的内容。"
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
                     "markdown/caption 会先做输出安全清洗，再用于渲染、发送和对话历史；仍必须只放正文本身："
@@ -106,7 +107,7 @@ class _LongReplyToolsMixin:
                         "properties": {
                             "markdown": {
                                 "type": "string",
-                                "description": "Markdown 格式的回复内容（image_path 为空时必填）。支持标题、列表、代码块、表格等标准 Markdown 语法。",
+                                "description": r"Markdown 格式的回复内容（image_path 为空时必填）。支持标题、列表、代码块、表格及 KaTeX 数学公式；短公式也可发送。JSON 中反斜杠需正确转义。",
                             },
                             "image_path": {
                                 "type": "string",

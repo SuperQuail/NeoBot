@@ -5,11 +5,12 @@ covers:
   - app/src/neobot_app/runtime/help_card.py
   - app/src/neobot_app/runtime/help_cache.py
   - app/src/neobot_app/reply/markdown_image.py
+  - app/src/neobot_app/reply/math_markdown.py
   - app/src/neobot_app/screenshot.py
   - app/src/neobot_app/image_pool.py
   - packages/contracts/src/neobot_contracts/ports/screenshot.py
-verified_against: 528fe18
-verified_hash: 646462480e0b
+verified_against: 6233322
+verified_hash: 013aefbbb6e6
 ---
 
 # 13 渲染与卡片：自包含 HTML 卡片 · /help 预渲染缓存 · Markdown 转图 · 截图链路 · 图片暂存池
@@ -24,7 +25,7 @@ verified_hash: 646462480e0b
   纯文本两级降级文案；
 * **/help 预渲染缓存**：`app/src/neobot_app/runtime/help_cache.py`（484 行）—— 命令指纹、index.json、三个权限维度
   预渲染、60 张容量淘汰；
-* **Markdown 转图**：`app/src/neobot_app/reply/markdown_image.py`（400 行）—— 浏览器优先 + pillowmd 降级 + 画布高度探针；
+* **Markdown 转图**：`app/src/neobot_app/reply/markdown_image.py` 与 `math_markdown.py` —— 安全解析、本地 KaTeX 排版、隔离截图与 pillowmd 源码降级；
 * **截图 façade 与契约**：`app/src/neobot_app/screenshot.py`（413 行）、
   `packages/contracts/src/neobot_contracts/ports/screenshot.py`（170 行）；
 * **图片暂存池**：`app/src/neobot_app/image_pool.py`（119 行）。
@@ -42,8 +43,8 @@ verified_hash: 646462480e0b
 
 **与 spec / 直觉不符的提示**（细节见「易错点」与文末清单）：
 
-* 卡片是**自包含**的（无 JS、无外链，`html_card.py:15-23` 的硬红线），但 **Markdown 转图的模板不是**：
-  它带两个 `cdnjs.cloudflare.com` 外链和一个内联脚本（`markdown_image.py:34/40-41`）；
+* 卡片是**自包含**的（无 JS、无外链，`html_card.py:15-23` 的硬红线）；Markdown 转图同样无外链，
+  但会执行随包附带的 KaTeX 与应用编写的就绪脚本，用户公式只作为文本传入；
 * 模块级截图端口 `html_card.set_screenshots` 在生产代码里**零调用**（只有单测调用），
   真正生效的注入点是 `bootstrap/__init__.py:977 command_service.set_screenshots(...)`；
 * `index.json` 里的 `pages`（各维度页数）**只写不读**；
@@ -451,42 +452,42 @@ flowchart TD
 </details>
 
 <details>
-### Markdown 转图：浏览器优先、探针视口量高与 pillowmd 降级
+### Markdown 转图：安全数学解析、本地排版、隔离截图与源码降级
 
 ```mermaid
 flowchart TD
-    A["convert(markdown_text, filename=None, force_pillowmd=False) / markdown_image.py:193"] --> B{"内容全空白?"}
+    A["convert(markdown_text, filename=None, force_pillowmd=False)"] --> B{"内容全空白?"}
     B -- 是 --> B1["raise MarkdownImageError：内容不能为空"]
-    B -- 否 --> C["filename = md_ 加 sha256 前 16 位，未指定时 / markdown_image.py:210"]
-    C --> D{"browser_available 且非强制 pillowmd?"}
-    D -- 否 --> P["_render_with_pillowmd / markdown_image.py:302"]
-    D -- 是 --> E["asyncio.wait_for(_render_with_browser, 60s) / markdown_image.py:216"]
-    E -- TimeoutError --> E1["直接 raise：超时不再尝试 pillowmd / markdown_image.py:220"]
-    E -- 其它异常 --> E2["warning：浏览器渲染失败，降级 pillowmd / markdown_image.py:223"]
+    B -- 否 --> C["内容哈希命名；检查 100000 字符与 512 公式上限"]
+    C -- 超限 --> B1
+    C -- 通过 --> D{"screenshots 可用且非强制 pillowmd?"}
+    D -- 否 --> P["pillowmd_source：公式保留为代码源码，不执行 TeX"]
+    D -- 是 --> E["60s 总预算包含共享锁排队、浏览器与降级"]
+    E -- TimeoutError 或 MarkdownImageError --> E1["直接抛错，不交付截断图片"]
+    E -- 其它异常 --> E2["warning：浏览器失败，降级 pillowmd"]
     E2 --> P
-    P --> P1["pillowmd.MdToImage 用 MdStyle 且 xSizeMax=800 出 PNG / markdown_image.py:304"]
-    E -- 成功 --> F["md_lib.markdown 带 fenced_code codehilite tables nl2br / markdown_image.py:231"]
-    F --> G["写 {filename}.html 到 output_dir，浏览器导航 file 协议 / markdown_image.py:236-242"]
-    G --> H["set_viewport(宽度加 40, 320 探针高) / markdown_image.py:249"]
-    H --> I["_measure_content_height：先量 article.markdown-body，量不到退回整页 / markdown_image.py:283"]
-    I --> J["height = clamp(测量值, 200, 8192)，再 set_viewport / markdown_image.py:251"]
-    J --> K["browser.screenshot()：success 或 path 不合即 MarkdownImageError / markdown_image.py:257"]
-    K --> L{"源文件后缀是 jpg 或 jpeg?"}
-    L -- 是 --> L1["PIL 打开另存为 PNG / markdown_image.py:271"]
-    L -- 否 --> L2["shutil.copy2 到同名 png"]
+    P --> P1["预检 10000 字符、180 估算行；拒绝图片语法后用 pillowmd 出 PNG"]
+    E --> F["render_markdown：排除代码、转义 HTML、保护四种数学定界符"]
+    F --> G["内联本地 KaTeX JS、CSS 与 data 字体；无 CDN"]
+    G --> H["ScreenshotService.save：共享锁与隔离临时页"]
+    H --> I["ready_script：KaTeX trust=false 排版并等待 fonts.ready"]
+    I --> J["扩展宽度容纳公式；检查 8192 单边、1600 万像素限制"]
+    J --> K["element 截取 article.markdown-body，直接输出 PNG"]
+    K --> L["finally 恢复原页并释放共享锁"]
 ```
 
-* 画布口径：`documentElement.scrollHeight` **不会小于视口高度**，直接量会把短内容出成「整屏高加大片空白」；
-  所以先压到 `_PROBE_VIEWPORT_HEIGHT = 320`（119）再量内容元素，上下限 `_MIN_CANVAS_HEIGHT = 200` 与
-  `_MAX_CANVAS_HEIGHT = 8192`（121-123）；
+* 画布口径：使用 320px 探针视口后截取内容元素，CSS 最小高度 200px，不使用整页高度托底。
+  图片超过任一边 8192px 或总面积 1600 万像素时明确报错，不静默裁掉公式；
 * 触发场景（阈值属 03 的图，这里只记口径）：`process_reply_text` 判定 `fallback_used` 才转图
   （sender.py:852-862，默认 `long_reply_max_length=300` 与 `long_reply_max_sentence_count=12`，
   orchestrator.py:1601-1612）；回复管线外层再包 `_MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0`（sender.py:25、377）；
-  这里**没有「切分」步骤**：整段清洗后的正文渲染成**一张**图，长度只受 8192px 画布上限约束；
-* `convert` 按内容哈希命名（同内容复用文件名），`_render_lock`（175）保证同一实例内不并发导航；
+  这里**没有「切分」步骤**：整段清洗后的正文渲染成**一张**图，超限需要调用方拆分；
+* `convert` 按内容哈希命名；不同转换器实例经同一个截图后端的 `operation_lock` 串行化；
+* `math_markdown.py` 使用 CommonMark 的代码块范围保持引用、列表中的代码不变；金额不作为单美元公式。
+  原始 HTML 显示为文字，图片只显示替代文字；公式坏语法局部保留源码。降级不调用系统 TeX；
 * 清理：6h 巡检删 24h 前的 png/jpg/jpeg/webp/html（`_CLEANUP_INTERVAL_SECONDS` 与 `_TMP_MAX_AGE_SECONDS`，154-155），
   `stop()` 时 `_cleanup_all` 全删（`_CLEANUP_ALL_ON_STOP = True`）；
-* 注意：`_style` 在 `start()` 里创建 —— 不 `start()` 就 `convert(force_pillowmd=True)` 会把 `style=None` 交给 pillowmd。
+* `_style` 在 `start()` 里创建；直接调用 `convert` 也会补用 `pillowmd.MdStyle()`。
 </details>
 
 <details>
@@ -508,7 +509,8 @@ flowchart TD
     G --> H["asyncio.timeout 内：_open_temporary_page 开隔离标签并激活 / manager.py:1566"]
     H --> I["_apply_temporary_capture_metrics：记录原尺寸并 setDeviceMetricsOverride / manager.py:1367"]
     I --> J["Page.setDocumentContent(frameId, document) / screenshot.py:245"]
-    J --> K["_wait_for_resources：fonts.ready 加逐字体 load 与 check，任一失败 FontLoadError / screenshot.py:300"]
+    J --> J1["可选 ready_script：只执行应用编写的脚本并等待返回 true"]
+    J1 --> K["_wait_for_resources：fonts.ready 加逐字体 load 与 check，任一失败 FontLoadError / screenshot.py:300"]
     K --> K1{"wait_for_images?"}
     K1 -- 是 --> K1a["等所有 img load 或 error（不判断成败）/ screenshot.py:342"]
     K1 -- 否 --> L
@@ -631,8 +633,8 @@ flowchart TD
    别用它判断维度页数，`is_fresh` 只看 fingerprint 与 renderer_version 与 size。
 7. **越界页不写缓存**：`allow_cache=False`（builtin.py:275）时即使渲染成功也不 store，
    避免把带「页码超出范围」提示的图当成正常页缓存。
-8. **Markdown 转图模板不是自包含的**：`_MD_HTML_TEMPLATE` 带两个 `https://cdnjs.cloudflare.com` 外链与内联
-   `hljs.highlightAll()`（markdown_image.py:34、40-41），与 `html_card` 的「无外链无脚本」红线是两套口径；
+8. **Markdown 转图允许受控本地脚本**：KaTeX 随包分发、字体内嵌，无外链；公式经文本节点传入，
+   `ready_script` 不插入用户内容。与卡片的「无脚本」规则仍需区分；
    离线时高亮样式缺失但出图不受影响（该模板会执行页面脚本，是仓内唯一允许脚本的渲染路径）。
 9. **`convert` 对超时不降级**：`except asyncio.TimeoutError: raise`（markdown_image.py:220-221）——
    只有非超时异常才落 pillowmd。浏览器卡死等于直接失败，靠调用方（sender 60s、tools、commands）再降级。
@@ -662,7 +664,7 @@ flowchart TD
 | N1 | `html_card.set_screenshots` 与模块级 `_screenshots` 在生产代码里**零调用**（只有 app/tests/modules/runtime/test_html_card.py:556 与 561 调用），于是 `get_screenshots()` 恒 None，`commands/service.py:120-127` 的「回落到模块级默认」是死分支；真正生效的注入只有 `bootstrap/__init__.py:977` | runtime/html_card.py:1717-1728、commands/service.py:114-131 | 任何直接 `render_card_image(html)` 而不传 `screenshots=` 的调用方（插件、脚本）必然降级；反过来改「默认端口」不会影响生产 |
 | N2 | `index.json` 的 `pages`（各维度页数）只写不读：`new_index` 与 `touch_index` 与 `store_list_image` 维护它，全模块无读取点；`is_fresh` 只看 fingerprint 与 renderer_version 与 size | runtime/help_cache.py:205-217、263-265 | 文档里「记录各维度页数」目前没有消费者；想用它做「缓存是否完整」的判断必须先补读取点 |
 | N3 | `image_pool.StagedImage.expires_at` 只写不读（过期判定用 `now - created_at > ttl`），且 TTL 300s 硬编码、配置层零命中 | app/src/neobot_app/image_pool.py:12-22、64-72、116；bootstrap/_runtime.py:60-61 | 面板改不了暂存时长；`expires_at` 不能作为外部观测字段 |
-| N4 | Markdown 转图模板带两个 `cdnjs.cloudflare.com` 外链加内联脚本，与卡片渲染器的「自包含、无外链、无脚本」硬红线相反 | reply/markdown_image.py:34、40-41 | 离线环境下高亮样式与脚本静默缺失；安全评审时两条渲染路径的口径必须分开说明 |
+| N4 | Markdown 转图内联本地 KaTeX 与受控就绪脚本，卡片仍禁止脚本 | reply/markdown_image.py、reply/math_markdown.py | 数学排版可离线工作；代码用普通等宽样式，安全评审仍需区分两条路径 |
 | N5 | `convert` 对浏览器渲染的 TimeoutError **不降级**（只有其它异常才落 pillowmd） | reply/markdown_image.py:214-225 | 「浏览器卡死」与「浏览器报错」的用户可见结果不同：前者直接失败，后者还能出一张 pillowmd 图 |
 | N6 | `CommandService._card_image_dir` 未注入时回落 `markdown_image_converter._output_dir`，卡片图与长文转图共用目录与清理器（24h 删除加 stop 全删） | commands/service.py:335-344；reply/markdown_image.py:154-156、342-385 | 「卡片图突然没了」多半是清理器或 `stop()` 干的；`data/cache/help/` 的缓存不受影响 |
 | N7 | `render_card_image` 四档尝试共用调用方传入的单个 timeout，`/help` 只用 25s 外包，full_page 两档在真实超时场景下几乎走不到 | runtime/html_card.py:1763-1768；commands/builtin.py:289-291、391-399 | 「有 full_page 兜底」在超时场景下不成立；调整档位或顺序时要重算最坏耗时 |

@@ -76,6 +76,9 @@ class RenderOptions:
     wait_for_fonts: bool = True
     wait_for_images: bool = True
     timeout: float = 30.0
+    # Trusted application-authored JavaScript returning true (or a Promise of true).
+    # Never interpolate user content; ordinary cards leave this unset.
+    ready_script: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

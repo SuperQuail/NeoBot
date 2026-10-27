@@ -8,19 +8,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import math
+import re
 import time
+from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import markdown as md_lib
 import pillowmd
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.ports.screenshot import RenderOptions, ScreenshotOptions, ScreenshotPort
 
-if TYPE_CHECKING:
-    pass
-
+from neobot_app.reply.math_markdown import pillowmd_source, render_markdown
 
 _MD_HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -31,14 +33,12 @@ _MD_HTML_TEMPLATE = """\
 <style>
   {css}
 </style>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 </head>
 <body>
 <article class="markdown-body">
 {content}
 </article>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script>hljs.highlightAll();</script>
+<script>{katex_js}</script>
 </body>
 </html>"""
 
@@ -104,6 +104,62 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 .markdown-body hr { border: none; border-top: 1px solid #d0d7de; margin: 24px 0; }
 .markdown-body a { color: #0969da; text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
+.markdown-body { box-sizing: border-box; min-height: 200px; }
+.neobot-math[data-display="true"] { display: block; margin: 1em 0; }
+.markdown-body .katex-display { overflow: visible; }
+.markdown-body pre { overflow: visible; white-space: pre-wrap; }
+"""
+
+
+@lru_cache(maxsize=1)
+def _katex_resources() -> tuple[str, str]:
+    """Embed vendored resources once; never fetch a network or file URL."""
+    root = Path(__file__).parent / "assets" / "katex"
+    css = (root / "katex.min.css").read_text(encoding="utf-8")
+
+    def embed(match: re.Match[str]) -> str:
+        name = match[1]
+        suffix = Path(name).suffix[1:]
+        mime = {"woff2": "font/woff2", "woff": "font/woff", "ttf": "font/ttf"}[suffix]
+        data = base64.b64encode((root / name).read_bytes()).decode("ascii")
+        return f"url(data:{mime};base64,{data})"
+
+    css = re.sub(r"url\((fonts/[^)]+)\)", embed, css)
+    return css, (root / "katex.min.js").read_text(encoding="utf-8")
+
+
+# Application-authored code only. TeX comes from textContent, never JS interpolation.
+_MATH_READY_SCRIPT = r"""
+return (async () => {
+  if (!window.katex) throw new Error('local KaTeX resources unavailable');
+  const article = document.querySelector('article.markdown-body');
+  for (const node of article.querySelectorAll('.neobot-math')) {
+    const source = node.textContent;
+    try {
+      katex.render(source, node, {displayMode: node.dataset.display === 'true',
+        trust: false, throwOnError: false, maxExpand: 1000, maxSize: 20,
+        strict: 'error'});
+    } catch (_) { node.textContent = source; }
+  }
+  await document.fonts.ready;
+  const failed = Array.from(document.fonts).some(font => font.status === 'error');
+  if (failed) throw new Error('local math font failed to load');
+  // Expand the captured article to include unbreakable formulas, code and tables.
+  let width = Math.max(article.getBoundingClientRect().width, article.scrollWidth);
+  // KaTeX radicals use deliberately huge SVGs clipped inside narrow wrappers.
+  // Only formula layout boxes count; measuring every descendant expands normal
+  // square roots to thousands of pixels even though their visible ink is small.
+  for (const child of article.querySelectorAll('.katex-html > .katex-base, .katex-html > .base, pre, table')) {
+    width = Math.max(width, child.getBoundingClientRect().width + 48);
+  }
+  article.style.maxWidth = 'none';
+  article.style.width = Math.ceil(width) + 'px';
+  article.style.margin = '0';
+  const box = article.getBoundingClientRect();
+  if (box.width > 8192 || box.height > 8192 || box.width * box.height > 16000000)
+    throw new Error('Markdown image dimensions exceed limit');
+  return true;
+})();
 """
 
 
@@ -117,24 +173,8 @@ _CONTENT_SELECTOR = "article.markdown-body"
 #: （同类缺陷见 commit a333286「卡片截图裁剪到元素盒」）。
 #: 先把视口压到一个小高度再量内容元素自身，就绕开了这层托底。
 _PROBE_VIEWPORT_HEIGHT = 320
-#: 输出画布高度下限（保证极短内容也有正常留白）
-_MIN_CANVAS_HEIGHT = 200
-#: 输出画布高度上限（防止异常内容造出超大图）
-_MAX_CANVAS_HEIGHT = 8192
 #: 视口宽度相对内容宽度的余量（沿用既有 40px 语义）
 _VIEWPORT_WIDTH_PADDING = 40
-#: 量「内容元素自身高度」的 JS（量不到返回 0，交给整页口径兜底）
-_ELEMENT_HEIGHT_JS = (
-    "const el = document.querySelector('" + _CONTENT_SELECTOR + "');"
-    "if (el) { const rect = el.getBoundingClientRect();"
-    " return Math.ceil(rect.bottom + window.scrollY); }"
-    "return 0;"
-)
-#: 量「整页高度」的 JS（仅在探针视口下使用才是内容高度）
-_PAGE_HEIGHT_JS = (
-    "return Math.max(document.documentElement.scrollHeight,"
-    " document.body ? document.body.scrollHeight : 0, 0);"
-)
 
 
 class MarkdownImageError(Exception):
@@ -145,16 +185,16 @@ class MarkdownImageConverter:
     """将 Markdown 文本渲染为 PNG 图片。
 
     支持两种渲染方式：
-    1. 浏览器渲染（质量更高，支持代码高亮）- 主方案
+    1. 浏览器渲染（本地 KaTeX 数学排版）- 主方案
     2. pillowmd 渲染（无需浏览器）- 降级方案
 
     自动选择可用方案。
     """
 
-    _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60   # 每 6 小时清理一次
-    _TMP_MAX_AGE_SECONDS = 24 * 60 * 60       # 超过 24 小时的文件视为过期
-    _CLEANUP_ALL_ON_STOP = True                # 关闭时删除所有文件
-    _RENDER_TIMEOUT_SECONDS = 60               # 渲染总超时（防浏览器卡死挂起回复管线）
+    _CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60  # 每 6 小时清理一次
+    _TMP_MAX_AGE_SECONDS = 24 * 60 * 60  # 超过 24 小时的文件视为过期
+    _CLEANUP_ALL_ON_STOP = True  # 关闭时删除所有文件
+    _RENDER_TIMEOUT_SECONDS = 60  # 渲染总超时（防浏览器卡死挂起回复管线）
 
     def __init__(
         self,
@@ -162,17 +202,22 @@ class MarkdownImageConverter:
         output_dir: Path,
         width: int = 800,
         browser_instance: Any = None,
+        screenshots: ScreenshotPort | None = None,
         logger: Logger | None = None,
     ) -> None:
         self._output_dir = output_dir
         self._width = width
-        self._browser = browser_instance
-        self._browser_available = browser_instance is not None
+        if screenshots is None and browser_instance is not None:
+            from neobot_app.browser import BrowserScreenshotBackend
+            from neobot_app.screenshot import ScreenshotService
+
+            screenshots = ScreenshotService(BrowserScreenshotBackend(browser_instance))
+        self._screenshots = screenshots
+        self._browser_available = screenshots is not None
         self._logger = logger or NullLogger()
         self._started = False
         self._style: pillowmd.MdStyle | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
-        self._render_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -211,104 +256,83 @@ class MarkdownImageConverter:
             content_hash = hashlib.sha256(markdown_text.encode("utf-8")).hexdigest()[:16]
             filename = f"md_{content_hash}"
 
-        if self._browser_available and not force_pillowmd:
-            try:
-                return await asyncio.wait_for(
-                    self._render_with_browser(markdown_text, filename),
-                    timeout=self._RENDER_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                raise
-            except Exception as exc:
-                self._logger.warning("浏览器渲染失败，降级到 pillowmd", error=str(exc))
-
-        return await self._render_with_pillowmd(markdown_text, filename)
+        if len(markdown_text) > 100000:
+            raise MarkdownImageError("Markdown input exceeds limit (100000 characters)")
+        html = render_markdown(markdown_text)
+        if html.count('class="neobot-math"') > 512:
+            raise MarkdownImageError("Markdown formula count exceeds limit (512)")
+        async with asyncio.timeout(self._RENDER_TIMEOUT_SECONDS):
+            if self._browser_available and not force_pillowmd:
+                try:
+                    return await self._render_with_browser(markdown_text, filename)
+                except (TimeoutError, MarkdownImageError):
+                    raise
+                except Exception as exc:
+                    self._logger.warning("浏览器渲染失败，降级到 pillowmd", error=str(exc))
+            return await self._render_with_pillowmd(markdown_text, filename)
 
     # ── 浏览器渲染 ──
 
     async def _render_with_browser(self, markdown_text: str, filename: str) -> Path:
         """使用浏览器渲染 markdown → HTML → 截图。"""
-        html = md_lib.markdown(
-            markdown_text,
-            extensions=["fenced_code", "codehilite", "tables", "nl2br"],
+        css, script = _katex_resources()
+        full_html = _MD_HTML_TEMPLATE.format(
+            css=_MD_CSS + css,
+            content=render_markdown(markdown_text),
+            katex_js=script,
         )
-
-        full_html = _MD_HTML_TEMPLATE.format(css=_MD_CSS, content=html)
-        html_path = self._output_dir / f"{filename}.html"
-        html_path.write_text(full_html, encoding="utf-8")
-
-        browser = self._browser
-        async with self._render_lock:
-            await browser.navigate(f"file:///{html_path.as_posix()}")
-            await asyncio.sleep(0.3)
-
-            width = self._width + _VIEWPORT_WIDTH_PADDING
-            # 先按目标宽度 + 探针高度布局，再量**内容元素自身**的高度。
-            # 直接量 documentElement.scrollHeight 会被窗口高度托底（见探针常量注释），
-            # 短内容也会得到整屏高的画布 → 下方大片空白。
-            await browser.set_viewport(width=width, height=_PROBE_VIEWPORT_HEIGHT)
-            await asyncio.sleep(0.1)
-            height = min(
-                max(await self._measure_content_height(browser), _MIN_CANVAS_HEIGHT),
-                _MAX_CANVAS_HEIGHT,
-            )
-            await browser.set_viewport(width=width, height=height)
-
-            result = await browser.screenshot()
-            if not isinstance(result, dict) or not result.get("success"):
-                err = ""
-                if isinstance(result, dict):
-                    err = result.get("error", "")
-                raise MarkdownImageError(f"浏览器截图失败: {err}")
-
-            image_path_str = result.get("path", "")
-            if not image_path_str:
-                raise MarkdownImageError("浏览器截图未返回路径")
-
-            # screenshot() 返回 jpg，复制到标准输出目录并统一为 png
-            src = Path(image_path_str)
-            target = self._output_dir / f"{filename}.png"
-            if src.suffix.lower() in (".jpg", ".jpeg"):
-                from PIL import Image
-                img = Image.open(str(src))
-                img.save(str(target), "PNG")
-                img.close()
-            else:
-                import shutil
-                shutil.copy2(str(src), str(target))
-
-            self._logger.info("Markdown 浏览器渲染完成", path=str(target), height=height)
-            return target
-
-    async def _measure_content_height(self, browser: Any) -> int:
-        """量内容容器（article.markdown-body）自身高度，量不到时退回整页高度。
-
-        调用前必须已经把视口压到探针高度：只有视口足够小的时候，整页 scrollHeight
-        才等于内容高度。返回 0 表示两条路径都量不到（调用方用下限兜底）。
-        """
-        for script in (_ELEMENT_HEIGHT_JS, _PAGE_HEIGHT_JS):
-            try:
-                result = await browser.execute_js(script)
-            except Exception as exc:
-                self._logger.debug("量 Markdown 内容高度失败", error=str(exc))
-                continue
-            value = _js_int(result)
-            if value > 0:
-                return value
-        return 0
+        target = self._output_dir / f"{filename}.png"
+        assert self._screenshots is not None
+        result = await self._screenshots.save(
+            html=full_html,
+            path=target,
+            options=RenderOptions(
+                screenshot=ScreenshotOptions(
+                    mode="element",
+                    selector=_CONTENT_SELECTOR,
+                    width=self._width + _VIEWPORT_WIDTH_PADDING,
+                    height=_PROBE_VIEWPORT_HEIGHT,
+                    format="png",
+                ),
+                ready_script=_MATH_READY_SCRIPT,
+                timeout=self._RENDER_TIMEOUT_SECONDS,
+            ),
+        )
+        if result is not None and (
+            result.width > 8192 or result.height > 8192 or result.width * result.height > 16000000
+        ):
+            target.unlink(missing_ok=True)
+            raise MarkdownImageError("Markdown image dimensions exceed limit")
+        return target
 
     # ── pillowmd 渲染 ──
 
     async def _render_with_pillowmd(self, markdown_text: str, filename: str) -> Path:
         """使用 pillowmd 渲染 markdown 为图片。"""
+        # Bound the fallback before Pillow allocates a potentially enormous canvas.
+        # Conservative wrapping estimate includes CJK and large heading glyphs.
+        columns = max(1, self._width // 32)
+        lines = sum(max(1, math.ceil(len(line) / columns)) for line in markdown_text.splitlines())
+        if len(markdown_text) > 10000 or lines > 180:
+            raise MarkdownImageError("Markdown fallback exceeds input/layout limit")
+        # pillowmd resolves local image paths independently of its URL switch.
+        # Its scanner differs from MarkdownIt; reject even ambiguous/code images
+        # rather than letting a second parser read user-selected files.
+        if "![" in markdown_text:
+            raise MarkdownImageError("Markdown fallback does not support image sources")
         result = await pillowmd.MdToImage(
-            text=markdown_text,
-            style=self._style,
+            text=pillowmd_source(markdown_text),
+            style=self._style or pillowmd.MdStyle(),
         )
 
         output_path = self._output_dir / f"{filename}.png"
-        result.image.save(str(output_path), "PNG")
-        result.image.close()
+        try:
+            width, height = result.image.size
+            if width > 8192 or height > 8192 or width * height > 16000000:
+                raise MarkdownImageError("Markdown image dimensions exceed limit")
+            result.image.save(str(output_path), "PNG")
+        finally:
+            result.image.close()
         self._logger.info("Markdown pillowmd 渲染完成", path=str(output_path))
         return output_path
 
@@ -383,18 +407,3 @@ class MarkdownImageConverter:
                 pass
         if deleted:
             self._logger.info("Markdown 图片全部清理完成", deleted=deleted)
-
-
-def _js_int(result: Any) -> int:
-    """把 execute_js 的返回值（可能是 {"result": "800"} 或裸值）解析成 int；失败返回 0。"""
-    raw: Any = result
-    if isinstance(result, dict):
-        raw = result.get("result", result.get("data", 0))
-    if isinstance(raw, bool):
-        return 0
-    if isinstance(raw, (int, float)):
-        return int(raw)
-    try:
-        return int(float(str(raw).strip()))
-    except (TypeError, ValueError):
-        return 0

@@ -247,6 +247,7 @@ def _build_core_services(state: _BuildState) -> None:
     markdown_image_converter = build_markdown_image_converter(
         data_dir=DATA_DIR,
         browser_instance=browser["browser_instance"],
+        screenshots=browser["screenshots"],
         logger_factory=logger_factory,
     )
 

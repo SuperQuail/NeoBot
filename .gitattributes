@@ -1,5 +1,8 @@
 * text=auto
 
+# Vendored KaTeX files must retain the upstream SHA256 bytes on every platform.
+app/src/neobot_app/reply/assets/katex/** -text
+
 *.bat text eol=crlf
 *.sh text eol=lf
 

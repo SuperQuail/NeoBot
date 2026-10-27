@@ -217,12 +217,14 @@ def build_markdown_image_converter(
     data_dir: Path,
     browser_instance: Any,
     logger_factory: Any,
+    screenshots: Any = None,
 ) -> Any:
     from neobot_app.reply.markdown_image import MarkdownImageConverter
 
     return MarkdownImageConverter(
         output_dir=data_dir / "markdown_images",
         browser_instance=browser_instance,
+        screenshots=screenshots,
         logger=logger_factory.get_logger("app.markdown_image"),
     )
 
