@@ -34,7 +34,7 @@ class _MiscToolsMixin:
             remaining = int(self._wait_cooldown_seconds - elapsed)
             return (
                 f"wait 处于冷却中，还需等待 {remaining} 秒后才可再次调用。"
-                "【提示】如果是在等待后台任务完成，请结束本轮回复，系统会在完成后通知你。"
+                "【提示】如果是在等待后台任务完成，可以继续聊天或处理其他事情；系统会在完成后通知你，不要轮询。"
             )
         self._last_wait_time = now
         return await self._wait(seconds=seconds)

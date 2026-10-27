@@ -44,7 +44,7 @@ class ImageParseSkillBase:
             "parse_image 为会话工具(session模式)：\n"
             "  - 调用后立即返回 session_submitted，实际解析在后台进行\n"
             "  - timeout_seconds 默认为 300 秒（5分钟），agent 可按需设置，最长 1800 秒（30分钟）\n"
-            "  - 收到返回后请立即结束本轮回复，不要继续调用其他工具或使用 wait\n"
+            "  - 收到返回后可以继续聊天或处理其他事情；不要轮询或反复提交\n"
             "  - 系统会在解析完成后通过通知自动唤醒你，届时携带解析结果\n\n"
             "多张图片（推荐用法，省 API 调用）：\n"
             "  - 同一消息多张图：msg_number + image_indices=[0,1,2]（0-based）一次解析\n"

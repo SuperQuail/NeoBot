@@ -133,8 +133,12 @@ class BackgroundNotificationHub:
 
         目的：agent 在下一轮重建提示词时能看到 `[通知:<source>] <content>`，
         而不是只有「被单独叫起来」那一次才知道刚才发生了什么。
+        一次性动作通知（如 session_tool / drawing）可设置 metadata['mirror']=False 跳过；
+        它们已经通过 background_content/轮询交付，留在历史里会重复响应。
         永不抛异常——入队失败绝不影响通知的既有投递。
         """
+        if notification.metadata.get("mirror", True) is False:
+            return
         recorder = getattr(self._orchestrator, "record_notification", None)
         if not callable(recorder):
             return

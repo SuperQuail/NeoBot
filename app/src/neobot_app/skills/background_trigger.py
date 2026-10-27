@@ -33,13 +33,13 @@ class BackgroundTriggerSkill(SkillModule):
             "  网页搜索：需要联网获取实时信息的任务\n\n"
             "=== 文件生成的标准流程 ===\n"
             "用户要文件 → submit_problem(question=\"生成xxx文件，格式为...，内容包含...\")\n"
-            "           → 返回 task_id，立即结束本轮回复（告知用户稍候）\n"
+            "           → 返回 task_id；可在合适时 send_reply 告知用户（不强制）\n"
             "           → 收到后台通知（含文件路径）\n"
             "           → sandbox_manager__send_chat_file 或 send_file 发送给用户\n\n"
             "=== 提交后的行为规范 ===\n"
-            "1. 立即用 send_reply 告知用户「已提交后台任务，请稍候」，然后结束\n"
-            "2. 禁止轮询 get_solver_status 或 get_solution\n"
-            "3. 禁止使用 wait 等待结果\n"
+            "1. 可在合适时用 send_reply 告知用户「已提交后台任务」（不强制），然后继续聊天或做其他事\n"
+            "2. 不要轮询 get_solver_status 或 get_solution\n"
+            "3. 不需要使用 wait 等待结果；可以继续聊天或处理其他事情\n"
             "4. 系统会在任务完成后通过通知自动唤醒你，届时携带结果\n\n"
             "=== 工具说明 ===\n"
             "submit_problem(question, context) — 提交任务。question 写清楚要什么文件/什么格式/什么内容\n"
@@ -63,7 +63,7 @@ class BackgroundTriggerSkill(SkillModule):
                 "将任务提交到后台 Agent 执行。后台 Agent 可以运行 Python 代码生成 PDF、图片、"
                 "Word/Excel/PPT、图表、代码文件等任意文件，也可以进行复杂计算、网页搜索、数据分析。"
                 "简单文本可用 write/edit；二进制生成需 run_python 或此后台入口，代码执行仍须管理员凭据。"
-                "提交后立即结束本轮回复，等待系统通知唤醒。"
+                "提交后可以继续聊天或处理其他事情；系统会在完成后通知你。"
                 "完成后用 sandbox_manager__send_chat_file 将生成的文件发送到聊天。"
                 "适用：生成任何文件、复杂计算、数据分析、多步推理、网页调研。",
                 {
@@ -156,7 +156,7 @@ async def _handle_get_solver_status(self: BackgroundTriggerSkill, args: dict) ->
     status = self._manager.get_pipeline_status(pipeline_key) if pipeline_key else {}
     result: dict[str, Any] = {"ok": True, "status": status}
     if status.get("solver_has_active_task"):
-        result["_hint"] = "【有活跃任务进行中，请结束本轮回复等待通知，无需轮询】"
+        result["_hint"] = "【有活跃任务进行中，可以继续处理其他事情；完成后会通知，无需轮询】"
     return _json(result)
 
 _HANDLERS = {

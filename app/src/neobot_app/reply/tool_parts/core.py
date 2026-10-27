@@ -109,6 +109,8 @@ class _CoreMixin:
         self._session_task_info: dict[int, dict] = {}
         self._session_task_queue: dict[str, dict] = {}
         self._session_completed: dict[str, list[dict]] = {}
+        #: 已发布完成通知的 task_id；保证任务级一次性通知（重试/清理不重复发）。
+        self._session_notified: set[str] = set()
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._logger = logger or NullLogger()
@@ -173,9 +175,9 @@ class _CoreMixin:
     async def drain_sessions(self) -> None:
         """等待在途会话工具任务自然结束，不取消它们。
 
-        回复管线结束时调用。会话工具的契约是活过本轮回复（工具返回值明确要求模型
-        「立即结束本轮回复」，完成后由通知中心唤醒下一次回复），所以这里只等它们
-        跑完，好让执行器连同完整对话历史一起释放；只有进程关停才用 close() 取消。
+        回复管线结束时调用。会话工具的契约是活过本轮回复（模型可继续聊天/做其他事，
+        完成后由通知中心唤醒下一次回复），所以这里只等它们跑完，好让执行器连同完整
+        对话历史一起释放；只有进程关停才用 close() 取消。
         """
         while self._session_tasks:
             tasks = tuple(self._session_tasks)
@@ -200,3 +202,4 @@ class _CoreMixin:
         self._session_task_queue.clear()
         self._session_task_info.clear()
         self._session_completed.clear()
+        self._session_notified.clear()

@@ -101,6 +101,9 @@ class _ScriptedProvider:
 
     async def chat(self, messages, tools=None):
         self.calls.append((list(messages), tools))
+        if not self._responses:
+            # send_reply 不再结束本轮：脚本耗尽等价于模型停止调用工具
+            return {"content": "", "tool_calls": []}
         return self._responses.pop(0)
 
     async def close(self):
@@ -344,7 +347,8 @@ async def test_current_time_block_is_appended_per_model_call(monkeypatch):
     await _wait_until_idle(orch)
 
     assert event.error is None
-    assert len(provider.calls) == 2
+    # wait → send_reply → 模型再拉一次收束（send_reply 不再结束本轮）
+    assert len(provider.calls) == 3
 
     def _time_blocks(request):
         return [
@@ -363,6 +367,11 @@ async def test_current_time_block_is_appended_per_model_call(monkeypatch):
     # 旧的时间块保留在历史里,第二次调用再追加一条
     assert len(blocks) == 2
     assert second_request[-1] is blocks[-1]
+
+    third_request = provider.calls[2][0]
+    third_blocks = _time_blocks(third_request)
+    assert len(third_blocks) == 3
+    assert third_request[-1] is third_blocks[-1]
     await orch.shutdown()
 
 

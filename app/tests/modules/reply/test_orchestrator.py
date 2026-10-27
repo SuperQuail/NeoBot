@@ -85,6 +85,10 @@ class _ScriptedProvider:
 
     async def chat(self, messages, tools=None):
         self.calls.append((list(messages), tools))
+        if not self._responses:
+            # 脚本耗尽等价于模型停止调用工具：send_reply 不再结束本轮后，
+            # 必须允许主循环再拉一次模型并自然收束，否则旧用例会 IndexError。
+            return {"content": "", "tool_calls": []}
         return self._responses.pop(0)
 
     async def close(self):
@@ -421,6 +425,28 @@ async def test_poke_failure_keeps_raw_error_for_model(monkeypatch):
     content = "\n".join(m["content"] for m in tool_messages)
     assert "戳一戳失败" in content
     assert "PacketBackend 不支持当前QQ版本架构" in content
+    assert event.error is None
+
+
+
+
+async def test_send_reply_does_not_end_round(monkeypatch):
+    """设计契约：send_reply 是普通工具；发出回复后本轮仍可继续调用其它工具。"""
+    provider = _ScriptedProvider([
+        _send_reply_response("收到"),
+        {"content": "", "tool_calls": [_poke_call("p1")]},
+        {"content": "", "tool_calls": []},
+    ])
+    executed: list[str] = []
+
+    async def _ok(action, params):
+        executed.append(action)
+        return {"status": "ok"}
+
+    _, event, _stages = await _run_agent_once(monkeypatch, provider, _ok)
+
+    assert len(provider.calls) == 3
+    assert executed, "send_reply 之后的工具必须真的执行"
     assert event.error is None
 
 
@@ -2156,9 +2182,11 @@ async def test_cost_pipeline_extends_group_lifespan(monkeypatch):
     provider = _ScriptedProvider(
         [
             _send_reply_response("回复1"),
+            {"content": "", "tool_calls": []},
             _send_reply_response("回复2"),
+            {"content": "", "tool_calls": []},
             _send_reply_response("回复3"),
-            _send_reply_response("回复4"),
+            {"content": "", "tool_calls": []},
         ]
     )
     orch = ReplyOrchestrator(
@@ -2185,8 +2213,9 @@ async def test_cost_pipeline_extends_group_lifespan(monkeypatch):
     assert event is not None
     await _wait_until_idle(orch)
 
-    # 基础寿命 1 + 阈值 2 = 3 次回复;第 4 条脚本未被消费
-    assert len(provider.calls) == 3, provider.calls
+    # 基础寿命 1 + 阈值 2 = 3 次回复；send_reply 不再结束本轮，
+    # 每条回复后模型再被拉一次并自然收束，所以是 3 组 (send_reply + 空响应)
+    assert len(provider.calls) == 6, provider.calls
     assert suspend_calls == 2
     await orch.shutdown()
 
@@ -2206,7 +2235,9 @@ async def test_cost_pipeline_disabled_keeps_base_lifespan(monkeypatch):
     provider = _ScriptedProvider(
         [
             _send_reply_response("回复1"),
+            {"content": "", "tool_calls": []},
             _send_reply_response("回复2"),
+            {"content": "", "tool_calls": []},
         ]
     )
     orch = ReplyOrchestrator(
@@ -2230,8 +2261,8 @@ async def test_cost_pipeline_disabled_keeps_base_lifespan(monkeypatch):
     assert event is not None
     await _wait_until_idle(orch)
 
-    # 基础寿命 1 耗尽后直接结束,不再调用挂起
-    assert len(provider.calls) == 1, provider.calls
+    # 基础寿命 1 耗尽后直接结束，不再调用挂起；每条回复后仍会再拉一次模型收束
+    assert len(provider.calls) == 2, provider.calls
     await orch.shutdown()
 
 
@@ -2765,6 +2796,7 @@ async def test_time_block_full_then_short_within_activation(monkeypatch):
             {"content": "", "tool_calls": [_poke_call("p0")]},
             {"content": "", "tool_calls": [_poke_call("p1")]},
             _send_reply_response("好了"),
+            {"content": "", "tool_calls": []},
         ]
     )
 
@@ -2777,6 +2809,7 @@ async def test_time_block_full_then_short_within_activation(monkeypatch):
         [True],
         [True, False],
         [True, False, False],
+        [True, False, False, False],
     ]
     short = blocks[1][1]
     assert re.fullmatch(
@@ -2789,13 +2822,15 @@ async def test_time_block_full_then_short_within_activation(monkeypatch):
     assert short_stamp.group(0) >= full_stamp.group(0)
 
 
-async def test_time_block_full_injected_again_in_new_activation(monkeypatch):
-    """新一轮管线激活(挂起恢复)时重新注入完整时间块。"""
+async def test_time_block_full_not_reinjected_after_resume(monkeypatch):
+    """同一长期会话挂起恢复后不再重新注入完整时间块，始终用短时间戳。"""
     provider = _ScriptedProvider(
         [
             {"content": "", "tool_calls": [_poke_call("p0")]},
             _send_reply_response("回复1"),
+            {"content": "", "tool_calls": []},
             _send_reply_response("回复2"),
+            {"content": "", "tool_calls": []},
         ]
     )
 
@@ -2810,10 +2845,12 @@ async def test_time_block_full_injected_again_in_new_activation(monkeypatch):
         suspend_result=([], "resume", None),
     )
 
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 5
     blocks = [_time_block_texts(messages) for messages, _tools in provider.calls]
-    assert [len(block) for block in blocks] == [1, 2, 3]
-    assert [_uses_full_time_block(block[-1]) for block in blocks] == [True, False, True]
+    assert [len(block) for block in blocks] == [1, 2, 3, 4, 5]
+    assert [_uses_full_time_block(block[-1]) for block in blocks] == [
+        True, False, False, False, False
+    ]
     assert event.state.name == "COMPLETED"
 
 
@@ -2974,12 +3011,112 @@ async def test_no_tool_call_reminder_then_send_reply_succeeds(monkeypatch):
             break
         await asyncio.sleep(0.01)
 
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     assert event.state.name == "COMPLETED"
     assert event.generated_text == "收到"
     assert any(stage == "no_tool_call_reminder" for stage, _ in stages)
     await orch.shutdown()
 
+
+
+
+
+
+
+async def test_private_send_reply_then_cancel_updates_cooldown(monkeypatch):
+    """已发出回复后的 cancel 按完成收尾：冷却时间必须真正推进。"""
+    cancel = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "cancel",
+                "type": "function",
+                "function": {"name": "cancel", "arguments": None},
+            }
+        ],
+    }
+    provider = _ScriptedProvider([_send_reply_response("收到"), cancel])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+    event = orch.start_reply(
+        message=_make_private_message(), queue=queue, queue_key="123456", decision=_make_decision()
+    )
+    assert event is not None
+    await _wait_until_idle(orch)
+
+    assert event.state.name == "COMPLETED"
+    assert "private:123456" in orch._last_reply_time
+    await orch.shutdown()
+
+
+async def test_private_send_reply_then_cancel_keeps_completed(monkeypatch):
+    """私聊已发出回复后再 cancel：不能把事件改回 CANCELLED，冷却/位置必须按完成推进。"""
+    cancel = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "cancel",
+                "type": "function",
+                "function": {"name": "cancel", "arguments": None},
+            }
+        ],
+    }
+    provider = _ScriptedProvider([_send_reply_response("收到"), cancel])
+
+    _, event, stages = await _run_agent_pipeline(monkeypatch, provider)
+
+    assert event.state.name == "COMPLETED"
+    assert event.error is None
+    assert any(stage == "post_reply_terminal_normalized" for stage, _ in stages)
+
+
+
+
+async def test_send_reply_and_cancel_in_same_batch_completes(monkeypatch):
+    """同批 tool_calls 里 send_reply 后紧跟 cancel：真实回复已发出，仍须按完成收尾。"""
+    first = _send_reply_response("收到")
+    first["tool_calls"].append(
+        {
+            "id": "cancel",
+            "type": "function",
+            "function": {"name": "cancel", "arguments": None},
+        }
+    )
+    provider = _ScriptedProvider([first])
+
+    _, event, stages = await _run_agent_pipeline(monkeypatch, provider)
+
+    assert event.state.name == "COMPLETED"
+    assert event.error is None
+    assert any(stage == "post_reply_terminal_normalized" for stage, _ in stages)
+
+
+
+
+class _ExplodingAfterFirstProvider(_ScriptedProvider):
+    """第一次正常返回 send_reply，第二次模型调用直接抛异常。"""
+
+    async def chat(self, messages, tools=None):
+        if self.calls:
+            raise RuntimeError("provider boom after reply")
+        return await super().chat(messages, tools)
+
+
+async def test_exception_after_send_reply_completes(monkeypatch):
+    """回复已发出后 provider 抛异常：事件必须按 COMPLETED 收尾，而不是 FAILED。"""
+    provider = _ExplodingAfterFirstProvider([_send_reply_response("收到")])
+
+    _, event, stages = await _run_agent_pipeline(monkeypatch, provider)
+
+    assert event.state.name == "COMPLETED"
+    assert event.send_response is not None
+    assert event.error is None
+    assert any(stage == "post_reply_terminal_normalized" for stage, _ in stages)
 
 
 async def test_no_tool_call_reminder_then_cancel(monkeypatch):
@@ -3073,7 +3210,8 @@ async def _run_media_only_pipeline(monkeypatch, provider, **orch_extra):
 
 
 async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
-    """只发一张表情包就算已回复：主循环立即结束，事件进 COMPLETED。"""
+    """只发一张表情包也算已回复；send_emoji 是普通工具，不结束本轮，
+    发完仍会再拉一次模型收束，事件进 COMPLETED。"""
     emoji_file = tmp_path / "emoji.png"
     emoji_file.write_bytes(_PNG_1X1)
     emoji_service = SimpleNamespace(
@@ -3098,14 +3236,15 @@ async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
         file_server=SimpleNamespace(_enabled=False),
     )
 
-    assert len(provider.calls) == 1, "表情包已真实发出，不得再拉模型"
+    assert len(provider.calls) == 2, "表情包发出后应再拉一次模型自然收束"
     emoji_service.record_usage.assert_awaited_once_with(3)
     assert event.state.name == "COMPLETED"
     assert event.error is None
 
 
 async def test_speak_only_round_counts_as_replied(monkeypatch):
-    """只发一条语音就算已回复：主循环立即结束，事件进 COMPLETED。"""
+    """只发一条语音也算已回复；speak 是普通工具，不结束本轮，
+    发完仍会再拉一次模型收束，事件进 COMPLETED。"""
     tts_service = SimpleNamespace(
         enabled=True,
         synthesize_segment=AsyncMock(
@@ -3124,10 +3263,89 @@ async def test_speak_only_round_counts_as_replied(monkeypatch):
         monkeypatch, provider, tts_service=tts_service
     )
 
-    assert len(provider.calls) == 1, "语音已真实发出，不得再拉模型"
+    assert len(provider.calls) == 2, "语音发出后应再拉一次模型自然收束"
     tts_service.synthesize_segment.assert_awaited_once_with("你好")
     assert event.state.name == "COMPLETED"
     assert event.error is None
+
+
+
+
+async def test_send_emoji_then_cancel_keeps_completed(monkeypatch, tmp_path):
+    """emoji 已真实发出后 cancel 不能把事件改回 CANCELLED。"""
+    emoji_file = tmp_path / "emoji.png"
+    emoji_file.write_bytes(_PNG_1X1)
+    emoji_service = SimpleNamespace(
+        emoji_count=1,
+        get_entry=lambda number: (
+            SimpleNamespace(file_path=emoji_file) if number == 3 else None
+        ),
+        record_usage=AsyncMock(),
+    )
+    cancel = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "cancel",
+                "type": "function",
+                "function": {"name": "cancel", "arguments": None},
+            }
+        ],
+    }
+    provider = _ScriptedProvider([
+        {
+            "content": "",
+            "tool_calls": [
+                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+            ],
+        },
+        cancel,
+    ])
+    event = await _run_media_only_pipeline(
+        monkeypatch,
+        provider,
+        emoji_service=emoji_service,
+        file_server=SimpleNamespace(_enabled=False),
+    )
+
+    assert event.state.name == "COMPLETED"
+    assert event.send_response is not None
+    assert event.error is None
+
+
+async def test_speak_then_cancel_keeps_completed(monkeypatch):
+    """speak 已真实发出后 cancel 不能把事件改回 CANCELLED。"""
+    tts_service = SimpleNamespace(
+        enabled=True,
+        synthesize_segment=AsyncMock(
+            return_value={"type": "record", "data": {"file": "file:///voice.wav"}}
+        )
+    )
+    cancel = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "cancel",
+                "type": "function",
+                "function": {"name": "cancel", "arguments": None},
+            }
+        ],
+    }
+    provider = _ScriptedProvider([
+        {
+            "content": "",
+            "tool_calls": [
+                _media_tool_call("call-speak", "speak", json.dumps({"text": "你好"}))
+            ],
+        },
+        cancel,
+    ])
+    event = await _run_media_only_pipeline(monkeypatch, provider, tts_service=tts_service)
+
+    assert event.state.name == "COMPLETED"
+    assert event.send_response is not None
+    assert event.error is None
+
 
 
 async def test_wait_reports_duplicate_name_note_for_new_sender(monkeypatch):

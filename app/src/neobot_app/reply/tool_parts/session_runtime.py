@@ -19,6 +19,7 @@ class _SessionRuntimeMixin:
         conv_kind: str,
         conv_id: str,
         token: Any = None,
+        task_id: str = "",
     ) -> None:
         """在后台执行会话工具并将结果发布到 NotificationHub。
 
@@ -29,6 +30,7 @@ class _SessionRuntimeMixin:
         timeout_seconds = self._parse_session_timeout(args.get("timeout_seconds", 300))
         status = "completed"
         result_summary = ""
+        detail = ""
         notification: str | None = None
 
         try:
@@ -44,11 +46,13 @@ class _SessionRuntimeMixin:
 
             if success:
                 result_summary = result_text[:200]
+                detail = result_text
                 notification = (
                     f"<会话工具结果>\n"
-                    f"工具 {name} 已完成：\n"
-                    f"{result_text}\n"
-                    f"请根据此结果继续处理用户的请求。\n"
+                    f"任务 {task_id or name}（{name}）已完成。\n"
+                    f"摘要：{result_summary}\n"
+                    f"完整结果：\n{result_text}\n"
+                    f"你可以继续聊天或处理其他事情。\n"
                     f"</会话工具结果>"
                 )
             else:
@@ -56,7 +60,8 @@ class _SessionRuntimeMixin:
                 result_summary = (error_msg or result_text)[:200]
                 notification = (
                     f"<会话工具结果>\n"
-                    f"工具 {name} 执行失败：{error_msg or result_text}\n"
+                    f"任务 {task_id or name}（{name}）执行失败。\n"
+                    f"摘要：{result_summary}\n"
                     f"请告知用户操作失败，并根据情况尝试替代方案。\n"
                     f"</会话工具结果>"
                 )
@@ -72,8 +77,8 @@ class _SessionRuntimeMixin:
             result_summary = f"超时（{timeout_seconds}秒）"
             notification = (
                 f"<会话工具结果>\n"
-                f"工具 {name} 执行超时（{timeout_seconds}秒）。\n"
-                f"请告知用户下载超时，建议减小文件或稍后重试。\n"
+                f"任务 {task_id or name}（{name}）执行超时（{timeout_seconds}秒）。\n"
+                f"请告知用户超时，建议减小文件或稍后重试。\n"
                 f"如需更长时间，可通过 timeout_seconds 参数设置（最长 1800 秒）。\n"
                 f"</会话工具结果>"
             )
@@ -92,7 +97,7 @@ class _SessionRuntimeMixin:
             result_summary = "工具执行异常"
             notification = (
                 f"<会话工具结果>\n"
-                f"工具 {name} 执行异常。\n"
+                f"任务 {task_id or name}（{name}）执行异常。\n"
                 f"请告知用户操作失败。\n"
                 f"</会话工具结果>"
             )
@@ -105,7 +110,12 @@ class _SessionRuntimeMixin:
         finally:
             elapsed = monotonic_seconds() - started_at
             self._record_session_completion(
-                name, pipeline_key, status, result_summary, elapsed
+                name,
+                pipeline_key,
+                status,
+                result_summary,
+                elapsed,
+                detail=detail,
             )
 
         if (
@@ -113,7 +123,12 @@ class _SessionRuntimeMixin:
             and self._notification_hub is not None
             and conv_kind
             and conv_id
+            and (not task_id or task_id not in self._session_notified)
         ):
+            if task_id:
+                self._session_notified.add(task_id)
+                if len(self._session_notified) > 200:
+                    self._session_notified = set(list(self._session_notified)[-100:])
             try:
                 await self._notification_hub.publish(
                     source="session_tool",
@@ -121,9 +136,17 @@ class _SessionRuntimeMixin:
                     conversation_id=conv_id,
                     content=notification,
                     manager_name="session_tool",
-                    metadata={"tool_name": name, "pipeline_key": pipeline_key},
+                    # 任务结果是一次性动作通知：不镜像进长期 transcript，避免后续轮次重放。
+                    metadata={
+                        "tool_name": name,
+                        "pipeline_key": pipeline_key,
+                        "task_id": task_id,
+                        "mirror": False,
+                    },
                 )
             except Exception:
+                # 发布失败允许后续重试能再次发（从去重集合移除）
+                self._session_notified.discard(task_id)
                 self._logger.warning(
                     "会话工具通知发布失败",
                     tool=name,
@@ -139,6 +162,7 @@ class _SessionRuntimeMixin:
         status: str,
         summary: str,
         elapsed: float,
+        detail: str = "",
     ) -> None:
         """记录已完成的会话工具，供 check_background_tasks 展示。"""
         if pipeline_key not in self._session_completed:
@@ -149,6 +173,7 @@ class _SessionRuntimeMixin:
                 "tool": name,
                 "status": status,
                 "summary": summary,
+                "detail": detail or summary,
                 "elapsed_seconds": round(elapsed),
                 "completed_at": monotonic_seconds(),
             }

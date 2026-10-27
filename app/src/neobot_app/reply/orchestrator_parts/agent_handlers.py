@@ -56,6 +56,7 @@ class AgentHandlersMixin:
         这样主循环不会在模型还没说出正文时就退出（否则整轮静默结束）。
         """
         event.generated_text = text
+        before_message_id = queue.get_last_message_id(queue_key)
         sink = self._self_sent_sink(queue, queue_copy, queue_key)
         # 发送前清洗只使用当前会话的发送者标签（含快照中的历史标签）。
         sender_names = self._known_sender_names(queue, queue_copy, queue_key=queue_key)
@@ -90,6 +91,9 @@ class AgentHandlersMixin:
             )
         if delivered is not False:
             state.reply_sent = True
+            self._record_reply_delivered(
+                event, queue, queue_key, before_message_id=before_message_id
+            )
         return delivered
 
     async def _agent_send_emoji_handler(
@@ -113,11 +117,16 @@ class AgentHandlersMixin:
             segments.append({"type": "text", "data": {"text": text.strip()}})
         segments.append(prepare_image_segment(self._file_server, entry.file_path))
         emoji_conv = event.conversation_ref
+        before_message_id = queue.get_last_message_id(queue_key)
         delivered = await self._send_with_timeout(emoji_conv, segments)
         # 表情包发出去了就算「已回复」：否则 emoji-only 轮次会被判 CANCELLED，
         # 回复冷却与 last_reply_position 都不推进
         if delivered is not False:
             state.reply_sent = True
+            event.send_response = delivered
+            self._record_reply_delivered(
+                event, queue, queue_key, before_message_id=before_message_id
+            )
         # 表情包也是「真实发出去了」的图片：文本与图片各按真实形态入队
         if emoji_conv is not None:
             emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
@@ -260,10 +269,15 @@ class AgentHandlersMixin:
             timeout=self._get_io_timeout_seconds(),
         )
         speak_conv = event.conversation_ref
+        before_message_id = queue.get_last_message_id(queue_key)
         delivered = await self._send_with_timeout(speak_conv, [segment])
         # 与 send_reply 同语义：语音真实发出即视为已回复
         if delivered is not False:
             state.reply_sent = True
+            event.send_response = delivered
+            self._record_reply_delivered(
+                event, queue, queue_key, before_message_id=before_message_id
+            )
         # 语音入队：保留发送时的原始文本 + 音频文件索引
         # （暂无语音解析能力，文本原样留着；文件索引供将来取用）
         if speak_conv is not None:
@@ -318,8 +332,8 @@ class AgentHandlersMixin:
         mention: list[int] | None = None,
         markdown: str = "",
     ) -> None:
-        state.reply_sent = True
         conv_ref = event.conversation_ref
+        before_message_id = queue.get_last_message_id(queue_key)
         # 解析消息编号 -> 实际 message_id
         reply_to_message_id = None
         if reply_to is not None:
@@ -330,6 +344,7 @@ class AgentHandlersMixin:
             else None
         )
         # 发送说明文字（如果有）
+        caption_delivered = True
         if caption.strip():
             caption_segs = self._build_reply_segments(
                 text=caption.strip(),
@@ -337,13 +352,13 @@ class AgentHandlersMixin:
                 reply_to_message_id=reply_to_message_id,
                 mention_user_ids=mention,
             )
-            await self._send_with_timeout(conv_ref, caption_segs)
-            if conv_ref is not None:
+            caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
+            if conv_ref is not None and caption_delivered is not False:
                 self._sender.record_self_sent_text(
                     long_reply_sink, conv_ref, caption.strip()
                 )
         # 发送图片（不附带引用，图片单独发送）
-        await send_image(
+        image_delivered = await send_image(
             self._file_server, self._adapter, conv_ref, Path(image_path),
             wait_response=False,
         )
@@ -356,6 +371,14 @@ class AgentHandlersMixin:
                 Path(image_path),
                 kind="markdown",
                 source_note=markdown,
+            )
+        if image_delivered is not False or caption_delivered is not False:
+            state.reply_sent = True
+            event.send_response = (
+                image_delivered if image_delivered is not False else caption_delivered
+            )
+            self._record_reply_delivered(
+                event, queue, queue_key, before_message_id=before_message_id
             )
 
     def _append_current_time_block(

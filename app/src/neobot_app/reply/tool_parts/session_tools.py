@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 from typing import Any
+from uuid import uuid4
 
 from neobot_app.time_context import monotonic_seconds
 
@@ -80,7 +81,8 @@ class _SessionToolsMixin:
                     "tool": name,
                     "message": (
                         "已有会话工具正在执行，当前任务已加入排队。"
-                        "系统会在当前任务完成后自动执行排队的任务。请立即结束本轮回复。"
+                        "系统会在当前任务完成后自动执行排队的任务。"
+                        "你可以继续聊天或处理其他事情；完成后会通知你，不要轮询、不要反复提交。"
                     ),
                 },
                 ensure_ascii=False,
@@ -110,6 +112,7 @@ class _SessionToolsMixin:
                 },
                 ensure_ascii=False,
             )
+        task_id = f"session_{uuid4().hex[:12]}"
         task = asyncio.create_task(
             self._run_session_tool(
                 name=name,
@@ -118,6 +121,7 @@ class _SessionToolsMixin:
                 conv_kind=conv_kind,
                 conv_id=conv_id,
                 token=token,
+                task_id=task_id,
             )
         )
         tid = id(task)
@@ -126,6 +130,7 @@ class _SessionToolsMixin:
             "name": name,
             "pipeline_key": pipeline_key,
             "started_at": monotonic_seconds(),
+            "task_id": task_id,
         }
 
         def _cleanup(t: asyncio.Task) -> None:
@@ -183,9 +188,11 @@ class _SessionToolsMixin:
                 "ok": True,
                 "status": "session_submitted",
                 "tool": name,
+                "task_id": task_id,
                 "message": (
                     "任务已提交到后台执行，完成后会自动通知你。"
-                    "请立即结束本轮回复，不要等待、不要轮询、不要调用 wait 工具。"
+                    "你可以继续聊天或处理其他事情；如需告知用户进度可用 send_reply（不强制），"
+                    "不要轮询、不要反复提交。"
                 ),
             },
             ensure_ascii=False,

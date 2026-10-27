@@ -74,8 +74,8 @@ class AgentLoopMixin:
         state.rendered_user_ids = rendered_user_ids
         # 回复前追加的 <当前时间> user 块:每次调用模型前追加一条最新时间,
         # 已追加的时间块保留在对话历史里(不清理),让模型能看到时间推进。
-        # 分级注入:每次管线激活的第一次模型调用用完整 [current_time],
-        # 同一激活内的后续调用只追加 [current_time_short](短时间戳)。
+        # 分级注入:整条长期会话只在第一次模型调用用完整 [current_time],
+        # 之后（含挂起恢复）统一用 [current_time_short](短时间戳)。
         state.time_block_full_sent = False
         state.previous_entries = queue_copy.entries(queue_key)
         round_index = 0
@@ -94,8 +94,7 @@ class AgentLoopMixin:
             state.reply_sent = False
             state.cancelled = False
             no_tool_reminders = 0
-            # 时间块分级:每轮(每次管线激活)重置为"尚未注入完整时间块"
-            state.time_block_full_sent = False
+            # 时间块分级不随挂起恢复重置：整条长期会话首次完整、之后始终短块。
             # 防重复提醒:每次管线激活只追加一次
             avoid_repeat_sent = False
             # 沉默提醒记录器:轮次归零、阶梯阈值取首次值、时间基准从本轮开始
