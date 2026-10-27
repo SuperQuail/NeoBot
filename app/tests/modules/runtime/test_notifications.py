@@ -174,6 +174,26 @@ async def test_publish_mirrors_notification_into_message_queue():
     ]
 
 
+
+
+@pytest.mark.asyncio
+async def test_publish_can_skip_message_queue_mirror_via_metadata():
+    """一次性动作通知可设置 metadata['mirror']=False，不写长期 transcript。"""
+    orchestrator = _RecordingOrchestrator()
+    hub = BackgroundNotificationHub(orchestrator=orchestrator)
+
+    await hub.publish(
+        source="session_tool",
+        kind="group",
+        conversation_id="888888",
+        content="任务完成",
+        metadata={"mirror": False},
+    )
+
+    assert orchestrator.records == []
+    assert hub._queues["group:888888"].qsize() == 1
+
+
 @pytest.mark.asyncio
 async def test_publish_mirrors_before_starting_background_reply():
     """起管线路径也必须镜像：后启动的管线会 clone 队列，镜像晚一步就会漏。"""

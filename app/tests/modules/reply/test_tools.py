@@ -633,8 +633,53 @@ async def test_session_tool_queues_and_rejects_third_submission():
         assert second["status"] == "queued"
         assert third["status"] == "queue_full"
         assert third["ok"] is False
+        assert first["task_id"].startswith("session_")
+        assert "可以继续" in first["message"]
+        assert "可以继续" in second["message"]
+        assert "结束本轮" not in first["message"]
+        assert "结束本轮" not in second["message"]
     finally:
         await executor.close()
+
+
+
+
+async def test_session_tool_notification_is_task_level_once_with_summary():
+    """同一 task_id 只发布一次完成通知；通知带摘要和完整结果（可由 check_background_tasks 复查）。"""
+    class _Hub:
+        def __init__(self) -> None:
+            self.published: list[dict] = []
+
+        async def publish(self, **kwargs) -> bool:
+            self.published.append(kwargs)
+            return True
+
+    hub = _Hub()
+    executor = _make_executor(
+        skill_manager=_OkSkill({"ok": True, "content": "结果正文"}),
+        conv_kind="group",
+        conv_id="123456",
+        notification_hub=hub,
+    )
+    try:
+        await executor._run_session_tool(
+            "download__url", {}, "group:123456", "group", "123456",
+            task_id="session_x",
+        )
+        await executor._run_session_tool(
+            "download__url", {}, "group:123456", "group", "123456",
+            task_id="session_x",
+        )
+    finally:
+        await executor.close()
+
+    assert len(hub.published) == 1
+    content = hub.published[0]["content"]
+    assert "摘要" in content
+    assert "完整结果" in content
+    assert "\\u7ed3\\u679c\\u6b63\\u6587" in content
+    assert "session_x" in content
+    assert hub.published[0]["metadata"]["task_id"] == "session_x"
 
 
 async def test_cancel_task_cancels_queued_session_tool():

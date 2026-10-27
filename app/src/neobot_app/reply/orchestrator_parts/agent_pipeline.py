@@ -103,7 +103,9 @@ class AgentPipelineMixin:
         if state.reply_sent:
             nudge_rounds = 0
             nudge_deadline = monotonic_seconds() + nudge_seconds
-        return tools, nudge_rounds, nudge_deadline, state.reply_sent or state.cancelled
+        # 设计契约：外发工具（send_reply / send_emoji / speak / send_long_reply）
+        # 只是普通工具，发出消息不等于结束本轮；只有 cancel 可以主动终止。
+        return tools, nudge_rounds, nudge_deadline, state.cancelled
 
     async def _agent_group_pipeline_tail(
         self,

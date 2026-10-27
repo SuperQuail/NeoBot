@@ -102,7 +102,7 @@ class _LongReplyToolsMixin:
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
                     "markdown/caption 会先做输出安全清洗，再用于渲染、发送和对话历史；仍必须只放正文本身："
                     "不要带消息编号、发送者名字、[msg_id=...] 这类系统标注，也不要把思考过程或草稿写进去。"
-                    "调用后本轮回复视为完成。",
+                    "本工具只发送消息，不结束本轮；只有 cancel 会结束一轮回复。",
                     {
                         "properties": {
                             "markdown": {

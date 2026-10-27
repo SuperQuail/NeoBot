@@ -222,11 +222,16 @@ class AgentPromptMixin:
             self._record_debug(
                 "reply_generated", event, queue_key=queue_key, reply_text=pre_hook_text
             )
-            await self._send_reply(
+            before_message_id = queue.get_last_message_id(queue_key)
+            delivered = await self._send_reply(
                 event,
                 pre_hook_text,
                 self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
             )
+            if delivered is not False:
+                self._record_reply_delivered(
+                    event, queue, queue_key, before_message_id=before_message_id
+                )
             return None
 
         # 工具输出压缩状态:已压缩的 tool_call_id 与调用名映射(压缩只改内容,

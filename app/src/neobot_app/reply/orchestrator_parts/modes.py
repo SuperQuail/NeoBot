@@ -9,6 +9,38 @@ if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
 
 class ModesMixin:
+
+
+    def _record_reply_delivered(
+        self,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_key: str,
+        *,
+        before_message_id: int | None = None,
+    ) -> None:
+        """每条真实发出的消息都推进冷却与 last_reply_position（长期管线的语义）。"""
+        conv = event.conversation_ref
+        if conv is None:
+            return
+        self._last_reply_time[f"{conv.kind}:{queue_key}"] = monotonic_seconds()
+        enable_tracking = (
+            getattr(
+                getattr(self._config, "chat", None),
+                "enable_last_reply_tracking",
+                True,
+            )
+            if self._config
+            else True
+        )
+        if not enable_tracking:
+            return
+        if before_message_id is None or before_message_id <= 0:
+            # Bot 自身消息使用负合成 id，不能拿它当“已回复到”的位置。
+            before_message_id = event.pre_reply_message_id
+        if before_message_id is not None and before_message_id > 0:
+            queue.set_last_reply_position(queue_key, before_message_id=before_message_id)
+
     async def _run(
         self,
         event: ReplyEvent,
@@ -43,6 +75,7 @@ class ModesMixin:
             else:
                 await self._run_common_mode(event, queue, queue_key)
             self._set_flow_active(event, queue_key, False)
+            self._normalize_delivered_terminal(event, queue_key=queue_key)
             if event.state == ReplyState.CANCELLED:
                 self._record_debug("cancelled", event, queue_key=queue_key)
                 await self._emit_runtime_event(
@@ -63,25 +96,9 @@ class ModesMixin:
                     "reply.fail", event, queue_key=queue_key, error=event.error
                 )
                 return
-            # 记录完成时间用于冷却
-            if event.conversation_ref is not None:
-                pipeline_key = f"{event.conversation_ref.kind}:{queue_key}"
-                self._last_reply_time[pipeline_key] = monotonic_seconds()
-            # 记录上次回复位置
-            enable_tracking = (
-                getattr(
-                    getattr(self._config, "chat", None),
-                    "enable_last_reply_tracking",
-                    True,
-                )
-                if self._config
-                else True
-            )
-            if enable_tracking:
-                queue.set_last_reply_position(
-                    queue_key,
-                    before_message_id=event.pre_reply_message_id,
-                )
+            # 冷却与 last_reply_position 已在每条消息发出时更新；这里只补事件终态。
+            if event.state is ReplyState.GENERATING and event.send_response is not None:
+                event.transition(ReplyState.COMPLETED)
             elapsed = monotonic_seconds() - started_at
             self._logger.info(
                 "回复事件结束",
@@ -109,6 +126,30 @@ class ModesMixin:
             raise
         except Exception as exc:
             self._set_flow_active(event, queue_key, False)
+            if event.send_response is not None:
+                # 回复已经真实发出；发送之后的异常不能把用户看到的“已回复”改写成失败。
+                original_state = event.state.name
+                event.state = ReplyState.COMPLETED
+                event.error = None
+                self._logger.warning(
+                    "回复已发出，后续异常按完成收尾",
+                    event_id=event.event_id,
+                    original_state=original_state,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                self._record_debug(
+                    "post_reply_terminal_normalized",
+                    event,
+                    queue_key=queue_key,
+                    original_state=original_state,
+                )
+                await self._emit_runtime_event(
+                    "reply.complete",
+                    event,
+                    queue_key=queue_key,
+                    duration_seconds=monotonic_seconds() - started_at,
+                )
+                return
             try:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
@@ -125,6 +166,46 @@ class ModesMixin:
                 "reply.fail", event, queue_key=queue_key, error=event.error
             )
             await self._handle_runtime_failure(event, exc)
+
+
+    def _normalize_delivered_terminal(
+        self, event: ReplyEvent, *, queue_key: str
+    ) -> bool:
+        """已经真实发出回复后，后续的取消/失败不能撤销“已回复”事实。
+
+        语义：send_reply 是普通工具，回复发出后模型仍可能继续执行工具，
+        随后 cancel、空轮次、超时等都可能把事件置为 CANCELLED/FAILED。
+        但消息已经送达用户，这轮必须按 COMPLETED 收尾，冷却与
+        last_reply_position 才能正常推进；错误只留在日志/调试记录里。
+        """
+        if event.send_response is None:
+            return False
+        if event.state not in (ReplyState.CANCELLED, ReplyState.FAILED):
+            if event.error:
+                self._logger.warning(
+                    "回复已发出，忽略后续错误标记",
+                    event_id=event.event_id,
+                    state=event.state.name,
+                    error=event.error,
+                )
+                event.error = None
+            return False
+        original_state = event.state.name
+        event.state = ReplyState.COMPLETED
+        event.error = None
+        self._logger.warning(
+            "回复已发出，后续取消/失败按完成收尾",
+            event_id=event.event_id,
+            original_state=original_state,
+        )
+        self._record_debug(
+            "post_reply_terminal_normalized",
+            event,
+            queue_key=queue_key,
+            original_state=original_state,
+        )
+        return True
+
     async def _run_common_mode(
         self,
         event: ReplyEvent,
@@ -165,9 +246,14 @@ class ModesMixin:
             "reply_generated", event, queue_key=queue_key, reply_text=reply_text
         )
 
-        await self._send_reply(
+        before_message_id = queue.get_last_message_id(queue_key)
+        delivered = await self._send_reply(
             event, reply_text, self_sent=self._self_sent_sink(queue, queue, queue_key)
         )
+        if delivered is not False:
+            self._record_reply_delivered(
+                event, queue, queue_key, before_message_id=before_message_id
+            )
     async def _run_agent_mode(
         self,
         event: ReplyEvent,

@@ -87,6 +87,7 @@ class _BackgroundToolsMixin:
                     "tool": c["tool"],
                     "status": c["status"],
                     "summary": c["summary"],
+                    "detail": c.get("detail", c["summary"]),
                     "elapsed_seconds": c["elapsed_seconds"],
                     "completed_ago_seconds": round(now - c["completed_at"]),
                 }
