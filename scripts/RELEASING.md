@@ -21,7 +21,7 @@
 
 ### 手动更新版本
 
-1. 在 **`dev` 分支**（发布准备，`dev → main` 之前）手动把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，例如 `1.0.0-alpha.23`；主分支保护禁止直推，因此不要在 release PR 里提交版本：
+1. 在 **`dev` 分支**（发布准备，`dev → main` 之前）运行 `python scripts/versions.py <新版本>`，脚本会把以下 8 个 `pyproject.toml` 的 `project.version` 更新为一致且递增的 SemVer 版本，并同步 `app/pyproject.toml` 里 6 条内部子包 pin（issue #72）；主分支保护禁止直推，因此不要在 release PR 里提交版本：
    - `pyproject.toml`
    - `app/pyproject.toml`
    - `packages/adapter/pyproject.toml`
@@ -39,7 +39,7 @@
 
 - 必须是 `X.Y.Z`，可带 `-先行版本` 和 `+编译信息`；主/次/修订号及纯数字先行标识符不得有前导零。
 - 拒绝 `1.0`、`v1.2.3`、`1.0.0a23`、`01.2.3`、`1.0.0-alpha.01`、空标识符、空白和非 ASCII 字符。
-- 可手动运行 `python scripts/versions.py 1.0.0-alpha.24` 批量更新工作区版本。目标版本在文件扫描、确认和写入之前校验；非法则退出且不改文件。该脚本不会由 CI 自动调用，也不会更新锁文件。
+- 可手动运行 `python scripts/versions.py 1.0.0-alpha.24` 批量更新工作区版本，并同步 app 的 6 条内部 pin。目标版本在文件扫描、确认和写入之前校验；非法则退出且不改文件。该脚本不会由 CI 自动调用，也不会更新锁文件。
 - SemVer 合法不等于 PyPI 可发布。例如 `1.0.0+build.01` 和任意先行标签可以通过手动版本脚本的 SemVer 校验，但发布入口还要求兼容 PyPI/PEP 440；不兼容会单独报错，绝不自动删改版本信息。
 
 ### 版本检测与上传
