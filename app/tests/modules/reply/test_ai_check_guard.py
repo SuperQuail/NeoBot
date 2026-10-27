@@ -152,7 +152,8 @@ async def test_structured_review_decisions_still_work(monkeypatch, kind, decisio
     event, provider, sent, stages, _, _ = await run_script(monkeypatch, [
         tool_response("send_reply", {"text": "待审草稿"}), tool_response(decision, args),
     ], kind=kind)
-    assert len(provider.calls) == 2
+    expected_calls = 3 if decision == "send_reply" else 2
+    assert len(provider.calls) == expected_calls
     assert "ai_reply_check_without_tool_call" not in stages
     if decision == "cancel":
         assert event.state is ReplyState.CANCELLED
@@ -192,7 +193,7 @@ async def test_orchestrator_forwards_verified_preview_to_real_sender(monkeypatch
     })
     event, provider, sent, _, _, _ = await run_script(monkeypatch, [first, approved])
     assert event.state is ReplyState.COMPLETED
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     preview_text = "\n".join(str(message.get("content", "")) for message in provider.calls[1][0])
     assert "切分结果：" in preview_text
     assert all(f"{index}. {part}" in preview_text for index, part in enumerate(segments, 1))
