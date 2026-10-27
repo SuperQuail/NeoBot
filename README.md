@@ -55,14 +55,17 @@ NeoBot 只有一个网页面板，由**官方内置插件 `dashboard`** 提供�
 - 页面包含：仪表盘（运行概览/系统资源/消息趋势/最近日志）、插件管理（官方与第三方分组、启停、热重载能力标注、安装/更新/卸载、在线配置、下载代理）、配置管理（`config.toml` 表单/TOML 编辑、`.env` 编辑、一键添加 API 供应商、模型库、模型分配、撤销/历史/恢复默认、热重载标记）、用量统计（金额与 Token 图表）、系统状态（进程资源/宿主服务/后台任务/模型用量）、机器人详情、日志。
 - **密钥只写不读**：`.env` 与第三方插件配置中的 API Key / Token 只显示「已设置 / 未设置」，留空表示不修改，保存后也无法再读回明文。
 
+面板配置位于数据目录下的 `plugins_data/dashboard/config.toml`（默认 `data/plugins_data/dashboard/config.toml`），也可在「插件 → dashboard → 配置」中修改：
+
 ```toml
-[dashboard]
-enabled = true
 host = "0.0.0.0"      # 对网络开放；127.0.0.1 仅本机
+allowed_ips = []      # 空数组不限制来源；填写后仅允许数组内的 IP，修改需重启
 port = 9981
 manage_plugins = true # 关闭后面板内所有写操作变为只读
 allow_remote_manage = true  # 关闭后远程只能查看，改配置/管插件仅限本机
 ```
+
+例如 `allowed_ips = ["127.0.0.1", "::1", "192.168.1.100"]` 仅允许回环地址和指定 IP 访问；其他来源访问页面、静态资源及 API 均返回 `403`，白名单不替代登录验证。仅支持单个 IPv4/IPv6 地址，不支持域名或网段；非法值会阻止面板启动。经反向代理访问时，来源识别沿用 `trust_proxy_headers`，未开启时看到的是代理地址而非终端设备地址。
 
 公网使用时建议通过 HTTPS 反向代理访问，并在确认 HTTPS 生效后将 `secure_cookies` 设为 `true`；只有可信反向代理正确覆盖客户端地址头时才应开启 `trust_proxy_headers`。若外部无法建立 TCP 连接，请放行操作系统和云平台防火墙中的面板端口（Windows 可执行 `neobot firewall-open`，需管理员权限）。
 

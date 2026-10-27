@@ -10,8 +10,8 @@ covers:
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: 264696d
-verified_hash: 69d3d7a4b7dc
+verified_against: 146242d
+verified_hash: b8a893ae7a54
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流
@@ -332,7 +332,7 @@ flowchart TD
     C3 -- 是 --> C5["diff_snapshot 后再 summarize_changes"]
     C5 --> C6["changes 里 hot_reload 与 needs_restart 两组明细回前端展示"]
     D["插件配置：hot_reload_policies / dashboard/hot_reload.py:101"] --> D1["运行期安全的 8 个键：探针四项、bot_info_cache_ttl、log_buffer_size、history_max_days、allow_archive_delete"]
-    D --> D2["声明需重启的 10 个键：host、port、base_path、三个安全开关、会话超时、Cookie、限流两项"]
+    D --> D2["声明需重启的 11 个键：host、port、base_path、allowed_ips、三个安全开关、会话超时、Cookie、限流两项"]
     D1 --> E["apply_plugin_config_change：只有存在可原地生效的键才调 apply_config"]
     E --> E1{"apply_config 抛异常"}
     E1 -- 是 --> E2["保留旧配置，回「已保存但立即生效失败」"]
@@ -544,7 +544,7 @@ flowchart TD
 | `changes` | `config_save(reload=true)` 或 `config_reload` 的响应 | 放弃修改、下一次保存 | 只影响展示「已生效 / 需重启」 |
 | `secrets_set` / `secrets_hidden` | `read()` 掩码时写入；只读会话置 `secrets_hidden` | 每次读取重算 | 密钥永远不回明文；只读会话连原文也拿不到 |
 | `hot_reload` / `restart_reason` | `describe_dataclass` 逐字段调 `classify(path)` | 随 schema 重新生成 | 仅影响徽标与提示，不影响保存 |
-| `config_error`（插件） | 插件加载时配置校验失败 | 配置改对后重载 | 插件按默认值运行，面板显示「已回落到默认值运行」 |
+| `config_error`（插件） | 插件加载时配置校验失败 | 配置改对后重载 | 插件按默认值运行，面板显示「已回落到默认值运行」；Dashboard 额外校验原始 `allowed_ips`，非法值阻止面板启动，不回落为无限制访问 |
 | `runtime_config`（面板自身） | `apply_config` 成功后 | 进程重启 | `apply_config` 抛异常时保留旧对象，面板继续用旧值 |
 | `config_backup/*` | 每次写盘前 `backup_config` | 超过保留份数时按 mtime 删除 | 备份失败只记日志，写入照常进行 |
 | `.dashboard.bak` | 插件配置每次保存前 | 下一次保存覆盖，只留一份 | 备份失败被吞掉 |

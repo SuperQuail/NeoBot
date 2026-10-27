@@ -60,6 +60,7 @@ _RUNTIME_SAFE: tuple[tuple[str, str], ...] = (
 #: 绑定期 / 安全类：保守处理，继续要求重启 NeoBot
 _REQUIRES_RESTART: tuple[tuple[str, str], ...] = (
     ("host", "监听地址在启动时绑定，改动需重启重新监听"),
+    ("allowed_ips", "IP 白名单在启动时确定，改动需重启"),
     ("port", "监听端口在启动时绑定，改动需重启重新监听"),
     ("base_path", "路由前缀在启动时注册，改动需重启"),
     ("manage_plugins", "安全开关：避免把管理员锁在门外，需重启"),

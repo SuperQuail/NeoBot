@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 93d0141
-verified_hash: 2e3981c88beb
+verified_against: 146242d
+verified_hash: 1f88fb6fac24
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -13,7 +13,7 @@ verified_hash: 2e3981c88beb
 ## 范围
 
 画**面板这个 HTTP 服务本身**：`DashboardServer.start` 的监听绑定、`_make_app` 装配的两层中间件、
-`_auth_middleware` 的「公开路径 / 会话 / CSRF」判定、`_catch_all` 的「扩展优先 → SPA 回退」、
+`_auth_middleware` 的「IP 白名单 / 公开路径 / 会话 / CSRF」判定、`_catch_all` 的「扩展优先 → SPA 回退」、
 `web/` 静态产物的来源与提供方式，以及前端从 `main.tsx` 到 `/api/*` 的取数链路
 （X-Token / X-CSRF-Token / 401 跳登录 / `queryCore` 去重与轮询）。行号以当前提交为准。
 
@@ -40,7 +40,9 @@ verified_hash: 2e3981c88beb
 flowchart TD
     A["HTTP 请求 → aiohttp Router"] --> B["_error_middleware｜server.py:436"]
     B --> C["_auth_middleware｜server.py:448"]
-    C --> D{"passwords.configured?"}
+    C --> IP{"allowed_ips 为空或客户端 IP 命中?"}
+    IP -- 是 --> D{"passwords.configured?"}
+    IP -- 否 --> IP1["403 当前 IP 不允许访问面板"]
     D -- 否 --> D1["未设密码：本机仅 /api/auth/setup<br/>外网 /api/* → 403 setup_required"]
     D -- 是 --> E{"需要会话?<br/>扩展 auth_prefixes 或 /api/* 非公开"}
     E -- 否 --> F["静态资源 / SPA 页面 / healthz 直通"]
@@ -66,6 +68,7 @@ flowchart TD
     D1 --> N
     G1 --> N
     H2 --> N
+    IP1 --> N
 ```
 
 ## 时序
@@ -153,12 +156,14 @@ error 在外层，所以鉴权中间件里抛出的任何非 HTTPException 也�
 ```mermaid
 flowchart TD
     A["_auth_middleware 入口｜server.py:448"] --> B["path 去掉 base_path 前缀<br/>ip 解析、loopback 判定"]
-    B --> C{"path 是 login 或 setup 且为写方法?"}
+    B --> IP{"allowed_ips 为空或规范化后的 IP 命中?"}
+    IP -- 否 --> IP1["403，所有路径均拦截"]
+    IP -- 是 --> C{"path 是 login 或 setup 且为写方法?"}
     C -- 是 --> C1["_cross_site_guard｜server.py:46<br/>Content-Type 必须 application/json"]
     C1 -- 不通过 --> C2["415 或 403，直接返回"]
     C -- 否 --> D{"passwords.configured?"}
     D -- 否 --> D1{"path 是 /api/auth/status 或非 /api 路径?"}
-    D1 -- 是 --> D2["直通：静态资源与 SPA 始终可达"]
+    D1 -- 是 --> D2["直通：静态资源与 SPA 免登录"]
     D1 -- 否 --> D3{"loopback?"}
     D3 -- 否 --> D4["403 setup_required<br/>提示本机设置或 /set_password"]
     D3 -- 是 --> D5{"path 是 /api/auth/setup?"}
@@ -169,10 +174,11 @@ flowchart TD
     E -- 是 --> F["进入会话校验（见下一个折叠块）"]
 ```
 
+以下免登录规则均以通过 IP 白名单为前提；`allowed_ips=[]` 不限制来源 IP。
 已配置密码时的公开集（`server.py:487`）：`/healthz`、`/`、`/favicon.ico`、`/api/auth/status`、
 `/api/auth/login`、`/api/auth/setup`。注意 `/api/auth/setup` 在**已配置**时也放行，
 由处理器直接回 400「面板密码已设置，请直接登录」——故意的，避免把它暴露成「需要登录」的接口。
-`/assets/` 与 `/image/` 永远公开：前端壳与图标要能加载，真正的数据都在受保护的 `/api/*` 后面。
+`/assets/` 与 `/image/` 免登录：前端壳与图标要能加载，真正的数据都在受保护的 `/api/*` 后面。
 
 **没有 `@login_required` 这类装饰器**：保护范围由「`/api/` 前缀 + 公开集 + 扩展 auth_prefixes」三段决定。
 新增一个 `/api/xxx` 路由就自动受保护；新增一个非 `/api` 路径则自动公开（SPA 路由就是这样）。
@@ -427,7 +433,7 @@ flowchart TD
     D1 -- 是 --> D2["400 面板自身不支持热重载，请重启 NeoBot"]
     A --> E["DashboardConfigConsumer｜hot_reload.py:82<br/>load 时登记为配置消费者"]
     E --> F["运行期安全 8 项：探针四项、bot_info_cache_ttl、<br/>log_buffer_size、history_max_days、allow_archive_delete"]
-    E --> G["需重启 10 项：host、port、base_path、manage_plugins、<br/>allow_remote_manage、会话超时、secure_cookies、trust_proxy、限流两项"]
+    E --> G["需重启 11 项：host、port、base_path、allowed_ips、manage_plugins、<br/>allow_remote_manage、会话超时、secure_cookies、trust_proxy、限流两项"]
     F --> H["server.apply_runtime_config｜server.py:698<br/>刷新 runtime_config 与指标容量"]
     G --> I["面板提示需重启，仍按 self.config 启动快照运行"]
 ```
@@ -450,7 +456,9 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["on_load → DashboardPlugin.load｜__init__.py:53"] --> B["构造 DashboardServer｜__init__.py:67"]
-    B --> C["await server.start()｜server.py:249"]
+    B --> IP["_load_allowed_ips 读取原始配置并校验 IPv4 / IPv6"]
+    IP -- 合法 --> C["await server.start()｜server.py:249"]
+    IP -- 非法 --> IP1["构造失败，不监听端口；不能回落为空白名单"]
     C --> D["_make_app 加 AppRunner.setup"]
     D --> E["从 config.port 起最多试 10 个端口｜_PORT_SEARCH_LIMIT"]
     E --> F{"绑上了吗?"}

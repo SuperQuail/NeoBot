@@ -30,6 +30,7 @@ from .security import (
     SessionStore,
     client_ip,
     is_loopback,
+    normalize_ip,
     secrets_equal,
 )
 from .web_extension import extension_metadata
@@ -118,6 +119,7 @@ class DashboardServer:
         self._allow_remote_manage = bool(config.allow_remote_manage)
         self.secure_cookies = bool(config.secure_cookies)
         self.trust_proxy = bool(config.trust_proxy_headers)
+        self._allowed_ips = self._load_allowed_ips()
 
         self.sessions = SessionStore(timeout_seconds=config.session_timeout_minutes * 60)
         self.limiter = LoginLimiter(
@@ -217,6 +219,16 @@ class DashboardServer:
     @property
     def uptime_seconds(self) -> int:
         return int(max(0.0, time.time() - self._started_at))
+
+    def _load_allowed_ips(self) -> frozenset[str]:
+        # 宿主会把非法插件配置回落到默认值；白名单必须校验原始值，不能因此放开访问。
+        try:
+            with (self.data_dir / "config.toml").open("rb") as handle:
+                stored = tomllib.load(handle)
+        except FileNotFoundError:
+            stored = {}
+        values = stored.get("allowed_ips", self.config.allowed_ips)
+        return frozenset(DashboardConfig(allowed_ips=values).allowed_ips)
 
     def _live_config(self) -> dict[str, Any]:
         """插件配置文件的最新内容（按 mtime 缓存）。
@@ -470,6 +482,13 @@ class DashboardServer:
     async def _auth_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
         path = self._strip_base(request.path)
         ip = self.request_ip(request)
+        if self._allowed_ips:
+            try:
+                allowed = normalize_ip(ip) in self._allowed_ips
+            except ValueError:
+                allowed = False
+            if not allowed:
+                return _json_error("当前 IP 不允许访问面板", status=403)
         loopback = is_loopback(ip)
         configured = self.passwords.configured
 

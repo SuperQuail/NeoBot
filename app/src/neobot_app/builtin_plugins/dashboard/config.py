@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from .security import normalize_ip
+
 
 class DashboardConfig(BaseModel):
     """网页面板运行配置（plugins_data/dashboard/config.toml）。"""
@@ -19,6 +21,10 @@ class DashboardConfig(BaseModel):
     host: str = Field(
         default="0.0.0.0",
         description="监听地址。0.0.0.0 对网络开放；只在本机使用请填 127.0.0.1。",
+    )
+    allowed_ips: list[str] = Field(
+        default=[],
+        description="允许访问面板的 IPv4/IPv6 地址数组；空数组不限制来源，填写后仅允许匹配的 IP。修改需重启。",
     )
     port: int = Field(
         default=9981,
@@ -110,6 +116,11 @@ class DashboardConfig(BaseModel):
         default=False,
         description="是否信任反向代理写入的客户端地址头（X-Forwarded-For/Host）。仅在代理可信时开启。",
     )
+
+    @field_validator("allowed_ips")
+    @classmethod
+    def _normalize_allowed_ips(cls, value: list[str]) -> list[str]:
+        return [normalize_ip(item) for item in value]
 
     @field_validator("host")
     @classmethod

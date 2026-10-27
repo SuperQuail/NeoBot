@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hmac
+from ipaddress import IPv6Address, ip_address
 import re
 import secrets
 import time
@@ -138,6 +139,13 @@ def client_ip(request: Any, *, trust_proxy: bool = False) -> str:
     if isinstance(peer, (tuple, list)) and peer:
         return str(peer[0])
     return str(request.remote or "")
+
+
+def normalize_ip(value: str) -> str:
+    address = ip_address(value.strip())
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return str(address)
 
 
 def is_loopback(ip: str) -> bool:
