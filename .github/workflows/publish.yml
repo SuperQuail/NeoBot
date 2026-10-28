@@ -167,6 +167,8 @@ jobs:
       - name: 创建 tag 与 GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 本 job 不 checkout 源码，gh 需要显式仓库上下文（否则 gh 会尝试从 .git 推断并失败）
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
           TARGET: ${{ github.sha }}
