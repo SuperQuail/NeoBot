@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from neobot_app.reply.output_guard import clean_text
 from neobot_chat.schema.types import ToolDefinition
 
 from neobot_app.reply.tool_parts.common import _MAX_EMOJI_PAGE_SIZE, _tool_def
@@ -17,17 +16,19 @@ class _EmojiToolsMixin:
             number = int(args.get("number", -1))
         except (ValueError, TypeError):
             return "错误：number 必须为整数"
+        if str(args.get("text") or "").strip():
+            return (
+                "错误：send_emoji 不接受附带文字，表情包必须单独发送；"
+                "想说的话请用 send_reply 单独发送，再调用 send_emoji 发表情包。"
+            )
         emoji_entry = None
         if self._emoji is not None:
             emoji_entry = self._emoji.get_entry(number)
             if emoji_entry is None:
                 total = self._emoji.emoji_count
                 return f"错误：表情包编号 {number} 不存在，当前共 {total} 个表情包"
-        text = clean_text(
-            str(args.get("text") or ""), known_sender_names=self._sender_names()
-        )
-        # 附带文字可为空；清洗掉草稿后仍可单独发送表情包。
-        await handler(number=number, text=text)
+        # 表情包必须单独发送：不接受随表情包附带的文字（想说话用 send_reply）
+        await handler(number=number)
         entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
         return f"已发送表情包 {entry_name}"
 
@@ -101,21 +102,15 @@ class _EmojiToolsMixin:
             tools.append(
                 _tool_def(
                     "send_emoji",
-                    "向当前会话发送一个表情包图片（可附带可选文字）。"
-                    "仅用于只发送表情包而不发送独立文字回复的场景。"
-                    "若需要同时发送文字回复和表情包，请使用 send_reply 工具并通过 images 参数指定表情包编号。"
+                    "单独发送一个表情包图片。表情包必须单独发送："
+                    "不要与你要说的话一起发，也不要在表情包里附带文字；"
+                    "想说话请另外调用 send_reply。"
                     "编号用 list_emojis 或 search_custom_emoji 查看（按使用次数从少到多排列，优先用不常用的）。",
                     {
                         "properties": {
                             "number": {
                                 "type": "integer",
                                 "description": "表情包编号，用 list_emojis / search_custom_emoji 获取。",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "可选，随表情包一起发送的文字。只放你要说的那句话本身："
-                                "不要带编号/发送者名字/[msg_id=...] 等系统标注，也不要写思考过程"
-                                "（发送和写回对话历史前会做输出安全清洗）。",
                             },
                         },
                         "required": ["number"],

@@ -69,10 +69,7 @@ class _ReplyToolsMixin:
         )
         split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview else None
         send_original = bool(args.get("send_original") is True)
-        merge_text_with_image = bool(args.get("merge_text_with_image") is True)
-        if raw_segments and not segments and not (
-            send_original or (args.get("images") and merge_text_with_image)
-        ):
+        if raw_segments and not segments and not send_original:
             # text is only a placeholder when explicit segments were selected.
             text = ""
         if not text.strip() and not segments and not args.get("images"):
@@ -123,11 +120,7 @@ class _ReplyToolsMixin:
             if result.fallback_used:
                 return self._build_ai_check_prompt(result)
 
-        if (
-            self._enable_ai_reply_regenerate
-            and not (send_original or merge_text_with_image)
-            and not segments
-        ):
+        if self._enable_ai_reply_regenerate and not send_original and not segments:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -138,11 +131,7 @@ class _ReplyToolsMixin:
                     )
                 )
 
-        if (
-            self._enable_ai_reply_regenerate
-            and not (send_original or merge_text_with_image)
-            and ai_check_approved
-        ):
+        if self._enable_ai_reply_regenerate and not send_original and ai_check_approved:
             pre_check = self._preview_split(text)
             if pre_check.fallback_used:
                 return (
@@ -161,7 +150,6 @@ class _ReplyToolsMixin:
             segments=segments,
             send_original=send_original,
             images=images,
-            merge_text_with_image=merge_text_with_image,
             **({"split_preview": split_preview} if split_preview is not None else {}),
         )
         if delivered is False:
@@ -329,8 +317,8 @@ class _ReplyToolsMixin:
                 "向当前会话发送回复，可附带表情包图片。agent 模式下这是对外发言的唯一出口："
                 "只有调用本工具（长文用 send_long_reply）才会真正发出消息，"
                 "直接输出的正文不会发送，且本轮会被判为失败。"
-                "发送图片时先逐一发送图片再发送切分后的文字；"
-                "若设置 merge_text_with_image=true 则文字与第一张图片合并且不切分。"
+                "发送图片时每张图片单独作为一条消息发送，文字另外单独发送；"
+                "图片与文字不会合并到同一条消息里。"
                 "本工具只发送消息，不结束本轮；发送后仍可继续调用其他工具。"
                 "只有 cancel 会结束一轮回复；允许在同一轮内多次发送，用于长任务的开工与进度。"
                 "text/segments 只放你要说的那句话本身：不要带消息编号、发送者名字、"
@@ -367,11 +355,7 @@ class _ReplyToolsMixin:
                         "images": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "可选，要发送的表情包编号列表。发送时先逐一发送图片（每条消息一张图片），再发送切分后的文字。若同时设置 merge_text_with_image=true，文字会与第一张图片合并为一条消息且文字不再切分。",
-                        },
-                        "merge_text_with_image": {
-                            "type": "boolean",
-                            "description": "可选，是否将文字与第一张图片合并发送，此时文字不切分。默认为 false。仅在提供了 images 参数时生效。",
+                            "description": "可选，要发送的表情包编号列表。每张图片单独作为一条消息发送，文字另外单独发送，不会合并到同一条消息。",
                         },
                         "ai_check_approved": {
                             "type": "boolean",

@@ -577,6 +577,11 @@ SILENT_NUDGE_TEXT = (
 )
 #: 基础 <回复要求> 里新增的「适时回话」原则
 TIMELY_REPLY_PRINCIPLE = "需要时间的事情要适时回话"
+#: 基础 <回复要求> 里新增的「不主动描述图片/不接表情包」原则
+NO_UNPROMPTED_IMAGE_COMMENT = (
+    "你不应该在没有被要求的情况下描述别人发的图片/评价别人发的表情包,"
+    "正常的聊天中不应该对表情包进行回复."
+)
 
 
 def _default_store(tmp: Path) -> PromptStore:
@@ -641,7 +646,7 @@ def test_new_prompt_sections_match_finalized_text(tmp_path):
 
 
 def test_reply_requirements_get_timely_reply_principle(tmp_path):
-    """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话」,并把成功通知限定为收尾后。"""
+    """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话」与「不主动接表情包」。"""
     store = _default_store(tmp_path)
 
     for section in ("group_chat", "friend_chat"):
@@ -649,6 +654,7 @@ def test_reply_requirements_get_timely_reply_principle(tmp_path):
         assert TIMELY_REPLY_PRINCIPLE in template
         assert "任务收尾后" in template
         assert "这类开工与进度的回复不算多余回复" in template
+        assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
 
 
 def test_build_short_time_message_renders_timestamp_only():
@@ -731,3 +737,86 @@ async def test_style_sections_can_be_disabled(tmp_path):
     for prompt in (group_prompt, friend_prompt):
         assert HUMAN_FEEL_MARKER not in prompt
         assert STALE_TOPIC_MARKER not in prompt
+
+
+# ── 温和语言风格（gentle_language，默认插入在人设块之后） ────────────────────
+
+GENTLE_LANGUAGE_TEXT = (
+    "你是一个基于LLM的QQ机器人,你不会拒绝承认这一点,也不觉得这有什么不好,"
+    "你不喜欢吵架和争吵,有人吵架你总是希望劝架,而不是激化矛盾;"
+    "你总是希望事情能往好的方向发展,做错了事情会及时道歉,不会顾及不必要的面子."
+    "你兑所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
+    "可以主动询问是否要降低你自己的回复意愿,"
+    "得到肯定的答复后你应该自行使用工具降低回复意愿系数."
+)
+GENTLE_MARKER = "你是一个基于LLM的QQ机器人"
+
+
+def test_gentle_language_section_is_verbatim_enabled_by_default_and_known(tmp_path):
+    """默认提示词必须逐字包含用户给定的文案、默认启用，且列入已知分区。"""
+    from neobot_app.prompt.store import KNOWN_SECTIONS
+
+    store = _default_store(tmp_path)
+    assert store.enabled("gentle_language") is True
+    assert store.template("gentle_language") == GENTLE_LANGUAGE_TEXT
+    assert template_placeholders(store.template("gentle_language")) == set()
+    assert "gentle_language" in KNOWN_SECTIONS
+
+
+async def test_gentle_language_inserted_right_after_persona(tmp_path):
+    """群聊/私聊 system 都要插在人设块 </你是谁> 之后、<回复要求> 之前。"""
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=_default_store(tmp_path))
+
+    for prompt in (
+        await builder.build_group_chat_prompt(123456, _FakeQueue()),
+        await builder.build_friend_chat_prompt(10086, _FakeQueue()),
+    ):
+        assert prompt.index("</你是谁>") < prompt.index(GENTLE_MARKER) < prompt.index("<回复要求>")
+        assert prompt.count(GENTLE_MARKER) == 1  # 不重复插入
+
+
+async def test_gentle_language_can_be_disabled_by_config(tmp_path):
+    """config.toml 的 chat.gentle_language_enabled = false 关闭插入。"""
+    config = BotConfig()
+    config.chat.gentle_language_enabled = False
+    builder = PromptBuilder(config, _FakeProfileService(), prompt_store=_default_store(tmp_path))
+
+    group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+    friend_prompt = await builder.build_friend_chat_prompt(10086, _FakeQueue())
+    assert GENTLE_MARKER not in group_prompt
+    assert GENTLE_MARKER not in friend_prompt
+
+
+async def test_gentle_language_can_be_disabled_by_prompt_section(tmp_path):
+    """提示词分区 enabled = false 同样可以关闭插入（与 config 开关并存）。"""
+    sync_default_prompts(tmp_path)
+    store = _write_custom(tmp_path, "[gentle_language]\nenabled = false\n")
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=store)
+
+    group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+    assert GENTLE_MARKER not in group_prompt
+
+
+async def test_gentle_language_appended_when_custom_template_has_no_persona():
+    """自定义 [group_chat]/[friend_chat] 没有 <你是谁> 人设块时退回追加到末尾。"""
+    builder = _make_builder("你好{bot_name}")
+
+    for prompt in (
+        await builder.build_group_chat_prompt(123456, _FakeQueue()),
+        await builder.build_friend_chat_prompt(10086, _FakeQueue()),
+    ):
+        assert GENTLE_MARKER in prompt
+        assert prompt.index(GENTLE_MARKER) > prompt.index("你好小测试")
+
+
+async def test_gentle_language_custom_override_takes_effect(tmp_path):
+    """custom/prompts.toml 覆盖 [gentle_language] 后使用自定义文案。"""
+    sync_default_prompts(tmp_path)
+    store = _write_custom(
+        tmp_path, '[gentle_language]\ntemplate = "自定义温和风格"\n'
+    )
+    builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=store)
+
+    prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
+    assert "自定义温和风格" in prompt
+    assert GENTLE_MARKER not in prompt

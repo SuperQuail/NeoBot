@@ -236,7 +236,6 @@ class ReplySender:
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
-        merge_text_with_image: bool = False,
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
@@ -264,7 +263,7 @@ class ReplySender:
         # 的源头也在这里被切断（详见 reply/output_guard.py）。
         text, segments = self._sanitize_outgoing(
             text, segments, sender_names=sender_names,
-            prefer_text=send_original or bool(images and merge_text_with_image),
+            prefer_text=send_original,
             split_preview=split_preview,
         )
         before_send = await self._debug_helper.emit_runtime_event(
@@ -294,7 +293,7 @@ class ReplySender:
         # 否则「最后一道兜底」会被插件绕过。清洗幂等，重复调用无副作用。
         text, segments = self._sanitize_outgoing(
             text, segments, sender_names=sender_names,
-            prefer_text=send_original or bool(images and merge_text_with_image),
+            prefer_text=send_original,
             split_preview=split_preview,
         )
         if not (str(text or "").strip() or segments or images):
@@ -314,50 +313,6 @@ class ReplySender:
 
         send_results: list[object] = []
         formatted_messages: list[list[dict]] = []
-
-        # Phase B: text + first image merged
-        if images and merge_text_with_image:
-            image_entries = self._resolve_image_entries(images)
-            if image_entries:
-                first_img = image_entries[0]
-                merged = self.build_reply_segments(
-                    text=text,
-                    conversation_kind=conv_ref.kind,
-                    reply_to_message_id=reply_to_message_id,
-                    mention_user_ids=mention_user_ids,
-                )
-                if not text:
-                    merged = [segment for segment in merged if segment["type"] != "text"]
-                merged.append(prepare_image_segment(self._file_server, first_img.file_path))
-                formatted_messages.append(merged)
-                send_results.append(await self.send_with_timeout(conv_ref, merged))
-                # 真实发送结果入队：文本与图片分别按真实形态记录（图片为索引）
-                self._emit_self_sent_text(self_sent, conv_ref, text)
-                await self._emit_self_sent_image(self_sent, conv_ref, first_img.file_path)
-                if self._emoji_service:
-                    await self._emoji_service.record_usage(images[0])
-                for i, entry in enumerate(image_entries[1:], start=1):
-                    formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                    send_results.append(await send_image(
-                        self._file_server, self._adapter, conv_ref, entry.file_path,
-                        wait_response=False,
-                    ))
-                    await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
-                    if self._emoji_service:
-                        await self._emoji_service.record_usage(images[i])
-            if not send_results:
-                if event.state is ReplyState.SENDING:
-                    event.transition(ReplyState.GENERATING)
-                return False
-            event.send_response = send_results[0] if len(send_results) == 1 else send_results
-            self._leave_sending(event, conv_ref.kind)
-            self._debug_helper.record(
-                "reply_sent",
-                event,
-                formatted=formatted_messages[0] if len(formatted_messages) == 1 else formatted_messages,
-                reply_to_message_id=reply_to_message_id,
-            )
-            return True
 
         # Phase A: send images first (one by one)
         if images:
@@ -868,13 +823,3 @@ class ReplySender:
 
     async def _render_long_reply_as_image(self, text: str) -> Path:
         return await self._markdown_image_converter.convert(text)
-
-    def _resolve_image_entries(self, image_numbers: list[int]) -> list[Any]:
-        if self._emoji_service is None:
-            return []
-        entries: list[Any] = []
-        for number in image_numbers:
-            entry = self._emoji_service.get_entry(number)
-            if entry is not None:
-                entries.append(entry)
-        return entries

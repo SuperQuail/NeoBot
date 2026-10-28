@@ -82,8 +82,14 @@ async def test_optional_text_may_be_empty_without_dropping_media(media, dirty):
     assert handler.await_args.kwargs["caption"] == ""
     converter.convert.assert_not_awaited()
     handler.reset_mock()
-    assert "已发送表情包" in await executor.execute("send_emoji", {"number": 3, "text": dirty})
-    handler.assert_awaited_once_with(number=3, text="")
+    # 表情包单独发送：带 text 的调用必须被显式拒绝，不能静默丢弃文字
+    result = await executor.execute("send_emoji", {"number": 3, "text": dirty})
+    if str(dirty).strip():
+        assert result.startswith("错误：") and "单独发送" in result
+        handler.assert_not_awaited()
+    else:
+        assert "已发送表情包" in result
+        handler.assert_awaited_once_with(number=3)
 
 
 async def test_empty_caption_still_renders_valid_markdown(media):
@@ -96,17 +102,31 @@ async def test_empty_caption_still_renders_valid_markdown(media):
     assert handler.await_args.kwargs["caption"] == ""
 
 
-@pytest.mark.parametrize("tool", ["speak", "send_emoji"])
 @pytest.mark.parametrize("dirty, expected", [
     ("215: 贝拉: 你好", "你好"),
     ("AAA大肥鱼: ？？？", "？？？"),
     ("<think>草稿</think>你好", "你好"),
     ("HTTP: 200 OK", "HTTP: 200 OK"),
 ])
-async def test_speech_and_emoji_use_shared_known_names(media, tool, dirty, expected):
+async def test_speech_uses_shared_known_names(media, dirty, expected):
     executor, _, handler = media
-    await executor.execute(tool, {"number": 3, "text": dirty})
+    await executor.execute("speak", {"text": dirty})
     assert handler.await_args.kwargs["text"] == expected
+
+
+def test_emoji_tools_require_sending_alone(media):
+    """表情包必须单独发送：send_emoji 没有附带文字，send_reply 没有合并开关。"""
+    executor, _, _ = media
+    definitions = {item["function"]["name"]: item["function"] for item in executor.definitions()}
+
+    send_emoji = definitions["send_emoji"]
+    assert set(send_emoji["parameters"]["properties"]) == {"number"}
+    assert "单独发送" in send_emoji["description"]
+
+    send_reply = definitions["send_reply"]
+    assert "merge_text_with_image" not in send_reply["parameters"]["properties"]
+    assert "单独" in send_reply["description"]
+    assert "单独" in send_reply["parameters"]["properties"]["images"]["description"]
 
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
@@ -126,7 +146,7 @@ async def test_markdown_fenced_examples_survive_guard(media, fence):
 def test_media_descriptions_no_longer_promise_unsanitized_output(media):
     executor, _, _ = media
     definitions = {item["function"]["name"]: item["function"] for item in executor.definitions()}
-    for name in ("send_long_reply", "speak", "send_emoji"):
+    for name in ("send_long_reply", "speak"):
         description = json.dumps(definitions[name], ensure_ascii=False)
         assert "原样发出" not in description
         assert "不做任何清洗" not in description

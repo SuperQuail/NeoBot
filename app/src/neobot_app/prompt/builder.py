@@ -44,6 +44,9 @@ _DEDUP_KEYS_FRIEND = (
     "memory_list",
 )
 
+#: 人设块结束标记:温和语言风格提示插在它之后
+_PERSONA_END = "</你是谁>"
+
 
 class PromptBuilder:
     """从消息队列与已保存的用户资料信息组装提示词。"""
@@ -242,6 +245,8 @@ class PromptBuilder:
                 f"<消息编号说明>\n{values['numbering_guide']}\n</消息编号说明>",
             )
 
+        prompt = self._insert_gentle_language(prompt, values)
+
         if context_blocks is not None and self._section_enabled("group_context"):
             block = render_template(
                 self._template("group_context"),
@@ -272,6 +277,26 @@ class PromptBuilder:
             if block:
                 prompt = _merge_prompt_fragments(prompt, block)
         return prompt
+
+    def _insert_gentle_language(self, prompt: str, values: dict) -> str:
+        """把 [gentle_language] 渲染后插在 <你是谁> 人设块之后。
+
+        config.toml 的 chat.gentle_language_enabled 与分区 enabled 任一关闭即不插入;
+        自定义模板里没有 `</你是谁>` 时退回追加到 system 末尾。
+        """
+        if not bool(getattr(getattr(self._config, "chat", None), "gentle_language_enabled", True)):
+            return prompt
+        if not self._section_enabled("gentle_language"):
+            return prompt
+        block = render_template(self._template("gentle_language"), values)
+        if not block or block in prompt:
+            return prompt
+        # 取最后一个 </你是谁>：人设正文若出现该字面量，最后一个是真实闭合标签
+        end = prompt.rfind(_PERSONA_END)
+        if end == -1:
+            return _merge_prompt_fragments(prompt, block)
+        end += len(_PERSONA_END)
+        return f"{prompt[:end]}\n{block}\n{prompt[end:].lstrip('\r\n')}"
 
     def _context_values(
         self,
@@ -360,6 +385,8 @@ class PromptBuilder:
                 prompt,
                 f"<消息编号说明>\n{values['numbering_guide']}\n</消息编号说明>",
             )
+
+        prompt = self._insert_gentle_language(prompt, values)
 
         if context_blocks is not None and self._section_enabled("friend_context"):
             block = render_template(

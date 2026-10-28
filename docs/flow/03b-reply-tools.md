@@ -311,7 +311,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["入口一 工具层 / tools.py:1606"] --> A1["send_reply：clean_text(text) 再 clean_segments(raw_segments)"]
-    A1 --> A2["split_reply / send_emoji / speak / send_long_reply 各自 clean_text"]
+    A1 --> A2["split_reply / speak / send_long_reply 各自 clean_text；send_emoji 只发图片、带 text 直接拒绝"]
     A2 --> A3["remember_split_preview 只记「真正暴露给模型」的预览（deque 8 条）"]
     A3 --> B["入口二 发送层 / sender.py:439"]
     B --> B1["reply.postprocess.after 钩子改写后再清洗一遍（幂等）"]

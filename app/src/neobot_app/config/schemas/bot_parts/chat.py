@@ -200,6 +200,13 @@ class EnhancedChat(Chat):
             "群员档案由 agent 用 archive_crud__read_archive 按需读取"
         },
     )
+    gentle_language_enabled: Optional[bool] = field(
+        default=True,
+        metadata={
+            "description": "是否在群聊/私聊 system 提示词的人设之后插入 [gentle_language] "
+            "温和语言风格提示词；默认开启。关闭也可在提示词分区里写 enabled = false"
+        },
+    )
     poke_weight: Optional[float] = field(
         default=0.2,
         metadata={"description": "戳一戳事件在消息队列中的权重，结算队列长度时按此权重计算（0.2表示5个戳一戳等同1条消息）"},

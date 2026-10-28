@@ -67,8 +67,7 @@ def tool_for(sender, event, **kwargs):
     async def handler(**args):
         return await sender.send_reply(
             event, args["text"], segments=args["segments"], send_original=args["send_original"],
-            images=args["images"], merge_text_with_image=args["merge_text_with_image"],
-            split_preview=args.get("split_preview"),
+            images=args["images"], split_preview=args.get("split_preview"),
         )
 
     return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
@@ -186,9 +185,8 @@ def test_guard_fixed_point_preserves_main_contract(raw):
     assert clean_text(once, known_sender_names=["Bot"]) == once
 
 
-@pytest.mark.parametrize("merge", [False, True])
 @pytest.mark.parametrize("original", [False, True])
-async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, merge, original):
+async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, original):
     image = tmp_path / "image.png"
     image.write_bytes(b"fake image, never rendered")
     emoji = SimpleNamespace(
@@ -196,7 +194,7 @@ async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, merge, or
     )
     sender, event, adapter = make_sender(emoji_service=emoji)
     result = await tool_for(sender, event).execute("send_reply", {
-        "text": "cancel", "images": [1], "merge_text_with_image": merge, "send_original": original,
+        "text": "cancel", "images": [1], "send_original": original,
     })
     assert "已发送" in result
     assert wire_text(adapter) == []
@@ -205,11 +203,10 @@ async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, merge, or
     assert event.send_response == {"message_id": 1}
 
 
-@pytest.mark.parametrize("merge", [False, True])
-async def test_missing_image_plus_cleaned_empty_text_is_not_success(merge):
+async def test_missing_image_plus_cleaned_empty_text_is_not_success():
     sender, event, adapter = make_sender()
     result = await tool_for(sender, event).execute("send_reply", {
-        "text": "cancel", "images": [404], "merge_text_with_image": merge,
+        "text": "cancel", "images": [404],
     })
     assert result.startswith("错误：") and "未发送" in result
     assert not adapter.sent
@@ -217,8 +214,7 @@ async def test_missing_image_plus_cleaned_empty_text_is_not_success(merge):
     assert event.send_response is None
 
 
-@pytest.mark.parametrize("tool", ["send_emoji", "send_long_reply"])
-async def test_special_media_caption_uses_guard_before_real_transport(tmp_path, tool):
+async def test_special_media_caption_uses_guard_before_real_transport(tmp_path):
     image = tmp_path / "rendered.png"
     image.write_bytes(b"fake image")
     sender, event, adapter = make_sender()
@@ -232,12 +228,11 @@ async def test_special_media_caption_uses_guard_before_real_transport(tmp_path, 
         return await sender.send_with_timeout(event.conversation_ref, payload)
 
     executor = ReplyToolExecutor(
-        send_emoji_handler=handler, send_long_reply_handler=handler, markdown_image_converter=converter,
+        send_long_reply_handler=handler, markdown_image_converter=converter,
     )
-    args = {"number": 1, "text": "cancel"} if tool == "send_emoji" else {
+    await executor.execute("send_long_reply", {
         "image_path": str(image), "markdown": "cancel", "caption": "cancel",
-    }
-    await executor.execute(tool, args)
+    })
     assert not wire_text(adapter)
     assert len(adapter.sent) == 1 and adapter.sent[0][0]["type"] == "image"
     converter.convert.assert_not_awaited()

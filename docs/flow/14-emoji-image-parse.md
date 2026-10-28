@@ -343,7 +343,7 @@ flowchart TD
     K -. 解析回写 .-> K1["image_source 被硬编码成部署者提供 skill_import 丢失 / :621"]
     J --> L["_scan_folder 重建编号 返回 EmojiImportResult"]
     K1 --> L
-    M["send_sticker / service.py:199 或回复内 send_emoji_handler / orchestrator.py:2324"] --> N["prepare_image_segment file_server 开启注册 HTTP URL 否则 file 本地路径"]
+    M["send_sticker（只发图片，带 text 拒绝）/ service.py:199 或回复内 send_emoji_handler（只发图片）"] --> N["prepare_image_segment file_server 开启注册 HTTP URL 否则 file 本地路径"]
     N --> O["adapter.send 成功后 record_usage / send_sticker 里两者成对"]
     O --> P["record_usage 重算 sha256 后 uow.emojis.increment_usage / :241"]
     P -. 异常 .-> P1["warning 记录使用次数失败 内存计数也不加"]

@@ -42,11 +42,11 @@ class StickerSkill(SkillModule):
         return [
             self._tool_def(
                 "send_sticker",
-                "从表情包库中选择并发送一个表情包图片到指定会话。",
+                "从表情包库中选择并单独发送一个表情包图片到指定会话。"
+                "表情包必须单独发送：不要附带文字，也不要和要说的话一起发。",
                 {
                     "properties": {
                         "number": {"type": "integer", "description": "表情包编号，用 list_emojis / search_custom_emoji 获取。"},
-                        "text": {"type": "string", "description": "可选，随表情包一起发送的文字。"},
                         "group_id": {"type": "string", "description": "目标群号，群聊场景使用。"},
                         "user_id": {"type": "string", "description": "目标QQ号，私聊场景使用。"},
                     },
@@ -69,11 +69,15 @@ async def _handle_send_sticker(self: StickerSkill, args: dict) -> str:
     number = args.get("number")
     if number is None:
         return _json({"ok": False, "error": "缺少表情包编号"})
-    text = args.get("text", "")
+    if str(args.get("text") or "").strip():
+        return _json({
+            "ok": False,
+            "error": "send_sticker 不接受附带文字：表情包必须单独发送，要说的文字请另行发送",
+        })
     group_id = args.get("group_id", "")
     user_id = args.get("user_id", "")
     try:
-        result = await self._emoji_service.send_sticker(number, text=text, group_id=group_id, user_id=user_id)
+        result = await self._emoji_service.send_sticker(number, group_id=group_id, user_id=user_id)
         return _json({"ok": True, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})

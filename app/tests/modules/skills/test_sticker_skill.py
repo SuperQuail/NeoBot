@@ -44,8 +44,8 @@ async def test_send_sticker_forwards_number_to_service():
     assert service.calls == [(7, "", "", "")]
 
 
-async def test_send_sticker_passes_text_and_targets_through():
-    """正常路径：text/group_id/user_id 应原样透传给 emoji_service。"""
+async def test_send_sticker_rejects_accompanying_text():
+    """表情包必须单独发送：带 text 的调用直接拒绝，不把文字与图片合并。"""
     service = _FakeEmojiService()
     skill = _make_skill(service)
 
@@ -54,12 +54,29 @@ async def test_send_sticker_passes_text_and_targets_through():
             "number": 3,
             "text": "早安",
             "group_id": "888888",
+        })
+    )
+
+    assert result["ok"] is False
+    assert "单独发送" in result["error"]
+    assert service.calls == []
+
+
+async def test_send_sticker_passes_targets_through():
+    """正常路径：group_id/user_id 应原样透传给 emoji_service。"""
+    service = _FakeEmojiService()
+    skill = _make_skill(service)
+
+    result = json.loads(
+        await skill.execute("send_sticker", {
+            "number": 3,
+            "group_id": "888888",
             "user_id": "123456",
         })
     )
 
     assert result["ok"] is True
-    assert service.calls == [(3, "早安", "888888", "123456")]
+    assert service.calls == [(3, "", "888888", "123456")]
 
 
 async def test_send_sticker_missing_number_rejected():
@@ -133,3 +150,7 @@ def test_get_tools_exposes_send_sticker_when_configured():
     assert len(tools) == 1
     assert tools[0]["function"]["name"] == "send_sticker"
     assert "number" in tools[0]["function"]["parameters"]["required"]
+    # 模型可见参数里不能有 text：表情包必须单独发送
+    assert set(tools[0]["function"]["parameters"]["properties"]) == {
+        "number", "group_id", "user_id",
+    }

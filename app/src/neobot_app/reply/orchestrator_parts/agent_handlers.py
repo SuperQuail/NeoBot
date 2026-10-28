@@ -47,7 +47,6 @@ class AgentHandlersMixin:
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
-        merge_text_with_image: bool = False,
         split_preview: ReplySplitPreview | None = None,
     ) -> bool:
         """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
@@ -71,7 +70,6 @@ class AgentHandlersMixin:
                 segments=segments,
                 send_original=send_original,
                 images=images,
-                merge_text_with_image=merge_text_with_image,
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
@@ -84,7 +82,6 @@ class AgentHandlersMixin:
                 segments=segments,
                 send_original=send_original,
                 images=images,
-                merge_text_with_image=merge_text_with_image,
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
@@ -104,18 +101,14 @@ class AgentHandlersMixin:
         queue_copy: MessageQueue,
         queue_key: str,
         number: int,
-        text: str = "",
     ) -> None:
         if self._emoji_service is None:
             return
         entry = self._emoji_service.get_entry(number)
         if entry is None:
             return
-        # 构建消息段：可选文字 + 图片
-        segments: list[dict] = []
-        if text.strip():
-            segments.append({"type": "text", "data": {"text": text.strip()}})
-        segments.append(prepare_image_segment(self._file_server, entry.file_path))
+        # 表情包单独作为一条消息发送，不与要说的话合并
+        segments = [prepare_image_segment(self._file_server, entry.file_path)]
         emoji_conv = event.conversation_ref
         before_message_id = queue.get_last_message_id(queue_key)
         delivered = await self._send_with_timeout(emoji_conv, segments)
@@ -127,13 +120,9 @@ class AgentHandlersMixin:
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
-        # 表情包也是「真实发出去了」的图片：文本与图片各按真实形态入队
+        # 表情包也是「真实发出去了」的图片：按真实形态入队
         if emoji_conv is not None:
             emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
-            if text.strip():
-                self._sender.record_self_sent_text(
-                    emoji_sink, emoji_conv, text.strip()
-                )
             await self._sender.record_self_sent_image(
                 emoji_sink, emoji_conv, entry.file_path
             )

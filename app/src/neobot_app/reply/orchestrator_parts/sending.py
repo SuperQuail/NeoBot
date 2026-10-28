@@ -49,7 +49,6 @@ class SendingMixin:
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
-        merge_text_with_image: bool = False,
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
@@ -76,7 +75,6 @@ class SendingMixin:
             segments=segments,
             send_original=send_original,
             images=images,
-            merge_text_with_image=merge_text_with_image,
             self_sent=self_sent,
             sender_names=names,
             **({"split_preview": split_preview} if split_preview is not None else {}),
@@ -155,8 +153,6 @@ class SendingMixin:
             reply_to_message_id=reply_to_message_id,
             mention_user_ids=mention_user_ids,
         )
-    def _resolve_image_entries(self, image_numbers: list[int]) -> list[Any]:
-        return self._sender._resolve_image_entries(image_numbers)
     @staticmethod
     def _api_succeeded(result: Any) -> bool:
         if result is None:
