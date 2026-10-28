@@ -582,6 +582,11 @@ NO_UNPROMPTED_IMAGE_COMMENT = (
     "你不应该在没有被要求的情况下描述别人发的图片/评价别人发的表情包,"
     "正常的聊天中不应该对表情包进行回复."
 )
+#: 基础 <回复要求> 里新增的「不复述评论/不硬找话题」原则
+NO_ECHO_OR_FORCED_TOPIC_COMMENT = (
+    "你绝对不应该复述别人说过的话然后再加以评论,也不应该主动对别人的行为做出评价,"
+    "如果当前没有话题,不应该硬找话题,应该直接cancel结束对话."
+)
 
 
 def _default_store(tmp: Path) -> PromptStore:
@@ -646,7 +651,7 @@ def test_new_prompt_sections_match_finalized_text(tmp_path):
 
 
 def test_reply_requirements_get_timely_reply_principle(tmp_path):
-    """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话」与「不主动接表情包」。"""
+    """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话 / 不接表情包 / 不硬找话题」。"""
     store = _default_store(tmp_path)
 
     for section in ("group_chat", "friend_chat"):
@@ -655,6 +660,7 @@ def test_reply_requirements_get_timely_reply_principle(tmp_path):
         assert "任务收尾后" in template
         assert "这类开工与进度的回复不算多余回复" in template
         assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
+        assert template.count(NO_ECHO_OR_FORCED_TOPIC_COMMENT) == 1
 
 
 def test_build_short_time_message_renders_timestamp_only():
