@@ -37,6 +37,11 @@ class ModelSettings:
     image_api: str = "auto"
     #: generations 模式下参考图的 JSON 字段名
     image_reference_param: str = "image"
+    #: 顶层推理强度：配置层已解析好的最终值（None = 不单独下发）
+    reasoning_effort: str | None = None
+    #: 推理强度的下发格式：openai（reasoning_effort）或 claude（output_config.effort）。
+    #: 由配置层解析好，provider 不再根据供应商名猜。
+    reasoning_effort_format: str = "openai"
 
 
 def _normalize_provider_kind(provider_name: str) -> str:
@@ -116,6 +121,8 @@ class RegisteredModel:
                 top_p=self.settings.top_p,
                 extra_body=self.settings.extra_body,
                 use_system_proxy=self.use_system_proxy,
+                reasoning_effort=self.settings.reasoning_effort,
+                reasoning_effort_format=self.settings.reasoning_effort_format,
             )
 
         if self.provider_kind == "deepseek":
@@ -132,6 +139,8 @@ class RegisteredModel:
                 presence_penalty=self.settings.presence_penalty,
                 extra_body=self.settings.extra_body,
                 use_system_proxy=self.use_system_proxy,
+                reasoning_effort=self.settings.reasoning_effort,
+                reasoning_effort_format=self.settings.reasoning_effort_format,
             )
 
         return OpenAIProvider(
@@ -147,6 +156,8 @@ class RegisteredModel:
             presence_penalty=self.settings.presence_penalty,
             extra_body=self.settings.extra_body,
             use_system_proxy=self.use_system_proxy,
+            reasoning_effort=self.settings.reasoning_effort,
+            reasoning_effort_format=self.settings.reasoning_effort_format,
         )
 
 

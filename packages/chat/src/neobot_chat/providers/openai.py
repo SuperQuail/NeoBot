@@ -6,6 +6,7 @@ from typing import Any
 
 from neobot_chat.providers.base import (
     BaseHTTPProvider,
+    apply_reasoning_effort,
     normalized_tool_calls,
     set_finish_reason,
 )
@@ -30,6 +31,8 @@ class OpenAIProvider(BaseHTTPProvider):
         extra_body: dict[str, Any] | None = None,
         native_vision: bool = False,
         use_system_proxy: bool = False,
+        reasoning_effort: str | None = None,
+        reasoning_effort_format: str = "openai",
     ):
         super().__init__(
             api_key,
@@ -45,6 +48,8 @@ class OpenAIProvider(BaseHTTPProvider):
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.extra_body = extra_body or {}
+        self.reasoning_effort = reasoning_effort
+        self.reasoning_effort_format = reasoning_effort_format
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -107,6 +112,8 @@ class OpenAIProvider(BaseHTTPProvider):
             presence_penalty=self.presence_penalty,
             extra_body=self.extra_body,
         )
+        # 顶层显式推理强度优先于 extra_body 里的同名 / 同义键
+        apply_reasoning_effort(payload, self.reasoning_effort, output_format=self.reasoning_effort_format)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

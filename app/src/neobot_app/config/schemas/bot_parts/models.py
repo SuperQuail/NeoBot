@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from neobot_app.config.reasoning_effort import EFFORT_OPTIONS, OPTION_GROUPS, OPTION_LABELS
+
 from .core import normalize_model_key
 
 
@@ -115,7 +117,9 @@ class DeepSeekModelSettings(ModelSettings):
     deepseek_reasoning_effort: str = field(
         default="high",
         metadata={
-            "description": "思考强度控制（OpenAI 样式）：low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max",
+            "description": "思考强度控制（旧版入口，OpenAI 样式）：仅当模型条目的顶层 reasoning_effort "
+            "留空时生效；low/medium 映射为 high，xhigh 映射为 max，可选 high（默认）或 max。"
+            "新配置请用模型条目的顶层 reasoning_effort 字段",
             "options": ["high", "max"],
             "options_strict": True,
             "hidden": True,
@@ -194,6 +198,20 @@ class ModelDefinition:
         metadata={
             "description": "模型名：**真正发给供应商的模型标识**（请求体 model 字段）。"
             "必须是供应商侧存在的名字，写错会在调用时报错"
+        },
+    )
+    reasoning_effort: str = field(
+        default="",
+        metadata={
+            "description": "推理强度（本模型顶层开关）：留空 = 不单独下发，沿用供应商默认"
+            "（DeepSeek 模型仍按旧 settings 思考参数）。OpenAI 系下发请求体 reasoning_effort，"
+            "Claude 系下发 output_config.effort（选带 claude: 前缀的档位）。"
+            "Anthropic 供应商自动按 Claude 系且没有 none / minimal；DeepSeek 官方只认 high / max。"
+            "仅对话 / 视觉 / 其它模型生效",
+            "options": list(EFFORT_OPTIONS),
+            "options_strict": True,
+            "option_labels": dict(OPTION_LABELS),
+            "option_groups": [dict(group) for group in OPTION_GROUPS],
         },
     )
     pricing: ModelPricing = field(default_factory=ModelPricing)

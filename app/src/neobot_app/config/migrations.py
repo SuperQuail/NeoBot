@@ -366,3 +366,107 @@ def migrate_v7_to_v8(old: dict) -> dict:
     new_models["assignments"] = assignments
     new["models"] = new_models
     return new
+
+
+#: 旧 settings.deepseek_reasoning_effort -> 顶层 reasoning_effort。沿用 DeepSeek provider
+#: 的历史归并规则（low/medium->high，xhigh->max）；none/minimal 在旧字段里本来就无效，
+#: 迁移时跳过，避免把一个「关闭推理」的语义搬成 high。
+_LEGACY_EFFORT_TO_TOP_LEVEL: dict[str, str] = {
+    "low": "high",
+    "medium": "high",
+    "high": "high",
+    "xhigh": "max",
+    "max": "max",
+}
+
+#: 旧思考开关里「明确关闭」的写法（历史配置可能是 bool，也可能是 enabled/disabled、true/false）
+_THINKING_DISABLED_VALUES = frozenset({"disabled", "disable", "false", "off", "no", "0"})
+
+
+def _thinking_is_disabled(settings: dict[str, Any]) -> bool:
+    value = settings.get("deepseek_thinking_mode")
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, int):  # 手写 TOML 可能用 0/1 表示开关
+        return value == 0
+    return str(value or "").strip().casefold() in _THINKING_DISABLED_VALUES
+
+
+def _is_image_or_tts(entry: dict[str, Any]) -> bool:
+    from neobot_app.config.schemas.bot import normalize_model_type
+
+    return normalize_model_type(entry.get("model_type", "chat")) in {"image", "tts"}
+
+
+#: DeepSeek 官方 provider 的历史写法（与 neobot_chat._normalize_provider_kind 同判据）
+_DEEPSEEK_PROVIDER_NAMES = frozenset({"deepseek", "deepseek_offical", "deepseek_official"})
+
+
+def _is_deepseek_provider(entry: dict[str, Any]) -> bool:
+    """旧 settings.deepseek_reasoning_effort 只有 DeepSeek provider 会真正使用。
+
+    旧版程序给**每个**模型都写了这个字段（dataclass 默认值），所以迁移不能只看字段
+    存在与否——否则 OpenAI / Anthropic / 硅基流动条目会凭空多出一个会改变请求体的
+    顶层推理强度。
+    """
+    value = str(entry.get("provider") or "").strip().casefold().replace("-", "_")
+    return value in _DEEPSEEK_PROVIDER_NAMES
+
+
+@Config.migration(from_version="0.8.0", to_version="0.9.0")
+def migrate_v8_to_v9(old: dict) -> dict:
+    """迁移 0.8.0 -> 0.9.0：旧 DeepSeek 思考强度搬到模型库顶层 reasoning_effort。
+
+    顶层字段是面板里可见、可编辑的主入口；旧 settings.deepseek_reasoning_effort 原样保留
+    （provider 仍兼容），只是不再作为首选入口 —— 升级不会让用户丢掉已有设置。
+
+    「思考已关」和「生图 / TTS 模型」不搬：这些条目上顶层值不会生效，搬过去只会让面板
+    显示一个假的推理强度或在启动时刷无意义告警。
+    """
+    new: dict[str, Any] = {"version": "0.9.0"}
+    for key, value in old.items():
+        if key in ("version", "models"):
+            continue
+        new[key] = value
+
+    models = old.get("models")
+    if models is None:
+        return new
+    if not isinstance(models, dict):
+        # 形态不可识别：原样保留，迁移只负责能看懂的部分
+        new["models"] = models
+        return new
+
+    registry = models.get("registry")
+    if not isinstance(registry, list):
+        new["models"] = models
+        return new
+
+    migrated: list[Any] = []
+    for entry in registry:
+        if not isinstance(entry, dict):
+            migrated.append(entry)
+            continue
+        item = dict(entry)
+        settings = item.get("settings")
+        # 只有 DeepSeek 条目会真正使用旧思考强度；思考已关（出厂 deepseek-flash-off
+        # 就是这种）搬过去只会显示一个不生效的「推理 high」；生图 / TTS 模型搬过去只会
+        # 在加载时刷无意义告警。都跳过，旧键不动。
+        if (
+            not str(item.get("reasoning_effort") or "").strip()
+            and _is_deepseek_provider(item)
+            and not _is_image_or_tts(item)
+            and isinstance(settings, dict)
+            and not _thinking_is_disabled(settings)
+        ):
+            legacy = str(settings.get("deepseek_reasoning_effort") or "").strip().casefold()
+            effort = _LEGACY_EFFORT_TO_TOP_LEVEL.get(legacy)
+            if effort is not None:
+                item["reasoning_effort"] = effort
+        migrated.append(item)
+
+    # registry 之外的 models 字段（assignments / 其它自定义段）一律原样保留
+    new_models = {name: value for name, value in models.items() if name != "registry"}
+    new_models["registry"] = migrated
+    new["models"] = new_models
+    return new

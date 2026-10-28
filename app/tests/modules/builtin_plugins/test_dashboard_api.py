@@ -929,6 +929,80 @@ async def test_models_view_exposes_options_and_proxy_flag(panel) -> None:
     assert settings["deepseek_reasoning_effort"]["options"] == ["high", "max"]
 
 
+async def test_models_view_exposes_reasoning_effort(panel) -> None:
+    """推理强度是模型条目顶层字段：schema 带分组/显示名，列表行带原始值与展示文案。"""
+    _, _, base, _ = panel
+    token, csrf = await _login(base)
+    headers = {"X-Token": token, "X-CSRF-Token": csrf}
+    async with httpx.AsyncClient() as client:
+        listed = await client.get(base + "/api/config/models", headers={"X-Token": token})
+        payload = listed.json()
+        saved = await client.post(
+            base + "/api/config/models/library",
+            headers=headers,
+            json={
+                "action": "upsert",
+                "entry": {
+                    "model_ref": "claude-probe",
+                    "display_name": "Claude 推理强度探针",
+                    "provider": "Anthropic",
+                    "model_name": "claude-sonnet-4",
+                    "model_type": "chat",
+                    "reasoning_effort": "claude:max",
+                },
+                "revision": payload["revision"],
+            },
+        )
+
+    entry_schema = {field["name"]: field for field in payload["entry_schema"]}
+    effort = entry_schema["reasoning_effort"]
+    assert effort["options"] == [
+        "",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "claude:low",
+        "claude:medium",
+        "claude:high",
+        "claude:xhigh",
+        "claude:max",
+    ]
+    assert effort["options_strict"] is True
+    # 每个可选值都要有中文显示名；Claude 系档位必须能被一眼认出来（用户需求）。
+    assert set(effort["option_labels"]) == set(effort["options"])
+    assert all(label.strip() for label in effort["option_labels"].values())
+    assert all(
+        "Claude 系" in effort["option_labels"][value]
+        for value in effort["options"]
+        if value.startswith("claude:")
+    )
+    assert effort["option_groups"] == [
+        {
+            "label": "OpenAI 系（reasoning_effort）",
+            "options": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        },
+        {
+            "label": "Claude 系（output_config.effort）",
+            "options": ["claude:low", "claude:medium", "claude:high", "claude:xhigh", "claude:max"],
+        },
+    ]
+
+    library = {item["model_ref"]: item for item in payload["library"]}
+    assert library["deepseek-flash-high"]["reasoning_effort"] == "high"
+    assert library["deepseek-flash-high"]["reasoning_effort_label"] == "high"
+    assert library["deepseek-flash-off"]["reasoning_effort"] == ""
+    assert library["deepseek-flash-off"]["reasoning_effort_label"] == ""
+
+    assert saved.status_code == 200, saved.text
+    saved_library = {item["model_ref"]: item for item in saved.json()["models"]["library"]}
+    assert saved_library["claude-probe"]["reasoning_effort"] == "claude:max"
+    assert saved_library["claude-probe"]["reasoning_effort_label"] == "Claude 系 · max"
+
+
 async def test_models_test_endpoint_reports_missing_credentials(panel) -> None:
     _, _, base, _ = panel
     token, csrf = await _login(base)

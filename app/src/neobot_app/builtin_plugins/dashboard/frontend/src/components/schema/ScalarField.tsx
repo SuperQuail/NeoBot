@@ -129,6 +129,22 @@ function ScalarField({
     );
   }
   if (options && options.length && descriptor.options_strict) {
+    const labelOf = (option: string) => descriptor.option_labels?.[option] ?? option;
+    // 旧/脏 API 数据可能把 option_groups 写成非数组：退回扁平下拉而不是整页崩掉。
+    const groups = Array.isArray(descriptor.option_groups) ? descriptor.option_groups : [];
+    // 分组只改变显示顺序：不属于任何分组的值（如「不设置」）排在分组前，
+    // 其余按后端给定分组渲染，用户才能一眼分清 OpenAI 档位与 Claude 档位。
+    const grouped = new Set(groups.flatMap((group) => group.options));
+    // 手写 TOML 可能留 " HIGH " 这类写法：按大小写/空白宽容匹配，避免下拉显示成「不设置」。
+    const rawValue = value === undefined || value === null ? '' : String(value);
+    const normalizedValue = rawValue.trim().toLowerCase();
+    const selected =
+      options.find((option) => option.trim().toLowerCase() === normalizedValue) ?? rawValue;
+    const renderOption = (option: string) => (
+      <option key={option} value={option}>
+        {labelOf(option)}
+      </option>
+    );
     return (
       <div className="cfg-row">
         {header}
@@ -137,15 +153,16 @@ function ScalarField({
             id={id}
             className="input"
             disabled={locked}
-            value={value ?? ''}
+            value={selected}
             onChange={(event) => {
               if (!locked) onChange(event.target.value);
             }}
           >
-            {options.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
+            {options.filter((option) => !grouped.has(option)).map(renderOption)}
+            {groups.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.options.map(renderOption)}
+              </optgroup>
             ))}
           </select>
           <FieldActions

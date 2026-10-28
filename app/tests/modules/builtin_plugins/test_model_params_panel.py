@@ -225,3 +225,125 @@ def test_model_library_upsert_folds_params_pseudo_field(tmp_path, monkeypatch) -
     raw = config_path.read_text(encoding="utf-8")
     assert "[models.registry.settings.params]" not in raw
     assert not any(line.strip().startswith("params") for line in raw.splitlines())
+
+def test_reasoning_effort_top_level_field_visible_on_both_panel_paths(tmp_path, monkeypatch) -> None:
+    """顶层推理强度字段：模型库弹窗与本体配置页两条渲染路径都带分组下拉元数据。"""
+    manager, _ = _make_manager(tmp_path, monkeypatch)
+
+    payload = models_view(manager.instance())
+    entry_field = next(item for item in payload["entry_schema"] if item["name"] == "reasoning_effort")
+    assert entry_field["default"] == ""
+    assert entry_field["options"][0] == ""
+    assert entry_field["options_strict"] is True
+    assert entry_field["option_labels"]["claude:max"] == "Claude 系 · max（最高）"
+    assert [group["label"] for group in entry_field["option_groups"]] == [
+        "OpenAI 系（reasoning_effort）",
+        "Claude 系（output_config.effort）",
+    ]
+
+    document = manager.read()
+    models_group = next(item for item in document["schema"] if item["name"] == "models")
+    registry_group = next(item for item in models_group["fields"] if item["name"] == "registry")
+    page_field = next(
+        item for item in registry_group["items"][0]["fields"] if item["name"] == "reasoning_effort"
+    )
+    assert page_field["options"] == entry_field["options"]
+    assert page_field["option_labels"] == entry_field["option_labels"]
+    assert page_field["option_groups"] == entry_field["option_groups"]
+
+
+def test_config_page_save_persists_top_level_reasoning_effort(tmp_path, monkeypatch) -> None:
+    """本体配置页保存：顶层 reasoning_effort 原样落盘（与模型库弹窗同一条配置路径）。"""
+    manager, config_path = _make_manager(tmp_path, monkeypatch)
+    draft = {
+        "models": {
+            "registry": [
+                {
+                    "model_ref": "ds-a",
+                    "model_type": "chat",
+                    "display_name": "测试模型 ds-a",
+                    "provider": "DeepSeek",
+                    "model_name": "deepseek-flash",
+                    "reasoning_effort": "max",
+                    "settings": {
+                        "temperature": 0.8,
+                        "deepseek_reasoning_effort": "max",
+                        "deepseek_thinking_mode": "enabled",
+                        "enabled_params": [],
+                        "extra_body": {},
+                    },
+                }
+            ]
+        }
+    }
+    errors = manager.validate(config=draft)
+    assert errors == [], errors
+
+    manager.save(config=draft, expected_revision=manager.revision())
+
+    assert manager.instance().models.by_ref()["ds-a"].reasoning_effort == "max"
+    raw = config_path.read_text(encoding="utf-8")
+    assert 'reasoning_effort = "max"' in raw
+
+
+def test_models_view_labels_reasoning_effort_effectiveness() -> None:
+    """面板行必须标出「实际下发 / 不生效」，而不是显示一个根本没发出去的档位。"""
+    from types import SimpleNamespace
+
+    from neobot_app.config.schemas.bot import (
+        DeepSeekModelSettings,
+        ModelDefinition,
+        Models,
+    )
+
+    models = Models(
+        registry=[
+            ModelDefinition(
+                model_ref="ds-low",
+                provider="DeepSeek",
+                model_name="deepseek-flash",
+                reasoning_effort="low",
+            ),
+            ModelDefinition(
+                model_ref="ds-claude",
+                provider="DeepSeek",
+                model_name="deepseek-flash",
+                reasoning_effort="claude:max",
+            ),
+            ModelDefinition(
+                model_ref="ds-off",
+                provider="DeepSeek",
+                model_name="deepseek-flash",
+                reasoning_effort="high",
+                settings=DeepSeekModelSettings(deepseek_thinking_mode="disabled"),
+            ),
+            ModelDefinition(
+                model_ref="anth",
+                provider="Anthropic",
+                model_name="claude-sonnet-4",
+                reasoning_effort="high",
+            ),
+            ModelDefinition(
+                model_ref="img",
+                provider="OpenAI",
+                model_name="gpt-image-1",
+                model_type="image",
+                reasoning_effort="max",
+            ),
+            ModelDefinition(
+                model_ref="plain",
+                provider="OpenAI",
+                model_name="gpt-5",
+                reasoning_effort="",
+            ),
+        ]
+    )
+    payload = models_view(SimpleNamespace(models=models))
+    labels = {row["model_ref"]: row["reasoning_effort_label"] for row in payload["library"]}
+
+    assert labels["ds-low"] == "low（实际下发 high）"
+    assert labels["ds-claude"] == "Claude 系 · max（DeepSeek 不支持 Claude 系）"
+    assert labels["ds-off"] == "high（思考已关闭，不下发）"
+    assert labels["anth"] == "Claude 系 · high"
+    assert labels["img"] == "max（该模型类型不生效）"
+    assert labels["plain"] == ""

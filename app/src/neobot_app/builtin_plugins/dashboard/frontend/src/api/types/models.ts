@@ -17,6 +17,10 @@ export interface ModelItem {
   registered?: boolean;
   assigned?: boolean;
   native_vision?: boolean;
+  /** 顶层推理强度原始值（claude: 前缀表示 Claude 系档位） */
+  reasoning_effort?: string;
+  /** 推理强度展示文案（后端生成；Claude 系带「Claude 系 ·」，空串 = 未设置） */
+  reasoning_effort_label?: string;
   [key: string]: unknown;
 }
 

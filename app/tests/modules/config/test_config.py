@@ -464,12 +464,12 @@ def test_migrations_registered_and_applied_on_load(monkeypatch, tmp_path):
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.8.0"
+    assert config_obj.version == "0.9.0"
     assert not hasattr(config_obj.chat, "group_prompt_template")
     assert config_obj.bot.bot_data, "bot_data 必须保留"
     raw = cfg_path.read_text(encoding="utf-8")
     assert "group_prompt_template" not in raw
-    assert 'version = "0.8.0"' in raw
+    assert 'version = "0.9.0"' in raw
 
 
 def test_migration_v6_to_v7_renames_legacy_default_model_keys(monkeypatch, tmp_path):
@@ -521,7 +521,7 @@ def test_migration_v6_to_v7_renames_legacy_default_model_keys(monkeypatch, tmp_p
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.8.0"
+    assert config_obj.version == "0.9.0"
     refs = [item.model_ref for item in config_obj.models.registry]
     # pro 与 flash-max 是同一模型（同 model_name + 同 max 推理），合并后不留重复条目
     assert refs == ["deepseek-flash-max", "deepseek-flash-high", "deepseek-flash-off"]
@@ -581,7 +581,7 @@ def test_migration_v4_to_v5_moves_console_and_image_models(monkeypatch, tmp_path
     config_obj = Config.load(cfg_path, BotConfig)
 
     # Assert
-    assert config_obj.version == "0.8.0"
+    assert config_obj.version == "0.9.0"
     # 面板配置已移出本体配置（见 plugin_config_migration），旧分区直接丢弃
     assert not hasattr(config_obj, "console")
     assert not hasattr(config_obj, "dashboard")

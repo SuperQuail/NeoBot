@@ -10,6 +10,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 - `description`：用途说明（生图模型还会作为 Agent 选择依据）
 - `provider`：供应商（DeepSeek / OpenAI / Anthropic / 硅基流动 SiliconFlow …）
 - `model_name`：模型名
+- `reasoning_effort`：**顶层推理强度**（可选，默认空 = 不单独下发）。OpenAI 系取值 `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max` 下发请求体 `reasoning_effort`；Claude 系取值 `claude:low` … `claude:max` 下发 `output_config.effort`；Anthropic 供应商普通值自动按 Claude 系。它不属于 `settings.enabled_params` 体系，填写后按 provider 归一：Anthropic 用 Claude 系、其余用 OpenAI 系；DeepSeek 官方只保留 high/max（其它档位归并并告警）、不接受 Claude 系；生图 / TTS 模型不生效。顶层值优先于旧的 `settings.deepseek_reasoning_effort`（旧键保留兼容）。详见[配置参考](../05-配置参考.md#顶层推理强度reasoning_effort)
 - `pricing`：计费（每百万 Token 输入/输出/缓存命中价格，`billing_metric` 用于非 Token 计费平台）
 - `settings`：采样参数（temperature、top_p、max_output_tokens、timeout 等）；DeepSeek 模型额外支持思考模式（`deepseek_thinking_mode`：enabled/disabled/random，`deepseek_reasoning_effort`：high/max，`deepseek_random_thinking_probability`）
 - `native_vision`、`balance_query_hint`：原生视觉开关与该模型的余额查询方式。`model_type = "vision"` 的图像识别模型**无需配置** `native_vision`，一律按原生视觉处理（原生视觉回退路由本就按「图片原样发送」处理）

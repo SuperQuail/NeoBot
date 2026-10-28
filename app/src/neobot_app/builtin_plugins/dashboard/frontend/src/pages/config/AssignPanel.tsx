@@ -143,6 +143,13 @@ function ModelInformation({ model }: { model: ModelItem }) {
             <code>{model.model_name || model.model_ref || '—'}</code>
           </dd>
         </div>
+        {/* 分配模型时就能看到档位，省得回头去模型库核对后再决定用途 */}
+        {model.reasoning_effort_label && (
+          <div>
+            <dt>推理强度</dt>
+            <dd>{model.reasoning_effort_label}</dd>
+          </div>
+        )}
       </dl>
       <div className="assignment-capabilities">
         {(model.type_label || model.model_type) && <span>{model.type_label || model.model_type}</span>}

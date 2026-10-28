@@ -1,1 +1,0 @@
-import{j as s,k as r,I as l}from"./index-BtHIhHZ8.js";function p({icon:e,title:n,compact:m=!1,className:t,children:a}){return m?s.jsx("div",{className:r("empty muted",t),children:a}):s.jsxs("div",{className:r("workspace-empty",t),children:[e?s.jsx(l,{name:e}):null,n!=null?s.jsx("h3",{children:n}):null,a]})}export{p as E};

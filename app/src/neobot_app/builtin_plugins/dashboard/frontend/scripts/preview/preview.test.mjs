@@ -176,6 +176,33 @@ test('all scenarios preserve workspace shapes and do not reset memory on switchi
   }
 });
 
+test('model entry schema exposes the top-level reasoning effort with grouped labels', async (t) => {
+  const request = await fixture(t);
+  const models = (await request('/api/config/models')).data;
+  const effort = models.entry_schema.find((item) => item.name === 'reasoning_effort');
+  // 推理强度是模型条目的顶层字段，不再藏在 settings 参数目录里
+  assert.equal(effort.kind, 'scalar');
+  assert.equal(effort.options_strict, true);
+  assert.equal(effort.options.includes(''), true);
+  assert.equal(effort.options.includes('claude:max'), true);
+  assert.deepEqual(
+    effort.option_groups.map((item) => item.label),
+    ['OpenAI 系（reasoning_effort）', 'Claude 系（output_config.effort）'],
+  );
+  assert.equal(effort.option_labels['claude:max'], 'Claude 系 · max（最高）');
+  const settings = models.entry_schema.find((item) => item.name === 'settings');
+  const params = settings.fields.find((item) => item.name === 'params');
+  assert.equal(
+    params.catalog.some((item) => item.name === 'reasoning_effort'),
+    false,
+  );
+  // 列表行带展示文案：Claude 系标注出来，未设置的模型为空
+  const rows = Object.fromEntries(models.library.map((item) => [item.model_ref, item]));
+  assert.equal(rows.deep_reason.reasoning_effort, 'claude:max');
+  assert.equal(rows.deep_reason.reasoning_effort_label, 'Claude 系 · max');
+  assert.equal(rows.vision.reasoning_effort_label, '');
+});
+
 test('config revisions, form/source values and cross-workspace reads share the same memory', async (t) => {
   const request = await fixture(t);
   const doc = (await request('/api/config')).data;

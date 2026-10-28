@@ -63,6 +63,10 @@ export interface FieldDescriptor {
   description?: string;
   options?: string[];
   options_strict?: boolean;
+  /** strict 下拉的中文选项名（值 → 文案）；缺省时直接显示原始值 */
+  option_labels?: Record<string, string>;
+  /** strict 下拉的选项分组；未列入任何分组的值（如「不设置」）排在分组之前 */
+  option_groups?: Array<{ label: string; options: string[] }>;
   readonly?: boolean;
   multi?: boolean;
   min?: number;

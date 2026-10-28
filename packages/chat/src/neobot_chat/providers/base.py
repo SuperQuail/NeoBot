@@ -128,6 +128,41 @@ def normalized_tool_calls(tool_calls: list[ToolCall]) -> list[ToolCall]:
     return copied if copied is not None else tool_calls
 
 
+def apply_reasoning_effort(
+    payload: dict[str, Any],
+    effort: str | None,
+    *,
+    output_format: str = "openai",
+) -> None:
+    """把顶层推理强度叠进请求体；调用点在 _apply_payload_options 之后，故优先于 extra_body。
+
+    格式只有两系：claude / anthropic 写 output_config.effort（Anthropic Messages API 只认这个
+    位置），其余写 reasoning_effort。写 output_config 时必须合并已有键，不能整体覆盖——
+    那里的 format 等键属于调用方的别的配置。
+
+    显式值必须完全胜出：extra_body 可能带着另一种格式的同义键（例如 Anthropic 的
+    reasoning_effort），不清理就会同时下发两套强度，严格端点会直接 400。
+    """
+    if not effort:
+        return
+    if str(output_format or "").strip().casefold() in {"claude", "anthropic"}:
+        payload.pop("reasoning_effort", None)
+        existing = payload.get("output_config")
+        merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        merged["effort"] = effort
+        payload["output_config"] = merged
+        return
+    payload["reasoning_effort"] = effort
+    # 反向同理：显式选了 OpenAI 系，就不该再保留 extra_body 里的 output_config.effort
+    existing = payload.get("output_config")
+    if isinstance(existing, dict) and "effort" in existing:
+        remaining = {name: value for name, value in existing.items() if name != "effort"}
+        if remaining:
+            payload["output_config"] = remaining
+        else:
+            payload.pop("output_config", None)
+
+
 class Provider(Protocol):
     """LLM Provider 接口：统一的 chat / stream / close 方法"""
 

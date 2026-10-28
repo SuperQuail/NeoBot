@@ -44,6 +44,24 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
             item["options"] = [str(value) for value in options]
             if field_obj.metadata.get("options_strict"):
                 item["options_strict"] = True
+        option_labels = field_obj.metadata.get("option_labels")
+        if isinstance(option_labels, dict) and option_labels:
+            item["option_labels"] = {str(key): str(label) for key, label in option_labels.items()}
+        # 分组下拉（推理强度按供应商分 OpenAI / Claude 两系）：形态不合法整组丢弃，
+        # 免得前端拿到半截分组渲染出错。
+        option_groups = field_obj.metadata.get("option_groups")
+        if isinstance(option_groups, (list, tuple)):
+            groups: list[dict[str, Any]] = []
+            for group in option_groups:
+                if not isinstance(group, dict):
+                    continue
+                label = group.get("label")
+                group_options = group.get("options")
+                if not isinstance(label, str) or not isinstance(group_options, list):
+                    continue
+                groups.append({"label": label, "options": [str(value) for value in group_options]})
+            if groups:
+                item["option_groups"] = groups
         if is_dataclass(target):
             actual_schema = target
             if is_dataclass(value) and isinstance(value, target):

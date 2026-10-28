@@ -198,6 +198,35 @@ export const changes = {
   needs_restart: [],
   needs_restart_count: 0,
 };
+// 推理强度：取值、中文名与分组和后端 neobot_app/config/reasoning_effort.py 保持一致。
+// 演示夹具不能 import Python，改动那边时同步这里。
+const REASONING_OPENAI = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const REASONING_CLAUDE = ['claude:low', 'claude:medium', 'claude:high', 'claude:xhigh', 'claude:max'];
+const REASONING_LABELS = {
+  '': '不设置（沿用供应商默认）',
+  none: 'none（关闭推理）',
+  minimal: 'minimal（极低）',
+  low: 'low（低）',
+  medium: 'medium（中）',
+  high: 'high（高）',
+  xhigh: 'xhigh（极高）',
+  max: 'max（最高）',
+  'claude:low': 'Claude 系 · low（低）',
+  'claude:medium': 'Claude 系 · medium（中）',
+  'claude:high': 'Claude 系 · high（高）',
+  'claude:xhigh': 'Claude 系 · xhigh（极高）',
+  'claude:max': 'Claude 系 · max（最高）',
+};
+
+/** 模型库行展示名（同后端 describe_reasoning_effort）：空值 → ""，Claude 系带前缀。 */
+export function reasoningEffortLabel(value) {
+  const text = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!text) return '';
+  return text.startsWith('claude:') ? 'Claude 系 · ' + text.slice('claude:'.length) : text;
+}
+
 export const modelEntrySchema = [
   field('model_ref', ['model_ref'], 'str', '本机引用名', ''),
   field('display_name', ['display_name'], 'str', '显示名称', ''),
@@ -210,6 +239,22 @@ export const modelEntrySchema = [
     options: ['chat', 'vision', 'image', 'tts'],
     options_strict: true,
   }),
+  field(
+    'reasoning_effort',
+    ['reasoning_effort'],
+    'str',
+    '推理强度（本模型顶层开关）：留空沿用供应商默认；OpenAI 系下发 reasoning_effort，Claude 系下发 output_config.effort',
+    '',
+    {
+      options: ['', ...REASONING_OPENAI, ...REASONING_CLAUDE],
+      options_strict: true,
+      option_labels: REASONING_LABELS,
+      option_groups: [
+        { label: 'OpenAI 系（reasoning_effort）', options: REASONING_OPENAI },
+        { label: 'Claude 系（output_config.effort）', options: REASONING_CLAUDE },
+      ],
+    },
+  ),
   field('use_system_proxy', ['use_system_proxy'], 'bool', '使用系统代理', false),
   {
     name: 'settings',
@@ -231,14 +276,6 @@ export const modelEntrySchema = [
           { name: 'frequency_penalty', group: 'sampling', label: '重复惩罚', type: 'float', default: 0 },
           { name: 'presence_penalty', group: 'sampling', label: '话题重复惩罚', type: 'float', default: 0 },
           { name: 'seed', group: 'sampling', label: '随机种子', type: 'int', default: 42 },
-          {
-            name: 'reasoning_effort',
-            group: 'reasoning',
-            label: '推理强度',
-            type: 'str',
-            default: 'medium',
-            options: ['low', 'medium', 'high'],
-          },
         ],
         hot_reload: true,
       },

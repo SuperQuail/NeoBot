@@ -166,3 +166,36 @@ describe('模型编辑表单样式（issue #75）', () => {
     expect(within(dialog).getByPlaceholderText('搜索模型字段（支持路径与说明）…')).toHaveClass('cfg-search');
   });
 });
+
+describe('模型库列表的推理强度', () => {
+  it('设置后在该行「运行与计费」列显示后端给的展示文案', async () => {
+    vi.mocked(api.configModels).mockResolvedValue({
+      ok: true,
+      data: {
+        ...VIEW,
+        library: [{ ...ITEM, reasoning_effort: 'claude:max', reasoning_effort_label: 'Claude 系 · max' }],
+      } as ModelsPayload,
+      error: null,
+      status: 200,
+    });
+    render(<ModelsPanel />);
+
+    expect(await screen.findByText('推理：Claude 系 · max')).toBeInTheDocument();
+  });
+
+  it('未设置时不占位', async () => {
+    vi.mocked(api.configModels).mockResolvedValue({
+      ok: true,
+      data: {
+        ...VIEW,
+        library: [{ ...ITEM, reasoning_effort: '', reasoning_effort_label: '' }],
+      } as ModelsPayload,
+      error: null,
+      status: 200,
+    });
+    render(<ModelsPanel />);
+
+    expect(await screen.findByText('1 个模型')).toBeInTheDocument();
+    expect(screen.queryByText(/^推理：/)).toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import {
   parseDemoToml,
   describeFields,
   foldDemoModelParams,
+  reasoningEffortLabel,
   changes,
 } from './config-schema.mjs';
 import { json } from './http.mjs';
@@ -116,6 +117,7 @@ export function createConfigurationPreview(scene) {
       provider: 'DeepSeek',
       model_name: 'demo-chat',
       model_type: 'chat',
+      reasoning_effort: 'high',
       settings: { temperature: 0.7, max_tokens: 4096, enabled_params: ['top_p'], top_p: 0.9, extra_body: {} },
     },
     {
@@ -124,11 +126,12 @@ export function createConfigurationPreview(scene) {
       provider: '演示云',
       model_name: 'demo-reasoner',
       model_type: 'chat',
+      reasoning_effort: 'claude:max',
       settings: {
         temperature: 0.3,
         max_tokens: 8192,
-        enabled_params: ['reasoning_effort'],
-        reasoning_effort: 'high',
+        enabled_params: ['top_p'],
+        top_p: 0.95,
         extra_body: { demo_mode: true },
       },
       billing_script: 'demo_pricing',
@@ -168,6 +171,7 @@ export function createConfigurationPreview(scene) {
             ...entry,
             display_name: label(entry.display_name),
             entry: clone(entry),
+            reasoning_effort_label: reasoningEffortLabel(entry.reasoning_effort),
             api_key_configured: true,
             url_configured: true,
             registered: true,

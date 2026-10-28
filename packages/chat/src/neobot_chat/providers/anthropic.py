@@ -6,6 +6,7 @@ from typing import Any
 
 from neobot_chat.providers.base import (
     BaseHTTPProvider,
+    apply_reasoning_effort,
     normalize_anthropic_stop_reason,
     set_finish_reason,
     tool_arguments_object,
@@ -31,6 +32,8 @@ class AnthropicProvider(BaseHTTPProvider):
         extra_body: dict[str, Any] | None = None,
         native_vision: bool = False,
         use_system_proxy: bool = False,
+        reasoning_effort: str | None = None,
+        reasoning_effort_format: str = "openai",
     ):
         super().__init__(
             api_key,
@@ -44,6 +47,9 @@ class AnthropicProvider(BaseHTTPProvider):
         self.temperature = temperature
         self.top_p = top_p
         self.extra_body = extra_body or {}
+        self.reasoning_effort = reasoning_effort
+        # Anthropic Messages API 只接受 output_config.effort；配置层的格式名仅用于日志
+        self.reasoning_effort_format = reasoning_effort_format
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -155,6 +161,8 @@ class AnthropicProvider(BaseHTTPProvider):
             top_p=self.top_p,
             extra_body=self.extra_body,
         )
+        # 顶层显式推理强度优先于 extra_body；Anthropic 只有 output_config.effort 这一种写法
+        apply_reasoning_effort(payload, self.reasoning_effort, output_format="claude")
         if system:
             payload["system"] = system
         if tools:
@@ -236,6 +244,8 @@ class AnthropicProvider(BaseHTTPProvider):
             top_p=self.top_p,
             extra_body=self.extra_body,
         )
+        # 与 chat() 一致：Anthropic 只认 output_config.effort
+        apply_reasoning_effort(payload, self.reasoning_effort, output_format="claude")
         if system:
             payload["system"] = system
         if tools:

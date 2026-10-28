@@ -154,6 +154,64 @@ def _build_runtime_extra_body(
     return {**user_extra_body, **internal}
 
 
+def _resolve_model_reasoning_effort(
+    model_config: Any,
+    *,
+    key: str,
+    provider_name: str,
+    model_type: str,
+) -> tuple[str | None, str]:
+    """解析模型库顶层的推理强度，返回（最终下发值, 下发格式）。
+
+    生图 / TTS 模型没有推理强度概念；非法值或 Claude 系不支持的档位一律记 warning
+    后忽略——「配了却不生效」必须能一眼看到，不能静默丢弃。
+    """
+    from neobot_app.config.reasoning_effort import (
+        DEEPSEEK_EFFORT_MAP,
+        resolve_reasoning_effort,
+    )
+    from neobot_app.config.schemas.bot import normalize_model_type
+    from neobot_chat.models import _normalize_provider_kind
+
+    raw = str(getattr(model_config, "reasoning_effort", "") or "").strip()
+    provider_kind = _normalize_provider_kind(provider_name or "")
+    effort, output_format = resolve_reasoning_effort(raw, provider_kind=provider_kind)
+
+    if normalize_model_type(model_type) in {"image", "tts"}:
+        if raw:
+            logger.warning(f"模型 {key} 的推理强度（{raw}）对 {model_type} 模型无意义，已忽略")
+        return None, "openai"
+
+    if raw and effort is None:
+        wanted = "Claude 系（output_config.effort）" if output_format == "claude" else "OpenAI 系（reasoning_effort）"
+        logger.warning(
+            f"模型 {key} 的推理强度取值 {raw} 无效"
+            f"（provider={provider_name or '?'} 走 {wanted}），已忽略；"
+            "可用值见模型库条目的 reasoning_effort 下拉"
+        )
+        return None, output_format
+
+    if provider_kind == "deepseek" and effort:
+        # DeepSeek 只有 high / max：归并过的档位、以及 thinking 关闭时的丢弃，都必须说出来，
+        # 否则「面板显示 low / max，实际下发 high / 根本不发」无从排查。
+        configured = str(raw).strip().casefold()
+        effective = DEEPSEEK_EFFORT_MAP.get(configured)
+        if effective is not None and effective != configured:
+            logger.warning(
+                f"模型 {key} 的推理强度 {configured} 在 DeepSeek 官方只支持 high / max，"
+                f"已按 {effective} 处理"
+            )
+        thinking_mode = _normalize_deepseek_thinking_mode(
+            getattr(getattr(model_config, "settings", None), "deepseek_thinking_mode", "enabled")
+        )
+        if thinking_mode == "false":
+            logger.warning(
+                f"模型 {key} 的思考模式已关闭（settings.deepseek_thinking_mode），"
+                f"推理强度 {effort} 不会下发"
+            )
+    return effort, output_format
+
+
 def _infer_missing_model_params(existing_data: dict[Any, Any]) -> list[str]:
     """R12：旧配置缺 enabled_params 时按“值 ≠ schema 默认值”推断一次并写回。
 
@@ -468,6 +526,15 @@ class Config:
             model_type_value = normalize_model_type(
                 getattr(model_config, "model_type", "chat")
             )
+            reasoning_effort, reasoning_effort_format = _resolve_model_reasoning_effort(
+                model_config,
+                key=model_ref,
+                provider_name=provider_name,
+                model_type=model_type_value,
+            )
+            if reasoning_effort:
+                # 「配了却没生效」最难排查：生效值必须在启动日志里能直接看到
+                logger.info(f"模型 {model_ref} 的推理强度: {reasoning_effort}（{reasoning_effort_format} 系）")
             # 只下发 enabled_params 里、且 scope 匹配的可选参数；其余值原地保留在配置里
             enabled_params = _resolve_enabled_params(
                 settings_config,
@@ -498,6 +565,8 @@ class Config:
                 image_reference_param=str(
                     _optional("image_reference_param", "image") or "image"
                 ),
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_format=reasoning_effort_format,
             )
             pending.append(
                 (

@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from neobot_chat.models import ModelSettings, RegisteredModel
 from neobot_chat.providers.anthropic import AnthropicProvider
 from neobot_chat.providers.deepseek_offical import DeepSeekOfficalProvider
 from neobot_chat.providers.openai import OpenAIProvider
@@ -547,3 +548,283 @@ async def test_anthropic_stream_surfaces_stop_reason_from_message_delta():
         assert final["extensions"]["finish_reason"] == "length"
     finally:
         await provider.close()
+
+
+# ── 顶层推理强度下发 ──────────────────────────────────────────
+# 配置层解析好的 reasoning_effort 必须原样进请求体：OpenAI 系写 reasoning_effort，
+# Claude 系写 output_config.effort；显式顶层值优先于 extra_body / 旧 DeepSeek 私有键。
+
+_ANTHROPIC_OK_BODY = {
+    "content": [{"type": "text", "text": "hi"}],
+    "stop_reason": "end_turn",
+}
+
+
+async def _captured_chat_payload(provider, response_json: dict) -> dict:
+    """跑一次 chat，返回 MockTransport 捕获到的请求体。"""
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=response_json)
+
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        await provider.chat([{"role": "user", "content": "hi"}])
+    finally:
+        await provider.close()
+    assert len(captured) == 1
+    return captured[0]
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_dispatches_effort_in_openai_format():
+    payload = await _captured_chat_payload(
+        OpenAIProvider(api_key="k", model="m", reasoning_effort="high"), _OK_CHAT_BODY,
+    )
+    assert payload["reasoning_effort"] == "high"
+    assert "output_config" not in payload
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_dispatches_claude_format_merging_output_config():
+    payload = await _captured_chat_payload(
+        OpenAIProvider(
+            api_key="k",
+            model="m",
+            reasoning_effort="high",
+            reasoning_effort_format="claude",
+            extra_body={"output_config": {"format": "json"}},
+        ),
+        _OK_CHAT_BODY,
+    )
+    # 只写 effort，不能整体覆盖调用方已有的 output_config 其它键
+    assert payload["output_config"] == {"format": "json", "effort": "high"}
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_top_level_effort_wins_over_extra_body():
+    payload = await _captured_chat_payload(
+        OpenAIProvider(
+            api_key="k",
+            model="m",
+            reasoning_effort="max",
+            extra_body={"reasoning_effort": "low"},
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_omits_empty_effort():
+    payload = await _captured_chat_payload(OpenAIProvider(api_key="k", model="m"), _OK_CHAT_BODY)
+    assert "reasoning_effort" not in payload
+    assert "output_config" not in payload
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_writes_output_config_effort_for_openai_format():
+    """Anthropic Messages API 只认 output_config.effort：配置格式是 openai 也照旧写这里。"""
+    payload = await _captured_chat_payload(
+        AnthropicProvider(
+            api_key="k",
+            model="claude",
+            reasoning_effort="max",
+            reasoning_effort_format="openai",
+            extra_body={"output_config": {"format": "json"}},
+        ),
+        _ANTHROPIC_OK_BODY,
+    )
+    assert payload["output_config"] == {"format": "json", "effort": "max"}
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_payload_carries_output_config_effort():
+    captured: list[dict] = []
+    body = (
+        "event: content_block_delta\n"
+        'data: {"delta": {"type": "text_delta", "text": "hi"}}\n'
+        "event: message_stop\n"
+        'data: {"type": "message_stop"}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=body.encode(), headers={"Content-Type": "text/event-stream"},
+        )
+
+    provider = AnthropicProvider(api_key="k", model="claude", reasoning_effort="high")
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com",
+    )
+    try:
+        async for _chunk in provider.stream([{"role": "user", "content": "hi"}]):
+            pass
+    finally:
+        await provider.close()
+
+    assert len(captured) == 1
+    assert captured[0]["output_config"] == {"effort": "high"}
+    assert "reasoning_effort" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_omits_empty_effort():
+    payload = await _captured_chat_payload(
+        AnthropicProvider(api_key="k", model="claude"), _ANTHROPIC_OK_BODY,
+    )
+    assert "output_config" not in payload
+
+
+@pytest.mark.asyncio
+async def test_deepseek_top_level_effort_overrides_legacy_private_key():
+    payload = await _captured_chat_payload(
+        DeepSeekOfficalProvider(
+            api_key="k",
+            model="deepseek-chat",
+            reasoning_effort="max",
+            extra_body={
+                "__deepseek_thinking_mode__": "true",
+                "__deepseek_reasoning_effort__": "high",
+            },
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_legacy_private_key_still_dispatches_without_top_level():
+    payload = await _captured_chat_payload(
+        DeepSeekOfficalProvider(
+            api_key="k",
+            model="deepseek-chat",
+            extra_body={
+                "__deepseek_thinking_mode__": "true",
+                "__deepseek_reasoning_effort__": "high",
+            },
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_thinking_disabled_never_sends_effort():
+    payload = await _captured_chat_payload(
+        DeepSeekOfficalProvider(
+            api_key="k",
+            model="deepseek-chat",
+            reasoning_effort="max",
+            extra_body={"__deepseek_thinking_mode__": "false"},
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+async def test_deepseek_ignores_claude_format_effort():
+    """DeepSeek /chat/completions 没有 output_config：即使调用方误传 claude 格式也不能照发。"""
+    payload = await _captured_chat_payload(
+        DeepSeekOfficalProvider(
+            api_key="k",
+            model="deepseek-chat",
+            reasoning_effort="high",
+            reasoning_effort_format="claude",
+            extra_body={"__deepseek_thinking_mode__": "true"},
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert "output_config" not in payload
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+async def test_anthropic_top_level_effort_drops_conflicting_extra_body_key():
+    """显式 Claude 系强度必须完全胜出：extra_body 里的 reasoning_effort 要清掉。"""
+    payload = await _captured_chat_payload(
+        AnthropicProvider(
+            api_key="k",
+            model="claude",
+            reasoning_effort="max",
+            extra_body={"reasoning_effort": "low"},
+        ),
+        _ANTHROPIC_OK_BODY,
+    )
+    assert payload["output_config"] == {"effort": "max"}
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+async def test_openai_top_level_effort_drops_conflicting_output_config_effort():
+    """反向同理：显式 OpenAI 系强度时，extra_body 里残留的 output_config.effort 不能跟着发。"""
+    payload = await _captured_chat_payload(
+        OpenAIProvider(
+            api_key="k",
+            model="m",
+            reasoning_effort="max",
+            extra_body={"output_config": {"format": "json", "effort": "low"}},
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["reasoning_effort"] == "max"
+    assert payload["output_config"] == {"format": "json"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("none", "high"),
+        ("minimal", "high"),
+        ("low", "high"),
+        ("medium", "high"),
+        ("xhigh", "max"),
+        ("high", "high"),
+        ("max", "max"),
+    ],
+)
+async def test_deepseek_normalizes_top_level_effort_to_high_or_max(configured, expected):
+    payload = await _captured_chat_payload(
+        DeepSeekOfficalProvider(
+            api_key="k",
+            model="deepseek-chat",
+            reasoning_effort=configured,
+            extra_body={"__deepseek_thinking_mode__": "true"},
+        ),
+        _OK_CHAT_BODY,
+    )
+    assert payload["reasoning_effort"] == expected
+
+
+def test_registered_model_forwards_reasoning_effort_to_every_provider():
+    """配置层解析好的两个字段必须一路透传到三家 provider。"""
+    settings = ModelSettings(reasoning_effort="xhigh", reasoning_effort_format="claude")
+    cases = (
+        ("OpenAI", OpenAIProvider),
+        ("Anthropic", AnthropicProvider),
+        ("DeepSeek", DeepSeekOfficalProvider),
+    )
+    for provider_name, expected_cls in cases:
+        model = RegisteredModel(
+            model_ref="m",
+            display_name="m",
+            provider_name=provider_name,
+            model_name="test-model",
+            base_url="https://example.com",
+            api_key="k",
+            settings=settings,
+        )
+        provider = model._build_provider()
+        assert isinstance(provider, expected_cls), provider_name
+        assert provider.reasoning_effort == "xhigh", provider_name
+        assert provider.reasoning_effort_format == "claude", provider_name

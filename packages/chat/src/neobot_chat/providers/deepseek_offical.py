@@ -9,6 +9,7 @@ import httpx
 
 from neobot_chat.providers.base import (
     BaseHTTPProvider,
+    apply_reasoning_effort,
     normalized_tool_calls,
     set_finish_reason,
 )
@@ -38,6 +39,8 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         extra_body: dict[str, Any] | None = None,
         native_vision: bool = False,
         use_system_proxy: bool = False,
+        reasoning_effort: str | None = None,
+        reasoning_effort_format: str = "openai",
     ):
         super().__init__(
             api_key,
@@ -53,6 +56,9 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.extra_body = extra_body or {}
+        self.reasoning_effort = reasoning_effort
+        self.reasoning_effort_format = reasoning_effort_format
+        self._claude_format_warned = False
 
     def _build_headers(self) -> dict[str, str]:
         return {
@@ -118,6 +124,10 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             self._resolve_extra_body()
         )
 
+        # 顶层显式值优先于 settings 注入的私有键：推理强度是用户直接选的，不是兼容层默认值
+        if self.reasoning_effort:
+            reasoning_effort = self._normalize_reasoning_effort(self.reasoning_effort.strip().casefold())
+
         enabled = thinking_mode == "true"
         if thinking_mode == "random":
             enabled = random.random() < thinking_probability
@@ -139,10 +149,14 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
 
     @staticmethod
     def _normalize_reasoning_effort(value: str | None) -> str | None:
-        """标准化思考强度值，兼容 low/medium→high, xhigh→max 映射。"""
+        """标准化思考强度值：DeepSeek 只认 high / max，其余档位按档位就近归并。
+
+        none / minimal / low / medium 归为 high（关闭思考请用 thinking_mode），
+        xhigh 归为 max，high / max 原样。
+        """
         if value is None:
             return None
-        if value in {"low", "medium"}:
+        if value in {"none", "minimal", "low", "medium"}:
             return "high"
         if value == "xhigh":
             return "max"
@@ -261,12 +275,6 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
         thinking_payload, reasoning_effort, extra_body = self._build_thinking_payload()
         payload["thinking"] = thinking_payload
 
-        if reasoning_effort is not None:
-            fmt = self._detect_thinking_format()
-            if fmt == "anthropic":
-                payload["output_config"] = {"effort": reasoning_effort}
-            else:
-                payload["reasoning_effort"] = reasoning_effort
         self._apply_payload_options(
             payload,
             temperature=self.temperature,
@@ -276,6 +284,22 @@ class DeepSeekOfficalProvider(BaseHTTPProvider):
             presence_penalty=self.presence_penalty,
             extra_body=extra_body,
         )
+        if reasoning_effort is not None:
+            if self.reasoning_effort and str(self.reasoning_effort_format).strip().casefold() == "claude":
+                # DeepSeek /chat/completions 没有 output_config；配置层已拦截，这里兜底直接调用方。
+                if not self._claude_format_warned:
+                    self._logger.warning(
+                        "DeepSeek Chat Completions 不支持 Claude 系 output_config.effort，已忽略推理强度"
+                    )
+                    self._claude_format_warned = True
+            else:
+                # 顶层显式值自带格式；未配置时沿用子类的自动检测（旧路径行为不变）。
+                output_format = (
+                    self.reasoning_effort_format
+                    if self.reasoning_effort
+                    else self._detect_thinking_format()
+                )
+                apply_reasoning_effort(payload, reasoning_effort, output_format=output_format)
         return payload
 
     def _parse_message(self, raw_message: dict[str, Any]) -> Message:

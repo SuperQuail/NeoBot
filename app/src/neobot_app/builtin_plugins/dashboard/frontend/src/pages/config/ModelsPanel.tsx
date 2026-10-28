@@ -478,6 +478,8 @@ function ModelsPanel() {
                         >
                           {billingScriptOf(item) ? '脚本：' + billingScriptOf(item) : '固定计费'}
                         </span>
+                        {/* 推理强度是顶层开关：后端只在设置后给展示文案，留空不占位 */}
+                        {item.reasoning_effort_label && <span>{'推理：' + item.reasoning_effort_label}</span>}
                       </div>
                     </td>
                     <td>

@@ -1,1 +1,0 @@
-import{j as e}from"./index-BtHIhHZ8.js";function d({title:s,actions:a,children:r}){return e.jsxs("header",{className:"page-header",children:[e.jsxs("div",{className:"page-heading",children:[e.jsx("h1",{className:"page-title",children:s}),r]}),a&&e.jsx("div",{className:"page-actions",children:a})]})}export{d as P};

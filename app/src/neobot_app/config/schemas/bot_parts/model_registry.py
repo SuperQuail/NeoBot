@@ -16,6 +16,7 @@ def _default_primary_chat_model() -> "ModelDefinition":
         display_name="主对话模型（Agent模型编号0，deepseek-flash max 推理）",
         provider="DeepSeek",
         model_name="deepseek-flash",
+        reasoning_effort="max",
         native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
@@ -48,6 +49,7 @@ def _default_agent_model_1() -> "ModelDefinition":
         display_name="Agent模型编号1：deepseek-flash max 推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
+        reasoning_effort="max",
         native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
@@ -80,6 +82,7 @@ def _default_agent_model_2() -> "ModelDefinition":
         display_name="Agent模型编号2：deepseek-flash high 推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
+        reasoning_effort="high",
         native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,
@@ -112,6 +115,8 @@ def _default_agent_model_3() -> "ModelDefinition":
         display_name="Agent模型编号3：deepseek-flash 非推理模式",
         provider="DeepSeek",
         model_name="deepseek-flash",
+        # 非推理模式：顶层留空 = 不单独下发推理强度（思考本身已由 thinking_mode 关闭）
+        reasoning_effort="",
         native_vision=True,
         settings=DeepSeekModelSettings(
             temperature=1.0,

@@ -61,6 +61,8 @@ const PAYLOAD: ModelsPayload = {
       type_label: '对话',
       native_vision: true,
       registered: false,
+      reasoning_effort: 'claude:max',
+      reasoning_effort_label: 'Claude 系 · max',
     },
     {
       model_ref: 'vision',
@@ -128,6 +130,8 @@ describe('AssignPanel 用途分配', () => {
     expect(within(card).getByText('Demo')).toBeInTheDocument();
     expect(within(card).getByText('chat-basic')).toBeInTheDocument();
     expect(within(card).getByText('运行时已注册')).toBeInTheDocument();
+    // 未设置推理强度时不显示这一项
+    expect(within(card).queryByText('推理强度')).not.toBeInTheDocument();
     await openOptions(select);
     expect(screen.getByRole('option', { name: '请选择模型' })).toHaveAttribute('aria-disabled', 'true');
     expect(
@@ -146,6 +150,9 @@ describe('AssignPanel 用途分配', () => {
     expect(within(card).getByText('支持看图')).toBeInTheDocument();
     expect(within(card).getByText('Reason')).toBeInTheDocument();
     expect(within(card).getByText('未保存')).toBeInTheDocument();
+    // 选中的模型带推理强度时，分配卡片直接展示档位
+    expect(within(card).getByText('推理强度')).toBeInTheDocument();
+    expect(within(card).getByText('Claude 系 · max')).toBeInTheDocument();
     await chooseOption(select, '绘图模型 · image');
     expect(within(card).getByText(/当前选择仍可保存/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '保存分配' })).toBeEnabled();

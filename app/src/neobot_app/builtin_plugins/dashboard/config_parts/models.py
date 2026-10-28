@@ -7,12 +7,14 @@ from dataclasses import fields
 from typing import Any
 
 from neobot_app.config.model_params import apply_model_param_catalog, is_inferred
+from neobot_app.config.reasoning_effort import describe_reasoning_effort
 from neobot_app.config.schemas.bot import (
     MODEL_TYPE_LABELS,
     ModelAssignments,
     ModelDefinition,
 )
 from neobot_app.config.schemas.env import EnvConfig
+from neobot_chat.models import _normalize_provider_kind
 
 from .describe import describe_dataclass
 from .schema import _jsonable
@@ -107,7 +109,16 @@ def models_view(config: Any = None) -> dict[str, Any]:
         by_ref = models_config.by_ref()
         assigned_refs = {ref for _role, ref in models_config.assignments.items()}
         for model_ref, definition in models_config.iter_definitions():
-            platform = platform_payload(str(getattr(definition, "provider", "") or ""))
+            provider_name = str(getattr(definition, "provider", "") or "")
+            platform = platform_payload(provider_name)
+            # 推理强度是条目顶层配置：原始值供编辑表单回填，label 供表格直接展示。
+            # label 带上「实际下发 / 不生效」原因，避免面板显示一个根本没发出去的值。
+            reasoning_effort = str(getattr(definition, "reasoning_effort", "") or "")
+            model_type_value = str(getattr(definition, "model_type", "chat") or "chat")
+            settings_obj = getattr(definition, "settings", None)
+            thinking_mode = str(
+                getattr(settings_obj, "deepseek_thinking_mode", "enabled") or ""
+            ).strip().casefold()
             library.append(
                 {
                     # model_ref = 本机引用名（不发供应商）；model_name 才是发出去的模型名。
@@ -115,9 +126,17 @@ def models_view(config: Any = None) -> dict[str, Any]:
                     "display_name": str(
                         getattr(definition, "display_name", "") or ""
                     ),
-                    "provider": str(getattr(definition, "provider", "") or ""),
+                    "provider": provider_name,
                     "model_name": str(getattr(definition, "model_name", "") or ""),
-                    "model_type": str(getattr(definition, "model_type", "chat") or "chat"),
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_label": describe_reasoning_effort(
+                        reasoning_effort,
+                        provider_kind=_normalize_provider_kind(provider_name),
+                        model_type=model_type_value,
+                        thinking_enabled=thinking_mode
+                        not in {"disabled", "disable", "false", "off", "no", "0"},
+                    ),
+                    "model_type": model_type_value,
                     "type_label": str(
                         getattr(definition, "type_label", "")
                         or MODEL_TYPE_LABELS.get(
