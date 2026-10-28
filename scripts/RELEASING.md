@@ -5,7 +5,8 @@
 - `.github/workflows/ci.yml`：PR 的 Python 静态检查/测试、前端 lint/类型/测试/构建及入库产物一致性检查；同时可由发布工作流复用。
 - `.github/workflows/pr-title.yml`：PR 标题规范检查（`scripts/check_pr_title.py`）。仓库 squash 设置为 `PR_TITLE` + `PR_BODY`，PR 标题会成为目标分支上的提交标题，因此按 commit message 规范阻断：格式、长度、`(#NN)`、空话、「主题 —— 明细」清单写法；「疑似罗列」只警告，加 `--strict` 才阻断。
 - `.github/workflows/publish.yml`：**release 推送**后通过 GitHub API 确认该提交来自 `main → release` 的合并 PR，直接推送不发布。也可在 Actions 页面手动对 release 触发（`workflow_dispatch`）：手动触发是对 release 的显式发布动作，仅当 ref 就是 release 时才可信，从其他分支手动触发一律跳过。两种情况都会先重跑 CI，通过后才检测版本、构建和上传。
-- CI 和发布流程只读检查源码版本及锁文件，不自动改版本、不更新锁文件，也不提交或推送代码；无需保护分支写权限。
+- 发布流程结束后自动创建 Git tag 与 GitHub Release：tag 使用 PyPI 规范化版本（`2.0.2-a13` → `v2.0.2a13`），版本含预发布标识时标记为 Pre-release，Release 正文由 GitHub 自动生成（对比上一个 Release）。已存在同名 Release 时跳过，可安全重跑；对 release 手动触发也可用于补齐当前版本的 tag/Release（该版本已在 PyPI 时上传步骤跳过，但仍会补建 Release）。
+- CI 和发布流程只读检查源码版本及锁文件，不自动改版本、不更新锁文件，也不提交源码；唯一的写操作是创建 Git tag 与 GitHub Release（workflow 中的 `github-release` job 使用 `contents: write`）。
 
 ### 分支与发布流程（2026-10-26 起）
 

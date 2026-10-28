@@ -74,6 +74,9 @@ jobs:
   publish:
     name: 检测版本、构建并发布
     needs: checks
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -139,3 +142,43 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
         run: uv publish --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
+
+  github-release:
+    name: 创建 GitHub Release 与 tag
+    needs: [merged-pr, checks, publish]
+    # PyPI 发布成功、或该版本已在 PyPI（publish=false，手动触发补齐）时都补建 Release。
+    if: needs.merged-pr.outputs.merged == 'true' && needs.checks.result == 'success' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: 解析发布版本
+        id: version
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          # tag 用 PyPI 规范化版本：2.0.2-a13 -> v2.0.2a13，与历史 tag 一致
+          read -r tag prerelease < <(uv run --no-project --python 3.13 --with packaging python -c 'import os; from packaging.version import Version; v = Version(os.environ["RELEASE_VERSION"]); print("v" + str(v), "true" if v.is_prerelease else "false")')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: 创建 tag 与 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          TARGET: ${{ github.sha }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，跳过"
+            exit 0
+          fi
+          title="$TAG"
+          extra=()
+          if [ "$PRERELEASE" = "true" ]; then
+            title="$TAG — 预发布版本"
+            extra+=(--prerelease)
+          fi
+          gh release create "$TAG" --target "$TARGET" --title "$title" "${extra[@]}" --generate-notes
