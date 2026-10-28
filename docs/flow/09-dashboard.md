@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: 93d0141
-verified_hash: 1c6bdc8e811e
+verified_hash: 7ac78424ed8c
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流

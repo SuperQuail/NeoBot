@@ -7,7 +7,7 @@ covers:
   - app/src/neobot_app/bootstrap/_providers.py
 
 verified_against: 264696d
-verified_hash: 077d56f07879
+verified_hash: aad370f717e4
 ---
 
 # 05b Provider 实现与原生视觉降级：注册表 · 三种供应商 · 异常契约 · 包装器
