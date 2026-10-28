@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/runtime/sandbox_service.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
-verified_against: 802eb41
-verified_hash: 6ac33f225685
+verified_against: a1e83c0
+verified_hash: e646c1c0326a
 ---
 
 # 06 工具运行时与技能：注册 · native/PTC · 管理员凭据 · 沙箱裁决 · 维护 Agent
@@ -68,7 +68,7 @@ flowchart TD
 ```
 
 主图只画主干与四个拒绝点。注册顺序、两种模式、四个 PTC 硬上限、凭据签发、子 Agent 三种编排、
-Windows 进程树、技能前缀与按需加载、Markdown 技能注入、沙箱路径七道闸、锁与临时区、
+Windows 进程树、技能前缀与按需加载、Markdown 技能注入、沙箱路径裁决与排除工作区、锁与临时区、
 维护 Agent 循环各有一块折叠细节。
 
 ## 时序
@@ -242,6 +242,7 @@ sequenceDiagram
 
     R->>P: require context 与动作名
     Note over R: 动作来源：agent_execute / agent_shared_write<br/>agent_goal / agent_ralph / agent_plan
+    Note over P: 管理员本人发起（is_super_admin）且 admin_self_authorize=true<br/>仅私聊默认放行；群聊需列入 admin_self_authorize_chats
     P->>CM: consume 会话 动作 commit=True
     alt 有可用凭据
         CM-->>P: 返回 Credential
@@ -262,13 +263,14 @@ sequenceDiagram
 `require` 的 docstring 写明「never grant from model text」：`context` 必须是宿主铸造的
 `ToolContext`（`contracts.py:9`，`__post_init__` 校验 owner 与 `chat_flow_id` 必须含冒号），
 模型参数里伪造的身份不参与判定。
+管理员本人发起的请求在 `agent.tools.admin_self_authorize=true` 时由 `_admin_self_authorized` 直接放行：不消费凭据、也不走自动审查。默认只信任与超管的私聊；群聊必须在 `admin_self_authorize_chats` 显式列出（受信群成员可能经 wait 插话搭车）。其他人发起的请求仍按下面的门控执行。
 当前会触发凭据检查的位置：`_EXECUTION` 六个工具（`run_python` / `execute_command` / `bash` / `pwsh` /
 `terminal_open` / `terminal_send`）→ `agent_execute`；`write`/`edit` 且路径以 `shared:` 开头 →
 `agent_shared_write`；`create_goal`、`update_goal` 的 resume/edit → 先要 `human_request` 再要 `agent_goal`；
 `ralph` → `human_request` + `agent_ralph`；`_approve_plan` → `agent_plan`。
 `update_goal` 的 complete/blocked 走另一条闸：没有真人请求时必须匹配到正在运行的目标轮，
 否则 `GOAL_ROUND_REQUIRED`。
-凭据不是重试型错误：`permissions.py:29` 明确写「拿到凭据之前重复调用每次都会同样失败」，
+凭据不是重试型错误：`permissions.py:123` 明确写「拿到凭据之前重复调用每次都会同样失败」，
 且「凭据不等于操作系统沙箱」。
 </details>
 
@@ -450,11 +452,11 @@ flowchart TD
 </details>
 
 <details>
-### 沙箱路径裁决：resolve_agent_path 的七道闸
+### 沙箱路径裁决：resolve_agent_path 的分支与排除工作区
 
 ```mermaid
 flowchart TD
-    A["resolve_agent_path 入口｜sandbox_service.py:163"] --> B{"owner 与 chat_flow_id 非空且在长度上限内?"}
+    A["resolve_agent_path 入口｜sandbox_service.py:169"] --> B{"owner 与 chat_flow_id 非空且在长度上限内?"}
     B -- 否 --> B1["PermissionError：trusted owner 与 flow 必填"]
     B -- 是 --> C{"chat_flow_id 是否规范?"}
     C -- "含冒号" --> C1["必须 group:数字 或 private:数字，否则拒绝别名拼写"]
@@ -468,8 +470,12 @@ flowchart TD
     D -- 否 --> F["基准 = temp/{chat_flow_id}"]
     E2 --> G["拒绝 .. 段、盘符、冒号、Windows 保留设备名（含数据流）"]
     F --> G
-    G --> H["拼接后 resolve，判定是否仍在基准之内"]
-    H --> I{"在基准之内?"}
+    G --> H["拼接后 resolve，得到归一后的目标"]
+    H --> H0{"非 shared 且目标落在排除工作区内?"}
+    H0 -- "是" --> H1{"命中只读白名单?"}
+    H1 -- 否 --> M["返回绝对路径，后续 IO 再各自校验"]
+    H1 -- 是 --> I{"在基准之内?"}
+    H0 -- 否 --> I
     I -- 否 --> I1["PermissionError：outside current flow/shared directory"]
     I -- 是 --> J["逐级检查 symlink 与 junction，命中即拒（含指向另一允许根的链接）"]
     J --> K{"write 且不在沙箱根内?"}
@@ -479,12 +485,17 @@ flowchart TD
     L -- 否 --> L1["PermissionError：path is not allowed"]
 ```
 
+排除工作区（`agent.sandbox.excluded_workspaces`，判定在 `_is_excluded`）走 realpath 分支：
+非 `shared:` 路径归一后落在任一排除根内就直接放行，不再逐级拒绝符号链接（链接指向根外时
+归一会落到根外，仍被拒绝）；只读白名单优先，命中 `allowed_read_dirs` 的路径维持只读，
+排除工作区的根目录本身也不允许删除/移动。
+
 这是「受信上下文」版本：`owner` 与 `chat_flow_id` 只能由宿主传入，
 模型参数里的 `owner` / `chat_flow_id` / `pipeline_key` 会被 `AgentFileTools.execute`（`:155`）
 判为 `untrusted_context` 直接拒绝。
-旧的 `resolve_path`（`:141`）只做「拼 `temp/{清洗后的 flow id}` + 沙箱边界检查」，
+旧的 `resolve_path`（`:147`）只做「拼 `temp/{清洗后的 flow id}` + 沙箱/排除工作区边界检查」，
 没有 shared 白名单与符号链接检查，新代码应走 `resolve_agent_path`。
-`_sanitize_flow_id`（`:503`）先删 `..` 与斜杠，再把 `<>:"|?*` 和控制字符换成下划线，
+`_sanitize_flow_id`（`:563`）先删 `..` 与斜杠，再把 `<>:"|?*` 和控制字符换成下划线，
 去掉首尾空格与点，空串回落 `unknown` —— 冒号被拒的规范判定正是为了避免两个不同身份
 经清洗后落进同一个目录。
 </details>

@@ -15,11 +15,40 @@ class ToolPermissions:
         reviewer: Any = None,
         auto_review: bool = True,
         review_timeout_seconds: float = 30.0,
+        admin_self_authorize: bool = False,
+        admin_self_authorize_chats: Any = None,
     ) -> None:
         self.manager = credential_manager
         self.reviewer = reviewer
         self.auto_review = bool(auto_review)
         self.review_timeout = max(1.0, float(review_timeout_seconds or 30.0))
+        self.admin_self_authorize = bool(admin_self_authorize)
+        self.admin_self_authorize_chats = frozenset(
+            str(item) for item in (admin_self_authorize_chats or ()) if str(item).strip()
+        )
+
+    def _admin_self_authorized(self, context: ToolContext) -> bool:
+        """管理员本人发起的请求视为已授权：不用再申请凭据或走自动审查。
+
+        默认只信任「与超管的私聊」：私聊里只有他能发话，不存在别人插话
+        搭同一条回复管线的问题；群聊要放行必须显式列入
+        ``admin_self_authorize_chats``（受信群），并自行承担群成员在 wait
+        期间插话也会搭上这条管线的风险。
+        """
+        if not self.admin_self_authorize or self.manager is None:
+            return False
+        flow = str(getattr(context, "chat_flow_id", "") or "")
+        if not flow:
+            return False
+        if not flow.startswith("private:") and flow not in self.admin_self_authorize_chats:
+            return False
+        checker = getattr(self.manager, "is_super_admin", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(getattr(context, "user_id", None)))
+        except Exception:
+            return False
 
     async def authorize(
         self,
@@ -32,6 +61,8 @@ class ToolPermissions:
         """自动审查优先；审查拒绝/不可用回退凭据；凭据=人工覆盖。"""
         if not isinstance(context, ToolContext):
             raise AgentToolError("CONTEXT_REQUIRED", "Trusted invocation context required")
+        if self._admin_self_authorized(context):
+            return
         if self.manager is not None and self.manager.consume(
             chat_flow=context.chat_flow_id, action=action, commit=True
         ) is not None:
@@ -75,6 +106,8 @@ class ToolPermissions:
         """Consume immediately before a sensitive operation; never grant from model text."""
         if not isinstance(context, ToolContext):
             raise AgentToolError("CONTEXT_REQUIRED", "Trusted invocation context required")
+        if self._admin_self_authorized(context):
+            return
         if self.manager is not None and self.manager.consume(
             chat_flow=context.chat_flow_id, action=action, commit=True
         ) is not None:

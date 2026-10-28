@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/credentials/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 528fe18
-verified_hash: 0027469ee19c
+verified_against: 104fe25
+verified_hash: f48198f898ba
 ---
 
 # 19 凭据、面板鉴权与安全边界
@@ -96,7 +96,7 @@ flowchart TD
 ```
 
 四种状态要分清（`credentials/service.py`）：**不存在 / 已过期 / 已消费（一次性）/ 有效**。
-`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:199`）负责把一次性凭据置为已用。
+`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:213`）负责把一次性凭据置为已用。
 `cleanup`（`:239`）是清理入口，但不保证被周期调用 —— 长期不清理不会导致功能错误（`get` 会判过期），
 只是内存里会留垃圾项。
 </details>
@@ -118,6 +118,8 @@ flowchart TD
     J --> K["_clear_issue_failures 清零"]
 ```
 
+`ToolPermissions` 在 `agent.tools.admin_self_authorize=true` 时对**超管本人的请求**直接放行，不会进入 `try_issue`；默认只放行私聊，群聊需列入 `admin_self_authorize_chats`。签发流程只服务其他人发起的请求。
+
 `_ISSUE_MAX_FAILURES = 5`（`service.py:26`）与冷却窗口是**防爆破**设计：
 失败 5 次后该会话在冷却期内无法再尝试签发。
 注意冷却键是 **chat_flow**（会话维度）不是全局 —— 一个群被冷却不影响其它群。
@@ -136,7 +138,7 @@ flowchart LR
     E --> F
 ```
 
-`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:263`）是唯一读法。
+`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:277`）是唯一读法。
 新增危险动作**必须**同时加表项与调用点，否则会落到 `DEFAULT_REQUIRED_LEVEL` —— 表现为
 「该拦的没拦」。回执文案里明确写了「不要重试」（见 FINDINGS 06 节的凭据语义）。
 </details>

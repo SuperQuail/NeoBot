@@ -302,3 +302,76 @@ def test_link_component_policy_without_host_symlink_privilege(env, monkeypatch):
     monkeypatch.setattr(Path, "is_symlink", lambda path: path == blocked or original(path))
     with pytest.raises(PermissionError, match="symlink"):
         tools.resolve_path("linked/file", owner="alice", chat_flow_id="group:1")
+
+
+# ── 工作区排除（agent.sandbox.excluded_workspaces） ──────────────────
+
+
+@pytest.fixture
+def excluded_env(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.txt").write_text("secret", encoding="utf-8")
+    service = SandboxService(tmp_path / "sandbox", excluded_workspaces=[workspace])
+    return AgentFileTools(service), workspace, outside
+
+
+async def test_excluded_workspace_supports_read_write_edit_glob_grep(excluded_env):
+    """Arrange 一个排除工作区，Act 用绝对路径做 write/read/edit/glob/grep，
+    Assert 五个工具全部成功且命中工作区内的文件。"""
+    tools, workspace, _ = excluded_env
+    target = workspace / "notes.md"
+
+    written = await call(tools, "write", {"file_path": str(target), "content": "alpha\nbeta\n"})
+    assert written["ok"], written
+
+    read = await call(tools, "read", {"file_path": str(target)})
+    assert read["ok"] and "alpha" in read["content"], read
+
+    edited = await call(
+        tools, "edit",
+        {"file_path": str(target), "old_string": "beta", "new_string": "gamma"},
+    )
+    assert edited["ok"], edited
+    assert target.read_text(encoding="utf-8") == "alpha\ngamma\n"
+
+    globbed = await call(tools, "glob", {"path": str(workspace), "pattern": "*.md"})
+    assert globbed["ok"] and str(target) in globbed["paths"], globbed
+
+    grepped = await call(
+        tools, "grep",
+        {"path": str(workspace), "pattern": "gamma", "include": "*.md"},
+    )
+    assert grepped["ok"] and grepped["matches"], grepped
+    assert str(target) in {match["path"] for match in grepped["matches"]}
+
+
+async def test_excluded_workspace_does_not_open_paths_outside_it(excluded_env):
+    """Arrange 排除工作区之外的目录，Act 尝试读写其中的文件，
+    Assert 仍然 permission_denied 且没有产生新文件。"""
+    tools, _, outside = excluded_env
+
+    denied_read = await call(tools, "read", {"file_path": str(outside / "leak.txt")})
+    denied_write = await call(
+        tools, "write", {"file_path": str(outside / "new.txt"), "content": "x"}
+    )
+
+    assert denied_read["code"] == "permission_denied", denied_read
+    assert denied_write["code"] == "permission_denied", denied_write
+    assert not (outside / "new.txt").exists()
+
+
+async def test_excluded_workspace_keeps_traversal_and_shared_gate(excluded_env):
+    """Arrange 一个含 .. 的绝对路径，Act 尝试写入，
+    Assert 仍按父目录穿越拒绝，且普通路径不被识别成 shared 写（不触发凭据门控）。"""
+    tools, workspace, _ = excluded_env
+
+    traversal = await call(
+        tools, "write",
+        {"file_path": f"{workspace}/../escape.txt", "content": "x"},
+    )
+
+    assert traversal["code"] == "permission_denied", traversal
+    assert tools.is_shared_write("write", {"file_path": str(workspace / "a.txt")}) is False
