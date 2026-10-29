@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import uuid
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.speaking import SpeechBlocked
 from neobot_app.time_context import now_utc
 
 if TYPE_CHECKING:
@@ -50,6 +52,7 @@ class ReplyEvent:
     completed_at: datetime | None = None
     pre_reply_message_id: int | None = None
     error: str | None = None
+    speech_blocked: SpeechBlocked | None = field(default=None, repr=False)
     background_content: str | None = None
     human_request: bool = False
     #: 本轮要预先激活的技能包（插件消息意图入口用；在本轮工具表构建前生效）

@@ -1,0 +1,16 @@
+name = "speaking_schedule"
+enabled = false
+version = "1.0.0"
+description = "按星期与会话限制发言时段，支持临时静默"
+author = "NeoBot"
+tags = ["official", "schedule"]
+hot_reload = true
+config_hot_reload = true
+
+[config]
+# 日程使用的 IANA 时区；事件时间只作健康校验。
+timezone = "Asia/Shanghai"
+# 默认允许时段，空列表表示无限制。星期 1–7 表示周一至周日。
+windows = []
+# 会话覆盖：kind 为 group/private，id 为字符串，windows 替换默认规则。
+overrides = []

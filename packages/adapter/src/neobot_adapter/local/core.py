@@ -10,6 +10,8 @@ from aiohttp import web
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.sandbox import SandboxDataPort
+from neobot_contracts.ports.speaking import SpeakingPolicy
+from neobot_adapter.speaking import check_action, check_speech
 
 from neobot_adapter.local.server import LocalAdapterServer
 from neobot_adapter.local.store import InMemorySandboxDataStore
@@ -30,6 +32,7 @@ class LocalCore:
         packet_callback: Any = None,
         sandbox_data: SandboxDataPort | None = None,
     ) -> None:
+        self.speaking_policy: SpeakingPolicy | None = None
         self._dispatcher = dispatcher
         self._logger = logger or NullLogger()
         self._packet_callback = packet_callback
@@ -179,6 +182,12 @@ class LocalCore:
         conversation: ConversationRef,
         message: str | list[dict[str, Any]],
     ) -> Any:
+        check_speech(self.speaking_policy, conversation, self._logger)
+        return await self._send_unchecked(conversation, message)
+
+    async def _send_unchecked(
+        self, conversation: ConversationRef, message: str | list[dict[str, Any]]
+    ) -> Any:
         stored = self._store.add_outgoing(conversation, message)
         await self._flush_store()
         await self._hub.broadcast("message.sent", stored.to_dict())
@@ -224,6 +233,7 @@ class LocalCore:
         timeout: float = 5.0,
         websocket: Any = None,
     ) -> dict[str, Any] | None:
+        check_action(self.speaking_policy, action, params or {}, self._logger)
         return await self._dispatch_action(action, params or {})
 
     def call_api_sync(
@@ -243,11 +253,11 @@ class LocalCore:
     async def _dispatch_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "send_private_msg":
             conversation = ConversationRef(kind="private", id=str(params.get("user_id", "")))
-            stored = await self.send(conversation, params.get("message", ""))
+            stored = await self._send_unchecked(conversation, params.get("message", ""))
             return self._ok({"message_id": stored.message_id})
         if action == "send_group_msg":
             conversation = ConversationRef(kind="group", id=str(params.get("group_id", "")))
-            stored = await self.send(conversation, params.get("message", ""))
+            stored = await self._send_unchecked(conversation, params.get("message", ""))
             return self._ok({"message_id": stored.message_id})
         if action in {"send_private_forward_msg", "send_group_forward_msg"}:
             return await self._send_forward_msg(action, params)
@@ -508,7 +518,7 @@ class LocalCore:
             kind="group" if action == "send_group_forward_msg" else "private",
             id=str(params.get("group_id") if action == "send_group_forward_msg" else params.get("user_id")),
         )
-        stored = await self.send(
+        stored = await self._send_unchecked(
             conversation,
             [{"type": "forward", "data": {"id": forward["id"]}}],
         )

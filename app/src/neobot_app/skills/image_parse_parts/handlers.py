@@ -8,6 +8,8 @@ import base64
 from pathlib import Path
 
 from neobot_app.utils.logger import get_module_logger
+from neobot_app.image.speaking import check_image_policy, pipeline_conversation
+from neobot_contracts.ports.speaking import SpeechBlocked
 
 from .helpers import _json
 
@@ -34,6 +36,8 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     chat_flow_id = args.get("chat_flow_id")
     image_indices_arg = args.get("image_indices") or []
     pipeline_key = str(args.get("pipeline_key", "")).strip()
+    conversation = pipeline_conversation(pipeline_key)
+    check_image_policy(self._adapter, conversation)
 
     try:
         timeout_seconds = float(int(args.get("timeout_seconds", 300) or 300))
@@ -192,6 +196,7 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                 _add_image_part(single_image)
 
         # ── 调用 vision 模型 ──
+        check_image_policy(self._adapter, conversation)
         result = await self._vision_provider.chat([{"role": "user", "content": content_parts}])
         text = result.get("content", "") if isinstance(result, dict) else str(result)
 
@@ -213,6 +218,8 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                 "errors": errors or None,
             })
         return _json({"ok": True, "description": text[:2000]})
+    except SpeechBlocked:
+        raise
     except Exception as e:
         return _json({"ok": False, "error": f"{type(e).__name__}: {e}"})
 

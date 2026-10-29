@@ -10,6 +10,7 @@ import Icon from '../components/Icon';
 import WorkspaceLayout from '../components/WorkspaceLayout';
 import PluginListPanel from './plugins/PluginListPanel';
 import PluginEditorPanel from './plugins/PluginEditorPanel';
+import { scheduleErrors } from './plugins/speakingScheduleModel';
 import { confirmAction } from '../components/ui/ConfirmDialog';
 import PageHeader from '../components/ui/PageHeader';
 import { isEditingSurfaceActive, useAutoRefresh } from '../hooks/useAutoRefresh';
@@ -396,6 +397,13 @@ export default function Plugins() {
 
   async function save(reload: boolean) {
     if (!configDocument) return;
+    if (
+      mode === 'form' &&
+      selected?.official &&
+      selected.name === 'speaking_schedule' &&
+      scheduleErrors(draft).length
+    )
+      return;
     const body: PluginConfigSaveBody = {
       revision: configDocument.revision,
       mode,
@@ -460,7 +468,12 @@ export default function Plugins() {
 
   const isConsole = selected?.name === consolePlugin;
   const canEdit = selectedExists && permissions.manage_enabled && !!configDocument && !loading;
-  const canSave = canEdit && dirty && !operation && !errors.length;
+  const invalidSchedule =
+    mode === 'form' &&
+    selected?.official &&
+    selected.name === 'speaking_schedule' &&
+    scheduleErrors(draft).length > 0;
+  const canSave = canEdit && dirty && !operation && !errors.length && !invalidSchedule;
   const canReload =
     selectedExists &&
     !!selected &&

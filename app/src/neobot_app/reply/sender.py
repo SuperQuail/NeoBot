@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neobot_contracts.ports.speaking import SpeechBlocked
+
 import asyncio
 import inspect
 import time
@@ -349,6 +351,8 @@ class ReplySender:
                     self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
                     return True
+                except SpeechBlocked:
+                    raise
                 except Exception as exc:
                     self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
 

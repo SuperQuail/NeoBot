@@ -18,6 +18,7 @@ import './styles/config-workspace.css';
 import './styles/config-tree.css';
 import './styles/environment.css';
 import './styles/plugins.css';
+import './styles/speaking-schedule.css';
 import './styles/forms.css';
 import './styles/field-editors.css';
 import './styles/schema-collections.css';

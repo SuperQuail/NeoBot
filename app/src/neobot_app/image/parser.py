@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import math
+from contextvars import ContextVar
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,9 @@ from typing import TYPE_CHECKING, Any
 from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.speaking import SpeechBlocked
+from neobot_app.image.speaking import check_image_policy, message_conversation
 from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS
 from neobot_app.image.unavailable import (
     REGISTRY,
@@ -59,6 +63,7 @@ class ImageParseService:
         self._adapter = adapter
         self._logger = logger or NullLogger()
         self._pending: dict[str, set[asyncio.Task[None]]] = {}
+        self._conversation: ContextVar[ConversationRef | None] = ContextVar('image_parse_conversation', default=None)
 
     def install_providers(
         self,
@@ -82,6 +87,10 @@ class ImageParseService:
         queue_key: str,
     ) -> None:
         """原生视觉保留原图；否则异步解析并替换为描述文本。"""
+        try:
+            check_image_policy(self._adapter, message_conversation(message))
+        except SpeechBlocked:
+            return
         if getattr(self._native_vision_provider, "native_vision", False) is True:
             return
         segments = getattr(message, "message", None)
@@ -149,7 +158,10 @@ class ImageParseService:
             if seg_type not in ("image", "cardimage"):
                 return
             try:
+                check_image_policy(self._adapter, message_conversation(message))
                 description = await self._parse_single_image(seg)
+            except SpeechBlocked:
+                return  # Keep the original image; do not queue a later retry.
             except Exception as exc:
                 self._logger.error("图片解析失败", error=str(exc))
                 description = ""
@@ -158,10 +170,14 @@ class ImageParseService:
 
         # 一条消息里的多张图并发解析：串行时每张各自付一次下载超时（转发多条图片时
         # 会等比放大等待），并发后最坏只等一次超时。每张各写各的下标，互不干扰。
-        await asyncio.gather(
-            *(parse_one(index) for index in indices),
-            return_exceptions=True,
-        )
+        token = self._conversation.set(message_conversation(message))
+        try:
+            await asyncio.gather(
+                *(parse_one(index) for index in indices),
+                return_exceptions=True,
+            )
+        finally:
+            self._conversation.reset(token)
 
     async def _parse_single_image(self, segment) -> str:
         image_bytes, expired_key = await self._download_image_with_reason(segment)
@@ -331,6 +347,7 @@ class ImageParseService:
             }
         ]
 
+        check_image_policy(self._adapter, self._conversation.get())
         try:
             response = await asyncio.wait_for(
                 self._vision_provider.chat(messages),

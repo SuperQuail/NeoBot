@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from neobot_contracts.ports.speaking import SpeechBlocked
+
 import asyncio
 import calendar
 from dataclasses import dataclass
@@ -336,6 +338,11 @@ class ScheduledTaskManager:
                 continue
             try:
                 plan.notified = await self._remind_bindings(plan.task, plan.window, now)
+            except SpeechBlocked:
+                plan.notified = False
+                plan.finalize_requires_notified = False
+                plan.finalize = ("archive" if plan.task.recurrence == ScheduledTaskRecurrence.ONCE else "mark_completed")
+                plan.finalize_reason = "speaking_policy_skipped"
             except Exception as exc:
                 self._logger.warning(
                     "定时任务提醒派发失败",
@@ -528,9 +535,13 @@ class ScheduledTaskManager:
         now: datetime,
     ) -> bool:
         notified = False
+        blocked = None
         for binding in task.bindings:
             try:
                 reminded = await self._remind_if_due(task, binding, window, now)
+            except SpeechBlocked as exc:
+                blocked = exc
+                reminded = False
             except Exception as exc:
                 self._logger.warning(
                     "定时任务提醒绑定失败",
@@ -540,6 +551,10 @@ class ScheduledTaskManager:
                 )
                 reminded = False
             notified = reminded or notified
+        if blocked is not None:
+            # A denied binding completes this window even if another binding
+            # was delivered; never retry the denied destination after reopening.
+            raise blocked
         return notified
 
     async def _remind_if_due(
@@ -562,9 +577,17 @@ class ScheduledTaskManager:
         self._reminder_attempts[attempt_key] = attempt
         prompt = self._build_reminder_prompt(task, binding, window, attempt)
 
-        if self._notification_hub is not None:
+        hub = self._notification_hub
+        if hub is None and self._orchestrator is not None:
+            from neobot_app.runtime.notifications import BackgroundNotificationHub
+
+            candidate = BackgroundNotificationHub(orchestrator=self._orchestrator, logger=self._logger)
+            if candidate.confirms_scheduled_delivery:
+                hub = candidate
+        if hub is not None:
+            confirms_delivery = getattr(hub, "confirms_scheduled_delivery", False) is True
             try:
-                await self._notification_hub.publish(
+                delivered = await hub.publish(
                     source="scheduled_task",
                     kind=binding.kind,
                     conversation_id=str(binding.id),
@@ -573,7 +596,13 @@ class ScheduledTaskManager:
                     reasons=["scheduled task reminder"],
                     metadata={"task_uuid": task.task_uuid, "window_key": window.key},
                 )
+                if confirms_delivery and not delivered:
+                    self._last_reminder_at.pop(reminder_key, None)
+                    return False
                 return True
+            except SpeechBlocked:
+                self._last_reminder_at.pop(reminder_key, None)
+                raise
             except Exception as exc:
                 self._logger.warning(
                     "定时任务通知发布失败",

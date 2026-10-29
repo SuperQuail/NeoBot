@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
+from neobot_contracts.ports.speaking import SpeechBlocked
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio, monotonic_seconds
 if TYPE_CHECKING:
@@ -49,6 +50,11 @@ class ModesMixin:
     ) -> None:
         started_at = monotonic_seconds()
         try:
+            policy = getattr(getattr(self._adapter, "core", None), "speaking_policy", None)
+            if policy is not None and event.conversation_ref is not None:
+                decision = policy.evaluate(event.conversation_ref)
+                if not decision.allowed:
+                    raise SpeechBlocked(decision.reason)
             before_decide = await self._emit_runtime_event(
                 "reply.decide.before", event, queue_key=queue_key
             )
@@ -112,6 +118,15 @@ class ModesMixin:
             await self._emit_runtime_event(
                 "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
             )
+        except SpeechBlocked as exc:
+            event.speech_blocked = exc
+            self._set_flow_active(event, queue_key, False)
+            event.error = f"SpeechBlocked: {exc}"
+            if not event.is_terminal:
+                event.transition(ReplyState.CANCELLED)
+            self._logger.info("发言策略取消回复", event_id=event.event_id, reason=str(exc))
+            self._record_debug("speaking_policy_blocked", event, queue_key=queue_key)
+            await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
         except asyncio.CancelledError:
             self._set_flow_active(event, queue_key, False)
             event.error = "cancelled"

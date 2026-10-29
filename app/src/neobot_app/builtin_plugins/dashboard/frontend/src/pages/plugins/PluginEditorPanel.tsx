@@ -12,6 +12,7 @@ import TomlEditor from '../../components/TomlEditor';
 import type { PluginEditorPanelProps } from './pluginProps';
 import { confirmAction } from '../../components/ui/ConfirmDialog';
 import { useAuthGate } from '../../auth/AuthContext';
+import SpeakingScheduleForm from './SpeakingScheduleForm';
 
 export default function PluginEditorPanel(props: PluginEditorPanelProps) {
   const { canManage: sessionCanManage } = useAuthGate();
@@ -342,7 +343,14 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                   ) : (
                     configDocument && (
                       <div className="config-body" role="tabpanel">
-                        {mode === 'form' ? (
+                        {mode === 'form' && selected.official && selected.name === 'speaking_schedule' ? (
+                          <SpeakingScheduleForm
+                            key={`${selectedId}-${editorVersion}`}
+                            value={draft}
+                            disabled={!canEdit || !!operation}
+                            onChange={onChangeField}
+                          />
+                        ) : mode === 'form' ? (
                           <SchemaForm
                             key={`${selectedId}-${editorVersion}`}
                             fields={configDocument.schema || []}

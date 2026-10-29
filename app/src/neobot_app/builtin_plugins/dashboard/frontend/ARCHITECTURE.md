@@ -40,6 +40,8 @@
 | 配置     | `pages/config/` 各面板管理自己的编辑会话            | `ConfigTreePanel` 绑定 Schema 字段                         |
 | 插件     | 父页管理列表、选择、权限与操作                      | `PluginListPanel`、`PluginEditorPanel` 使用显式 props 契约 |
 
+官方 `speaking_schedule` 的表单由 `pages/plugins/SpeakingScheduleForm.tsx` 展示默认及会话覆盖，`ScheduleWindowEditor.tsx` 负责星期、精确时间和两端滑块，`speakingScheduleModel.ts` 负责纯时间转换及周周期重叠校验。只通过现有 `onChangeField` 修改父页草稿，不自行查询或保存；`Plugins` 在现有保存入口应用相同校验，TOML 仍交由后台校验。嵌套可选字段 `next_day` / 覆盖 `windows` 在显示时使用后台默认值，不因读取改写草稿；字段修改保留未涉及的额外字段。其它插件及第三方同名插件继续使用 `SchemaForm`。保存版本、409、重读、撤销、模式切换与只读沿用原编辑会话。
+
 拆分以状态和业务职责为依据，不按行数机械切分，也不把每个简单字段单独建文件。仅在多个调用点有同一稳定职责时提升为共享能力；领域独有的格式与数据转换留在对应目录。
 
 ## 编辑与写操作

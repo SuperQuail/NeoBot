@@ -11,6 +11,35 @@ if TYPE_CHECKING:
     from neobot_app.willing.models import WillingDecision
 
 class LifecycleStartMixin:
+    @property
+    def speaking_policy(self):
+        return getattr(getattr(self._adapter, "core", None), "speaking_policy", None)
+
+    async def wait_reply_delivery(self, event: ReplyEvent) -> bool:
+        """Wait only for this event, bounded by existing reply phase limits."""
+        task = next(
+            (task for task in self._tasks if task.get_name() == f"reply:{event.event_id}"),
+            None,
+        )
+        if task is None:
+            if event.speech_blocked is not None:
+                raise event.speech_blocked
+            return event.send_response is not None
+        if task is asyncio.current_task():
+            return False
+        timeout = (
+            self._get_prompt_timeout_seconds()
+            + self._get_model_response_timeout_seconds(event)
+            + self._get_io_timeout_seconds()
+        )
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except TimeoutError:
+            return event.send_response is not None
+        if event.speech_blocked is not None:
+            raise event.speech_blocked
+        return event.send_response is not None
+
     def start_reply(
         self,
         *,
@@ -136,7 +165,9 @@ class LifecycleStartMixin:
 
                 callback_task.add_done_callback(_callback_done)
 
-        task = asyncio.create_task(self._run(event, queue, queue_key))
+        task = asyncio.create_task(
+            self._run(event, queue, queue_key), name=f"reply:{event.event_id}"
+        )
         self._tasks.add(task)
         self._active_pipelines[pipeline_key] = task
         task.add_done_callback(_cleanup)

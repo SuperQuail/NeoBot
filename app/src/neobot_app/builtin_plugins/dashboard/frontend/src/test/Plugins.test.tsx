@@ -7,6 +7,7 @@ import { api } from '../api/endpoints';
 import type { ConfigDocument } from '../api/types';
 import { infoBar, notify } from '../notifications/infoBar';
 import { POLL } from '../data/queryKeys';
+import { ConfirmHost } from '../components/ui/ConfirmDialog';
 
 vi.mock('../notifications/infoBar', () => ({ infoBar: vi.fn(), notify: vi.fn() }));
 
@@ -80,6 +81,102 @@ beforeEach(() => {
 });
 
 describe('Plugins 页面', () => {
+  it('官方发言时段保存数组、保留精确分钟及冲突草稿，并沿用撤销与 TOML 路径', async () => {
+    const schedule = {
+      ...PLUGIN_LIST.items[0],
+      id: 'speaking_schedule',
+      name: 'speaking_schedule',
+      manageable: true,
+    };
+    vi.mocked(api.plugins).mockResolvedValue({ ...PLUGIN_LIST, items: [schedule] });
+    const config = {
+      timezone: 'Asia/Shanghai',
+      windows: [{ weekdays: [1], start: '08:13', end: '18:00', next_day: false }],
+      overrides: [],
+      extra: 'keep',
+    };
+    const doc = {
+      revision: 12,
+      config,
+      form_supported: true,
+      source_available: true,
+      source: 'timezone = "Asia/Shanghai"',
+      schema: [],
+    };
+    vi.mocked(api.pluginConfig).mockResolvedValue({ ok: true, status: 200, error: null, data: doc });
+    vi.mocked(api.pluginConfigSave).mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      error: '文件已变化',
+      data: null,
+    });
+    render(
+      <>
+        <Plugins />
+        <ConfirmHost />
+      </>,
+    );
+    const start = await screen.findByLabelText('默认窗口 1 开始时间');
+    fireEvent.change(start, { target: { value: '08:17' } });
+    expect(api.pluginConfigSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /保存并重载/ }));
+    await waitFor(() =>
+      expect(api.pluginConfigSave).toHaveBeenCalledWith('speaking_schedule', {
+        revision: 12,
+        mode: 'form',
+        reload: true,
+        config: { ...config, windows: [{ ...config.windows[0], start: '08:17' }] },
+      }),
+    );
+    expect(await screen.findByText('文件已变化')).toBeInTheDocument();
+    expect(start).toHaveValue('08:17');
+    expect(screen.getByText('有未保存的修改')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '放弃修改' }));
+    fireEvent.click(
+      within(await screen.findByRole('dialog', { name: '放弃配置修改？' })).getByRole('button', {
+        name: '放弃修改',
+      }),
+    );
+    await waitFor(() => expect(screen.getByLabelText('默认窗口 1 开始时间')).toHaveValue('08:13'));
+    fireEvent.click(screen.getByRole('tab', { name: 'TOML' }));
+    expect(screen.getByLabelText('TOML 配置')).toHaveValue(doc.source);
+  });
+
+  it('发言时段的无效持续时间禁止保存，第三方同名插件仍走通用字段', async () => {
+    const config = {
+      timezone: 'Asia/Shanghai',
+      windows: [{ weekdays: [1], start: '08:13', end: '18:00', next_day: false }],
+      overrides: [],
+    };
+    const schedule = { ...PLUGIN_LIST.items[0], id: 'speaking_schedule', name: 'speaking_schedule' };
+    vi.mocked(api.plugins).mockResolvedValue({ ...PLUGIN_LIST, items: [schedule] });
+    vi.mocked(api.pluginConfig).mockResolvedValue({
+      ok: true,
+      status: 200,
+      error: null,
+      data: { revision: 1, config, form_supported: true, schema: [] },
+    });
+    const rendered = render(<Plugins />);
+    fireEvent.change(await screen.findByLabelText('默认窗口 1 开始时间'), { target: { value: '20:00' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('时长必须大于 0 且小于 24 小时');
+    expect(screen.getByRole('button', { name: /保存并重载/ })).toBeDisabled();
+    rendered.unmount();
+    vi.mocked(api.plugins).mockResolvedValue({ ...PLUGIN_LIST, items: [{ ...schedule, official: false }] });
+    vi.mocked(api.pluginConfig).mockResolvedValue({
+      ok: true,
+      status: 200,
+      error: null,
+      data: {
+        config: { greeting: '通用字段' },
+        form_supported: true,
+        schema: [{ name: 'greeting', path: ['greeting'], kind: 'scalar', type: 'str', value: '通用字段' }],
+      },
+    });
+    render(<Plugins />);
+    expect(await screen.findByDisplayValue('通用字段')).toBeInTheDocument();
+    expect(screen.queryByLabelText('时区')).not.toBeInTheDocument();
+  });
+
   it('列表首读慢于多个轮询周期时不重叠，返回后恢复自动读取', async () => {
     vi.useFakeTimers();
     try {

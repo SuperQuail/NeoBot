@@ -6,6 +6,17 @@ export function createPluginPreview(scene) {
   const { empty, canManage, label } = scene;
   let plugins = [
     {
+      name: 'speaking_schedule',
+      version: '1.0.0',
+      official: true,
+      status: 'disabled',
+      enabled: false,
+      manageable: true,
+      hot_reload: true,
+      config_hot_reload: true,
+      description: '虚构的 Bot 发言时段配置，仅保存到演示内存',
+    },
+    {
       name: 'dashboard',
       version: '1.0.0',
       official: true,
@@ -96,7 +107,10 @@ export function createPluginPreview(scene) {
     if (!pluginConfigs.has(name))
       pluginConfigs.set(name, {
         revision: 1,
-        config: { enabled: true, greeting: '你好，欢迎使用演示面板。', max_items: 20, notify_admin: false },
+        config:
+          name === 'speaking_schedule'
+            ? { timezone: 'Asia/Shanghai', windows: [], overrides: [] }
+            : { enabled: true, greeting: '你好，欢迎使用演示面板。', max_items: 20, notify_admin: false },
       });
     const doc = pluginConfigs.get(name);
     return {
@@ -107,12 +121,18 @@ export function createPluginPreview(scene) {
       form_supported: true,
       source_available: true,
       schema: describeFields(
-        [
-          field('enabled', ['enabled'], 'bool', '启用功能', true),
-          field('greeting', ['greeting'], 'str', '欢迎语', ''),
-          field('max_items', ['max_items'], 'int', '最多条目', 20, { min: 1, max: 200 }),
-          field('notify_admin', ['notify_admin'], 'bool', '通知管理员', false),
-        ],
+        name === 'speaking_schedule'
+          ? [
+              field('timezone', ['timezone'], 'str', '时区', 'Asia/Shanghai'),
+              { name: 'windows', path: ['windows'], kind: 'list', type: 'dict', value: [], default: [] },
+              { name: 'overrides', path: ['overrides'], kind: 'list', type: 'dict', value: [], default: [] },
+            ]
+          : [
+              field('enabled', ['enabled'], 'bool', '启用功能', true),
+              field('greeting', ['greeting'], 'str', '欢迎语', ''),
+              field('max_items', ['max_items'], 'int', '最多条目', 20, { min: 1, max: 200 }),
+              field('notify_admin', ['notify_admin'], 'bool', '通知管理员', false),
+            ],
         doc.config,
       ),
     };

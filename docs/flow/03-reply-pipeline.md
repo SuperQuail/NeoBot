@@ -9,7 +9,7 @@ covers:
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
 verified_against: 2d7925b
-verified_hash: 6cd915a22a82
+verified_hash: a1caca7f81c3
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -223,7 +223,9 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph 出站 IO
-      A["_send_with_timeout"] --> B["adapter 发送"]
+      A["_send_with_timeout"] --> SG{"适配器 core 发言策略允许?"}
+      SG -- 是 --> B["adapter 发送"]
+      SG -- 否 --> SX["SpeechBlocked：未投递，不记成功"]
       C["_call_api_with_timeout"] --> D["OneBot API"]
     end
     subgraph 只读登记
@@ -244,6 +246,11 @@ flowchart LR
 </details>
 
 ## 关键状态
+
+发言策略的拒绝通过 `SpeechBlocked` 结束本轮，`ReplyEvent.speech_blocked` 保留类型化原因，
+避免上层把它当作一般工具错误重试。需要确认投递的定时通知通过
+`wait_reply_delivery(event)` 等待本轮已有任务，等待上限沿用提示词、模型和 I/O 阶段的超时总和；
+到期取消本轮，阻止超时后迟发。任务已清理时直接读取事件的拒绝原因和发送回执。
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|

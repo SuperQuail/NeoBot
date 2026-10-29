@@ -11,6 +11,9 @@ from urllib.parse import parse_qs, urlparse
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from neobot_contracts.ports.speaking import SpeakingPolicy, SpeechBlocked
+from neobot_adapter.speaking import check_action
+
 from neobot_adapter.model.meta_event import Heartbeat, LifeCycle, LifeCycleSubType
 from neobot_adapter.onebot.receiver.settings import ReverseWsSettings
 from neobot_adapter.utils.logger import get_module_logger
@@ -90,6 +93,7 @@ class AdapterCore:
             access_token: 反向 WebSocket 握手鉴权的 access token（OneBot 11 规范）。
                   留空表示不校验（与历史行为一致）
         """
+        self.speaking_policy: SpeakingPolicy | None = None
         self.host = host
         self.port = port
         self.access_token = str(access_token or "").strip()
@@ -747,6 +751,7 @@ class AdapterCore:
 
     async def call_api(self, action, params, timeout=20, websocket=None, wait_response=True):
         """调用 API；wait_response=False 时只发请求不等回执。"""
+        check_action(self.speaking_policy, action, params or {}, logger)
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
@@ -761,6 +766,9 @@ class AdapterCore:
 
     async def send_message(self, data, websocket=None):
         """通过一条活跃的 WebSocket 连接发送原始 OneBot 数据。"""
+        check_action(
+            self.speaking_policy, data.get("action", ""), data.get("params") or {}, logger
+        )
         if websocket is None:
             async with self._connections_lock:
                 if not self.active_connections:
@@ -780,6 +788,8 @@ class AdapterCore:
         )
         try:
             return bool(future.result(timeout))
+        except SpeechBlocked:
+            raise
         except Exception as exc:
             logger.error(f"发送原始消息失败: {exc}")
             return False
@@ -794,6 +804,8 @@ class AdapterCore:
         )
         try:
             return future.result(timeout + 1)  # 额外等待1秒
+        except SpeechBlocked:
+            raise
         except Exception as e:
             logger.error(f"调用 API 失败: {e}")
             return None

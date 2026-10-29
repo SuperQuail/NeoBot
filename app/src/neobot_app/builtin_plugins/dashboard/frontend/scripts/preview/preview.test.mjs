@@ -169,7 +169,7 @@ test('all scenarios preserve workspace shapes and do not reset memory on switchi
     const prompts = (await request('/api/prompts')).data;
     assert.equal(prompts.sections.length, scenario === 'empty' ? 0 : scenario === 'long' ? 36 : 26);
     const plugins = (await request('/api/plugins')).data;
-    assert.equal(plugins.items.length, scenario === 'empty' ? 0 : 7);
+    assert.equal(plugins.items.length, scenario === 'empty' ? 0 : 8);
     assert.equal(plugins.manage_enabled, scenario !== 'readonly');
     const config = (await request('/api/config')).data;
     assert.equal(config.config.models.registry.length, scenario === 'long' ? 8 : 3);
@@ -201,6 +201,45 @@ test('model entry schema exposes the top-level reasoning effort with grouped lab
   assert.equal(rows.deep_reason.reasoning_effort, 'claude:max');
   assert.equal(rows.deep_reason.reasoning_effort_label, 'Claude 系 · max');
   assert.equal(rows.vision.reasoning_effort_label, '');
+});
+
+test('speaking schedule is disabled by default and saves nested window arrays in isolated memory', async (t) => {
+  const request = await fixture(t);
+  const plugin = (await request('/api/plugins')).data.items.find((item) => item.name === 'speaking_schedule');
+  assert.equal(plugin.official, true);
+  assert.equal(plugin.enabled, false);
+  assert.equal(plugin.status, 'disabled');
+  const path = '/api/plugins/speaking_schedule/config';
+  const doc = (await request(path)).data;
+  assert.deepEqual(doc.config, { timezone: 'Asia/Shanghai', windows: [], overrides: [] });
+  assert.deepEqual(
+    doc.schema.map((item) => item.name),
+    ['timezone', 'windows', 'overrides'],
+  );
+  const window = { weekdays: [1, 7], start: '22:13', end: '02:17', next_day: true };
+  const config = {
+    timezone: 'UTC',
+    windows: [window],
+    overrides: [{ kind: 'private', id: 'fictional-person', windows: [] }],
+  };
+  const saved = await request(path, {
+    method: 'POST',
+    body: { revision: doc.revision, mode: 'form', reload: false, config },
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.config, config);
+  assert.deepEqual((await request(path)).data.config, config);
+  assert.equal(saved.data.revision, doc.revision + 1);
+  assert.equal(
+    (await request(path, { method: 'POST', body: { revision: doc.revision, config } })).status,
+    409,
+  );
+  assert.equal(
+    (await request('/api/plugins')).data.items.find((item) => item.name === 'speaking_schedule').enabled,
+    false,
+  );
+  const fresh = await fixture(t);
+  assert.deepEqual((await fresh(path)).data.config.windows, []);
 });
 
 test('config revisions, form/source values and cross-workspace reads share the same memory', async (t) => {

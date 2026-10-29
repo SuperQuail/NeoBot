@@ -183,6 +183,7 @@ def _build_core_services(state: _BuildState) -> None:
 
     # ── 插件主机基础设施 ──
     plugin = _reuse_or("plugin", lambda: build_plugin_host(logger_factory=logger_factory))
+    adapter.core.speaking_policy = plugin["speaking_policy"]
 
     # ── 记忆 / 用户画像 / 意愿 / 提示词 ──
     memory_svcs = build_memory_services(
