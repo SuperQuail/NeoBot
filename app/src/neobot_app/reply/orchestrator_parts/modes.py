@@ -124,8 +124,17 @@ class ModesMixin:
             event.error = f"SpeechBlocked: {exc}"
             if not event.is_terminal:
                 event.transition(ReplyState.CANCELLED)
-            self._logger.info("发言策略取消回复", event_id=event.event_id, reason=str(exc))
             self._record_debug("speaking_policy_blocked", event, queue_key=queue_key)
+            self._normalize_delivered_terminal(event, queue_key=queue_key)
+            if event.send_response is not None:
+                await self._emit_runtime_event(
+                    "reply.complete",
+                    event,
+                    queue_key=queue_key,
+                    duration_seconds=monotonic_seconds() - started_at,
+                )
+                return
+            self._logger.info("发言策略取消回复", event_id=event.event_id, reason=str(exc))
             await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
         except asyncio.CancelledError:
             self._set_flow_active(event, queue_key, False)

@@ -193,6 +193,74 @@ async def test_agent_tool_denial_is_typed_and_stops_generation():
         await orchestrator.shutdown()
 
 
+@pytest.mark.parametrize("delivered_first", [False, True])
+@pytest.mark.asyncio
+async def test_agent_policy_denial_preserves_delivered_terminal(monkeypatch, delivered_first):
+    gate = [True]
+    adapter, _, orchestrator, hub = runtime(gate)
+    lifecycle = []
+    original_emit = orchestrator._emit_runtime_event
+
+    async def capture(name, event, **kwargs):
+        lifecycle.append((name, event))
+        return await original_emit(name, event, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_emit_runtime_event", capture)
+
+    class ToolProvider:
+        calls = 0
+
+        async def close(self):
+            pass
+
+        async def chat(self, messages, tools=None):
+            self.calls += 1
+            if not delivered_first or self.calls == 2:
+                gate[0] = False
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"send-{self.calls}",
+                        "type": "function",
+                        "function": {"name": "send_reply", "arguments": '{"text":"Take a break"}'},
+                    }
+                ],
+            }
+
+    provider = ToolProvider()
+    orchestrator._provider = provider
+    orchestrator._config.chat.reply_mode = "agent"
+    consumed = []
+    try:
+        # A partial notification remains refused, without claiming full delivery.
+        with pytest.raises(SpeechBlocked):
+            await hub.publish(
+                source="scheduled_task",
+                kind="group",
+                conversation_id="42",
+                content="break",
+                on_consumed=lambda _: consumed.append(True),
+            )
+        assert provider.calls == (2 if delivered_first else 1)
+        event = lifecycle[-1][1]
+        assert event.state.name == ("COMPLETED" if delivered_first else "CANCELLED")
+        assert (event.send_response is not None) is delivered_first
+        assert isinstance(event.speech_blocked, SpeechBlocked)
+        assert (event.error is None) is delivered_first
+        names = [name for name, _ in lifecycle]
+        assert names.count("reply.complete") == int(delivered_first)
+        assert names.count("reply.cancel") == int(not delivered_first)
+        assert len(adapter.core.list_conversations()) == int(delivered_first)
+        messages = adapter.core.list_messages(kind="group", conversation_id="42")["messages"]
+        assert len(messages) == int(delivered_first)
+        assert consumed == []
+        assert hub.get_pipeline_status("group:42")["background_notifications_pending"] == 0
+        assert all(entry.notification is None for entry in orchestrator._group_queue.entries("42"))
+    finally:
+        await orchestrator.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_speak_tool_does_not_swallow_policy_denial():
     from neobot_app.reply.tools import ReplyToolExecutor

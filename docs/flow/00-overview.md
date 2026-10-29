@@ -8,7 +8,7 @@ covers:
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
 verified_against: 6233322
-verified_hash: 998222ef650f
+verified_hash: 0ee9a08d142d
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -95,6 +95,7 @@ sequenceDiagram
 宿主的 `speaking_policy` 服务与适配器 core 共享同一注册器。插件添加的发言限制按交集判断，
 空注册器保持原行为；管理命令的临时绕过只作用于自身策略，离开作用域即撤销。
 该服务只决定是否发言，不调用睡眠唤醒或待机切换。
+一轮中已有消息送达时，后续策略拒绝仍保留回复完成终态；尚未送达时按取消收尾。
 
 ## 细节
 
