@@ -1,0 +1,38 @@
+# 插件开发约定
+
+本工程是 NeoBot 的独立 Python 插件。先阅读 README.md，确认需求、宿主源码位置和验证入口，再修改业务。
+
+## 从最小改动开始
+
+- 默认入口是 `__init__.py` 导出的 `plugin` 实例，不使用旧的 setup、Matcher 或 on_command API。
+- 普通配置直接在 `Config` 中声明 Pydantic 字段、中文标题、说明和约束；宿主生成表单，不添加前端框架。
+- 聊天命令使用 `@plugin.command(..., permission=0/1/2, description="中文说明")`。0 是所有人，1 是次级管理员，2 是超级管理员；按需求选择，不能为方便测试放宽权限。
+- 命令通过注入的 `Reply` 回复。`plugin.action` 是页面业务动作，`plugin.tool` 是模型工具，二者不自动成为聊天命令。
+- 只有动态候选、预览或业务列表确实需要页面时才使用 `plugin.view`；采用宿主 `_sdk.js` 和 `_ui.css`，遵守主题、暂停与权限协议。
+- 后台任务用 `ctx.create_task` 托管；多轮交互用 `message_session` 和 `wait_for_message`，不要阻塞普通消息处理器。
+- 中文注释解释约束与原因，业务分支通常保持两层以内；避免无关重构和过度防御。
+
+## 配置、数据和教程
+
+- 配置和业务数据属于宿主 `plugins_data/<插件名>/`，通过上下文访问；不把用户改动写回 plugin.toml 或源码。
+- 不提交真实凭据、Cookie、账号或用户数据；敏感配置用只写字段，样例必须是合成数据。
+- `plugin.contract.json` 只由 `export` 生成；删除或改名字段、动作、资源、页面时，同步修改教程引用。
+- `GUIDE.md` 列出当前目标和扩展方式。每步 `example` 是完整独立快照，后退、跳章和重播不能残留后续状态。
+- 思索是使用说明书，只展示合成样例；看完不表示业务已完成，不调用真实动作或保存真实配置。
+
+## 验证与交付
+
+在插件目录使用 README 中的宿主环境命令：
+
+```sh
+uv run --project ../NeoBot --no-sync python -m neobot_modloader.sdk export .
+uv run --project ../NeoBot --no-sync python -m neobot_modloader.sdk check .
+uv run --project ../NeoBot --no-sync python -m neobot_modloader.sdk export . --check
+uv run --project ../NeoBot --no-sync python ../NeoBot/scripts/plugin_ci.py . --output-dir ../__PLUGIN_NAME___acceptance
+```
+
+- 业务测试必须覆盖需求中的成功结果、关键失败和权限；使用合成宿主端口，不只测试被替换成 mock 的处理器。
+- 当前测试替代了宿主注册表和外部适配器，真实执行 SDK 注册和回复链；它不能证明真实 QQ、宿主权限服务或外部平台联调通过。
+- 错误先查看 report.json 的 errors 和对应阶段日志，不删除、跳过、xfail 或放宽失败断言。
+- 新增功能同步 README 和使用说明。只报告真正执行过的命令、结果与未验证范围。
+- 提交、推送、发布以及修改宿主仓库，按用户明确授权执行；不顺手升级宿主版本或修改其锁文件。

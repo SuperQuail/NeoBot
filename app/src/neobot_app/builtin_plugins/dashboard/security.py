@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|password|secret|credential|authorization)")
+SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|access[_-]?key|token|password|secret|credential|authorization|cookie)")
 _REDACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(
@@ -289,9 +289,7 @@ class SessionStore:
     def timeout_seconds(self) -> float:
         return self._timeout
 
-    def create(
-        self, *, ip: str = "", user_agent: str = "", password_revision: int = 0
-    ) -> Session:
+    def create(self, *, ip: str = "", user_agent: str = "", password_revision: int = 0) -> Session:
         self.prune()
         if len(self._sessions) >= self._max_sessions:
             oldest = min(self._sessions.values(), key=lambda item: item.last_seen_at)
@@ -315,10 +313,7 @@ class SessionStore:
         session = self._sessions.get(token)
         if session is None:
             return None
-        if (
-            password_revision is not None
-            and session.password_revision != int(password_revision)
-        ):
+        if password_revision is not None and session.password_revision != int(password_revision):
             # 密码已被修改：旧会话立即失效
             self._sessions.pop(token, None)
             return None
@@ -339,11 +334,7 @@ class SessionStore:
 
     def prune(self) -> None:
         now = time.time()
-        for token in [
-            token
-            for token, session in self._sessions.items()
-            if now - session.last_seen_at > self._timeout
-        ]:
+        for token in [token for token, session in self._sessions.items() if now - session.last_seen_at > self._timeout]:
             self._sessions.pop(token, None)
 
     def has_recent_activity(self, window_seconds: float) -> bool:
@@ -365,9 +356,7 @@ class SessionStore:
         self.prune()
         return [
             {"token": session.token[:6] + "…", **session.to_payload(timeout_seconds=self._timeout)}
-            for session in sorted(
-                self._sessions.values(), key=lambda item: item.last_seen_at, reverse=True
-            )
+            for session in sorted(self._sessions.values(), key=lambda item: item.last_seen_at, reverse=True)
         ]
 
 
@@ -403,4 +392,3 @@ class LoginLimiter:
 
     def reset(self, ip: str) -> None:
         self._failures.pop(ip, None)
-

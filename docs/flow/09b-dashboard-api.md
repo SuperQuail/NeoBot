@@ -6,8 +6,13 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/prompt_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/scheduled_admin.py
   - app/src/neobot_app/builtin_plugins/dashboard/model_probe.py
+  - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugin_surface.py
+  - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugin_views.py
+  - app/src/neobot_app/builtin_plugins/dashboard/api_parts/config.py
+  - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugins.py
+  - app/src/neobot_app/builtin_plugins/dashboard/api_parts/_common.py
 verified_against: 93d0141
-verified_hash: 098f4d61d94c
+verified_hash: cbed7aa8b3f1
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -16,6 +21,33 @@ verified_hash: 098f4d61d94c
 
 本图覆盖**面板 HTTP 接口这一层**，也就是 `server.py` 显式路由挂上去之后、
 到 `DashboardApi` 方法返回之间的全部判定：
+
+统一 SDK 新增 `GET /api/plugins/{name}/surface` 与 `POST /api/plugins/{name}/actions/{action}`。
+前者返回公开契约、运行状态与可信权限；后者只从请求读取 `values`，身份、权限和插件上下文全部由服务端构造。
+POST 包括 read 查询也需要 CSRF；manage 动作按来源与管理策略拒绝越权，超时、输入错误和运行代不可用分别返回结构化失败。
+配置表单中的声明式设置分组通过既有动作接口执行真实业务；只展示作者明确登记的动作、动态候选和资源，读取不占用前端写锁，修改和配置保存与原编辑器共用操作锁。服务端权限与运行代约束不变。“使用说明”读取同一契约作隔离演示，不调用动作接口查询或修改真实业务，打开时暂停真实设置。
+
+`GET /api/plugins/{name}/views` 返回当前代页面地址。公开 `/plugins-ui/{name}/{view}/...` 只分发声明入口同目录的公开静态文件，包含宿主 `_sdk.js`；响应使用 CSP sandbox 和无凭据 CORS，直接打开也不能取得宿主源权限。ES module 与动态 import 的实际浏览器回归覆盖 iframe 和直接打开两种方式。
+
+```mermaid
+sequenceDiagram
+    participant F as 宿主功能面板
+    participant P as 空源插件 iframe
+    participant A as 原有鉴权 API
+    participant R as 当前插件运行代
+    F->>A: 会话读取 surface 与 views
+    F->>P: 无凭据静态文档和随机桥接会话
+    P->>F: action 或配置请求及会话标识
+    F->>F: 验证 window 当前页面 会话和权限
+    alt 看演示
+        F-->>P: 明确声明的合成结果，配置保存拒绝
+    else 实际操作
+        F->>A: 带宿主会话与 CSRF 的原有接口
+        A->>R: 名字锁内校验动作或配置
+        R-->>F: 当前实际业务结果
+        F-->>P: 脱敏结果，无源码路径和凭据
+    end
+```
 
 * `dashboard/api.py`（2787 行，全仓第 2 大文件）：`DashboardApi`（`api.py:109`）的
   **75 个 async handler** 与 75 条 `/api/*` 路由（`server.py:326-418`）的对应关系、分组、

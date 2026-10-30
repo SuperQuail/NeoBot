@@ -24,7 +24,7 @@ class LifecycleStartMixin:
         if task is None:
             if event.speech_blocked is not None:
                 raise event.speech_blocked
-            return event.send_response is not None
+            return event.send_response is not None and not event.send_incomplete
         if task is asyncio.current_task():
             return False
         timeout = (
@@ -35,10 +35,10 @@ class LifecycleStartMixin:
         try:
             await asyncio.wait_for(task, timeout=timeout)
         except TimeoutError:
-            return event.send_response is not None
+            return event.send_response is not None and not event.send_incomplete
         if event.speech_blocked is not None:
             raise event.speech_blocked
-        return event.send_response is not None
+        return event.send_response is not None and not event.send_incomplete
 
     def start_reply(
         self,

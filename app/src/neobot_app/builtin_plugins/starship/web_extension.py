@@ -3,7 +3,7 @@
 页面路径：{面板 base_path}{starship.route}/（例如 /game/）
 接口路径：{面板 base_path}{starship.route}/api/...
 
-面板负责鉴权（auth_prefixes 声明的 /api 必须先登录）与目录穿越防护
+面板负责鉴权（auth_prefixes 声明的 /api 必须先登录）、操作权限与目录穿越防护
 （StaticAssetDirectory），本模块只做路由分发与静态资源映射。
 
 不在游戏页面时零开销：这里没有任何后台任务，只有请求到达才会执行。
@@ -16,7 +16,7 @@ from typing import Any
 
 from aiohttp import web
 
-from neobot_app.panel_web import StaticAssetDirectory
+from neobot_app.panel_web import ExtensionRequestPermission, StaticAssetDirectory
 
 from .api import StarshipApi, _json_error
 
@@ -48,9 +48,7 @@ class StarshipWebExtension:
         self.logger = logger
         self.web_root = Path(web_root or WEB_ROOT)
         self.index_file = self.web_root / "index.html"
-        self._assets = StaticAssetDirectory(
-            self.web_root / "assets", max_age=31536000, immutable=True
-        )
+        self._assets = StaticAssetDirectory(self.web_root / "assets", max_age=31536000, immutable=True)
         self._images = StaticAssetDirectory(self.web_root / "image", max_age=86400)
 
     # ------------------------------------------------------------------
@@ -70,6 +68,18 @@ class StarshipWebExtension:
         # 页面与静态资源保持与面板一致（资源不需要登录，数据接口需要）
         return (f"{self.prefix}/api",)
 
+    def request_permission(self, method: str, path: str) -> ExtensionRequestPermission:
+        """普通游戏行为只需会话；清空成绩始终使用面板管理权限。"""
+        route = path[len(self.prefix) :].rstrip("/")
+        if route == "/api/scores/reset":
+            return "manage"
+        if method == "POST" and route in {"/api/scores", "/api/achievements"}:
+            return "operate"
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            return "read"
+        # 未知路径和方法不能因新增接口自动继承普通游戏操作权限。
+        return "manage"
+
     def panel_entry(self) -> dict[str, str] | None:
         """面板侧栏入口；show_in_sidebar=false 时不显示。"""
         if not bool(self.config.show_in_sidebar):
@@ -81,9 +91,7 @@ class StarshipWebExtension:
             "description": "进入 3D 星舰，把控制台当成飞船终端来用",
         }
 
-    async def handle_request(
-        self, request: web.Request, path: str
-    ) -> web.StreamResponse | None:
+    async def handle_request(self, request: web.Request, path: str) -> web.StreamResponse | None:
         prefix = self.prefix
         if path == prefix:
             # 目录形式访问，保证页面内的相对资源路径正确（相对路径基准是 /game/）
@@ -99,9 +107,7 @@ class StarshipWebExtension:
         if path == f"{prefix}/favicon.ico":
             icon = self.web_root / "image" / "icon.webp"
             if icon.is_file():
-                return web.FileResponse(
-                    icon, headers={"Cache-Control": "public, max-age=86400"}
-                )
+                return web.FileResponse(icon, headers={"Cache-Control": "public, max-age=86400"})
             return web.Response(status=404)
         return None
 
@@ -114,9 +120,7 @@ class StarshipWebExtension:
             return web.Response(text=BUILD_HINT, content_type="text/plain", status=503)
         return web.FileResponse(self.index_file, headers={"Cache-Control": "no-store"})
 
-    async def _api(
-        self, request: web.Request, tail: str, path: str
-    ) -> web.StreamResponse:
+    async def _api(self, request: web.Request, tail: str, path: str) -> web.StreamResponse:
         route = tail.strip("/")
         # 面板 base_path（反向代理子路径部署时非空）：request.path 去掉扩展路径
         base = request.path[: len(request.path) - len(path)] if path else ""

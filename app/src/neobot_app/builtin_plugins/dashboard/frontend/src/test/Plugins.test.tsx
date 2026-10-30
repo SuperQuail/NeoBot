@@ -19,6 +19,7 @@ vi.mock('../api/endpoints', () => ({
   api: {
     plugins: vi.fn(),
     pluginConfig: vi.fn(),
+    pluginSurface: vi.fn(),
     pluginConfigSave: vi.fn(),
     pluginToggle: vi.fn(),
     pluginReload: vi.fn(),
@@ -78,6 +79,18 @@ beforeEach(() => {
   vi.mocked(api.plugins).mockResolvedValue(PLUGIN_LIST);
   // 配置详情保持在加载中，聚焦列表与工具栏行为
   vi.mocked(api.pluginConfig).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(api.pluginSurface).mockResolvedValue({
+    ok: true,
+    status: 200,
+    error: null,
+    data: {
+      contract: null,
+      available: false,
+      state: 'loaded',
+      permissions: ['read'],
+      source: 'none',
+    },
+  });
 });
 
 describe('Plugins 页面', () => {
@@ -96,7 +109,7 @@ describe('Plugins 页面', () => {
       extra: 'keep',
     };
     const doc = {
-      revision: 12,
+      revision: 'schedule-revision-12',
       config,
       form_supported: true,
       source_available: true,
@@ -122,13 +135,17 @@ describe('Plugins 页面', () => {
     fireEvent.click(screen.getByRole('button', { name: /保存并重载/ }));
     await waitFor(() =>
       expect(api.pluginConfigSave).toHaveBeenCalledWith('speaking_schedule', {
-        revision: 12,
+        revision: 'schedule-revision-12',
         mode: 'form',
         reload: true,
         config: { ...config, windows: [{ ...config.windows[0], start: '08:17' }] },
       }),
     );
-    expect(await screen.findByText('文件已变化')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(infoBar).toHaveBeenCalledWith(
+        expect.objectContaining({ title: '插件配置操作失败', message: '文件已变化', tone: 'err' }),
+      ),
+    );
     expect(start).toHaveValue('08:17');
     expect(screen.getByText('有未保存的修改')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '放弃修改' }));
@@ -154,7 +171,7 @@ describe('Plugins 页面', () => {
       ok: true,
       status: 200,
       error: null,
-      data: { revision: 1, config, form_supported: true, schema: [] },
+      data: { revision: 'schedule-revision-1', config, form_supported: true, schema: [] },
     });
     const rendered = render(<Plugins />);
     fireEvent.change(await screen.findByLabelText('默认窗口 1 开始时间'), { target: { value: '20:00' } });
@@ -210,7 +227,7 @@ describe('Plugins 页面', () => {
       vi.useFakeTimers();
       try {
         const doc: ConfigDocument = {
-          revision: 3,
+          revision: '00000000000000000000000000000003',
           config: { payload: kind === '非法 JSON' ? { nested: [1] } : {} },
           form_supported: true,
           schema: [
@@ -243,8 +260,7 @@ describe('Plugins 页面', () => {
         expect(api.plugins).toHaveBeenCalledTimes(2);
         expect(api.pluginConfig).toHaveBeenCalledTimes(1);
         expect(screen.getByRole('heading', { name: 'dashboard' })).toBeInTheDocument();
-        expect(screen.getByText('插件已不在列表中')).toBeInTheDocument();
-        expect(screen.getByText('当前编辑内容已保留，恢复插件后再保存。')).toBeInTheDocument();
+        expect(infoBar).toHaveBeenLastCalledWith(expect.objectContaining({ tone: 'warn' }));
         expect(screen.getByRole('textbox', { name: kind === '非法 JSON' ? 'payload' : '新增条目的键' })).toBe(
           input,
         );
@@ -259,7 +275,6 @@ describe('Plugins 页面', () => {
         await act(async () => {
           await vi.advanceTimersByTimeAsync(POLL.plugins);
         });
-        expect(screen.queryByText('插件已不在列表中')).not.toBeInTheDocument();
         expect(input).toHaveValue(text);
         expect(input).toBeEnabled();
         expect(api.pluginConfig).toHaveBeenCalledTimes(1);
@@ -276,7 +291,7 @@ describe('Plugins 页面', () => {
         ok: true,
         status: 200,
         error: null,
-        data: { revision: 1, config: {}, form_supported: true, schema: [] },
+        data: { revision: '00000000000000000000000000000001', config: {}, form_supported: true, schema: [] },
       });
       render(<Plugins />);
       await act(async () => {});
@@ -330,7 +345,7 @@ describe('Plugins 页面', () => {
 
   it('配置保存只产生一条通知，未生效结果保留警告及完整原因', async () => {
     const document = {
-      revision: 1,
+      revision: '00000000000000000000000000000001',
       config: { greeting: '原始内容' },
       form_supported: true,
       schema: [
@@ -446,7 +461,7 @@ describe('Plugins 页面', () => {
         status: 200,
         error: null,
         data: {
-          revision: 3,
+          revision: '00000000000000000000000000000003',
           config: {},
           source: '[config]\nenabled = true\n',
           form_supported: true,
@@ -479,7 +494,7 @@ describe('Plugins 页面', () => {
       );
       fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
       expect(api.pluginConfigSave).toHaveBeenCalledWith('dashboard', {
-        revision: 3,
+        revision: '00000000000000000000000000000003',
         mode: 'toml',
         source,
         reload: true,
@@ -499,7 +514,7 @@ describe('Plugins 页面', () => {
     vi.useFakeTimers();
     try {
       const doc = {
-        revision: 1,
+        revision: '00000000000000000000000000000001',
         config: { greeting: '初始配置' },
         source: 'greeting = "初始配置"',
         form_supported: true,
@@ -516,7 +531,7 @@ describe('Plugins 页面', () => {
           error: null,
           data: {
             ...doc,
-            revision: 2,
+            revision: '00000000000000000000000000000002',
             config: { greeting: '文件新配置' },
             source: 'greeting = "文件新配置"',
             schema: doc.schema.map((field) => ({ ...field, value: '文件新配置' })),
@@ -525,7 +540,7 @@ describe('Plugins 页面', () => {
       render(<Plugins />);
       await act(async () => {});
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(POLL.editor);
+        await vi.advanceTimersByTimeAsync(POLL.pluginSurface);
       });
       expect(api.pluginConfig).toHaveBeenCalledTimes(2);
       expect(screen.getByDisplayValue('文件新配置')).toBeInTheDocument();
@@ -537,11 +552,16 @@ describe('Plugins 页面', () => {
           }),
       );
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(POLL.editor);
+        await vi.advanceTimersByTimeAsync(POLL.pluginSurface);
       });
       fireEvent.change(screen.getByDisplayValue('文件新配置'), { target: { value: '请求途中键入' } });
       await act(async () => {
-        finish({ ok: true, status: 200, error: null, data: { ...doc, revision: 3 } });
+        finish({
+          ok: true,
+          status: 200,
+          error: null,
+          data: { ...doc, revision: '00000000000000000000000000000003' },
+        });
       });
       expect(screen.getByDisplayValue('请求途中键入')).toBeInTheDocument();
       vi.mocked(api.pluginConfigSave).mockResolvedValueOnce({
@@ -555,7 +575,10 @@ describe('Plugins 页面', () => {
       });
       expect(api.pluginConfigSave).toHaveBeenCalledWith(
         'dashboard',
-        expect.objectContaining({ revision: 2, config: { greeting: '请求途中键入' } }),
+        expect.objectContaining({
+          revision: '00000000000000000000000000000002',
+          config: { greeting: '请求途中键入' },
+        }),
       );
     } finally {
       vi.useRealTimers();

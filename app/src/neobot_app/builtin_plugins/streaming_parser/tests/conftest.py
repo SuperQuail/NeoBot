@@ -55,6 +55,10 @@ def install_modloader_stub() -> bool:
         on_load = _decorator
         on_startup = _decorator
         on_shutdown = _decorator
+        action = _decorator
+        resource = _decorator
+        guide = _decorator
+        view = _decorator
 
         def sqlite_database(self, *args: Any, **kwargs: Any) -> Any:
             # 导入期只要求返回一个对象；真正的数据库能力在 CI 里不可用，
@@ -72,6 +76,7 @@ def install_modloader_stub() -> bool:
             self.__dict__.update(kwargs)
 
     stub.Plugin = _Plugin  # type: ignore[attr-defined]
+    stub.ActionError = RuntimeError  # type: ignore[attr-defined]
     stub.Migration = _Migration  # type: ignore[attr-defined]
     stub.FontFace = _Migration  # type: ignore[attr-defined]
     stub.RenderOptions = _RenderOptions  # type: ignore[attr-defined]
@@ -90,7 +95,7 @@ def install_plugin_package_alias() -> bool:
     所以不能靠目录名导入；这里按文件位置把插件目录注册成 streaming_parser 包。
     返回是否新建了别名。
     """
-    if 'streaming_parser' in sys.modules:
+    if "streaming_parser" in sys.modules:
         return False
     try:
         import streaming_parser  # noqa: F401
@@ -99,14 +104,14 @@ def install_plugin_package_alias() -> bool:
     except ImportError:
         pass
     spec = importlib.util.spec_from_file_location(
-        'streaming_parser',
-        PLUGIN_DIR / '__init__.py',
+        "streaming_parser",
+        PLUGIN_DIR / "__init__.py",
         submodule_search_locations=[str(PLUGIN_DIR)],
     )
     if spec is None or spec.loader is None:
         return False
     module = importlib.util.module_from_spec(spec)
-    sys.modules['streaming_parser'] = module
+    sys.modules["streaming_parser"] = module
     spec.loader.exec_module(module)
     return True
 
@@ -189,4 +194,3 @@ def sleep_recorder():
         recorded.append(seconds)
 
     return recorded, _sleep
-

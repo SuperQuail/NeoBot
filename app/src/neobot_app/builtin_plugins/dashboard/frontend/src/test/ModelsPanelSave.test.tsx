@@ -52,7 +52,7 @@ const VIEW = {
   ],
   provider_options: ['DeepSeek'],
   model_type_labels: { chat: '对话' },
-  revision: 1,
+  revision: '00000000000000000000000000000001',
 };
 
 beforeEach(() => {

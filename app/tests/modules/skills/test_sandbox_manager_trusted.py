@@ -215,3 +215,33 @@ async def test_private_delivery_uses_trusted_private_target(env):
     result = await invoke(skill, "send_chat_file", {"path": "file"}, owner="private:9:main", flow="private:9")
     assert result["ok"]
     assert adapter.calls[-1][0].kind == "private" and adapter.calls[-1][0].id == "9"
+
+
+async def test_trusted_glob_grep_keep_absolute_paths_for_excluded_workspace(tmp_path):
+    """Arrange 一个排除工作区与带 CURRENT_INVOCATION 的生产调用路径，
+    Act 用 glob_files / grep_files 搜索该工作区，
+    Assert 返回的路径保持绝对（模型回填 read_file 不会解析回聊天临时目录）。"""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("match here", encoding="utf-8")
+    service = SandboxService(tmp_path / "sandbox", excluded_workspaces=[workspace])
+    skill = SandboxManagerSkill(
+        service,
+        adapter=Adapter(),
+        file_server=SimpleNamespace(_enabled=False),
+        credential_manager=Credentials(),
+    )
+
+    glob_result = await invoke(
+        skill, "glob_files", {"pattern": "*.txt", "path": str(workspace)}
+    )
+    grep_result = await invoke(
+        skill, "grep_files",
+        {"pattern": "match", "path": str(workspace), "output_mode": "content"},
+    )
+
+    assert glob_result["ok"], glob_result
+    assert glob_result["matches"][0]["path"] == str(target)
+    assert grep_result["ok"], grep_result
+    assert grep_result["results"][0]["file"] == str(target)

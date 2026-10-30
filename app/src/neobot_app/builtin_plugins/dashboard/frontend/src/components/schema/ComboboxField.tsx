@@ -8,7 +8,6 @@ function ComboboxField({
   value,
   onChange,
   disabled,
-  changed,
   onRestore,
   onShowHistory,
   historyCount,
@@ -41,7 +40,7 @@ function ComboboxField({
   const header = (
     <div className="cfg-label">
       <label htmlFor={fieldId}>
-        {descriptor.name}
+        {descriptor.label || descriptor.name}
         {descriptor.readonly && <span className="muted small"> · 只读</span>}
       </label>
       {descriptor.description && <p>{descriptor.description}</p>}
@@ -54,7 +53,7 @@ function ComboboxField({
   return (
     <div className="cfg-row">
       {header}
-      <div className="cfg-control">
+      <div className="cfg-control cfg-control-with-actions">
         {custom ? (
           <div className="config-input-wrap">
             <input
@@ -104,8 +103,8 @@ function ComboboxField({
         )}
         <FieldActions
           descriptor={descriptor}
+          value={value}
           disabled={locked}
-          changed={changed}
           onRestore={onRestore}
           onShowHistory={onShowHistory}
           historyCount={historyCount}

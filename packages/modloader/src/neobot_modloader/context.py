@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,10 +16,14 @@ from neobot_contracts.ports.screenshot import ScreenshotPort
 from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.management import PluginControlFacade
+from neobot_modloader.message import Message, MessageChain, MessageSegment, normalize_message_payload
+from neobot_modloader.messaging import PluginMessaging
 from neobot_modloader.plugins.agents import PluginAgentRegistrar
 from neobot_modloader.users import UserDirectory
 
-MessagePayload = str | list[dict[str, Any]]
+MessagePayload = (
+    str | Message | MessageChain | MessageSegment | Mapping[str, Any] | Iterable[MessageSegment | Mapping[str, Any]]
+)
 
 
 class MarkdownSkillRegistrar:
@@ -136,10 +141,7 @@ class PluginCommand:
     def help_line(self) -> str:
         usage = f" {self.usage}" if self.usage else ""
         source = f" {self.source_label}" if self.source_label else ""
-        return (
-            f"{self.display_name}{usage} — {self.description}"
-            f" [权限:{_permission_name(self.permission)}]{source}"
-        )
+        return f"{self.display_name}{usage} — {self.description} [权限:{_permission_name(self.permission)}]{source}"
 
 
 class PluginCommandRegistrar:
@@ -258,8 +260,7 @@ class PluginCommandRegistrar:
                 continue
             except Exception as exc:  # 注册表异常同样不得阻断插件加载
                 self._warn(
-                    f"命令注册失败,跳过: plugin={self._plugin_name} "
-                    f"requested={requested} actual={actual} error={exc}"
+                    f"命令注册失败,跳过: plugin={self._plugin_name} requested={requested} actual={actual} error={exc}"
                 )
                 return None
             self._registered.add(actual)
@@ -272,10 +273,7 @@ class PluginCommandRegistrar:
             if not prefixed and actual != requested:
                 # 只有「因冲突回退」才算重命名；prefixed=True 是旧语义的常规前缀化
                 self._renames.append((requested, actual))
-                self._warn(
-                    f"命令因重名被重命名: plugin={self._plugin_name} "
-                    f"requested=/{requested} actual=/{actual}"
-                )
+                self._warn(f"命令因重名被重命名: plugin={self._plugin_name} requested=/{requested} actual=/{actual}")
             return actual
         self._warn(
             f"原名与来源前缀名均被占用,跳过注册: plugin={self._plugin_name} "
@@ -292,7 +290,7 @@ class PluginCommandRegistrar:
         self._renames.clear()
 
 
-class RuntimePluginContext:
+class RuntimePluginContext(PluginMessaging):
     """新 Plugin API 的内部运行时上下文。"""
 
     def __init__(
@@ -321,6 +319,7 @@ class RuntimePluginContext:
         source: str = THIRD_PARTY_SOURCE,
         generation_provider: Any | None = None,
     ) -> None:
+        super().__init__()
         self._plugin_name = plugin_name
         self._source = str(source or THIRD_PARTY_SOURCE)
         self._plugin_dir = plugin_dir
@@ -398,9 +397,7 @@ class RuntimePluginContext:
         """当前代际的截图端口；软重启后自动指向新对象。"""
         return self._generation_provider().screenshots
 
-    def on_generation_change(
-        self, previous: RuntimeGeneration, current: RuntimeGeneration
-    ) -> None:
+    def on_generation_change(self, previous: RuntimeGeneration, current: RuntimeGeneration) -> None:
         """代际切换：把插件注册的 Agent / Markdown Skill 迁到新对象上。
 
         截图端口等"读时解析"的依赖无需迁移；命令注册表属核心对象也不迁移。
@@ -408,9 +405,7 @@ class RuntimePluginContext:
         if current.agent_registry is not previous.agent_registry:
             self.agents.rebind(previous.agent_registry, current.agent_registry)
         if current.skills_registry is not previous.skills_registry:
-            self.markdown_skills.rebind(
-                previous.skills_registry, current.skills_registry
-            )
+            self.markdown_skills.rebind(previous.skills_registry, current.skills_registry)
 
     @property
     def logger(self) -> Logger:
@@ -472,13 +467,13 @@ class RuntimePluginContext:
         self._record_subscription(subscription)
 
     async def send_private(self, user_id: int, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send_private_msg(user_id, message)
+        return await self._adapter.send_private_msg(user_id, normalize_message_payload(message))
 
     async def send_group(self, group_id: int, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send_group_msg(group_id, message)
+        return await self._adapter.send_group_msg(group_id, normalize_message_payload(message))
 
     async def send(self, conversation: ConversationRef, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send(conversation, message)
+        return await self._adapter.send(conversation, normalize_message_payload(message))
 
     async def send_image(
         self,

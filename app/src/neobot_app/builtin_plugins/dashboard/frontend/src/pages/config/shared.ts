@@ -86,11 +86,11 @@ export function useEditorOperation() {
 }
 
 export interface Leaf {
-  path: string[];
+  path: Array<string | number>;
   value: unknown;
 }
 
-export function collectLeaves(value: unknown, path: string[] = [], out: Leaf[] = []): Leaf[] {
+export function collectLeaves(value: unknown, path: Array<string | number> = [], out: Leaf[] = []): Leaf[] {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     for (const key of Object.keys(value as Record<string, unknown>)) {
       collectLeaves((value as Record<string, unknown>)[key], [...path, key], out);
@@ -103,7 +103,7 @@ export function collectLeaves(value: unknown, path: string[] = [], out: Leaf[] =
 
 /** 一次字段修改记录（撤销/重做栈元素） */
 export interface ChangeEntry {
-  path: string[];
+  path: Array<string | number>;
   before: unknown;
   after: unknown;
 }
@@ -122,7 +122,11 @@ export interface AssignDraft extends Record<string, any> {
 }
 
 /** 比较一次分组修改，找出真正变化的叶子配置项（用于逐项历史）。 */
-export function changedLeaves(before: unknown, after: unknown, basePath: string[]): ChangeEntry[] {
+export function changedLeaves(
+  before: unknown,
+  after: unknown,
+  basePath: Array<string | number>,
+): ChangeEntry[] {
   const beforeMap = new Map(collectLeaves(before).map((item) => [item.path.join('.'), item.value]));
   const changes: ChangeEntry[] = [];
   for (const item of collectLeaves(after)) {
@@ -169,21 +173,70 @@ function modelParamsValue(field: FieldDescriptor, source: Record<string, any>): 
   return { enabled_params: enabled, extra_body: extra, values };
 }
 
+/** 对象列表模板不含行号；生成当前行时同步重写其所有后代路径。 */
+export function rebaseFieldPaths(
+  fields: FieldDescriptor[],
+  previous: FieldDescriptor['path'],
+  next: FieldDescriptor['path'],
+): FieldDescriptor[] {
+  return fields.map((field) => ({
+    ...field,
+    path: [...next, ...field.path.slice(previous.length)],
+    fields: field.fields && rebaseFieldPaths(field.fields, previous, next),
+    item_fields: field.item_fields && rebaseFieldPaths(field.item_fields, previous, next),
+    items: field.items?.map((item) => ({
+      ...item,
+      fields: rebaseFieldPaths(item.fields, previous, next),
+    })),
+  }));
+}
+
 /** 把草稿值绑定到后端 schema 的描述符上（表单只认描述符上的 value）。 */
 export function bindValues(
   fields: FieldDescriptor[],
   values?: Record<string, any>,
   context: FieldContext = {},
+  parentPath: FieldDescriptor['path'] = [],
 ): FieldDescriptor[] {
   return (fields || []).map((field) => {
-    const value = values ? values[field.name] : undefined;
+    const value = values ? getPath(values, field.path.slice(parentPath.length)) : undefined;
     if (field.kind === 'group') {
       const nested = value && typeof value === 'object' ? value : {};
       const nextContext: FieldContext = {
         provider: (values && values.provider) ?? context.provider,
         model_type: (values && values.model_type) ?? context.model_type,
       };
-      return { ...field, value: nested, fields: bindValues(field.fields || [], nested, nextContext) };
+      return {
+        ...field,
+        value: nested,
+        fields: bindValues(field.fields || [], nested, nextContext, field.path),
+      };
+    }
+    if (field.kind === 'model_list') {
+      const current = value === undefined ? field.value : value;
+      const rows = Array.isArray(current) ? current : [];
+      return {
+        ...field,
+        value: rows,
+        items: rows.map((row, index) => {
+          const item = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+          const template = field.item_fields ?? field.items?.[index]?.fields ?? [];
+          const previous = field.item_fields ? field.path : [...field.path, String(index)];
+          const fields = rebaseFieldPaths(template, previous, [...field.path, String(index)]);
+          return {
+            index,
+            fields: bindValues(
+              fields,
+              item,
+              {
+                provider: item.provider ?? context.provider,
+                model_type: item.model_type ?? context.model_type,
+              },
+              [...field.path, String(index)],
+            ),
+          };
+        }),
+      };
     }
     if (field.kind === 'model_params') {
       // 伪字段：值来自 settings 草稿（enabled_params / extra_body / 各可选参数值），
@@ -199,3 +252,4 @@ export function bindValues(
     return { ...field, value: value === undefined ? field.value : value };
   });
 }
+import { getPath } from '../../utils/paths';

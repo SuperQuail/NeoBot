@@ -24,6 +24,10 @@ class Plugins:
 
     enabled: bool = field(default=True, metadata={"description": "是否启用插件"})
     dir: str = field(default="./plugins", metadata={"description": "插件目录"})
+    watch: bool = field(
+        default=False,
+        metadata={"description": "监听已加载插件源码并自动热重载（开发用，修改此项需重启）"},
+    )
     proxy_mode: str = field(
         default="system",
         metadata={
@@ -84,10 +88,7 @@ class Debug:
     )
     retention_days: int = field(
         default=10,
-        metadata={
-            "description": "调试数据保留天数（默认 10）：data/debug/log 下更早的分片"
-            "与回复事件明细会被自动清理"
-        },
+        metadata={"description": "调试数据保留天数（默认 10）：data/debug/log 下更早的分片与回复事件明细会被自动清理"},
     )
 
 
@@ -102,8 +103,7 @@ class Standby:
     start_in_standby: Optional[bool] = field(
         default=False,
         metadata={
-            "description": "启动时直接进入待机（只启动面板等核心服务，不启动 bot 运行时）；"
-            "适合先开面板补配置再启动运行"
+            "description": "启动时直接进入待机（只启动面板等核心服务，不启动 bot 运行时）；适合先开面板补配置再启动运行"
         },
     )
     connect_onebot: Optional[bool] = field(

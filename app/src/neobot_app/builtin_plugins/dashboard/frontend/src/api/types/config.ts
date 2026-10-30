@@ -44,17 +44,19 @@ export interface DeployStatus {
   };
   /** 出厂默认值：account / 昵称 / 人设仍是出厂占位时，向导据此判「未配置」 */
   defaults?: { bot_account?: string; bot_nick_name?: string; bot_data?: string };
-  revision?: number;
-  env_revision?: number;
+  revision?: string;
+  env_revision?: string;
   ready?: boolean;
 }
 
 /** schema 字段描述（由后端 config_manager.describe_dataclass 生成） */
-export type FieldKind = 'scalar' | 'group' | 'list' | 'dict' | 'model_list' | 'model_params';
+export type FieldKind = 'scalar' | 'group' | 'list' | 'dict' | 'model_list' | 'model_params' | 'json';
 
 export interface FieldDescriptor {
   name: string;
-  path: string[];
+  /** 开发者声明的显示名称；缺省时使用存储字段名。 */
+  label?: string;
+  path: Array<string | number>;
   kind: FieldKind;
   /** 读取时的当前值（后端快照，编辑草稿以 values 为准） */
   value?: unknown;
@@ -62,6 +64,7 @@ export interface FieldDescriptor {
   default?: unknown;
   description?: string;
   options?: string[];
+  option_values?: Record<string, string | number | boolean | null>;
   options_strict?: boolean;
   /** strict 下拉的中文选项名（值 → 文案）；缺省时直接显示原始值 */
   option_labels?: Record<string, string>;
@@ -102,7 +105,8 @@ export interface ConfigChanges {
 export interface ConfigDocument {
   section?: string;
   path?: string;
-  revision?: number;
+  /** 配置文件内容摘要；文件尚未创建时为空串，保存时不作数值转换。 */
+  revision?: string;
   form_supported?: boolean;
   source_available?: boolean;
   source?: string;
@@ -143,7 +147,7 @@ export interface EnvPayload {
     builtin?: boolean;
     [k: string]: unknown;
   }>;
-  revision?: number;
+  revision?: string;
   message?: string;
   /** 保存并重载的结果：仍有部分模块需重启进程才生效（启动期读取环境变量的那些，如 TTS / 生图） */
   needs_restart?: boolean;

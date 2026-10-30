@@ -41,7 +41,7 @@ export default function SchemaForm({
     walk(fields);
     return paths;
   }, [fields]);
-  const restore = (path: string[], value: unknown) => {
+  const restore = (path: Array<string | number>, value: unknown) => {
     if (!disabled && !readonlyPaths.has(pathKey(path))) onRestore?.(path, value);
   };
 
@@ -95,7 +95,7 @@ export default function SchemaForm({
       ))}
       <Modal
         open={!!historyTarget}
-        title={'历史数值 · ' + (historyTarget?.name || '')}
+        title={'历史数值 · ' + (historyTarget?.label || historyTarget?.name || '')}
         onClose={() => setHistoryTarget(null)}
       >
         {entries.length === 0 && <p className="empty muted">暂无历史记录</p>}

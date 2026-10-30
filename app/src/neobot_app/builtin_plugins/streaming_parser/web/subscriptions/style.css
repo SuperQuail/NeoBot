@@ -1,0 +1,282 @@
+/* 直播订阅插件界面样式：结构清晰、卡片化、零AI感、专业控制台风格 */
+
+/* 根容器与基础重置 */
+.subscriptions-view {
+  padding: 20px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* 统一容器卡片 */
+.sub-card {
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--border-soft, #e6f0f7);
+  border-radius: 12px;
+  padding: 22px 24px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), 0 1px 2px rgba(15, 23, 42, 0.02);
+  margin-bottom: 22px;
+}
+
+/* 顶部工作台：左侧表单与右侧预览并排 */
+.workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
+  gap: 28px;
+  align-items: stretch;
+}
+
+.workbench-form {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.workbench-header {
+  margin-bottom: 16px;
+}
+
+.workbench-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text, #1f3a4d);
+  margin: 0 0 4px;
+}
+
+.workbench-subtitle {
+  font-size: 12px;
+  color: var(--muted, #526e80);
+}
+
+.form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1f3a4d);
+  margin-bottom: 6px;
+}
+
+.field-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-control {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-height, 38px);
+  padding: 0 12px;
+  border: 1px solid var(--border, #d2e5f0);
+  border-radius: var(--radius-control, 8px);
+  font-size: 13px;
+  color: var(--text, #1f3a4d);
+  background: var(--surface-field, #ffffff);
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.field-control:focus {
+  outline: none;
+  border-color: var(--brand, #0369a1);
+  box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.12);
+}
+
+.field-control-sm {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* 自定义下拉控件：与 Dashboard SelectControl 视觉规范完全对齐 */
+.select-control-wrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: block;
+  width: 100%;
+}
+
+.select-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  height: var(--control-height, 38px);
+  padding: 0 12px;
+  border: 1px solid var(--border, #d2e5f0);
+  border-radius: var(--radius-control, 8px);
+  color: var(--text, #1f3a4d);
+  background: var(--surface-field, #ffffff);
+  font: 500 13px var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.select-control-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-control-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--muted, #526e80);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.select-control[data-state='open'] .select-control-icon {
+  transform: rotate(180deg);
+}
+
+.select-control:hover:not(:disabled) {
+  border-color: var(--brand, #0369a1);
+}
+
+.select-control:focus-visible,
+.select-control[data-state='open'] {
+  outline: none;
+  border-color: var(--brand, #0369a1);
+  box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.12);
+}
+
+.select-control:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f8fafc;
+}
+
+/* 下拉菜单浮层：替代系统原生灰底框 */
+.select-control-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 260px;
+  overflow-y: auto;
+  color: var(--text, #1f3a4d);
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--border-soft, #e6f0f7);
+  border-radius: var(--radius-control, 8px);
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
+  animation: selectMenuFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes selectMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.select-control-options {
+  padding: 4px;
+}
+
+.select-control-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text, #1f3a4d);
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.select-control-option:hover,
+.select-control-option[data-highlighted='true'] {
+  background: var(--panel-2, #eef9ff);
+  color: var(--brand, #0369a1);
+}
+
+.select-control-option[data-state='checked'] {
+  color: var(--brand, #0369a1);
+  background: rgba(3, 105, 161, 0.08);
+  font-weight: 600;
+}
+
+.select-control-option-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-control-check {
+  display: flex;
+  align-items: center;
+  color: var(--brand, #0369a1);
+  flex-shrink: 0;
+}
+
+/* 隐藏原生 select，同时保持在 DOM 中 */
+.select-hidden-native {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 小号控件适配 (如 list-filter, settings-style) */
+.select-control-sm {
+  height: 32px;
+  font-size: 12px;
+}
+
+.select-control-sm .select-control {
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.select-control-sm .select-control-option {
+  min-height: 28px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted, #526e80);
+  margin: 6px 0 0;
+  line-height: 1.4;
+}

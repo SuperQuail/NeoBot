@@ -1,6 +1,7 @@
 """回复发送、媒体发送与发送者标签。"""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from neobot_contracts.models import ConversationRef
@@ -54,6 +55,16 @@ class SendingMixin:
         split_preview: ReplySplitPreview | None = None,
     ) -> bool:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
+        if self_sent is not None and self_sent.usable:
+            sink = self_sent
+            before_message_id = sink.queue.get_last_message_id(sink.queue_key)
+
+            def record_delivery() -> None:
+                self._record_reply_delivered(event, sink.queue, sink.queue_key, before_message_id=before_message_id)
+                if sink.on_delivered is not None:
+                    sink.on_delivered()
+
+            self_sent = replace(sink, on_delivered=record_delivery)
         # post-reply hooks：可对回复文本做后处理
         text = await self._apply_post_reply_hooks(event, text) or text
         # 缺少标签时补配置昵称及当前会话标签，不能混入其他群聊/私聊。

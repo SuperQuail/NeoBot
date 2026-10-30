@@ -229,7 +229,8 @@ test('speaking schedule is disabled by default and saves nested window arrays in
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.config, config);
   assert.deepEqual((await request(path)).data.config, config);
-  assert.equal(saved.data.revision, doc.revision + 1);
+  assert.match(saved.data.revision, /^[a-f0-9]{32}$/);
+  assert.notEqual(saved.data.revision, doc.revision);
   assert.equal(
     (await request(path, { method: 'POST', body: { revision: doc.revision, config } })).status,
     409,
@@ -245,12 +246,15 @@ test('speaking schedule is disabled by default and saves nested window arrays in
 test('config revisions, form/source values and cross-workspace reads share the same memory', async (t) => {
   const request = await fixture(t);
   const doc = (await request('/api/config')).data;
+  assert.equal(typeof doc.revision, 'string');
+  assert.match(doc.revision, /^[a-f0-9]{32}$/);
   doc.config.bot.nick_name = '内存中的演示名称';
   const saved = await request('/api/config', {
     method: 'POST',
     body: { revision: doc.revision, config: doc.config },
   });
-  assert.equal(saved.data.revision, doc.revision + 1);
+  assert.match(saved.data.revision, /^[a-f0-9]{32}$/);
+  assert.notEqual(saved.data.revision, doc.revision);
   assert.equal(
     (await request('/api/config', { method: 'POST', body: { revision: doc.revision, config: doc.config } }))
       .status,
@@ -284,6 +288,8 @@ test('plugin revisions and guarded starship toggles keep extensions synchronized
   assert.deepEqual((await request('/api/extensions')).data.items, []);
   assert.equal((await request('/api/preview/starship/')).status, 404);
   const doc = (await request('/api/plugins/dashboard/config')).data;
+  assert.equal(typeof doc.revision, 'string');
+  assert.match(doc.revision, /^[a-f0-9]{32}$/);
   assert.equal(doc.schema.find((item) => item.name === 'greeting').value, doc.config.greeting);
   const saved = await request('/api/plugins/dashboard/config', {
     method: 'POST',
@@ -294,6 +300,8 @@ test('plugin revisions and guarded starship toggles keep extensions synchronized
     },
   });
   assert.equal(saved.data.config.greeting, '演示新值');
+  assert.match(saved.data.revision, /^[a-f0-9]{32}$/);
+  assert.notEqual(saved.data.revision, doc.revision);
   assert.equal(saved.data.schema.find((item) => item.name === 'enabled').value, false);
   assert.equal(
     (

@@ -1,0 +1,165 @@
+name: Reusable plugin acceptance
+
+on:
+  workflow_call:
+    inputs:
+      sdk-ref:
+        description: SuperQuail/NeoBot 的完整 40 位 commit
+        type: string
+        required: true
+      plugin-path:
+        description: 调用仓库内的插件目录
+        type: string
+        default: .
+      generate-template:
+        description: 在临时目录生成 SDK 模板并验收，用于 SDK 自检
+        type: boolean
+        default: false
+      config-path:
+        description: 可选的插件内合成 TOML 配置样例
+        type: string
+        default: ''
+      step-timeout:
+        description: 每个 runner 子进程的超时秒数
+        type: number
+        default: 300
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.13', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: 校验固定 SDK 版本和工程路径
+        shell: python
+        env:
+          SDK_REF: ${{ inputs.sdk-ref }}
+          PLUGIN_PATH: ${{ inputs.plugin-path }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GENERATE_TEMPLATE: ${{ inputs.generate-template }}
+        run: |
+          import os
+          import re
+          from pathlib import Path, PurePosixPath, PureWindowsPath
+
+          if not re.fullmatch(r"[0-9a-fA-F]{40}", os.environ["SDK_REF"]):
+              raise SystemExit("sdk-ref 必须是完整 40 位 commit，不接受浮动分支或 tag")
+
+          def relative_path(value):
+              if not value or any(character in value for character in ("\\", "\n", "\r", "\0")):
+                  raise SystemExit("工程路径必须是仓库内相对路径")
+              path = PurePosixPath(value)
+              if path.is_absolute() or PureWindowsPath(value).drive or ".." in path.parts:
+                  raise SystemExit("工程路径不能离开仓库")
+              return path
+
+          project = Path(os.environ["GITHUB_WORKSPACE"]) / "plugin" / relative_path(os.environ["PLUGIN_PATH"])
+          if os.environ["GENERATE_TEMPLATE"] == "true":
+              project = Path(os.environ["RUNNER_TEMP"]) / "sdk_ci_example"
+          config = os.environ["CONFIG_PATH"]
+          config = str(project / relative_path(config)) if config else ""
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"NEOBOT_PLUGIN_PROJECT={project}\nNEOBOT_PLUGIN_CONFIG={config}\n")
+              output.write(f"UV_PROJECT_ENVIRONMENT={Path(os.environ['RUNNER_TEMP']) / 'neobot-plugin-sdk-venv'}\n")
+
+      - name: 检出调用仓库的当前提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: plugin
+          persist-credentials: false
+
+      - name: 检出指定 SDK 提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SuperQuail/NeoBot
+          ref: ${{ inputs.sdk-ref }}
+          path: .neobot-sdk
+          persist-credentials: false
+
+      - name: 安装 uv 和 Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.24'
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+
+      - name: 安装锁定 SDK 和测试依赖
+        working-directory: .neobot-sdk
+        # dev 定义在 workspace 根，成员包与根组分别同步，避免将根项目重型依赖带入。
+        run: |
+          uv sync --package neobot-modloader --locked
+          uv sync --only-group dev --inexact --locked
+
+      - name: 读取声明并按需生成模板
+        id: plan
+        env:
+          GENERATE_TEMPLATE: ${{ inputs.generate-template }}
+        run: |
+          args=("$NEOBOT_PLUGIN_PROJECT" --plan --github-output "$GITHUB_OUTPUT")
+          if [[ "$GENERATE_TEMPLATE" == "true" ]]; then
+            args+=(--template-name sdk_ci_example)
+          fi
+          uv run --project .neobot-sdk --no-sync python .neobot-sdk/scripts/plugin_ci.py "${args[@]}"
+
+      - name: 安装声明前端所需的 Node
+        if: steps.plan.outputs.frontend == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: 运行与作者本地相同的验收 runner
+        env:
+          STEP_TIMEOUT: ${{ inputs.step-timeout }}
+        run: |
+          args=("$NEOBOT_PLUGIN_PROJECT" --output-dir "$RUNNER_TEMP/plugin-acceptance" --timeout "$STEP_TIMEOUT")
+          if [[ -n "$NEOBOT_PLUGIN_CONFIG" ]]; then
+            args+=(--config "$NEOBOT_PLUGIN_CONFIG")
+          fi
+          uv run --project .neobot-sdk --no-sync python .neobot-sdk/scripts/plugin_ci.py "${args[@]}"
+
+      # 验收产物没有发布或签名权限，可信发布流程必须独立执行。
+      - name: 上传验收报告、最终包和摘要
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-acceptance-${{ matrix.os }}-py${{ matrix.python }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/plugin-acceptance/report.json
+            ${{ runner.temp }}/plugin-acceptance/plugin.zip
+            ${{ runner.temp }}/plugin-acceptance/SHA256SUMS
+            ${{ runner.temp }}/plugin-acceptance/pytest.xml
+            ${{ runner.temp }}/plugin-acceptance/pytest-execution.json
+            ${{ runner.temp }}/plugin-acceptance/*.log
+
+  verified:
+    name: 插件全部支持环境验收
+    needs: acceptance
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 必需矩阵不能被跳过或取消
+        shell: python
+        env:
+          ACCEPTANCE_RESULT: ${{ needs.acceptance.result }}
+        run: |
+          import os
+          if os.environ["ACCEPTANCE_RESULT"] != "success":
+              raise SystemExit("插件矩阵存在失败、跳过或取消，不能通过验收")

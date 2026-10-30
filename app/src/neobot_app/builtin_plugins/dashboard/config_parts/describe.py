@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from typing import Any, get_args, get_origin
 
+from pydantic import BaseModel
+from .pydantic_fields import describe_pydantic_fields
 from .schema import _default_of, _inner_types, _is_optional, _jsonable, _type_name
 
 
@@ -97,56 +99,14 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
     return descriptors
 
 
-def describe_pydantic_model(model: Any, values: Any = None) -> list[dict[str, Any]]:
-    """把 pydantic 配置模型转换为面板可渲染的字段描述（官方插件配置用）。"""
+def describe_pydantic_model(
+    model: type[BaseModel] | None, values: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """把插件的配置模型转换为前端字段描述，脱敏规则与原配置读写保持一致。"""
+    # 旧插件可以不使用 Pydantic，此时继续使用配置文件生成的字段描述。
     if model is None or not hasattr(model, "model_fields"):
         return []
-    from pydantic_core import PydanticUndefined
-
-    data = dict(values or {})
-    descriptors: list[dict[str, Any]] = []
-    for name, info in model.model_fields.items():
-        annotation = getattr(info, "annotation", None)
-        # 类型必须来自注解本身：按 json-schema 名字映射会把 int/bool/float 一律
-        # 退化成 str，面板就把数字当文本框渲染（静默漂移）。
-        type_name = _type_name(annotation)
-        default = info.get_default(call_default_factory=True)
-        if default is PydanticUndefined:
-            default = None
-        extra = getattr(info, "json_schema_extra", None) or {}
-        metadata = getattr(info, "metadata", ()) or ()
-        minimum = maximum = None
-        for item in metadata:
-            if hasattr(item, "ge") and item.ge is not None:
-                minimum = item.ge
-            if hasattr(item, "le") and item.le is not None:
-                maximum = item.le
-        descriptor: dict[str, Any] = {
-            "name": name,
-            "path": [name],
-            "label": str(getattr(info, "title", "") or name),
-            "description": str(getattr(info, "description", "") or ""),
-            "required": bool(getattr(info, "is_required", lambda: False)()),
-            "default": _jsonable(default),
-            "value": _jsonable(data.get(name, default)),
-            "kind": "scalar",
-            "type": type_name,
-            "readonly": bool(isinstance(extra, dict) and extra.get("readonly")),
-            "hot_reload": True,
-            "restart_reason": "",
-        }
-        inner = _inner_types(annotation)
-        target = inner[0] if inner else annotation
-        if get_origin(target) is list:
-            args = get_args(target)
-            descriptor["kind"] = "list"
-            descriptor["element_type"] = _type_name(args[0]) if args else "any"
-        if minimum is not None:
-            descriptor["min"] = minimum
-        if maximum is not None:
-            descriptor["max"] = maximum
-        descriptors.append(descriptor)
-    return descriptors
+    return describe_pydantic_fields(model, values)
 
 
 def _collect_scalar_fields(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:

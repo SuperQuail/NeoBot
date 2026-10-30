@@ -1,6 +1,5 @@
 // pages/plugins/PluginListPanel.tsx —— 插件列表侧栏（搜索 / 来源筛选 / 状态分组 / 底部状态）
 import Icon from '../../components/Icon';
-import Button from '../../components/ui/Button';
 import { PanelSkeleton } from '../../components/ui/PageSkeleton';
 import type { PluginListPanelProps } from './pluginProps';
 
@@ -26,7 +25,6 @@ export default function PluginListPanel(props: PluginListPanelProps) {
     proxy,
     onSelect,
     onOpenProxy,
-    onReload,
   } = props;
   return (
     <aside className="workspace-panel plugin-sidebar" aria-label="插件列表">
@@ -58,14 +56,6 @@ export default function PluginListPanel(props: PluginListPanelProps) {
           ))}
         </div>
         <div className="workspace-scroll plugin-list">
-          {listError && (
-            <div className="workspace-error" role="alert">
-              {listError}
-              <Button size="sm" onClick={onReload}>
-                重试
-              </Button>
-            </div>
-          )}
           {listLoading && <PanelSkeleton label="正在读取插件…" kind="list" rows={5} />}
           {!listLoading && !listError && visible.length === 0 && (
             <p className="empty muted">{filter ? '没有匹配的插件' : '还没有安装插件'}</p>

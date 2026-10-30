@@ -92,6 +92,7 @@ allow_remote_manage = true  # 关闭后远程只能查看，改配置/管插件�
 - [配置参考](docs/05-配置参考.md) — `data/config.toml` 完整配置项说明
 - [开发指南](docs/06-开发指南.md) — 开发环境、测试、代码规范
 - [插件开发](docs/07-插件开发.md) — 插件系统入门（详细 API 见 [packages/modloader/README.md](packages/modloader/README.md)）
+- [创建第一个插件](docs/04-功能文档/插件SDK与工程验收.md#创建并检查第一个工程) — 生成工程、离线验收、打开自己的插件说明与安装到真实机器人
 
 ## 贡献方式
 

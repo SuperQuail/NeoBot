@@ -3,7 +3,7 @@
 // 曾经这里只有一个 matchPath（只比路径），于是出现两类问题：
 //   1. 搜「概率」这类只出现在字段**说明**里的词，命中数算出来了、右侧却一行都不渲染；
 //   2. 搜群号这类只存在于**数组/字典值**里的内容，完全搜不到。
-// 现在统一成「路径 / 说明 / 集合类字段的值」三选一命中，且只有这一处判定。
+// 统一按显示名称、路径、说明或集合值命中，渲染和统计共用这一处判定。
 import type { FieldDescriptor } from '../../api/types';
 
 /** 纯文本包含判定：大小写不敏感，两侧都做 trim。 */
@@ -35,11 +35,12 @@ function collectionValueText(field: FieldDescriptor): string {
   return '';
 }
 
-/** 字段是否命中关键词：路径 / 说明 / 集合值，任一命中即可。空关键词视为全命中。 */
+/** 显示名称与原始路径均可搜索，空关键词视为全命中。 */
 export function fieldMatches(field: FieldDescriptor, keyword: string): boolean {
   if (!String(keyword || '').trim()) return true;
   return (
     matchesText(field.path.join('.'), keyword) ||
+    matchesText(field.label, keyword) ||
     matchesText(field.description, keyword) ||
     matchesText(collectionValueText(field), keyword)
   );

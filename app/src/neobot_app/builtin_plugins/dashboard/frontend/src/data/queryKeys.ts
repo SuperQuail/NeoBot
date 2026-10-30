@@ -35,6 +35,10 @@ export const QK = {
   extensions: 'extensions',
   power: 'admin:power',
   pluginConfig: (id: string) => `plugin-config:${id}`,
+  pluginSurface: (id: string) => `plugin-surface:${id}`,
+  pluginViews: (id: string) => `plugin-views:${id}`,
+  pluginResources: (id: string) => `plugin-resource:${id}:`,
+  pluginResource: (id: string, resource: string) => `plugin-resource:${id}:${resource}`,
   config: 'config',
   env: 'env',
   models: 'models',
@@ -74,6 +78,8 @@ export const POLL = {
   scheduledTasks: 15_000,
   /** 插件列表：20s */
   plugins: 20_000,
+  /** 选中插件的契约、配置与页面资源：2s，热重载后及时同步。 */
+  pluginSurface: 2_000,
   /** 档案与编辑文档由页面守护草稿后自动读取，避免无条件轮询覆盖编辑基线。 */
   archives: 0,
   editor: 30_000,

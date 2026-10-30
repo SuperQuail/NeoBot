@@ -1,0 +1,73 @@
+"""合成宿主端口，实际执行 SDK 命令注册、参数注入和回复处理。"""
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from neobot_modloader.context import RuntimePluginContext
+from neobot_modloader.loader import FilesystemPluginLoader
+
+
+class Adapter:
+    self_id = 10001
+
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, conversation, message):
+        self.messages.append(message)
+        return "test-message"
+
+
+class Commands:
+    """只替代宿主注册表，不替代插件处理器。"""
+
+    def __init__(self):
+        self.items = {}
+
+    def register(self, command):
+        if command.name in self.items:
+            raise ValueError("命令已注册")
+        self.items[command.name] = command
+
+    def unregister(self, name):
+        return self.items.pop(name, None) is not None
+
+
+async def test_configured_ping_reply(tmp_path):
+    loader = FilesystemPluginLoader()
+    loaded = loader.load_one(Path(__file__).resolve().parents[1])
+    assert loaded is not None and loaded.plugin is not None
+    adapter = Adapter()
+    commands = Commands()
+    context = RuntimePluginContext(
+        plugin_name="__PLUGIN_NAME__",
+        plugin_dir=loaded.plugin_dir,
+        data_dir=tmp_path,
+        config={"greeting": "custom reply"},
+        logger=None,
+        adapter=adapter,
+        app_commands=commands,
+    )
+    try:
+        await loaded.plugin.on_load(context)
+        await loaded.plugin.on_start()
+        command = commands.items["ping"]
+        assert command.permission == 0
+        assert command.source == "__PLUGIN_NAME__"
+        assert "发送配置中的回复内容" in command.help_line
+        call = SimpleNamespace(
+            kind="private",
+            user_id=10001,
+            conv_id="10001",
+            raw_args="",
+            command=command,
+            message={"post_type": "message", "message_type": "private", "user_id": 10001, "message": "/ping"},
+        )
+        await command.handler(call)
+        assert adapter.messages == ["custom reply"]
+        assert loaded.plugin.surface.describe(loaded.plugin)["actions"] == []
+    finally:
+        context.app_commands.unregister_all()
+        await loaded.plugin.on_stop()
+        loader.clear_module_cache(loaded.module_names)
+    assert commands.items == {}

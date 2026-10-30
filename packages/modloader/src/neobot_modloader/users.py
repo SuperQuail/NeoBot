@@ -36,9 +36,7 @@ class UserDirectory:
         self._adapter = adapter
         # value: (profile, fetched_at, failed)；failed=True 表示所有 API 均未返回
         # 数据（占位负缓存），仅此情况使用 FAILURE_TTL
-        self._cache: dict[
-            tuple[str, str | None], tuple[UserProfile, float, bool]
-        ] = {}
+        self._cache: dict[tuple[str, str | None], tuple[UserProfile, float, bool]] = {}
 
     def _now(self) -> float:
         return time.time()
@@ -85,9 +83,7 @@ class UserDirectory:
             return profile
         return None
 
-    async def get(
-        self, user_id: str, *, group_id: str | None = None, refresh: bool = False
-    ) -> UserProfile:
+    async def get(self, user_id: str, *, group_id: str | None = None, refresh: bool = False) -> UserProfile:
         uid = str(user_id)
         key = (uid, str(group_id) if group_id is not None else None)
         if not refresh:
@@ -123,7 +119,8 @@ class UserDirectory:
             self._cache[(uid, None)] = (profile, now, True)
         return profile
 
-    def from_event(self, event: dict[str, Any] | BaseModel) -> UserProfile:
+    @staticmethod
+    def from_event(event: dict[str, Any] | BaseModel) -> UserProfile:
         data = event.model_dump() if isinstance(event, BaseModel) else dict(event)
         sender = data.get("sender") or {}
         if isinstance(sender, BaseModel):
@@ -140,14 +137,10 @@ class UserDirectory:
             raw=dict(sender),
         )
 
-    async def display_name(
-        self, user_id: str, *, group_id: str | None = None, refresh: bool = False
-    ) -> str:
+    async def display_name(self, user_id: str, *, group_id: str | None = None, refresh: bool = False) -> str:
         return (await self.get(user_id, group_id=group_id, refresh=refresh)).display_name
 
-    async def get_many(
-        self, user_ids: Sequence[str], *, group_id: str | None = None
-    ) -> dict[str, UserProfile]:
+    async def get_many(self, user_ids: Sequence[str], *, group_id: str | None = None) -> dict[str, UserProfile]:
         if not user_ids:
             return {}
         uid_list: list[str] = []
@@ -193,15 +186,11 @@ class UserDirectory:
                     else:
                         remaining.append(uid)
                 if remaining:
-                    profiles = await asyncio.gather(
-                        *(self.get(uid, group_id=group_id) for uid in remaining)
-                    )
+                    profiles = await asyncio.gather(*(self.get(uid, group_id=group_id) for uid in remaining))
                     for uid, profile in zip(remaining, profiles):
                         result[uid] = profile
                 return {uid: result[uid] for uid in uid_list}
-        profiles = await asyncio.gather(
-            *(self.get(uid, group_id=group_id) for uid in missing)
-        )
+        profiles = await asyncio.gather(*(self.get(uid, group_id=group_id) for uid in missing))
         for uid, profile in zip(missing, profiles):
             result[uid] = profile
         return {uid: result[uid] for uid in uid_list}

@@ -15,13 +15,12 @@ def _sender_name(message: Any) -> str:
         return ""
     if isinstance(sender, dict):
         return str(sender.get("card") or sender.get("nickname") or "")
-    return str(
-        getattr(sender, "card", None) or getattr(sender, "nickname", None) or ""
-    )
+    return str(getattr(sender, "card", None) or getattr(sender, "nickname", None) or "")
+
 
 def _event_text(event: Any) -> str:
     try:
-        return str(Message(event).text or "")
+        return Message(event).to_chain().exclude("at", "reply").plain_text
     except Exception:
         if isinstance(event, dict):
             return str(event.get("raw_message") or "")

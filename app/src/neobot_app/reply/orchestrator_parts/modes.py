@@ -145,8 +145,18 @@ class ModesMixin:
                 except RuntimeError:
                     pass
             self._logger.warning("回复事件被取消", event_id=event.event_id)
-            self._record_debug("cancelled", event, queue_key=queue_key)
-            await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
+            self._normalize_delivered_terminal(event, queue_key=queue_key)
+            if event.send_response is not None:
+                self._record_debug("completed", event, queue_key=queue_key)
+                await self._emit_runtime_event(
+                    "reply.complete",
+                    event,
+                    queue_key=queue_key,
+                    duration_seconds=monotonic_seconds() - started_at,
+                )
+            else:
+                self._record_debug("cancelled", event, queue_key=queue_key)
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
             raise
         except Exception as exc:
             self._set_flow_active(event, queue_key, False)
@@ -186,9 +196,7 @@ class ModesMixin:
                 error=event.error,
             )
             self._record_debug("failed", event, queue_key=queue_key)
-            await self._emit_runtime_event(
-                "reply.fail", event, queue_key=queue_key, error=event.error
-            )
+            await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
             await self._handle_runtime_failure(event, exc)
 
 

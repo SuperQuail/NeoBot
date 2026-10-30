@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 93d0141
-verified_hash: 7ac78424ed8c
+verified_against: 235e60ac
+verified_hash: 1bb09f2dedf5
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -34,6 +34,18 @@ verified_hash: 7ac78424ed8c
 | `dashboard/web/` | 构建产物：index.html + assets + image | 是 | 否 |
 | `dashboard/` 下的 `*.py` | 服务端：路由、鉴权、静态资源 | 是 | 是 |
 
+新增插件页面仍走显式路由：`/api/plugins/{name}/views` 是会话接口，`/plugins-ui/{name}/{view}/...` 只分发声明页面目录内的公开资源。后者单独应用 CSP sandbox，禁止同源权限、网络连接与网络表单提交，同时允许 JS 处理本地表单事件；公开资源的无凭据 CORS 支持模块脚本。页面经随机会话桥接调用原有鉴权 API，不接收 Cookie、token 或 CSRF。
+
+前端“使用说明”入口进入整屏思索模式，顶部可返回原配置，舞台下方集中分章时间线、播放控件和字幕。默认手动阅读，“目录与全文”在同一舞台内搜索章节、正文和命令；选择步骤后返回演示并保持暂停。样例舞台不执行真实插件动作，也不写配置；原配置编辑器继续挂载，返回后恢复焦点并保留草稿。普通配置由模型生成固定表单，动态业务通过显式 view 声明的页面提供；旧 settings 布局声明已经移除。
+
+插件编辑器使用“配置表单 / TOML / 插件页面”平级模式，没有页面时隐藏最后一项。页面首次访问时挂载，切换模式和打开说明只暂停并保留原输入；说明关闭后恢复。跟做工具条和业务完成检查已经移除，演示结束和加载错误只走全局 InfoBar，短视口保留内容滚动退路。
+
+Pydantic 配置描述与保存归一化共用输入别名的优先级，嵌套组、对象列表和首次配置都按实际输入路径读写。前端路径保留序列整数下标，统一由不可变路径工具处理缺失容器和负下标，新增对象行使用同一份模板路径；不会另写一个不起作用的字段名键。
+
+机器人信息的缓存按连接状态失效；反向连接建立或断开后，下一次读取按当前连接状态返回，不继续复用离线身份缓存。直播订阅的群目录与机器人身份通过适配器公开 API 读取。
+
+InfoBar 的唯一宿主通过 Portal 直接挂到 body，与业务弹窗处于同一浮层环境；操作全局通知不会触发业务弹窗的外部关闭。
+
 ## 流程
 
 ```mermaid
@@ -41,7 +53,7 @@ flowchart TD
     A["HTTP 请求 → aiohttp Router"] --> B["_error_middleware｜server.py:436"]
     B --> C["_auth_middleware｜server.py:448"]
     C --> D{"passwords.configured?"}
-    D -- 否 --> D1["未设密码：本机仅 /api/auth/setup<br/>外网 /api/* → 403 setup_required"]
+    D -- 否 --> D1["未设密码：本机仅 /api/auth/setup<br/>受保护 API 与扩展均回 403 setup_required"]
     D -- 是 --> E{"需要会话?<br/>扩展 auth_prefixes 或 /api/* 非公开"}
     E -- 否 --> F["静态资源 / SPA 页面 / healthz 直通"]
     E -- 是 --> G{"X-Token 或 Cookie 会话有效?"}
@@ -161,7 +173,7 @@ flowchart TD
     C -- 是 --> C1["_cross_site_guard｜server.py:46<br/>Content-Type 必须 application/json"]
     C1 -- 不通过 --> C2["415 或 403，直接返回"]
     C -- 否 --> D{"passwords.configured?"}
-    D -- 否 --> D1{"path 是 /api/auth/status 或非 /api 路径?"}
+    D -- 否 --> D1{"status 或不需鉴权的非 /api 路径?"}
     D1 -- 是 --> D2["直通：静态资源与 SPA 始终可达"]
     D1 -- 否 --> D3{"loopback?"}
     D3 -- 否 --> D4["403 setup_required<br/>提示本机设置或 /set_password"]
@@ -183,8 +195,9 @@ flowchart TD
 扩展路径判定 `_extension_requires_auth`（`server.py:201`）用的是**去掉 base_path 之后**的路径，
 与前缀做「等于」或「前缀 + /」匹配，所以扩展的 `prefixes` / `auth_prefixes` 都不要带 base_path。
 
-未配置密码分支里，「非 `/api` 路径一律直通」意味着**未设密码不等于端口不可访问**：
-外网能看到登录页与静态资源，只有 `/api/*`（除 status）被 403 拦住。
+未配置密码时，登录页与公开静态资源仍可达；`auth_prefixes` 标记的扩展接口与受保护 `/api/*` 使用相同初始化保护，不能通过非 `/api` 路径绕开。
+扩展可按请求声明 `read/operate/manage`；默认读取为 read、写入为 manage，普通业务写入必须显式声明 operate。
+会话与 CSRF 后仍在服务端检查 manage，错误声明拒绝请求；受保护扩展响应使用 `Cache-Control: no-store`。
 </details>
 
 <details>

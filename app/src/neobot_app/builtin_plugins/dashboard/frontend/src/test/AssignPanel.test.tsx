@@ -14,7 +14,7 @@ vi.mock('../api/endpoints', () => ({
 }));
 
 const PAYLOAD: ModelsPayload = {
-  revision: 10,
+  revision: '00000000000000000000000000000010',
   can_manage: true,
   assignments: { roles: { primary_chat_model: 'main', vision_model: '' }, creator_image_models: ['image'] },
   roles_meta: [
@@ -97,7 +97,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(useAuthGate).mockReturnValue({ canManage: true, setupRequired: false, refresh: async () => {} });
   vi.mocked(api.configModels).mockResolvedValue(ok(structuredClone(PAYLOAD)));
-  vi.mocked(api.modelsAssignmentsSave).mockResolvedValue(ok({ revision: 11 }));
+  vi.mocked(api.modelsAssignmentsSave).mockResolvedValue(
+    ok({ revision: '00000000000000000000000000000011' }),
+  );
   vi.mocked(confirmAction).mockResolvedValue(true);
 });
 
@@ -165,7 +167,7 @@ describe('AssignPanel 用途分配', () => {
       creator_image_models: ['image', 'vision'],
     };
     vi.mocked(api.modelsAssignmentsSave).mockResolvedValue(
-      ok({ revision: 11, models: { ...PAYLOAD, assignments } }),
+      ok({ revision: '00000000000000000000000000000011', models: { ...PAYLOAD, assignments } }),
     );
     render(<AssignPanel />);
     await chooseOption(await readyPrimary(), '长上下文推理模型 · reason');
@@ -174,7 +176,7 @@ describe('AssignPanel 用途分配', () => {
 
     await waitFor(() =>
       expect(api.modelsAssignmentsSave).toHaveBeenCalledWith({
-        revision: 10,
+        revision: '00000000000000000000000000000010',
         assignments: {
           primary_chat_model: 'reason',
           vision_model: '',
@@ -250,7 +252,7 @@ describe('AssignPanel 用途分配', () => {
     await user.click(screen.getByRole('button', { name: '保存分配' }));
     await waitFor(() =>
       expect(api.modelsAssignmentsSave).toHaveBeenCalledWith({
-        revision: 10,
+        revision: '00000000000000000000000000000010',
         assignments: { primary_chat_model: 'main', vision_model: '', creator_image_models: ['image'] },
       }),
     );
@@ -327,12 +329,14 @@ describe('AssignPanel 用途分配', () => {
     await user.click(screen.getByRole('button', { name: '保存分配' }));
     expect(select).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: '绘图模型 (image)' })).toBeDisabled();
-    await act(async () => finish(ok({ revision: 11 })));
+    await act(async () => finish(ok({ revision: '00000000000000000000000000000011' })));
     await waitFor(() => expect(select).toBeEnabled());
     await chooseOption(select, '日常对话 · main');
     await user.click(screen.getByRole('button', { name: '保存分配' }));
     await waitFor(() =>
-      expect(api.modelsAssignmentsSave).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 11 })),
+      expect(api.modelsAssignmentsSave).toHaveBeenLastCalledWith(
+        expect.objectContaining({ revision: '00000000000000000000000000000011' }),
+      ),
     );
   });
 });

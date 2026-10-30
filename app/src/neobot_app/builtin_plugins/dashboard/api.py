@@ -15,6 +15,8 @@ from .api_parts.overview import OverviewMixin
 from .api_parts.stats import StatsMixin
 from .api_parts.system import SystemMixin
 from .api_parts.plugins import PluginsMixin
+from .api_parts.plugin_surface import PluginSurfaceMixin
+from .api_parts.plugin_views import PluginViewsMixin
 from .api_parts.config import ConfigMixin
 from .api_parts.deploy import DeployMixin
 from .api_parts.models import ModelsMixin
@@ -70,6 +72,8 @@ class DashboardApi(
     StatsMixin,
     SystemMixin,
     PluginsMixin,
+    PluginSurfaceMixin,
+    PluginViewsMixin,
     ConfigMixin,
     DeployMixin,
     ModelsMixin,

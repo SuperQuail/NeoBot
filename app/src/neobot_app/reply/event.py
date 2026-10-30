@@ -46,6 +46,8 @@ class ReplyEvent:
     willing_decision: WillingDecision | None = None
     generated_text: str = ""
     send_response: object | None = None
+    #: 回执可逐条保留；尚未完整结束的发送不能作为通知完整投递的确认。
+    send_incomplete: bool = False
     message_number_map: dict[int, int] = field(default_factory=dict)
     reply_to_number: int | None = None
     created_at: datetime = field(default_factory=now_utc)

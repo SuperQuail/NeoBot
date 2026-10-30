@@ -10,6 +10,7 @@ import ListField from './ListField';
 import ModelList from './ModelList';
 import ModelParamsField from './ModelParamsField';
 import ScalarField from './ScalarField';
+import JsonField from './JsonField';
 import type { FieldCallbacks } from './fieldTypes';
 
 type FieldComponent = ComponentType<{ descriptor: FieldDescriptor } & FieldCallbacks>;
@@ -22,6 +23,7 @@ export const fieldRegistry: Record<string, FieldComponent> = {
   // 数组/字典：可视化编辑（自动在 chip 墙 / 拖拽列表 / 键值表之间选形态），保留 JSON 兜底
   list: ListField,
   dict: DictField,
+  json: JsonField,
   // 下拉候选型标量：由 ScalarField 内部再次分流到 ComboboxField
   enum: ScalarField,
 };

@@ -1,0 +1,211 @@
+/* 列表卡片 */
+.list-card {
+  padding-bottom: 16px;
+}
+
+.list-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.list-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text, #1f3a4d);
+  margin: 0;
+}
+
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filter-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-box .select-control-wrapper {
+  min-width: 130px;
+}
+
+.filter-label {
+  font-size: 12px;
+  color: var(--muted, #526e80);
+  white-space: nowrap;
+}
+
+/* 运行状态微条 */
+.health-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border-soft, #e6f0f7);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.health-key {
+  color: var(--muted, #526e80);
+  font-size: 11px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.health-val {
+  color: var(--text, #1f3a4d);
+  font-weight: 500;
+  font-size: 12px;
+  margin: 0;
+}
+
+.health-chip-status .health-val {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #e2e8f0;
+  font-weight: 600;
+  font-size: 11px;
+  color: #334155;
+}
+
+.health-chip-status .health-val::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background: #64748b;
+}
+
+.health-chip-note {
+  flex: 1 1 200px;
+  color: var(--muted, #526e80);
+}
+
+.health-chip-note .health-val {
+  font-weight: normal;
+  color: var(--muted, #526e80);
+}
+
+/* 列表空态指引 */
+.list-empty-state {
+  padding: 44px 20px;
+  text-align: center;
+  border: 1px dashed var(--border, #d2e5f0);
+  border-radius: 10px;
+  background: #fdfdfe;
+  margin: 4px 0 12px;
+}
+
+.empty-icon-box {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  margin-bottom: 12px;
+}
+
+.empty-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text, #1f3a4d);
+  margin: 0 0 4px;
+}
+
+.empty-desc {
+  font-size: 12px;
+  color: var(--muted, #526e80);
+  margin: 0;
+}
+
+/* 表格区域 */
+.subscriptions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.subscriptions-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #526e80);
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border-soft, #e6f0f7);
+  white-space: nowrap;
+}
+
+.subscriptions-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-soft, #e6f0f7);
+  vertical-align: middle;
+  color: var(--text, #1f3a4d);
+}
+
+.subscriptions-table tr:hover td {
+  background: #fcfdfe;
+}
+
+.row-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted, #526e80);
+}
+
+/* 响应式断点 */
+@media (max-width: 860px) {
+  .workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  .preview-panel {
+    min-height: 320px;
+  }
+
+  .preview-canvas,
+  .preview-text-view {
+    min-height: 280px;
+    height: 320px;
+  }
+
+  .list-card-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .list-toolbar {
+    justify-content: space-between;
+  }
+
+  .health-strip {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}

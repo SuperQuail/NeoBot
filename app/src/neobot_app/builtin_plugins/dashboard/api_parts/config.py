@@ -15,6 +15,7 @@ from ..config_manager import (
     describe_pydantic_model,
 )
 from ..plugin_config import PluginConfigConflictError, PluginConfigError
+from ..config_parts.normalize import normalize_config_values
 from ._common import _pydantic_errors, _append_model_reload_hint, _json_ok, _json_error
 
 
@@ -26,10 +27,10 @@ class ConfigMixin:
             return _json_error("插件运行时不可用", status=503)
         name = request.match_info["name"]
         snapshot = self._find_snapshot(control, name)
-        editor = self._plugin_config_editor(control, name)
-        if editor is None:
-            return _json_error(f"插件不存在或没有独立数据目录: {name}", status=404)
         try:
+            editor = self._plugin_config_editor(control, name)
+            if editor is None:
+                return _json_error(f"插件不存在或没有独立数据目录: {name}", status=404)
             document = editor.read()
         except PluginConfigError as exc:
             return _json_error(str(exc), status=400)
@@ -38,9 +39,7 @@ class ConfigMixin:
         if schema:
             # 插件声明了 pydantic 模型时以模型为准（带范围/标题/说明）；
             # 模型没写 description 的字段用 plugin.toml 的注释兜底
-            document["schema"] = self._with_field_comments(
-                schema, self._plugin_field_comments(control, name)
-            )
+            document["schema"] = self._with_field_comments(schema, self._plugin_field_comments(control, name))
             document["form_supported"] = True
         return _json_ok(self._plugin_config_meta(snapshot, name, document))
 
@@ -58,7 +57,10 @@ class ConfigMixin:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
-        editor = self._plugin_config_editor(control, name)
+        try:
+            editor = self._plugin_config_editor(control, name)
+        except PluginConfigError as exc:
+            return _json_error(str(exc), status=400)
         if editor is None:
             return _json_error(f"插件不存在或没有独立数据目录: {name}", status=404)
         values = payload.get("config")
@@ -66,6 +68,7 @@ class ConfigMixin:
             values = payload.get("values")
         model = control.config_model(name)
         if model is not None and isinstance(values, dict):
+            values = editor.prepare_values(values)
             defaults: dict[str, Any] = {}
             getter = getattr(control, "plugin_config_defaults", None)
             if callable(getter):
@@ -76,14 +79,14 @@ class ConfigMixin:
             try:
                 validated = model.model_validate({**defaults, **values})
             except Exception as exc:
+                # 已恢复的只写字段可能出现在作者校验器错误中，只返回位置，不能回显异常正文。
                 return _json_error(
-                    "插件配置校验失败", status=400, errors=_pydantic_errors(exc)
+                    "插件配置校验失败", status=400, errors=_pydantic_errors(exc, include_messages=False, model=model)
                 )
             # 校验通过的值按模型声明的类型回填（"9981" -> 9981，list 也不再是字符串），
             # 提交里有的键才回填：未知键原样保留。否则 TOML 里会落下字符串，
             # 插件读到的类型与声明的对不上（静默漂移）。
-            dumped = validated.model_dump()
-            values = {**values, **{key: dumped[key] for key in values if key in dumped}}
+            values = normalize_config_values(values, validated)
         # 保存前的生效配置：用于判断哪些改动可以在运行期原地生效（不重载插件）
         before_values = self._plugin_config_values(control, name)
         try:
@@ -98,9 +101,7 @@ class ConfigMixin:
             return _json_error(str(exc), status=400)
         schema = describe_pydantic_model(model, document.get("config") or {})
         if schema:
-            document["schema"] = self._with_field_comments(
-                schema, self._plugin_field_comments(control, name)
-            )
+            document["schema"] = self._with_field_comments(schema, self._plugin_field_comments(control, name))
         applied = False
         message = "配置已保存到插件数据目录"
         reload_requested = bool(payload.get("reload"))
@@ -170,19 +171,13 @@ class ConfigMixin:
 
         after = self._plugin_config_values(control, name)
         try:
-            result = await apply_plugin_config_change(
-                consumer, plugin_name=name, before=before, after=after
-            )
+            result = await apply_plugin_config_change(consumer, plugin_name=name, before=before, after=after)
         except Exception as exc:
             self.logger.error(f"插件配置原地生效失败: {name}", error=str(exc))
             return False, f"配置已保存，但立即生效失败（已保留原配置）: {exc}", None
 
         changes = diff_summary(result.changes) if result.changes else None
-        restart_note = (
-            f"；另有 {len(result.needs_restart)} 项需重启 NeoBot 才能生效"
-            if result.needs_restart
-            else ""
-        )
+        restart_note = f"；另有 {len(result.needs_restart)} 项需重启 NeoBot 才能生效" if result.needs_restart else ""
         if result.error:
             self.logger.error(f"插件配置原地生效失败: {name}", error=result.error)
             return (
@@ -272,9 +267,7 @@ class ConfigMixin:
             payload = await self._read_json(request)
         except ValueError as exc:
             return _json_error(str(exc))
-        errors = self._config_manager().validate(
-            source=payload.get("source"), config=payload.get("config")
-        )
+        errors = self._config_manager().validate(source=payload.get("source"), config=payload.get("config"))
         if errors:
             return _json_error("配置校验未通过", status=400, errors=errors)
         return _json_ok({"message": "配置校验通过", "errors": []})

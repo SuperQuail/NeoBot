@@ -2,6 +2,7 @@
 flow: 03-reply-pipeline
 covers:
   - app/src/neobot_app/reply/orchestrator.py
+  - app/src/neobot_app/reply/orchestrator_parts/
   - app/src/neobot_app/reply/event.py
   - app/src/neobot_app/reply/sender.py
   - app/src/neobot_app/reply/postprocess.py
@@ -43,10 +44,10 @@ flowchart TD
     L --> M
     M --> N["SENDING -> _send_reply"]
     N --> O["后处理 + 输出兜底 + 逐句发送"]
-    O --> P["COMPLETED + 记 _last_reply_time"]
+    O --> P["每条投递即记回执与冷却<br/>本轮按实际投递补 COMPLETED"]
     P --> Q["on_reply_done: 处理回复期间积压的消息"]
-    N -.取消.-> R["CANCELLED（无出边）"]
-    N -.异常.-> S["FAILED（无出边）+ _handle_runtime_failure"]
+    N -.取消.-> R["无回执 CANCELLED<br/>已有回执保留 COMPLETED"]
+    N -.异常.-> S["无回执 FAILED + _handle_runtime_failure<br/>已有回执保留 COMPLETED"]
 ```
 
 ## 时序
@@ -68,9 +69,10 @@ sequenceDiagram
     OR->>SD: send_reply(text)
     SD->>PP: process_reply_text 切句
     PP-->>SD: segments + fallback_used
-    SD->>Q: 逐句发送
+    SD->>Q: 逐句发送，适配器逐条检查发言策略
+    SD->>OR: 每条成功即保留回执、更新冷却和回复位置
     SD->>Q: _emit_self_sent 自身发言入队 + 落盘
-    OR->>OR: COMPLETED + 记冷却基准
+    OR->>OR: 按实际投递补 COMPLETED
 ```
 
 ## 细节
@@ -122,8 +124,9 @@ flowchart TD
 ```
 
 `pipeline_key = f"{conversation_ref.kind}:{queue_key}"`（`orchestrator.py:600`）；
-冷却基准是**上一次成功的 `_run` 完成时刻**（`:1805`），不是「上次收到消息的时刻」。
-后台通知走 `start_background_reply`（`:761`），它带 `skip_cooldown=True`，不占用冷却额度。
+冷却基准在每条消息真实投递后由 `_record_reply_delivered` 更新，同时推进已回复位置；
+后续分句被拒绝、超时或取消不会撤销已发生的投递。后台通知走 `start_background_reply`，
+带 `skip_cooldown=True` 绕过入口冷却；实际发送仍更新该会话的冷却基准。
 </details>
 
 <details>
@@ -208,7 +211,7 @@ flowchart TD
     G --> H["reply.postprocess.after 钩子"]
     H --> I["clean_segments（trusted_split 才关控制 token 抑制）"]
     I --> J["逐条发送: 句子冷却 -> send_with_timeout"]
-    J --> K["_emit_self_sent_text 自身发言入队 + 快照"]
+    J --> K["成功即保留回执并调用 on_delivered<br/>再 _emit_self_sent_text 入队 + 快照"]
     K --> L["_schedule_self_sent_persist 后台落盘（永不抛）"]
 ```
 
@@ -253,12 +256,16 @@ flowchart LR
 到期取消本轮，阻止超时后迟发。任务已清理时直接读取事件的拒绝原因和发送回执。
 若拒绝前已有消息送达，回复事件仍为 `COMPLETED` 并发出 `reply.complete`，后续输出停止；
 `speech_blocked` 继续保留，定时通知的部分投递不会被当作全部成功，也不排队补发。
+`send_incomplete` 在每次发送开始时置位，全部发送结束才清除；回执逐条保留，通知确认还要求
+`send_incomplete=False`。等待超时会取消本轮，部分投递仍完成收尾但不消费通知；
+已完整发送、仅后处理钩子尚未返回的回复可以确认。长回复的说明文字和图片分别即时记账。
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | `ReplyState` 七态 | `ReplyEvent.transition` | 终态无出边 | 非法迁移直接 RuntimeError；终态补 `completed_at` |
 | 同会话在跑标记 `_replying_queues` | `_start_reply_with_tracking` 成功后 | `on_reply_done` | start_reply 返回 None 时不置位（否则会话会被永久锁住） |
-| 冷却基准 `_last_reply_time` | `_run` 成功完成时 | 不清理（只被新值覆盖） | 取消/失败都不刷新基准 |
+| 冷却基准 `_last_reply_time` | 每条实际投递后的 `_record_reply_delivered` | 不清理（只被新值覆盖） | 后续取消/失败不撤销已发部分的基准 |
+| `send_response` / `send_incomplete` | 每条真实投递保留回执；发送开始置位未完成 | 全部发送结束清除未完成标记 | 部分投递可完成收尾，但不能确认通知完整送达 |
 | 静默看门狗 `silent_deadline` | `_run_agent_mode` 建闭包 | 每轮 `reset_silent_deadline` | 超时 -> CANCELLED + 记 phase，不抛异常上浮 |
 | 发送中标记 | `sender._enter_sending` | `_leave_sending` | 群聊允许 COMPLETED -> SENDING 再入 |
 | 自身发言落盘任务 | `_emit_self_sent` | 后台任务自行结束 | 永不抛异常，失败只记日志 |

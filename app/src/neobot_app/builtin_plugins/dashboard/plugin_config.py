@@ -29,8 +29,11 @@ from pathlib import Path
 from typing import Any
 
 import tomlkit
+from pydantic import SecretBytes, SecretStr
 
 from neobot_modloader import merge_plugin_config
+
+from .config_parts.secret_values import PluginSecretPolicy
 
 
 class PluginConfigError(RuntimeError):
@@ -70,6 +73,13 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _jsonable(value: Any) -> Any:
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    if isinstance(value, SecretBytes):
+        try:
+            return value.get_secret_value().decode("utf-8")
+        except UnicodeDecodeError:
+            raise PluginConfigError("凭据不是有效的 UTF-8 文本，无法保存为 TOML") from None
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -230,31 +240,35 @@ def describe_mapping(data: dict[str, Any], path: tuple[str, ...] = ()) -> list[d
     return descriptors
 
 
-def _decorate_schema(descriptors: list[dict[str, Any]], original: Any) -> list[dict[str, Any]]:
-    """把敏感字段的默认值清空，只保留「是否已设置」，避免密钥回传到前端。"""
-    from .security import is_sensitive_key
+def _decorate_model_list(
+    descriptor: dict[str, Any], original: Any, policy: PluginSecretPolicy, path: tuple[str | int, ...]
+) -> None:
+    entries = original if isinstance(original, list) else []
+    for index, entry in enumerate(descriptor["items"]):
+        raw = entries[index] if index < len(entries) else None
+        _decorate_schema(entry["fields"], raw, policy, (*path, index))
+    if entries:
+        _decorate_schema(descriptor["item_fields"], entries[0], policy, (*path, 0))
 
+
+def _decorate_schema(
+    descriptors: list[dict[str, Any]], original: Any, policy: PluginSecretPolicy, path: tuple[str | int, ...] = ()
+) -> list[dict[str, Any]]:
+    """把敏感字段的默认值清空，只保留「是否已设置」，避免密钥回传到前端。"""
     if not isinstance(original, dict):
         return descriptors
     for item in descriptors:
-        name = str(item.get("name") or "")
+        name = item["name"]
         raw = original.get(name)
-        if is_sensitive_key(name):
+        if policy.sensitive((*path, name), raw):
             item["sensitive"] = True
             item["has_value"] = bool(str(raw or "").strip())
             item["value"] = ""
             continue
-        if item.get("kind") == "group":
-            _decorate_schema(item.get("fields") or [], raw)
-        elif item.get("kind") == "model_list":
-            entries = raw if isinstance(raw, list) else []
-            for index, entry in enumerate(item.get("items") or []):
-                _decorate_schema(
-                    entry.get("fields") or [],
-                    entries[index] if index < len(entries) else None,
-                )
-            if entries:
-                _decorate_schema(item.get("item_fields") or [], entries[0])
+        if item["kind"] == "group":
+            _decorate_schema(item["fields"], raw, policy, (*path, name))
+        elif item["kind"] == "model_list":
+            _decorate_model_list(item, raw, policy, (*path, name))
     return descriptors
 
 
@@ -278,10 +292,13 @@ class PluginConfigEditor:
         *,
         defaults: Mapping[str, Any] | None = None,
         comments: Mapping[str, str] | None = None,
+        model: Any = None,
+        schema: dict[str, Any] | None = None,
     ) -> None:
         self.path = Path(path)
         self._defaults = _jsonable({str(key): value for key, value in (defaults or {}).items()})
         self._comments = {str(key): str(value) for key, value in (comments or {}).items()}
+        self._secrets = PluginSecretPolicy(model, schema=schema)
 
     @property
     def exists(self) -> bool:
@@ -325,15 +342,13 @@ class PluginConfigEditor:
         return _comments_from_text(text, None)
 
     def read(self) -> dict[str, Any]:
-        from .security import has_secret_value, mask_mapping
-
         document = self._document()
         # 插件实际生效的配置 = 打包默认值 + 插件数据目录里保存的值
         effective = merge_plugin_config(self._defaults, self._stored())
-        secret_present = has_secret_value(effective)
-        masked = mask_mapping(effective)
+        secret_present = self._secrets.contains(effective)
+        masked = self._secrets.mask(effective)
         # schema 从打码后的数据构建，避免分组 value 里残留明文
-        schema = _decorate_schema(describe_mapping(masked), effective)
+        schema = _decorate_schema(describe_mapping(masked), effective, self._secrets)
         # 字段说明：配置文件里已有的注释优先，其次是 plugin.toml 的注释
         comments: dict[str, str] = {}
         for key, text in self._comments.items():
@@ -354,8 +369,13 @@ class PluginConfigEditor:
             "form_supported": bool(schema),
             # 默认值同样可能来自 plugin.toml 且含密钥形态的键：与 config/source 一起打码，
             # 不能因为 secret_policy=write_only 却把 defaults 明文发出去。
-            "defaults": mask_mapping(self._defaults),
+            "defaults": self._secrets.mask(self._defaults),
         }
+
+    def prepare_values(self, config: dict[str, Any]) -> dict[str, Any]:
+        """在模型校验之前恢复只写字段，避免占位符被当作新凭据校验或保存。"""
+        effective = merge_plugin_config(self._defaults, self._stored())
+        return self._secrets.restore(_jsonable(config), effective)
 
     def save(
         self,
@@ -364,23 +384,20 @@ class PluginConfigEditor:
         source: str | None = None,
         expected_revision: str | None = None,
     ) -> dict[str, Any]:
-        from .security import has_secret_value, restore_mapping
-
         original = self._stored()
         if expected_revision is not None and expected_revision != self.revision():
             raise PluginConfigConflictError("插件配置已被其它会话修改，请重新读取后再保存")
         if source is not None:
-            if has_secret_value(original):
-                raise PluginConfigError(
-                    "该插件配置含密钥，已禁用源码编辑；请使用表单模式（密钥只能更新，不能读取）"
-                )
+            # 读取与保存必须使用同一套生效配置，首次保存前的打包密钥也不能绕过保护。
+            if self._secrets.contains(merge_plugin_config(self._defaults, original)):
+                raise PluginConfigError("该插件配置含密钥，已禁用源码编辑；请使用表单模式（密钥只能更新，不能读取）")
             try:
                 document = tomlkit.parse(source)
             except Exception as exc:
                 raise PluginConfigError(f"TOML 解析失败: {exc}") from exc
         else:
             # 占位符/空值 -> 沿用原密钥；新值 -> 覆盖（密钥只能更新，不能读取）
-            submitted = restore_mapping(_jsonable(dict(config or {})), original)
+            submitted = self.prepare_values(dict(config or {}))
             if not isinstance(submitted, dict) or not submitted:
                 raise PluginConfigError("配置内容为空")
             document = self._merge_into_document(submitted)
