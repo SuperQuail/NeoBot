@@ -49,6 +49,7 @@ class ModesMixin:
         queue_key: str,
     ) -> None:
         started_at = monotonic_seconds()
+        completion_started = False
         try:
             policy = getattr(getattr(self._adapter, "core", None), "speaking_policy", None)
             if policy is not None and event.conversation_ref is not None:
@@ -115,6 +116,7 @@ class ModesMixin:
                 reply_preview=event.generated_text[:80] if event.generated_text else "",
             )
             self._record_debug("completed", event, queue_key=queue_key)
+            completion_started = True
             await self._emit_runtime_event(
                 "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
             )
@@ -148,12 +150,13 @@ class ModesMixin:
             self._normalize_delivered_terminal(event, queue_key=queue_key)
             if event.send_response is not None:
                 self._record_debug("completed", event, queue_key=queue_key)
-                await self._emit_runtime_event(
-                    "reply.complete",
-                    event,
-                    queue_key=queue_key,
-                    duration_seconds=monotonic_seconds() - started_at,
-                )
+                if not completion_started:
+                    await self._emit_runtime_event(
+                        "reply.complete",
+                        event,
+                        queue_key=queue_key,
+                        duration_seconds=monotonic_seconds() - started_at,
+                    )
             else:
                 self._record_debug("cancelled", event, queue_key=queue_key)
                 await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)

@@ -327,12 +327,13 @@ class ReplySender:
 
         # Phase A: send images first (one by one)
         if images:
-            for image_number in images:
-                if self._emoji_service is None:
-                    continue
-                entry = self._emoji_service.get_entry(image_number)
-                if entry is None:
-                    continue
+            image_entries = [
+                (image_number, entry)
+                for image_number in images
+                if self._emoji_service is not None
+                and (entry := self._emoji_service.get_entry(image_number)) is not None
+            ]
+            for index, (image_number, entry) in enumerate(image_entries):
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
                 record_delivery(
                     await send_image(
@@ -343,6 +344,8 @@ class ReplySender:
                         wait_response=False,
                     )
                 )
+                if index == len(image_entries) - 1 and not text.strip() and not segments:
+                    event.send_incomplete = False
                 await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
                 await self._emoji_service.record_usage(image_number)
 
@@ -356,13 +359,13 @@ class ReplySender:
                     )
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
                     record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
+                    event.send_incomplete = False
                     await self._emit_self_sent_image(
                         self_sent, conv_ref, image_path,
                         kind="markdown",
                         source_note=text,
                     )
                     event.send_response = send_results[0]
-                    event.send_incomplete = False
                     self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
                     return True
