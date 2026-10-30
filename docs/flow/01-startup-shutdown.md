@@ -14,8 +14,8 @@ covers:
   - app/src/neobot_app/runtime/instance_lease.py
   - app/src/neobot_app/runtime/local_control.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 6d95ad1
-verified_hash: 878228d49c1b
+verified_against: e0c9636
+verified_hash: e93671dc25c3
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机

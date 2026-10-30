@@ -9,8 +9,8 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
-verified_against: 2d7925b
-verified_hash: a1caca7f81c3
+verified_against: e0c9636
+verified_hash: 48cbd6b515bc
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
