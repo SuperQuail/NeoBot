@@ -698,3 +698,22 @@ def test_download_file_is_session_tool():
     skill = SandboxManagerSkill()
 
     assert "download_file" in skill.session_tools
+
+
+def test_display_result_path_keeps_absolute_paths_outside_sandbox(tmp_path):
+    """Arrange 沙箱内 flow 目录与沙箱外的工作区各一个文件，Act 用展示路径函数转换，
+    Assert 沙箱内按相对路径展示、沙箱外保持绝对路径（模型回填时不会解析错）。"""
+    from neobot_app.skills.sandbox_manager_parts.common import display_result_path
+
+    sandbox_root = tmp_path / "sandbox"
+    flow = sandbox_root / "temp" / "group_1"
+    flow.mkdir(parents=True)
+    (flow / "a.txt").write_text("a", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "b.txt").write_text("b", encoding="utf-8")
+
+    assert display_result_path(flow / "a.txt", flow, sandbox_root) == "a.txt"
+    assert display_result_path(workspace / "b.txt", workspace, sandbox_root) == str(
+        workspace / "b.txt"
+    )

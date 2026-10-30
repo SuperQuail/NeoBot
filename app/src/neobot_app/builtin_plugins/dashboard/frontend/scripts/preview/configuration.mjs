@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { clone, longText, longUrl, created } from './scenario.mjs';
 import {
   group,
@@ -14,8 +15,8 @@ import { json } from './http.mjs';
 
 export function createConfigurationPreview(scene) {
   const { empty, label } = scene;
-  let configRevision = 7;
-  let envRevision = 3;
+  let configRevision = randomBytes(16).toString('hex');
+  let envRevision = randomBytes(16).toString('hex');
   let config = {
     bot: {
       account: '1000000001',
@@ -239,7 +240,7 @@ export function createConfigurationPreview(scene) {
         config = foldDemoModelParams(
           body.mode === 'toml' ? parseDemoToml(body.source) : clone(body.config || config),
         );
-        configRevision++;
+        configRevision = randomBytes(16).toString('hex');
         return json(res, { ...configDoc(), message: '已保存到演示内存', applied: !!body.reload, changes });
       }
       if (path === '/api/config/validate') {
@@ -261,7 +262,7 @@ export function createConfigurationPreview(scene) {
           if (value)
             Object.assign(item, { has_value: true, value: item.sensitive ? undefined : String(value) });
         }
-        envRevision++;
+        envRevision = randomBytes(16).toString('hex');
         return json(res, {
           ...envDoc(),
           applied: !!body.reload,
@@ -281,7 +282,7 @@ export function createConfigurationPreview(scene) {
           { key: name + '_APIKey', sensitive: true, has_value: !!body.api_key, in_file: true },
           { key: name + '_URL', sensitive: false, value: body.url, in_file: true },
         );
-        envRevision++;
+        envRevision = randomBytes(16).toString('hex');
         return json(res, { ...envDoc(), message: '演示供应商已添加' });
       }
       if (path === '/api/config/models') return json(res, modelDoc());
@@ -294,7 +295,7 @@ export function createConfigurationPreview(scene) {
           if (index < 0) library.push(entry);
           else library[index] = entry;
         }
-        configRevision++;
+        configRevision = randomBytes(16).toString('hex');
         return json(res, {
           ...modelDoc(),
           models: modelDoc(),
@@ -310,7 +311,7 @@ export function createConfigurationPreview(scene) {
           roles: Object.fromEntries(Object.entries(draft).filter(([key]) => key !== 'creator_image_models')),
           creator_image_models: draft.creator_image_models || [],
         };
-        configRevision++;
+        configRevision = randomBytes(16).toString('hex');
         return json(res, { ...modelDoc(), models: modelDoc(), message: '演示模型分配已保存' });
       }
       if (path === '/api/config/models/test')

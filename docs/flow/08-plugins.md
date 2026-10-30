@@ -14,8 +14,8 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/runtime/plugin_config_reload.py
   - app/src/neobot_app/bootstrap/_skills.py
-verified_against: 528fe18
-verified_hash: 673b1740f81d
+verified_against: 89ec896
+verified_hash: 75f8f53a3f6f
 ---
 
 # 08 插件系统：扫描 · 加载 · 启停 · 依赖 · 配置热重载
@@ -37,7 +37,9 @@ verified_hash: 673b1740f81d
 * `modloader/runtime.py`（2328 行编排门面）的逐行细节、`installer.py` 的下载/解压/备份、`hooks.py` 的处理器绑定与参数注入 → 见 `08b-plugin-runtime.md`（待补）。本图只在节点上标注它们的位置与调用顺序。
 * `Plugin`（`plugin.py`）的装饰器注册面（命令/工具/Agent/Markdown Skill 绑定）→ 见 06-tools-skills。
 
-**spec 与现实的差异**：实现里**没有文件监听**。全仓没有插件目录 watcher，`reload` 只能由面板按钮 / `plugin_control` 门面 / 插件自身调用触发；`config.reload` 命令只分发**本体**配置（`HotReloadRegistry.apply`），插件配置走 `apply_plugin_config_change` 这条独立通道 —— 两者不互相触发。
+**触发边界**：面板按钮 / `plugin_control` 门面 / 插件自身可以显式重载。开启 `[plugins].watch=true` 后，`PluginHotReloader` 还会扫描已就绪且支持热重载的插件，将稳定的源码保存送入同一事务重载；默认关闭，修改开关需重启。`config.reload` 命令只分发**本体**配置（`HotReloadRegistry.apply`），插件配置走 `apply_plugin_config_change` 独立通道。文件监测生命周期与防抖详见 `08b-plugin-runtime.md`。
+
+插件机器名在注册前统一校验为安全的单个路径组件，不接受工具命名空间分隔符 `__`。清单依赖与代码依赖按加载规则形成同一份有效声明，供全来源启动排序及停用、重载联动使用；不再要求作者把同一依赖重复声明两次。Python 发行包依赖同时检查实际版本与条件声明。
 
 ## 流程
 
@@ -45,22 +47,22 @@ verified_hash: 673b1740f81d
 flowchart TD
     A["build_plugin_runtime / bootstrap/_skills.py:91（同步装配）"] --> B["PluginRuntime.load_all / runtime.py:426"]
     B --> C["scan_dirs(): 官方目录在前, 第三方目录在后 / runtime.py:251"]
-    C --> D["FilesystemPluginLoader.load_all / loader.py:82（逐目录）"]
+    C --> D["FilesystemPluginLoader.load_all(resolve_dependencies=False)：逐目录收集"]
     D --> E{"目录带 __init__.py 或单文件 .py?"}
     E -- 都不是 / 带 _ 前缀 --> E1["跳过: 不是插件, 不报错"]
     E -- 是 --> F["import_module: 清 __pycache__ + 新 gN 命名空间 / importer.py:30"]
     F --> G{"plugin.toml 存在?"}
     G -- 是 --> G1["read_manifest: name / version / priority / dependencies / hot_reload"]
     G -- 否 --> G2["单文件插件: 版本固定 0.1.0, 元数据取 Plugin() 属性"]
-    G1 --> H["order_results: 拓扑排序 + 依赖判定 / ordering.py:233"]
+    G1 --> H["runtime 汇总全部来源，官方名称去重后统一 order_results"]
     G2 --> H
     H --> I{"依赖问题?（五种 code, 见细节 4）"}
     I -- 有 --> I1["DisabledPlugin: 自动禁用, 不阻断启动, 记 _auto_disabled"]
     I -- 无 --> J["_register: 合并配置 + 校验 + 建上下文 / runtime.py:2114"]
     J --> K["manager.register: 记录 + 名字永久锁 / manager.py:284"]
     K --> L["load_registered: on_load -> LOADED / runtime.py:517"]
-    L --> M["start_all: on_start -> RUNNING / runtime.py:522"]
-    M --> N["运行期控制入口: set_enabled / reload / unload（面板或命令触发）"]
+    L --> M["start_all：on_start -> RUNNING<br/>plugins.watch 为真则启动源码监测 / runtime.py:499"]
+    M --> N["运行期控制入口：面板 / 命令 / 稳定保存触发 reload"]
     N --> O{"改动的是插件配置?"}
     O -- 是, 已登记 config consumer --> O1["apply_plugin_config_change: 只喂运行期安全项 / plugin_config_reload.py:142"]
     O -- 是, 无 consumer --> O2["config_hot_reload? 重载插件 : 提示需重启 / dashboard/api.py:1306"]
@@ -85,9 +87,10 @@ sequenceDiagram
     participant HR as HotReloadRegistry或plugin_config_reload
 
     Note over RT,LD: 启动装配（同步, 无 await, 装不下就整段跳过）
-    RT->>LD: load_all(plugin_dir) 逐目录（官方目录先）
-    LD->>LD: 导入模块（新 gN 命名空间）+ order_results 拓扑排序
+    RT->>LD: load_all(plugin_dir, resolve_dependencies=False) 逐目录（官方目录先）
+    LD->>LD: 导入模块（新 gN 命名空间），本阶段不判跨来源依赖
     LD-->>RT: LoadedPlugin / DisabledPlugin / PluginLoadError 三选一
+    RT->>RT: 合并来源并保留官方名称，统一依赖判定和拓扑排序
     RT->>RT: 存在性依赖 + PyPI 依赖 + min_neobot_version 检查（任一不过 = 跳过加载, 不致命）
     RT->>MG: register(plugin, context)（只登记, 不 await 生命周期）
     Note over RT,MG: 之后 load_registered / start_all 才跑生命周期
@@ -96,7 +99,7 @@ sequenceDiagram
     RT->>MG: start_plugin(name)
     MG->>PL: on_start()（抛错 → ERROR, 已加载的模块不回滚, 可直接重载）
 
-    Note over P,RT: 运行期操作（显式触发, 没有文件监听）
+    Note over P,RT: 运行期操作：显式触发，或 plugins.watch 开启后的稳定保存
     P->>RT: set_enabled(false) 或 unload 或 reload
     RT->>MG: _cascade_stop_dependents: 先停依赖方（失败不致命, 只记 _auto_disabled）
     MG-->>RT: 名字锁内串行（ReentrantLock 同任务可重入）
@@ -192,6 +195,10 @@ flowchart TD
 
 版本口径（`version.py`）：`1.0` 与 `1.0.0` 相等（去尾零）；预发布后缀被忽略，`1.0.0-alpha.1` 按 `1.0.0` 处理；`compare_plugin_versions` 对**任一侧解析不出数字**或**全零版本**（源码运行回落 `0.0.0`）返回 `None`，语义是「无法比较，别拦」。
 `parse_dependencies` 额外拒绝两类写法：单个字符串（必须是列表）、同名依赖声明两次。
+
+以上是插件间版本比较。Python 包依赖单独使用 `packaging.Requirement` 解析完整 PEP 508 声明，
+按环境 marker 决定是否适用，再检查已安装版本是否满足；非法声明只记为该插件加载失败，不能中断全局扫描。
+清单中的插件依赖优先于 `Plugin.dependencies`，导入后同步为同一份运行时依赖，保证后续启停和重载使用相同判据。
 </details>
 
 <details>
@@ -226,7 +233,7 @@ flowchart TD
 
 | 入口 | 时机 | 判据 | 不满足的后果 |
 |---|---|---|---|
-| `ordering._evaluate` | `loader.load_all` 排序时 | 静态快照 + `unavailable` 名单 | 变 `DisabledPlugin` |
+| `ordering._evaluate` | 运行时汇总全部来源后排序；独立 loader 默认自行排序 | 静态快照 + `unavailable` 名单 | 变 `DisabledPlugin` |
 | `runtime._dependency_presence_issues` | `load_all` 注册阶段 | 只查记录**在不在**，不要求已加载 | 自动禁用（跳过注册） |
 | `runtime._dependency_issues` | 启动 / 激活 / 重载插件 | 要求前置状态在 LOADED 或 RUNNING，且版本满足 | 返回 `ok=False` + 原因 |
 | `PluginRegistryView.dependency_issues` | 面板查询 | 同上一行，但只产出文本 | 只展示，不拦操作 |
@@ -241,8 +248,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["import_module(path, name) / importer.py:30"] --> B["importlib.invalidate_caches()"]
-    B --> C["rmtree(插件目录下 __pycache__): 防止复用旧 .pyc"]
-    C --> D["模块名 = namespace.安全名_路径sha1前12位_gN / importer.py:63"]
+    B --> C["_clear_bytecode：单文件清同级缓存；包递归清子包缓存<br/>不跟随符号链接，跳过 .git / node_modules / .venv"]
+    C --> D["模块名 = namespace.安全名_路径sha1前12位_gN / importer.py:77"]
     D --> E["sys.modules[module_name] = module 之后 exec_module"]
     E --> F{"exec 抛错?"}
     F -- 是 --> F1["clear_module_cache(本代) 后原样抛出"]
@@ -255,7 +262,7 @@ flowchart TD
 ```
 
 namespace 分两个：第三方插件 `neobot_user_plugins`，官方插件 `neobot_builtin_plugins`（`runtime.py:140`、`runtime.py:145`）。
-**反直觉之处**：模块名里带自增代际 `_gN`，所以「热重载会复用到旧模块」在当前实现里不成立 —— 真正保证新代码生效的是**删掉 `__pycache__`**（避免按源码 mtime 判定时命中旧字节码）。清理 `sys.modules` 的作用变成了「不留孤儿代」：注册失败、被禁用、被同名覆盖的插件，其模块不会注册进管理器，留着只占内存并污染排查视野。
+**代际与字节码是两道独立防线**：新 `_gN` 命名空间隔离旧模块对象，`_clear_bytecode` 递归删除包内 `__pycache__`，防止子包在同秒、等长保存后仍命中旧字节码。单文件只清同级缓存；包扫描不进入符号链接与 `.git` / `node_modules` / `.venv`。清理 `sys.modules` 的作用变成了「不留孤儿代」：注册失败、被禁用、被同名覆盖的插件，其模块不会注册进管理器，留着只占内存并污染排查视野。
 </details>
 
 <details>
@@ -310,7 +317,7 @@ flowchart TD
 ```
 
 状态机本体在 `manager.py`：`_load_plugin_locked` 只接受 UNLOADED / STOPPED 起步，`_start_plugin_locked` 在 STOPPED 时会先补一次 `load_plugin`；`on_load` / `on_start` 抛错都进 ERROR 并立刻 `_teardown_owned_resources`（清理回调、事件订阅、Agent 注销、插件数据库关闭，`manager.py:583`）；已处于 STOPPING 或 `_teardown_depth>0` 时再次 stop 直接返回 False，不污染外层那次停止的记账。
-`_cascade_restore_dependents` 只认 `_auto_disabled` 里 `前置 == 刚恢复的插件` 的条目；路径找不到就静默丢弃该条目（插件目录被删了）。
+`_cascade_restore_dependents` 从刚恢复的插件出发收集 `_auto_disabled` 的完整前置闭包，按拓扑恢复多前置与传递依赖；路径缺失或成环返回失败结果。源码监测保留同一路径的已有指纹，依赖方被联动恢复换代后也不会把期间的新保存误当成基线。
 </details>
 
 <details>
@@ -470,17 +477,17 @@ flowchart TD
 
 ## 易错点
 
-* **没有文件监听**：改完插件代码不会自动生效。面板「重载」按钮 / `control.reload` / 插件里调 `plugin_control` 才是触发点；`config.reload` 只重载**本体**配置。
+* **自动监测默认关闭**：`[plugins].watch=true` 需重启后生效，只重载已就绪且 `hot_reload=True` 的插件；停止、卸载或停用的插件不会因保存而复活。文件暂不可读时保留旧代；`config.reload` 仍只重载**本体**配置。
 * **`hot_reload=False` 是硬闸**：`_loaded_flags[name][0]` 为假时重载直接被拒并置 `requires_restart=True`（`runtime.py:904`）。dashboard 就是靠这条 + 配置消费者，把「立即生效」改走原地通道。
 * **依赖未满足 ≠ 报错**：它变成 `DisabledPlugin` / `auto_disabled`，程序照常启动；面板上看到的是「自动禁用 + 原因」，重置依赖后会被 `_cascade_restore_dependents` 自动拉起，不需要用户手工启用。
 * **版本无法比较时放行**：`version_satisfies` 返回 `None` 时 `_evaluate` 不拦；源码运行 `0.0.0`、非数字版本号都会走这条路 —— 「明明写了约束却没拦」是设计如此。
 * **注册阶段只查依赖在不在**（`_dependency_presence_issues`）：跨目录场景下可能出现「前置已注册但还没 `on_load`」的窗口，此时插件在 `on_load` 里 `require().call()` 会抛 `PluginDependencyError`。跨插件调用放到 `on_start` 之后更稳。
 * **清理模块缓存 ≠ 让新代码生效**：新代码靠 `_gN` 新命名空间 + 删 `__pycache__`；清理是为了不留孤儿模块代（注册失败、被禁用、被官方同名覆盖三种情况必须清）。
-* **`clear_module_cache` 按「名字长度倒序 + 前缀」删**：传进来的名字包含全部子模块，顺序反了会先删父再删子（子模块名仍能匹配前缀，所以实际仍能删净）；但只传顶层名字不会删掉 `pkg.sub`。
+* **`clear_module_cache` 按「名字长度倒序 + 前缀」删**：每个名字同时匹配自身与 `name.` 前缀，传顶层代名也会清掉其全部子模块；子包字节码则由 `_clear_bytecode` 递归删除。
 * **插件名含连续两个下划线直接拒绝**：与工具全局名 `{plugin}__{tool}` 的分隔符冲突，早失败好过在 `bind_tools` 阶段整批注册失败。
 * **官方插件与第三方插件同名时静默丢弃第三方**：只有一条 warning，没有任何面板冲突提示（安装路径的冲突提示是 `installer.probe` 的另一回事，见 08b 待补）。
 * **两处「重复注册」语义相反**：`HotReloadRegistry.register` 同名忽略（先注册者胜），`PluginRuntime.register_plugin_config_consumer` 是字典赋值（后登记覆盖）。
-* **联动停用只发生在 `stop/unload/reload` 入口**，恢复只发生在 `reload` 成功或 `set_enabled(true)` 成功；手工 `manager.stop_plugin` 绕过 runtime 不会触发联动。
+* **联动停用发生在 runtime 的 `stop/unload/reload` 入口**：显式与自动重载共用这一入口；候选失败但旧代恢复就绪时仍恢复依赖方。手工 `manager.stop_plugin` 绕过 runtime 不会触发联动。
 * **操作锁只增不减是刻意的**（manager 侧），runtime 侧的操作锁却要主动剪枝 —— 改这两个字典时别把策略搞反。
 * **`plugin.toml` 与 `Plugin(...)` 的 name/version 必须一致**：不一致在 `validate_manifest_conflicts` 直接报错（`manifest.py:98`），而 `dependencies`/`priority`/`min_neobot_version` 是「manifest 优先，缺失才回落到代码」。
-* **`_cascade_restore_dependents` 只认配对的前置名**：如果联动停用时记的前置名字与实际恢复的插件不同（例如中途改了依赖声明），条目会被静默丢弃，插件再也拉不起来。
+* **依赖级联换代不能吞保存**：监测保留同一路径的指纹，而不因 record / 模块代变化重新建立基线；联动恢复期间的代码保存仍会在后续扫描触发一次重载。

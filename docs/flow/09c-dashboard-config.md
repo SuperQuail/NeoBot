@@ -6,12 +6,13 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/config.py
   - app/src/neobot_app/builtin_plugins/dashboard/hot_reload.py
   - app/src/neobot_app/builtin_plugins/dashboard/security.py
+  - app/src/neobot_app/builtin_plugins/dashboard/config_parts/
   - app/src/neobot_app/builtin_plugins/dashboard/frontend/src/pages
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: 264696d
-verified_hash: f39100a96c6b
+verified_against: 8320053
+verified_hash: f918ad30c97f
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流
@@ -30,6 +31,20 @@ verified_hash: f39100a96c6b
 * 前端编辑器数据流：`pages/ConfigManager.tsx`（顶层 tab）、`pages/config/BotConfigPanel.tsx`
   （表单与 TOML 双模式）、`pages/Plugins.tsx` + `pages/plugins/PluginEditorPanel.tsx`、
   `components/SchemaForm.tsx` 与 `components/schema/*`、`api/client.ts` 的状态码语义。
+
+原文模型校验使用保留 date/time/datetime 类型的打包默认值；不能先将默认值 JSON 化，否则严格模型会误拒绝合法 TOML。
+
+统一页面桥接复用插件配置读写，不另存一份配置。文件 revision 是不透明 SHA 字符串，新文件为空串；保存冲突仍返回 409，页面保留草稿。读取、默认值、字段描述与源码保护共同消费模型的显式敏感语义及认证键名，停用插件只读静态契约。保存先恢复占位符，再校验并回填实际类型；SecretStr/SecretBytes 保存真实文本，配置校验错误不回显作者异常正文。
+
+类型回填按模型实际接受的别名优先级定位提交值，保留原输入路径和未知字段；RootModel、映射和序列分别处理。字段描述通过 pydantic_fields 递归映射枚举、嵌套分组、对象列表与字典，保留枚举原始类型和敏感字段只写语义；不能无损展开的结构使用 JSON。旧插件未采用 Pydantic 时仍使用配置文件生成描述。思索配置章节复用字段描述，并按样例重建所有嵌套值和列表，不能复用真实配置行。
+
+思索仅作为说明书，读取明确的样例和静态教程，不调用真实插件动作或配置保存；说明书打开与关闭均不替换原配置输入节点或草稿。
+
+首次打开说明默认手动阅读，连播由使用者明确启动；目录与全文只过滤同一份教程声明，不增加配置查询。选中步骤后恢复舞台和目录按钮焦点，真实配置及隐藏页面仍按原编辑会话暂停和恢复。
+
+使用说明入口直接打开思索，不增加跟做流程。「配置」提供固定自动表单与 TOML，「插件页面」承载独立 sandbox iframe；隐藏页保留输入并暂停，配置草稿未处理时阻止真实业务。真实页面与说明书样例使用不同桥接会话，共用 `_ui.css` 组件样式和 SDK 主题同步。配置项恢复默认使用输入旁图标；当前值等于默认值时隐藏，未保存标记仍按保存基线比较。配置章节复用同一套字段控件，聊天章节提供真实命令及使用场景，反馈统一走全局 InfoBar。
+
+插件编辑会话在 input 冒泡阶段标记，与字段草稿更新一起提交。不在捕获阶段设置会话状态，避免首次原生输入尚未进入字段回调就被受控旧值回写；非法 JSON 和在途读取仍受编辑会话保护。
 
 **不画什么**（相邻图）：逐个端点的请求/响应与权限矩阵（`09b-dashboard-api.md`）；
 面板 HTTP 服务本身、鉴权中间件、静态产物、`queryCore` 通用取数（`09-dashboard.md`）；
@@ -53,7 +68,7 @@ schema 分层、`Config.load` 全链路、版本迁移、`.env` 逐字段解析�
    真话只在保存响应的 `message` / `changes` 里。
 5. **`dashboard.manage_plugins` / `allow_remote_manage` 声明「需重启」，实际立即生效**：
    `server.py:217 _live_config()` 每次访问都按 mtime 读一遍插件配置文件。
-6. **插件页每 20 s 轮询一次列表，列表数组换新会触发配置重读**，未保存草稿被静默覆盖。
+6. **插件列表轮询与配置编辑会话分离**：同一插件的设置和说明共用查询缓存；焦点、草稿、非法 JSON 和在途保存保护编辑基线，列表后台更新不能静默覆盖输入。
 
 ## 流程
 
@@ -140,8 +155,8 @@ sequenceDiagram
     end
     Note over UI,CM: 插件配置是另一条通道：先写 .dashboard.bak，再就地合并写回
     UI->>API: POST /api/plugins/{name}/config revision + config 或 source
-    API->>CM: 表单模式先过 pydantic model_validate，再按 model_dump 回填类型（TOML 模式不校验模型）
-    CM->>FS: 就地更新：缺键不删、表改标量静默忽略
+    API->>CM: 表单先校验/回填类型；原文先核对 revision，再按原生默认值合并并校验模型
+    CM->>FS: 校验通过才备份并原子写盘；原文保留注释/格式
     opt reload 且插件登记了 consumer
         API->>PCR: apply_plugin_config_change(before, after)
         PCR->>PL: apply_config 抛异常则保留旧配置并原样回错
@@ -431,7 +446,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["敏感键判定：is_sensitive_key 匹配 api key / token / password / secret / credential / authorization / security.py:21"] --> B{"载体"}
+    A["敏感键判定：api key / access key / token / password / secret / credential / authorization / cookie"] --> B{"载体"}
     B -- "结构化配置 JSON" --> B1["_mask_sensitive_leaves：字符串值换空串，同时记 secrets_set 布尔 / :878"]
     B1 --> B2["schema 描述符的 default 与 value 也要掩码：分组节点带整段字典副本 / :979"]
     B -- "config.toml 原文" --> C1["_mask_toml_source：整行值换成 ***，保留缩进与行尾注释 / :928"]
@@ -439,7 +454,7 @@ flowchart TD
     B -- ".env" --> D1["敏感键 value 恒为空串，只回 masked 与 has_value / config_manager.py:1207"]
     D1 --> D2[".env 不回原文：source_available 恒 false"]
     B -- "插件配置" --> E1["mask_mapping 把敏感键换成八个圆点占位 / security.py:72"]
-    E1 --> E2["含密钥时整份不返回 source，TOML 模式直接不可用 / plugin_config.py:349"]
+    E1 --> E2["保存值或打包默认值含密钥时不返回 source，TOML 模式不可用"]
     F["回写时的还原"] --> F1["表单：_restore_masked_secrets 空串换回现有值 / :1002"]
     F --> F2["原文：_restore_masked_source 仍是 *** 的行换回磁盘原值 / :944"]
     F --> F3["插件表单：restore_mapping 占位或空串沿用原值，新值才覆盖 / security.py:88"]
@@ -534,6 +549,29 @@ flowchart TD
 
 ## 关键状态
 
+### 发言时段的专属表单
+
+`speaking_schedule` 在插件配置页使用时段编辑控件：选择默认、群或私聊范围，
+按星期添加允许发言的时间段，通过双端滑块与时间输入框调整起止时间。
+跨夜必须显式选择「次日」；时间输入保留精确分钟，滑块提供五分钟调整。
+默认时段和覆盖范围分别写入插件的 `windows`、`overrides`，时区写入 `timezone`。
+
+```mermaid
+flowchart TD
+    SS1["选中 speaking_schedule 的配置表单"] --> SS2["选择范围、星期与允许时段"]
+    SS2 --> SS3["滑块或时间输入只修改当前草稿"]
+    SS3 --> SS4{"点击现有保存按钮?"}
+    SS4 -- 否 --> SS5["保持草稿，可撤销或放弃"]
+    SS4 -- 是 --> SS6["沿用插件配置保存、版本冲突和权限检查"]
+    SS6 --> SS7["模型校验时段后写盘并应用配置"]
+```
+
+专属控件不自行调用保存 API；只读会话不能编辑，其他插件仍使用通用表单。
+保存并应用后，插件只替换自己的发言策略，不修改睡眠或待机状态。
+
+插件配置 Schema 的敏感叶子会显式标记并清空 `default/value`；嵌套 Pydantic 默认对象先按模型导出再递归脱敏，避免对象字符串化泄露凭据。
+保存值与清单默认值共同决定原文模式是否可用，Cookie 与 access_key 不再遗漏。数值 token 配置继续保留类型和默认值。
+
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | `revision` | 每次 `read()` 与保存响应带回，前端存进 `doc` | 下一次读取或保存响应覆盖 | 不匹配则 409，磁盘零变化，前端保留草稿 |
@@ -574,9 +612,9 @@ flowchart TD
    「避免把管理员锁在门外」的假设不成立。
 6. **插件页 20 秒轮询会丢未保存草稿**：列表轮询换新 `items` 数组，依赖 `items` 的
    effect 重跑，清空 `configDocument` 并重新读取。其它路径都有 `dirty` 守卫，唯独这条没有。
-7. **插件配置的 TOML 模式不做模型校验**：`plugin_config_save` 只在表单模式跑
-   `model.model_validate`（`api.py:1263`）；TOML 模式只解析语法，写进去的非法值
-   要等插件加载时才发现，表现为 `config_error` 与「回落到默认值运行」。
+7. **原文保存不能依赖加载失败兜底**：`PluginConfigEditor.save` 在写盘前验证模型，
+   非法值返回 400 并保持文件、备份、revision 与运行配置。停用/未加载而无法确认模型时，
+   原文只读并提示原因，不为校验执行插件入口；已确认无模型的配置保留 TOML 语法支持。
 8. **插件配置「表改标量」被静默忽略**：`PluginConfigEditor._merge_into_document` 遇到
    「现有值是子表、提交值是标量」时 `continue`（`plugin_config.py:413`），不报错也不写入。
 9. **插件配置的改动明细前端看不到**：保存响应里有 `changes`（`api.py:1304`），

@@ -166,7 +166,10 @@ async def test_frames_picks_avc_720p_and_builds_sheet(
     frames = [Path(item) for item in result["frames"]]
     assert len(frames) == 5
     assert all(path.is_file() and path.suffix == ".jpg" for path in frames)
-    assert frames[0].parent == data_dir / "bilibili_frames" / _BVID / "frames"
+    assert frames[0].parent.name == "frames"
+    assert frames[0].parent.parent.parent == data_dir / "bilibili_frames"
+    assert frames[0].parent.parent.name.startswith(f"run-{_BVID}-")
+    assert (frames[0].parent.parent / video_frames_module._COMPLETE_MARKER).is_file()
     sheets = [Path(item) for item in result["sheets"]]
     assert len(sheets) == 1
     assert sheets[0].name == "sheet_1.jpg"
@@ -216,10 +219,47 @@ async def test_concurrent_frames_for_same_bvid_keep_full_output(
         assert result["ok"] is True
         assert all(Path(item).is_file() for item in result["frames"])
     base = tmp_path / "bilibili_frames"
-    frames_dir = base / _BVID / "frames"
-    assert len(list(frames_dir.glob("f_*.jpg"))) == 2
+    output_dirs = [Path(result["frames"][0]).parent.parent for result in (first, second)]
+    assert output_dirs[0] != output_dirs[1]
+    assert set(base.iterdir()) == set(output_dirs)
+    for output in output_dirs:
+        assert len(list((output / "frames").glob("f_*.jpg"))) == 2
     # 没有残留的临时目录
     assert [item.name for item in base.iterdir() if item.name.startswith(".")] == []
+
+
+async def test_concurrent_frames_keep_each_requests_sheets_during_description(
+    tmp_path: Path, fake_ffmpeg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """第二次抽帧完成时，第一次仍必须能读取自己的第二张拼图。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class PausedVision(_FakeVision):
+        async def chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                started.set()
+                await release.wait()
+            return {"content": f"拼图{len(self.messages)}"}
+
+    vision = PausedVision()
+    service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), vision_provider=vision, data_dir=tmp_path)
+    monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=17))
+    first_task = asyncio.create_task(service.frames(_BVID))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=1))
+        second = await service.frames(_BVID, describe=False)
+    finally:
+        release.set()
+    first = await asyncio.wait_for(first_task, timeout=5)
+
+    assert first["ok"] is True and second["ok"] is True
+    assert first["description"] == "拼图1\n\n拼图2"
+    assert len(first["frames"]) == 17 and len(second["frames"]) == 1
+    assert all(Path(item).is_file() for result in (first, second) for item in result["frames"] + result["sheets"])
+    assert Path(first["frames"][0]).parent != Path(second["frames"][0]).parent
 
 
 async def test_frames_failure_keeps_previous_output(
@@ -227,16 +267,16 @@ async def test_frames_failure_keeps_previous_output(
 ) -> None:
     monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(frames=2))
     service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), data_dir=tmp_path)
-    assert (await service.frames(_BVID))["ok"] is True
+    previous = await service.frames(_BVID)
+    assert previous["ok"] is True
+    previous_bytes = {path: Path(path).read_bytes() for path in previous["frames"] + previous["sheets"]}
 
-    monkeypatch.setattr(
-        video_frames_module.subprocess, "run", _FakeRun(returncode=1, stderr=b"boom")
-    )
+    monkeypatch.setattr(video_frames_module.subprocess, "run", _FakeRun(returncode=1, stderr=b"boom"))
     failed = await service.frames(_BVID)
 
     assert failed["ok"] is False
-    out_dir = tmp_path / "bilibili_frames" / _BVID
-    assert len(list((out_dir / "frames").glob("f_*.jpg"))) == 2  # 旧结果没被拆掉
+    assert all(Path(path).read_bytes() == content for path, content in previous_bytes.items())
+    assert list((tmp_path / "bilibili_frames").iterdir()) == [Path(previous["frames"][0]).parent.parent]
 
 
 async def test_frames_prunes_old_output_dirs(
@@ -255,12 +295,13 @@ async def test_frames_prunes_old_output_dirs(
         (extra / "f_00001.jpg").write_bytes(b"old")
     service = VideoFrameService(_FakeClient(player=_player(_AVC_720)), data_dir=tmp_path)
 
-    assert (await service.frames(_BVID))["ok"] is True
+    result = await service.frames(_BVID)
+    assert result["ok"] is True
 
     # 只保留最近 20 份；超时的旧目录即使份数没超也会被清掉
     kept = sorted(item.name for item in base.iterdir() if item.is_dir())
     assert len(kept) == video_frames_module._MAX_OUTPUT_DIRS
-    assert _BVID in kept
+    assert Path(result["frames"][0]).parent.parent.name in kept
     assert "BVexpired" not in kept
 
 
@@ -419,7 +460,7 @@ async def test_frames_cleans_partial_output_on_ffmpeg_failure(
     assert result["ok"] is False
     assert "403" in result["error"]
     assert result["frames"] == [] and result["sheets"] == []
-    assert (tmp_path / "bilibili_frames" / _BVID).exists() is False
+    assert list((tmp_path / "bilibili_frames").iterdir()) == []
 
 
 async def test_frames_reports_ffmpeg_timeout_and_cleans_up(
@@ -432,7 +473,7 @@ async def test_frames_reports_ffmpeg_timeout_and_cleans_up(
 
     assert result["ok"] is False
     assert "超时" in result["error"]
-    assert (tmp_path / "bilibili_frames" / _BVID).exists() is False
+    assert list((tmp_path / "bilibili_frames").iterdir()) == []
 
 
 # ── Skill ──

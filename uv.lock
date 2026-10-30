@@ -1930,19 +1930,23 @@ version = "2.0.2a14"
 source = { editable = "packages/modloader" }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "httpx" },
     { name = "neobot-adapter" },
     { name = "neobot-contracts" },
+    { name = "packaging" },
     { name = "pyyaml" },
-    { name = "sqlalchemy" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0,<0.23" },
+    { name = "httpx", specifier = ">=0.27.0,<0.29" },
     { name = "neobot-adapter", editable = "packages/adapter" },
     { name = "neobot-contracts", editable = "packages/contracts" },
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
-    { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
 verified_against: 9587891
-verified_hash: 9664f74a3752
+verified_hash: 5dadc0c97870
 ---
 
 # 02 适配器入站：反向 WS -> 事件网关 -> 队列 -> 事件管道
@@ -99,6 +99,11 @@ flowchart LR
 `packages/adapter/src/neobot_adapter/factory.py:29 create_adapter`；
 契约在 `interfaces.py:31 RuntimeAdapter`，热重载能力由 `AdapterReconfigurable``（`:79`）判定，
 装配层用 `isinstance` 而不是 `hasattr`（`runtime/adapter_supervisor.py:87`）。
+
+出站侧在 OneBot core 的 `call_api` / `send_message` 和 Local core 的 `call_api` / `send`
+执行共享发言策略；文本、图片、语音、文件与合并转发在实际传输前检查，拒绝时抛出
+`SpeechBlocked`。查询、心跳和非发言 API 不因此停止；内部已检查的发送路径避免重复判断。
+同步 API 转发保留拒绝异常，不将它吞成空回执。
 </details>
 
 <details>

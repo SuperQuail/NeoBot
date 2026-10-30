@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from neobot_chat.runtime.agent import SILENT_HEARTBEAT
+from neobot_contracts.ports.speaking import SpeechBlocked
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio, monotonic_seconds
 if TYPE_CHECKING:
@@ -48,7 +49,13 @@ class ModesMixin:
         queue_key: str,
     ) -> None:
         started_at = monotonic_seconds()
+        completion_started = False
         try:
+            policy = getattr(getattr(self._adapter, "core", None), "speaking_policy", None)
+            if policy is not None and event.conversation_ref is not None:
+                decision = policy.evaluate(event.conversation_ref)
+                if not decision.allowed:
+                    raise SpeechBlocked(decision.reason)
             before_decide = await self._emit_runtime_event(
                 "reply.decide.before", event, queue_key=queue_key
             )
@@ -109,9 +116,28 @@ class ModesMixin:
                 reply_preview=event.generated_text[:80] if event.generated_text else "",
             )
             self._record_debug("completed", event, queue_key=queue_key)
+            completion_started = True
             await self._emit_runtime_event(
                 "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
             )
+        except SpeechBlocked as exc:
+            event.speech_blocked = exc
+            self._set_flow_active(event, queue_key, False)
+            event.error = f"SpeechBlocked: {exc}"
+            if not event.is_terminal:
+                event.transition(ReplyState.CANCELLED)
+            self._record_debug("speaking_policy_blocked", event, queue_key=queue_key)
+            self._normalize_delivered_terminal(event, queue_key=queue_key)
+            if event.send_response is not None:
+                await self._emit_runtime_event(
+                    "reply.complete",
+                    event,
+                    queue_key=queue_key,
+                    duration_seconds=monotonic_seconds() - started_at,
+                )
+                return
+            self._logger.info("发言策略取消回复", event_id=event.event_id, reason=str(exc))
+            await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
         except asyncio.CancelledError:
             self._set_flow_active(event, queue_key, False)
             event.error = "cancelled"
@@ -121,8 +147,19 @@ class ModesMixin:
                 except RuntimeError:
                     pass
             self._logger.warning("回复事件被取消", event_id=event.event_id)
-            self._record_debug("cancelled", event, queue_key=queue_key)
-            await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
+            self._normalize_delivered_terminal(event, queue_key=queue_key)
+            if event.send_response is not None:
+                self._record_debug("completed", event, queue_key=queue_key)
+                if not completion_started:
+                    await self._emit_runtime_event(
+                        "reply.complete",
+                        event,
+                        queue_key=queue_key,
+                        duration_seconds=monotonic_seconds() - started_at,
+                    )
+            else:
+                self._record_debug("cancelled", event, queue_key=queue_key)
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
             raise
         except Exception as exc:
             self._set_flow_active(event, queue_key, False)
@@ -162,9 +199,7 @@ class ModesMixin:
                 error=event.error,
             )
             self._record_debug("failed", event, queue_key=queue_key)
-            await self._emit_runtime_event(
-                "reply.fail", event, queue_key=queue_key, error=event.error
-            )
+            await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
             await self._handle_runtime_failure(event, exc)
 
 

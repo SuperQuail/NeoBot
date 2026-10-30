@@ -32,6 +32,9 @@ import type {
   Overview,
   PluginConflictSide,
   PluginListPayload,
+  PluginSurfacePayload,
+  PluginActionPayload,
+  PluginView,
   PromptAnalysisPayload,
   PromptPreviewPayload,
   PromptsPayload,
@@ -120,7 +123,7 @@ export interface PowerState {
 }
 
 export interface PluginConfigSaveBody {
-  revision?: number;
+  revision?: string;
   mode: 'form' | 'toml';
   reload?: boolean;
   source?: string;
@@ -314,6 +317,15 @@ export const api = {
     getResult<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config'),
   pluginConfigSave: (name: string, body: PluginConfigSaveBody) =>
     postJSON<ConfigDocument>('/api/plugins/' + encodeURIComponent(name) + '/config', body),
+  pluginSurface: (name: string) =>
+    getResult<PluginSurfacePayload>('/api/plugins/' + encodeURIComponent(name) + '/surface'),
+  pluginViews: (name: string) =>
+    getResult<{ ok: boolean; items: PluginView[] }>('/api/plugins/' + encodeURIComponent(name) + '/views'),
+  pluginAction: (name: string, action: string, values: unknown) =>
+    postJSON<PluginActionPayload>(
+      '/api/plugins/' + encodeURIComponent(name) + '/actions/' + encodeURIComponent(action),
+      { values },
+    ),
 
   // 本体配置 / 环境变量 / 模型
   config: () => getResult<ConfigDocument>('/api/config'),

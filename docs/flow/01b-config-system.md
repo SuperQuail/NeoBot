@@ -4,13 +4,18 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: 2a86224
-verified_hash: b3049b172fd9
+verified_against: 89ec896
+verified_hash: 935918bd2aa2
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
 
 ## 范围
+
+`[plugins].watch` 在 `config/schemas/bot_parts/runtime.py:27` 声明，默认 `false`。
+装配时 `bootstrap/_skills.py:177` 把它传给 `PluginRuntime`，只有重建运行时才切换监测；
+现有 `plugins` 重启分类继续覆盖此项，不注册新的本体配置消费者。源码监测启动、
+防抖与停止等待详见 `08b-plugin-runtime.md`，不与插件配置的原地生效通道混用。
 
 本图覆盖 config.toml 的一生：**schema 声明**（`config/schemas/`）、**加载与类型校验**
 （`config/loader/`）、**默认值与回落**、**写回与备份**、**版本迁移**，以及
@@ -271,6 +276,8 @@ flowchart TD
 ```
 
 分类表回答的是「**改完这项要不要重启**」，它**不是**调用闸门（见下一块）。
+`plugins.watch` 沿用 `plugins` 的需重启规则：保存配置不会在既有 `PluginRuntime` 上
+创建或销毁监测任务，必须重启后由构造参数决定是否启用。
 前缀匹配按点分段（`registry.py:181`），所以 `adapter` 不会命中 `adapter_x`；
 但 `_rule_for` 用的是「段数组前缀」比较，`bot` 同样不会命中 `bot_data`。
 </details>

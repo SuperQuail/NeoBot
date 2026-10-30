@@ -12,8 +12,9 @@ from neobot_contracts.ports.logging import Logger
 
 from neobot_modloader.agent import AgentRequest
 from neobot_modloader.bot import Bot
+from neobot_modloader.events import IncomingEvent
 from neobot_modloader.management import PluginControlFacade
-from neobot_modloader.message import Message
+from neobot_modloader.message import Message, MessageChain
 from neobot_modloader.plugins.registration import Handler
 from neobot_modloader.reply import Reply
 from neobot_modloader.users import UserDirectory
@@ -135,24 +136,21 @@ def _classify_di_annotation(
     if (
         config_model is not None
         and annotation is not BaseModel
-        and (
-            _safe_issubclass(config_model, annotation)
-            or _safe_issubclass(annotation, config_model)
-        )
+        and (_safe_issubclass(config_model, annotation) or _safe_issubclass(annotation, config_model))
     ):
         return "config"
     for provider_type, kind in (
+        (IncomingEvent, "incoming_event"),
         (Reply, "reply"),
         (Message, "message"),
+        (MessageChain, "message_chain"),
         (AgentRequest, "agent_request"),
         (Bot, "bot"),
         (Logger, "logger"),
         (PluginControlFacade, "plugin_control"),
         (UserDirectory, "users"),
     ):
-        if _safe_issubclass(provider_type, annotation) or _safe_issubclass(
-            annotation, provider_type
-        ):
+        if _safe_issubclass(provider_type, annotation) or _safe_issubclass(annotation, provider_type):
             return kind
     if name in {"data_dir", "plugin_dir"} and (
         _safe_issubclass(Path, annotation) or _safe_issubclass(annotation, Path)
@@ -261,10 +259,7 @@ def validate_config_injection(
         for candidate in _annotation_candidates(annotation)
         if isinstance(candidate, type)
         and candidate is not BaseModel
-        and (
-            _safe_issubclass(config_model, candidate)
-            or _safe_issubclass(candidate, config_model)
-        )
+        and (_safe_issubclass(config_model, candidate) or _safe_issubclass(candidate, config_model))
     )
     if expected and not any(isinstance(config, candidate) for candidate in expected):
         expected_names = " | ".join(candidate.__qualname__ for candidate in expected)
@@ -287,10 +282,14 @@ def _injected_value(
 ) -> tuple[bool, Any]:
     if kind == "context":
         return True, context
+    if kind == "incoming_event":
+        return bool(event), IncomingEvent(dict(event))
     if kind == "reply":
         return True, Reply(context, event)
     if kind == "message":
         return True, message
+    if kind == "message_chain":
+        return True, message.to_chain()
     if kind == "agent_request":
         return agent_request is not None, agent_request
     if kind == "task":
@@ -355,9 +354,7 @@ async def resolve_handler_kwargs(
         )
         if annotated_kind is not None:
             if annotated_kind == "config" and config is not None:
-                validate_config_injection(
-                    handler, name, annotation, config, config_model
-                )
+                validate_config_injection(handler, name, annotation, config, config_model)
             available, value = _injected_value(
                 annotated_kind,
                 context=context,
@@ -407,7 +404,5 @@ async def resolve_handler_kwargs(
             continue
 
         if parameter.default is inspect.Parameter.empty:
-            raise TypeError(
-                f"Cannot resolve parameter {name!r} for handler {_handler_name(handler)}"
-            )
+            raise TypeError(f"Cannot resolve parameter {name!r} for handler {_handler_name(handler)}")
     return kwargs

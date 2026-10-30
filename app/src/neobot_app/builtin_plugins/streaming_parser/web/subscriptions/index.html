@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>直播订阅</title>
+    <link rel="stylesheet" href="_ui.css" />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="settings.css" />
+    <link rel="stylesheet" href="preview.css" />
+    <link rel="stylesheet" href="records.css" />
+    <script src="_sdk.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <main class="nb-view subscriptions-view">
+      <h1 class="nb-sr-only">直播订阅</h1>
+
+      <!-- 顶部工作台：订阅配置与实时预览 (左右分栏，平衡工整) -->
+      <section class="sub-card workbench-card">
+        <div class="workbench-grid">
+          <!-- 左侧配置流：群选择 -> 主播链接 -> 群偏好 -> 操作 -->
+          <div class="workbench-form">
+            <div class="workbench-header">
+              <h2 class="workbench-title">添加直播订阅</h2>
+              <span class="workbench-subtitle">配置目标群与直播间，实时预览通知效果</span>
+            </div>
+
+            <div class="form-fields">
+              <!-- 目标群选择 -->
+              <section id="group" class="field-item" tabindex="-1">
+                <label for="group_id" class="field-label">接收通知的群</label>
+                <div class="field-input-row">
+                  <select id="group_id" name="group_id" class="field-control">
+                    <option value="">请选择接收群</option>
+                  </select>
+                  <button id="reload-groups" class="btn-subtle" type="button" title="刷新群列表">
+                    刷新
+                  </button>
+                </div>
+                <p id="group-hint" class="field-hint" hidden></p>
+              </section>
+
+              <!-- 直播间目标输入 -->
+              <section id="target" class="field-item" tabindex="-1">
+                <label for="target-input" class="field-label">直播间或 UP 主链接</label>
+                <div class="field-input-row">
+                  <input
+                    id="target-input"
+                    name="target"
+                    maxlength="256"
+                    placeholder="粘贴直播间链接或 UP 主主页链接"
+                    autocomplete="off"
+                    class="field-control"
+                  />
+                  <button id="resolve" class="btn-subtle" type="button">识别</button>
+                </div>
+                <p id="identity" class="field-hint">支持房间号、短号、UP主空间链接或 uid: 写法</p>
+              </section>
+            </div>
+
+            <!-- 本群通知设置 (内嵌卡片，不再突兀横穿全屏) -->
+            <section
+              id="settings"
+              class="group-settings-card"
+              tabindex="-1"
+              aria-labelledby="settings-heading"
+            >
+              <div class="settings-card-header">
+                <div class="settings-title-wrap">
+                  <h3 id="settings-heading" class="settings-title">本群通知设置</h3>
+                  <span id="settings-origin" class="settings-badge">未选择群</span>
+                </div>
+              </div>
+
+              <div class="settings-card-body">
+                <div class="settings-style-row">
+                  <label for="settings-style" class="settings-label">卡片风格</label>
+                  <select id="settings-style" class="field-control field-control-sm">
+                    <option value="random">随机风格 (random)</option>
+                    <option value="sakura">樱花粉 (sakura)</option>
+                    <option value="neon">霓虹夜 (neon)</option>
+                    <option value="minimal">极简白 (minimal)</option>
+                  </select>
+                </div>
+
+                <fieldset class="settings-toggles">
+                  <legend class="nb-sr-only">推送默认值与 AI 回复</legend>
+                  <label class="toggle-card" for="settings-push-live">
+                    <input type="checkbox" id="settings-push-live" />
+                    <span>默认开播推送</span>
+                  </label>
+                  <label class="toggle-card" for="settings-push-end">
+                    <input type="checkbox" id="settings-push-end" />
+                    <span>默认下播推送</span>
+                  </label>
+                  <label class="toggle-card" for="settings-ai-live">
+                    <input type="checkbox" id="settings-ai-live" />
+                    <span>开播 AI 回复</span>
+                  </label>
+                  <label class="toggle-card" for="settings-ai-end">
+                    <input type="checkbox" id="settings-ai-end" />
+                    <span>下播 AI 回复</span>
+                  </label>
+                </fieldset>
+              </div>
+
+              <div class="settings-card-footer">
+                <p class="settings-note">
+                  AI 与风格为当前群专属；默认推送仅作用于新订阅
+                </p>
+                <div class="settings-actions">
+                  <button id="reset-settings" class="btn-ghost" type="button">
+                    放弃修改
+                  </button>
+                  <button id="save-settings" class="btn-subtle btn-sm" type="button" data-manage>
+                    保存群配置
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 操作按钮与操作反馈 -->
+            <div class="workbench-actions-bar">
+              <div class="actions-buttons-row">
+                <section id="start" tabindex="-1">
+                  <button id="subscribe" class="btn-primary" type="button" disabled>
+                    开始监听
+                  </button>
+                </section>
+                <section id="preview" tabindex="-1">
+                  <button id="show-preview" class="btn-secondary" type="button">
+                    预览通知
+                  </button>
+                </section>
+              </div>
+              <p id="confirmation" class="confirmation-banner" hidden></p>
+            </div>
+          </div>
+
+          <!-- 右侧：通知预览面板 (高度自适应该列，空态优雅) -->
+          <aside class="preview-panel" aria-label="通知预览">
+            <div class="preview-panel-header">
+              <div class="preview-title-group">
+                <h3 class="preview-title">通知预览</h3>
+                <span id="preview-style" class="preview-tag">未预览</span>
+              </div>
+              <div class="preview-modes" role="group" aria-label="预览视图模式">
+                <button id="preview-image" type="button" aria-pressed="true">
+                  HTML卡片
+                </button>
+                <button id="preview-text" type="button" aria-pressed="false">
+                  文字消息
+                </button>
+              </div>
+            </div>
+
+            <div class="preview-panel-body">
+              <div id="preview-empty" class="preview-empty-state">
+                <div class="preview-empty-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="6" y="8" width="36" height="32" rx="6" />
+                    <path d="M16 28l6-6 6 6 8-8" />
+                    <circle cx="16" cy="18" r="3" />
+                  </svg>
+                </div>
+                <p class="preview-empty-title">选择群和主播后生成预览</p>
+                <p class="preview-empty-sub">仅在本地试看卡片样式，不会向群内发送任何消息</p>
+              </div>
+
+              <div id="preview-canvas" class="preview-canvas" hidden>
+                <div id="preview-stage" class="preview-stage">
+                  <iframe
+                    id="card"
+                    title="通知卡片预览"
+                    sandbox=""
+                    tabindex="-1"
+                  ></iframe>
+                </div>
+              </div>
+
+              <pre
+                id="preview-copy"
+                class="preview-text-view"
+                hidden
+                aria-label="文字通知内容"
+              ></pre>
+
+              <button id="preview-zoom" class="preview-zoom-btn" type="button" hidden>
+                查看原始大小
+              </button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- 下方卡片：订阅列表与监控状态 (统一承载在单个卡片内) -->
+      <section
+        id="status"
+        class="sub-card list-card"
+        tabindex="-1"
+        aria-labelledby="list-title"
+      >
+        <!-- 列表头部工具条：标题 + 筛选群 + 刷新状态 -->
+        <div class="list-card-header">
+          <div class="list-title-wrap">
+            <h2 id="list-title" class="list-title">已订阅列表</h2>
+          </div>
+          <div class="list-toolbar">
+            <div class="filter-box">
+              <label for="list-filter" class="filter-label">筛选群</label>
+              <select id="list-filter" class="field-control field-control-sm">
+                <option value="">全部群</option>
+              </select>
+            </div>
+            <button id="refresh" class="btn-subtle btn-sm" type="button">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+              </svg>
+              刷新状态
+            </button>
+          </div>
+        </div>
+
+        <!-- 监听服务微状态条 (去掉了刺眼的青底大条，整理为清爽的状态芯片) -->
+        <dl
+          id="health-panel"
+          class="health-strip"
+          aria-label="监听服务运行状态"
+        >
+          <div class="health-chip health-chip-status">
+            <dt class="health-key">服务状态</dt>
+            <dd id="health" class="health-val">—</dd>
+          </div>
+          <div class="health-chip">
+            <dt class="health-key">订阅任务</dt>
+            <dd id="checked" class="health-val">—</dd>
+          </div>
+          <div class="health-chip">
+            <dt class="health-key">检查统计</dt>
+            <dd id="health-counts" class="health-val">—</dd>
+          </div>
+          <div class="health-chip">
+            <dt class="health-key">最近成功</dt>
+            <dd id="health-success" class="health-val">—</dd>
+          </div>
+          <div class="health-chip health-chip-note">
+            <dt class="health-key">说明</dt>
+            <dd id="health-message" class="health-val">等待读取</dd>
+          </div>
+        </dl>
+
+        <!-- 空态指引 (精致轻量，告别粗黑虚线框) -->
+        <div id="list-empty" class="list-empty-state">
+          <div class="empty-icon-box" aria-hidden="true">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="3" width="20" height="14" rx="3" />
+              <path d="M8 21h8M12 17v4" />
+              <circle cx="12" cy="10" r="2" />
+            </svg>
+          </div>
+          <p class="empty-title">暂无直播订阅任务</p>
+          <p class="empty-desc">
+            在上方选择接收群并粘贴 UP 主或直播间链接，即可开始监听并接收通知
+          </p>
+        </div>
+
+        <!-- 宽表局部横滚区域 -->
+        <div
+          class="nb-table-wrap"
+          tabindex="0"
+          role="region"
+          aria-label="直播订阅列表"
+        >
+          <table id="rows" class="subscriptions-table" hidden>
+            <thead>
+              <tr>
+                <th scope="col">主播</th>
+                <th scope="col">接收群</th>
+                <th scope="col">直播状态</th>
+                <th scope="col">开播通知</th>
+                <th scope="col">下播通知</th>
+                <th scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

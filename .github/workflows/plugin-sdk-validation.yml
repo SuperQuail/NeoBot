@@ -1,0 +1,153 @@
+name: Plugin SDK validation
+
+on:
+  pull_request:
+    paths:
+      - 'packages/modloader/**'
+      - 'scripts/plugin_ci*.py'
+      - 'scripts/plugin_registry.py'
+      - 'scripts/plugin_compat.py'
+      - 'scripts/plugin_ecosystem.py'
+      - 'scripts/plugin_demo.py'
+      - 'scripts/plugin_demo/**'
+      - 'app/src/neobot_app/builtin_plugins/dashboard/**'
+      - 'app/src/neobot_app/builtin_plugins/streaming_parser/**'
+      - 'app/src/neobot_app/panel*.py'
+      - 'app/tests/modules/builtin_plugins/test_plugin_*.py'
+      - 'app/tests/modules/builtin_plugins/test_streaming_panel*.py'
+      - 'app/tests/modules/browser/test_plugin_*_browser.py'
+      - '.github/workflows/plugin-ci.yml'
+      - '.github/workflows/plugin-sdk-validation.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  template:
+    name: CLI 模板完整验收
+    uses: ./.github/workflows/plugin-ci.yml
+    with:
+      sdk-ref: ${{ github.sha }}
+      generate-template: true
+
+  sdk:
+    name: SDK 工具和运行时回归
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: 检出当前提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 安装 uv 和 Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.24'
+          python-version: '3.14'
+          enable-cache: false
+
+      - name: 安装 SDK 既有回归所需的宿主依赖
+        run: |
+          uv sync --package neobot-app --locked
+          uv sync --only-group dev --inexact --locked
+
+      - name: 校验 SDK 和本地 runner
+        run: |
+          uv run --no-sync ruff check packages/modloader/src/neobot_modloader/sdk scripts/plugin_ci.py scripts/plugin_ci_support.py scripts/plugin_ci_process.py scripts/plugin_ci_pytest.py
+          uv run --no-sync python -m pytest packages/modloader/tests --strict-markers -m "not browser and not network and not slow and not llm" --junitxml "${{ runner.temp }}/plugin-sdk-tests.xml"
+          uv run --no-sync python -m pytest app/tests/modules/builtin_plugins/test_plugin_*.py app/tests/modules/builtin_plugins/test_streaming_panel*.py --strict-markers -m "not browser and not network and not slow and not llm" --junitxml "${{ runner.temp }}/plugin-sdk-app-tests.xml"
+
+      - name: 上传 SDK 回归报告
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-sdk-tests
+          path: ${{ runner.temp }}/plugin-sdk-*.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  browser:
+    name: 最终插件包真实浏览器验收
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: 检出当前提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 安装 uv 和 Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.24'
+          python-version: '3.14'
+          enable-cache: false
+
+      - name: 安装锁定宿主依赖
+        run: |
+          uv sync --package neobot-app --locked
+          uv sync --only-group dev --inexact --locked
+
+      - name: 安装 Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: 按宿主 packageManager 安装锁定 pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: app/src/neobot_app/builtin_plugins/dashboard/frontend/package.json
+          cache: false
+
+      - name: 校验并构建宿主页面
+        working-directory: app/src/neobot_app/builtin_plugins/dashboard/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run verify
+          pnpm run build
+
+      - name: 安装真实 Chromium
+        run: uv run --no-sync python -m playwright install --with-deps chromium
+
+      - name: 对合成最终包执行真实浏览器操作
+        run: |
+          uv run --no-sync pytest app/tests/modules/browser/test_plugin_workbench_browser.py -m browser --strict-markers --junitxml "${{ runner.temp }}/plugin-browser-tests.xml"
+          uv run --no-sync pytest app/tests/modules/browser/test_plugin_hot_reload_browser.py -m browser --strict-markers --junitxml "${{ runner.temp }}/plugin-browser-hot-reload.xml"
+          uv run --no-sync pytest app/tests/modules/builtin_plugins/test_plugin_views_api.py -m browser --strict-markers --junitxml "${{ runner.temp }}/plugin-browser-views.xml"
+
+      - name: 上传浏览器回归报告
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-browser-tests
+          path: ${{ runner.temp }}/plugin-browser-*.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  verified:
+    name: 插件 SDK 全部验收
+    needs: [template, sdk, browser]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 所有必需工作均需成功
+        shell: python
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          import json
+          import os
+          results = json.loads(os.environ["JOB_RESULTS"])
+          if any(job["result"] != "success" for job in results.values()):
+              raise SystemExit("必需工作存在失败、跳过或取消，不能通过 SDK 验收")

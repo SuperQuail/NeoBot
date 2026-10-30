@@ -7,13 +7,15 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: 6233322
-verified_hash: cdbcb1a94b17
+verified_against: e0c9636
+verified_hash: d5a22a8bcb84
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
 
 ## 范围
+
+公开 CLI 的程序名固定为 `neobot`，版本号仍从包元数据读取；Python 3.14 下也不依赖 argparse 对解释器启动方式的默认推断。
 
 这是**跨模块的一张总图**：从 `cli.main` 装配进程，到一条 QQ 消息进来、被判定、走回复管线、
 把结果发出去，最后遇到停机信号如何有界拆除。单模块细节不在这张图里，分别见：
@@ -29,8 +31,12 @@ verified_hash: cdbcb1a94b17
 
 ```mermaid
 flowchart TD
-    A["进程启动 cli:main"] --> B["bootstrap:create_application<br/>装配: 配置/存储/适配器/插件/模型路由"]
-    B --> Z{装配成功?}
+    A["进程启动 cli:main"] --> AL["run: InstanceLease(DATA_DIR)<br/>装配前取得实例目录租约"]
+    AL -- 已被占用 --> AX["拒绝启动第二个实例"]
+    AL -- 已取得 --> B["bootstrap:create_application<br/>装配: 配置/存储/适配器/插件/模型路由"]
+    B --> LC["本机控制服务 + 发现文件<br/>Bearer / 实例身份 / 随机端口"]
+    LC --> Z{装配成功?}
+    UI["独立 CLI / Textual"] -. 查看状态或选定插件开发 .-> LC
     Z -. 否 .-> ZS["待机模式 StandbyService<br/>起面板修配置, 不碰 QQ"]
     Z -- 是 --> C["NeoBotApplication.run_forever"]
     C --> C1["start(): 文件服务 -> 插件 -> 适配器<br/>-> 事件入口 -> 后台任务"]
@@ -50,16 +56,25 @@ flowchart TD
     K -- 否 --> L["意愿判定 willing + 冷却 + 概率"]
     L -- 不回复 --> M1["静默丢弃"]
     L -- 回复 --> M["回复管线 Orchestrator"]
-    M --> N["Agent 循环 provider.chat"]
+    M --> MP{"会话发言策略允许?"}
+    MP -- 否 --> M1
+    MP -- 是 --> N["Agent 循环 provider.chat"]
     N --> O{有工具调用?}
     O -- 是 --> O1["执行工具; 失败以 tool 消息回灌"]
     O1 --> N
     O -- 否 --> P["后处理 postprocess -> 发送 sender"]
-    P --> Q["自身发言入队/落盘<br/>供后续上下文重组"]
+    P --> SP{"适配器发送前再次检查策略"}
+    SP -- 允许 --> Q["自身发言入队/落盘<br/>供后续上下文重组"]
+    SP -- 拒绝 --> SB["SpeechBlocked 停止后续发送<br/>已有回执保留完成与冷却；通知不算完整投递"]
 
     N -.->|provider 异常| NX["ProviderError 上抛<br/>编排层降级, 不入历史"]
     N -.->|调用联网搜索| S1["web_search 三级回退<br/>HTTP -> 浏览器 -> DDG"]
+    LC -.-> PD["当前 PluginRuntime<br/>加载源码 / 选定监听 / 事务重载<br/>锁内复核状态与代际"]
     E -.->|stop / 待机 / 软重启| R["有界拆除: 停止入口 -> 适配器<br/>-> 后台任务 -> 插件"]
+    R --> RP{"进程退出或换进程?"}
+    RP -- 仅应用代际切换 --> ZS
+    RP -- 是 --> RC["进程收尾: 状态服务保留只读<br/>等待插件监测与在途事务完成"]
+    RC --> RX["关闭控制服务与发现文件<br/>最后释放实例租约"]
 ```
 
 ## 时序
@@ -68,6 +83,7 @@ flowchart TD
 sequenceDiagram
     autonumber
     participant CLI as cli.main
+    participant LC as 本机控制服务
     participant BS as bootstrap
     participant APP as NeoBotApplication
     participant AD as OneBotAdapter
@@ -75,8 +91,11 @@ sequenceDiagram
     participant EP as EventPipeline
     participant OR as ReplyOrchestrator
 
+    CLI->>CLI: InstanceLease.acquire，重复实例在装配前退出
     CLI->>BS: create_application()
     BS-->>CLI: application（装配完成或待机）
+    CLI->>LC: 启动本机控制接口并原子写发现文件
+    Note over CLI,LC: 独立控制台连接当前 PID，创建插件后只选择该插件的监听
     CLI->>APP: run_forever() -> start()
     APP->>AD: start() 起反向 WS 监听
     Note over APP,AD: 未连上不致命，事件入口照常待命
@@ -86,7 +105,19 @@ sequenceDiagram
     OR-->>Q: 发送结果 + 自身发言入队
     CLI->>APP: request_stop() / request_restart()
     APP->>AD: stop() 有界拆除
+    opt 进程退出或换进程
+        CLI->>LC: begin_shutdown，stopping=true 并拒绝新写入
+        CLI->>CLI: 等待插件清理，控制状态与实例租约仍保留
+        CLI->>LC: close，移除自己的发现文件
+        CLI->>CLI: 释放 InstanceLease 后正常退出或换进程
+    end
+    Note over CLI,LC: 仅应用代际切换时，控制服务与实例租约继续保留
 ```
+
+宿主的 `speaking_policy` 服务与适配器 core 共享同一注册器。插件添加的发言限制按交集判断，
+空注册器保持原行为；管理命令的临时绕过只作用于自身策略，离开作用域即撤销。
+该服务只决定是否发言，不调用睡眠唤醒或待机切换。
+一轮中已有消息送达时，后续策略拒绝仍保留回复完成终态；尚未送达时按取消收尾。
 
 ## 细节
 
@@ -111,7 +142,7 @@ flowchart LR
     J --> K["adapter + HotReloadRegistry(AdapterSupervisor)"]
     K --> L["memory / vision_provider / main provider"]
     L --> M["emoji / file_server / 运行时组件 / sandbox"]
-    M --> N["commands / skills / 插件宿主"]
+    M --> N["commands / skills / 插件宿主<br/>PluginRuntime(watch=config.plugins.watch)"]
     N --> O["ReplyOrchestrator + 各 manager.set_orchestrator"]
     O --> P["build_pipelines_and_app -> NeoBotApplication"]
 \`\`\`
@@ -134,7 +165,7 @@ flowchart TD
     S3 --> S4["adapter.start 反向 WS 开始监听"]
     S4 --> S5["connection_probe.observe 最多 30s, 永不抛"]
     S5 --> S6["bot_detector.refresh"]
-    S6 --> S7["plugin.start_all"]
+    S6 --> S7["plugin.start_all<br/>启动插件后按 plugins.watch 启动源码监测"]
     S7 --> S8["chat_stream.initialize"]
     S8 --> S9["emoji.start"]
     S9 --> S10["background_coros: sleep ticker / help 预渲染 / 沙箱维护"]
@@ -148,6 +179,10 @@ flowchart TD
 
 注意 \`started.append(...)\` 的顺序就是回滚顺序的逆序：回滚只释放**已经成功启动**的组件，
 半启动状态不会留在内存里（\`runtime/application.py:138\`）。
+
+`bootstrap/_skills.py:177` 把 `[plugins].watch`（默认 `false`）传入插件运行时；
+`start_all` 在插件启动后建立源码指纹基线并启动后台监测。文件扫描在线程执行，
+源码变化由现有事务重载处理，不改变消息入口与适配器顺序；详见 `08b-plugin-runtime.md`。
 </details>
 
 <details>
@@ -232,7 +267,7 @@ flowchart TD
     G --> H["event_ingress.stop 关入口"]
     H --> I["reply_orchestrator.shutdown 取消在途回复"]
     I --> J["flush_pending_summaries 落摘要"]
-    J --> K["plugin stop_all -> adapter stop(12s 先报错, 再 shield 等)"]
+    J --> K["plugin.stop_all：先等源码监测与在途重载结束<br/>再停插件 -> adapter.stop（12s 先报错，再 shield 等）"]
     K --> L["tts / file_server / engine.dispose"]
     L --> M{"restart_requested ?"}
     M -- 是 --> N["cli.cmd_run: os.execv 原地换进程"]
@@ -245,12 +280,17 @@ flowchart TD
 面板的 `POST /api/admin/shutdown` 走后者 —— 只接受本机来源并要求管理权限，请求立即返回，
 调用方须按进程存活轮询。`cli.py` 的 `stop_watcher` 收到后调用的仍是 `request_stop()`，
 **与 SIGINT/SIGTERM 同一个汇点**，所以上面这条停机顺序不受入口影响。
+
+独立 CLI / Textual 的 `/v1/stop` 同样投递现有 `request_stop()`。`run()` 在装配前取得
+数据目录租约；进程收尾先把本机控制服务切成只读并等完在途写入，核心插件清理完成后
+才关闭服务、清理发现文件并释放租约。关闭控制台本身不会停止机器人。
 </details>
 
 ## 关键状态
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
+| 实例租约与本机控制状态 | `cli.run` 装配前取租约；核心插件就绪前启动控制服务 | 核心清理结束后关闭服务与发现文件，最后释放租约 | 第二进程拒绝装配；停机中保留 `stopping=true` 只读状态 |
 | 应用已启动 `_started` | `NeoBotApplication.start()` | `stop()` / `dispose()` | 启动异常 -> `_rollback_start` 反向释放，`_started=False` |
 | 关闭事件 `_shutdown_event` | `request_stop()` / `request_restart()` | `start()`（非重启时 clear） | 超时只打印报告，绝不提前 exec 新进程 |
 | 待机模式 `StandbyService` | 配置缺失 `_CONFIG_ERROR` 或面板按钮 | 面板/命令恢复运行 | 待机时只留面板与命令，运行时不启动 |
@@ -290,4 +330,6 @@ flowchart TD
   （见 `fix(12) §4.2`），失败要在编排层显式处理。
 * **自身发言必须入队**：否则管线重组后丢失，表现为重复回复（见 `fix(2)`）。
 * **停机超时是报告，不是许可**：`_drain_shutdown_task` 超时只提示，不会提前启动新进程。
+* **控制台与宿主不是两个实例**：开发命令经本机控制接口调用现有 `PluginRuntime`；
+  停止请求已接收也不表示退出完成，要等控制状态、发现文件与实例租约完成收尾。
 * 本图只画主链路；搜索回退、记忆摘要、插件热重载等分支各自有专图，改动时请落到对应文件。

@@ -29,6 +29,8 @@ from neobot_modloader.plugins.registration import (
     validate_tool_name,
 )
 from neobot_modloader.plugins.tools import bind_tools
+from neobot_modloader.sdk import ActionPermission, GuideDefinition, PluginSurface, ResourceDefinition
+from neobot_modloader.sdk.surface import ViewDefinition
 
 #: 工具包名（技能名后缀）允许的字符
 _TOOL_PACKAGE_RE = re.compile(r"[A-Za-z0-9_]+")
@@ -58,9 +60,7 @@ class Plugin:
         self.usage = usage
         self.author = author
         self.config_model = config
-        self.command_prefix = MessagePattern(
-            "_prefix_validation", command=True, prefix=command_prefix
-        ).prefix
+        self.command_prefix = MessagePattern("_prefix_validation", command=True, prefix=command_prefix).prefix
         self.dependencies = tuple(dependencies)
         self.priority = int(priority)
         self.min_neobot_version = min_neobot_version
@@ -83,6 +83,63 @@ class Plugin:
         self._context: Any | None = None
         self._config: BaseModel | None = None
         self._bound = False
+        self.surface = PluginSurface()
+
+    def action(
+        self,
+        id: str,
+        *,
+        input_model: type[BaseModel] | None = None,
+        output_model: type[BaseModel] | None = None,
+        title: str = "",
+        description: str = "",
+        permission: ActionPermission = "manage",
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """声明独立于聊天回复的业务动作，处理器接收输入和可信调用上下文。"""
+        return self.surface.action(
+            id,
+            input_model=input_model,
+            output_model=output_model,
+            title=title,
+            description=description,
+            permission=permission,
+        )
+
+    def resource(
+        self,
+        id: str,
+        *,
+        title: str,
+        list_action: str,
+        columns: Sequence[str | Mapping[str, Any]],
+        create_action: str | None = None,
+        delete_action: str | None = None,
+    ) -> ResourceDefinition:
+        """声明由宿主展示的业务资源，列表与修改仍通过动作完成。"""
+        return self.surface.resource(
+            id,
+            title=title,
+            list_action=list_action,
+            columns=columns,
+            create_action=create_action,
+            delete_action=delete_action,
+        )
+
+    def guide(
+        self,
+        id: str,
+        *,
+        title: str,
+        steps: Sequence[Mapping[str, Any]],
+        completion_action: str | None = None,
+        demo: dict[str, Any] | None = None,
+    ) -> GuideDefinition:
+        """声明任务教程，步骤只引用已登记的配置字段、动作和资源。"""
+        return self.surface.guide(id, title=title, steps=steps, completion_action=completion_action, demo=demo)
+
+    def view(self, id: str, *, title: str, entry: str, anchors: Sequence[str] = ()) -> ViewDefinition:
+        """声明包内页面和稳定锚点，数据操作由宿主页面桥接。"""
+        return self.surface.view(id, title=title, entry=entry, anchors=anchors)
 
     def sqlite_database(
         self,
@@ -99,9 +156,7 @@ class Plugin:
         filename = filename or f"{name}.sqlite3"
         for existing in self._databases.values():
             if existing.filename.casefold() == filename.casefold():
-                raise ValueError(
-                    f"插件 {self.name} 已注册使用同名文件的数据库: {filename!r}"
-                )
+                raise ValueError(f"插件 {self.name} 已注册使用同名文件的数据库: {filename!r}")
         database = PluginDatabase(
             self.name,
             name,
@@ -123,12 +178,14 @@ class Plugin:
         block: bool = True,
         timeout: float | None = None,
         parse_error: str = "reply",
+        permission: int | None = None,
+        description: str = "",
     ) -> Callable[[Handler], Handler]:
-        """Register a slash command handler.
+        """注册命令；显式 permission 接入宿主鉴权、帮助和来源管理。
 
-        With ``parse_error="ignore"``, a matching command whose arguments do
-        not parse is treated as unhandled: it neither runs the handler nor
-        applies this registration's block settings.
+        省略 permission 时保留消息模式匹配。该模式下 parse_error="ignore"
+        会跳过参数无效的命令，不执行处理器，也不应用阻断设置。
+        宿主模式由命令服务决定消费语义，参数无效时回复用法。
         """
         compiled = MessagePattern(
             pattern,
@@ -137,6 +194,10 @@ class Plugin:
             prefix=prefix if prefix is not None else self.command_prefix,
         )
         validate_parse_error(parse_error)
+        if permission is not None and (type(permission) is not int or permission not in {0, 1, 2}):
+            raise ValueError("permission 必须是 0、1 或 2")
+        if permission is not None and "command_context" in compiled.capture_names:
+            raise ValueError("command_context 是宿主命令上下文的保留参数")
 
         def decorate(handler: Handler) -> Handler:
             self._registrations.append(
@@ -150,6 +211,8 @@ class Plugin:
                     timeout=timeout,
                     parse_error=parse_error,
                     command_prefix=prefix,
+                    permission=permission,
+                    description=description,
                 )
             )
             return handler
@@ -256,6 +319,42 @@ class Plugin:
 
         return decorate
 
+    def event(
+        self,
+        *,
+        post_type: str,
+        notice_type: str | None = None,
+        request_type: str | None = None,
+        rule=None,
+        priority: int = 10,
+        block: bool = False,
+        timeout: float | None = None,
+    ) -> Callable[[Handler], Handler]:
+        """订阅消息、通知或请求事件，支持 IncomingEvent 类型注入。"""
+        if post_type not in {"message", "notice", "request", "meta_event"}:
+            raise ValueError("不支持的 post_type")
+
+        def decorate(handler: Handler) -> Handler:
+            self._registrations.append(
+                HandlerRegistration(
+                    kind="event",
+                    pattern=MessagePattern(),
+                    handler=handler,
+                    priority=priority,
+                    block=block,
+                    block_ai_reply=False,
+                    timeout=timeout,
+                    parse_error="ignore",
+                    rule=rule,
+                    post_type=post_type,
+                    notice_type=notice_type,
+                    request_type=request_type,
+                )
+            )
+            return handler
+
+        return decorate
+
     def agent(
         self,
         name: str,
@@ -324,9 +423,7 @@ class Plugin:
 
         return decorate
 
-    def tool_package(
-        self, name: str, *, description: str = "", instructions: str = ""
-    ) -> ToolPackageRegistration:
+    def tool_package(self, name: str, *, description: str = "", instructions: str = "") -> ToolPackageRegistration:
         """声明一个工具包的元数据（description / instructions 会进技能索引与说明）。
 
         只有 @plugin.tool(package=...) 用到的包名才需要声明；未声明的包回落插件
@@ -400,6 +497,8 @@ class Plugin:
     async def on_stop(self) -> None:
         errors: list[Exception] = []
         try:
+            if hasattr(self._context, "close_tasks"):
+                await self._context.close_tasks()
             for handler in reversed(self._shutdown_handlers):
                 try:
                     await self._call_lifecycle(handler)
@@ -423,6 +522,8 @@ class Plugin:
         （Windows 上锁住数据库文件，导致重装/升级失败）。同时复位 ``_bound``，
         保证后续重载会重新绑定数据库与处理器。
         """
+        if hasattr(self._context, "close_tasks"):
+            await self._context.close_tasks()
         errors: list[Exception] = []
         for database in self._databases.values():
             try:
@@ -437,11 +538,9 @@ class Plugin:
 
     async def _load(self, context: Any) -> None:
         self._context = context
-        self._config = (
-            self.config_model.model_validate(dict(context.config))
-            if self.config_model is not None
-            else None
-        )
+        if hasattr(context, "_messaging_closed"):
+            context._messaging_closed = False
+        self._config = self.config_model.model_validate(dict(context.config)) if self.config_model is not None else None
         await self._bind_databases()
         if not self._bound:
             self._apply_command_prefix()
@@ -458,9 +557,7 @@ class Plugin:
         prefix = self.command_prefix
         configured = getattr(self._config, "command_prefix", None)
         if configured is not None:
-            prefix = MessagePattern(
-                "_prefix_validation", command=True, prefix=configured
-            ).prefix
+            prefix = MessagePattern("_prefix_validation", command=True, prefix=configured).prefix
         for registration in self._registrations:
             if registration.kind != "command" or registration.command_prefix is not None:
                 continue
@@ -469,9 +566,7 @@ class Plugin:
             if old_prefix and pattern.startswith(old_prefix):
                 pattern = pattern.removeprefix(old_prefix)
             aliases = tuple(
-                alias.removeprefix(old_prefix)
-                if old_prefix and alias.startswith(old_prefix)
-                else alias
+                alias.removeprefix(old_prefix) if old_prefix and alias.startswith(old_prefix) else alias
                 for alias in registration.pattern.aliases
             )
             registration.pattern = MessagePattern(

@@ -2,8 +2,8 @@
 flow: 11-minigame
 covers:
   - app/src/neobot_app/builtin_plugins/minigame/
-verified_against: e93fb6a
-verified_hash: af8708f5de46
+verified_against: fb703fe5
+verified_hash: d092b1a1948d
 ---
 
 # 11 小游戏：命令/关键词/工具三入口 · 认人窗口 · 积分账户 · 卡片渲染与降级
@@ -15,6 +15,8 @@ verified_hash: af8708f5de46
 `service.py` 的六张表与积分账户写入语义、`games/*.py` 四个玩法的判据与阈值、
 `themes.py` / `avatars.py` 的卡片主题与头像注入、文件末尾四个对外能力
 （`points.get` / `points.add` / `points.rank` / `points.describe`）。
+
+关键词入口位于 `parts/hooks.py`，通过 `plugin.message` 与 `~starts_with("/")` 规则接收类型化 `IncomingEvent`；命令预激活另用 `plugin.event`，避免把命令正文当普通关键词再处理。`parts/utils.py` 统一从消息链提取正文，@ 与引用段不混入关键字文本，事件原始字段继续传给既有业务运行时。
 
 **不画什么**（指向相邻图）：
 

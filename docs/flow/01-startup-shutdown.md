@@ -11,14 +11,18 @@ covers:
   - app/src/neobot_app/runtime/adapter_supervisor.py
   - app/src/neobot_app/runtime/process_restart.py
   - app/src/neobot_app/runtime/process_stop.py
+  - app/src/neobot_app/runtime/instance_lease.py
+  - app/src/neobot_app/runtime/local_control.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: 56559c2
-verified_hash: 5a0f8f5ff0f6
+verified_against: e0c9636
+verified_hash: e93671dc25c3
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
 
 ## 范围
+
+`cli.main` 明确设置 argparse 的 `prog="neobot"`，保证直接入口与模块调用的 `--version` 输出使用同一个公开命令名，版本值仍动态读取。
 
 这张图回答四个问题：**进程怎么起来**（CLI 入口 + 装配顺序）、**每一步失败停在哪**
 （启动 13 步 + 回滚清单）、**怎么在不换进程的前提换一代运行时**（待机 + 软重启），
@@ -29,6 +33,10 @@ verified_hash: 5a0f8f5ff0f6
 `NeoBotApplication.start/stop`、`ConnectionReadinessProbe`、
 `StandbyService` 状态机、`StandbyController` 代际编排、`ProcessRestartSignal`、
 `ProcessStopSignal`、`AdapterSupervisor` 监听热重载。
+
+`cli.run` 先取得 `InstanceLease(DATA_DIR)`，再进入原启动装配，防止第二进程在检查前
+已经导入并启动插件。独立 CLI / Textual 通过 `LocalControlServer` 连接同一个宿主，
+该服务由进程入口持有，跨应用代际存活；开发监听见 `08b-plugin-runtime.md`。
 
 **不画**（各自成图，避免重复）：
 
@@ -76,19 +84,24 @@ flowchart TD
     A1 -- 否 --> B["子命令分派｜cli.py:1053"]
     B -- 无子命令 --> C["cmd_run｜cli.py:297<br/>asyncio.run(run())"]
     B -- "init / open_web / firewall-open / sandbox_CP" --> B1["各自子命令, 不起运行时"]
-    C --> D["run｜cli.py:37<br/>注册 SIGINT/SIGTERM -> request_stop"]
+    C --> CL{"run: InstanceLease.acquire<br/>同一 DATA_DIR 的租约是否可用?"}
+    CL -- 否 --> CX["拒绝第二个实例，不进入装配"]
+    CL -- 是 --> D["_run_instance<br/>注册 SIGINT/SIGTERM -> request_stop"]
     D --> E["enable_core_reuse + create_application｜cli.py:61<br/>owns_plugins=False"]
     E --> E1["watch_stop 任务｜cli.py:61<br/>get_cached_core('process_stop').wait()<br/>收到 -> request_stop()"]
     E1 --> F{"get_cached_core('standby_service') 为空?"}
     F -- 是 --> F1["遗留单机装配: 直接 run_forever<br/>无待机/软重启"]
     F -- 否 --> G["StandbyController｜cli.py:75<br/>runtime_factory=create_application"]
     G --> H["standby_service.set_hooks｜cli.py:84<br/>on_enter/on_resume/on_onebot_change"]
-    H --> I["startup 任务｜cli.py:91<br/>plugin load/start -> controller.start"]
+    H --> HC["LocalControlServer.start<br/>本机随机端口 + 原子发现文件"]
+    HC --> I["startup 任务<br/>plugin load/start -> controller.start"]
     I --> J["run_entry_loop｜cli.py:144<br/>poll_interval=0.5s"]
     J --> K{"state 的 stopping 或 restart_signal.requested ?"}
     K -- 是 --> L["controller.request_shutdown<br/>-> shutdown 观察窗口 20s"]
     L --> M{"shutdown 确认完成?"}
-    M -- 是 --> N["返回 restart -> cmd_run: os.execv｜cli.py:310"]
+    M -- 是 --> NC["begin_shutdown: 控制服务只读<br/>等在途写入与核心插件清理"]
+    NC --> NX["关闭控制服务与发现文件<br/>释放实例租约"]
+    NX --> N["返回 restart -> cmd_run: os.execv 或正常退出"]
     M -- 否 --> J
     K -- 否 --> O{"runtime_task 刚结束?"}
     O -- "是, 且 controller.application 空, 且非待机" --> P["state 的 stopping=True<br/>下一轮走停机, 不重启"]
@@ -107,6 +120,7 @@ flowchart TD
 sequenceDiagram
     autonumber
     participant CLI as cli.run
+    participant LC as LocalControlServer
     participant SC as StandbyController
     participant APP as NeoBotApplication
     participant SB as StandbyService
@@ -115,8 +129,10 @@ sequenceDiagram
     participant PB as ConnectionReadinessProbe
 
     CLI->>CLI: sanitize_no_proxy_environment + 解析子命令
+    CLI->>CLI: 取得数据目录租约，失败则不进入装配
     CLI->>CLI: enable_core_reuse + create_application(owns_plugins=False)
     CLI->>SB: set_hooks(on_enter/on_resume/on_onebot_change)
+    CLI->>LC: start，写 DATA_DIR/.neobot/control.json
     CLI->>PR: load_registered + start_all（core 自持, 不在 app.start 内）
     CLI->>SC: start()
     SC->>APP: start()（初始代际 _initial 直接复用）
@@ -132,7 +148,15 @@ sequenceDiagram
     CLI->>CLI: runtime_task 结束但 is_standby 为真 -> 不退出进程
     CLI->>SC: resume -> 新代际 -> controller.application -> run_forever
     Note over CLI,APP: 进程重启: restart_signal.request -> request_shutdown -> 收敛后 os.execv
+    CLI->>LC: begin_shutdown: stopping=true，拒绝新写入并排空在途操作
+    CLI->>PR: stop_all: 等监测任务与事务结束，再逆序停止插件
+    Note over CLI,LC: 核心清理尚未结束时，状态接口与实例租约都保留
+    CLI->>LC: close，删除自己的发现文件
+    CLI->>CLI: 释放实例租约，再正常退出或 os.execv
 ```
+
+本机显式重载在依赖联动后，于运行时名字锁内复核原记录、状态和启用标志；
+等待期间发生停止、停用或换代时返回 `409 / reload_failed`，不重新启动旧目标。
 
 谁等谁：CLI 等 `controller` 的代际切换，`controller` 等 `app.stop()`（20s 后只是
 报告，仍继续等），`StandbyService` 等 hook（20s / 120s）。**没有一处把超时当成功**。
@@ -220,6 +244,10 @@ flowchart TD
 `process_restart`；`loguru` 走 `_run_once`（只配置一次）。
 复用清单之外的一切（队列、memory_svcs、provider、emoji、编排器、管线、应用本身）**每代重建** ——
 这就是「软重启能生效」与「面板不断线」同时成立的原因。
+
+发言策略注册器随插件主机一起复用：`build_plugin_host` 发布 `speaking_policy` 服务，
+`core_services` 将相同实例绑定到适配器 core。每代重建回复编排器时仍读取这个共享实例，
+插件配置热更新不替换注册器；策略注销由注册该策略的插件负责。
 
 热重载消费者按**注册顺序**生效（`runtime/hot_reload_registry.py:113` 注释「先注册先生效」）：
 `AdapterSupervisor` 在 :784 先注册，`_provider_reload` 在 :1182 先 unregister 再
@@ -462,6 +490,8 @@ flowchart TD
     F --> G["_discard_initial: 释放从未启动的初始代际"]
     G --> H["_sync_adapter(desired=False) 断待机连接"]
     H --> I["返回 True: 运行时与适配器已确认停止"]
+    I --> IC["CLI finally: 控制服务切只读<br/>等在途开发操作与核心 plugin.stop_all"]
+    IC --> IX["关闭本机控制与发现文件<br/>离开 run 后释放 InstanceLease"]
     D --> J["app.stop: _stop_lock 串行, 防双跑清理链"]
     J --> K["_stop_components 逐项 shield<br/>self_heal/problem_solver -> report -> event_ingress"]
     K --> L["orchestrator.shutdown -> flush_pending_summaries<br/>-> plugin.stop_all -> creator_image -> markdown -> emoji -> background"]
@@ -616,6 +646,8 @@ flowchart TD
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
+| `InstanceLease._file` | `run()` 在 `create_application` 前取得 OS 文件锁 | `run()` 离开上下文时释放 | 第二个进程立即拒绝，锁文件存在不等于进程仍存活 |
+| 控制服务 `_closing` 与发现文件 | 启动服务后原子发布；停止请求或 `begin_shutdown` 置 closing | 核心插件清理后 `close` 只移除自己的发现文件 | 停机中 GET 状态仍可读且 `stopping=true`，新写入被拒绝 |
 | `NeoBotApplication._started` | `start()` 末尾 | `stop()` / 回滚 `:210` | 回滚后为 False，`_cleanup_complete=True` |
 | `_cleanup_complete` | `stop()` 或回滚结束 | 不清理（防复活标志） | `run_forever` 直接 return，`dispose` 幂等返回 |
 | `_shutdown_event` | `request_stop/request_restart/stop` | `start()` 且未请求重启时 clear | 置位后 `run_forever` 退出并进入 `stop()` |
@@ -631,6 +663,9 @@ flowchart TD
 | `_CONFIG_ERROR` | `_load_config_or_defaults` 失败 | 下一次加载成功 | 非空即强制 `start_in_standby`，且默认配置不进缓存 |
 
 ## 易错点
+
+* **不能用关闭控制台代表关闭宿主**。Textual 是客户端；`/v1/stop` 投递同一个
+  `request_stop()`，其应答只表示已受理。核心清理完成之前不能先关闭状态服务或释放租约。
 
 * **超时不是许可**。`_drain_shutdown_task` / `_wait_stage` /
   `_stop_adapter_with_timeout` 三处都是「先报错、再继续等」；取消或超时都不代表组件已停，

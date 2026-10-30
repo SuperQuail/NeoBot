@@ -168,3 +168,8 @@ scripts/flow/_commit_msg.txt
 # Split package dirs under app/src are source, not sdist artifacts
 !app/src/**/parts/
 !app/src/**/parts/**
+
+# Python caches under source parts
+__pycache__/
+*.py[cod]
+app/src/**/parts/__pycache__/

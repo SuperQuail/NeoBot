@@ -1,0 +1,19 @@
+name: PR 评审事件
+run-name: 'PR #${{ github.event.pull_request.number }}'
+
+# fork 评审事件只有只读令牌。这里只产生完成事件，不检出或执行 PR 代码。
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+jobs:
+  notify:
+    name: 通知门禁刷新
+    runs-on: ubuntu-latest
+    steps:
+      - name: 交由基础仓库刷新
+        run: echo '评审发生变化，交由基础仓库的 PR 门禁刷新工作流处理。'

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from neobot_modloader.agent import AgentRequest
 from neobot_modloader.bot import Bot
+from neobot_modloader.events import IncomingEvent
+from neobot_modloader.messaging import MessageWaitBusy
+from neobot_modloader.rules import Rule, has_segment, mentioned, starts_with
 from neobot_modloader.database import (
     Migration,
     PluginDatabase,
@@ -48,6 +51,7 @@ from neobot_modloader.plugin import Plugin
 from neobot_modloader.reply import Reply
 from neobot_modloader.runtime import PluginRuntime
 from neobot_modloader.context import RuntimePluginContext
+from neobot_modloader.sdk import ActionError, ActionInvocation, ActionPermission, PluginSurface, SurfaceContractError
 from neobot_modloader.users import UserDirectory, UserProfile
 from neobot_contracts.ports.screenshot import (
     FontFace,
@@ -67,6 +71,15 @@ from neobot_contracts.ports.screenshot import (
 )
 
 __all__ = [
+    "IncomingEvent",
+    "MessageWaitBusy",
+    "Rule",
+    "has_segment",
+    "mentioned",
+    "starts_with",
+    "ActionError",
+    "ActionInvocation",
+    "ActionPermission",
     "AgentRequest",
     "AtSegment",
     "Bot",
@@ -112,6 +125,8 @@ __all__ = [
     "PluginOperationResult",
     "PluginRuntime",
     "PluginSnapshot",
+    "PluginSurface",
+    "SurfaceContractError",
     "PythonDependencyInstaller",
     "Reply",
     "RuntimeGeneration",

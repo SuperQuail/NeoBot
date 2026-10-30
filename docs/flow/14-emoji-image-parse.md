@@ -6,12 +6,16 @@ covers:
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
 verified_against: e93fb6a
-verified_hash: 3fc779c75ad0
+verified_hash: ce2d869e7167
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
 
 ## 范围
+
+入站图片解析在创建任务前检查当前群/私聊的发言策略，异步任务开始及视觉模型调用前重新检查。
+静默时保留原图片段、不排队补解析；`parse_image` 根据运行时注入的 `pipeline_key` 做同样的入口与模型前检查。
+群和私聊的覆盖独立生效，无策略时沿用原解析流程；表情包库、本地检测和其他后台任务不参与此改动。
 
 本图覆盖三条共用「图片字节」这一输入形态的链路：
 

@@ -24,9 +24,12 @@ from . import commands, db
 from .assets import AssetCache
 from .bilibili.client import BilibiliLiveClient, HttpxTransport
 from .bilibili.errors import BilibiliAPIError, BilibiliTransportError
+from .chat_guide import register_chat_guide
 from .config import StreamConfig
 from .logs import log_at
 from .notify import Notifier
+from .panel import register_surface
+from .panel_guide import register_guide
 from .poller import LivePoller
 from .render import CardRenderer, resolve_style
 
@@ -101,13 +104,21 @@ class PluginState:
                 avatar_url = card.face
             except (BilibiliAPIError, BilibiliTransportError):
                 pass
-        return {"room_id": room_id, "uid": uid, "short_id": short_id, "name": name, "avatar_url": avatar_url}
+        return {
+            "room_id": room_id,
+            "uid": uid,
+            "short_id": short_id,
+            "name": name,
+            "avatar_url": avatar_url,
+        }
 
     async def find_subscription(self, group_id: int, kind: str, value: int) -> Any:
         """按用户输入找到订阅记录；先直接命中，再走一次解析。"""
         if kind == "room":
             async with self.database.session() as session:
-                direct = db.sub_view(await db.get_subscription(session, group_id, value))
+                direct = db.sub_view(
+                    await db.get_subscription(session, group_id, value)
+                )
             if direct is not None:
                 return direct
         try:
@@ -134,7 +145,9 @@ class PluginState:
 
     # ── 总览图数据 ───────────────────────────────────────────────────────
 
-    async def build_overview_hosts(self, rows: list[Any], states: dict[int, Any]) -> list[dict[str, Any]]:
+    async def build_overview_hosts(
+        self, rows: list[Any], states: dict[int, Any]
+    ) -> list[dict[str, Any]]:
         """把订阅列表变成总览图需要的 {avatar_src, name, live}。"""
         assets = self._require_assets()
         semaphore = asyncio.Semaphore(AVATAR_CONCURRENCY)
@@ -145,7 +158,8 @@ class PluginState:
                 if row.avatar_url:
                     try:
                         avatar = await asyncio.wait_for(
-                            assets.fetch_data_uri(row.avatar_url), timeout=AVATAR_TIMEOUT
+                            assets.fetch_data_uri(row.avatar_url),
+                            timeout=AVATAR_TIMEOUT,
                         )
                     except (asyncio.TimeoutError, TimeoutError):
                         log_at(
@@ -276,6 +290,10 @@ class PluginState:
 
 state = PluginState()
 
+register_surface(plugin, state)
+register_guide(plugin)
+register_chat_guide(plugin, state)
+
 #: 命令在 on_load 里注册：宿主命令表（ctx.app_commands）要到那时才注入，
 #:  注册进去的命令才会出现在 /help 列表与详情里。
 
@@ -309,4 +327,3 @@ async def _on_shutdown(ctx: Any) -> None:
     await state.stop_polling()
     await state.aclose()
     ctx.logger.info(f"{ctx.plugin_name} 已停止")
-

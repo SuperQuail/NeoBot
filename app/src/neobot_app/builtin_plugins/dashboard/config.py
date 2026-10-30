@@ -63,7 +63,7 @@ class DashboardConfig(BaseModel):
         default=300,
         ge=0,
         le=86400,
-        description="机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询。",
+        description="机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询；连接或断开后缓存立即失效。",
     )
     latency_probe_interval_seconds: int = Field(
         default=60,

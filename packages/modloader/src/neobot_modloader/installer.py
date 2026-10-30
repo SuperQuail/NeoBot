@@ -209,9 +209,7 @@ class PluginInstaller:
         self._fetcher = fetcher
         self._proxy = proxy or ProxySettings()
         #: 官方插件目录（ID 为保留字：随本体更新，不能在面板内安装 / 更新）
-        self._official_dirs = tuple(
-            Path(path).resolve() for path in (official_plugin_dirs or ())
-        )
+        self._official_dirs = tuple(Path(path).resolve() for path in (official_plugin_dirs or ()))
 
     # ------------------------------------------------------------------
     # 代理
@@ -242,9 +240,7 @@ class PluginInstaller:
         if proxy.mode == "none":
             return urllib.request.build_opener(urllib.request.ProxyHandler({}))
         if proxy.mode == "custom":
-            return urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url})
-            )
+            return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}))
         return urllib.request.build_opener()
 
     @property
@@ -261,9 +257,7 @@ class PluginInstaller:
             raise PluginInstallError("仓库地址不能为空")
         match = _REPO_SPEC_RE.match(raw)
         if match is None:
-            raise PluginInstallError(
-                f"无法解析仓库地址: {raw}（支持 owner/repo 或 https://github.com/owner/repo）"
-            )
+            raise PluginInstallError(f"无法解析仓库地址: {raw}（支持 owner/repo 或 https://github.com/owner/repo）")
         resolved_branch = (branch or match.group("branch") or DEFAULT_BRANCH).strip()
         if not resolved_branch or "/" in resolved_branch or "\\" in resolved_branch:
             raise PluginInstallError(f"非法分支名: {resolved_branch!r}")
@@ -321,9 +315,7 @@ class PluginInstaller:
                         break
                     total += len(chunk)
                     if total > self._max_archive_bytes:
-                        raise PluginInstallError(
-                            f"下载内容超过上限 {self._max_archive_bytes} 字节"
-                        )
+                        raise PluginInstallError(f"下载内容超过上限 {self._max_archive_bytes} 字节")
                     chunks.append(chunk)
                 return b"".join(chunks)
         except urllib.error.HTTPError as exc:
@@ -382,9 +374,7 @@ class PluginInstaller:
             "official": self.is_reserved(target.name),
         }
 
-    def _conflict_payload(
-        self, kind: str, requested: dict[str, Any], existing: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _conflict_payload(self, kind: str, requested: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
         if kind == "official":
             message = (
                 f"插件 ID {existing.get('name') or requested.get('name')} 是官方插件保留字："
@@ -479,9 +469,7 @@ class PluginInstaller:
 
         staging_root: Path | None = None
         try:
-            staging_root = Path(
-                tempfile.mkdtemp(dir=str(self._ensure_plugin_parent()), prefix=".install-")
-            )
+            staging_root = Path(tempfile.mkdtemp(dir=str(self._ensure_plugin_parent()), prefix=".install-"))
             source_dir = self._extract(archive, staging_root)
             manifest = read_manifest(source_dir / "plugin.toml")
             if not manifest:
@@ -520,9 +508,7 @@ class PluginInstaller:
             backup_path: Path | None = None
             existing_install = target.exists()
             conflict: dict[str, Any] | None = (
-                self._conflict_payload(
-                    "existing_plugin", requested, self._installed_meta(target)
-                )
+                self._conflict_payload("existing_plugin", requested, self._installed_meta(target))
                 if existing_install
                 else None
             )
@@ -533,7 +519,11 @@ class PluginInstaller:
                     name=name,
                     version=version,
                     path=target,
-                    message=(f"探测完成：{name} {version}（存在同名插件）" if existing_install else f"探测完成：{name} {version}（无冲突）"),
+                    message=(
+                        f"探测完成：{name} {version}（存在同名插件）"
+                        if existing_install
+                        else f"探测完成：{name} {version}（无冲突）"
+                    ),
                     conflict=conflict,
                     dry_run=True,
                 )
@@ -550,6 +540,11 @@ class PluginInstaller:
                 )
             # ④ 显式替换：走既有备份路径
             if existing_install:
+                from .sdk.storage import read_storage
+
+                previous_storage = read_storage(read_manifest(target / "plugin.toml"))
+                if previous_storage != read_storage(manifest):
+                    raise PluginInstallError("插件配置或数据版本有变化，请退出宿主后使用 SDK 维护期升级")
                 backup_path = self._backup(target, name)
                 try:
                     shutil.rmtree(target)
@@ -702,9 +697,7 @@ class PluginInstaller:
             with zipfile.ZipFile(buffer) as bundle:
                 infos = [info for info in bundle.infolist() if not info.is_dir()]
                 if len(infos) > self._max_archive_entries:
-                    raise PluginInstallError(
-                        f"压缩包条目过多（{len(infos)}），超过上限 {self._max_archive_entries}"
-                    )
+                    raise PluginInstallError(f"压缩包条目过多（{len(infos)}），超过上限 {self._max_archive_entries}")
                 total = 0
                 for info in infos:
                     member = self._safe_member(info.filename)
@@ -715,9 +708,7 @@ class PluginInstaller:
                         continue
                     total += int(info.file_size)
                     if total > self._max_extracted_bytes:
-                        raise PluginInstallError(
-                            f"解压后体积超过上限 {self._max_extracted_bytes} 字节"
-                        )
+                        raise PluginInstallError(f"解压后体积超过上限 {self._max_extracted_bytes} 字节")
                     target = destination / member
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with bundle.open(info) as source, open(target, "wb") as handle:

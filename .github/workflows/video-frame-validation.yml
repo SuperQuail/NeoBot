@@ -1,0 +1,64 @@
+name: 视频抽帧验证
+
+on:
+  pull_request:
+    paths:
+      - 'app/src/neobot_app/bilibili/video_frames.py'
+      - 'app/tests/modules/bilibili/test_video_frame*.py'
+      - '.github/workflows/video-frame-validation.yml'
+      - 'app/pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-frames-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows 视频抽帧 / Python ${{ matrix.python }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.13', '3.14']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: 检出当前提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 安装 uv 和 Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.24'
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+
+      - name: 安装锁定宿主与测试依赖
+        run: |
+          uv sync --package neobot-app --locked
+          uv sync --only-group dev --inexact --locked
+
+      - name: 原生共享句柄与并发取消回归
+        run: >-
+          uv run --no-sync pytest
+          app/tests/modules/bilibili/test_video_frames.py
+          app/tests/modules/bilibili/test_video_frame_publication.py
+          app/tests/modules/bilibili/test_video_frame_windows_publication.py
+          --strict-markers --junitxml "${{ runner.temp }}/video-frames.xml"
+
+      - name: 上传 Windows 回归报告
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: video-frames-windows-${{ matrix.python }}
+          path: ${{ runner.temp }}/video-frames.xml
+          if-no-files-found: error
+          retention-days: 7

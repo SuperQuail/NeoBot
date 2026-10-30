@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.speaking import SpeechBlocked
 
 
 OnNotificationConsumed = Callable[["BackgroundNotification"], None | Awaitable[None]]
@@ -51,6 +53,11 @@ class BackgroundNotificationHub:
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator
 
+    @property
+    def confirms_scheduled_delivery(self) -> bool:
+        policy = getattr(self._orchestrator, "speaking_policy", None)
+        return policy is not None and getattr(policy, "has_policies", True) is True
+
     def _get_callback_timeout_seconds(self) -> float:
         return 10.0
 
@@ -67,6 +74,15 @@ class BackgroundNotificationHub:
         on_consumed: OnNotificationConsumed | None = None,
         on_polled: OnNotificationConsumed | None = None,
     ) -> bool:
+        policy = getattr(self._orchestrator, "speaking_policy", None)
+        if policy is not None:
+            decision = policy.evaluate(ConversationRef(kind, str(conversation_id)))
+            if not decision.allowed:
+                self._logger.info(
+                    "发言策略拒绝后台通知", source=source,
+                    pipeline_key=f"{kind}:{conversation_id}", reason=decision.reason,
+                )
+                raise SpeechBlocked(decision.reason)
         pipeline_key = f"{kind}:{conversation_id}"
         notification = BackgroundNotification(
             source=source,
@@ -79,6 +95,11 @@ class BackgroundNotificationHub:
             metadata=dict(metadata or {}),
             on_consumed=on_consumed or on_polled,
         )
+
+        if source == "scheduled_task" and self.confirms_scheduled_delivery:
+            # No history mirror or deferred queue: a skipped reminder must never
+            # reappear as a prompt after the speaking window opens again.
+            return await self._try_start_background_reply(notification, confirm_delivery=True)
 
         queue = self._queues.get(pipeline_key)
         queue_size_before = queue.qsize() if queue is not None else 0
@@ -231,7 +252,7 @@ class BackgroundNotificationHub:
         self._queues.clear()
         self._last_used.clear()
 
-    async def _try_start_background_reply(self, notification: BackgroundNotification) -> bool:
+    async def _try_start_background_reply(self, notification: BackgroundNotification, *, confirm_delivery: bool = False) -> bool:
         if self._orchestrator is None:
             self._logger.debug(
                 "_try_start_background_reply: orchestrator 为空"
@@ -258,6 +279,8 @@ class BackgroundNotificationHub:
                 manager_name=notification.manager_name,
                 reasons=notification.reasons or [f"{notification.source} notification"],
             )
+        except SpeechBlocked:
+            raise
         except Exception as exc:
             self._logger.warning(
                 "后台通知启动回复管线失败",
@@ -275,6 +298,8 @@ class BackgroundNotificationHub:
             )
             return False
 
+        if confirm_delivery and not await self._orchestrator.wait_reply_delivery(result):
+            return False
         await self._consume(notification)
         self._logger.info(
             "后台通知已启动回复管线",

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from neobot_contracts.ports.speaking import SpeechBlocked
+
 import asyncio
 import inspect
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from neobot_contracts.models import ConversationRef, IncomingMessage
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -40,6 +42,7 @@ class SelfSentSink:
     queue: Any = None
     snapshot: Any = None
     queue_key: str = ""
+    on_delivered: Callable[[], None] | None = None
 
     @property
     def usable(self) -> bool:
@@ -307,6 +310,7 @@ class ReplySender:
             return False
 
         self._enter_sending(event)
+        event.send_incomplete = True
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
@@ -314,19 +318,34 @@ class ReplySender:
         send_results: list[object] = []
         formatted_messages: list[list[dict]] = []
 
+        def record_delivery(result: object) -> None:
+            # 后续分句、图片索引或用量记录失败，也不能丢失已经发生的投递。
+            send_results.append(result)
+            event.send_response = send_results[0] if len(send_results) == 1 else send_results
+            if self_sent is not None and self_sent.on_delivered is not None:
+                self_sent.on_delivered()
+
         # Phase A: send images first (one by one)
         if images:
-            for image_number in images:
-                if self._emoji_service is None:
-                    continue
-                entry = self._emoji_service.get_entry(image_number)
-                if entry is None:
-                    continue
+            image_entries = [
+                (image_number, entry)
+                for image_number in images
+                if self._emoji_service is not None
+                and (entry := self._emoji_service.get_entry(image_number)) is not None
+            ]
+            for index, (image_number, entry) in enumerate(image_entries):
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                send_results.append(await send_image(
-                    self._file_server, self._adapter, conv_ref, entry.file_path,
-                    wait_response=False,
-                ))
+                record_delivery(
+                    await send_image(
+                        self._file_server,
+                        self._adapter,
+                        conv_ref,
+                        entry.file_path,
+                        wait_response=False,
+                    )
+                )
+                if index == len(image_entries) - 1 and not text.strip() and not segments:
+                    event.send_incomplete = False
                 await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
                 await self._emoji_service.record_usage(image_number)
 
@@ -339,7 +358,8 @@ class ReplySender:
                         timeout=_MARKDOWN_RENDER_TIMEOUT_SECONDS,
                     )
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
-                    send_results.append(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
+                    record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
+                    event.send_incomplete = False
                     await self._emit_self_sent_image(
                         self_sent, conv_ref, image_path,
                         kind="markdown",
@@ -349,6 +369,8 @@ class ReplySender:
                     self._leave_sending(event, conv_ref.kind)
                     self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
                     return True
+                except SpeechBlocked:
+                    raise
                 except Exception as exc:
                     self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
 
@@ -363,6 +385,7 @@ class ReplySender:
             event.send_response = (
                 send_results[0] if len(send_results) == 1 else send_results
             )
+            event.send_incomplete = False
             self._leave_sending(event, conv_ref.kind)
             self._debug_helper.record(
                 "reply_sent",
@@ -428,12 +451,13 @@ class ReplySender:
                 mention_user_ids=mention_user_ids if index == 0 else None,
             )
             formatted_messages.append(formatted)
-            send_results.append(await self.send_with_timeout(conv_ref, formatted))
+            record_delivery(await self.send_with_timeout(conv_ref, formatted))
             # 逐条按「真正发到 QQ 的那句文本」入队：重建后模型知道自己分几句说了什么
             self._emit_self_sent_text(self_sent, conv_ref, message_text)
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
+        event.send_incomplete = False
         self._leave_sending(event, conv_ref.kind)
         self._debug_helper.record(
             "reply_sent",

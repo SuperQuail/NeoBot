@@ -5,6 +5,7 @@ import asyncio
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 
@@ -312,7 +313,8 @@ def pid_alive(pid):
             # An adopted zombie has terminated, even if init has not reaped it yet.
             stat = Path(f"/proc/{pid}/stat")
             return not (stat.exists() and stat.read_text().split()[2] == "Z")
-        except ProcessLookupError:
+        except (ProcessLookupError, FileNotFoundError):
+            # The process may exit between probing /proc and reading its state.
             return False
     import ctypes
     from ctypes import wintypes as w
@@ -329,6 +331,29 @@ def pid_alive(pid):
         return kernel.WaitForSingleObject(handle, 0) == 258
     finally:
         kernel.CloseHandle(handle)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux /proc process state")
+def test_pid_alive_handles_exit_between_stat_probe_and_read(monkeypatch):
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert pid_alive(process.pid)
+        stat = Path(f"/proc/{process.pid}/stat")
+        exists = Path.exists
+
+        def exit_after_exists(path):
+            found = exists(path)
+            if path == stat and found:
+                process.terminate()
+                process.wait(timeout=5)
+            return found
+
+        monkeypatch.setattr(Path, "exists", exit_after_exists)
+        assert not pid_alive(process.pid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize("parent_exits", [False, True])

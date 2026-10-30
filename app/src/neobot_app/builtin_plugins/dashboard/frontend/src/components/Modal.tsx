@@ -75,6 +75,11 @@ export default function Modal({
         <Dialog.Content
           asChild
           aria-describedby={undefined}
+          onInteractOutside={(event) => {
+            // 全局通知独立于业务弹窗，操作通知按钮不应关闭当前工作区。
+            if (event.target instanceof Element && event.target.closest('.info-bar-host'))
+              event.preventDefault();
+          }}
           onOpenAutoFocus={(event) => {
             const active = document.activeElement;
             // 多步设置返回此弹窗时，保留页内入口，避免记住即将卸载的上一步按钮。

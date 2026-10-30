@@ -1,0 +1,1616 @@
+{
+  "actions": [
+    {
+      "description": "",
+      "id": "subscriptions.groups",
+      "input_schema": null,
+      "output_schema": {
+        "$defs": {
+          "GroupChoice": {
+            "properties": {
+              "bot_id": {
+                "title": "机器人账号",
+                "type": "string"
+              },
+              "group_id": {
+                "title": "接收群号",
+                "type": "integer"
+              },
+              "name": {
+                "title": "群名称",
+                "type": "string"
+              }
+            },
+            "required": [
+              "group_id",
+              "name",
+              "bot_id"
+            ],
+            "title": "GroupChoice",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/GroupChoice"
+            },
+            "title": "可选接收群",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Groups",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "选择接收群"
+    },
+    {
+      "description": "",
+      "id": "groups.settings.get",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "title": "GroupSettingsInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_reply_live": {
+            "title": "开播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "ai_reply_live_end": {
+            "title": "下播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "card_style": {
+            "enum": [
+              "random",
+              "sakura",
+              "neon",
+              "minimal"
+            ],
+            "title": "通知卡片风格",
+            "type": "string"
+          },
+          "default_push_live": {
+            "title": "新订阅默认发送开播通知",
+            "type": "boolean"
+          },
+          "default_push_live_end": {
+            "title": "新订阅默认发送下播通知",
+            "type": "boolean"
+          },
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "inherited": {
+            "title": "尚未保存群设置，使用插件默认值",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "group_id",
+          "card_style",
+          "ai_reply_live",
+          "ai_reply_live_end",
+          "default_push_live",
+          "default_push_live_end",
+          "inherited"
+        ],
+        "title": "GroupSettings",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "查看群设置"
+    },
+    {
+      "description": "",
+      "id": "groups.settings.update",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_reply_live": {
+            "title": "开播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "ai_reply_live_end": {
+            "title": "下播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "card_style": {
+            "enum": [
+              "random",
+              "sakura",
+              "neon",
+              "minimal"
+            ],
+            "title": "通知卡片风格",
+            "type": "string"
+          },
+          "default_push_live": {
+            "title": "新订阅默认发送开播通知",
+            "type": "boolean"
+          },
+          "default_push_live_end": {
+            "title": "新订阅默认发送下播通知",
+            "type": "boolean"
+          },
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "card_style",
+          "ai_reply_live",
+          "ai_reply_live_end",
+          "default_push_live",
+          "default_push_live_end"
+        ],
+        "title": "GroupSettingsUpdateInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_reply_live": {
+            "title": "开播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "ai_reply_live_end": {
+            "title": "下播后触发 AI 回复",
+            "type": "boolean"
+          },
+          "card_style": {
+            "enum": [
+              "random",
+              "sakura",
+              "neon",
+              "minimal"
+            ],
+            "title": "通知卡片风格",
+            "type": "string"
+          },
+          "default_push_live": {
+            "title": "新订阅默认发送开播通知",
+            "type": "boolean"
+          },
+          "default_push_live_end": {
+            "title": "新订阅默认发送下播通知",
+            "type": "boolean"
+          },
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "inherited": {
+            "title": "尚未保存群设置，使用插件默认值",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "group_id",
+          "card_style",
+          "ai_reply_live",
+          "ai_reply_live_end",
+          "default_push_live",
+          "default_push_live_end",
+          "inherited"
+        ],
+        "title": "GroupSettings",
+        "type": "object"
+      },
+      "permission": "manage",
+      "title": "保存群设置"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.resolve",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "target": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "直播间或账号链接",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "title": "TargetInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "avatar_url": {
+            "title": "主播头像",
+            "type": "string"
+          },
+          "name": {
+            "title": "主播",
+            "type": "string"
+          },
+          "room_id": {
+            "title": "直播间号",
+            "type": "integer"
+          },
+          "short_id": {
+            "title": "直播间短号",
+            "type": "integer"
+          },
+          "uid": {
+            "title": "UP 主 UID",
+            "type": "integer"
+          },
+          "url": {
+            "title": "直播间链接",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "uid",
+          "short_id",
+          "name",
+          "avatar_url",
+          "url"
+        ],
+        "title": "Target",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "识别直播间"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.preview",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "target": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "直播间或账号链接",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "group_id"
+        ],
+        "title": "CreateInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "Target": {
+            "properties": {
+              "avatar_url": {
+                "title": "主播头像",
+                "type": "string"
+              },
+              "name": {
+                "title": "主播",
+                "type": "string"
+              },
+              "room_id": {
+                "title": "直播间号",
+                "type": "integer"
+              },
+              "short_id": {
+                "title": "直播间短号",
+                "type": "integer"
+              },
+              "uid": {
+                "title": "UP 主 UID",
+                "type": "integer"
+              },
+              "url": {
+                "title": "直播间链接",
+                "type": "string"
+              }
+            },
+            "required": [
+              "room_id",
+              "uid",
+              "short_id",
+              "name",
+              "avatar_url",
+              "url"
+            ],
+            "title": "Target",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "fallback_text": {
+            "title": "通知文字",
+            "type": "string"
+          },
+          "html": {
+            "title": "通知预览",
+            "type": "string"
+          },
+          "style": {
+            "title": "通知卡片风格",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/$defs/Target",
+            "title": "识别结果"
+          }
+        },
+        "required": [
+          "target",
+          "style",
+          "html",
+          "fallback_text"
+        ],
+        "title": "Preview",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "预览通知"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.create",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "target": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "直播间或账号链接",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "group_id"
+        ],
+        "title": "CreateInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "SubscriptionItem": {
+            "properties": {
+              "avatar_url": {
+                "default": "",
+                "title": "主播头像",
+                "type": "string"
+              },
+              "checked_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "最近检查时间"
+              },
+              "group_id": {
+                "title": "接收群号",
+                "type": "integer"
+              },
+              "live_status": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "直播状态"
+              },
+              "name": {
+                "default": "",
+                "title": "主播",
+                "type": "string"
+              },
+              "push_live": {
+                "default": true,
+                "title": "开播通知",
+                "type": "boolean"
+              },
+              "push_live_end": {
+                "default": true,
+                "title": "下播通知",
+                "type": "boolean"
+              },
+              "room_id": {
+                "title": "直播间号",
+                "type": "integer"
+              },
+              "short_id": {
+                "default": 0,
+                "title": "直播间短号",
+                "type": "integer"
+              },
+              "uid": {
+                "default": 0,
+                "title": "UP 主 UID",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_id",
+              "room_id"
+            ],
+            "title": "SubscriptionItem",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "created": {
+            "title": "已添加新订阅",
+            "type": "boolean"
+          },
+          "item": {
+            "$ref": "#/$defs/SubscriptionItem",
+            "title": "当前订阅"
+          }
+        },
+        "required": [
+          "created",
+          "item"
+        ],
+        "title": "Created",
+        "type": "object"
+      },
+      "permission": "manage",
+      "title": "开始监听"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.list",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "接收通知的群"
+          }
+        },
+        "title": "ListInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "SubscriptionItem": {
+            "properties": {
+              "avatar_url": {
+                "default": "",
+                "title": "主播头像",
+                "type": "string"
+              },
+              "checked_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "最近检查时间"
+              },
+              "group_id": {
+                "title": "接收群号",
+                "type": "integer"
+              },
+              "live_status": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "直播状态"
+              },
+              "name": {
+                "default": "",
+                "title": "主播",
+                "type": "string"
+              },
+              "push_live": {
+                "default": true,
+                "title": "开播通知",
+                "type": "boolean"
+              },
+              "push_live_end": {
+                "default": true,
+                "title": "下播通知",
+                "type": "boolean"
+              },
+              "room_id": {
+                "title": "直播间号",
+                "type": "integer"
+              },
+              "short_id": {
+                "default": 0,
+                "title": "直播间短号",
+                "type": "integer"
+              },
+              "uid": {
+                "default": 0,
+                "title": "UP 主 UID",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_id",
+              "room_id"
+            ],
+            "title": "SubscriptionItem",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/SubscriptionItem"
+            },
+            "title": "订阅列表",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SubscriptionList",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "查看订阅"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.remove",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "room_id": {
+            "exclusiveMinimum": 0,
+            "title": "直播间号",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "room_id"
+        ],
+        "title": "SubscriptionInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "removed": {
+            "title": "已取消监听",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "Removed",
+        "type": "object"
+      },
+      "permission": "manage",
+      "title": "取消监听"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.toggle",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "exclusiveMinimum": 0,
+            "title": "接收通知的群",
+            "type": "integer"
+          },
+          "push_live": {
+            "title": "开播推送",
+            "type": "boolean"
+          },
+          "push_live_end": {
+            "title": "下播推送",
+            "type": "boolean"
+          },
+          "room_id": {
+            "exclusiveMinimum": 0,
+            "title": "直播间号",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "room_id",
+          "push_live",
+          "push_live_end"
+        ],
+        "title": "ToggleInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "SubscriptionItem": {
+            "properties": {
+              "avatar_url": {
+                "default": "",
+                "title": "主播头像",
+                "type": "string"
+              },
+              "checked_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "最近检查时间"
+              },
+              "group_id": {
+                "title": "接收群号",
+                "type": "integer"
+              },
+              "live_status": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "直播状态"
+              },
+              "name": {
+                "default": "",
+                "title": "主播",
+                "type": "string"
+              },
+              "push_live": {
+                "default": true,
+                "title": "开播通知",
+                "type": "boolean"
+              },
+              "push_live_end": {
+                "default": true,
+                "title": "下播通知",
+                "type": "boolean"
+              },
+              "room_id": {
+                "title": "直播间号",
+                "type": "integer"
+              },
+              "short_id": {
+                "default": 0,
+                "title": "直播间短号",
+                "type": "integer"
+              },
+              "uid": {
+                "default": 0,
+                "title": "UP 主 UID",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_id",
+              "room_id"
+            ],
+            "title": "SubscriptionItem",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "item": {
+            "$ref": "#/$defs/SubscriptionItem",
+            "title": "当前订阅"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "title": "Changed",
+        "type": "object"
+      },
+      "permission": "manage",
+      "title": "调整推送开关"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.health",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "接收通知的群"
+          }
+        },
+        "title": "ListInput",
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "checked": {
+            "title": "本轮检查成功数",
+            "type": "integer"
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "最近检查时间"
+          },
+          "error": {
+            "title": "最近异常",
+            "type": "string"
+          },
+          "failed": {
+            "title": "本轮检查失败数",
+            "type": "integer"
+          },
+          "message": {
+            "title": "监听状态说明",
+            "type": "string"
+          },
+          "running": {
+            "title": "轮询运行中",
+            "type": "boolean"
+          },
+          "subscriptions": {
+            "title": "订阅数量",
+            "type": "integer"
+          },
+          "success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "最近检查成功时间"
+          },
+          "watched_rooms": {
+            "title": "监听的直播间数",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "running",
+          "subscriptions",
+          "watched_rooms",
+          "checked_at",
+          "success_at",
+          "checked",
+          "failed",
+          "error",
+          "message"
+        ],
+        "title": "Health",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "查看监听状态"
+    },
+    {
+      "description": "",
+      "id": "subscriptions.ready",
+      "input_schema": null,
+      "output_schema": {
+        "properties": {
+          "completed": {
+            "title": "监听检查已完成",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "检查说明",
+            "type": "string"
+          }
+        },
+        "required": [
+          "completed",
+          "reason"
+        ],
+        "title": "Ready",
+        "type": "object"
+      },
+      "permission": "read",
+      "title": "检查首次订阅"
+    }
+  ],
+  "config": {
+    "description": "流媒体解析插件配置。",
+    "properties": {
+      "asset_cache_days": {
+        "default": 14,
+        "maximum": 365,
+        "minimum": 0,
+        "title": "图片缓存天数",
+        "type": "integer"
+      },
+      "cookie": {
+        "title": "B 站 Cookie",
+        "type": "string",
+        "writeOnly": true
+      },
+      "default_ai_reply_live": {
+        "default": true,
+        "title": "开播后触发 AI 回复",
+        "type": "boolean"
+      },
+      "default_ai_reply_live_end": {
+        "default": false,
+        "title": "下播后触发 AI 回复",
+        "type": "boolean"
+      },
+      "default_card_style": {
+        "default": "random",
+        "title": "默认通知卡片风格",
+        "type": "string"
+      },
+      "default_push_live": {
+        "default": true,
+        "title": "默认发送开播通知",
+        "type": "boolean"
+      },
+      "default_push_live_end": {
+        "default": true,
+        "title": "默认发送下播通知",
+        "type": "boolean"
+      },
+      "overview_max_hosts": {
+        "default": 30,
+        "maximum": 100,
+        "minimum": 1,
+        "title": "总览最多显示的主播数",
+        "type": "integer"
+      },
+      "poll_concurrency": {
+        "default": 4,
+        "maximum": 16,
+        "minimum": 1,
+        "title": "同时检查的直播间数",
+        "type": "integer"
+      },
+      "poll_interval_seconds": {
+        "default": 60,
+        "maximum": 3600,
+        "minimum": 15,
+        "title": "检查间隔（秒）",
+        "type": "integer"
+      },
+      "render_scale": {
+        "default": 2.0,
+        "maximum": 4.0,
+        "minimum": 1.0,
+        "title": "卡片清晰度倍数",
+        "type": "number"
+      },
+      "render_timeout": {
+        "default": 30.0,
+        "exclusiveMinimum": 0,
+        "maximum": 120,
+        "title": "卡片渲染超时（秒）",
+        "type": "number"
+      },
+      "request_timeout": {
+        "default": 10.0,
+        "exclusiveMinimum": 0,
+        "maximum": 60,
+        "title": "请求超时（秒）",
+        "type": "number"
+      },
+      "user_agent": {
+        "default": "",
+        "title": "浏览器标识（User-Agent）",
+        "type": "string"
+      }
+    },
+    "title": "StreamConfig",
+    "type": "object"
+  },
+  "guides": [
+    {
+      "completion_action": null,
+      "demo": {
+        "actions": {
+          "groups.settings.get": {
+            "ai_reply_live": false,
+            "ai_reply_live_end": false,
+            "card_style": "minimal",
+            "default_push_live": true,
+            "default_push_live_end": true,
+            "group_id": 20001,
+            "inherited": true
+          },
+          "groups.settings.update": {
+            "ai_reply_live": false,
+            "ai_reply_live_end": false,
+            "card_style": "minimal",
+            "default_push_live": true,
+            "default_push_live_end": true,
+            "group_id": 20001,
+            "inherited": false
+          },
+          "subscriptions.create": {
+            "created": true,
+            "item": {
+              "avatar_url": "",
+              "checked_at": "2026-10-28T12:00:00Z",
+              "group_id": 20001,
+              "live_status": 0,
+              "name": "演示主播",
+              "push_live": true,
+              "push_live_end": true,
+              "room_id": 610001,
+              "short_id": 1001,
+              "uid": 510001
+            }
+          },
+          "subscriptions.groups": {
+            "items": [
+              {
+                "bot_id": "10001",
+                "group_id": 20001,
+                "name": "演示交流组"
+              }
+            ]
+          },
+          "subscriptions.health": {
+            "checked": 1,
+            "checked_at": "2026-10-28T12:00:00Z",
+            "error": "",
+            "failed": 0,
+            "message": "示例订阅已建立，后台会按开关通知接收群。",
+            "running": true,
+            "subscriptions": 1,
+            "success_at": "2026-10-28T12:00:00Z",
+            "watched_rooms": 1
+          },
+          "subscriptions.list": {
+            "items": []
+          },
+          "subscriptions.preview": {
+            "fallback_text": "【开播】演示主播\n一起认识新的插件面板\n知识分享 · 120人气",
+            "html": "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=720\">\n\n<style>\n  /* ===== 极简浅色风格开播/下播卡片（原创，纯 CSS 绘制，无阴影） ===== */\n  * { box-sizing: border-box; }\n  html, body { margin: 0; padding: 0; width: 720px; background-color: #ffffff; }\n  body {\n    font-family: \"FusionPixel\", \"Microsoft YaHei\", \"PingFang SC\", system-ui, sans-serif;\n    -webkit-font-smoothing: antialiased;\n  }\n\n  .card {\n    position: relative;\n    width: 720px;\n    overflow: hidden;\n    padding: 28px;\n    background-color: #ffffff;\n  }\n\n  .inner {\n    position: relative;\n    border: 1px solid #e6e6ec;\n    border-radius: 10px;\n    padding: 22px;\n    background: #ffffff;\n  }\n\n  /* 顶栏：右上角品牌小字 */\n  .topbar {\n    display: flex; align-items: center; justify-content: flex-end;\n    margin-bottom: 18px; padding-bottom: 12px;\n    border-bottom: 1px solid #f0f0f4;\n  }\n  .brand {\n    font-size: 11px; font-weight: 600; letter-spacing: .22em;\n    text-transform: uppercase; color: #9a9aa8;\n  }\n\n  /* 封面 16:9 */\n  .cover-wrap {\n    position: relative; width: 100%; padding-top: 56.25%;\n    border-radius: 6px; overflow: hidden; background: #f4f4f7;\n  }\n  .cover { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; display: block; }\n  .cover-shade {\n    position: absolute; top: 0; left: 0; right: 0; bottom: 0;\n    background: linear-gradient(180deg, rgba(20, 20, 28, 0) 52%, rgba(20, 20, 28, .46) 100%);\n  }\n  .status {\n    position: absolute; left: 12px; bottom: 12px;\n    display: inline-flex; align-items: center; gap: 8px;\n    padding: 7px 14px; border-radius: 4px;\n    font-size: 15px; font-weight: 700; letter-spacing: .06em; color: #232329;\n    background: rgba(255, 255, 255, .95);\n  }\n  .status::before { content: \"\"; width: 7px; height: 7px; border-radius: 50%; background: #fb7299; }\n\n  .profile { display: flex; align-items: flex-start; gap: 18px; margin-top: 22px; }\n  .avatar {\n    flex: 0 0 auto; width: 96px; height: 96px;\n    border-radius: 50%; object-fit: cover; display: block;\n    border: 1px solid #e6e6ec; background: #f4f4f7;\n  }\n  .who { flex: 1 1 auto; min-width: 0; padding-top: 3px; }\n  .name {\n    font-size: 26px; line-height: 1.25; font-weight: 700; letter-spacing: .01em; color: #17171c;\n    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;\n  }\n  .title {\n    margin-top: 9px;\n    font-size: 16px; line-height: 1.55; color: #5c5c68;\n    overflow-wrap: anywhere; word-break: break-word;\n    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;\n    overflow: hidden; max-height: 50px;\n  }\n\n  .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 18px; }\n  .tag {\n    display: inline-flex; align-items: center; padding: 3px 10px;\n    border: 1px solid #e6e6ec; border-radius: 4px;\n    font-size: 12px; letter-spacing: .04em; color: #6b6b78; background: #fafafc;\n  }\n  .stat { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: #6b6b78; }\n  .stat::before { content: \"\"; width: 6px; height: 6px; border-radius: 50%; background: #fb7299; }\n  .tag:empty, .stat:empty { display: none; }\n\n  /* 开播时间：空字符串时整块隐藏，不留空白 */\n  .live-time {\n    position: relative; display: inline-flex; align-items: center;\n    margin-top: 14px; padding: 2px 0 2px 15px;\n    font-size: 13px; color: #4a4a55; border-left: 2px solid #fb7299;\n  }\n  .live-time:empty { display: none; }\n\n  .foot {\n    display: flex; align-items: center; justify-content: space-between;\n    margin-top: 18px; padding-top: 12px;\n    border-top: 1px solid #f0f0f4;\n  }\n  .room { font-size: 12px; letter-spacing: .08em; color: #9a9aa8; }\n  .room:empty { display: none; }\n  .mark { display: inline-flex; align-items: center; gap: 6px; }\n  .mark i { display: block; width: 5px; height: 5px; border-radius: 50%; background: #e0e0e6; }\n  .mark i:nth-child(3) { background: #fb7299; }\n</style>\n</head>\n<body>\n  <div class=\"card\">\n    <div class=\"inner\">\n      <div class=\"topbar\">\n        <span class=\"brand\">Bilibili Live</span>\n      </div>\n\n      <div class=\"cover-wrap\">\n        <img class=\"cover\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MjAiIGhlaWdodD0iNDA1IiB2aWV3Qm94PSIwIDAgNzIwIDQwNSI+PHJlY3Qgd2lkdGg9IjcyMCIgaGVpZ2h0PSI0MDUiIGZpbGw9IiMxNzMyNGQiLz48Y2lyY2xlIGN4PSI1ODYiIGN5PSI3MCIgcj0iMTgwIiBmaWxsPSIjMjM1Njc1Ii8+PGNpcmNsZSBjeD0iMTI1IiBjeT0iMzcwIiByPSIxNjAiIGZpbGw9IiMyODU1NzQiLz48cGF0aCBkPSJNMTA1IDIyOGg1OHYtNzhoMjl2MTQ0aDI5VjExNmgyOXYyMDRoMjlWODJoMjl2MjU4aDI5VjEyOGgyOXYxNzhoMjlWMTU2aDI5djExOGgyOVYxOTBoNTgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzc5ZDRlNSIgc3Ryb2tlLXdpZHRoPSIxMSIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjQyIiB5PSI1OCIgZmlsbD0iI2Q5ZjRmYSIgZm9udC1zaXplPSIyNCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiPua8lOekuuebtOaSremXtDwvdGV4dD48dGV4dCB4PSI0MiIgeT0iMzcwIiBmaWxsPSIjZDlmNGZhIiBmb250LXNpemU9IjE4IiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiI+5LiA6LW36K6k6K+G5paw55qE5o+S5Lu26Z2i5p2/PC90ZXh0Pjwvc3ZnPg==\" alt=\"\">\n        <span class=\"cover-shade\"></span>\n        <span class=\"status\">开播了</span>\n      </div>\n\n      <div class=\"profile\">\n        <img class=\"avatar\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIj48cmVjdCB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgcng9IjYwIiBmaWxsPSIjMjg3ZjlhIi8+PHRleHQgeD0iNjAiIHk9IjgwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSJ3aGl0ZSIgZm9udC1zaXplPSI2MiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiPua8lDwvdGV4dD48L3N2Zz4=\" alt=\"\">\n        <div class=\"who\">\n          <div class=\"name\">演示主播</div>\n          <div class=\"title\">一起认识新的插件面板</div>\n        </div>\n      </div>\n\n      <div class=\"meta\"><span class=\"tag\">知识分享</span><span class=\"stat\">120人气</span></div>\n\n      <div class=\"live-time\"></div>\n\n      <div class=\"foot\">\n        <span class=\"room\">房间 610001</span>\n        <span class=\"mark\"><i></i><i></i><i></i></span>\n      </div>\n    </div>\n  </div>\n</body>\n</html>\n",
+            "style": "minimal",
+            "target": {
+              "avatar_url": "",
+              "name": "演示主播",
+              "room_id": 610001,
+              "short_id": 1001,
+              "uid": 510001,
+              "url": "https://live.bilibili.com/610001"
+            }
+          },
+          "subscriptions.ready": {
+            "completed": true,
+            "reason": "演示流程已经完整展示。"
+          },
+          "subscriptions.remove": {
+            "removed": true
+          },
+          "subscriptions.resolve": {
+            "avatar_url": "",
+            "name": "演示主播",
+            "room_id": 610001,
+            "short_id": 1001,
+            "uid": 510001,
+            "url": "https://live.bilibili.com/610001"
+          },
+          "subscriptions.toggle": {
+            "item": {
+              "avatar_url": "",
+              "checked_at": "2026-10-28T12:00:00Z",
+              "group_id": 20001,
+              "live_status": 0,
+              "name": "演示主播",
+              "push_live": true,
+              "push_live_end": true,
+              "room_id": 610001,
+              "short_id": 1001,
+              "uid": 510001
+            }
+          }
+        }
+      },
+      "id": "first-subscription",
+      "steps": [
+        {
+          "chapter": "打开空白订阅表单",
+          "example": {
+            "group_id": 0,
+            "target": ""
+          },
+          "target": "view.subscriptions.group",
+          "text": "选择插件页面后直接看到订阅表单，不需要再展开。开始时接收群和直播间都未填写；教程只使用合成群和主播，不会读取或改动你的订阅。"
+        },
+        {
+          "chapter": "选择接收通知的群",
+          "example": {
+            "group_id": 20001,
+            "target": ""
+          },
+          "target": "view.subscriptions.group",
+          "text": "先选择接收通知的群。真实页面只列出当前机器人加入的群；没有可选群时请先检查机器人连接和加群状态。这里只选群，还没有建立订阅。"
+        },
+        {
+          "chapter": "填写并识别直播间",
+          "example": {
+            "group_id": 20001,
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.target",
+          "text": "再填写直播间链接，点击识别核对主播和房间号。也支持房间号、短号、UP 主空间链接及 uid: 写法。前一步的群选择会保留。"
+        },
+        {
+          "chapter": "预览通知",
+          "example": {
+            "group_id": 20001,
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.preview",
+          "text": "预览后核对主播、接收群、卡片风格和文字内容。预览不会创建订阅，也不会往群里发送消息；修改群或链接后需要重新预览。"
+        },
+        {
+          "chapter": "确认并开始监听",
+          "example": {
+            "group_id": 20001,
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.start",
+          "text": "确认预览后点击开始监听，订阅即时保存，不需要再保存配置表单。同一群重复添加相同直播间会更新主播信息，并保留已有推送开关。"
+        },
+        {
+          "chapter": "检查保存结果",
+          "example": {
+            "group_id": 20001,
+            "items": [
+              {
+                "avatar_url": "",
+                "checked_at": "2026-10-28T12:00:00Z",
+                "group_id": 20001,
+                "live_status": 0,
+                "name": "演示主播",
+                "push_live": true,
+                "push_live_end": true,
+                "room_id": 610001,
+                "short_id": 1001,
+                "uid": 510001
+              }
+            ],
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.status",
+          "text": "新增记录出现在下方列表，可按群筛选、查看房间与最近直播状态、调整开播和下播推送、取消监听。未首次检查的房间显示未检查，不会冒充正在直播。"
+        },
+        {
+          "chapter": "设置本群通知",
+          "example": {
+            "group_id": 20001,
+            "items": [
+              {
+                "avatar_url": "",
+                "checked_at": "2026-10-28T12:00:00Z",
+                "group_id": 20001,
+                "live_status": 0,
+                "name": "演示主播",
+                "push_live": true,
+                "push_live_end": true,
+                "room_id": 610001,
+                "short_id": 1001,
+                "uid": 510001
+              }
+            ],
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.settings",
+          "text": "本群可选择通知卡片风格、开播和下播 AI 回复，以及新订阅的默认推送开关。保存后即时生效；新订阅默认值不修改列表里已有订阅的开关，全局配置也不会覆盖已保存的群设置。"
+        },
+        {
+          "chapter": "确认监听健康",
+          "example": {
+            "group_id": 20001,
+            "items": [
+              {
+                "avatar_url": "",
+                "checked_at": "2026-10-28T12:00:00Z",
+                "group_id": 20001,
+                "live_status": 0,
+                "name": "演示主播",
+                "push_live": true,
+                "push_live_end": true,
+                "room_id": 610001,
+                "short_id": 1001,
+                "uid": 510001
+              }
+            ],
+            "target": "https://live.bilibili.com/610001"
+          },
+          "target": "view.subscriptions.health-panel",
+          "text": "最后查看轮询是否运行、最近检查和成功时间、成功与失败数量。首次检查只记录基线，之后状态变化才推送；看完演示不代表真实订阅或外部连接已经完成。"
+        }
+      ],
+      "title": "从零添加订阅"
+    },
+    {
+      "completion_action": null,
+      "id": "config-form-basics",
+      "steps": [
+        {
+          "chapter": "打开初始表单",
+          "example": {},
+          "form": "start",
+          "target": "config",
+          "text": "在插件管理选择 streaming_parser，再打开配置表单。初始表单带有安全默认值，文本与凭据可以留空；不是把每个字段都删空。本演示始终使用合成配置，不读取你的真实配置。"
+        },
+        {
+          "chapter": "填写文本",
+          "example": {
+            "cookie": "",
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "edit",
+          "target": "config.user_agent",
+          "text": "先填写一个文本字段。这里用 NeoBot tutorial/1.0 演示浏览器标识；实际不需要定制时可以留空。Cookie 是只写凭据，教程不会填写或展示真实值。"
+        },
+        {
+          "chapter": "填写检查间隔",
+          "example": {
+            "cookie": "",
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "edit",
+          "target": "config.poll_interval_seconds",
+          "text": "接着把检查间隔设为 30 秒。上一步的文本仍保留在同一张样例表单里；数字输入有范围限制，单位是秒。"
+        },
+        {
+          "chapter": "选择默认行为",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "edit",
+          "target": "config.default_ai_reply_live",
+          "text": "关闭默认开播 AI 回复，表示新群默认只接收卡片，不额外请求 AI。这是全局默认，不会覆盖已经保存的群设置；其他默认值可以先保持不变。"
+        },
+        {
+          "chapter": "查看校验错误",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 10,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "validate",
+          "target": "config.poll_interval_seconds",
+          "text": "如果误填为 10 秒，校验会指出它小于最小值 15。此时不能继续保存；不要靠切到 TOML 绕开校验，真实保存仍会由服务端校验。"
+        },
+        {
+          "chapter": "修正后检查",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "edit",
+          "target": "config.poll_interval_seconds",
+          "text": "把检查间隔改回 30 秒。文本和开关保持之前的输入，只修正有问题的字段。"
+        },
+        {
+          "chapter": "确认配置有效",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "validate",
+          "target": "config",
+          "text": "核对全部字段及其单位，再检查样例校验结果。这里的校验仅用于演示，真实保存时还会进行服务端模型校验和版本冲突检查。"
+        },
+        {
+          "chapter": "保存配置",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "save",
+          "target": "config",
+          "text": "确认后使用底部保存并重载。舞台展示的是保存动作，不会向真实配置接口发送请求，也不会替你重启进程。"
+        },
+        {
+          "chapter": "确认保存与生效",
+          "example": {
+            "cookie": "",
+            "default_ai_reply_live": false,
+            "poll_interval_seconds": 30,
+            "user_agent": "NeoBot tutorial/1.0"
+          },
+          "form": "saved",
+          "target": "config",
+          "text": "演示结束后返回真实配置表单再操作。保存成功不等于所有配置立即生效：该插件的全局配置需要重启 NeoBot，请查看全局通知中的实际结果；插件页面里的群设置和订阅操作则即时生效。"
+        }
+      ],
+      "title": "从零填写配置"
+    },
+    {
+      "completion_action": null,
+      "id": "group-commands",
+      "steps": [
+        {
+          "chapter": "在目标群添加监听",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/监听 610001"
+          },
+          "target": "action.subscriptions.create",
+          "text": "除了直播订阅设置，也可在目标群里用命令添加。610001 是示例房间号，实际请换成自己的；房间号、短号、直播间链接和 UP 主空间链接都支持。回复会列出主播、房间号与推送开关；重复监听保留已有开关。"
+        },
+        {
+          "chapter": "核对本群订阅",
+          "command": {
+            "context": "在接收通知的同一个 QQ 群里，先 @机器人，再发送命令；所有人可用。",
+            "text": "/监听列表"
+          },
+          "target": "resource.subscriptions",
+          "text": "用监听列表核对主播、房间号、开播推送和下播推送。列表只显示当前群，其他群需要到对应群里查询。命令若因重名改了名称，可在 /help 或插件信息中核对。"
+        },
+        {
+          "chapter": "查看开播状态",
+          "command": {
+            "context": "在接收通知的同一个 QQ 群里，先 @机器人，再发送命令；所有人可用。",
+            "text": "/开播状态"
+          },
+          "target": "action.subscriptions.health",
+          "text": "开播状态会查询本群关注的主播；查询失败或超时会使用最近一次轮询结果，并标明来源。首次检查只记录状态，不会补发已经发生的开播通知；以后状态变化才按开关推送。看完说明不代表已建立订阅。"
+        },
+        {
+          "chapter": "查看本群设置",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/config"
+          },
+          "target": "resource.subscriptions",
+          "text": "这里查看本群的 AI 回复、卡片风格和新订阅默认推送。群设置通过聊天命令调整，配置表单里的 default 字段是全局默认值。"
+        },
+        {
+          "chapter": "关闭一条开播推送",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/开播推送 610001 关"
+          },
+          "target": "action.subscriptions.toggle",
+          "text": "只修改本群这个直播间的开播推送，其他订阅不受影响。要恢复，把命令末尾的关改成开。"
+        },
+        {
+          "chapter": "调整一条下播推送",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/下播推送 610001 开"
+          },
+          "target": "action.subscriptions.toggle",
+          "text": "开播和下播是两个独立开关。这里开启本群这个直播间的下播推送；只想接收开播时可以改成关。"
+        },
+        {
+          "chapter": "开播只发通知",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/config 开播AI 关"
+          },
+          "target": "resource.subscriptions",
+          "text": "关闭本群开播通知后的 AI 回复，通知卡片仍按订阅开关发送。AI 开关只决定是否请求一次回复，不保证 AI 一定发言。"
+        },
+        {
+          "chapter": "调整下播 AI",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/config 下播AI 关"
+          },
+          "target": "resource.subscriptions",
+          "text": "下播通知后的 AI 回复单独设置；把关改成开即可请求下播后的 AI 回复。"
+        },
+        {
+          "chapter": "选择本群卡片风格",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/卡片风格 minimal"
+          },
+          "target": "resource.subscriptions",
+          "text": "可选 sakura、neon、minimal 或随机。影响本群之后的通知卡片；可回到直播订阅设置预览，但预览不会向群里发消息。"
+        },
+        {
+          "chapter": "新订阅默认不开播推送",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/config 开播推送默认 关"
+          },
+          "target": "resource.subscriptions",
+          "text": "只影响本群之后新增的订阅，已经监听的直播间不变。已有订阅请用开播推送命令逐条修改。"
+        },
+        {
+          "chapter": "新订阅默认开下播推送",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/config 下播推送默认 开"
+          },
+          "target": "resource.subscriptions",
+          "text": "新订阅的默认下播推送也可独立设置。此项不批量修改已有订阅，重复监听也不会重置已有开关。"
+        },
+        {
+          "chapter": "取消本群监听",
+          "command": {
+            "context": "在接收通知的 QQ 群里，先 @机器人，再发送命令；需要 NeoBot 次级管理员权限。",
+            "text": "/取消监听 610001"
+          },
+          "target": "action.subscriptions.remove",
+          "text": "取消当前群的这条订阅，其他群的监听保留。取消后可再用监听列表核对。"
+        }
+      ],
+      "title": "群聊命令"
+    },
+    {
+      "completion_action": null,
+      "id": "panel-settings",
+      "steps": [
+        {
+          "chapter": "检查间隔与配置生效",
+          "example": {
+            "poll_interval_seconds": 60
+          },
+          "target": "config.poll_interval_seconds",
+          "text": "入口是插件管理 → streaming_parser → 配置表单，也可编辑同页 TOML。这里设置全局检查间隔，范围 15–3600 秒。插件未声明配置热更新，保存后需重启 NeoBot 生效；请以全局通知中的生效结果为准。"
+        },
+        {
+          "chapter": "默认卡片风格",
+          "example": {
+            "default_card_style": "minimal"
+          },
+          "target": "config.default_card_style",
+          "text": "全局默认可填 random、sakura、neon 或 minimal。已有群设置优先；修改此项不会覆盖群里用卡片风格命令保存的选择。"
+        },
+        {
+          "chapter": "默认开播推送",
+          "example": {
+            "default_push_live": true
+          },
+          "target": "config.default_push_live",
+          "text": "没有单独群设置时，新订阅采用这个默认值。已有订阅的开关不变；有群设置时以 /config 开播推送默认 的值为准。"
+        },
+        {
+          "chapter": "默认下播推送",
+          "example": {
+            "default_push_live_end": true
+          },
+          "target": "config.default_push_live_end",
+          "text": "决定新订阅默认是否推送下播，与开播开关独立。已有订阅不变；群里的下播推送默认设置优先。"
+        },
+        {
+          "chapter": "默认开播 AI 回复",
+          "example": {
+            "default_ai_reply_live": false
+          },
+          "target": "config.default_ai_reply_live",
+          "text": "没有群设置时，决定开播通知后是否请求一次 AI 回复。已有群设置不会被这个全局默认覆盖，本群请用 /config 开播AI 调整。"
+        },
+        {
+          "chapter": "默认下播 AI 回复",
+          "example": {
+            "default_ai_reply_live_end": false
+          },
+          "target": "config.default_ai_reply_live_end",
+          "text": "没有群设置时，决定下播通知后是否请求一次 AI 回复。与开播 AI 独立，本群可用 /config 下播AI 覆盖。"
+        },
+        {
+          "chapter": "请求超时",
+          "example": {
+            "request_timeout": 10.0
+          },
+          "target": "config.request_timeout",
+          "text": "每次 B 站请求的超时秒数，大于 0 且不超过 60。网络不稳定时可以适度增加；此项不会改变已有订阅。"
+        },
+        {
+          "chapter": "并发检查数量",
+          "example": {
+            "poll_concurrency": 4
+          },
+          "target": "config.poll_concurrency",
+          "text": "同一轮同时检查的房间数，范围 1–16。它控制请求并发，不是允许监听的主播总数。"
+        },
+        {
+          "chapter": "B 站 Cookie",
+          "example": {
+            "cookie": ""
+          },
+          "target": "config.cookie",
+          "text": "留空表示匿名请求。需要时在真实配置字段中填写；说明书只展示空样例，不读取或展示已保存的凭据。"
+        },
+        {
+          "chapter": "请求 User-Agent",
+          "example": {
+            "user_agent": ""
+          },
+          "target": "config.user_agent",
+          "text": "留空使用插件内置 User-Agent。通常无需修改；它是请求头设置，不是聊天里展示的机器人名称。"
+        },
+        {
+          "chapter": "状态总览数量",
+          "example": {
+            "overview_max_hosts": 30
+          },
+          "target": "config.overview_max_hosts",
+          "text": "控制 /开播状态 总览最多展示多少位主播，范围 1–100。超出显示上限的订阅仍会被轮询。"
+        },
+        {
+          "chapter": "图片缓存天数",
+          "example": {
+            "asset_cache_days": 14
+          },
+          "target": "config.asset_cache_days",
+          "text": "头像和封面的本地缓存保留天数，范围 0–365。它不控制订阅保留时间，也不会取消监听。"
+        },
+        {
+          "chapter": "卡片渲染超时",
+          "example": {
+            "render_timeout": 30.0
+          },
+          "target": "config.render_timeout",
+          "text": "卡片出图的超时秒数，大于 0 且不超过 120。渲染不可用时通知可降级为文字，仍需宿主具备正常发送消息的能力。"
+        },
+        {
+          "chapter": "卡片清晰度",
+          "example": {
+            "render_scale": 2.0
+          },
+          "target": "config.render_scale",
+          "text": "渲染倍率范围 1–4，默认 2。更高倍率会增加图片尺寸和出图开销；修改后同样需要重启 NeoBot，再看后续实际通知。"
+        }
+      ],
+      "title": "面板设置"
+    }
+  ],
+  "plugin": {
+    "description": "流媒体平台解析：B 站直播间监听、开播/下播推送与卡片渲染",
+    "name": "streaming_parser",
+    "version": "0.3.1"
+  },
+  "resources": [
+    {
+      "columns": [
+        {
+          "key": "group_id",
+          "title": "接收群"
+        },
+        {
+          "key": "name",
+          "title": "主播"
+        },
+        {
+          "key": "room_id",
+          "title": "直播间"
+        },
+        {
+          "key": "push_live",
+          "title": "开播推送"
+        },
+        {
+          "key": "push_live_end",
+          "title": "下播推送"
+        }
+      ],
+      "create_action": "subscriptions.create",
+      "delete_action": "subscriptions.remove",
+      "id": "subscriptions",
+      "list_action": "subscriptions.list",
+      "title": "订阅列表"
+    }
+  ],
+  "schema_version": 1,
+  "views": [
+    {
+      "anchors": [
+        "group",
+        "target",
+        "preview",
+        "start",
+        "status",
+        "settings",
+        "health-panel"
+      ],
+      "entry": "web/subscriptions/index.html",
+      "id": "subscriptions",
+      "title": "直播订阅"
+    }
+  ]
+}

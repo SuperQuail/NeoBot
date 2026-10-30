@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 
@@ -39,8 +41,7 @@ def backup_sqlite_database(
     target_dir = Path(backup_dir)
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{source.stem}_{_timestamp()}.db"
-        _copy_database(source, target)
+        target = _create_backup(source, target_dir)
     except Exception as exc:
         log.warning(f"数据库备份失败（迁移将继续）: {exc}")
         return None
@@ -51,6 +52,39 @@ def backup_sqlite_database(
 
 def _timestamp() -> str:
     return time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+
+
+def _create_backup(source: Path, target_dir: Path) -> Path:
+    prefix = f".{source.stem}_{_timestamp()}_"
+    for _ in range(100):
+        descriptor, filename = tempfile.mkstemp(dir=target_dir, prefix=prefix, suffix=".db")
+        staged = Path(filename)
+        target = staged.with_name(staged.name[1:])
+        try:
+            os.close(descriptor)
+            _copy_database(source, staged)
+            try:
+                _publish_backup(staged, target)
+            except FileExistsError:
+                continue
+            return target
+        finally:
+            # 隐藏暂存不参与保留策略，失败或碰撞也不能留下空库/半成品。
+            staged.unlink(missing_ok=True)
+    raise FileExistsError("无法分配未占用的数据库备份路径")
+
+
+def _publish_backup(staged: Path, target: Path) -> None:
+    # 先独占预留目标，不能用 replace 直接覆盖仅凭随机后缀假定不存在的路径。
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    published = False
+    try:
+        os.close(descriptor)
+        os.replace(staged, target)
+        published = True
+    finally:
+        if not published:
+            target.unlink(missing_ok=True)
 
 
 def _copy_database(source: Path, target: Path) -> None:
@@ -65,16 +99,23 @@ def _copy_database(source: Path, target: Path) -> None:
         source_conn.close()
 
 
-def _prune_backups(
-    backup_dir: Path, stem: str, max_backups: int, logger: Logger
-) -> None:
+def _prune_backups(backup_dir: Path, stem: str, max_backups: int, logger: Logger) -> None:
     if max_backups <= 0:
         return
     try:
-        backups = sorted(
-            backup_dir.glob(f"{stem}_*.db"),
-            key=lambda item: item.stat().st_mtime,
-        )
+        snapshots = []
+        for item in backup_dir.glob(f"{stem}_*.db"):
+            try:
+                metadata = item.stat()
+            except FileNotFoundError:
+                # 另一备份调用可能已经清理掉同一旧快照，继续检查其余文件。
+                continue
+            # SQLite backup 即使源库为空也生成非空数据库。零字节只可能是
+            # 发布前的独占占位，不能由其他调用的保留策略删除。
+            if metadata.st_size == 0:
+                continue
+            snapshots.append((metadata.st_mtime_ns, item.name, item))
+        backups = [item for _, _, item in sorted(snapshots)]
     except OSError as exc:
         logger.warning(f"清理旧数据库备份失败: {exc}")
         return
@@ -83,5 +124,7 @@ def _prune_backups(
     for stale in backups[: len(backups) - max_backups]:
         try:
             stale.unlink()
+        except FileNotFoundError:
+            continue
         except OSError as exc:
             logger.warning(f"删除旧数据库备份失败 ({stale.name}): {exc}")

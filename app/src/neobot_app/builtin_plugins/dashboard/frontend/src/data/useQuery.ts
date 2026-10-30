@@ -14,6 +14,8 @@ import {
 } from './queryCore';
 
 export interface UseQueryOptions {
+  /** 暂停首读和轮询，已有数据保持可见。 */
+  enabled?: boolean;
   /** 轮询间隔（毫秒）；0 表示只在挂载/依赖变化时取一次 */
   interval?: number;
   /** 依赖变化时重新取数（与旧 useApi 的 deps 语义一致） */
@@ -29,7 +31,7 @@ export interface UseQueryResult<T> extends QueryState<T> {
 export function useQuery<T>(
   queryKey: string,
   fetcher: () => Promise<T | null>,
-  { interval = 0, deps = [], refetchOnMount = false }: UseQueryOptions = {},
+  { interval = 0, deps = [], refetchOnMount = false, enabled = true }: UseQueryOptions = {},
 ): UseQueryResult<T> {
   const entry = getEntry<T>(queryKey, fetcher, interval);
   const state = useSyncExternalStore(
@@ -42,12 +44,13 @@ export function useQuery<T>(
   const previousDeps = useRef(depsKey);
 
   useEffect(() => {
+    if (!enabled) return;
     const changed = previousDeps.current !== depsKey;
     previousDeps.current = depsKey;
     void fetchQuery(queryKey, { force: changed || refetchOnMount });
     if (interval > 0) return addPoller(queryKey, entry);
     return undefined;
-  }, [queryKey, depsKey, interval, entry, refetchOnMount]);
+  }, [queryKey, depsKey, interval, entry, refetchOnMount, enabled]);
 
   const refetch = useCallback(() => fetchQuery<T>(queryKey, { force: true }), [queryKey]);
 

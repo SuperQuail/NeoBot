@@ -327,13 +327,10 @@ class AgentHandlersMixin:
         reply_to_message_id = None
         if reply_to is not None:
             reply_to_message_id = numbering.get_message_id(reply_to)
-        long_reply_sink = (
-            self._self_sent_sink(queue, queue_copy, queue_key)
-            if conv_ref is not None
-            else None
-        )
+        long_reply_sink = self._self_sent_sink(queue, queue_copy, queue_key) if conv_ref is not None else None
         # 发送说明文字（如果有）
-        caption_delivered = True
+        event.send_incomplete = True
+        caption_delivered = False
         if caption.strip():
             caption_segs = self._build_reply_segments(
                 text=caption.strip(),
@@ -343,14 +340,23 @@ class AgentHandlersMixin:
             )
             caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
             if conv_ref is not None and caption_delivered is not False:
-                self._sender.record_self_sent_text(
-                    long_reply_sink, conv_ref, caption.strip()
-                )
+                state.reply_sent = True
+                event.send_response = caption_delivered
+                self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
+                self._sender.record_self_sent_text(long_reply_sink, conv_ref, caption.strip())
         # 发送图片（不附带引用，图片单独发送）
         image_delivered = await send_image(
-            self._file_server, self._adapter, conv_ref, Path(image_path),
+            self._file_server,
+            self._adapter,
+            conv_ref,
+            Path(image_path),
             wait_response=False,
         )
+        if image_delivered is not False:
+            state.reply_sent = True
+            event.send_response = image_delivered
+            event.send_incomplete = False
+            self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
         # 图片入队为「索引」：产物登记进 temp 图库（tmp_xxx）+ file 路径兜底，
         # Markdown 原文只留前 N 字来源标注（全文不再重复注入上下文）。
         if conv_ref is not None:

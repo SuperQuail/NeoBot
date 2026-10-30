@@ -174,6 +174,7 @@ def build_plugin_runtime(
         installer=installer,
         user_plugins_enabled=bool(getattr(config.plugins, "enabled", True)),
         host_version=APP_VERSION,
+        watch=bool(getattr(plugins_config, "watch", False)),
     )
     plugin_runtime.load_all()
     return plugin_runtime

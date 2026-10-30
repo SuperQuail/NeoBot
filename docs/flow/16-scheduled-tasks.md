@@ -5,20 +5,23 @@ covers:
   - app/src/neobot_app/runtime/sleep_service.py
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
+  - app/src/neobot_app/builtin_plugins/speaking_schedule/
 verified_against: 528fe18
-verified_hash: 71bbec5da576
+verified_hash: 45c1da44a78c
 ---
 
 # 16 定时任务 · 睡眠 · 后台通知 · 临时清理
 
 ## 范围
 
-四条与「时间」相关的链路：
+与「时间」相关的链路：
 
 * `ScheduledTaskManager`（888 行）：定时任务的扫描、到点判定、错过窗口、提醒投递与完成标记；
 * `SleepService`（307 行）：`/sleep` `/awake` 的睡眠状态机与 ticker；
 * `BackgroundNotificationHub`（344 行）：后台任务（绘画/解题等）完成后如何回到会话；
 * `temp_cleaner`（191 行）：临时文件清理周期。
+* 官方 `speaking_schedule` 插件：按服务器时钟判断发言时段，QQ 事件时间戳只校验时钟健康；
+  注册统一发言策略，支持按会话覆盖与临时静默，不修改睡眠或待机状态。
 
 不在这里：/sleep、/awake 命令的解析与权限见 `17-commands.md`；睡眠期「仅被@可唤醒」的意愿判定
 见 `02b-willing-probability.md`；面板的定时任务接口见 `09b-dashboard-api.md`。
@@ -193,6 +196,35 @@ flowchart TD
 </details>
 
 ## 关键状态
+
+### 发言策略与定时提醒
+
+插件加载时用当前 `PluginContext` 创建运行实例，登记发言策略、事件订阅与配置消费者；
+卸载时随订阅注销策略，避免热重载后遗留限制。每次发送按服务器时钟换算配置时区，
+默认规则可被群或私聊覆盖；空时段无限制，开始包含、结束不包含，跨夜归开始日。
+临时静默独立存储账号和范围的 UTC 截止时间，运行期间用单调时钟倒计时，重启后恢复剩余时间。
+QQ 事件仅接受当前 Bot 账号的有效新样本用于时钟健康提示，不调整服务器时钟或执行日程。
+
+适配器绑定了非空发言策略注册器时，`scheduled_task` 通知走实际投递确认：
+通知中枢先检查会话策略，不镜像、不排入待取队列；启动回复后有界等待该次回复结束。
+发送阶段再次拒绝时，回复保留 `SpeechBlocked` 类型结果，定时扫描据此清除本次冷却，
+以 `speaking_policy_skipped` 完成一次性任务或当前重复窗口，不把它记为已通知。
+回复管线忙时也不排队，保留本窗口内后续扫描的机会；静默期跳过的窗口不会恢复后补发。
+
+```mermaid
+flowchart TD
+    SG1["scheduled_task 通知"] --> SG2{"存在发言策略?"}
+    SG2 -- 否 --> SG3["原投递与队列语义"]
+    SG2 -- 是 --> SG4{"当前策略允许?"}
+    SG4 -- 否 --> SG8["明确跳过当前窗口，清冷却"]
+    SG4 -- 是 --> SG5["无排队启动回复并等待投递结果"]
+    SG5 --> SG6{"发送边界再次检查"}
+    SG6 -- 拒绝 --> SG8
+    SG6 -- 成功 --> SG7["标记已通知"]
+```
+
+其他来源的后台通知在入口同样检查策略，获准后保持原有的接收语义。
+作息策略不改变 `SleepService` 的状态，也不会在允许发言时段开始时调用唤醒。
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|

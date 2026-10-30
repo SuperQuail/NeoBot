@@ -1,0 +1,209 @@
+/* 插件只编排业务内容；颜色与控件尺寸由宿主主题提供。 */
+:root {
+  color-scheme: light;
+  font-family: var(--font-sans, 'Microsoft YaHei UI', system-ui, sans-serif);
+  color: var(--text, #1f3a4d);
+  background: var(--panel, #ffffff);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+[hidden] {
+  display: none !important;
+}
+.nb-view {
+  display: flow-root;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+html[data-neobot-layout='stage'] .nb-view {
+  padding: 20px;
+}
+.nb-view :where(h1, h2, h3, p) {
+  margin: 0;
+}
+.nb-view :where(h2, h3) {
+  font-size: 14px;
+  font-weight: 650;
+}
+.nb-stack {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.nb-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+.nb-section {
+  min-width: 0;
+  padding-block: 20px;
+  border-top: 1px solid var(--border-soft, #e6f0f7);
+}
+.nb-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.nb-section-heading,
+.nb-actions,
+.nb-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.nb-section-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.nb-actions {
+  flex-wrap: wrap;
+}
+.nb-field {
+  min-width: 0;
+}
+.nb-field > label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.nb-help {
+  margin-top: 6px !important;
+  color: var(--muted, #526e80);
+  font-size: 12px;
+}
+.nb-muted {
+  color: var(--muted, #526e80);
+  font-size: 12px;
+}
+.nb-view :where(button, input, select, textarea) {
+  font: inherit;
+}
+.nb-view :where(input:not([type='checkbox']):not([type='radio']), select, textarea) {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height, 38px);
+  padding: 8px 10px;
+  border: 1px solid var(--border, #d2e5f0);
+  border-radius: var(--radius-control, 8px);
+  color: var(--text, #1f3a4d);
+  background: var(--surface-field, #ffffff);
+}
+.nb-view textarea {
+  resize: vertical;
+}
+.nb-view :where(input[type='checkbox'], input[type='radio']) {
+  accent-color: var(--brand, #0369a1);
+  width: 16px;
+  height: 16px;
+}
+.nb-view :where(button) {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: var(--control-height, 38px);
+  padding: 8px 12px;
+  border: 1px solid var(--border, #d2e5f0);
+  border-radius: var(--radius-control, 8px);
+  color: var(--text, #1f3a4d);
+  background: var(--panel, #ffffff);
+  cursor: pointer;
+}
+.nb-view :where(button:hover:enabled) {
+  background: var(--panel-2, #eef9ff);
+}
+.nb-view .nb-primary {
+  color: var(--text-on-brand, #ffffff);
+  background: var(--brand, #0369a1);
+  border-color: transparent;
+}
+.nb-view .nb-primary:hover:enabled {
+  background: var(--brand-hover, #075985);
+}
+.nb-view .nb-quiet {
+  border-color: transparent;
+  color: var(--muted, #526e80);
+  background: transparent;
+}
+.nb-view .nb-danger {
+  color: var(--err, #bc3c36);
+}
+.nb-view :where(button, input, select, textarea):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.nb-view :focus-visible {
+  outline: 2px solid var(--brand, #0369a1);
+  outline-offset: var(--focus-outline-offset, -3px);
+}
+.nb-view .nb-primary:focus-visible {
+  outline-color: var(--text-on-brand, #ffffff);
+}
+.nb-view :where([aria-invalid='true']) {
+  border-color: var(--err, #bc3c36);
+}
+.nb-empty {
+  padding-block: 20px;
+  color: var(--muted, #526e80);
+}
+.nb-table-wrap {
+  overflow-x: auto;
+}
+.nb-view table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.nb-view :where(th, td) {
+  padding: 12px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-soft, #e6f0f7);
+}
+.nb-view :where(th) {
+  color: var(--muted, #526e80);
+  font-size: 12px;
+  font-weight: 500;
+}
+.nb-view :where(th, td):first-child {
+  padding-left: 0;
+}
+.nb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 640px) {
+  .nb-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .nb-view :where(button, input:not([type='checkbox']):not([type='radio']), select) {
+    min-height: 44px;
+  }
+  html[data-neobot-layout='stage'] .nb-view {
+    padding: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nb-view *,
+  .nb-view *::before,
+  .nb-view *::after {
+    scroll-behavior: auto !important;
+  }
+}

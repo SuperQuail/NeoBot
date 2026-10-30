@@ -148,7 +148,7 @@ function BotConfigPanel() {
     setEditingSession(true);
   };
 
-  const pushHistory = useCallback((path: string[], value: unknown) => {
+  const pushHistory = useCallback((path: Array<string | number>, value: unknown) => {
     const key = path.join('.') || '(root)';
     setHistory((previous) => ({
       ...previous,
@@ -156,12 +156,12 @@ function BotConfigPanel() {
     }));
   }, []);
 
-  const recordChange = useCallback((path: string[], before: unknown, after: unknown) => {
+  const recordChange = useCallback((path: Array<string | number>, before: unknown, after: unknown) => {
     setUndoStack((stack) => [...stack, { path, before, after }].slice(-200));
     setRedoStack([]);
   }, []);
 
-  const applyValue = useCallback((path: string[], value: unknown) => {
+  const applyValue = useCallback((path: Array<string | number>, value: unknown) => {
     setDraft((previous) => setPath(previous, path, value));
   }, []);
 
@@ -288,7 +288,7 @@ function BotConfigPanel() {
   };
 
   const changeField = useCallback(
-    (path: string[], value: unknown) => {
+    (path: Array<string | number>, value: unknown) => {
       if (readOnly || operationRef.current || mode !== 'form') return;
       const before = getPath(draftRef.current, path);
       if (JSON.stringify(before ?? null) === JSON.stringify(value ?? null)) return;
@@ -303,7 +303,7 @@ function BotConfigPanel() {
   );
 
   const restoreValue = useCallback(
-    (path: string[], value: unknown) => {
+    (path: Array<string | number>, value: unknown) => {
       if (readOnly || operationRef.current || mode !== 'form') return;
       const before = getPath(draftRef.current, path);
       recordChange(path, before, value);

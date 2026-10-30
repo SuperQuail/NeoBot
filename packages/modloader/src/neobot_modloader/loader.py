@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.metadata
-import re
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+
+from packaging.requirements import Requirement
+from packaging.version import InvalidVersion
+
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_modloader.loading.importer import PluginModuleImporter
@@ -59,33 +62,38 @@ class FilesystemPluginLoader:
     def official(self) -> bool:
         return self.source == OFFICIAL_SOURCE
 
-    def discover_all(self, plugin_dir: Path) -> list[PluginDiscoveryResult]:
+    def discover_all(self, plugin_dir: Path, *, resolve_dependencies: bool = True) -> list[PluginDiscoveryResult]:
         plugin_dir = plugin_dir.resolve()
         if not plugin_dir.exists():
             self._logger.info(f"插件目录不存在，已按空目录处理: {plugin_dir}")
             return []
         if not plugin_dir.is_dir():
-            return [PluginLoadError(name=plugin_dir.name, plugin_dir=plugin_dir, error=NotADirectoryError(str(plugin_dir)))]
+            return [
+                PluginLoadError(name=plugin_dir.name, plugin_dir=plugin_dir, error=NotADirectoryError(str(plugin_dir)))
+            ]
 
         results: list[PluginDiscoveryResult] = []
         for entry in sorted(plugin_dir.iterdir(), key=lambda item: item.name):
             if entry.name.startswith("_"):
                 continue
+            result: PluginDiscoveryResult | None = None
             if entry.is_file() and entry.suffix == ".py":
-                results.append(self._discover_file(entry))
+                result = self._discover_file(entry)
             elif entry.is_dir() and (entry / "__init__.py").is_file():
                 result = self._discover_package(entry)
-                if result is not None:
-                    results.append(result)
-        return order_discovery_results(results)
+            if result is not None:
+                results.append(result)
+        return order_discovery_results(results) if resolve_dependencies else results
 
-    def load_all(self, plugin_dir: Path) -> list[PluginLoadResult]:
+    def load_all(self, plugin_dir: Path, *, resolve_dependencies: bool = True) -> list[PluginLoadResult]:
         plugin_dir = plugin_dir.resolve()
         if not plugin_dir.exists():
             self._logger.info(f"插件目录不存在，已按空目录处理: {plugin_dir}")
             return []
         if not plugin_dir.is_dir():
-            return [PluginLoadError(name=plugin_dir.name, plugin_dir=plugin_dir, error=NotADirectoryError(str(plugin_dir)))]
+            return [
+                PluginLoadError(name=plugin_dir.name, plugin_dir=plugin_dir, error=NotADirectoryError(str(plugin_dir)))
+            ]
 
         results: list[PluginLoadResult] = []
         for entry in sorted(plugin_dir.iterdir(), key=lambda item: item.name):
@@ -98,18 +106,15 @@ class FilesystemPluginLoader:
                 result = self._load_package(entry)
             if result is not None:
                 results.append(result)
+        if not resolve_dependencies:
+            # 运行时合并多个来源后再解析，局部目录不能提前判定跨目录依赖缺失。
+            return results
         ordered = order_results(results)
         # 被自动禁用的插件同样要清掉刚导入的模块代：它不会注册，留着会污染 sys.modules
-        retained = {
-            result.name for result in ordered if isinstance(result, LoadedPlugin)
-        }
-        dropped = {
-            result.name for result in ordered if isinstance(result, DisabledPlugin)
-        }
+        retained = {result.name for result in ordered if isinstance(result, LoadedPlugin)}
+        dropped = {result.name for result in ordered if isinstance(result, DisabledPlugin)}
         for result in results:
-            if isinstance(result, LoadedPlugin) and (
-                result.name not in retained or result.name in dropped
-            ):
+            if isinstance(result, LoadedPlugin) and (result.name not in retained or result.name in dropped):
                 self.clear_module_cache(result.module_names)
         return ordered
 
@@ -187,9 +192,7 @@ class FilesystemPluginLoader:
                 license=read_optional_text(metadata, "license"),
                 tags=read_tags(metadata),
                 hot_reload=bool(read_optional_bool(metadata, "hot_reload", True)),
-                config_hot_reload=bool(
-                    read_optional_bool(metadata, "config_hot_reload", True)
-                ),
+                config_hot_reload=bool(read_optional_bool(metadata, "config_hot_reload", True)),
             )
         except Exception as exc:
             return PluginLoadError(name=manifest_name, plugin_dir=path, error=exc)
@@ -208,6 +211,9 @@ class FilesystemPluginLoader:
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
             version = str(getattr(plugin, "version", "0.1.0") or "0.1.0")
+            python_dependencies = _validated_python_dependencies(
+                tuple(getattr(plugin, "python_dependencies", ()) or ())
+            )
             return LoadedPlugin(
                 name=plugin_name,
                 version=version,
@@ -219,7 +225,7 @@ class FilesystemPluginLoader:
                 dependencies=tuple(getattr(plugin, "dependencies", ()) or ()),
                 priority=int(getattr(plugin, "priority", 0) or 0),
                 min_neobot_version=getattr(plugin, "min_neobot_version", None),
-                python_dependencies=tuple(getattr(plugin, "python_dependencies", ()) or ()),
+                python_dependencies=python_dependencies,
                 module_names=module_names,
                 source_path=path,
                 source=self.source,
@@ -267,8 +273,11 @@ class FilesystemPluginLoader:
             plugin_version = str(getattr(plugin, "version", version) or version)
             if "dependencies" not in metadata:
                 dependencies = tuple(getattr(plugin, "dependencies", ()) or ())
+            # 清单优先级在加载时确定，运行期的反向依赖与停用联动复用同一份结果。
+            plugin.dependencies = dependencies
             if not any(key in metadata for key in ("python_dependencies", "pypi_dependencies", "requirements")):
                 python_dependencies = tuple(getattr(plugin, "python_dependencies", ()) or ())
+            python_dependencies = _validated_python_dependencies(python_dependencies)
             if "priority" not in metadata:
                 priority = int(getattr(plugin, "priority", 0) or 0)
             if min_neobot_version is None:
@@ -324,19 +333,30 @@ class FilesystemPluginLoader:
 
 
 def requirement_distribution_name(requirement: str) -> str:
-    match = re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)
-    if match is None:
-        raise ValueError(f"非法 Python 依赖声明: {requirement!r}")
-    return match.group(1).replace("_", "-")
+    return Requirement(requirement).name.replace("_", "-")
+
+
+def _validated_python_dependencies(requirements: tuple[str, ...]) -> tuple[str, ...]:
+    """在单插件加载边界拒绝非法声明，避免后续扫描被一个包打断。"""
+    for requirement in requirements:
+        Requirement(requirement)
+    return requirements
 
 
 def is_python_dependency_installed(requirement: str) -> bool:
-    name = requirement_distribution_name(requirement)
+    """只把当前环境适用且版本满足需求的发行包视为已安装。"""
+    parsed = Requirement(requirement)
+    if parsed.marker is not None and not parsed.marker.evaluate():
+        return True
     try:
-        importlib.metadata.distribution(name)
+        distribution = importlib.metadata.distribution(parsed.name)
     except importlib.metadata.PackageNotFoundError:
         return False
-    return True
+    try:
+        return parsed.specifier.contains(distribution.version)
+    except InvalidVersion:
+        # 无法比较的发行包版本不能替插件跳过依赖安装。
+        return False
 
 
 def missing_python_dependencies(requirements: tuple[str, ...] | list[str]) -> tuple[str, ...]:

@@ -1,17 +1,14 @@
 name: PR 门禁刷新
 
-# 评论/评审事件不能直接把 check 挂到 PR head：GitHub 在 issue_comment /
-# pull_request_review 事件上运行的是默认分支的 workflow，check run 落在默认分支提交。
-# 所以这里只做一件事：找到该 PR head 对应的 pr-gates.yml pull_request run，重跑它。
-# 重跑保留原 head_sha，评审 job 重新读评论时间后会把检查刷新为成功/失败。
+# issue_comment 在默认分支运行；fork 评审先经只读的 PR 评审事件工作流，
+# 再由基础仓库 workflow_run 接力。写令牌只用于重跑既有门禁，不执行 PR 代码。
 
 on:
   issue_comment:
     types: [created, edited, deleted]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
-  pull_request_review:
-    types: [submitted, dismissed]
+  workflow_run:
+    workflows: [PR 评审事件]
+    types: [completed]
 
 permissions:
   actions: write
@@ -19,39 +16,24 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: pr-gates-refresh-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+  group: "pr-gates-refresh-${{ github.event.issue.number && format('PR #{0}', github.event.issue.number) || github.event.workflow_run.display_title || github.run_id }}"
   cancel-in-progress: true
 
 jobs:
   refresh:
     name: 重跑 PR 门禁
-    if: >-
-      github.event_name != 'issue_comment' ||
-      github.event.issue.pull_request
+    if: github.event_name == 'workflow_run' || github.event.issue.pull_request
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
-      - name: 找到 PR 门禁 run 并重跑
+      - name: 检出默认分支的可信刷新脚本
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 复核事件并重跑当前 head 的 PR 门禁
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PR_NUMBER:-}" ]; then
-            echo "不是 PR 事件，跳过。"
-            exit 0
-          fi
-          sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
-          run_id=$(gh run list --workflow pr-gates.yml --limit 100 \
-            --json databaseId,headSha,event,status \
-            --jq "[.[] | select(.headSha == \"$sha\" and .event == \"pull_request\")][0].databaseId")
-          if [ -z "${run_id:-}" ] || [ "${run_id}" = "null" ]; then
-            echo "该 PR head 还没有 pr-gates run，下一次 pull_request 事件会重新评估。"
-            exit 0
-          fi
-          status=$(gh run view "$run_id" --json status --jq .status)
-          if [ "$status" = "in_progress" ] || [ "$status" = "queued" ]; then
-            gh run watch "$run_id" --interval 10 >/dev/null 2>&1 || true
-          fi
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null
-          echo "已重跑 pr-gates run ${run_id}（head ${sha}）"
+        run: python3 scripts/refresh_pr_gates.py

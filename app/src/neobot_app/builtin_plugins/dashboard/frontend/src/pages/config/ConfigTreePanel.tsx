@@ -24,9 +24,9 @@ export interface ConfigTreePanelProps {
   disabled?: boolean;
   filter: string;
   onFilterChange: (value: string) => void;
-  onChange: (path: string[], value: unknown) => void;
+  onChange: (path: Array<string | number>, value: unknown) => void;
   onToggleCollapse: (key: string) => void;
-  onRestore?: (path: string[], value: unknown) => void;
+  onRestore?: (path: Array<string | number>, value: unknown) => void;
 }
 
 /** 搜索命中判定与收拢统一在 components/schema/searchHit.ts（Field 与这里共用同一套规则）。 */

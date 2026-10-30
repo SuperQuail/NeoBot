@@ -14,8 +14,8 @@ import LongTextField from './LongTextField';
 import type { FieldCallbacks } from './fieldTypes';
 
 function stringify(value: unknown, kind?: string): string {
-  const fallback = kind === 'dict' ? {} : [];
-  return JSON.stringify(value ?? fallback, null, 2);
+  const fallback = kind === 'dict' ? {} : kind === 'json' ? null : [];
+  return JSON.stringify(value === undefined ? fallback : value, null, 2);
 }
 
 function JsonField({
@@ -29,7 +29,10 @@ function JsonField({
   'onChange' | 'disabled' | 'value'
 >) {
   const locked = !!disabled || !!descriptor.readonly;
-  const id = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
+  const id =
+    typeof descriptor.input_id === 'string'
+      ? descriptor.input_id
+      : 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
   const [text, setText] = useState(() => stringify(value, descriptor.kind));
   const [error, setError] = useState('');
   // 记住「自己最后一次提交出去的文本」：只有外部值与它不同时才算真的被外部改过，
@@ -51,14 +54,22 @@ function JsonField({
       if (expectArray && !Array.isArray(parsed)) {
         return { ok: false, message: '请输入有效的 JSON 数组' };
       }
-      if (!expectArray && (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null)) {
+      if (
+        descriptor.kind === 'dict' &&
+        (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null)
+      ) {
         return { ok: false, message: '请输入有效的 JSON 对象' };
       }
       return { ok: true, parsed, message: '' };
     } catch {
       return {
         ok: false,
-        message: descriptor.kind === 'list' ? '请输入有效的 JSON 数组' : '请输入有效的 JSON 对象',
+        message:
+          descriptor.kind === 'list'
+            ? '请输入有效的 JSON 数组'
+            : descriptor.kind === 'dict'
+              ? '请输入有效的 JSON 对象'
+              : '请输入有效的 JSON',
       };
     }
   };
@@ -94,7 +105,7 @@ function JsonField({
     <div className={hideLabel ? 'cfg-json-field' : 'cfg-row'}>
       {!hideLabel && (
         <div className="cfg-label">
-          <label htmlFor={id}>{descriptor.name}</label>
+          <label htmlFor={id}>{descriptor.label || descriptor.name}</label>
           <p>{descriptor.description || 'JSON 格式'}</p>
           <span className="cfg-badges">
             <HotBadge descriptor={descriptor} />
@@ -110,7 +121,7 @@ function JsonField({
           minRows={6}
           maxRows={24}
           monospace
-          ariaLabel={descriptor.name}
+          ariaLabel={descriptor.label || descriptor.name}
           ariaInvalid={!!error}
         />
         <div className="cfg-json-actions">

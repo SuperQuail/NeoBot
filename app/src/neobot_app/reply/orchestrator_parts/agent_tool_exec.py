@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neobot_contracts.ports.speaking import SpeechBlocked
+
 from typing import TYPE_CHECKING, Any
 
 from neobot_app.reply.vision_context import labelled_tool_images
@@ -186,6 +188,8 @@ class AgentToolExecMixin:
                     tool_error=tool_error,
                     timed_out=True,
                 )
+            except SpeechBlocked:
+                raise
             except Exception as tool_exc:
                 # 保留失败原因：只记 error_type 的话，日志与模型都拿不到
                 # 真实原因（旧实现连 str(exc) 都没保留）。回给模型的文案

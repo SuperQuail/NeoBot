@@ -72,7 +72,7 @@
 .select-control:focus-visible,
 .select-control[data-state='open'] {
   outline: 2px solid var(--brand);
-  outline-offset: 2px;
+  outline-offset: var(--focus-outline-offset);
 }
 .select-control:disabled {
   opacity: 0.5;

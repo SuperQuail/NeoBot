@@ -113,6 +113,7 @@ class SandboxService:
       - 文件读写/删除/列表/移动/复制
       - 临时目录管理（按 chat_flow_id 隔离）
       - 只读目录注册（emoji/, gallery/）
+      - 排除工作区注册（excluded_workspaces）：目录内读写不受沙箱边界限制
     """
 
     def __init__(
@@ -120,6 +121,7 @@ class SandboxService:
         sandbox_root: Path,
         allowed_read_dirs: list[Path] | None = None,
         max_total_size_bytes: int = 2 * 1024 * 1024 * 1024,
+        excluded_workspaces: list[Path] | None = None,
     ) -> None:
         self._root = sandbox_root.resolve()
         self._max_total_size = max_total_size_bytes
@@ -133,6 +135,12 @@ class SandboxService:
             for d in allowed_read_dirs:
                 resolved = Path(d).resolve()
                 self._allowed_read_dirs.append(resolved)
+        self._excluded_workspaces: list[Path] = []
+        if excluded_workspaces:
+            for d in excluded_workspaces:
+                resolved = Path(d).expanduser().resolve()
+                if resolved not in self._excluded_workspaces:
+                    self._excluded_workspaces.append(resolved)
 
     # ── 路径解析 ──
 
@@ -151,10 +159,10 @@ class SandboxService:
             base = self._root / "temp" / self._sanitize_flow_id(chat_flow_id)
         # 拼接并规范化
         candidate = (base / relative_path).resolve()
-        # 验证在沙箱边界内
-        if not self._is_within_sandbox(candidate):
-            raise PermissionError(f"路径越界: {relative_path}")
-        return candidate
+        # 验证在沙箱边界或排除工作区内
+        if self._is_writable(candidate):
+            return candidate
+        raise PermissionError(f"路径越界: {relative_path}")
 
     SHARED_DIRECTORIES = frozenset({"tools", "docs", "assets", "gift", "emoji", "gallery"})
 
@@ -163,8 +171,10 @@ class SandboxService:
         """Trusted context only. Same-flow files are shared, observations are not.
 
         Persistent resources require explicit shared:<allowlisted-directory>/...
-        Absolute paths are accepted only within the current flow (delivery reuse).
-        Symlinks/junctions are rejected, including links to another allowed root.
+        Absolute paths are accepted within the current flow (delivery reuse) and
+        anywhere inside an excluded workspace (agent.sandbox.excluded_workspaces).
+        Symlinks/junctions are rejected, except under an excluded workspace where
+        the target must canonicalize back inside that workspace.
         """
         if not isinstance(owner, str) or not owner.strip():
             raise PermissionError("trusted owner required")
@@ -187,7 +197,8 @@ class SandboxService:
         if not isinstance(value, str) or not value or len(value) > 4096:
             raise ValueError("invalid path")
         value = value.replace("\\", "/")
-        if value.startswith("shared:"):
+        is_shared = value.startswith("shared:")
+        if is_shared:
             relative = value[7:]
             parts = relative.split("/")
             if parts[0] not in self.SHARED_DIRECTORIES:
@@ -213,6 +224,13 @@ class SandboxService:
             if ":" in component or (hasattr(os.path, "isreserved") and os.path.isreserved(component)):
                 raise PermissionError("reserved path component/alternate data stream")
         resolved = candidate.resolve()
+        # 排除工作区（excluded_workspaces）：先 realpath 归一再判包含——
+        # 链接指回工作区内部的放行，指到外部的落到下面的拒绝分支。
+        # shared: 路径不参与排除，保持「显式注册的外部资源只读」语义；
+        # 只读白名单优先：命中 allowed_read_dirs 的路径维持只读。
+        if (not is_shared and self._is_excluded(resolved)
+                and not self._is_readonly_dir(resolved)):
+            return resolved
         if not resolved.is_relative_to(base.absolute()):
             raise PermissionError("path is outside current flow/shared directory")
         for part in (candidate, *candidate.parents):
@@ -244,9 +262,11 @@ class SandboxService:
             raise
 
     def is_path_allowed(self, path: Path) -> bool:
-        """检查路径是否在沙箱或 allowed_read_dirs 内。"""
+        """检查路径是否在沙箱、只读目录或排除工作区内。"""
         resolved = path.resolve()
         if self._is_within_sandbox(resolved):
+            return True
+        if self._is_excluded(resolved):
             return True
         for ad in self._allowed_read_dirs:
             try:
@@ -335,7 +355,7 @@ class SandboxService:
     def atomic_write(self, path: Path, data: bytes) -> None:
         """Caller holds file_lock; fsync then replace on the same filesystem."""
         resolved = path.resolve()
-        if not self._is_within_sandbox(resolved):
+        if not self._is_writable(resolved):
             raise PermissionError(f"写入路径越界: {path}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".neobot-write-", dir=resolved.parent)
@@ -369,8 +389,10 @@ class SandboxService:
 
     def _delete_file_sync(self, path: Path) -> None:
         resolved = path.resolve()
-        if not self._is_within_sandbox(resolved):
+        if not self._is_writable(resolved):
             raise PermissionError(f"删除路径越界: {path}")
+        if self._is_excluded_root(resolved):
+            raise PermissionError(f"不能删除排除工作区的根目录: {path}")
         with self.file_lock(resolved):
             if resolved.is_dir():
                 shutil.rmtree(resolved)
@@ -441,9 +463,11 @@ class SandboxService:
     def _move_file_sync(self, src: Path, dst: Path) -> None:
         src_r = src.resolve()
         dst_r = dst.resolve()
-        if not self._is_within_sandbox(src_r):
+        if not self._is_writable(src_r):
             raise PermissionError(f"源路径越界: {src}")
-        if not self._is_within_sandbox(dst_r):
+        if self._is_excluded_root(src_r):
+            raise PermissionError(f"不能移动排除工作区的根目录: {src}")
+        if not self._is_writable(dst_r):
             raise PermissionError(f"目标路径越界: {dst}")
         with ExitStack() as locks:
             for path in sorted({src_r, dst_r}, key=lambda p: os.path.normcase(str(p))):
@@ -460,11 +484,11 @@ class SandboxService:
         dst_r = dst.resolve()
         if not self.is_path_allowed(src_r):
             raise PermissionError(f"源路径不允许: {src}")
-        if not self._is_within_sandbox(dst_r):
+        if not self._is_writable(dst_r):
             raise PermissionError(f"目标路径越界: {dst}")
         if dst_r.is_dir():
             dst_r = (dst_r / src_r.name).resolve()
-            if not self._is_within_sandbox(dst_r):
+            if not self._is_writable(dst_r):
                 raise PermissionError(f"目标路径越界: {dst}")
         with ExitStack() as locks:
             for path in sorted({src_r, dst_r}, key=lambda p: os.path.normcase(str(p))):
@@ -496,6 +520,44 @@ class SandboxService:
             return True
         except ValueError:
             return False
+
+    def _is_excluded(self, path: Path) -> bool:
+        """检查（已归一的）路径是否落在某个排除工作区内。"""
+        if not self._excluded_workspaces:
+            return False
+        for root in self._excluded_workspaces:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _is_readonly_dir(self, path: Path) -> bool:
+        """检查（已归一的）路径是否落在只读白名单目录内。"""
+        for ad in self._allowed_read_dirs:
+            try:
+                path.relative_to(ad)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _is_writable(self, path: Path) -> bool:
+        """检查（已归一的）路径是否可写：沙箱内或排除工作区内。
+
+        只读白名单优先：落在 ``allowed_read_dirs`` 里的路径即使被某个排除工作区
+        覆盖也仍然只读，避免「排除父目录」把显式只读的 bot 资产变成可写。
+        """
+        if self._is_within_sandbox(path):
+            return True
+        if self._is_readonly_dir(path):
+            return False
+        return self._is_excluded(path)
+
+    def _is_excluded_root(self, path: Path) -> bool:
+        """路径是否正好是某个排除工作区的根（根本身禁止删除/移动）。"""
+        return any(path == root for root in self._excluded_workspaces)
 
     @staticmethod
     def _sanitize_flow_id(chat_flow_id: str | None) -> str:
@@ -538,5 +600,15 @@ class SandboxService:
         return remaining
 
     @property
+    def root(self) -> Path:
+        """沙箱根目录（上层判断结果能否按沙箱相对路径展示）。"""
+        return self._root
+
+    @property
     def max_total_size(self) -> int:
         return self._max_total_size
+
+    @property
+    def excluded_workspaces(self) -> tuple[Path, ...]:
+        """当前生效的排除工作区（已归一，供装配与测试核对）。"""
+        return tuple(self._excluded_workspaces)

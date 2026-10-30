@@ -97,7 +97,10 @@
 }
 .config-switch input:focus-visible + .switch-track {
   outline: 2px solid var(--brand);
-  outline-offset: 3px;
+  outline-offset: var(--focus-outline-offset);
+}
+.config-switch input:checked:focus-visible + .switch-track {
+  outline-color: var(--text-on-brand);
 }
 .config-switch input:disabled + .switch-track {
   opacity: 0.4;
@@ -310,6 +313,30 @@
   gap: 8px;
 }
 
+.cfg-control-with-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 8px;
+}
+
+.cfg-control-with-actions > :is(.config-input-wrap, .cfg-longtext) {
+  min-width: 0;
+}
+
+.cfg-control-with-actions > .cfg-field-actions {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.cfg-control-with-actions > .field-error {
+  grid-column: 1 / -1;
+}
+
+.cfg-control-with-actions > .config-switch {
+  min-height: var(--control-height);
+}
+
 .cfg-control .input,
 .cfg-root .input {
   min-width: 0;
@@ -324,12 +351,12 @@
 
 .cfg-root .input:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent);
-  outline-offset: 2px;
+  outline-offset: var(--focus-outline-offset);
 }
 
 .cfg-root .input[aria-invalid='true'] {
   border-color: var(--err);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
 }
 
 .cfg-root input:disabled,
@@ -341,9 +368,38 @@
 
 .cfg-field-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  min-height: var(--control-height);
+  gap: 4px;
   margin-top: 0;
+}
+
+.cfg-restore-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+}
+
+.cfg-restore-slot .cfg-restore {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--text-secondary, var(--muted));
+}
+
+.cfg-restore-slot .cfg-restore[hidden] {
+  display: none;
+}
+
+.cfg-restore:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: var(--focus-outline-offset);
 }
 
 .cfg-field-actions .btn-sm {
@@ -410,7 +466,7 @@
 
 .cfg-collapse:focus-visible {
   outline: 2px solid var(--brand);
-  outline-offset: 2px;
+  outline-offset: var(--focus-outline-offset);
 }
 
 @container (max-width: 620px) {
@@ -460,6 +516,14 @@
 }
 
 @media (pointer: coarse) {
+  .cfg-restore-slot,
+  .cfg-restore-slot .cfg-restore {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .cfg-collapse {
     width: 44px;
     height: 44px;

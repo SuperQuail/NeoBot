@@ -59,6 +59,20 @@ class CredentialManager:
         self._issue_failures: dict[str, int] = {}
         self._issue_blocked_until: dict[str, float] = {}
 
+    def is_super_admin(self, user_id: Any) -> bool:
+        """该用户是否为超级管理员。
+
+        管理员本人直接发起的请求视为已授权：无需再申请凭据。其他人的请求
+        仍然需要管理员签发凭据，本方法只用于区分「谁在发起」。
+        """
+        permissions = getattr(self, "_permissions", None)
+        if permissions is None or user_id in (None, "", 0, "0"):
+            return False
+        try:
+            return bool(permissions.is_super_admin(int(user_id)))
+        except (TypeError, ValueError, AttributeError):
+            return False
+
     # ── 查询 ──
 
     def get(self, code: str) -> Credential | None:

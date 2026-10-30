@@ -10,12 +10,13 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from . import cards, db
 from .bilibili.errors import BilibiliAPIError, BilibiliTransportError
 from .bilibili.urls import live_room_page_url
+from .subscriptions import SubscriptionService, parse_target
+from .subscriptions import push_defaults as push_defaults
 
 try:  # 无 NeoBot 环境（CI/单测）退化成常量，取值与本体一致
     from neobot_app.commands.model import PERM_EVERYONE, PERM_SUB_ADMIN
@@ -23,34 +24,7 @@ except Exception:  # pragma: no cover
     PERM_EVERYONE = 0
     PERM_SUB_ADMIN = 1
 
-MAX_TARGET_LENGTH = 256
 UNNAMED = "未命名"
-
-_DIGITS = re.compile("[0-9]+")
-
-
-def parse_target(raw: str) -> tuple[str, int]:
-    """把用户输入解析成 (kind, id)，kind 为 room 或 uid。
-
-    支持：纯数字（房间号或短号）、直播间链接、UP 主空间链接、uid: 前缀写法。
-    """
-    text = (raw or "").strip()
-    if not text or len(text) > MAX_TARGET_LENGTH:
-        raise ValueError("目标不能为空")
-    lowered = text.lower()
-    if "space.bilibili.com" in lowered or lowered.startswith("uid"):
-        match = _DIGITS.search(text)
-        if match is None:
-            raise ValueError("没有从输入里找到 UID")
-        return "uid", int(match.group(0))
-    if "live.bilibili.com" in lowered:
-        match = _DIGITS.search(text)
-        if match is None:
-            raise ValueError("没有从链接里找到房间号")
-        return "room", int(match.group(0))
-    if text.isdigit():
-        return "room", int(text)
-    raise ValueError("请提供房间号、短号、直播间链接或 UP 主空间链接")
 
 
 def parse_switch(value: str | None) -> bool | None:
@@ -83,25 +57,15 @@ def shots(ctx: Any) -> Any:
     return getattr(ctx, "screenshots", None)
 
 
-async def push_defaults(state: Any, group_id: int) -> tuple[bool, bool]:
-    """新订阅的默认推送开关：优先用本群设置，没有设置才用插件全局配置。
-
-    群设置由 /config 开播推送默认|下播推送默认 写入。这条接线以前是断的：
-    /config 展示并写入群级默认，/监听 却只读全局配置，用户改了没效果。
-    """
-    config = state.config
-    async with state.database.session() as session:
-        setting = db.setting_view(await db.get_group_setting(session, group_id))
-    if setting is None:
-        return bool(config.default_push_live), bool(config.default_push_live_end)
-    return bool(setting.default_push_live), bool(setting.default_push_live_end)
-
-
 def usage_card(title: str, lines: list[str]) -> dict[str, Any]:
-    return cards.message_card(title=title, lines=lines, note="群聊里需要先 @机器人 再发命令")
+    return cards.message_card(
+        title=title, lines=lines, note="群聊里需要先 @机器人 再发命令"
+    )
 
 
-async def fail(command_ctx: Any, ctx: Any, title: str, text: str, hint: str = "") -> None:
+async def fail(
+    command_ctx: Any, ctx: Any, title: str, text: str, hint: str = ""
+) -> None:
     """统一的失败卡片。"""
     await cards.send_card(
         command_ctx,
@@ -172,28 +136,14 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
         except ValueError as exc:
             await fail(command_ctx, ctx, "没有找到直播间", str(exc))
             return
-        # 监听即自动建好开播与下播两条推送；默认值取本群设置（/config 可改），
-        # 没有群设置时回落到插件全局配置。已经监听过的房间只刷新主播信息，
-        # 不动用户手动改过的开关（upsert_subscription 对已存在的行不改 flags）。
-        default_live, default_live_end = await push_defaults(state, group_id)
-        async with state.database.transaction() as session:
-            row, created = await db.upsert_subscription(
-                session,
-                group_id=group_id,
-                room_id=resolved["room_id"],
-                short_id=resolved.get("short_id", 0),
-                uid=resolved.get("uid", 0),
-                name=resolved.get("name", ""),
-                avatar_url=resolved.get("avatar_url", ""),
-                push_live=default_live,
-                push_live_end=default_live_end,
-            )
-            view = db.sub_view(row)
+        view, created = await SubscriptionService(state).create_resolved(
+            group_id, resolved
+        )
         title = "已开始监听" if created else "已更新监听信息"
         name = resolved.get("name") or UNNAMED
-        room_id = view.room_id if view is not None else resolved["room_id"]
-        push_live = view.push_live if view is not None else default_live
-        push_live_end = view.push_live_end if view is not None else default_live_end
+        room_id = view.room_id
+        push_live = view.push_live
+        push_live_end = view.push_live_end
         await cards.send_card(
             command_ctx,
             cards.kv_card(
@@ -227,7 +177,11 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
             return
         args = command_args(command_ctx)
         if not args:
-            await cards.send_card(command_ctx, usage_card("取消监听", ["/取消监听 <房间号|短号|链接>"]), screenshots=shots(ctx))
+            await cards.send_card(
+                command_ctx,
+                usage_card("取消监听", ["/取消监听 <房间号|短号|链接>"]),
+                screenshots=shots(ctx),
+            )
             return
         try:
             kind, value = parse_target(args[0])
@@ -236,14 +190,25 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
             return
         row = await state.find_subscription(group_id, kind, value)
         if row is None:
-            await fail(command_ctx, ctx, "没有监听这个直播间", "本群当前没有监听它。", hint="用 /监听列表 看看都在监听什么")
+            await fail(
+                command_ctx,
+                ctx,
+                "没有监听这个直播间",
+                "本群当前没有监听它。",
+                hint="用 /监听列表 看看都在监听什么",
+            )
             return
-        async with state.database.transaction() as session:
-            removed = await db.remove_subscription(session, group_id, row.room_id)
+        removed = await SubscriptionService(state).remove(group_id, row.room_id)
         if removed:
             await cards.send_card(
                 command_ctx,
-                cards.kv_card(title="已取消监听", items=[("直播间", row.name or UNNAMED), ("房间号", str(row.room_id))]),
+                cards.kv_card(
+                    title="已取消监听",
+                    items=[
+                        ("直播间", row.name or UNNAMED),
+                        ("房间号", str(row.room_id)),
+                    ],
+                ),
                 screenshots=shots(ctx),
             )
         else:
@@ -269,7 +234,10 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
         if not rows:
             await cards.send_card(
                 command_ctx,
-                cards.message_card(title="本群还没有监听任何直播间", lines=["用 /监听 房间号 添加第一个"]),
+                cards.message_card(
+                    title="本群还没有监听任何直播间",
+                    lines=["用 /监听 房间号 添加第一个"],
+                ),
                 screenshots=shots(ctx),
             )
             return
@@ -297,4 +265,3 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
 
     names.append("监听列表")
     return names
-
