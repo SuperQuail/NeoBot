@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from threading import Lock
 from typing import Any
 
@@ -19,6 +20,7 @@ class AsyncLogDelivery:
         self._task: asyncio.Task | None = None
         self._scheduled = False
         self._generation = 0
+        self._consuming: ContextVar[bool] = ContextVar("neobot_log_consuming", default=False)
         self.dropped = 0
         self.failed = 0
 
@@ -46,6 +48,11 @@ class AsyncLogDelivery:
             self._schedule_locked()
 
     def submit(self, item: Any) -> None:
+        # 消费者的故障诊断仍写文件/控制台，但不能反馈到同一个异步出口。
+        if self._consuming.get():
+            with self._lock:
+                self.dropped += 1
+            return
         self.bind_loop()
         with self._lock:
             if self._target is None:
@@ -74,6 +81,7 @@ class AsyncLogDelivery:
 
     async def _drain(self, generation: int) -> None:
         cancelled = False
+        processed = 0
         try:
             while True:
                 with self._lock:
@@ -82,11 +90,18 @@ class AsyncLogDelivery:
                     item = self._pending.popleft()
                     target = self._target
                 if target is not None:
+                    token = self._consuming.set(True)
                     try:
                         await target(item)
                     except Exception:
                         # 不在日志 sink 内再次打日志，避免接收方故障造成自激。
                         self.failed += 1
+                    finally:
+                        self._consuming.reset(token)
+                processed += 1
+                if processed % 64 == 0:
+                    # async target 可能从不挂起；持续入队不能饿死心跳和关闭超时。
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             cancelled = True
             raise

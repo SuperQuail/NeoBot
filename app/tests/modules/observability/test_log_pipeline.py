@@ -293,6 +293,64 @@ async def test_delivery_failure_does_not_stop_later_records_or_recurse():
     assert delivery.stats()["failed"] == 1
 
 
+async def test_delivery_drops_consumer_feedback_and_remains_usable():
+    delivery = AsyncLogDelivery()
+    captured = []
+
+    async def target(item):
+        captured.append(item)
+        delivery.submit("recursive")
+        await asyncio.to_thread(delivery.submit, "thread-recursive")
+
+    delivery.set_target(target)
+    delivery.submit("first")
+    await delivery.flush()
+    delivery.submit("second")
+    await delivery.flush()
+    assert captured == ["first", "second"]
+    assert delivery.stats() == {"pending": 0, "dropped": 4, "failed": 0}
+
+
+async def test_delivery_yields_to_other_callbacks_during_a_synchronous_batch():
+    delivery = AsyncLogDelivery(capacity=128)
+    marker = asyncio.Event()
+    marker_at_end = []
+
+    async def target(item):
+        if item == 0:
+            asyncio.get_running_loop().call_soon(marker.set)
+        if item == 127:
+            marker_at_end.append(marker.is_set())
+
+    delivery.set_target(target)
+    for item in range(128):
+        delivery.submit(item)
+    await delivery.flush()
+    assert marker_at_end == [True]
+
+
+async def test_failing_runtime_subscriber_does_not_reenter_log_output(tmp_path):
+    from neobot_modloader.hooks import PluginHookBus
+
+    logger = LoguruLoggerFactory().get_logger("plugin.faulty")
+    bus = PluginHookBus(logger=logger)
+    received = []
+
+    async def faulty(envelope):
+        received.append(envelope)
+        raise RuntimeError("subscriber unavailable")
+
+    bus.subscribe_runtime(faulty, kind="log", logger=logger)
+    set_runtime_event_dispatcher(bus.dispatch_envelope)
+    configure_loguru(tmp_path, runtime_events=True)
+    logger.info("original event")
+    assert await flush_log_sinks()
+    assert len(received) == 1
+    content = (tmp_path / "neobot.log").read_text()
+    assert "original event" in content
+    assert "subscriber unavailable" in content
+
+
 async def test_dispatcher_replacement_drops_previous_generation():
     delivery = AsyncLogDelivery()
     previous, current = [], []
