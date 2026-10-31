@@ -9,8 +9,8 @@ covers:
   - app/src/neobot_app/screenshot.py
   - app/src/neobot_app/image_pool.py
   - packages/contracts/src/neobot_contracts/ports/screenshot.py
-verified_against: 6233322
-verified_hash: 013aefbbb6e6
+verified_against: d525a5b
+verified_hash: cd2cc2280e8e
 ---
 
 # 13 渲染与卡片：自包含 HTML 卡片 · /help 预渲染缓存 · Markdown 转图 · 截图链路 · 图片暂存池

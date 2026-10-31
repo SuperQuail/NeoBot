@@ -5,8 +5,8 @@ covers:
   - packages/chat/src/neobot_chat/schema/exceptions.py
   - app/src/neobot_app/agents/
   - app/src/neobot_app/agent_tools/invocation.py
-verified_against: 528fe18
-verified_hash: bc2b728c2707
+verified_against: d525a5b
+verified_hash: c257d2a71809
 ---
 
 # 04 Agent 循环：工具迭代 / 轮次上限 / 失败语义 / 自修复
