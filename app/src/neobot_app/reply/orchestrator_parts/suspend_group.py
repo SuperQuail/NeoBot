@@ -1,10 +1,13 @@
 """群聊挂起等待（新消息/后台通知/唤醒）。"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from ._runtime import asyncio, monotonic_seconds
+
 if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
+
 
 class SuspendGroupMixin:
     async def _suspend_group_chat(
@@ -109,9 +112,7 @@ class SuspendGroupMixin:
                 # 睡眠拦截:睡眠中非@消息忽略(已入快照,不会反复拾取),
                 # @提及唤醒并注入唤醒提示词,与事件入口语义一致
                 if self._sleeping():
-                    if not self._entries_have_at_mention(
-                        current_new, queue_key=queue_key
-                    ):
+                    if not self._entries_have_at_mention(current_new, queue_key=queue_key):
                         self._logger.info(
                             "睡眠中,挂起管线忽略新消息",
                             queue_key=queue_key,
@@ -153,51 +154,27 @@ class SuspendGroupMixin:
                             at_mention_deadline = monotonic_seconds() + at_delay
                         else:
                             # 普通意愿命中：立即结束
-                            self._logger.debug(
-                                "群聊挂起普通意愿命中，立即结束挂起",
-                                queue_key=queue_key,
-                                count=len(all_new_entries),
-                            )
                             break
 
             # 轮询后台通知，有通知立即中断挂起
             if notification_text is None:
-                notification_text = await self._poll_background_notifications(
-                    pipeline_key
-                )
+                notification_text = await self._poll_background_notifications(pipeline_key)
 
             if notification_text:
-                self._logger.debug(
-                    "群聊挂起检测到后台通知，结束挂起",
-                    queue_key=queue_key,
-                )
                 break
 
             # @提及延迟窗口到期
             if at_mention_deadline > 0 and monotonic_seconds() >= at_mention_deadline:
-                self._logger.debug(
-                    "群聊挂起@提及收集窗口到期",
-                    queue_key=queue_key,
-                    total_new=len(all_new_entries),
-                )
                 break
 
-        if all_new_entries:
-            self._logger.debug(
-                "群聊挂起收集到新消息",
-                queue_key=queue_key,
-                count=len(all_new_entries),
-            )
-        elif notification_text:
-            self._logger.debug(
-                "群聊挂起收到后台通知",
-                queue_key=queue_key,
-            )
-        else:
-            self._logger.debug(
-                "群聊挂起超时未收到新消息或通知",
-                queue_key=queue_key,
-            )
+        self._logger.debug(
+            "群聊等待结束",
+            event="reply.wait_finished",
+            chat_flow_id=pipeline_key,
+            reason="notification" if notification_text else "messages" if has_willing else "timeout",
+            message_count=len(all_new_entries),
+            should_reply=bool(notification_text or has_willing),
+        )
 
         # 通知存在 → 总是返回（通知本身就是触发理由）
         if notification_text:
@@ -208,9 +185,4 @@ class SuspendGroupMixin:
             return all_new_entries, None, wake_prompt
 
         # 超时且无意愿消息 → 不触发回复
-        self._logger.debug(
-            "群聊挂起超时，未收到有意愿消息或通知",
-            queue_key=queue_key,
-            collected_count=len(all_new_entries),
-        )
         return [], None, None

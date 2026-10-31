@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from neobot_storage.models import Base
 
 config = context.config
-if config.config_file_name:
-    fileConfig(config.config_file_name)
+if config.config_file_name and config.attributes.get("configure_logging", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
@@ -65,6 +65,7 @@ else:
         asyncio.get_running_loop()
         # 已在 event loop 中（如 app 启动时调用），用新线程跑
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             pool.submit(asyncio.run, run_migrations_online()).result()
     except RuntimeError:

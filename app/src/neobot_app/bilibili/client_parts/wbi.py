@@ -41,7 +41,7 @@ class _WbiMixin:
         img_key = img_raw.rsplit("/", 1)[-1].split(".")[0]
         sub_key = sub_raw.rsplit("/", 1)[-1].split(".")[0]
         if len(img_key) < 32 or len(sub_key) < 32:
-            self._logger.debug("B站 WBI 密钥提取失败，跳过签名")
+            self._logger.warning("B站 WBI 密钥格式异常，后续请求将缺少签名")
             return
         combined = img_key + sub_key
         mixin_key = "".join(

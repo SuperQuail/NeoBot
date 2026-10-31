@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.database.chatstream import ChatStreamManager
+from neobot_app.observability.logging import bind_logging_loop, flush_log_sinks
 from neobot_app.reply import ReplyOrchestrator
 from neobot_app.core.file_server import FileServer, ExpirationConfig
 from neobot_app.core.paths import get_data_dir
@@ -143,22 +145,32 @@ class NeoBotApplication(Generic[T]):
     async def start(self) -> None:
         if self._started:
             return
-        self._logger.info("NeoBot启动中")
+        bind_logging_loop()
+        started_at = time.monotonic()
+        startup_stage = "initializing"
+
+        def log_stage(name: str) -> None:
+            nonlocal startup_stage
+            startup_stage = name
+            self._logger.debug("开始初始化组件", event="runtime.starting", component=name)
+
         self._cleanup_complete = False
         if not self._restart_requested:
             self._shutdown_event.clear()
         started: list[str] = []
         try:
+            log_stage("file_server")
             started.append("file_server")
             await self.file_server.start()
             if self.tts_service is not None:
+                log_stage("tts")
                 started.append("tts")
                 await self.tts_service.initialize()
-            self._logger.info("文件服务器启动完成")
             if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
+                log_stage("plugin")
                 started.append("plugin")
                 await self._plugin_runtime.load_registered()
-                self._logger.info("插件加载完成")
+            log_stage("adapter")
             started.append("adapter")
             await self.adapter.start()
             if self._connection_probe is not None:
@@ -174,43 +186,62 @@ class NeoBotApplication(Generic[T]):
                     self._logger.info(f"本地适配器 HTTP 地址: {http_url}")
                 if ws_url:
                     self._logger.info(f"本地适配器 WebSocket 地址: {ws_url}")
-            self._logger.info("NeoBot适配器启动完成")
             if self._bot_detector is not None:
+                log_stage("bot_detection")
                 await self._bot_detector.refresh()
-                self._logger.info("官方Bot检测范围已加载")
             if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
+                log_stage("plugin_start")
                 await self._plugin_runtime.start_all()
-                self._logger.info("插件系统启动完成")
+            log_stage("chat_stream")
             await self.chat_stream.initialize()
-            self._logger.info("NeoBot聊天流初始化完成")
             if self._emoji_service is not None:
+                log_stage("emoji")
                 started.append("emoji")
                 await self._emoji_service.start()
-                self._logger.info("表情包服务启动完成")
             if self._background_coros:
+                log_stage("background")
                 started.append("background")
             for coro in self._background_coros:
                 self._background_tasks.append(asyncio.create_task(coro))
-                self._logger.debug(
-                    f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}"
-                )
+                self._logger.debug(f"后台任务已启动: {getattr(coro, '__name__', coro.__class__.__name__)}")
             if self._browser_lifecycle_manager is not None:
+                log_stage("browser")
                 started.append("browser")
                 await self._browser_lifecycle_manager.start()
-                self._logger.info("浏览器生命周期管理器启动完成")
+            log_stage("event_ingress")
             started.append("event_ingress")
             self.event_ingress.start()
             if self._scheduled_task_manager is not None:
+                log_stage("scheduled_task_manager")
                 started.append("scheduled_task_manager")
                 await self._scheduled_task_manager.start()
             if self._markdown_image_converter is not None:
+                log_stage("markdown_image_converter")
                 started.append("markdown_image_converter")
                 await self._markdown_image_converter.start()
             if self._report_service is not None:
                 self._report_task = asyncio.create_task(self._run_report_loop())
+                log_stage("report_task")
                 started.append("report_task")
             self._started = True
-        except BaseException:
+            self._logger.info(
+                "NeoBot运行时已启动",
+                event="runtime.started",
+                completed_steps=list(started),
+                duration_seconds=round(time.monotonic() - started_at, 3),
+            )
+        except BaseException as exc:
+            log_failure = self._logger.info if isinstance(exc, asyncio.CancelledError) else self._logger.error
+            log_failure(
+                "NeoBot运行时启动中断，开始回收资源",
+                event="runtime.start_failed",
+                component=startup_stage,
+                attempted_components=list(started),
+                duration_seconds=round(time.monotonic() - started_at, 3),
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=not isinstance(exc, asyncio.CancelledError),
+            )
             deferred = await self._rollback_start(started)
             self._started = False
             self._cleanup_complete = True
@@ -227,33 +258,25 @@ class NeoBotApplication(Generic[T]):
         if "event_ingress" in started:
             steps.append(("event ingress", self.event_ingress.stop))
         if "markdown_image_converter" in started:
-            steps.append(
-                ("markdown image converter", self._markdown_image_converter.stop)
-            )
+            steps.append(("markdown image converter", self._markdown_image_converter.stop))
 
         # These managers own providers/agents created before start(), so they
         # must be closed even when no explicit start marker exists.
         if self._self_heal_manager is not None:
             steps.append(("self heal manager", self._self_heal_manager.shutdown))
         if self._problem_solver_manager is not None:
-            steps.append(
-                ("problem solver manager", self._problem_solver_manager.shutdown)
-            )
+            steps.append(("problem solver manager", self._problem_solver_manager.shutdown))
         if self._reply_orchestrator is not None:
             steps.append(("reply orchestrator", self._reply_orchestrator.shutdown))
         elif "scheduled_task_manager" in started:
-            steps.append(
-                ("scheduled task manager", self._scheduled_task_manager.shutdown)
-            )
+            steps.append(("scheduled task manager", self._scheduled_task_manager.shutdown))
         if self._reply_orchestrator is None and self._drawing_manager is not None:
             steps.append(("drawing manager", self._drawing_manager.shutdown))
         if self._creator_image_service is not None:
             steps.append(("creator image service", self._creator_image_service.close))
 
         if "browser" in started and self._browser_lifecycle_manager is not None:
-            steps.append(
-                ("browser lifecycle manager", self._browser_lifecycle_manager.stop)
-            )
+            steps.append(("browser lifecycle manager", self._browser_lifecycle_manager.stop))
         if self._browser_instance is not None:
             steps.append(("browser instance", self._browser_instance.close))
             steps.append(("browser artifacts", self._cleanup_browser_artifacts))
@@ -273,9 +296,7 @@ class NeoBotApplication(Generic[T]):
         if "tts" in started and self.tts_service is not None:
             steps.append(("tts service", self.tts_service.close))
         if self._archive_summary_service is not None:
-            steps.append(
-                ("archive summary service", self._archive_summary_service.close)
-            )
+            steps.append(("archive summary service", self._archive_summary_service.close))
         if self._vision_provider is not None:
             steps.append(("vision provider", self._vision_provider.close))
         if "file_server" in started:
@@ -284,7 +305,12 @@ class NeoBotApplication(Generic[T]):
             steps.append(("database engine", self._engine.dispose))
 
         deferred = await self._run_cleanup_steps("startup rollback", steps)
-        self._logger.warning("NeoBot启动失败，已回滚已启动的组件")
+        self._logger.debug(
+            "启动回滚的清理步骤已结束",
+            event="runtime.rollback_finished",
+            attempted_steps=[label for label, _ in steps],
+            deferred_error_type=type(deferred).__name__ if deferred is not None else None,
+        )
         return deferred
 
     async def _run_cleanup_steps(
@@ -298,9 +324,7 @@ class NeoBotApplication(Generic[T]):
             candidate = await self._run_cleanup_step(phase, label, action)
             if candidate is None:
                 continue
-            if deferred is None or isinstance(
-                candidate, (KeyboardInterrupt, SystemExit)
-            ):
+            if deferred is None or isinstance(candidate, (KeyboardInterrupt, SystemExit)):
                 deferred = candidate
         return deferred
 
@@ -313,6 +337,12 @@ class NeoBotApplication(Generic[T]):
         deferred_cancel: asyncio.CancelledError | None = None
         cleanup_task: asyncio.Future[Any] | None = None
         try:
+            self._logger.debug(
+                "开始清理组件",
+                event="runtime.cleaning",
+                phase=phase,
+                component=label,
+            )
             result = action()
             if inspect.isawaitable(result):
                 cleanup_task = asyncio.ensure_future(result)
@@ -436,14 +466,24 @@ class NeoBotApplication(Generic[T]):
             if not self._started:
                 return
             deferred: BaseException | None = None
+            started_at = time.monotonic()
+            cleanup_finished = False
             try:
                 deferred = await self._stop_components()
+                cleanup_finished = True
             finally:
                 self._started = False
                 self._cleanup_complete = True
                 self._close_unstarted_coros()
                 self._connection_state = None
-                self._logger.info("NeoBot已停止")
+                self._logger.info(
+                    "NeoBot运行时关闭清理结束",
+                    event="runtime.stopped",
+                    duration_seconds=round(time.monotonic() - started_at, 3),
+                    cleanup_finished=cleanup_finished,
+                    deferred_error_type=type(deferred).__name__ if deferred is not None else None,
+                )
+                await flush_log_sinks()
             if deferred is not None:
                 raise deferred
 
@@ -453,9 +493,7 @@ class NeoBotApplication(Generic[T]):
         if self._self_heal_manager is not None:
             steps.append(("self heal manager", self._self_heal_manager.shutdown))
         if self._problem_solver_manager is not None:
-            steps.append(
-                ("problem solver manager", self._problem_solver_manager.shutdown)
-            )
+            steps.append(("problem solver manager", self._problem_solver_manager.shutdown))
         if self._report_task is not None:
             steps.append(("report task", self._cancel_report_task))
 
@@ -464,9 +502,7 @@ class NeoBotApplication(Generic[T]):
             steps.append(("reply orchestrator", self._reply_orchestrator.shutdown))
         else:
             if self._scheduled_task_manager is not None:
-                steps.append(
-                    ("scheduled task manager", self._scheduled_task_manager.shutdown)
-                )
+                steps.append(("scheduled task manager", self._scheduled_task_manager.shutdown))
             if self._drawing_manager is not None:
                 steps.append(("drawing manager", self._drawing_manager.shutdown))
         if self._message_pipeline is not None:
@@ -475,23 +511,17 @@ class NeoBotApplication(Generic[T]):
             steps.append(
                 (
                     "message pipeline summaries",
-                    lambda: self._message_pipeline.flush_pending_summaries(
-                        timeout=CLOSE_FLUSH_TIMEOUT_SECONDS
-                    ),
+                    lambda: self._message_pipeline.flush_pending_summaries(timeout=CLOSE_FLUSH_TIMEOUT_SECONDS),
                 )
             )
         if self._archive_summary_service is not None:
-            steps.append(
-                ("archive summary service", self._archive_summary_service.close)
-            )
+            steps.append(("archive summary service", self._archive_summary_service.close))
         if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
             steps.append(("plugin runtime", self._plugin_runtime.stop_all))
         if self._creator_image_service is not None:
             steps.append(("creator image service", self._creator_image_service.close))
         if self._markdown_image_converter is not None:
-            steps.append(
-                ("markdown image converter", self._markdown_image_converter.stop)
-            )
+            steps.append(("markdown image converter", self._markdown_image_converter.stop))
         if self._emoji_service is not None:
             steps.append(("emoji service", self._emoji_service.stop))
         if self._background_tasks:
@@ -501,9 +531,7 @@ class NeoBotApplication(Generic[T]):
         if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
             steps.append(("agent registry", self._close_agent_registry))
         if self._browser_lifecycle_manager is not None:
-            steps.append(
-                ("browser lifecycle manager", self._browser_lifecycle_manager.stop)
-            )
+            steps.append(("browser lifecycle manager", self._browser_lifecycle_manager.stop))
         if self._browser_instance is not None:
             steps.append(("browser instance", self._browser_instance.close))
             steps.append(("browser artifacts", self._cleanup_browser_artifacts))
@@ -553,8 +581,7 @@ class NeoBotApplication(Generic[T]):
         done, _ = await asyncio.wait((task,), timeout=self._ADAPTER_STOP_TIMEOUT_SECONDS)
         if not done:
             self._logger.error(
-                "适配器停止超时，仍在等待清理；不会按已停止继续重建，"
-                "若持续卡住需手动处理或显式强制重启进程",
+                "适配器停止超时，仍在等待清理；不会按已停止继续重建，若持续卡住需手动处理或显式强制重启进程",
                 timeout_seconds=self._ADAPTER_STOP_TIMEOUT_SECONDS,
             )
         await asyncio.shield(task)

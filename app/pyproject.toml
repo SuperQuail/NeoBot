@@ -45,6 +45,7 @@ dependencies = [
     "python-lsp-server>=1.14.0,<2",
     "readability-lxml>=0.8.0,<0.10",
     "requests>=2.32.0,<3",
+    "rich>=14,<16",
     "sqlalchemy[asyncio]>=2.0,<3",
     "tomlkit<0.16",
     "trafilatura>=2.0.0,<3",

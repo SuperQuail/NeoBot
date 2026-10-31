@@ -2,6 +2,7 @@
 
 from dataclasses import fields, is_dataclass
 from pathlib import Path
+import time
 from typing import Any, Dict, Tuple, Type, TypeVar
 
 import tomlkit
@@ -62,13 +63,9 @@ def _build_provider_extra_body(
     if provider_kind not in {"deepseek", "deepseek_offical", "deepseek_official"}:
         return {}
 
-    thinking_mode = _normalize_deepseek_thinking_mode(
-        getattr(settings_config, "deepseek_thinking_mode", True)
-    )
+    thinking_mode = _normalize_deepseek_thinking_mode(getattr(settings_config, "deepseek_thinking_mode", True))
 
-    reasoning_effort = str(
-        getattr(settings_config, "deepseek_reasoning_effort", "high")
-    ).strip().casefold()
+    reasoning_effort = str(getattr(settings_config, "deepseek_reasoning_effort", "high")).strip().casefold()
 
     probability = getattr(settings_config, "deepseek_random_thinking_probability", 0.6)
     try:
@@ -110,14 +107,9 @@ def _resolve_enabled_params(
     from neobot_app.config.model_params import resolve_enabled_params
 
     enabled = list(getattr(settings_config, "enabled_params", None) or [])
-    applied, unknown, inapplicable = resolve_enabled_params(
-        enabled, provider=provider_name, model_type=model_type
-    )
+    applied, unknown, inapplicable = resolve_enabled_params(enabled, provider=provider_name, model_type=model_type)
     for name in unknown:
-        logger.warning(
-            f"模型 {key} 的可选参数 {name} 不在参数目录中，已忽略"
-            "（未知参数请改用 extra_body 自定义参数）"
-        )
+        logger.warning(f"模型 {key} 的可选参数 {name} 不在参数目录中，已忽略（未知参数请改用 extra_body 自定义参数）")
     for name in inapplicable:
         logger.warning(
             f"模型 {key} 的可选参数 {name} 不适用于 "
@@ -140,17 +132,10 @@ def _build_runtime_extra_body(
     reserved = extra_body_reserved_keys(user_extra_body)
     if reserved:
         logger.warning(
-            f"模型 {key} 的自定义参数使用了保留键（__ 前缀，属内部命名空间），已忽略: "
-            + "、".join(reserved)
+            f"模型 {key} 的自定义参数使用了保留键（__ 前缀，属内部命名空间），已忽略: " + "、".join(reserved)
         )
-        user_extra_body = {
-            name: value
-            for name, value in user_extra_body.items()
-            if name not in set(reserved)
-        }
-    internal = _build_provider_extra_body(
-        provider_name, settings_config, model_type=model_type
-    )
+        user_extra_body = {name: value for name, value in user_extra_body.items() if name not in set(reserved)}
+    internal = _build_provider_extra_body(provider_name, settings_config, model_type=model_type)
     return {**user_extra_body, **internal}
 
 
@@ -198,16 +183,14 @@ def _resolve_model_reasoning_effort(
         effective = DEEPSEEK_EFFORT_MAP.get(configured)
         if effective is not None and effective != configured:
             logger.warning(
-                f"模型 {key} 的推理强度 {configured} 在 DeepSeek 官方只支持 high / max，"
-                f"已按 {effective} 处理"
+                f"模型 {key} 的推理强度 {configured} 在 DeepSeek 官方只支持 high / max，已按 {effective} 处理"
             )
         thinking_mode = _normalize_deepseek_thinking_mode(
             getattr(getattr(model_config, "settings", None), "deepseek_thinking_mode", "enabled")
         )
         if thinking_mode == "false":
             logger.warning(
-                f"模型 {key} 的思考模式已关闭（settings.deepseek_thinking_mode），"
-                f"推理强度 {effort} 不会下发"
+                f"模型 {key} 的思考模式已关闭（settings.deepseek_thinking_mode），推理强度 {effort} 不会下发"
             )
     return effort, output_format
 
@@ -288,9 +271,7 @@ class Config:
         return decorator
 
     @classmethod
-    def _resolve_migration_chain(
-        cls, current_version: str, target_version: str
-    ) -> list[tuple[str, str]]:
+    def _resolve_migration_chain(cls, current_version: str, target_version: str) -> list[tuple[str, str]]:
         """解析 current -> target 的迁移链（支持多步迁移，如 0.3.0->0.4.0->0.5.0）。"""
         chain: list[tuple[str, str]] = []
         version = current_version
@@ -310,9 +291,7 @@ class Config:
         return chain
 
     @classmethod
-    def _apply_migrations(
-        cls, data: dict, current_version: str, target_version: str
-    ) -> dict:
+    def _apply_migrations(cls, data: dict, current_version: str, target_version: str) -> dict:
         """应用配置迁移（逐级链式执行，保证跨多个版本升级也能正确迁移）。"""
         if current_version == target_version:
             return data
@@ -327,9 +306,7 @@ class Config:
             logger.info(f"应用配置迁移: {from_version} -> {to_version}")
             migrated = cls._migrations[(from_version, to_version)](migrated)
             if not isinstance(migrated, dict):
-                raise TypeError(
-                    f"配置迁移 {from_version} -> {to_version} 必须返回 dict"
-                )
+                raise TypeError(f"配置迁移 {from_version} -> {to_version} 必须返回 dict")
             # 迁移函数可能忘记写版本号，这里强制推进，避免链式迁移卡住
             migrated["version"] = to_version
         return migrated
@@ -379,9 +356,7 @@ class Config:
             if role == "creator_image_models":
                 return bool(
                     getattr(getattr(config_obj, "agent", None), "creator", None)
-                    and getattr(
-                        getattr(config_obj, "agent", None).creator, "enabled", False
-                    )
+                    and getattr(getattr(config_obj, "agent", None).creator, "enabled", False)
                 )
             return True
 
@@ -423,26 +398,20 @@ class Config:
             # 不静默兜底：探测不到就明确说出来。上一版这里用 hasattr 探测旧方法名，
             # 改名后恒为 False，导致所有合法引用被误报为「不存在」（issue #68）。
             library_keys = set()
-            logger.warning(
-                "配置对象的 models 段没有 by_ref()，「引用名是否存在」这项校验已跳过"
-            )
+            logger.warning("配置对象的 models 段没有 by_ref()，「引用名是否存在」这项校验已跳过")
         assignments = getattr(models_config, "assignments", None)
         if assignments is not None and hasattr(assignments, "items"):
             for ref_role, ref_value in assignments.items():
                 if ref_value in library_keys:
                     continue
                 if not _feature_enabled(ref_role):
-                    logger.info(
-                        f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_value}"
-                    )
+                    logger.debug(f"{ref_role} 对应功能未启用，跳过缺失模型检查: {ref_value}")
                     continue
                 findings.append(
                     ModelFinding(
                         role=ref_role,
                         model_ref=str(ref_value),
-                        missing=(
-                            f"调用方 {ref_role} 引用了模型库中不存在的引用名: {ref_value}",
-                        ),
+                        missing=(f"调用方 {ref_role} 引用了模型库中不存在的引用名: {ref_value}",),
                     )
                 )
 
@@ -461,7 +430,7 @@ class Config:
             if not is_dataclass(model_config):
                 continue
             if not _feature_enabled(role):
-                logger.info(f"{role} 对应功能未启用，跳过注册与校验")
+                logger.debug(f"{role} 对应功能未启用，跳过注册与校验")
                 continue
 
             # model_ref 是本机引用名（注册表键），model_name 才是发给供应商的模型标识。
@@ -471,9 +440,7 @@ class Config:
                     ModelFinding(
                         role=role,
                         model_ref="",
-                        missing=(
-                            "引用的模型缺少 model_ref（模型库条目的引用名不能为空）",
-                        ),
+                        missing=("引用的模型缺少 model_ref（模型库条目的引用名不能为空）",),
                     )
                 )
                 continue
@@ -501,31 +468,21 @@ class Config:
                     missing.append(f"平台 {provider_name}_APIKey 配置")
 
             if missing:
-                findings.append(
-                    ModelFinding(role=role, model_ref=model_ref, missing=tuple(missing))
-                )
+                findings.append(ModelFinding(role=role, model_ref=model_ref, missing=tuple(missing)))
                 continue
             registered_refs.add(model_ref)
 
             pricing_config = getattr(model_config, "pricing", None)
             settings_config = getattr(model_config, "settings", None)
             pricing = ModelPricing(
-                input_price_per_mtokens=getattr(
-                    pricing_config, "input_price_per_mtokens", 0.0
-                ),
-                output_price_per_mtokens=getattr(
-                    pricing_config, "output_price_per_mtokens", 0.0
-                ),
-                cache_hit_price_per_mtokens=getattr(
-                    pricing_config, "cache_hit_price_per_mtokens", 0.0
-                ),
+                input_price_per_mtokens=getattr(pricing_config, "input_price_per_mtokens", 0.0),
+                output_price_per_mtokens=getattr(pricing_config, "output_price_per_mtokens", 0.0),
+                cache_hit_price_per_mtokens=getattr(pricing_config, "cache_hit_price_per_mtokens", 0.0),
                 billing_metric=getattr(pricing_config, "billing_metric", ""),
             )
             from neobot_app.config.schemas.bot import normalize_model_type
 
-            model_type_value = normalize_model_type(
-                getattr(model_config, "model_type", "chat")
-            )
+            model_type_value = normalize_model_type(getattr(model_config, "model_type", "chat"))
             reasoning_effort, reasoning_effort_format = _resolve_model_reasoning_effort(
                 model_config,
                 key=model_ref,
@@ -534,7 +491,7 @@ class Config:
             )
             if reasoning_effort:
                 # 「配了却没生效」最难排查：生效值必须在启动日志里能直接看到
-                logger.info(f"模型 {model_ref} 的推理强度: {reasoning_effort}（{reasoning_effort_format} 系）")
+                logger.debug(f"模型 {model_ref} 的推理强度: {reasoning_effort}（{reasoning_effort_format} 系）")
             # 只下发 enabled_params 里、且 scope 匹配的可选参数；其余值原地保留在配置里
             enabled_params = _resolve_enabled_params(
                 settings_config,
@@ -562,9 +519,7 @@ class Config:
                     model_type=model_type_value,
                 ),
                 image_api=str(_optional("image_api", "auto") or "auto"),
-                image_reference_param=str(
-                    _optional("image_reference_param", "image") or "image"
-                ),
+                image_reference_param=str(_optional("image_reference_param", "image") or "image"),
                 reasoning_effort=reasoning_effort,
                 reasoning_effort_format=reasoning_effort_format,
             )
@@ -586,18 +541,33 @@ class Config:
             )
 
         report = policy.classify(findings)
-        # 降级项逐条告警：具体哪个角色、哪个 key、缺什么，必须能一眼看到，
-        # 否则「能启动但不会回复」会变成难以定位的静默故障。
+        # 控制台保留一条行动明确的摘要，同平台缺 Key 的逐模型清单留给 DEBUG 文件。
+        # 完整事实仍在 report / ConfigLoadError 中，不能因降噪丢掉具体角色和缺失项。
         for message in report.degraded_messages():
-            logger.warning(f"{message}，该功能将被降级禁用")
+            logger.debug(f"{message}，该功能将被降级禁用", event="config.model_unavailable")
         if report.has_fatal:
             message = report.fatal_message()
-            logger.error(message)
+            logger.debug(message, event="config.model_validation_detail")
+            logger.warning(
+                "模型配置校验未通过，请补齐必需配置",
+                event="config.model_validation_failed",
+                missing_settings=sorted({reason for item in report.fatal for reason in item.missing}),
+            )
             raise ConfigLoadError(message)
         if report.has_degraded:
+            unavailable_count = len({item.model_ref or item.role for item in report.degraded})
+            missing_settings = sorted({reason for item in report.degraded for reason in item.missing})
+            missing_summary = (
+                missing_settings[0].removeprefix("平台 ").removesuffix(" 配置")
+                if len(missing_settings) == 1
+                else f"{len(missing_settings)} 项模型配置"
+            )
             logger.warning(
-                f"模型注册完成：{len(report.degraded)} 个模型因配置缺失被降级，"
-                "对应功能不可用（补齐配置后重启或热重载即可恢复）"
+                f"{unavailable_count} 个模型缺少 {missing_summary}，请在网页面板补齐配置",
+                event="config.models_degraded",
+                available_count=len(pending),
+                unavailable_count=unavailable_count,
+                missing_settings=missing_settings,
             )
 
         registry.clear()
@@ -636,11 +606,10 @@ class Config:
             )
             registered_count += 1
             # 左边是引用名（本机用），右边才是发出去的模型名 —— 排查时别把两者看混。
-            logger.info(
-                f"已注册模型: {model_ref} -> {provider_name}/{model_name}"
-            )
+            logger.debug(f"已注册模型: {model_ref} -> {provider_name}/{model_name}")
 
-        logger.info(f"模型注册完成，共注册 {registered_count} 个模型")
+        log = logger.debug if report.has_degraded else logger.info
+        log(f"模型注册完成，共注册 {registered_count} 个模型")
         return registry
 
     @classmethod
@@ -660,7 +629,8 @@ class Config:
         # 必须在首次 load 前完成;懒加载避免模块初始化阶段的循环依赖。
         from neobot_app.config import migrations as _migrations  # noqa: F401
 
-        logger.info(f"加载配置文件: {file_path}")
+        started_at = time.monotonic()
+        logger.debug("开始加载配置文件", event="config.loading", path=str(file_path))
 
         existing_data: dict[Any, Any] = {}
         file_exists = file_path.exists()
@@ -672,21 +642,12 @@ class Config:
                 # EmptyKeyError,整份配置会被当作损坏重置为默认值,造成数据丢失)
                 with open(file_path, "r", encoding="utf-8-sig") as f:
                     existing_data = tomlkit.parse(f.read()).unwrap()
-                logger.info(f"配置文件已读取: {file_path}")
 
                 current_version = existing_data.get("version")
                 target_version = getattr(schema(), "version", None)
-                if (
-                    current_version
-                    and target_version
-                    and current_version != target_version
-                ):
-                    logger.info(
-                        f"检测到配置版本变化: {current_version} -> {target_version}"
-                    )
-                    existing_data = cls._apply_migrations(
-                        existing_data, current_version, target_version
-                    )
+                if current_version and target_version and current_version != target_version:
+                    logger.info(f"检测到配置版本变化: {current_version} -> {target_version}")
+                    existing_data = cls._apply_migrations(existing_data, current_version, target_version)
             except Exception as e:
                 logger.error(f"读取配置文件失败: {e}")
                 load_error = e
@@ -715,11 +676,18 @@ class Config:
 
         if should_write:
             if missing_required:
-                for field in missing_required:
-                    logger.warning(f"缺失必须配置项: {field}")
+                logger.warning(
+                    "配置缺少必填项，请填写后重新加载",
+                    event="config.required_missing",
+                    path=str(file_path),
+                    missing_keys=missing_required,
+                )
             if missing_optional:
-                for field in missing_optional:
-                    logger.info(f"缺失非必须配置项: {field}")
+                logger.debug(
+                    "配置将补全可选项默认值",
+                    path=str(file_path),
+                    missing_keys=missing_optional,
+                )
 
             if file_exists:
                 # 备份目录按配置文件位置派生:生产环境等价于全局
@@ -730,16 +698,11 @@ class Config:
             assert toml_doc is not None, "toml_doc should not be None for valid dataclass"
             try:
                 _atomic_write_text(file_path, tomlkit.dumps(toml_doc))
-                logger.info(
-                    f"配置文件已{'更新并补全缺失项' if file_exists else '生成'}: {file_path}"
-                )
+                logger.info(f"配置文件已{'更新并补全缺失项' if file_exists else '生成'}", path=str(file_path))
             except Exception as e:
                 logger.error(f"写入配置文件失败: {e}")
                 if not file_exists:
-                    logger.error("无法生成配置文件")
-                    raise ConfigLoadError(
-                        f"无法生成配置文件 {file_path}，请检查目录写入权限"
-                    ) from e
+                    raise ConfigLoadError(f"无法生成配置文件 {file_path}，请检查目录写入权限") from e
 
         try:
             with open(file_path, "r", encoding="utf-8-sig") as f:
@@ -749,12 +712,20 @@ class Config:
             # 检查占位符值
             placeholders = _check_placeholders(config_obj)
             if placeholders:
-                logger.warning("以下配置项使用了占位符值，请修改为实际值:")
-                for field in placeholders:
-                    logger.warning(f"  - {field}")
+                logger.warning(
+                    "配置项仍为占位符，请填写实际值",
+                    event="config.placeholders_found",
+                    path=str(file_path),
+                    keys=placeholders,
+                )
 
-            logger.info("配置文件加载成功")
             cls.register_models(config_obj, availability_policy=availability_policy)
+            logger.info(
+                "配置文件加载完成",
+                event="config.loaded",
+                path=str(file_path),
+                duration_seconds=round(time.monotonic() - started_at, 3),
+            )
             return config_obj
         except ConfigLoadError:
             raise

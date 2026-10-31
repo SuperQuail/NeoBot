@@ -1222,7 +1222,18 @@ async def test_official_plugin_config_read_and_save(panel) -> None:
 
 
 async def test_logs_endpoint_shape(panel) -> None:
-    _, _, base, _ = panel
+    server, _, base, _ = panel
+    server.metrics.record_log(
+        {
+            "message": "请求失败",
+            "timestamp": 1234.5,
+            "file": "reply.py",
+            "line": 42,
+            "function": "reply",
+            "fields": {"operation": "test"},
+            "exception": {"type": "ValueError", "message": "无效请求", "traceback": "trace"},
+        }
+    )
     token, _ = await _login(base)
     async with httpx.AsyncClient() as client:
         response = await client.get(base + "/api/logs", headers={"X-Token": token})
@@ -1231,6 +1242,11 @@ async def test_logs_endpoint_shape(panel) -> None:
     assert payload["ok"] is True
     assert isinstance(payload["items"], list)
     assert "last_id" in payload
+    item = payload["items"][-1]
+    assert item["timestamp"] == 1234.5
+    assert item["file"] == "reply.py" and item["line"] == 42 and item["function"] == "reply"
+    assert item["fields"] == {"operation": "test"}
+    assert item["exception"]["type"] == "ValueError"
 
 
 # ── 会话建立前端点的跨站防护（登录 / 首次设置密码没有 CSRF token 可用） ──

@@ -245,6 +245,8 @@ class PluginRuntime:
         if not current.differs_from(previous):
             return previous
         self._generation = current
+        rebound_count = 0
+        failed_count = 0
         for name in self.manager.names():
             record = self.manager.get_record(name)
             context = getattr(record, "context", None)
@@ -253,9 +255,15 @@ class PluginRuntime:
                 continue
             try:
                 notify(previous, current)
+                rebound_count += 1
             except Exception as exc:
+                failed_count += 1
                 self.logger.warning(f"插件代际重绑失败 ({name}): {exc}")
-        self.logger.info("插件运行时已绑定新的运行时代际")
+        self.logger.info(
+            "插件运行时代际已切换",
+            rebound_count=rebound_count,
+            failed_count=failed_count,
+        )
         return current
 
     def scan_dirs(self) -> list[tuple[Path, FilesystemPluginLoader]]:
@@ -296,14 +304,11 @@ class PluginRuntime:
             if isinstance(result, PluginLoadError):
                 results.append(result)
                 continue
-            incompatible = self._host_version_error(result.name, result.min_neobot_version) if result.enabled else None
-            if incompatible is not None:
-                # 保留发现记录，面板仍能识别来源并允许停用或卸载；加载路径负责拒绝启动。
-                self.logger.error(f"插件不兼容当前 NeoBot 版本: {incompatible}")
+            # 发现接口由面板轮询调用；版本检查和告警由实际加载路径负责。
+            # 此处保留元数据供面板展示、停用和卸载，不为同一状态反复告警。
             if result.source == OFFICIAL_SOURCE:
                 official_names.add(result.name)
             elif result.name in official_names:
-                self.logger.warning(f"第三方插件与官方插件同名，已忽略第三方副本: {result.name}")
                 continue
             results.append(result)
         # 跨目录（官方 / 第三方）统一再做一次依赖解析：官方插件与第三方插件可以互相

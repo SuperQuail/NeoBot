@@ -264,8 +264,11 @@ class ReplySender:
         # 输出兜底清洗：不动 text/segments 之外的东西，且这里的 text 就是
         # self-sent 写回历史的文本（见下方 _emit_self_sent_text），因此正反馈
         # 的源头也在这里被切断（详见 reply/output_guard.py）。
+        original_text_length = len(str(text or ""))
         text, segments = self._sanitize_outgoing(
-            text, segments, sender_names=sender_names,
+            text,
+            segments,
+            sender_names=sender_names,
             prefer_text=send_original,
             split_preview=split_preview,
         )
@@ -295,14 +298,20 @@ class ReplySender:
         # 插件可能在 reply.send.before 里改写文本，清洗必须在改写之后再做一次，
         # 否则「最后一道兜底」会被插件绕过。清洗幂等，重复调用无副作用。
         text, segments = self._sanitize_outgoing(
-            text, segments, sender_names=sender_names,
+            text,
+            segments,
+            sender_names=sender_names,
             prefer_text=send_original,
             split_preview=split_preview,
         )
         if not (str(text or "").strip() or segments or images):
             self._logger.warning(
                 "回复清洗后为空，已丢弃发送",
-                conversation=f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
+                event="reply.send_empty",
+                event_id=event.event_id,
+                original_text_length=original_text_length,
+                cleaned_text_length=len(str(text or "")),
+                chat_flow_id=f"{event.conversation_ref.kind}:{event.conversation_ref.id}"
                 if event.conversation_ref is not None
                 else "",
             )
@@ -361,13 +370,17 @@ class ReplySender:
                     record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
                     event.send_incomplete = False
                     await self._emit_self_sent_image(
-                        self_sent, conv_ref, image_path,
+                        self_sent,
+                        conv_ref,
+                        image_path,
                         kind="markdown",
                         source_note=text,
                     )
                     event.send_response = send_results[0]
                     self._leave_sending(event, conv_ref.kind)
-                    self._debug_helper.record("reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path))
+                    self._debug_helper.record(
+                        "reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path)
+                    )
                     return True
                 except SpeechBlocked:
                     raise
@@ -382,9 +395,7 @@ class ReplySender:
                 if event.state is ReplyState.SENDING:
                     event.transition(ReplyState.GENERATING)
                 return False
-            event.send_response = (
-                send_results[0] if len(send_results) == 1 else send_results
-            )
+            event.send_response = send_results[0] if len(send_results) == 1 else send_results
             event.send_incomplete = False
             self._leave_sending(event, conv_ref.kind)
             self._debug_helper.record(
@@ -415,20 +426,20 @@ class ReplySender:
         reply_messages = list(after_postprocess.payload.get("reply_messages", reply_messages))
         # 插件也能在 reply.postprocess.after 改写逐条内容，而这一步在清洗之后：
         # 再清一遍，保证「最后一道兜底」不被插件绕过（清洗幂等，重复调用无副作用）。
-        trusted_split = (
-            isinstance(split_preview, ReplySplitPreview)
-            and split_preview.matches(text, reply_messages)
-        )
+        trusted_split = isinstance(split_preview, ReplySplitPreview) and split_preview.matches(text, reply_messages)
         reply_messages = clean_segments(
-            reply_messages, known_sender_names=self._sender_names(sender_names),
-            suppress_control_tokens=not (
-                trusted_split or (automatic_splits and reply_messages == original_messages)
-            ),
+            reply_messages,
+            known_sender_names=self._sender_names(sender_names),
+            suppress_control_tokens=not (trusted_split or (automatic_splits and reply_messages == original_messages)),
         )
         if not reply_messages and not send_results:
             self._logger.warning(
                 "回复清洗后为空，已丢弃发送",
-                conversation=f"{conv_ref.kind}:{conv_ref.id}",
+                event="reply.send_empty",
+                event_id=event.event_id,
+                chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
+                original_segment_count=len(original_messages),
+                cleaned_segment_count=len(reply_messages),
             )
             if event.state is ReplyState.SENDING:
                 event.transition(ReplyState.GENERATING)
@@ -519,9 +530,7 @@ class ReplySender:
         """
         if sink is None or not sink.usable:
             return None
-        index_text = await self._build_image_index_text(
-            file_path, kind=kind, source_note=source_note
-        )
+        index_text = await self._build_image_index_text(file_path, kind=kind, source_note=source_note)
         return self._emit_self_sent(sink, conv_ref, index_text)
 
     async def record_self_sent_voice(
@@ -550,9 +559,7 @@ class ReplySender:
         self._last_self_sent_id = candidate
         return candidate
 
-    def _build_self_sent_message(
-        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int
-    ) -> Any:
+    def _build_self_sent_message(self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int) -> Any:
         """把一段 Bot 自身发言构造为可入队的消息对象。"""
         from neobot_adapter.model.basic import PostMessageMessagesender
         from neobot_adapter.model.message import (
@@ -599,7 +606,14 @@ class ReplySender:
                 sink.snapshot.push(sink.queue_key, message)
         except Exception as exc:
             # 入队失败绝不能反噬发送路径：宁可少一条上下文，也不能让回复发不出去。
-            self._logger.warning("Bot 自身发言入队失败（已忽略）", error=str(exc))
+            self._logger.warning(
+                "已发送消息未写入会话上下文",
+                event="reply.history_queue_failed",
+                chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
+                message_id=synthetic_msg_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             return None
         return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id)
 
@@ -617,13 +631,9 @@ class ReplySender:
         kind: str = "image",
         source_note: str = "",
     ) -> asyncio.Task[None] | None:
-        return await self.record_self_sent_image(
-            sink, conv_ref, file_path, kind=kind, source_note=source_note
-        )
+        return await self.record_self_sent_image(sink, conv_ref, file_path, kind=kind, source_note=source_note)
 
-    async def _build_image_index_text(
-        self, file_path: Any, *, kind: str, source_note: str
-    ) -> str:
+    async def _build_image_index_text(self, file_path: Any, *, kind: str, source_note: str) -> str:
         label = "Markdown图片" if kind == "markdown" else "图片"
         path = Path(str(file_path))
         image_id = await self._register_temp_image(path)
@@ -649,9 +659,7 @@ class ReplySender:
             if inspect.isawaitable(result):
                 result = await result
         except Exception as exc:
-            self._logger.warning(
-                "Bot 自发图片登记 temp 图库失败（已降级为 file: 索引）", error=str(exc)
-            )
+            self._logger.warning("Bot 自发图片登记 temp 图库失败（已降级为 file: 索引）", error=str(exc))
             return None
         image_id = getattr(result, "image_id", None)
         if image_id is None and isinstance(result, str):
@@ -676,11 +684,7 @@ class ReplySender:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return None
-        task = loop.create_task(
-            self.persist_self_sent_message(
-                conv_ref, text, synthetic_msg_id=synthetic_msg_id
-            )
-        )
+        task = loop.create_task(self.persist_self_sent_message(conv_ref, text, synthetic_msg_id=synthetic_msg_id))
         self._self_sent_persist_tasks.add(task)
         task.add_done_callback(self._self_sent_persist_tasks.discard)
         return task
@@ -705,11 +709,7 @@ class ReplySender:
             factory = self._self_sent_uow_factory or _default_self_sent_uow_factory()
             if factory is None:
                 return
-            message_id = (
-                synthetic_msg_id
-                if synthetic_msg_id is not None
-                else -int(time.time() * 1_000_000)
-            )
+            message_id = synthetic_msg_id if synthetic_msg_id is not None else -int(time.time() * 1_000_000)
             async with factory() as uow:
                 await uow.messages.save_message(
                     IncomingMessage(
@@ -723,7 +723,14 @@ class ReplySender:
                 )
                 await uow.commit()
         except Exception as exc:
-            self._logger.warning("Bot 自身消息落盘失败（已忽略）", error=str(exc))
+            self._logger.warning(
+                "已发送消息未写入历史记录",
+                event="reply.history_persist_failed",
+                chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
+                message_id=synthetic_msg_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     # ── message building ────────────────────────────────────────
 
@@ -738,10 +745,12 @@ class ReplySender:
         segments: list[dict] = []
         if mention_user_ids and conversation_kind == "group":
             for qq in mention_user_ids:
-                segments.append({
-                    "type": "at",
-                    "data": {"qq": str(qq)},
-                })
+                segments.append(
+                    {
+                        "type": "at",
+                        "data": {"qq": str(qq)},
+                    }
+                )
 
         if reply_to_message_id is not None:
             segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
@@ -776,7 +785,9 @@ class ReplySender:
         if segments:
             trusted_split = isinstance(split_preview, ReplySplitPreview) and split_preview.matches(text, segments)
             kept = clean_segments(
-                segments, known_sender_names=names, suppress_control_tokens=not trusted_split,
+                segments,
+                known_sender_names=names,
+                suppress_control_tokens=not trusted_split,
             )
             if kept:
                 return cleaned_text, kept

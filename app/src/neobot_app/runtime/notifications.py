@@ -79,8 +79,10 @@ class BackgroundNotificationHub:
             decision = policy.evaluate(ConversationRef(kind, str(conversation_id)))
             if not decision.allowed:
                 self._logger.info(
-                    "发言策略拒绝后台通知", source=source,
-                    pipeline_key=f"{kind}:{conversation_id}", reason=decision.reason,
+                    "发言策略拒绝后台通知",
+                    source=source,
+                    chat_flow_id=f"{kind}:{conversation_id}",
+                    reason=decision.reason,
                 )
                 raise SpeechBlocked(decision.reason)
         pipeline_key = f"{kind}:{conversation_id}"
@@ -101,26 +103,12 @@ class BackgroundNotificationHub:
             # reappear as a prompt after the speaking window opens again.
             return await self._try_start_background_reply(notification, confirm_delivery=True)
 
-        queue = self._queues.get(pipeline_key)
-        queue_size_before = queue.qsize() if queue is not None else 0
-        self._logger.debug(
-            "hub.publish() 入口",
-            source=source,
-            pipeline_key=pipeline_key,
-            queue_size_before=queue_size_before,
-        )
-
         # 先镜像到消息队列：后启动的管线可能在 create_task 后立刻 clone 队列，
         # 若镜像发生在 await 之后，通知条目就有概率错过这一轮的 transcript。
         # 镜像写队列、投递走既有通道，两者正交（通知条目权重 0.1，不挤占窗口）。
         self._mirror_to_message_queue(notification)
 
         if await self._try_start_background_reply(notification):
-            self._logger.info(
-                "hub.publish() 已启动新管线",
-                source=source,
-                pipeline_key=pipeline_key,
-            )
             return True
 
         queue = self._queues.get(pipeline_key)
@@ -132,18 +120,22 @@ class BackgroundNotificationHub:
             try:
                 dropped = queue.get_nowait()
                 self._logger.warning(
-                    "hub.publish() 通知队列已满，丢弃最旧通知",
+                    "后台通知队列已满，最旧通知已丢弃",
+                    event="notification.dropped",
+                    dropped_task_id=dropped.metadata.get("task_id"),
                     source=source,
-                    pipeline_key=pipeline_key,
+                    chat_flow_id=pipeline_key,
                     dropped_source=dropped.source,
                 )
             except asyncio.QueueEmpty:
                 pass
         queue.put_nowait(notification)
-        self._logger.info(
-            "hub.publish() 通知已入队",
+        self._logger.debug(
+            "后台通知已入队",
+            event="notification.queued",
+            task_id=notification.metadata.get("task_id"),
             source=source,
-            pipeline_key=pipeline_key,
+            chat_flow_id=pipeline_key,
             pending=queue.qsize(),
         )
         self._sweep_idle_queues()
@@ -172,9 +164,11 @@ class BackgroundNotificationHub:
             )
         except Exception as exc:
             self._logger.warning(
-                "通知写入消息队列失败（已忽略）",
+                "后台通知未写入会话历史，继续原投递通道",
+                event="notification.history_failed",
+                error_type=type(exc).__name__,
                 source=notification.source,
-                pipeline_key=notification.pipeline_key,
+                chat_flow_id=notification.pipeline_key,
                 error=str(exc),
             )
 
@@ -206,10 +200,12 @@ class BackgroundNotificationHub:
             raise
 
         self._last_used[pipeline_key] = time.monotonic()
-        self._logger.info(
-            "hub.poll() 取出通知",
+        self._logger.debug(
+            "后台通知已交付活动管线",
+            event="notification.consumed",
+            task_id=notification.metadata.get("task_id"),
             source=notification.source,
-            pipeline_key=pipeline_key,
+            chat_flow_id=pipeline_key,
             notification_preview=notification.content[:120],
             remaining_in_queue=queue.qsize(),
         )
@@ -225,16 +221,14 @@ class BackgroundNotificationHub:
             return
         self._last_sweep = now
         idle_keys = [
-            key
-            for key, last_used in self._last_used.items()
-            if now - last_used > self._queue_idle_ttl_seconds
+            key for key, last_used in self._last_used.items() if now - last_used > self._queue_idle_ttl_seconds
         ]
         for key in idle_keys:
             self._queues.pop(key, None)
             self._last_used.pop(key, None)
             self._logger.debug(
                 "hub 清理空闲通知队列",
-                pipeline_key=key,
+                chat_flow_id=key,
             )
 
     def get_pipeline_status(self, pipeline_key: str) -> dict[str, Any]:
@@ -252,25 +246,15 @@ class BackgroundNotificationHub:
         self._queues.clear()
         self._last_used.clear()
 
-    async def _try_start_background_reply(self, notification: BackgroundNotification, *, confirm_delivery: bool = False) -> bool:
+    async def _try_start_background_reply(
+        self, notification: BackgroundNotification, *, confirm_delivery: bool = False
+    ) -> bool:
         if self._orchestrator is None:
-            self._logger.debug(
-                "_try_start_background_reply: orchestrator 为空"
-            )
             return False
 
         if self._orchestrator.is_pipeline_key_active(notification.pipeline_key):
-            self._logger.info(
-                "_try_start_background_reply: 管线已活跃，跳过启动",
-                pipeline_key=notification.pipeline_key,
-            )
             return False
 
-        self._logger.info(
-            "_try_start_background_reply: 尝试启动新管线",
-            source=notification.source,
-            pipeline_key=notification.pipeline_key,
-        )
         try:
             result = self._orchestrator.start_background_reply(
                 kind=notification.kind,
@@ -284,33 +268,32 @@ class BackgroundNotificationHub:
         except Exception as exc:
             self._logger.warning(
                 "后台通知启动回复管线失败",
+                event="notification.start_failed",
+                task_id=notification.metadata.get("task_id"),
+                error_type=type(exc).__name__,
                 source=notification.source,
-                pipeline_key=notification.pipeline_key,
+                chat_flow_id=notification.pipeline_key,
                 error=str(exc),
             )
             return False
 
         if result is None:
-            self._logger.info(
-                "_try_start_background_reply: start_background_reply 返回 None",
-                pipeline_key=notification.pipeline_key,
-                source=notification.source,
-            )
             return False
 
         if confirm_delivery and not await self._orchestrator.wait_reply_delivery(result):
             return False
         await self._consume(notification)
-        self._logger.info(
-            "后台通知已启动回复管线",
+        self._logger.debug(
+            "后台通知已交付新管线",
+            event="notification.consumed",
+            task_id=notification.metadata.get("task_id"),
+            event_id=getattr(result, "event_id", None),
             source=notification.source,
-            pipeline_key=notification.pipeline_key,
+            chat_flow_id=notification.pipeline_key,
         )
         return True
 
-    def _requeue(
-        self, pipeline_key: str, notification: BackgroundNotification
-    ) -> None:
+    def _requeue(self, pipeline_key: str, notification: BackgroundNotification) -> None:
         """把通知放回队列（消费被取消时使用），沿用 publish 的有界策略。"""
         queue = self._queues.get(pipeline_key)
         if queue is None:
@@ -327,7 +310,7 @@ class BackgroundNotificationHub:
             self._logger.warning(
                 "后台通知重新入队失败，通知已丢弃",
                 source=notification.source,
-                pipeline_key=pipeline_key,
+                chat_flow_id=pipeline_key,
             )
 
     async def _consume(self, notification: BackgroundNotification) -> None:
@@ -344,14 +327,17 @@ class BackgroundNotificationHub:
             self._logger.warning(
                 "后台通知消费回调超时",
                 source=notification.source,
-                pipeline_key=notification.pipeline_key,
+                chat_flow_id=notification.pipeline_key,
                 timeout_seconds=self._get_callback_timeout_seconds(),
             )
         except Exception as exc:
             self._logger.warning(
                 "后台通知消费回调失败",
+                event="notification.callback_failed",
+                task_id=notification.metadata.get("task_id"),
+                error_type=type(exc).__name__,
                 source=notification.source,
-                pipeline_key=notification.pipeline_key,
+                chat_flow_id=notification.pipeline_key,
                 error=str(exc),
             )
 

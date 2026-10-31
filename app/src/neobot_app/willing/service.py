@@ -170,7 +170,10 @@ class WillingService:
 
     def set_runtime_global_coefficient(self, value: float) -> str:
         self._runtime_config.global_coefficient = clamp_probability(value)
-        self._logger.info(f"全局回复系数已更新：{value:.3f}")
+        self._logger.info(
+            "全局回复系数已设置",
+            coefficient=self._runtime_config.global_coefficient,
+        )
         return f"全局回复系数已设为 {self._runtime_config.global_coefficient:.3f}"
 
     def get_runtime_conversation_coefficient(self, conv_id: str) -> float | None:
@@ -235,8 +238,9 @@ class WillingService:
 
     def remove_runtime_blacklist(self, conv_id: str) -> str:
         conv_id = self._normalize_conversation_id(conv_id)
-        self._runtime_config.blacklisted_conversations.discard(conv_id)
-        self._logger.info(f"已从临时黑名单移除：{conv_id}")
+        if conv_id in self._runtime_config.blacklisted_conversations:
+            self._runtime_config.blacklisted_conversations.remove(conv_id)
+            self._logger.info("会话已移出临时黑名单", conversation_id=conv_id)
         return f"已将 {conv_id} 从临时黑名单移除"
 
     def remove_runtime_conversation_coefficient(self, conv_id: str) -> str:

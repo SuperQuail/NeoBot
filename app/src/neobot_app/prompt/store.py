@@ -506,7 +506,7 @@ def sync_default_prompts(data_dir: Path, logger: Logger | None = None) -> None:
                         tmp.unlink()
                     except OSError:
                         pass
-            log.info(f"默认提示词已同步: {dest}")
+            log.info("默认提示词已同步", path=str(dest))
         else:
             log.warning(f"内置默认提示词文件不存在,跳过同步: {DEFAULT_TEMPLATE_FILE}")
 

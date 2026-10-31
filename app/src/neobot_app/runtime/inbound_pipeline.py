@@ -28,7 +28,10 @@ class InboundPipeline:
 
     async def handle(self, message: IncomingMessage) -> None:
         self._logger.info(
-            "收到入站消息",
+            "收到消息",
+            event="message.received",
+            event_id=message.event_id,
+            chat_flow_id=f"{message.conversation.kind}:{message.conversation.id}",
             conversation_kind=message.conversation.kind,
             conversation_id=message.conversation.id,
             sender_id=message.sender_id,

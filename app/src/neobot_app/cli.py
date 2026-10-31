@@ -7,6 +7,7 @@ import asyncio
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ from neobot_app.config.loader.manager import ConfigLoadError
 from neobot_app.core import APP_VERSION, DATA_DIR
 from neobot_app.runtime.instance_lease import InstanceAlreadyRunning, InstanceLease
 from neobot_app.runtime.application import ConnectionTimeoutError
+from neobot_app.observability.startup_display import display_banner, display_startup_result
+from neobot_app.observability.log_exceptions import install_exception_hooks
 from neobot_app.utils.http import sanitize_no_proxy_environment
 from neobot_app.cli_parts.doctor import cmd_doctor, cmd_install_browser
 from neobot_app.cli_parts.init import cmd_init
@@ -46,6 +49,7 @@ async def run() -> bool:
 
 async def _run_instance() -> bool:
     """运行一轮；只有所有旧运行时与核心清理确认完成，才允许进程重启。"""
+    startup_started_at = time.monotonic()
     loop = asyncio.get_running_loop()
     state: dict[str, Any] = {"application": None, "stopping": False, "controller": None}
 
@@ -88,6 +92,17 @@ async def _run_instance() -> bool:
         # Legacy standalone/test assembly has no core watcher.
         state["application"] = application
         try:
+            start_application = getattr(application, "start", None)
+            if callable(start_application):
+                await start_application()
+                dashboard_info = await _dashboard_startup_info(get_cached_core("plugin_runtime"))
+                if not state["stopping"]:
+                    display_startup_result(
+                        ready=True,
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                    )
             await application.run_forever()
             return not state["stopping"] and application.restart_requested
         finally:
@@ -121,19 +136,56 @@ async def _run_instance() -> bool:
         )
 
     async def startup() -> None:
+        webui_announced = False
         try:
             if plugin_runtime is not None and not controller.exiting:
                 await plugin_runtime.load_registered()
                 if not controller.exiting:
                     await plugin_runtime.start_all()
             if not controller.exiting:
+                dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                if not controller.exiting and dashboard_info.get("available"):
+                    display_startup_result(
+                        ready=True,
+                        initializing=True,
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                        detail="可立即打开面板，OneBot 连接与其余初始化会继续进行",
+                    )
+                    webui_announced = True
+            if not controller.exiting:
                 ok, detail = await controller.start()
                 if not ok:
                     standby_service.record_failure(detail)
+                if not controller.exiting and (not webui_announced or not ok or standby_service.is_standby()):
+                    dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                    if not controller.exiting:
+                        standby = standby_service.is_standby()
+                        status = getattr(standby_service, "status", lambda: {})()
+                        display_startup_result(
+                            ready=ok,
+                            standby=standby,
+                            version=APP_VERSION,
+                            duration_seconds=time.monotonic() - startup_started_at,
+                            dashboard=dashboard_info,
+                            detail=(status.get("reason") or detail) if standby or not ok else "",
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             standby_service.record_failure(f"启动失败：{type(exc).__name__}: {exc}")
+            if not controller.exiting:
+                dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                if not controller.exiting:
+                    display_startup_result(
+                        ready=False,
+                        standby=standby_service.is_standby(),
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
 
     try:
         if control_server is not None:
@@ -289,8 +341,28 @@ async def run_entry_loop(
                     raise RuntimeError(detail)
 
 
+async def _dashboard_startup_info(plugin_runtime: Any) -> dict[str, Any]:
+    """经面板公开的只读能力查询真实监听信息，不根据出厂配置猜地址。"""
+    try:
+        registry = getattr(getattr(plugin_runtime, "manager", None), "registry_view", None)
+        if registry is None:
+            return {"available": False, "reason": "面板未启用或未加载"}
+        handle = registry.get("dashboard")
+        if handle is None:
+            return {"available": False, "reason": "面板未启用或未加载"}
+        if not handle.ready:
+            return {"available": False, "reason": f"面板未就绪（{handle.state.value}）"}
+        result = await asyncio.wait_for(handle.call("server.describe"), timeout=2.0)
+    except Exception as exc:
+        return {"available": False, "reason": f"面板运行状态查询失败：{type(exc).__name__}"}
+    if not isinstance(result, dict) or not result.get("available") or not result.get("local_url"):
+        return {"available": False, "reason": "面板监听未启动或启动失败"}
+    return result
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人；重启时先回收旧循环，再以原启动参数替换进程。"""
+    display_banner(APP_VERSION)
     try:
         restart_requested = asyncio.run(run())
     except InstanceAlreadyRunning as exc:
@@ -480,6 +552,7 @@ def _ensure_vc_runtime_fixed() -> bool:
 
 
 def main() -> None:
+    install_exception_hooks()
     # 启动期加固（先于任何 httpx 客户端构造）：把 NO_PROXY 里 "[::1]" 这类带方括号的
     # IPv6 字面量还原成 "::1"。httpx 只识别不带方括号的形态，带方括号的会被当成域名
     # 通配条目并生成非法的 URLPattern，导致装配阶段直接抛 httpx.InvalidURL 而整体启动失败。

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
 
 
 class AgentToolExecMixin:
-
     async def _agent_execute_tool_calls(
         self,
         *,
@@ -47,8 +46,10 @@ class AgentToolExecMixin:
             name = str(function.get("name", ""))
             args = _parse_tool_args(function.get("arguments"))
             safe_args = _safe_tool_args(args)
-            self._logger.info(
-                f"工具调用: {name}",
+            self._logger.debug(
+                "开始执行工具",
+                event="tool.started",
+                chat_flow_id=(f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key),
                 event_id=event.event_id,
                 tool=name,
                 args=safe_args,
@@ -68,9 +69,7 @@ class AgentToolExecMixin:
                     parsed_seconds = int(raw_seconds)
                 except (ValueError, TypeError):
                     parsed_seconds = 20
-                wait_extra_seconds = float(
-                    max(1, min(parsed_seconds, self._get_max_wait_seconds()))
-                )
+                wait_extra_seconds = float(max(1, min(parsed_seconds, self._get_max_wait_seconds())))
             reset_silent_deadline(wait_extra_seconds)
             result: object | None = None
             safe_result: str | None = None
@@ -84,8 +83,7 @@ class AgentToolExecMixin:
                     if remaining is not None
                     else max(
                         self._get_model_response_timeout_seconds(event),
-                        wait_extra_seconds
-                        + self._get_dependency_timeout_seconds(),
+                        wait_extra_seconds + self._get_dependency_timeout_seconds(),
                     )
                 )
                 if not reply_toolset.executor.is_tool_authorized(name):
@@ -102,9 +100,7 @@ class AgentToolExecMixin:
                         timeout_seconds=tool_timeout,
                     )
                     name = str(before_tool.payload.get("tool_name", name))
-                    args = _parse_tool_args(
-                        before_tool.payload.get("tool_args", args)
-                    )
+                    args = _parse_tool_args(before_tool.payload.get("tool_args", args))
                     safe_args = _safe_tool_args(args)
 
                     # A hook may rewrite both tool and arguments. Recompute
@@ -132,15 +128,12 @@ class AgentToolExecMixin:
                         if remaining is not None
                         else max(
                             self._get_model_response_timeout_seconds(event),
-                            wait_extra_seconds
-                            + self._get_dependency_timeout_seconds(),
+                            wait_extra_seconds + self._get_dependency_timeout_seconds(),
                         )
                     )
                     tool_failure_key = self._tool_failure_key(name, args)
                     if not reply_toolset.executor.is_tool_authorized(name):
-                        result = reply_toolset.executor.authorization_error(
-                            name
-                        )
+                        result = reply_toolset.executor.authorization_error(name)
                     elif before_tool.consumed:
                         result = before_tool.result
                     else:
@@ -167,12 +160,13 @@ class AgentToolExecMixin:
                 safe_result = _redacted_tool_text(result, _MAX_TOOL_LOG_CHARS)
                 result = _bounded_tool_text(result)
             except asyncio.TimeoutError:
-                tool_error = (
-                    f"工具 {name} 执行超时"
-                    f"（已等待 {tool_timeout:.1f} 秒）"
-                )
+                tool_error = f"工具 {name} 执行超时（已等待 {tool_timeout:.1f} 秒）"
                 self._logger.warning(
-                    "agent 工具调用超时",
+                    "工具执行超时",
+                    event="tool.failed",
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     event_id=event.event_id,
                     queue_key=queue_key,
                     tool=name,
@@ -198,7 +192,11 @@ class AgentToolExecMixin:
                 detail = _scrub_secret_values(raw_detail)[:300]
                 tool_error = f"工具 {name} 执行失败：{detail}"
                 self._logger.warning(
-                    f"工具调用失败: {name}",
+                    "工具执行失败",
+                    event="tool.failed",
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     event_id=event.event_id,
                     tool=name,
                     error=detail,
@@ -212,15 +210,11 @@ class AgentToolExecMixin:
                     tool_args=safe_args,
                     tool_error=tool_error,
                 )
-            tool_call_id = (
-                str(tc.get("id", "")) if isinstance(tc, dict) else ""
-            )
+            tool_call_id = str(tc.get("id", "")) if isinstance(tc, dict) else ""
             if tool_call_id:
                 tool_name_by_call_id[tool_call_id] = name
             if tool_error is not None:
-                tool_failure_streak[tool_failure_key] = (
-                    tool_failure_streak.get(tool_failure_key, 0) + 1
-                )
+                tool_failure_streak[tool_failure_key] = tool_failure_streak.get(tool_failure_key, 0) + 1
                 failures = tool_failure_streak[tool_failure_key]
                 hint = ""
                 if failures >= _TOOL_FAILURE_HINT_AFTER:
@@ -262,8 +256,12 @@ class AgentToolExecMixin:
                 )
             else:
                 tool_failure_streak.pop(tool_failure_key, None)
-                self._logger.info(
-                    f"工具返回: {name}",
+                self._logger.debug(
+                    "工具执行完成",
+                    event="tool.completed",
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     event_id=event.event_id,
                     tool=name,
                     result=safe_result,

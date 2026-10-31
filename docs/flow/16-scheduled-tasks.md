@@ -165,7 +165,8 @@ flowchart TD
     E -- 否 --> F["置睡眠状态 + wake_up_at"]
     F --> G["ticker() 起 _ticker_loop"]
     G --> H{"到 wake_up_at?"}
-    H -- 否 --> I["_log_remaining 周期性记录剩余"]
+    H -- 否 --> I["_check_sleep_expiry 继续检查，不逐分钟播报"]
+    I --> G
     H -- 是 --> J["wake(reason='timer')"]
     K["事件管道被@"] --> L["wake(reason='at_mention_event')"]
     L --> M["wake_prompt() 生成唤醒提示词"]

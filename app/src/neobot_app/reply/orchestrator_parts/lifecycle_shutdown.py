@@ -1,4 +1,5 @@
 """后台回复启动与整体关闭。"""
+
 from __future__ import annotations
 
 import inspect
@@ -6,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from ._runtime import asyncio
+
 
 class LifecycleShutdownMixin:
     def start_background_reply(
@@ -73,14 +75,8 @@ class LifecycleShutdownMixin:
             sub_type: str = "normal"
             message_id: int = 0
             user_id: int = 0
-            group_id: int = (
-                int(conversation_id)
-                if kind == "group" and conversation_id.isdigit()
-                else 0
-            )
-            message: list = field(
-                default_factory=lambda: [{"type": "text", "data": {"text": content}}]
-            )
+            group_id: int = int(conversation_id) if kind == "group" and conversation_id.isdigit() else 0
+            message: list = field(default_factory=lambda: [{"type": "text", "data": {"text": content}}])
             raw_message: str = ""
             font: int = 0
             sender: Any = field(default_factory=_SyntheticSender)
@@ -97,12 +93,6 @@ class LifecycleShutdownMixin:
             reasons=tuple(reasons) if reasons else ("后台绘图任务完成通知",),
         )
 
-        self._logger.info(
-            "启动后台回复管线",
-            pipeline_key=pipeline_key,
-            kind=kind,
-            conversation_id=conversation_id,
-        )
         return self.start_reply(
             message=synthetic_msg,
             queue=queue,
@@ -111,6 +101,7 @@ class LifecycleShutdownMixin:
             skip_cooldown=True,
             background_content=content,
         )
+
     async def shutdown(self) -> None:
         self._closed = True
         deferred: BaseException | None = None
@@ -142,9 +133,7 @@ class LifecycleShutdownMixin:
                     )
                     deferred = exc
                 elif isinstance(exc, asyncio.CancelledError):
-                    self._logger.warning(
-                        f"{label} 在关闭编排器时被取消"
-                    )
+                    self._logger.warning(f"{label} 在关闭编排器时被取消")
                     current = asyncio.current_task()
                     if deferred_cancel is not None:
                         deferred = deferred or deferred_cancel
@@ -188,9 +177,7 @@ class LifecycleShutdownMixin:
                 raise fatal
 
         await _run_step("reply pipelines", lambda: _cancel_tasks(self._tasks))
-        await _run_step(
-            "reply completion callbacks", lambda: _cancel_tasks(self._callback_tasks)
-        )
+        await _run_step("reply completion callbacks", lambda: _cancel_tasks(self._callback_tasks))
         await _run_step("reply tool executors", _close_executors)
         if self._skill_manager is not None:
             shared_tools = self._skill_manager.get("agent_tools")
@@ -199,9 +186,7 @@ class LifecycleShutdownMixin:
         if self._drawing_manager is not None:
             await _run_step("drawing manager", self._drawing_manager.shutdown)
         if self._scheduled_task_manager is not None:
-            await _run_step(
-                "scheduled task manager", self._scheduled_task_manager.shutdown
-            )
+            await _run_step("scheduled task manager", self._scheduled_task_manager.shutdown)
         if self._notification_hub is not None:
             await _run_step("notification hub", self._notification_hub.clear)
         if self._provider is not None:

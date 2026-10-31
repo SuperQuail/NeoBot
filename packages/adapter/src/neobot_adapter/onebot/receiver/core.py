@@ -113,6 +113,7 @@ class AdapterCore:
         self._heartbeat_interval: float = 0.0  # 心跳间隔（秒）
         self._heartbeat_timeout_multiplier: float = heartbeat_timeout_multiplier
         self._heartbeat_checker_task: Optional[asyncio.Task] = None
+        self._heartbeat_timed_out = False
         self._packet_callback = packet_callback
         # 生命周期的串行化闸门：start/stop 由控制面调用，必须与接收线程的
         # 启停临界区互斥，否则「停止 → 改配置 → 重启」序列会与在途启停交错。
@@ -235,7 +236,6 @@ class AdapterCore:
             self._connection_established.clear()
             self.thread = threading.Thread(target=self._run_thread_target, daemon=True)
             self.thread.start()
-        logger.info("接收器已启动")
 
     def stop(self, timeout: float = 8.0) -> bool:
         """在有限时间内停止接收线程。
@@ -248,7 +248,6 @@ class AdapterCore:
         避免每次 stop 都白等满 timeout。
         """
         with self._lifecycle_lock:
-            logger.info("正在停止接收器...")
             self._stop_event.set()
             loop = None
             try:
@@ -645,6 +644,9 @@ class AdapterCore:
         if meta_event_type == "heartbeat":
             try:
                 heartbeat = safe_parse_model(event, Heartbeat)
+                if self._heartbeat_timed_out:
+                    logger.info("OneBot 心跳已恢复")
+                    self._heartbeat_timed_out = False
                 self._last_heartbeat_time = time.monotonic()
                 if heartbeat.interval and self._heartbeat_interval == 0.0:
                     self._heartbeat_interval = heartbeat.interval / 1000.0
@@ -656,24 +658,21 @@ class AdapterCore:
                         )
                         logger.debug("心跳检测任务已启动")
             except Exception as e:
-                logger.error(f"心跳包解析失败: {e}, 原始数据: {event}")
+                logger.bind(error_type=type(e).__name__).exception("OneBot 心跳包解析失败")
         elif meta_event_type == "lifecycle":
             try:
                 lifecycle = safe_parse_model(event, LifeCycle)
-                logger.info(
-                    f"生命周期: 机器人 {lifecycle.self_id}, "
-                    f"时间 {lifecycle.time}, 子类型 {lifecycle.sub_type}"
-                )
+                event_logger = logger.bind(sub_type=getattr(lifecycle.sub_type, "value", None))
                 if lifecycle.sub_type == LifeCycleSubType.disable:
-                    logger.warning(f"机器人 {lifecycle.self_id} 已禁用")
+                    event_logger.warning("OneBot 已禁用")
                 elif lifecycle.sub_type == LifeCycleSubType.enable:
-                    logger.info(f"机器人 {lifecycle.self_id} 已启用")
+                    event_logger.info("OneBot 已启用")
                 elif lifecycle.sub_type == LifeCycleSubType.connect:
-                    logger.info(f"机器人 {lifecycle.self_id} 连接建立")
+                    event_logger.info("OneBot 连接已建立")
             except Exception as e:
-                logger.error(f"生命周期解析失败: {e}, 原始数据: {event}")
+                logger.bind(error_type=type(e).__name__).exception("OneBot 生命周期解析失败")
         else:
-            logger.info(f"未知元事件类型: {meta_event_type}, 数据: {event}")
+            logger.bind(meta_event_type=meta_event_type).debug("收到未知 OneBot 元事件")
 
     async def _check_heartbeat(self):
         """定期检查心跳是否超时"""
@@ -684,10 +683,14 @@ class AdapterCore:
                     continue
                 elapsed = time.monotonic() - self._last_heartbeat_time
                 if (
-                    elapsed
-                    > self._heartbeat_interval * self._heartbeat_timeout_multiplier
+                    elapsed > self._heartbeat_interval * self._heartbeat_timeout_multiplier
+                    and not self._heartbeat_timed_out
                 ):
-                    logger.warning(f"心跳超时: 已 {elapsed:.1f}s 未收到心跳包")
+                    self._heartbeat_timed_out = True
+                    logger.bind(
+                        elapsed_seconds=round(elapsed, 1),
+                        interval_seconds=self._heartbeat_interval,
+                    ).warning("OneBot 心跳超时")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -701,8 +704,8 @@ class AdapterCore:
             # 状态与心跳发现（实测发送几乎不会失败）。
             try:
                 request = {"action": action, "params": params, "echo": echo}
-                logger.info(f"发送API请求(不等待回执): {request}")
                 await websocket.send(json.dumps(request))
+                logger.bind(event="onebot.api.sent", action=action, wait_response=False).debug("OneBot 请求已写入连接")
             except Exception as exc:
                 logger.warning(f"发送API请求失败(不等待回执): {action} - {exc}")
                 return None
@@ -721,10 +724,10 @@ class AdapterCore:
             self._conn_to_echo[websocket].add(echo)
         try:
             request = {"action": action, "params": params, "echo": echo}
-            # 高频恒定日志：降为 DEBUG。DEBUG 仍会落盘与进入面板缓冲（sink 等级为 DEBUG），
-            # 但不再污染 INFO 级别的业务日志；失败/超时分支保留 WARNING 作为诊断主线。
-            logger.debug(f"发送API请求: {request}")
             await websocket.send(json.dumps(request))
+            # 写入成功后上报独立指标；DEBUG 仅供文件诊断，普通运行时日志默认 INFO。
+            # 只记录动作与等待模式，避免输出消息正文；失败/超时仍保留 WARNING。
+            logger.bind(event="onebot.api.sent", action=action, wait_response=True).debug("OneBot 请求已写入连接")
             response = await asyncio.wait_for(fut, timeout)
             logger.debug(f"收到API响应: {response.get('status')}")
             # 根据 OneBot 协议规范，响应有 status 字段
@@ -781,7 +784,7 @@ class AdapterCore:
     def send_message_sync(self, data, websocket=None, timeout=5):
         """通过接收循环同步发送原始 OneBot 数据。"""
         if not self.loop or not self.loop.is_running():
-            logger.error("事件循环未运行")
+            logger.error("OneBot 接收循环未运行，无法发送原始消息")
             return False
         future = asyncio.run_coroutine_threadsafe(
             self.send_message(data, websocket), self.loop
@@ -797,7 +800,7 @@ class AdapterCore:
     def call_api_sync(self, action, params, timeout=5, websocket=None):
         """同步调用 API"""
         if not self.loop or not self.loop.is_running():
-            logger.error("事件循环未运行")
+            logger.bind(action=action).error("OneBot 接收循环未运行，无法调用 API")
             return None
         future = asyncio.run_coroutine_threadsafe(
             self.call_api(action, params, timeout, websocket), self.loop

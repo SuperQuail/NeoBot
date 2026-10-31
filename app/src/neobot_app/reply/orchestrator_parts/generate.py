@@ -1,4 +1,5 @@
 """模型回复生成与私聊历史压缩。"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +8,7 @@ from neobot_app.reply.event import ReplyEvent, ReplyState
 from neobot_app.reply.vision_context import append_image_context, labelled_tool_images, visible_content_length
 from neobot_app.statistics.tracker import get_usage_tracker
 from ._runtime import asyncio
+
 
 class GenerateMixin:
     async def _compact_private_history(
@@ -34,6 +36,8 @@ class GenerateMixin:
             except Exception as exc:
                 self._logger.warning(
                     "私聊上下文压缩失败",
+                    event="reply.compact_failed",
+                    chat_flow_id=f"private:{queue_key}",
                     event_id=event.event_id,
                     queue_key=queue_key,
                     error=f"{type(exc).__name__}: {exc}",
@@ -42,6 +46,8 @@ class GenerateMixin:
             if not result:
                 self._logger.warning(
                     "私聊上下文压缩未产生有效检查点",
+                    event="reply.compact_failed",
+                    chat_flow_id=f"private:{queue_key}",
                     event_id=event.event_id,
                     queue_key=queue_key,
                     attempt=attempt + 1,
@@ -51,6 +57,8 @@ class GenerateMixin:
             estimated = self._estimate_tokens(messages)
             self._logger.info(
                 "私聊上下文已压缩",
+                event="reply.compacted",
+                chat_flow_id=f"private:{queue_key}",
                 event_id=event.event_id,
                 queue_key=queue_key,
                 attempt=attempt + 1,
@@ -75,12 +83,15 @@ class GenerateMixin:
                 return True
         self._logger.warning(
             "私聊上下文压缩后仍超限",
+            event="reply.compact_failed",
+            chat_flow_id=f"private:{queue_key}",
             event_id=event.event_id,
             queue_key=queue_key,
             estimated_tokens=estimated,
             max_tokens=max_tokens,
         )
         return False
+
     @staticmethod
     def _estimate_tokens(messages: list[dict]) -> int:
         total_chars = sum(
@@ -90,6 +101,7 @@ class GenerateMixin:
         )
         # 中文为主：1 字符 ≈ 1.3-1.5 token；用 /0.75 做偏保守估计
         return int(total_chars / 0.75)
+
     async def _generate_reply(
         self,
         event: ReplyEvent,
@@ -114,7 +126,8 @@ class GenerateMixin:
 
             loader = ImageContextSkill(adapter=self._adapter)
             loaded = await loader.load_message(
-                event.message, max_images=self._get_native_vision_default_image_count(),
+                event.message,
+                max_images=self._get_native_vision_default_image_count(),
             )
             common_image_parts = labelled_tool_images(loaded, tool_call_id="当前消息默认图片", automatic=True)
             if not json.loads(loaded).get("ok"):
@@ -152,15 +165,9 @@ class GenerateMixin:
                 )
             except asyncio.TimeoutError:
                 event.error = f"AI response timed out after {timeout:.0f}s"
-                self._logger.warning(
-                    "common 模式模型调用超时",
-                    event_id=event.event_id,
-                    timeout_seconds=timeout,
-                )
+                # 交给回复收尾点统一记录，避免同一超时重复告警。
                 raise
-        after_model = await self._emit_runtime_event(
-            "model.call.after", event, messages=messages, response=response
-        )
+        after_model = await self._emit_runtime_event("model.call.after", event, messages=messages, response=response)
         response = after_model.payload.get("response", response)
 
         self._record_cache_request(messages, response)

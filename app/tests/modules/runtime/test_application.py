@@ -114,6 +114,59 @@ def _make_app(
     return app
 
 
+@pytest.mark.asyncio
+async def test_application_binds_log_loop_and_flushes_after_final_record(monkeypatch) -> None:
+    events: list[str] = []
+
+    class Log(NullLogger):
+        def info(self, message, **fields):
+            if fields.get("event"):
+                events.append(fields["event"])
+
+    async def flush():
+        events.append("flush")
+        return True
+
+    monkeypatch.setattr("neobot_app.runtime.application.bind_logging_loop", lambda: events.append("bind"))
+    monkeypatch.setattr("neobot_app.runtime.application.flush_log_sinks", flush)
+    app = _make_app()
+    app._logger = Log()
+
+    await app.start()
+    await app.stop()
+
+    assert events == ["bind", "runtime.started", "runtime.stopped", "flush"]
+
+
+@pytest.mark.asyncio
+async def test_start_failure_records_failed_component_without_ready_result() -> None:
+    records: list[dict] = []
+
+    class Log(NullLogger):
+        def info(self, message, **fields):
+            records.append(fields)
+
+        def error(self, message, **fields):
+            records.append(fields)
+
+    class FailingServer(_FakeFileServer):
+        async def start(self):
+            raise OSError("bind failed")
+
+    app = _make_app(file_server=FailingServer())
+    app._logger = Log()
+
+    with pytest.raises(OSError, match="bind failed"):
+        await app.start()
+
+    assert not app._started
+    assert not any(record.get("event") == "runtime.started" for record in records)
+    failure = next(record for record in records if record.get("event") == "runtime.start_failed")
+    assert failure["component"] == "file_server"
+    assert failure["error_type"] == "OSError"
+    assert app.file_server.stop_calls == 1
+
+
 def _make_app_real_init(screenshots=None) -> NeoBotApplication:
     """经真实 __init__ 构造应用（仅依赖 Fake 组件，不启动任何服务）。"""
     return NeoBotApplication(
@@ -157,9 +210,7 @@ async def test_application_default_screenshots_raise_unavailable() -> None:
     app = _make_app_real_init()
     assert isinstance(app.screenshots, UnavailableScreenshots)
     with pytest.raises(ScreenshotUnavailable, match="浏览器未启用或 Chromium 不可用"):
-        await app.screenshots.render(
-            html="<p>x</p>", options=RenderOptions(ScreenshotOptions())
-        )
+        await app.screenshots.render(html="<p>x</p>", options=RenderOptions(ScreenshotOptions()))
 
 
 def test_restart_request_is_distinct_from_normal_stop() -> None:
@@ -495,9 +546,7 @@ async def test_stop_defers_caller_cancellation_until_cleanup_finishes() -> None:
 
 @pytest.mark.asyncio
 async def test_rollback_closes_prebuilt_resources_and_continues_on_failure() -> None:
-    self_heal = SimpleNamespace(
-        shutdown=AsyncMock(side_effect=RuntimeError("heal close failed"))
-    )
+    self_heal = SimpleNamespace(shutdown=AsyncMock(side_effect=RuntimeError("heal close failed")))
     problem_solver = SimpleNamespace(shutdown=AsyncMock())
     orchestrator = SimpleNamespace(shutdown=AsyncMock())
     registry = SimpleNamespace(close=AsyncMock())

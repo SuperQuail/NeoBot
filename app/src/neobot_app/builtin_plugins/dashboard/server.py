@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import tomllib
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +51,21 @@ _ALLOW_LIST_EXEMPT_PATHS = frozenset({"/healthz"})
 
 #: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
 _PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
+
+
+def _bound_access_url(host: str, port: int, base_path: str) -> str:
+    """把实际监听地址转换为本机可访问 URL，不把通配地址当成访问地址。"""
+    host = host.strip("[]")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if address.is_unspecified:
+            host = "::1" if address.version == 6 else "127.0.0.1"
+    if ":" in host:
+        host = f"[{host.replace('%', '%25')}]"
+    return f"http://{host}:{port}{base_path}/"
 
 
 def _cross_site_guard(request: web.Request, *, trust_proxy: bool = False) -> web.Response | None:
@@ -260,7 +276,7 @@ class DashboardServer:
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await runner.setup()
         last_error: OSError | None = None
-        port = self.config.port
+        bound_site: web.TCPSite | None = None
         for offset in range(_PORT_SEARCH_LIMIT):
             candidate = self.config.port + offset
             if candidate > 65535:
@@ -271,23 +287,33 @@ class DashboardServer:
             except OSError as exc:
                 last_error = exc
                 continue
-            port = candidate
+            bound_site = site
             break
-        else:
+        if bound_site is None:
             await runner.cleanup()
-            raise OSError(f"面板端口从 {self.config.port} 起的 {_PORT_SEARCH_LIMIT} 个端口均不可用: {last_error}")
+            raise OSError(f"面板从端口 {self.config.port} 起未找到可用监听端口: {last_error}")
+        addresses = runner.addresses
+        if not addresses:
+            await runner.cleanup()
+            raise OSError("网页面板未建立监听，无法发布访问地址")
+        # host=localhost/None 可能同时绑定两个地址；选择一个确实绑定的地址。
+        # 端口 0 的程序化装配由系统分配端口，必须从 socket 结果读取。
+        address = next((item for item in addresses if ":" not in str(item[0])), addresses[0])
+        bound_host, port = str(address[0]), int(address[1])
+        if len(address) > 3 and address[3] and ":" in bound_host and "%" not in bound_host:
+            # IPv6 link-local 地址需要 zone；getsockname 把它放在四元组 scope_id 中。
+            zone = self.config.host.strip("[]").partition("%")[2] or str(address[3])
+            bound_host = f"{bound_host}%{zone}"
         self._runner = runner
-        self._site = site
+        self._site = bound_site
         self.bound_port = port
-        display_host = "<服务器IP>" if self.config.host in {"0.0.0.0", "::"} else self.config.host
-        prefix = self.base_path or ""
-        self.public_url = f"http://{display_host}:{port}{prefix}/"
-        if port != self.config.port:
+        self.public_url = _bound_access_url(bound_host, port, self.base_path or "")
+        if self.config.port and port != self.config.port:
             self.logger.warning(f"面板端口 {self.config.port} 被占用，已改用 {port}；请同步修改 dashboard.port")
         self.logger.info(
             "网页面板已启动",
             url=self.public_url,
-            local_url=f"http://127.0.0.1:{port}{prefix}/",
+            local_url=self.public_url,
             listen_host=self.config.host,
             password_configured=self.passwords.configured,
         )
@@ -319,6 +345,7 @@ class DashboardServer:
         self._runner = None
         self._site = None
         self.public_url = None
+        self.bound_port = None
         self.metrics.flush()
 
     # ------------------------------------------------------------------
@@ -816,9 +843,8 @@ class DashboardServer:
     def describe(self) -> dict[str, Any]:
         """面板自身状态（供诊断接口使用）。"""
         return {
-            "url": self.public_url,
+            **self.connection_info(),
             "host": self.config.host,
-            "port": self.bound_port or self.config.port,
             "base_path": self.base_path,
             "password_configured": self.passwords.configured,
             "manage_plugins": self.manage_plugins,
@@ -828,6 +854,18 @@ class DashboardServer:
             "sessions": self.sessions.describe(),
             "system": system_module.snapshot(data_dir=self.data_dir),
             "extensions": self.describe_extensions(),
+        }
+
+    def connection_info(self) -> dict[str, Any]:
+        """只读运行快照；未监听时不返回配置推测出的可用端口或地址。"""
+        available = self._site is not None and self.public_url is not None
+        return {
+            "available": available,
+            "url": self.public_url if available else None,
+            "local_url": self.public_url if available else None,
+            "port": self.bound_port if available else None,
+            "listen_host": self.config.host,
+            "base_path": self.base_path,
         }
 
 

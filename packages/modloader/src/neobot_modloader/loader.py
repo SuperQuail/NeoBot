@@ -65,7 +65,6 @@ class FilesystemPluginLoader:
     def discover_all(self, plugin_dir: Path, *, resolve_dependencies: bool = True) -> list[PluginDiscoveryResult]:
         plugin_dir = plugin_dir.resolve()
         if not plugin_dir.exists():
-            self._logger.info(f"插件目录不存在，已按空目录处理: {plugin_dir}")
             return []
         if not plugin_dir.is_dir():
             return [

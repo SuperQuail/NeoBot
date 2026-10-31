@@ -62,10 +62,7 @@ def test_redact_url_userinfo() -> None:
 
 
 def test_redact_authorization_and_bearer() -> None:
-    assert (
-        redact_sensitive("Authorization: Bearer sk-abcdefgh12345678")
-        == "***REDACTED***"
-    )
+    assert redact_sensitive("Authorization: Bearer sk-abcdefgh12345678") == "***REDACTED***"
     assert redact_sensitive("bearer abcDEF123.xyz") == "***REDACTED***"
     assert redact_sensitive("Authorization: token abcdef123456") == "***REDACTED***"
 
@@ -85,9 +82,7 @@ def test_file_sink_output_is_redacted(tmp_path) -> None:
     log_dir = tmp_path / "logs"
     configure_loguru(log_dir)
     try:
-        loguru.logger.error(
-            "认证失败 Authorization: Bearer sk-abcdefgh12345678, api_key=sk-zyxwvuts12345678"
-        )
+        loguru.logger.error("认证失败 Authorization: Bearer sk-abcdefgh12345678, api_key=sk-zyxwvuts12345678")
         try:
             raise ValueError("连接失败 key=sk-qwertyui12345678")
         except ValueError:
@@ -99,7 +94,10 @@ def test_file_sink_output_is_redacted(tmp_path) -> None:
     assert "sk-abcdefgh12345678" not in content
     assert "sk-zyxwvuts12345678" not in content
     assert "sk-qwertyui12345678" not in content
-    assert content.count("***REDACTED***") >= 4
+    # 每个值仅脱敏一次，源码行不再被异常 formatter 读取、重复输出。
+    assert content.count("***REDACTED***") == 3
+    assert content.count("Traceback (most recent call last):") == 1
+    assert "raise ValueError(" not in content
 
 
 def test_console_sink_output_is_redacted(capsys) -> None:
@@ -134,8 +132,7 @@ def test_console_sink_writes_to_stdout_not_stderr(capsys) -> None:
 
 
 def test_redacting_filter_redacts_traceback_in_exception_records() -> None:
-    """带异常的日志记录经 _redacting_filter 后，message 必须追加脱敏 traceback 且无密钥，
-    同时保留结构化 exception（值已脱敏、traceback 对象保留）供后续 sink 使用。"""
+    """异常独立于正文，保留脱敏堆栈，禁止下游重新渲染原异常的源码与 locals。"""
     try:
         raise ValueError("连接失败 api_key=sk-traceback12345678xyz")
     except ValueError:
@@ -148,17 +145,19 @@ def test_redacting_filter_redacts_traceback_in_exception_records() -> None:
 
     assert _redacting_filter(record) is True
 
-    assert "sk-traceback12345678xyz" not in record["message"]
-    assert "***REDACTED***" in record["message"]
-    assert "Traceback" in record["message"]
-
-    exc = record["exception"]
-    assert exc is not None
-    assert exc[0] is exc_type
-    assert exc[2] is exc_tb
-    assert "sk-traceback12345678xyz" not in str(exc[1])
-    assert "api_key" not in str(exc[1])
-    assert "***REDACTED***" in str(exc[1])
+    assert record["message"] == "请求异常"
+    assert record["exception"] is None
+    exc = record["extra"]["_neobot_exception"]
+    assert exc["type"] == "ValueError"
+    assert exc["message"] == "连接失败 ***REDACTED***"
+    assert "Traceback" in exc["traceback"]
+    assert "sk-traceback12345678xyz" not in str(exc)
+    assert "raise ValueError" not in exc["traceback"]
+    assert "test_redacting_filter_redacts_traceback_in_exception_records" in exc["traceback"]
+    # 多出口重复调用处理函数，不追加第二份异常。
+    original = dict(exc)
+    assert _redacting_filter(record) is True
+    assert record["extra"]["_neobot_exception"] == original
 
 
 async def test_self_heal_sink_forwards_redacted_records_with_traceback() -> None:

@@ -132,7 +132,7 @@ def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
     backup_logger = logger_factory.get_logger("app.db_backup")
     backup_path = backup_sqlite_database(db_path, DATA_DIR / "db_backup", logger=backup_logger)
     if backup_path is not None:
-        backup_logger.info(f"迁移前已备份数据库: {backup_path}")
+        backup_logger.info("迁移前已备份数据库", path=str(backup_path))
     run_migrations(db_url)
     return build_storage(db_url)
 

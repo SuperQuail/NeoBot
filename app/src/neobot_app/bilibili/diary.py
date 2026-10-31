@@ -136,7 +136,7 @@ class BilibiliDiaryService:
         try:
             atomic_write_text(path, json.dumps(lines, ensure_ascii=False))
         except Exception as exc:
-            logger.debug(f"B站日记素材快照写入失败：{path}（{type(exc).__name__}: {exc}）")
+            logger.warning(f"B站日记素材快照写入失败，下次可能重复采用素材：{path}（{type(exc).__name__}: {exc}）")
 
     def _commit_snapshot(self) -> None:
         """发布成功后落盘本次快照；预览/发布失败都不落盘，避免吃掉 diff。"""
@@ -157,7 +157,7 @@ class BilibiliDiaryService:
                     self._archive.list, table, limit=_MAX_ARCHIVE_ITEMS
                 )
             except Exception as exc:
-                logger.debug(f"读取日记档案失败（{table}）：{type(exc).__name__}: {exc}")
+                logger.warning(f"读取日记档案失败，本次日记将缺少该表素材（{table}）：{type(exc).__name__}: {exc}")
                 continue
             for item in items or []:
                 updated = get_field(item, "updated_at", None)

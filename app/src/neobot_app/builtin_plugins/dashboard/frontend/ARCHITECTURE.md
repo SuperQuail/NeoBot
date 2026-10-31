@@ -38,6 +38,7 @@
 | 快捷部署 | `deploy/useDeployEditor.ts`、`deployModel.ts`       | 五步内容集中在 `DeployStepPanel`                           |
 | 聊天流   | 父页管理查询、历史选择与跟随最新                    | 会话列表、快速预览、完整提示词、历史与详情弹窗             |
 | 档案     | 父页管理筛选、版本、草稿、删除与压缩轮询            | 浏览列表、正文编辑、工具与详情弹窗                         |
+| 日志     | `Logs` 管理增量缓冲、筛选与跟随；`logs/logPresentation` 统一上下文搜索与导出 | 行内展开字段、调用位置与异常，沿日志正文滚动 |
 | 配置     | `pages/config/` 各面板管理自己的编辑会话            | `ConfigTreePanel` 绑定 Schema 字段                         |
 | 插件     | 父页管理列表、选择、权限与操作                      | `PluginListPanel`、`PluginEditorPanel` 使用显式 props 契约 |
 

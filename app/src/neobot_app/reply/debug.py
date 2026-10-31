@@ -33,11 +33,7 @@ class DebugHelper:
             kind="reply_lifecycle",
             stage=stage,
             source="app.reply",
-            target=(
-                f"{conv_ref.kind}:{conv_ref.id}"
-                if conv_ref is not None
-                else None
-            ),
+            target=(f"{conv_ref.kind}:{conv_ref.id}" if conv_ref is not None else None),
             payload={"reply_event": event, **payload},
             context={
                 "event_id": event.event_id,
@@ -63,11 +59,7 @@ class DebugHelper:
         if "chat provider" not in str(exc):
             return
         # 模型不可用只写日志；不向任何聊天流发送错误提示。
-        self._logger.error(
-            "模型不可用（错误只写日志，不发送到聊天）",
-            event_id=getattr(event, "event_id", "?"),
-            error=str(exc),
-        )
+        # 失败由回复管线的唯一收尾点记录；这里只补充详细调试事件。
         self.record(
             "provider_unavailable_notice_suppressed",
             event,

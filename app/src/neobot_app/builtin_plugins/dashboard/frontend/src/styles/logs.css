@@ -90,7 +90,7 @@
 .logs-page .viewer-log-card .lv-row {
   display: grid;
   grid-template-columns: 78px 72px minmax(0, 1fr);
-  gap: 10px;
+  gap: 4px 10px;
   padding: 7px 20px;
   font-size: 12px;
   border-bottom: 0;
@@ -106,6 +106,37 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   min-width: 0;
+}
+.lv-details {
+  grid-column: 3;
+  min-width: 0;
+}
+.lv-details > summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+.lv-context {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.lv-context dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.lv-context dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.lv-context pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .lv-module {
   color: var(--muted);
@@ -124,11 +155,14 @@
   .logs-page .viewer-log-card .lv-row {
     font-size: 11px;
     grid-template-columns: 58px 60px minmax(0, 1fr);
-    gap: 6px;
+    gap: 4px 6px;
     padding-inline: 12px;
   }
   .logs-page .viewer-log-card .log-toolbar {
     padding: 12px 14px;
+  }
+  .lv-details {
+    grid-column: 1 / -1;
   }
   .logs-page .log-toolbar > input,
   .logs-page .log-toolbar > select {

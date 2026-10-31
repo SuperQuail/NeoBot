@@ -47,6 +47,7 @@ class DashboardPlugin:
         self._logger: Any = None
         #: 插件配置的「原地生效」消费者（bugfixes/feat(2) §6）
         self._config_consumer: Any = None
+        self._runtime_subscriptions: list[Any] = []
 
     # ------------------------------------------------------------------
 
@@ -91,9 +92,14 @@ class DashboardPlugin:
 
         hook_bus = getattr(ctx, "hook_bus", None)
         if hook_bus is not None:
-            subscription = hook_bus.subscribe_runtime(self._on_runtime_event, kind="log")
-            if subscription is not None:
-                ctx.record_subscription(subscription)
+            for handler, filters in (
+                (self._on_runtime_event, {"kind": "log"}),
+                (self._on_runtime_metric, {"kind": "metric", "stage": "onebot.api.sent"}),
+            ):
+                subscription = hook_bus.subscribe_runtime(handler, **filters)
+                if subscription is not None:
+                    self._runtime_subscriptions.append(subscription)
+                    ctx.record_subscription(subscription)
 
         self._register_status_command(ctx)
         self._register_config_consumer(ctx)
@@ -232,6 +238,10 @@ class DashboardPlugin:
             pass
 
     async def unload(self) -> None:
+        for subscription in self._runtime_subscriptions:
+            subscription.unsubscribe()
+        self._runtime_subscriptions.clear()
+
         # 先注销配置消费者：它持有本实例的引用，留着会被喂给已释放的对象
         control = getattr(self.ctx, "plugin_control", None)
         unregister = getattr(control, "unregister_config_consumer", None)
@@ -257,6 +267,15 @@ class DashboardPlugin:
                 server.metrics.record_log(payload)
         except Exception:
             pass
+        return envelope
+
+    async def _on_runtime_metric(self, envelope: Any) -> Any:
+        server = self.server
+        payload = getattr(envelope, "payload", None)
+        if server is not None and isinstance(payload, dict):
+            action = payload.get("action")
+            if isinstance(action, str):
+                server.metrics.record_api_call(action)
         return envelope
 
     def _log_probe_state(self, state: str, **fields: Any) -> None:

@@ -1,10 +1,13 @@
 """私聊挂起等待与单条消息意愿评估。"""
+
 from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 from ._runtime import asyncio, monotonic_seconds
+
 if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
+
 
 class SuspendPrivateMixin:
     async def _suspend_private_chat(
@@ -50,54 +53,29 @@ class SuspendPrivateMixin:
             if current_new:
                 if not all_new_entries:
                     first_new_time = monotonic_seconds()
-                    self._logger.debug(
-                        "私聊挂起检测到首条新消息",
-                        queue_key=queue_key,
-                        count=len(current_new),
-                    )
                 all_new_entries.extend(current_new)
 
             # 轮询后台通知，有通知立即中断挂起
             if notification_text is None:
-                notification_text = await self._poll_background_notifications(
-                    pipeline_key
-                )
+                notification_text = await self._poll_background_notifications(pipeline_key)
 
             if notification_text:
-                self._logger.debug(
-                    "私聊挂起检测到后台通知，结束挂起",
-                    queue_key=queue_key,
-                )
                 break
 
             if all_new_entries:
                 elapsed_since_first = monotonic_seconds() - first_new_time
                 if elapsed_since_first >= collect_secs:
-                    self._logger.debug(
-                        "私聊挂起收集窗口结束",
-                        queue_key=queue_key,
-                        total_new=len(all_new_entries),
-                        elapsed=f"{elapsed_since_first:.1f}s",
-                    )
                     break
 
-        if all_new_entries:
-            self._logger.debug(
-                "私聊挂起收集到新消息",
-                queue_key=queue_key,
-                count=len(all_new_entries),
-            )
-        elif notification_text:
-            self._logger.debug(
-                "私聊挂起收到后台通知",
-                queue_key=queue_key,
-            )
-        else:
-            self._logger.debug(
-                "私聊挂起超时未收到新消息或通知",
-                queue_key=queue_key,
-            )
+        self._logger.debug(
+            "私聊等待结束",
+            event="reply.wait_finished",
+            chat_flow_id=pipeline_key,
+            reason="notification" if notification_text else "messages" if all_new_entries else "timeout",
+            message_count=len(all_new_entries),
+        )
         return all_new_entries, notification_text
+
     def _evaluate_single_message_willing(
         self,
         *,
@@ -113,22 +91,29 @@ class SuspendPrivateMixin:
             return True
 
         sender_id = str(getattr(message, "user_id", "?"))
+        kind = "group" if getattr(message, "group_id", None) is not None else "private"
+        chat_flow_id = f"{kind}:{queue_key}"
 
         # @提及 → 检查屏蔽后直接通过
         if self._willing_service.is_at_mentioned(message):
-            block_reason = self._willing_service.block_reason_for_message(
-                message=message, queue_key=queue_key
-            )
+            block_reason = self._willing_service.block_reason_for_message(message=message, queue_key=queue_key)
             if block_reason:
-                self._logger.info(
-                    "挂起意愿判断：@提及消息被屏蔽",
+                self._logger.debug(
+                    "回复意愿判定",
+                    event="reply.decided",
+                    chat_flow_id=chat_flow_id,
+                    should_reply=False,
                     queue_key=queue_key,
                     sender_id=sender_id,
                     reason=block_reason,
                 )
                 return False
-            self._logger.info(
-                "挂起意愿判断：@提及，直接触发回复",
+            self._logger.debug(
+                "回复意愿判定",
+                event="reply.decided",
+                chat_flow_id=chat_flow_id,
+                should_reply=True,
+                reason="at_mention",
                 queue_key=queue_key,
                 sender_id=sender_id,
             )
@@ -136,11 +121,11 @@ class SuspendPrivateMixin:
 
         # 正常意愿评估
         try:
-            decision = self._willing_service.evaluate(
-                message=message, queue=queue, queue_key=queue_key
-            )
-            self._logger.info(
-                "挂起意愿判断",
+            decision = self._willing_service.evaluate(message=message, queue=queue, queue_key=queue_key)
+            self._logger.debug(
+                "回复意愿判定",
+                event="reply.decided",
+                chat_flow_id=chat_flow_id,
                 queue_key=queue_key,
                 sender_id=sender_id,
                 probability=f"{decision.probability:.3f}",
@@ -149,8 +134,12 @@ class SuspendPrivateMixin:
             )
             return decision.should_reply
         except Exception as exc:
-            self._logger.info(
-                "挂起意愿判断异常，跳过",
+            self._logger.warning(
+                "回复意愿计算失败，本条消息未唤醒管线",
+                event="reply.decision_failed",
+                chat_flow_id=chat_flow_id,
+                message_id=getattr(message, "message_id", None),
+                error_type=type(exc).__name__,
                 queue_key=queue_key,
                 sender_id=sender_id,
                 error=str(exc),

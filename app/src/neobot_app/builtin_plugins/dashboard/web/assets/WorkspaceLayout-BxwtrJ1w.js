@@ -1,0 +1,1 @@
+import{j as t,k as c}from"./index-CCX6CwAC.js";function n({panel:a,editor:e,showDetail:o=!1,panelWidth:s,className:r}){return t.jsxs("div",{className:c("workspace",o&&"show-detail",r),style:s?{"--workspace-panel-width":s}:void 0,children:[a,e]})}export{n as W};
