@@ -75,7 +75,7 @@ class FileServer:
     async def start(self) -> None:
         """启动文件服务器（端口被占时自动 +1 重试，最多 100 次）"""
         if not self._enabled:
-            logging.warning("已跳过 HTTP 文件服务器启动（配置要求走本地路径）")
+            logging.debug("已跳过 HTTP 文件服务器启动（配置要求走本地路径）")
             return
         if self._running:
             return

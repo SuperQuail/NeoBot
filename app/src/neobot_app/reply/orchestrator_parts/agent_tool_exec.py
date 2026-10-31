@@ -264,7 +264,7 @@ class AgentToolExecMixin:
                     ),
                     event_id=event.event_id,
                     tool=name,
-                    result=safe_result,
+                    result_chars=len(str(safe_result)),
                 )
                 self._record_debug(
                     "tool_returned",

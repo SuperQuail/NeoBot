@@ -278,10 +278,10 @@ flowchart TD
     D --> E["attempts：element 等字体, element 不等, full_page 等, full_page 不等 / html_card.py:1763"]
     E --> F["每档构造 RenderOptions 并带 selector=main.card format=png wait_for_images=False"]
     F --> G{"port.render 抛异常?"}
-    G -- 是 --> G1["记 last_error 仅在字体校验那档 warning 后 continue / html_card.py:1785"]
+    G -- 是 --> G1["保留实际 last_error 并继续尝试"]
     G -- 否 --> H{"result.data 为空?"}
     H -- 是 --> H1["warning：未返回渲染数据 立刻 return None 不再试下一档"]
-    H -- 否 --> I["return bytes(data)"]
+    H -- 否 --> I["备用方案成功时汇总原因与方案；返回 bytes(data)"]
     G1 --> J{"还有下一档?"}
     J -- 是 --> F
     J -- 否 --> K["warning：卡片渲染失败已降级 返回 None"]

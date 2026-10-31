@@ -358,7 +358,9 @@ class ArchiveMemoryService:
                 "（AI 不可用或处于冷却中）。原文已完整保留，下次写入会自动重试。"
             )
         self._logger.warning(
-            "档案超过存储上限，已保留原内容并等待压缩",
+            "档案超过存储上限，原文已保留，后台压缩已调度"
+            if scheduled
+            else "档案超过存储上限，原文已保留，后台压缩暂未调度",
             table_name=table_name,
             key=key,
             chars=chars,

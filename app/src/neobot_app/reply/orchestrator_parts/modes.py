@@ -207,7 +207,7 @@ class ModesMixin:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
                 pass
-            event.error = f"{type(exc).__name__}: {exc}"
+            event.error = event.error or f"{type(exc).__name__}: {exc}"
             self._logger.error(
                 "回复事件失败",
                 event="reply.failed",

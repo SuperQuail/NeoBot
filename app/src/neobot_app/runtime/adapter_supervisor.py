@@ -99,7 +99,7 @@ class AdapterSupervisor(ConfigConsumer):
             self._logger.debug("适配器监听设置未变化，跳过重启")
             return True
 
-        self._logger.warning(
+        self._logger.debug(
             "适配器监听设置变更，正在重启反向 WebSocket 服务",
             before=previous.describe(),
             after=settings.describe(),

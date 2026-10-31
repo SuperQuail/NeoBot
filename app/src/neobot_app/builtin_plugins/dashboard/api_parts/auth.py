@@ -72,7 +72,7 @@ class AuthMixin:
             }
         )
         self.console.set_session_cookie(response, session.token)
-        self.logger.warning(f"面板密码已设置 ip={ip}")
+        self.logger.info(f"面板密码已设置 ip={ip}")
         return response
 
     async def auth_me(self, request: web.Request) -> web.Response:
@@ -184,7 +184,7 @@ class AuthMixin:
         self.console.limiter.reset(ip)
         response = _json_ok({"reauthenticate": True, "message": "密码已修改，请重新登录"})
         self.console.clear_session_cookie(response)
-        self.logger.warning(f"面板密码已修改，全部会话已撤销 ip={ip}")
+        self.logger.info(f"面板密码已修改，全部会话已撤销 ip={ip}")
         return response
 
     # ------------------------------------------------------------------

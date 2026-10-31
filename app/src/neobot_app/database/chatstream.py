@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional, Set
 from dataclasses import dataclass
@@ -88,6 +89,7 @@ class ChatStreamManager:
         config: Optional[ChatStreamConfig] = None,
         group_message_queue: Optional[MessageQueue] = None,
         friend_message_queue: Optional[MessageQueue] = None,
+        bot_config: Any = None,
     ):
         """初始化聊天流管理器"""
         self.adapter = adapter
@@ -97,6 +99,7 @@ class ChatStreamManager:
         self._friend_queue = friend_message_queue
         self._semaphore = asyncio.Semaphore(self.config.concurrent_limit)
         self._initialized = False
+        self._bot_config = bot_config
 
     async def initialize(self) -> None:
         """初始化聊天流
@@ -106,14 +109,16 @@ class ChatStreamManager:
         3. 收集所有用户ID并更新缺失的用户信息到数据库
         """
         if self._initialized:
-            logger.warning("聊天流已初始化，跳过重复初始化")
             return
 
-        logger.info("开始初始化聊天流...")
-
+        started_at = time.monotonic()
         # 延迟加载配置获取观察上限
-        from neobot_app.config.instance import load_bot_config
-        bot_cfg = load_bot_config()
+        bot_cfg = self._bot_config
+        if bot_cfg is None:
+            # 兼容单独构造；生产装配复用已加载配置，避免重复读盘与播报。
+            from neobot_app.config.instance import load_bot_config
+
+            bot_cfg = load_bot_config()
         max_group_obs = bot_cfg.chat.max_group_chat_observations
         max_friend_obs = bot_cfg.chat.max_friend_chat_observations
         enable_group_startup_history_warmup = getattr(
@@ -173,18 +178,17 @@ class ChatStreamManager:
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
 
-        logger.info(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")
+        logger.debug(f"群聊观察上限: {max_group_obs}, 私聊观察上限: {max_friend_obs}")
 
+        friends: list[FriendData] = []
         try:
             # 获取群列表
-            logger.info("正在获取群列表...")
             group_response = await self._retry_api_call(self.adapter.get_group_list)
             groups = group_response.data if group_response.data else []
             logger.info(f"获取到 {len(groups)} 个群")
 
             # 将群信息存入数据库
             if groups:
-                logger.info("开始将群信息存入数据库...")
                 async with self._uow_factory() as uow:
                     for group in groups:
                         try:
@@ -216,12 +220,9 @@ class ChatStreamManager:
                     *group_tasks, return_exceptions=True
                 )
                 self._log_task_results(group_results, "群历史消息")
-            else:
-                logger.info("群聊启动历史聊天记录预热未开启，跳过群历史消息拉取")
 
             if enable_friend_startup_history_warmup:
                 logger.warning("已开启私聊启动历史聊天记录预热，这可能存在风控风险")
-                logger.info("正在获取好友列表...")
                 friend_response = await self._retry_api_call(self.adapter.get_friend_list)
                 friends = friend_response.data if friend_response.data else []
                 logger.info(f"获取到 {len(friends)} 个好友")
@@ -245,28 +246,29 @@ class ChatStreamManager:
                     *friend_tasks, return_exceptions=True
                 )
                 self._log_task_results(friend_results, "好友历史消息")
-            else:
-                logger.info("私聊启动历史聊天记录预热未开启，跳过私聊历史消息拉取")
 
             # 收集所有用户ID并更新缺失的用户信息
-            logger.info("开始收集用户ID并更新缺失的用户信息...")
             user_ids = await self._collect_user_ids_from_messages()
             await self._update_user_profiles(user_ids, profile_service)
 
             self._initialized = True
-            logger.info("聊天流初始化完成")
+            logger.info(
+                "聊天流初始化完成",
+                extra={
+                    "group_count": len(groups),
+                    "friend_history_count": len(friends),
+                    "user_count": len(user_ids),
+                    "duration_seconds": round(time.monotonic() - started_at, 3),
+                },
+            )
 
         except Exception as e:
             logger.error(f"聊天流初始化失败: {e}", exc_info=True)
             raise
 
     async def update(self) -> None:
-        """更新聊天流
-
-        定期调用此函数来更新消息队列和用户信息
-        """
-        logger.info("开始更新聊天流...")
-        await self.initialize()  # 目前重新初始化，后续可改为增量更新
+        """兼容旧调用方：确保完成初始化；不调度周期更新或重复预热。"""
+        await self.initialize()
 
     @asynccontextmanager
     async def _with_concurrency_limit(self):
@@ -362,12 +364,12 @@ class ChatStreamManager:
             if not messages:
                 logger.debug(f"好友 {friend.user_id} 无历史消息")
 
-            # 将消息推入队列
+            # 将消息推入队列；异常格式只记批次计数，不 dump 消息正文。
+            skipped_tuples = 0
             pushed_messages: list[Any] = []
             for msg_data in messages:
-                logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
-                    logger.warning(f"消息数据是元组而不是对象: {msg_data}")
+                    skipped_tuples += 1
                     continue
 
                 try:
@@ -377,8 +379,16 @@ class ChatStreamManager:
                     logger.error(f"推送好友 {friend.user_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            processed_count = len(messages) - sum(1 for msg in messages if isinstance(msg, tuple))
-            logger.debug(f"已处理好友 {friend.user_id} 的 {processed_count} 条历史消息（跳过 {len(messages) - processed_count} 条元组消息）")
+            logger.log(
+                logging.WARNING if skipped_tuples else logging.DEBUG,
+                "私聊历史消息批次处理完成",
+                extra={
+                    "chat_flow_id": f"private:{friend.user_id}",
+                    "total": len(messages),
+                    "processed": len(pushed_messages),
+                    "skipped_tuples": skipped_tuples,
+                },
+            )
 
             # 灌入之后补齐 Bot 自身发言：软重启丢 assistant 块会导致重复回复。
             await self._merge_self_sent_history(
@@ -409,12 +419,12 @@ class ChatStreamManager:
             if not messages:
                 logger.debug(f"群 {group.group_id} 无历史消息")
 
-            # 将消息推入队列
+            # 将消息推入队列；异常格式只记批次计数，不 dump 消息正文。
+            skipped_tuples = 0
             pushed_messages: list[Any] = []
             for msg_data in messages:
-                logger.debug(f"消息数据类型: {type(msg_data)}, 内容: {msg_data}")
                 if isinstance(msg_data, tuple):
-                    logger.warning(f"消息数据是元组而不是对象: {msg_data}")
+                    skipped_tuples += 1
                     continue
 
                 try:
@@ -424,8 +434,16 @@ class ChatStreamManager:
                     logger.error(f"推送群 {group.group_id} 消息到队列时出错: {e}", exc_info=True)
                     continue
 
-            processed_count = len(messages) - sum(1 for msg in messages if isinstance(msg, tuple))
-            logger.debug(f"已处理群 {group.group_id} 的 {processed_count} 条历史消息（跳过 {len(messages) - processed_count} 条元组消息）")
+            logger.log(
+                logging.WARNING if skipped_tuples else logging.DEBUG,
+                "群聊历史消息批次处理完成",
+                extra={
+                    "chat_flow_id": f"group:{group.group_id}",
+                    "total": len(messages),
+                    "processed": len(pushed_messages),
+                    "skipped_tuples": skipped_tuples,
+                },
+            )
 
             # 灌入之后补齐 Bot 自身发言：软重启丢 assistant 块会导致重复回复。
             await self._merge_self_sent_history(
@@ -657,7 +675,6 @@ class ChatStreamManager:
     ) -> None:
         """补齐并按配置刷新用户信息。"""
         if not user_ids:
-            logger.info("消息队列中未发现需要更新的用户信息")
             return
 
         tasks = [
@@ -686,6 +703,5 @@ class ChatStreamManager:
                 profile=group.group_memo or "",
                 is_quite=False,
             )
-            logger.debug(f"群 {group.group_id} 信息已存入数据库")
         except Exception as e:
             logger.error(f"插入或更新群 {group.group_id} 到数据库时出错: {e}")

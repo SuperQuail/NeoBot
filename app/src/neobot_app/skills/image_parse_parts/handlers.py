@@ -23,7 +23,6 @@ logger = get_module_logger("skills.image_parse")
 async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     if self._vision_provider is None:
         # 视觉模型不可用只写日志；不要把错误文案交给 agent/聊天流。
-        logger.warning("图片解析视觉模型未配置，跳过解析（仅记录日志）")
         return _json({"ok": True, "skipped": True, "note": ""})
     requirement = str(args.get("requirement") or "请简洁描述这张图片的主要内容。").strip()
     image_path = args.get("image_path")

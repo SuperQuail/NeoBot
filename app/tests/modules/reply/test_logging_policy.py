@@ -138,6 +138,22 @@ async def test_unavailable_provider_has_one_failure_record():
     assert failures[0]["error_type"] == "RuntimeError"
 
 
+async def test_timeout_preserves_specific_reason_in_single_failure_record():
+    harness = ReplyHarness()
+    event = make_event(state=ReplyState.GENERATING)
+
+    async def timeout(*args):
+        event.error = "AI response timed out after 37s"
+        await asyncio.wait_for(asyncio.Event().wait(), timeout=0)
+
+    harness._run_agent_mode.side_effect = timeout
+    await harness._run(event, SimpleNamespace(), "42")
+    failures = [fields for level, _, fields in harness._logger.records if level == "error"]
+    assert len(failures) == 1
+    assert failures[0]["error_type"] == "TimeoutError"
+    assert failures[0]["error"] == "AI response timed out after 37s"
+
+
 def test_unrenderable_flow_content_keeps_reply_alive_and_reports_missing_snapshot():
     class Unrenderable:
         def __str__(self):

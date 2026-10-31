@@ -21,7 +21,6 @@ def backup_config(file_path: Path, backup_dir: Path, max_backups: int = 15) -> N
     既容易误把 .env 备份当配置还原，也会让两类备份互相挤占保留额度。
     """
     if not file_path.exists():
-        logger.info(f"配置文件不存在，无需备份: {file_path}")
         return
 
     timestamp = time.strftime(_TIMESTAMP_FORMAT) + f"_{int(time.time() * 1000) % 1000:03d}"

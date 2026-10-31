@@ -206,7 +206,13 @@ class BrowserSearchChannel:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as exc:
-                logger.debug("浏览器会话关闭失败: %s", exc)
+                logger.warning(
+                    "浏览器会话关闭失败: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                    extra={"closer": getattr(closer, "__qualname__", type(closer).__name__)},
+                )
 
     async def close_if_idle(self, now: float | None = None) -> bool:
         """空闲超阈值则关闭会话，返回是否关闭（供后台任务/测试调用）。"""

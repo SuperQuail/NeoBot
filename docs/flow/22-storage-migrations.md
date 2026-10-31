@@ -10,6 +10,8 @@ verified_hash: 1ed684b6f893
 
 ## 范围
 
+嵌入式 Alembic 迁移沿用宿主日志出口，迁移内部进度保留到 DEBUG，宿主按结果与耗时输出摘要；独立 Alembic 命令仍使用自身 ini 日志配置。
+
 `neobot_storage` 包（32 个 py 文件）：异步引擎与 PRAGMA、UoW 事务边界、16 张表、
 28 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
 图片引用索引）都通过它读写 SQLite。

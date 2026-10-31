@@ -24,7 +24,6 @@ class LifecycleShutdownMixin:
         当绘图完成但对应聊天流无活跃管线时，由 BackgroundDrawingManager 调用。
         """
         if self._closed:
-            self._logger.warning("ReplyOrchestrator 已关闭，拒绝创建后台回复管线")
             return None
         from neobot_app.willing.models import WillingDecision
 
@@ -198,6 +197,5 @@ class LifecycleShutdownMixin:
         self._callback_tasks.clear()
         self._last_reply_time.clear()
         self._last_sentence_time.clear()
-        self._logger.info("ReplyOrchestrator 已关闭")
         if deferred is not None:
             raise deferred

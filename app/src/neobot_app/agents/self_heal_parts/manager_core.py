@@ -61,6 +61,7 @@ class SelfHealManagerCoreMixin:
         self._trigger_date_today: str = ""
         self._trigger_count_today: int = 0
         self._closed = False
+        self._dispatch_skip: tuple[str, str] | None = None
 
     # ── wiring ──
 
@@ -224,19 +225,16 @@ class SelfHealManagerCoreMixin:
             )
             return False
         if self._daily_trigger_count() >= self._config.daily_limit:
-            self._logger.warning(
-                "self_heal trigger skipped: 今日触发次数已达上限",
-                limit=self._config.daily_limit,
-                count=self._daily_trigger_count(),
-            )
+            self._record_dispatch_skip("daily_limit", str(today_local()))
             return False
         admin = self.resolve_admin_account()
         if not admin:
-            self._logger.warning("self_heal trigger skipped: admin account 未配置")
+            self._record_dispatch_skip("admin_missing")
             return False
         snapshot = list(self._buffer)
         if not snapshot:
             return False
+        self._dispatch_skip = None
         first = snapshot[0].get("time", "")
         last = snapshot[-1].get("time", "")
         heal = HealTask(
@@ -258,3 +256,14 @@ class SelfHealManagerCoreMixin:
         await self._publish_start_notification(heal)
         return True
 
+    def _record_dispatch_skip(self, reason: str, period: str = "") -> None:
+        state = (reason, period)
+        if self._dispatch_skip == state:
+            return
+        self._dispatch_skip = state
+        self._logger.info(
+            "自修复暂未触发：今日额度已用尽" if reason == "daily_limit" else "自修复暂未触发：未配置管理员",
+            event="self_heal.skipped",
+            reason=reason,
+            limit=self._config.daily_limit,
+        )

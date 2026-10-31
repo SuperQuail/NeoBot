@@ -138,8 +138,9 @@ class ObservabilityMixin:
                 conversation_kind=kind,
                 conversation_id=conv_id,
             )
-        except Exception:
-            self._logger.debug("登记聊天流提示词失败(忽略)", pipeline_key=key)
+        except Exception as exc:
+            self._logger.warning("面板提示词快照登记失败", chat_flow_id=key, error=str(exc), exc_info=True)
+
     def _record_flow_request(
         self,
         event: ReplyEvent,
@@ -162,8 +163,9 @@ class ObservabilityMixin:
                 model=self._current_model_name(),
                 iteration=iteration,
             )
-        except Exception:
-            self._logger.debug("登记聊天流请求失败(忽略)", pipeline_key=key)
+        except Exception as exc:
+            self._logger.warning("面板请求快照登记失败", chat_flow_id=key, error=str(exc), exc_info=True)
+
     def _set_flow_active(self, event: ReplyEvent, queue_key: str, active: bool) -> None:
         registry = self._flow_registry
         if registry is None:
@@ -173,8 +175,9 @@ class ObservabilityMixin:
             return
         try:
             registry.set_active(key, active)
-        except Exception:
-            self._logger.debug("登记聊天流状态失败(忽略)", pipeline_key=key)
+        except Exception as exc:
+            self._logger.warning("面板活动状态登记失败", chat_flow_id=key, error=str(exc), exc_info=True)
+
     def _record_debug(self, stage: str, event: ReplyEvent, **extra: object) -> None:
         self._debug_helper.record(stage, event, **extra)
     async def _record_context(

@@ -330,11 +330,6 @@ class ScheduledTaskManager:
             return None
         try:
             notification = queue.get_nowait()
-            self._logger.info(
-                "已轮询定时任务通知",
-                pipeline_key=pipeline_key,
-                notification_preview=notification[:120],
-            )
             return notification
         except asyncio.QueueEmpty:
             return None
@@ -704,11 +699,6 @@ class ScheduledTaskManager:
 
         queue = self._notification_queues.setdefault(pipeline_key, asyncio.Queue())
         await queue.put(prompt)
-        self._logger.info(
-            "定时任务提醒已入队",
-            task_id=task.task_uuid,
-            pipeline_key=pipeline_key,
-        )
         return True
 
     def _build_reminder_prompt(

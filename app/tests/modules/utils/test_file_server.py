@@ -38,14 +38,16 @@ async def test_enabled_false_skip_server(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enabled_false_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """enabled=False 时输出警告日志。"""
-    caplog.set_level(logging.WARNING)
+async def test_enabled_false_is_debug_configuration_state(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """主动禁用不占用告警级别，且不误报服务已经启动。"""
+    caplog.set_level(logging.DEBUG)
 
     fs = FileServer(data_dir=tmp_path, enabled=False)
     await fs.start()
 
     assert "已跳过 HTTP 文件服务器启动" in caplog.text
+    assert not fs._running
+    assert not any(record.levelno >= logging.INFO for record in caplog.records)
 
 
 @pytest.mark.asyncio

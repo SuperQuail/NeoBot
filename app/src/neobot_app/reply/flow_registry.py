@@ -144,21 +144,12 @@ class ChatFlowRegistry:
         state = self._state(pipeline_key)
         if state is None:
             return
-        try:
-            state.active = bool(active)
-            if active and not state.started_at:
-                state.started_at = time.time()
-            if not active:
-                state.started_at = 0.0
-            state.updated_at = time.time()
-        except Exception as exc:
-            self._logger.warning(
-                "面板聊天流活动状态未更新",
-                event="chat_flow.snapshot_failed",
-                chat_flow_id=pipeline_key,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
+        state.active = bool(active)
+        if active and not state.started_at:
+            state.started_at = time.time()
+        if not active:
+            state.started_at = 0.0
+        state.updated_at = time.time()
 
     # ── 后台任务 provider ──
 

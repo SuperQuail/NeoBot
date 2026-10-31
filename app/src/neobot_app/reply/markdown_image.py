@@ -226,14 +226,13 @@ class MarkdownImageConverter:
         self._started = True
         self._start_cleanup_task()
         mode = "浏览器 + pillowmd 降级" if self._browser_available else "pillowmd"
-        self._logger.info(f"MarkdownImageConverter 已就绪（{mode} 渲染 + 定时清理）")
+        self._logger.debug(f"MarkdownImageConverter 已就绪（{mode} 渲染 + 定时清理）")
 
     async def stop(self) -> None:
         self._started = False
         await self._stop_cleanup_task()
         if self._CLEANUP_ALL_ON_STOP:
             self._cleanup_all()
-        self._logger.info("MarkdownImageConverter 已停止")
 
     async def convert(
         self,

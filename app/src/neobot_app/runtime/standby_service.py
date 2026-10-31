@@ -278,7 +278,7 @@ class StandbyService:
                 self._persist()
             finally:
                 self._transition_active = False
-            self._logger.warning(
+            self._logger.info(
                 "Bot 已进入待机：仅保留面板与核心服务",
                 reason=self._reason,
                 operator=self._operator,
@@ -331,9 +331,8 @@ class StandbyService:
                 self._operator = operator or ""
                 self._since = epoch_seconds()
                 self._persist()
-                self._logger.warning(
-                    "Bot 已按新配置软重启运行"
-                    + (f"（原因：{reason}）" if reason else ""),
+                self._logger.info(
+                    "Bot 已按新配置软重启运行" + (f"（原因：{reason}）" if reason else ""),
                     operator=operator or "未记录",
                 )
                 return True, message

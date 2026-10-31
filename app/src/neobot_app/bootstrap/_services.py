@@ -156,6 +156,7 @@ def build_memory_services(
         uow_factory=uow_factory,
         group_message_queue=group_queue,
         friend_message_queue=friend_queue,
+        bot_config=config,
     )
     archive_memory_service = build_archive_memory_service(
         uow_factory=uow_factory,

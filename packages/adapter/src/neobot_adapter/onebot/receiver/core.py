@@ -610,11 +610,10 @@ class AdapterCore:
                 if conn_echo_set and echo in conn_echo_set:
                     conn_echo_set.remove(echo)
 
-    async def _handle_event(self, websocket, event):
+    async def _handle_event(self, websocket, event: dict):
         # 入队只放 dict：非对象事件一旦进队列，会在 EventDispatcher.matches()
         # 上抛 AttributeError 并打死分发循环（历史故障：[] / 不含 echo 的字符串）。
         if not isinstance(event, dict):
-            logger.warning(f"忽略非对象事件({type(event).__name__})")
             return
         # 放入队列（原始事件）
         try:

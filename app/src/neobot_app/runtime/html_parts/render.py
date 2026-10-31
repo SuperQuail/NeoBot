@@ -276,15 +276,19 @@ async def render_card_image(
             result = await port.render(html=html, options=options)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            if wait and not use_wait:
-                logger.warning(
-                    f"内嵌字体校验未通过，已改为不等字体直接渲染（字形仍由端口内联）: {exc}"
-                )
             continue
         data = getattr(result, "data", None)
         if not data:
             logger.warning("卡片渲染未返回渲染数据，已降级")
             return None
+        if last_error is not None:
+            logger.warning(
+                "卡片首次渲染失败，备用方案已成功",
+                mode=mode,
+                wait_for_fonts=use_wait,
+                error_type=type(last_error).__name__,
+                error=str(last_error),
+            )
         return bytes(data)
     logger.warning(f"卡片渲染失败，已降级: {last_error}")
     return None

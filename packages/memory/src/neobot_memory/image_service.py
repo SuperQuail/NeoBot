@@ -96,7 +96,7 @@ class ImageAnalysisService:
                 await uow.commit()
         except Exception as exc:
             self._logger.warning(
-                "图片引用索引写入失败（已忽略）",
+                "图片引用索引写入失败，过期图片描述将无法回显",
                 source_ref=source_ref,
                 error=str(exc),
             )
@@ -110,7 +110,7 @@ class ImageAnalysisService:
                 return await uow.images.get_ref_text(source_ref)
         except Exception as exc:
             self._logger.warning(
-                "图片引用索引查询失败（已忽略）",
+                "图片引用索引查询失败，本次无法回显过期图片描述",
                 source_ref=source_ref,
                 error=str(exc),
             )

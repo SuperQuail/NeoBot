@@ -91,7 +91,6 @@ class DebugRecorder:
         post_type = str(packet.get("post_type") or "")
         if post_type in self._IGNORED_POST_TYPES:
             return
-        self._logger.debug("记录数据包", post_type=post_type)
         self._write_jsonl(
             "packets",
             {
@@ -106,7 +105,6 @@ class DebugRecorder:
         event: ReplyEvent,
         **extra: Any,
     ) -> None:
-        self._logger.debug("记录回复事件", stage=stage, event_id=event.event_id)
         payload = {
             "recorded_at": now_utc().isoformat(),
             "stage": stage,

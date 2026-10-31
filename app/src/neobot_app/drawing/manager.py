@@ -306,6 +306,7 @@ class BackgroundDrawingManager:
                 "后台绘图任务完成",
                 task_id=task.task_id,
                 image_id=record.image_id,
+                pipeline_key=task.pipeline_key,
             )
             await self._on_completed(task)
         except Exception as exc:
@@ -437,12 +438,6 @@ class BackgroundDrawingManager:
             status="completed",
             message="绘图完成，图片已生成（这是结果通知，不是新的绘图请求）",
         )
-        self._logger.info(
-            "推送绘图完成通知",
-            task_id=task.task_id,
-            pipeline_key=task.pipeline_key,
-            image_id=task.image_id,
-        )
         await self._push_notification(task, notification)
 
     async def _on_failed(self, task: DrawTask) -> None:
@@ -455,40 +450,21 @@ class BackgroundDrawingManager:
             status="failed",
             message="绘图失败，请告知用户失败原因并询问是否重试",
         )
-        self._logger.info(
-            "推送绘图失败通知",
-            task_id=task.task_id,
-            pipeline_key=task.pipeline_key,
-            error=task.error,
-        )
         await self._push_notification(task, notification)
 
     async def _push_notification(self, task: DrawTask, notification: str) -> None:
         """推送通知到对应管线，若无活跃管线则尝试启动。"""
         if self._notification_hub is not None:
             started = await self._publish_hub_notification(task, notification)
-            self._logger.info(
-                "绘图通知已交给统一通知中心",
-                task_id=task.task_id,
-                pipeline_key=task.pipeline_key,
-                started_pipeline=started,
-            )
             if not started and not task.notified and task.notification_count == 0:
                 self._spawn_bg_task(self._retry_notification(task))
             return
 
         if self._orchestrator is None:
-            self._logger.warning("通知推送失败：orchestrator 为空", task_id=task.task_id)
+            self._logger.warning("绘图通知未交付：未配置通知中心或回复调度器", task_id=task.task_id)
             return
 
         pipeline_active = self._orchestrator.is_pipeline_key_active(task.pipeline_key)
-        self._logger.info(
-            "准备推送绘图通知",
-            task_id=task.task_id,
-            pipeline_key=task.pipeline_key,
-            pipeline_active=pipeline_active,
-            status=task.status,
-        )
         if not pipeline_active:
             # 无活跃管线，尝试启动新管线（通知作为新管线的初始消息）
             try:
@@ -497,31 +473,22 @@ class BackgroundDrawingManager:
                     conversation_id=task.conversation_id,
                     content=notification,
                 )
-                self._logger.info(
-                    "启动后台回复管线",
-                    task_id=task.task_id,
-                    pipeline_key=task.pipeline_key,
-                    success=result is not None,
-                )
                 if result is not None:
                     # 新管线已启动，通知会作为初始消息处理，不再入队
                     task.notified = True
                     return
             except Exception as exc:
                 self._logger.warning(
-                    "启动后台回复管线失败",
+                    "绘图结果通知启动回复失败，已转入待处理队列",
                     task_id=task.task_id,
+                    pipeline_key=task.pipeline_key,
                     error=str(exc),
+                    exc_info=True,
                 )
 
         # 有活跃管线，通知入队等待轮询注入
         queue = self._notification_queues.setdefault(task.pipeline_key, asyncio.Queue())
         await queue.put(notification)
-        self._logger.info(
-            "绘图通知已入队",
-            task_id=task.task_id,
-            pipeline_key=task.pipeline_key,
-        )
 
         if not task.notified and task.notification_count == 0:
             self._spawn_bg_task(self._retry_notification(task))
@@ -623,11 +590,6 @@ class BackgroundDrawingManager:
             for task in self._tasks.values():
                 if task.pipeline_key == pipeline_key and task.status != "drawing":
                     task.notified = True
-            self._logger.info(
-                "绘图通知已被轮询取出",
-                pipeline_key=pipeline_key,
-                notification_preview=notification[:120],
-            )
             return notification
         except asyncio.QueueEmpty:
             return None
@@ -645,7 +607,6 @@ class BackgroundDrawingManager:
             await asyncio.gather(*pending, return_exceptions=True)
         self._bg_tasks.clear()
         self._notification_queues.clear()
-        self._logger.info("BackgroundDrawingManager 已关闭")
 
     def _mark_notified(self, pipeline_key: str) -> None:
         for task in self._tasks.values():

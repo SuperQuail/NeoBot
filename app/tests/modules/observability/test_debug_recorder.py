@@ -46,17 +46,20 @@ def test_record_packet_skips_meta_events(tmp_path) -> None:
 
 
 def test_record_packet_writes_non_meta_events(tmp_path) -> None:
-    """普通事件照常记录日志与调试包。"""
+    """普通事件写入调试包，避免另打一条同义进度日志。"""
     logger = Mock()
     recorder = DebugRecorder(tmp_path, logger=logger)
+    logger.reset_mock()
 
     recorder.record_packet({"post_type": "message", "message_type": "group"})
 
-    logger.debug.assert_any_call("记录数据包", post_type="message")
+    logger.debug.assert_not_called()
+    logger.info.assert_not_called()
     lines = _packets_file(tmp_path).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["packet"]["post_type"] == "message"
+    assert payload["packet"]["message_type"] == "group"
 
 
 def test_packets_are_split_by_day(tmp_path) -> None:

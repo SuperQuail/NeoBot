@@ -152,7 +152,7 @@ class _PipelineWillingMixin:
 
         for msg in pending:
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
-                self._logger.warning(
+                self._logger.debug(
                     "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",
@@ -190,7 +190,7 @@ class _PipelineWillingMixin:
 
         for msg in pending:
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
-                self._logger.warning(
+                self._logger.debug(
                     "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",

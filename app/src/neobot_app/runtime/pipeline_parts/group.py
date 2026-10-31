@@ -116,7 +116,7 @@ class _PipelineGroupMixin:
             if self._has_active_reply_pipeline("group", queue_key):
                 self._post_reply_willing.setdefault(queue_key, []).append(message)
                 return
-            self._logger.warning(
+            self._logger.debug(
                 "已清理过期的回复中队列状态",
                 queue_key=queue_key,
                 kind="group",
