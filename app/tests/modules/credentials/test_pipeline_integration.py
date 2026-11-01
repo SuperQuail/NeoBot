@@ -198,10 +198,16 @@ async def test_chitchat_without_credential_is_not_counted() -> None:
         )
         assert handled is False
     assert manager.is_issue_blocked("group:123") is False
+    assert "group:123" not in manager._issue_failures
 
 
 async def test_pending_credential_survives_chitchat() -> None:
-    """有凭据待签发时，群里的普通聊天也不该把会话打进签发冷却。"""
+    """有凭据待签发时，群里的普通聊天也不该把会话打进签发冷却。
+
+    注意边界：权限门是「发送者能签发本会话任一 pending 凭据」粒度，本用例用的是
+    2-3 字中文（looks_like_code 为假），不会触发权限门；可签发者发「像码」的
+    文本（如 hahaha）仍按猜测计数，这是防爆破语义的有意保留。
+    """
     manager = CredentialManager(PermissionManager(_config()))
     credential = manager.create(
         chat_flow="group:123", action="kick", requester_id=88888, cred_type="one_time"

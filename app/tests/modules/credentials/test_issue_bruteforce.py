@@ -200,15 +200,28 @@ def test_normal_member_guesses_do_not_trigger_cooldown() -> None:
     assert issued.newly_issued is True
 
 
-def test_rate_limit_notice_is_once_per_cooldown() -> None:
-    """冷却窗口内每会话只允许提示一次，窗口结束后可再次提示。"""
+def test_rate_limit_notice_is_once_per_cooldown(monkeypatch) -> None:
+    """冷却窗口内每会话只允许提示一次；清窗口标记的三处入口都要生效。"""
     manager = _manager()
     _new_credential(manager)
     assert manager.take_rate_limit_notice("group:1") is True
     assert manager.take_rate_limit_notice("group:1") is False
 
-    # 重新进入冷却（成功签发会清掉窗口标记，这里直接走 _record_issue_failure）
+    # 成功签发（_clear_issue_failures）清掉窗口标记
+    manager._clear_issue_failures("group:1")
+    assert manager.take_rate_limit_notice("group:1") is True
+
+    # 进入新冷却窗口（_record_issue_failure）也清掉窗口标记
     for _ in range(_ISSUE_MAX_FAILURES):
         manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
     assert manager.is_issue_blocked("group:1") is True
+    assert manager.take_rate_limit_notice("group:1") is True
+
+    # 冷却过期后 cleanup 同样回收窗口标记，下一轮冷却可再提示
+    real_time = time.time
+    monkeypatch.setattr(
+        "neobot_app.credentials.service.time.time",
+        lambda: real_time() + _ISSUE_BLOCK_SECONDS + 1,
+    )
+    manager.cleanup()
     assert manager.take_rate_limit_notice("group:1") is True

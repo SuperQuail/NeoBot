@@ -37,11 +37,11 @@ flowchart TD
     D -- 否 --> I
     I --> J["管理员在群里发码"]
     J --> J1{"会话有 pending/active 凭据?"}
-    J1 -- 否 --> X["返回 not_found，按普通消息处理"]
+    J1 -- 否 --> X1["直接按普通消息处理（不进 try_issue）"]
     J1 -- 是 --> K["try_issue(chat_flow, code, issuer_id)"]
-    K --> B{"该会话在冷却中?"}
-    B -- 是 --> Z["rate_limited：能签发者收到「太频繁」（每窗口一次）"]
-    B -- 否 --> K1{"码存在且属于本会话?"}
+    K --> J2{"该会话在冷却中?"}
+    J2 -- 是 --> Z["rate_limited：looks_like_code 且能签发者收到「太频繁」（每窗口一次）"]
+    J2 -- 否 --> K1{"码存在且属于本会话?"}
     K1 -- 否 --> K2{"looks_like_code 且发送者能签发?"}
     K2 -- 是 --> K3["_record_issue_failure 计数 +1"]
     K2 -- 否 --> X
@@ -110,8 +110,8 @@ flowchart TD
 ```
 
 四种状态要分清（`credentials/service.py`）：**不存在 / 已过期 / 已消费（一次性）/ 有效**。
-`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:213`）负责把一次性凭据置为已用。
-`cleanup`（`:239`）是清理入口，但不保证被周期调用 —— 长期不清理不会导致功能错误（`get` 会判过期），
+`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:266`）负责把一次性凭据置为已用。
+`cleanup`（`:306`）是清理入口，但不保证被周期调用 —— 长期不清理不会导致功能错误（`get` 会判过期），
 只是内存里会留垃圾项。
 </details>
 
@@ -164,7 +164,7 @@ flowchart LR
     E --> F
 ```
 
-`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:277`）是唯一读法。
+`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:331`）是唯一读法。
 新增危险动作**必须**同时加表项与调用点，否则会落到 `DEFAULT_REQUIRED_LEVEL` —— 表现为
 「该拦的没拦」。回执文案里明确写了「不要重试」（见 FINDINGS 06 节的凭据语义）。
 </details>
@@ -252,6 +252,10 @@ flowchart TD
 * **凭据不是重试型错误**：无凭据时每次同样失败，必须先 `credential__request`；
   一次性凭据一消费就 USED，时限凭据持续有效不消费（FINDINGS 06 节）。
 * **签发冷却按会话**：一个群被冷却不影响其它群，但同一群内所有动作一起被挡。
+* **权限门是「能签任一条 pending」粒度**：同一 chat_flow 里同时存在不同级别的待签发凭据时，
+  只要发送者能签其中任意一条就会计数——例如次级管理员（能签 `willing_global`）连发像码文本，
+  会把同群的 `kick` 凭据一起挡进冷却。这是有意为之的粗粒度（按会话冷却），不要误读成
+  「只有目标动作的签发者才计数」。
 * **失败计数只认「可签发者发的、像码的文本」**：`looks_like_code` 为假（长度或字符集不符）
   或发送者没有签发权限都不进 `_issue_failures`，无凭据会话更是在管线处直接短路——别用
   「每句话都算一次猜测」的直觉得出「聊几句就冷却」的结论；`hahaha`/`233333` 这类词恰好
