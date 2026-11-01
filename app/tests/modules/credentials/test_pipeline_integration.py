@@ -227,6 +227,77 @@ async def test_pending_credential_survives_chitchat() -> None:
     assert credential.status == "active"
 
 
+async def test_normal_member_cannot_exhaust_cooldown() -> None:
+    """普通成员连发「像码」的文本不能把会话打进冷却：他们猜中也签不了。"""
+    manager = CredentialManager(PermissionManager(_config()))
+    credential = manager.create(
+        chat_flow="group:123", action="kick", requester_id=88888, cred_type="one_time"
+    )
+    pipeline = _build_pipeline(manager)
+    for index, text in enumerate(("hahaha", "233333", "666666", "thanks", "zzzzzz")):
+        message = _parse_group_message(
+            _group_event(text, user_id=NORMAL, message_id=index + 1)
+        )
+        handled = await pipeline._try_issue_credential(
+            message, kind="group", queue_key="123", queue=pipeline._group_queue
+        )
+        assert handled is False
+
+    assert manager.is_issue_blocked("group:123") is False
+    message = _parse_group_message(
+        _group_event(credential.code, user_id=SUPER, message_id=99)
+    )
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="123", queue=pipeline._group_queue
+    )
+    assert handled is True
+    assert credential.status == "active"
+
+
+async def test_rate_limited_notice_only_for_issuer_once() -> None:
+    """冷却期提示只回给能签发的人，且每窗口只提示一次。"""
+    manager = CredentialManager(PermissionManager(_config()))
+    credential = manager.create(
+        chat_flow="group:123", action="kick", requester_id=88888, cred_type="one_time"
+    )
+    for _ in range(5):
+        manager.try_issue(chat_flow="group:123", code="zzzzzz", issuer_id=SUPER)
+    assert manager.is_issue_blocked("group:123") is True
+
+    pipeline = _build_pipeline(manager)
+    sent: list = []
+
+    class _Adapter:
+        async def send(self, conv, segments):
+            sent.append(segments)
+
+    pipeline.adapter = _Adapter()
+
+    # 普通成员在冷却期发码：不提示（他本来也签不了）
+    message = _parse_group_message(_group_event(credential.code, user_id=NORMAL))
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="123", queue=pipeline._group_queue
+    )
+    assert handled is False
+    assert sent == []
+
+    # 超管发码：提示一次
+    message = _parse_group_message(_group_event(credential.code, user_id=SUPER))
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="123", queue=pipeline._group_queue
+    )
+    assert handled is True
+    assert "太频繁" in sent[0][0]["data"]["text"]
+
+    # 同一冷却窗口第二次不再提示
+    message = _parse_group_message(_group_event(credential.code, user_id=SUPER))
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="123", queue=pipeline._group_queue
+    )
+    assert handled is False
+    assert len(sent) == 1
+
+
 def _parse_group_message(event: dict):
     from neobot_adapter.model.message import GroupMessage
     from neobot_adapter.utils.parse import safe_parse_model

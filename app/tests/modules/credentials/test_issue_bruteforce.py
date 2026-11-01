@@ -75,6 +75,7 @@ def test_code_generation_does_not_use_global_random(monkeypatch) -> None:
 
 def test_repeated_not_found_enters_cooldown() -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         result = manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
         assert result.ok is False
@@ -116,6 +117,7 @@ def test_successful_issue_clears_failure_counter() -> None:
 
 def test_failures_are_per_chat_flow() -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
 
@@ -125,6 +127,7 @@ def test_failures_are_per_chat_flow() -> None:
 
 def test_cleanup_releases_expired_cooldown(monkeypatch) -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
     assert manager.is_issue_blocked("group:1") is True
@@ -174,3 +177,38 @@ def test_code_shaped_guesses_still_count() -> None:
 
     blocked = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
     assert blocked.error == "rate_limited"
+
+
+def test_normal_member_guesses_do_not_trigger_cooldown() -> None:
+    """无签发权限的成员发「像码」的文本也不计数。
+
+    他们猜中同样会被 permission_denied，计他们的数没有安全收益；反过来，
+    「hahaha」「233333」这类日常词恰好满足长度+字符集，计入会让普通成员用
+    闲聊把签发挡住。
+    """
+    manager = _manager()
+    credential = _new_credential(manager)
+    for text in ("hahaha", "233333", "666666", "thanks", "zzzzzz"):
+        assert manager.looks_like_code(text) is True
+        result = manager.try_issue(chat_flow="group:1", code=text, issuer_id=NORMAL)
+        assert result.ok is False
+        assert result.error == "not_found"
+
+    assert manager.is_issue_blocked("group:1") is False
+    issued = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert issued.ok is True
+    assert issued.newly_issued is True
+
+
+def test_rate_limit_notice_is_once_per_cooldown() -> None:
+    """冷却窗口内每会话只允许提示一次，窗口结束后可再次提示。"""
+    manager = _manager()
+    _new_credential(manager)
+    assert manager.take_rate_limit_notice("group:1") is True
+    assert manager.take_rate_limit_notice("group:1") is False
+
+    # 重新进入冷却（成功签发会清掉窗口标记，这里直接走 _record_issue_failure）
+    for _ in range(_ISSUE_MAX_FAILURES):
+        manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
+    assert manager.is_issue_blocked("group:1") is True
+    assert manager.take_rate_limit_notice("group:1") is True

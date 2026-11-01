@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: fb703fe5
-verified_hash: a93a77a6e190
+verified_hash: efb2096bce97
 ---
 
 # 19 凭据、面板鉴权与安全边界
@@ -37,14 +37,12 @@ flowchart TD
     D -- 否 --> I
     I --> J["管理员在群里发码"]
     J --> J1{"会话有 pending/active 凭据?"}
-    J1 -- 否 --> X["按普通消息处理（不查表、不计数）"]
-    J1 -- 是 --> J2{"该会话在冷却中?"}
-    J2 -- 是 --> Y{"码格式像凭据?"}
-    Y -- 是 --> Z["提示：签发太频繁，等几分钟"]
-    Y -- 否 --> X
-    J2 -- 否 --> K["try_issue(chat_flow, code, issuer_id)"]
-    K --> K1{"码存在且属于本会话?"}
-    K1 -- 否 --> K2{"looks_like_code（长度 + 字符集）?"}
+    J1 -- 否 --> X["返回 not_found，按普通消息处理"]
+    J1 -- 是 --> K["try_issue(chat_flow, code, issuer_id)"]
+    K --> B{"该会话在冷却中?"}
+    B -- 是 --> Z["rate_limited：能签发者收到「太频繁」（每窗口一次）"]
+    B -- 否 --> K1{"码存在且属于本会话?"}
+    K1 -- 否 --> K2{"looks_like_code 且发送者能签发?"}
     K2 -- 是 --> K3["_record_issue_failure 计数 +1"]
     K2 -- 否 --> X
     K3 --> K4{"failures >= 5?"}
@@ -77,12 +75,12 @@ sequenceDiagram
     CM-->>AG: False
     AG-->>AD: 提示需要凭据
     AD->>RT: 在会话里发送文本
-    RT->>CM: list(chat_flow)：有 pending/active 凭据?
+    RT->>CM: has_pending_or_active(chat_flow)?
     CM-->>RT: 没有 → 按普通消息处理
     RT->>CM: try_issue(chat_flow, code, issuer_id)
-    CM->>CM: 冷却判定 → 查表 → 仅格式合法的未命中计数
+    CM->>CM: 冷却判定 → 查表 → 仅「可签发者的格式合法未命中」计数
     CM-->>RT: 签发结果（码 + 时限 / rate_limited）
-    RT-->>AD: 首次签发回执；冷却期内格式像码则提示「太频繁」
+    RT-->>AD: 首次签发回执；冷却期内格式像码且可签发者才提示「太频繁」（每窗口一次）
     AG->>CM: get(code) + consume
     CM-->>AG: 有效则放行
     AG->>ACT: 执行
@@ -125,15 +123,16 @@ flowchart TD
     A["try_issue(chat_flow, code, issuer_id)"] --> B{"该会话在冷却中?"}
     B -- 是 --> C["rate_limited：冷却期内猜中也不签发"]
     B -- 否 --> D{"码存在且属于本会话?"}
-    D -- 否 --> E{"looks_like_code：长度 + 字符集?"}
+    D -- 否 --> E{"looks_like_code 且发送者可签发?"}
     E -- 是 --> F["_record_issue_failure：失败计数 +1"]
     E -- 否 --> G["返回 not_found（不计数）"]
     F --> H{"failures >= _ISSUE_MAX_FAILURES=5?"}
     H -- 是 --> I["进入冷却（约 300s）"]
-    H -- 否 --> G
+    H -- 否 --> G2["返回 not_found（本次已计数）"]
     D -- 是 --> J{"状态与签发者级别?"}
     J -- 过期 / 非 pending --> K["expired / invalid_status"]
-    J -- 已签发且无权限 --> L["permission_denied（不计数）"]
+    J -- active 且有权限 --> K2["ok：幂等重发，不新建"]
+    J -- 无签发权限 --> L["permission_denied（不计数）"]
     J -- pending 且级别够 --> M["pending → active 签发"]
     M --> N["_clear_issue_failures 清零"]
 ```
@@ -142,11 +141,13 @@ flowchart TD
 
 `_ISSUE_MAX_FAILURES = 5`（`service.py:26`）与冷却窗口是**防爆破**设计：
 失败 5 次后该会话在冷却期内无法再尝试签发。
-计数口径是「格式与凭据码一致的未命中」——`looks_like_code` 为假（长度不等于
-`code_length` 或含字符集外字符）时只返回 `not_found`，不进 `_issue_failures`。
+计数口径是「格式与凭据码一致、且发送者本来就能签发本会话 pending 凭据的未命中」：
+`looks_like_code` 为假（长度不等于 `code_length` 或含字符集外字符）只返回 `not_found`；
+发送者没有签发权限同样不计数——他猜中也会 `permission_denied`，计他的数没有安全收益，
+反而让普通成员能用 `hahaha` 这类恰好满足格式的日常词把签发挡住。
 管线侧（`runtime/pipeline_parts/credential.py`）在会话没有 pending/active 凭据时直接短路，
-普通聊天不会进入 `try_issue`。因此闲聊不会把活跃群聊打进冷却，而真正的爆破尝试仍逐次计数。
-冷却期内格式合法的码由管线回「签发尝试太频繁」提示，而不是静默失败。
+普通聊天不会进入 `try_issue`。冷却期内格式合法的码由管线回「签发尝试太频繁」提示，
+但只回给能签发的人、且每个冷却窗口只提示一次（`take_rate_limit_notice`）。
 注意冷却键是 **chat_flow**（会话维度）不是全局 —— 一个群被冷却不影响其它群。
 </details>
 
@@ -241,7 +242,7 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | 凭据项 | `create` | `consume` / `revoke` / `cleanup` | 过期与已消费都按无效处理 |
-| 签发失败计数 | `_record_issue_failure` | `_clear_issue_failures`（成功签发时） | 只有格式合法的未命中才计数，达 5 次进入冷却（chat_flow 维度） |
+| 签发失败计数 | `_record_issue_failure` | `_clear_issue_failures`（成功签发时） | 只有「格式合法 + 发送者可签发」的未命中才计数，达 5 次进入冷却（chat_flow 维度） |
 | 面板登录态 | `panel_auth` 登录 | 登出、过期或成功改密后撤销全部会话 | 未登录/版本过期 401，无权限/旧密码错误 403 |
 | 密钥 | `.env` + `EnvConfig` | 改 `.env` 需 reload 才重建注册表 | 平台名/密钥缺一即不注册该模型 |
 
@@ -251,8 +252,10 @@ flowchart TD
 * **凭据不是重试型错误**：无凭据时每次同样失败，必须先 `credential__request`；
   一次性凭据一消费就 USED，时限凭据持续有效不消费（FINDINGS 06 节）。
 * **签发冷却按会话**：一个群被冷却不影响其它群，但同一群内所有动作一起被挡。
-* **失败计数只认「像码的文本」**：`looks_like_code` 为假（长度或字符集不符）的普通消息
-  不进 `_issue_failures`，无凭据会话更是在管线处直接短路——别用「每句话都算一次猜测」的直觉得出「聊几句就冷却」的结论。
+* **失败计数只认「可签发者发的、像码的文本」**：`looks_like_code` 为假（长度或字符集不符）
+  或发送者没有签发权限都不进 `_issue_failures`，无凭据会话更是在管线处直接短路——别用
+  「每句话都算一次猜测」的直觉得出「聊几句就冷却」的结论；`hahaha`/`233333` 这类词恰好
+  满足长度与字符集，真正的防线是发送者权限门与无凭据短路。
 * **新增危险动作必须登记 `ACTION_REQUIRED_LEVEL`**：漏登记会落到默认级别，表现为「该拦的没拦」。
 * **面板登录态与凭据不通兑**：两套体系独立判定。
 * **密钥只从 `.env` 来**：面板保存后需要 reload 才让注册表用上新密钥。
