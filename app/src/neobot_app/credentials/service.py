@@ -149,6 +149,19 @@ class CredentialManager:
             if code not in self._credentials:
                 return code
 
+    def looks_like_code(self, text: str) -> bool:
+        """文本是否「长得像凭据码」：长度与字符集都要和凭据码一致。
+
+        `_try_issue_credential` 对每条群消息都会调用 `try_issue`，若把普通闲聊
+        也记成一次「没猜中」，活跃群聊五句话就能把会话打进 5 分钟冷却，而冷却期
+        内正确凭据码同样被拒（rate_limited），凭据功能等于不可用。所以只有格式
+        与凭据码一致的文本才算一次猜测尝试，防爆破强度不变。
+        """
+        candidate = text.strip().lower()
+        if len(candidate) != self._code_length:
+            return False
+        return all(char in _CODE_CHARS for char in candidate)
+
     def _record_issue_failure(self, chat_flow: str, now: float) -> None:
         """记录一次"没猜中"；达到阈值后进入冷却。"""
         failures = self._issue_failures.get(chat_flow, 0) + 1
@@ -176,7 +189,9 @@ class CredentialManager:
 
         credential = self._credentials.get(code.strip().lower())
         if credential is None or credential.chat_flow != chat_flow:
-            self._record_issue_failure(chat_flow, now)
+            # 普通聊天文本不计入防爆破计数，只有格式合法的猜测才算一次尝试
+            if self.looks_like_code(code):
+                self._record_issue_failure(chat_flow, now)
             return CredentialIssueResult(ok=False, error="not_found")
         if credential.is_expired():
             credential.status = CRED_STATUS_EXPIRED

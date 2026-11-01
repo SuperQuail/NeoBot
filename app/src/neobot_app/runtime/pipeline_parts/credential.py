@@ -6,6 +6,7 @@ import time
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
 from neobot_app.message.queue import MessageQueue
+from neobot_app.credentials.model import CRED_STATUS_ACTIVE, CRED_STATUS_PENDING
 
 from .helpers import _credential_message_text
 
@@ -85,6 +86,13 @@ class _PipelineCredentialMixin:
             return False
         self._maybe_cleanup_credentials()
         chat_flow = f"{kind}:{queue_key}"
+        # 该会话既没有待签发、也没有可用凭据时直接放行：既省一次查表，也避免把
+        # 群里的普通聊天统统算成「猜码失败」（那会让活跃群聊长期卡在签发冷却里）。
+        if not any(
+            credential.status in (CRED_STATUS_PENDING, CRED_STATUS_ACTIVE)
+            for credential in credential_manager.list(chat_flow=chat_flow)
+        ):
+            return False
         issue = credential_manager.try_issue(
             chat_flow=chat_flow,
             code=text,
@@ -98,6 +106,19 @@ class _PipelineCredentialMixin:
                     "该凭据需要更高级别的管理员签发,你没有权限。",
                 )
                 return True
+            if issue.error == "rate_limited" and credential_manager.looks_like_code(text):
+                # 冷却期里连正确码也不签发：明确告知，别让管理员以为码没发出去
+                await self._send_credential_notice(
+                    message, queue, queue_key,
+                    "签发尝试太频繁，等几分钟后再发一次凭据码。",
+                )
+                return True
+            self._logger.debug(
+                "凭据签发未命中，按普通消息处理",
+                chat_flow=chat_flow,
+                error=issue.error,
+                issuer_id=issuer_id,
+            )
             return False  # 非凭据文本(not_found/expired/状态异常):正常管线
         credential = issue.credential
         if credential is None:

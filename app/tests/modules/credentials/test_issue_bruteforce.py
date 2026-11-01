@@ -138,3 +138,39 @@ def test_cleanup_releases_expired_cooldown(monkeypatch) -> None:
 
     assert manager.is_issue_blocked("group:1") is False
     assert "group:1" not in manager._issue_failures
+
+
+def test_chitchat_does_not_trigger_cooldown() -> None:
+    """普通聊天不能被算成「猜码失败」。
+
+    管线对每条群消息都会调 try_issue；若把闲聊也计入失败次数，活跃群聊五句话
+    就能把会话打进 5 分钟冷却，冷却期内正确凭据码同样被拒（rate_limited），
+    线上表现就是「管理员发了码，凭据一直 pending」。
+    """
+    manager = _manager()
+    credential = _new_credential(manager)
+    for text in ("今天天气不错", "在吗", "哈哈哈哈", "晚安喵", "好耶", "诶嘿"):
+        result = manager.try_issue(chat_flow="group:1", code=text, issuer_id=SUPER)
+        assert result.ok is False
+        assert result.error == "not_found"
+
+    assert manager.is_issue_blocked("group:1") is False
+    issued = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert issued.ok is True
+    assert issued.newly_issued is True
+
+
+def test_code_shaped_guesses_still_count() -> None:
+    """格式与凭据码一致的猜测仍然计入失败次数（防爆破强度不变）。"""
+    manager = _manager()
+    credential = _new_credential(manager)
+    wrong = "z" * len(credential.code)
+    assert manager.looks_like_code(wrong) is True
+    assert manager.looks_like_code("在吗") is False
+
+    for _ in range(_ISSUE_MAX_FAILURES):
+        manager.try_issue(chat_flow="group:1", code=wrong, issuer_id=SUPER)
+    assert manager.is_issue_blocked("group:1") is True
+
+    blocked = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert blocked.error == "rate_limited"

@@ -185,6 +185,48 @@ async def test_requeued_code_does_not_retrigger() -> None:
     assert "没有权限" in sent[0][0]["data"]["text"] or "权限" in str(sent)
 
 
+async def test_chitchat_without_credential_is_not_counted() -> None:
+    """会话里没有任何凭据时，普通聊天不进签发逻辑，也不累计失败次数。"""
+    manager = CredentialManager(PermissionManager(_config()))
+    pipeline = _build_pipeline(manager)
+    for index, text in enumerate(("在吗", "哈哈哈哈", "晚安喵", "好耶", "诶嘿", "今天天气不错")):
+        message = _parse_group_message(
+            _group_event(text, user_id=SUPER, message_id=index + 1)
+        )
+        handled = await pipeline._try_issue_credential(
+            message, kind="group", queue_key="123", queue=pipeline._group_queue
+        )
+        assert handled is False
+    assert manager.is_issue_blocked("group:123") is False
+
+
+async def test_pending_credential_survives_chitchat() -> None:
+    """有凭据待签发时，群里的普通聊天也不该把会话打进签发冷却。"""
+    manager = CredentialManager(PermissionManager(_config()))
+    credential = manager.create(
+        chat_flow="group:123", action="kick", requester_id=88888, cred_type="one_time"
+    )
+    pipeline = _build_pipeline(manager)
+    for index, text in enumerate(("在吗", "哈哈哈哈", "晚安喵", "好耶", "诶嘿")):
+        message = _parse_group_message(
+            _group_event(text, user_id=SUPER, message_id=index + 1)
+        )
+        handled = await pipeline._try_issue_credential(
+            message, kind="group", queue_key="123", queue=pipeline._group_queue
+        )
+        assert handled is False
+
+    assert manager.is_issue_blocked("group:123") is False
+    message = _parse_group_message(
+        _group_event(credential.code, user_id=SUPER, message_id=99)
+    )
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="123", queue=pipeline._group_queue
+    )
+    assert handled is True
+    assert credential.status == "active"
+
+
 def _parse_group_message(event: dict):
     from neobot_adapter.model.message import GroupMessage
     from neobot_adapter.utils.parse import safe_parse_model
