@@ -4,13 +4,16 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: d525a5b
-verified_hash: d0293d1882ed
+verified_against: 21bfdff0
+verified_hash: 4c11689dd29c
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
 
 ## 范围
+
+定时任务写动作从当前宿主服务注册表取得 `skill_manager`，再通过 `get("reminder")`
+获取实际注册的提醒技能。工具元数据延迟加载不影响管理写操作；未注册或已卸载技能时返回 503。
 
 面板就绪以实际 socket 绑定成功为准，端口耗尽保持启动失败；访问 URL 使用实际端口，支持 IPv6 scope、通配监听地址和 base_path。日志页保留结构化字段、调用位置与异常，搜索和导出覆盖展开详情。成功的密码设置、改密、待机与重启操作使用 INFO。
 
