@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 9861f57d
-verified_hash: a51f1143cfc8
+verified_against: 5e1a42cf
+verified_hash: b59c4c5d7fd1
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -214,6 +214,13 @@ Windows 默认使用 `%LOCALAPPDATA%/ms-playwright`，未设置时才回退用�
 <details>
 ### 启动、探活与整机重建：3 次重试与"任何异常都重启"
 
+DrissionPage 4.1 的局部兼容逻辑集中在 `agent_browser/_drissionpage41.py`，由 `_compat.py`
+导入时安装一次。上游因 headless 不一致或 `new_env` 重启时，新的 browser id 同步到 CDP
+WebSocket 地址；成功后按新 id 登记 Chromium，并移除旧驱动缓存。构造异常时仅移除该对象
+及其驱动，停止连接线程，让 `start()` 后续重试重新初始化；其它浏览器实例的缓存保持不变。
+直接配置 `ws_address` 时始终保留原地址，即使 HTTP 探测可用，也不能把 browserContextId
+当成 endpoint id 替换。兼容逻辑只作用于 4.1 系列，不改依赖版本。
+
 Windows 残留清理识别 `chrome.exe`、`msedge.exe`、`chromium.exe`，仅匹配完整的
 `--user-data-dir` 参数。相似前缀目录、日志路径和其它 profile 均不会触发清理；
 同一 profile 仍有其它存活管理器时，继续跳过所有清理。
@@ -225,7 +232,7 @@ flowchart TD
     A["BrowserManager.start / manager.py:239"] --> B["_kill_orphaned_chrome / manager.py:198"]
     B --> B1{"Windows 且无其它存活实例?"}
     B1 -- 否 --> C
-    B1 -- 是 --> B2["psutil 扫 cmdline 含该 user_data_dir 的 chrome 进程 kill + wait(3)"]
+    B1 -- 是 --> B2["psutil 扫 Chrome / Edge / Chromium<br/>完整绝对 profile 参数匹配后 kill + wait(3)"]
     B2 --> C["attempt = 0"]
     C --> D["asyncio.to_thread(_start_sync): ChromiumPage(ChromiumOptions)"]
     D --> E["记 _chrome_pid（取不到就 None）"]
