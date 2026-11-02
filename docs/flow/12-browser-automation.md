@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 528fe18
-verified_hash: 2023badcb160
+verified_against: 31683ddf
+verified_hash: 5fcf63674341
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -173,10 +173,12 @@ flowchart TD
     A["_find_chrome_binary / manager.py:105"] --> B{"CHROME_PATH 环境变量?"}
     B -- 有 --> Z["直接返回"]
     B -- 无 --> C["_playwright_chromium_path / manager.py:86"]
-    C --> C1["Win: ms-playwright/chromium-*/chrome-win/chrome.exe"]
-    C --> C2["Linux: chrome-linux 或 chrome-linux64"]
+    C --> C1["Win: chromium-*/chrome-win*/chrome.exe"]
+    C --> C2["Linux: chrome-linux / chrome-linux64 / chrome-linux-arm64"]
     C --> C3["macOS: chrome-mac/Chromium.app/..."]
-    C1 --> C4["sorted()[−1] 取字典序最后一个"]
+    C1 --> C4["只保留文件，按数字 revision 取最新构建"]
+    C2 --> C4
+    C3 --> C4
     C4 --> D{"命中?"}
     D -- 是 --> Z
     D -- 否 --> E["系统候选列表"]
@@ -194,11 +196,12 @@ flowchart TD
     H4 -- 否 --> H6["--start-maximized/--window-size=1280,800 + 9 个 GPU 与后台节能开关"]
 ```
 
-**实测（本机 `%LOCALAPPDATA%/ms-playwright`）**：同时存在 `chromium-1148/chrome-win/chrome.exe`
-与 `chromium-1223/chrome-win64/chrome.exe`，而 `_playwright_chromium_path()` 的 Windows glob
-只认 `chrome-win`，所以自动检测拿到的是**旧构建 r1148**；`chrome-win64` 那一份永远匹配不到。
-同理 `sorted(candidates)[-1]` 是按字符串排序，`chromium-999` 会排在 `chromium-1000` 之后，
-"取最新 revision" 只在位数相同时成立。
+缓存根目录由 `manager_parts/process.py:_playwright_cache_directory` 与安装器规则保持一致：
+`PLAYWRIGHT_BROWSERS_PATH` 优先，值为 `0` 时使用 Python Playwright 包的
+`driver/package/.local-browsers`；相对路径以 `INIT_CWD` 或当前目录解析，并在查找前消除 `.`、`..` 路径段。
+Linux 默认使用 `$XDG_CACHE_HOME/ms-playwright`，未设置时回退 `~/.cache/ms-playwright`。
+发现缓存后冷启动直接复用；缺失时安装一次，随后启动再次使用同一目录。构建号按数字比较，
+因此 r1000 优先于 r999，目录占位不会被当成可执行文件。
 
 文档写"Chrome > Edge > Chromium"，实际 Windows 上 `shutil.which("msedge")` 被 `insert(0)`
 到最前，**PATH 里有 Edge 就用 Edge**；而 Playwright Chromium 又整体优先于系统 Chrome。
