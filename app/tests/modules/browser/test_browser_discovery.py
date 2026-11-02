@@ -152,6 +152,7 @@ def test_bootstrap_uses_valid_configuration_or_clears_it(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("name", ["chrome.exe", "msedge.exe", "chromium.exe"])
 @pytest.mark.parametrize("split_argument", [False, True])
 def test_orphan_cleanup_includes_edge_and_keeps_other_profiles(tmp_path, monkeypatch, name, split_argument):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(manager, "_WINDOWS", True)
     monkeypatch.setattr(manager, "_has_other_live_instances", lambda instance: False)
     profile = str(tmp_path / "profile")
@@ -168,6 +169,7 @@ def test_orphan_cleanup_includes_edge_and_keeps_other_profiles(tmp_path, monkeyp
         SimpleNamespace(info={"pid": 2, "name": name, "cmdline": [f"--user-data-dir={tmp_path / 'other'}"]}),
         SimpleNamespace(info={"pid": 3, "name": name, "cmdline": [f"--user-data-dir={profile}-other"]}),
         SimpleNamespace(info={"pid": 4, "name": name, "cmdline": [f"--log-file={profile}/browser.log"]}),
+        SimpleNamespace(info={"pid": 5, "name": name, "cmdline": ["--user-data-dir=profile"]}),
     ]
     monkeypatch.setitem(sys.modules, "psutil", psutil)
     instance = object.__new__(manager.BrowserManager)
@@ -175,3 +177,26 @@ def test_orphan_cleanup_includes_edge_and_keeps_other_profiles(tmp_path, monkeyp
     instance._kill_orphaned_chrome()
     psutil.Process.assert_called_once_with(1)
     psutil.Process.return_value.kill.assert_called_once()
+
+
+def test_equivalent_profile_paths_share_live_instance_protection(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "_WINDOWS", True)
+    monkeypatch.setattr(manager, "_INSTANCE_REGISTRY", {})
+    profile = tmp_path / "profile"
+    first = object.__new__(manager.BrowserManager)
+    first._user_data_dir = str(profile)
+    second = object.__new__(manager.BrowserManager)
+    second._user_data_dir = str(tmp_path / "unused" / ".." / "profile")
+    manager._register_instance(first)
+    manager._register_instance(second)
+    psutil = Mock()
+    monkeypatch.setitem(sys.modules, "psutil", psutil)
+
+    assert manager._has_other_live_instances(first)
+    assert manager._has_other_live_instances(second)
+    second._kill_orphaned_chrome()
+    psutil.process_iter.assert_not_called()
+    manager._unregister_instance(first)
+    assert not manager._has_other_live_instances(second)
+    manager._unregister_instance(second)
+    assert manager._INSTANCE_REGISTRY == {}

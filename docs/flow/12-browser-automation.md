@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: df66e7f5
-verified_hash: 1a42e5ace856
+verified_against: f8c88339
+verified_hash: a51f1143cfc8
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -217,6 +217,8 @@ Windows 默认使用 `%LOCALAPPDATA%/ms-playwright`，未设置时才回退用�
 Windows 残留清理识别 `chrome.exe`、`msedge.exe`、`chromium.exe`，仅匹配完整的
 `--user-data-dir` 参数。相似前缀目录、日志路径和其它 profile 均不会触发清理；
 同一 profile 仍有其它存活管理器时，继续跳过所有清理。
+实例注册、注销、存活判断和进程匹配共用规范化目录键；外部进程的相对 profile 参数
+因工作目录未知而跳过，不使用 NeoBot 的当前目录猜测归属。
 
 ```mermaid
 flowchart TD

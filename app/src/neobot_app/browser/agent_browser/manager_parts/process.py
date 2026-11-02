@@ -44,30 +44,36 @@ def _windows() -> bool:
     return bool(_facade_attr("_WINDOWS", _WINDOWS))
 
 
+def _profile_key(user_data_dir: str) -> str:
+    """注册表与残留清理共用同一个规范化目录键。"""
+    return os.path.abspath(user_data_dir).lower()
+
+
 def _register_instance(manager: "BrowserManager") -> None:
     registry = _facade_attr("_INSTANCE_REGISTRY", _INSTANCE_REGISTRY)
     with _facade_attr("_REGISTRY_LOCK", _REGISTRY_LOCK):
-        registry.setdefault(manager._user_data_dir.lower(), set()).add(weakref.ref(manager))
+        registry.setdefault(_profile_key(manager._user_data_dir), set()).add(weakref.ref(manager))
 
 
 def _unregister_instance(manager: "BrowserManager") -> None:
     registry = _facade_attr("_INSTANCE_REGISTRY", _INSTANCE_REGISTRY)
     with _facade_attr("_REGISTRY_LOCK", _REGISTRY_LOCK):
-        refs = registry.get(manager._user_data_dir.lower())
+        key = _profile_key(manager._user_data_dir)
+        refs = registry.get(key)
         if refs is None:
             return
         for ref in list(refs):
             if ref() is manager:
                 refs.discard(ref)
         if not refs:
-            registry.pop(manager._user_data_dir.lower(), None)
+            registry.pop(key, None)
 
 
 def _has_other_live_instances(manager: "BrowserManager") -> bool:
     """该用户数据目录下是否存在除 manager 之外仍存活的实例。"""
     registry = _facade_attr("_INSTANCE_REGISTRY", _INSTANCE_REGISTRY)
     with _facade_attr("_REGISTRY_LOCK", _REGISTRY_LOCK):
-        ud = manager._user_data_dir.lower()
+        ud = _profile_key(manager._user_data_dir)
         refs = registry.get(ud)
         if not refs:
             return False

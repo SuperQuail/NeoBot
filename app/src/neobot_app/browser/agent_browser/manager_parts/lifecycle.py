@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +18,7 @@ from .process import (
     _find_chrome_binary,
     _logger,
     _other_live_instances,
+    _profile_key,
     _register_instance,
     _unregister_instance,
     _windows,
@@ -27,7 +27,7 @@ from .process import (
 
 def _uses_user_data_dir(cmdline: list[str], user_data_dir: str) -> bool:
     """只匹配浏览器的完整 profile 参数，避免清理相似目录的其它实例。"""
-    expected = os.path.normcase(os.path.abspath(user_data_dir))
+    expected = _profile_key(user_data_dir)
     arguments = iter(cmdline)
     for argument in arguments:
         if argument == "--user-data-dir":
@@ -36,7 +36,11 @@ def _uses_user_data_dir(cmdline: list[str], user_data_dir: str) -> bool:
             profile = argument.partition("=")[2]
         else:
             continue
-        return os.path.normcase(os.path.abspath(profile.strip('"'))) == expected
+        profile = profile.strip('"')
+        # 外部进程的相对路径以它自己的 cwd 为准，不能借用 NeoBot 的 cwd。
+        if not Path(profile).is_absolute():
+            return False
+        return _profile_key(profile) == expected
     return False
 
 
