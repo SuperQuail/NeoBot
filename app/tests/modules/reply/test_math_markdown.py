@@ -83,6 +83,55 @@ def test_currency_ranges_are_not_formulas(source):
 
 
 @pytest.mark.parametrize(
+    ("source", "tex"),
+    [
+        ("$42$", "42"),
+        ("$0.33$", "0.33"),
+        ("$2m$", "2m"),
+        ("$2x$", "2x"),
+        ("$1,000$", "1,000"),
+    ],
+)
+def test_short_numeric_formulas_are_math(source, tex):
+    """纯数字 / 数字开头的短公式不再被当成金额。"""
+    assert math_sources(render_markdown(source)) == [tex]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "| 价格 | 说明 |\n|---|---|\n| $42$ | 元 |",
+        "- 价格 $42$",
+        "# 结论 $42$",
+        "> 引用里的 $42$",
+        "**粗体 $42$ 结束**",
+        "价格$42$元",
+        "（$42$）",
+    ],
+)
+def test_numeric_formula_in_any_block_context(source):
+    """预处理发生在 Markdown 解析之前，块级/行内结构不应影响判定。"""
+    assert math_sources(render_markdown(source)) == ["42"]
+
+
+@pytest.mark.parametrize("source", ["$42 元$", "$100%$", "$1,000 元$"])
+def test_math_mode_incompatible_text_stays_literal(source):
+    """CJK 与未转义 % 会让 KaTeX 报错（strict: 'error'），按普通文本处理。"""
+    output = render_markdown(source)
+    assert math_sources(output) == []
+    assert source in output
+
+
+@pytest.mark.parametrize(
+    ("source", "tex"),
+    [(r"$\text{元}$", r"\text{元}"), (r"$100\%$", r"100\%")],
+)
+def test_escaped_cjk_and_percent_still_render(source, tex):
+    """显式写了反斜杠就是 TeX 意图，不能被上一条的守卫误伤。"""
+    assert math_sources(render_markdown(source)) == [tex]
+
+
+@pytest.mark.parametrize(
     ("source", "code"),
     [
         ("> ~~~\n> $$a\n> b$$\n> ~~~", "$$a\nb$$\n"),
