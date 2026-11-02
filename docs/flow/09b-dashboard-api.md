@@ -11,8 +11,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/config.py
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugins.py
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/_common.py
-verified_against: 8320053
-verified_hash: 399dcb9eaa2c
+verified_against: 21bfdff0
+verified_hash: 035f18585377
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -337,7 +337,7 @@ flowchart LR
       D1["standby_service：待机状态与连接开关"]
       D2["host_commands.call 配置热重载"]
       D3["process_restart 信号或 application.request_restart"]
-      D4["skill_manager 到 reminder 技能"]
+      D4["skill_manager.get('reminder') 获取当前注册技能"]
     end
     subgraph SYS["进程本身"]
       E1["psutil 与 shutil.disk_usage｜system.py:97"]
@@ -353,6 +353,10 @@ flowchart LR
 | 用量库 | `/api/stats/usage`、`/api/series/usage` | `usage_session_factory` 为空即回 200 加 `available:false` | 异常被吞：200 加 `available:false` 加 `error` |
 | 文件 | `/api/config`、`/api/config/env`、`/api/prompts` | 管理器总是存在 | 读取失败 400（校验）或 500（IO） |
 | 宿主服务 | 档案 计费 定时 运维 | 一律 503 加「未注入 xxx」 | 依端点而定，多为 500 |
+
+定时任务写入使用 `SkillManager.get("reminder")`，不调用返回列表的 `all_skills` 属性。
+每次请求重新读取服务注册表；reminder 的工具元数据即使尚未加载，也可进行创建、更新、启停、
+通知策略和删除操作。技能已卸载时保持 503，管理权限检查仍在查找技能之前执行。
 
 `/api/config/env` 保存后可以顺带重载，但**环境变量不在配置快照里** ——
 配置 diff 永远看不到 `.env`。所以面板保存时会显式带上 `env` 这条变更路径

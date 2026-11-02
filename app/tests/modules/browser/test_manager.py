@@ -31,6 +31,8 @@ from neobot_app.bootstrap._runtime import _auto_install_chromium
 def _reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """每个用例前重置模块级实例注册表，保证用例间隔离。"""
     monkeypatch.setattr(manager_module, "_INSTANCE_REGISTRY", {})
+    for name in ("PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME", "LOCALAPPDATA", "INIT_CWD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 class _FakePage:
