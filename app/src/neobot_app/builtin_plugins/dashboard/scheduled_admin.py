@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from neobot_app.skills.base import SkillManager, SkillModule
 
 #: 提供定时任务 CRUD 的内置技能名
 REMINDER_SKILL_NAME = "reminder"
@@ -37,21 +40,11 @@ ACTION_FIELDS = (
 )
 
 
-def find_reminder_skill(skill_manager: Any) -> Any | None:
+def find_reminder_skill(skill_manager: SkillManager | None) -> SkillModule | None:
     """从 SkillManager 里找出 reminder 技能实例;找不到返回 None。"""
     if skill_manager is None:
         return None
-    lister = getattr(skill_manager, "all_skills", None)
-    if not callable(lister):
-        return None
-    try:
-        modules = lister()
-    except Exception:
-        return None
-    for module in modules or []:
-        if str(getattr(module, "name", "")) == REMINDER_SKILL_NAME:
-            return module
-    return None
+    return skill_manager.get(REMINDER_SKILL_NAME)
 
 
 def build_action_args(action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -70,9 +63,7 @@ def build_action_args(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     return args
 
 
-async def execute_action(
-    skill_manager: Any, action: str, payload: dict[str, Any]
-) -> dict[str, Any]:
+async def execute_action(skill_manager: Any, action: str, payload: dict[str, Any]) -> dict[str, Any]:
     """执行一次面板写操作,返回 skill 的 JSON 结果(已解析)。
 
     未配置技能/未知动作时抛 ValueError,由面板转成 400。
