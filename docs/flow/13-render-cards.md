@@ -486,7 +486,7 @@ flowchart TD
 * `math_markdown.py` 使用 CommonMark 的代码块范围保持引用、列表中的代码不变。
   单美元公式支持纯数字、小数及数字开头的短公式，如 `$42$`、`$0.33$`、`$2m$`；
   首尾空格、跨行、未闭合定界符、闭合符后紧跟数字及数字开头跨反引号的文本仍保留原文。
-  含 CJK 且没有反斜杠，或含未转义 `%` 的单美元内容也保留原文；`$\\text{元}$`、`$100\\%$` 可正常渲染。
+  含 CJK 且没有反斜杠，或含未转义 `%` 的单美元内容也保留原文；`$\text{元}$`、`$100\%$` 可正常渲染。
   原始 HTML 显示为文字，图片只显示替代文字；公式坏语法局部保留源码。降级不调用系统 TeX；
 * 清理：6h 巡检删 24h 前的 png/jpg/jpeg/webp/html（`_CLEANUP_INTERVAL_SECONDS` 与 `_TMP_MAX_AGE_SECONDS`，154-155），
   `stop()` 时 `_cleanup_all` 全删（`_CLEANUP_ALL_ON_STOP = True`）；
