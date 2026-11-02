@@ -15,6 +15,7 @@ from neobot_app.reply.tool_parts.common import _SKILL_GUARD_BASE_TOOLS, _SKILL_I
 #: 刻意不含 agents__delegate / 写文件 / 执行命令，避免 Router 绕开工具面裁剪。
 _ROUTER_BASE_TOOLS = frozenset(
     {
+        "cancel",
         "send_reply",
         "split_reply",
         "send_long_reply",
