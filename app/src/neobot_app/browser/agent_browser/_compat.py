@@ -35,6 +35,10 @@ try:  # pragma: no cover - 依赖存在与否决定分支
     from DrissionPage._pages.chromium_base import ChromiumBase
     from DrissionPage.errors import PageDisconnectedError
 
+    from ._drissionpage41 import install_restart_fix
+
+    install_restart_fix()
+
     DRISSIONPAGE_AVAILABLE = True
     DRISSIONPAGE_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - 兼容路径

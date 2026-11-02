@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 6e5808da
-verified_hash: c2f474c21b60
+verified_against: 31683ddf
+verified_hash: ed53f1c0989c
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -209,6 +209,12 @@ Linux 默认使用 `$XDG_CACHE_HOME/ms-playwright`，未设置时回退 `~/.cach
 
 <details>
 ### 启动、探活与整机重建：3 次重试与"任何异常都重启"
+
+DrissionPage 4.1 的局部兼容逻辑集中在 `agent_browser/_drissionpage41.py`，由 `_compat.py`
+导入时安装一次。上游因 headless 不一致或 `new_env` 重启时，新的 browser id 同步到 CDP
+WebSocket 地址；成功后按新 id 登记 Chromium，并移除旧驱动缓存。构造异常时仅移除该对象
+及其驱动，停止连接线程，让 `start()` 后续重试重新初始化；其它浏览器实例的缓存保持不变。
+直接指定的 WebSocket 连接仍保留原地址。兼容逻辑只作用于 4.1 系列，不改依赖版本。
 
 ```mermaid
 flowchart TD
