@@ -5,8 +5,6 @@
 ``RouterModeService.activate()`` 决定，普通会话行为不受影响。
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import List
 
