@@ -87,3 +87,14 @@ def test_snapshot_and_clear():
 
     service.clear()
     assert service.snapshot() == []
+
+
+def test_required_skills_are_registered_and_cleared():
+    service = RouterModeService()
+
+    assert service.required_skills() == ()
+    service.set_required_skills(["dsh_router", " ", ""])
+    assert service.required_skills() == ("dsh_router",)
+
+    service.set_required_skills(None)
+    assert service.required_skills() == ()

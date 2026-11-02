@@ -1,0 +1,31 @@
+name = "dsh_router"
+version = "0.1.0"
+description = "DSH 任务路由：把复杂开发任务分派给本机 DSH daemon，跟踪进度、审批卡点与回收空闲会话"
+author = "NeoBot"
+license = "MIT"
+tags = ["official", "dsh"]
+
+# 不依赖 dashboard：网关与 Router 模式都是本体内置服务，缺失时工具降级返回提示。
+dependencies = []
+
+hot_reload = true
+config_hot_reload = true
+
+[config]
+# 是否允许本插件派发任务。关闭后所有工具只返回提示，不写盘、不下发命令。
+enabled = true
+# 允许派发任务的工作区根目录（绝对路径，支持 ~）。留空表示拒绝一切 dispatch，
+# 必须先显式配置；cwd 必须是其中一个目录下的子目录（按 realpath 校验）。
+workspaces = []
+# 单个聊天流最多同时存在多少个未结束任务。
+max_tasks_per_chat = 3
+# 任务超过该秒数没有任何事件，视为 stale（只标记，不删除记录）。
+task_stale_seconds = 900
+# 同一任务的普通进度事件通知最小间隔（秒）；卡点（blocker）不受此限。
+event_min_interval_seconds = 45
+# 没有活跃任务后，Router 模式自动退出的分钟数；0 表示不自动退出。
+auto_exit_idle_minutes = 30
+# 提案（propose）的有效期，超时后 dispatch 必须重新提案。
+proposal_ttl_minutes = 10
+# /dsh 命令所需权限：0=所有人，1=管理员，2=超级管理员。
+command_permission = 2

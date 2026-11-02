@@ -37,12 +37,24 @@ class RouterModeService:
     def __init__(self) -> None:
         self._sessions: dict[str, RouterSession] = {}
         self._context_provider: RouterContextProvider | None = None
+        #: Router 模式激活时需要预激活的技能包（插件在 on_load 时注册，
+        #: 例如 ["dsh_router"]）。空表示不预激活。
+        self._required_skills: tuple[str, ...] = ()
 
     # ── 任务表 provider（dsh_router 插件在 on_load 时注册）──────────
 
     def set_context_provider(self, provider: RouterContextProvider | None) -> None:
         """注册/清除任务表 provider；插件卸载时必须传 None 清除。"""
         self._context_provider = provider
+
+    def set_required_skills(self, names: object) -> None:
+        """注册 Router 模式需要预激活的技能包；插件卸载时传空。"""
+        self._required_skills = tuple(
+            str(item) for item in (names or ()) if str(item).strip()
+        )
+
+    def required_skills(self) -> tuple[str, ...]:
+        return self._required_skills
 
     # ── 开关 ────────────────────────────────────────────────────
 
