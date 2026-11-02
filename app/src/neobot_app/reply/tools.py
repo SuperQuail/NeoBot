@@ -96,6 +96,8 @@ def build_reply_toolset(
     reviewer: Any = None,
     auto_review: bool = True,
     review_timeout_seconds: float = 30.0,
+    router_mode: Any = None,
+    router_config: Any = None,
 ) -> Toolset:
     executor = ReplyToolExecutor(
         send_reply_handler=send_reply_handler,
@@ -141,6 +143,8 @@ def build_reply_toolset(
         reviewer=reviewer,
         auto_review=auto_review,
         review_timeout_seconds=review_timeout_seconds,
+        router_mode=router_mode,
+        router_config=router_config,
     )
     definitions = executor.definitions()
     specs = [

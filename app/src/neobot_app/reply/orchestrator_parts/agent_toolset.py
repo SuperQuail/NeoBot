@@ -150,6 +150,10 @@ class AgentToolsetMixin:
                 getattr(getattr(getattr(self._config, "agent", None), "tools", None), "review_timeout_seconds", 30.0)
                 or 30.0
             ),
+            router_mode=getattr(self, "_router_mode", None),
+            router_config=getattr(
+                getattr(getattr(self._config, "agent", None), "dsh", None), "router", None
+            ),
         )
         self._tool_executors[event.event_id] = reply_toolset.executor
         # 本轮预激活（插件消息意图入口）：在构建工具表**之前**加载指定技能包，

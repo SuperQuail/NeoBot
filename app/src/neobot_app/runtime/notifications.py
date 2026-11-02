@@ -73,9 +73,17 @@ class BackgroundNotificationHub:
         metadata: dict[str, Any] | None = None,
         on_consumed: OnNotificationConsumed | None = None,
         on_polled: OnNotificationConsumed | None = None,
+        force: bool = False,
     ) -> bool:
+        """投递一条后台通知。
+
+        ``force=True`` 只对**私聊**生效：跳过发言策略，用于审批请求/失败这类
+        「静默会让任务卡死」的关键事件。群聊仍然遵守发言策略，调用方应自己
+        捕获 ``SpeechBlocked`` 并落到 pending 队列（由 /dsh pending 兜底）。
+        """
         policy = getattr(self._orchestrator, "speaking_policy", None)
-        if policy is not None:
+        bypass_policy = bool(force) and str(kind) == "private"
+        if policy is not None and not bypass_policy:
             decision = policy.evaluate(ConversationRef(kind, str(conversation_id)))
             if not decision.allowed:
                 self._logger.info(

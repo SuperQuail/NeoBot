@@ -9,6 +9,7 @@ from neobot_app.bootstrap._services import build_archive_summary_service, build_
 from neobot_app.core import DATA_DIR
 from neobot_app.core.paths import _get_project_root
 from neobot_app.observability.logging import register_self_heal_manager
+from neobot_app.runtime.router_mode import RouterModeService
 from .core_reuse import _register_flow_task_providers
 from .maintenance_services import _build_provider_reload_consumer, _web_search_config_dict
 from .state import _BuildState
@@ -114,6 +115,8 @@ def _build_pipeline_services(state: _BuildState) -> None:
         )
 
     # ── 回复编排器 + 交叉注入 ──
+    # Router 模式服务：没有 dsh_router 插件时永远不激活，普通会话行为不变。
+    router_mode = state.router_mode or RouterModeService()
     reply_orchestrator = build_reply_orchestrator(
         adapter=adapter,
         prompt_builder=memory_svcs["prompt_builder"],
@@ -149,6 +152,7 @@ def _build_pipeline_services(state: _BuildState) -> None:
         config_update_callback=_make_chat_config_update_callback(config),
         sleep_service=sleep_service,
         standby_service=standby_service,
+        router_mode=router_mode,
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)
@@ -190,6 +194,7 @@ def _build_pipeline_services(state: _BuildState) -> None:
     state.image_parse_service = image_parse_service
     state.log_file_path = log_file_path
     state.reply_orchestrator = reply_orchestrator
+    state.router_mode = router_mode
     state.self_heal_manager = self_heal_manager
     state.source_roots = source_roots
     state.tts_service = tts_service

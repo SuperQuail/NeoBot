@@ -263,6 +263,7 @@ def build_reply_orchestrator(
     config_update_callback: Any = None,
     sleep_service: Any = None,
     standby_service: Any = None,
+    router_mode: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -301,6 +302,7 @@ def build_reply_orchestrator(
         config_update_callback=config_update_callback,
         sleep_service=sleep_service,
         standby_service=standby_service,
+        router_mode=router_mode,
     )
 
 

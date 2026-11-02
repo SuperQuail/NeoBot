@@ -196,6 +196,10 @@ class AgentLoopMixin:
                     )
                 # 回复前:追加独立的 <当前时间> user 块(始终是最后一条消息)
                 self._append_current_time_block(state, messages)
+                # Router 模式:追加任务表 user 块（未启用时返回 None，不产生任何影响）
+                router_context = self._build_router_context_message(pipeline_key)
+                if router_context is not None:
+                    messages.append(router_context)
                 # 防重复提醒:每次管线激活只追加一次,节奏独立于时间块
                 if not avoid_repeat_sent:
                     avoid_repeat_sent = True
