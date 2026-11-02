@@ -3,7 +3,7 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: f8c88339
+verified_against: 9861f57d
 verified_hash: a51f1143cfc8
 ---
 
