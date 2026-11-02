@@ -68,6 +68,19 @@ def test_package_local_cache(tmp_path, monkeypatch):
     assert process._playwright_chromium_path() == str(executable)
 
 
+@pytest.mark.parametrize("absolute", [False, True])
+def test_cache_normalizes_parent_segments_before_filesystem_lookup(tmp_path, monkeypatch, absolute):
+    monkeypatch.setenv("INIT_CWD", str(tmp_path))
+    cache_path = Path("missing") / ".." / "browsers"
+    if absolute:
+        cache_path = tmp_path / cache_path
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache_path))
+    executable = _chromium(tmp_path / "browsers")
+    assert not (tmp_path / "missing").exists()
+    assert process._playwright_cache_directory() == tmp_path / "browsers"
+    assert process._playwright_chromium_path() == str(executable)
+
+
 def test_package_local_cache_without_playwright(monkeypatch):
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
     monkeypatch.setattr(process, "find_spec", lambda name: None)

@@ -108,7 +108,7 @@ def _playwright_cache_directory() -> Path | None:
     # Playwright 对相对路径优先使用安装器的 INIT_CWD，其次是当前工作目录。
     if not cache.is_absolute():
         cache = Path(os.environ.get("INIT_CWD") or Path.cwd()) / cache
-    return cache.absolute()
+    return Path(os.path.abspath(cache))
 
 
 def _playwright_chromium_path() -> str:
