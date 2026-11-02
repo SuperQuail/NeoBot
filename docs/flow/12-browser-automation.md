@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 49486fbf
-verified_hash: 04cd2c203dfd
+verified_against: 5e1a42cf
+verified_hash: b59c4c5d7fd1
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
