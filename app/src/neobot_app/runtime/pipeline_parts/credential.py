@@ -85,6 +85,10 @@ class _PipelineCredentialMixin:
             return False
         self._maybe_cleanup_credentials()
         chat_flow = f"{kind}:{queue_key}"
+        # 该会话既没有待签发、也没有可用凭据时直接放行：没有可签发的目标，后面的
+        # 查表与计数都没有意义，普通聊天也不会被误算成「猜码失败」。
+        if not credential_manager.has_pending_or_active(chat_flow=chat_flow):
+            return False
         issue = credential_manager.try_issue(
             chat_flow=chat_flow,
             code=text,
@@ -98,6 +102,27 @@ class _PipelineCredentialMixin:
                     "该凭据需要更高级别的管理员签发,你没有权限。",
                 )
                 return True
+            if (
+                issue.error == "rate_limited"
+                and credential_manager.looks_like_code(text)
+                and credential_manager.can_issue_pending(
+                    chat_flow=chat_flow, issuer_id=issuer_id
+                )
+                and credential_manager.take_rate_limit_notice(chat_flow)
+            ):
+                # 冷却期里连正确码也不签发：只对能签发的人提示一次，避免任意
+                # 成员反复触发回执，也避免用回执探测会话是否在冷却。
+                await self._send_credential_notice(
+                    message, queue, queue_key,
+                    "签发尝试太频繁，等几分钟后再发一次凭据码。",
+                )
+                return True
+            self._logger.debug(
+                "凭据签发未命中，按普通消息处理",
+                chat_flow=chat_flow,
+                error=issue.error,
+                issuer_id=issuer_id,
+            )
             return False  # 非凭据文本(not_found/expired/状态异常):正常管线
         credential = issue.credential
         if credential is None:
