@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import inspect
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from neobot_app.runtime.provider_reload import ProviderReloadConsumer
 
 
 def _web_search_config_dict(config: Any) -> dict[str, Any]:
