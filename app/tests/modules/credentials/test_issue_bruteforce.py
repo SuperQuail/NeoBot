@@ -75,6 +75,7 @@ def test_code_generation_does_not_use_global_random(monkeypatch) -> None:
 
 def test_repeated_not_found_enters_cooldown() -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         result = manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
         assert result.ok is False
@@ -116,6 +117,7 @@ def test_successful_issue_clears_failure_counter() -> None:
 
 def test_failures_are_per_chat_flow() -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
 
@@ -125,6 +127,7 @@ def test_failures_are_per_chat_flow() -> None:
 
 def test_cleanup_releases_expired_cooldown(monkeypatch) -> None:
     manager = _manager()
+    _new_credential(manager)
     for _ in range(_ISSUE_MAX_FAILURES):
         manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
     assert manager.is_issue_blocked("group:1") is True
@@ -138,3 +141,87 @@ def test_cleanup_releases_expired_cooldown(monkeypatch) -> None:
 
     assert manager.is_issue_blocked("group:1") is False
     assert "group:1" not in manager._issue_failures
+
+
+def test_chitchat_does_not_trigger_cooldown() -> None:
+    """普通聊天不能被算成「猜码失败」。
+
+    管线对每条群消息都会调 try_issue；若把闲聊也计入失败次数，活跃群聊五句话
+    就能把会话打进 5 分钟冷却，冷却期内正确凭据码同样被拒（rate_limited），
+    线上表现就是「管理员发了码，凭据一直 pending」。
+    """
+    manager = _manager()
+    credential = _new_credential(manager)
+    for text in ("今天天气不错", "在吗", "哈哈哈哈", "晚安喵", "好耶", "诶嘿"):
+        result = manager.try_issue(chat_flow="group:1", code=text, issuer_id=SUPER)
+        assert result.ok is False
+        assert result.error == "not_found"
+
+    assert manager.is_issue_blocked("group:1") is False
+    issued = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert issued.ok is True
+    assert issued.newly_issued is True
+
+
+def test_code_shaped_guesses_still_count() -> None:
+    """格式与凭据码一致的猜测仍然计入失败次数（防爆破强度不变）。"""
+    manager = _manager()
+    credential = _new_credential(manager)
+    wrong = "z" * len(credential.code)
+    assert manager.looks_like_code(wrong) is True
+    assert manager.looks_like_code("在吗") is False
+
+    for _ in range(_ISSUE_MAX_FAILURES):
+        manager.try_issue(chat_flow="group:1", code=wrong, issuer_id=SUPER)
+    assert manager.is_issue_blocked("group:1") is True
+
+    blocked = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert blocked.error == "rate_limited"
+
+
+def test_normal_member_guesses_do_not_trigger_cooldown() -> None:
+    """无签发权限的成员发「像码」的文本也不计数。
+
+    他们猜中同样会被 permission_denied，计他们的数没有安全收益；反过来，
+    「hahaha」「233333」这类日常词恰好满足长度+字符集，计入会让普通成员用
+    闲聊把签发挡住。
+    """
+    manager = _manager()
+    credential = _new_credential(manager)
+    for text in ("hahaha", "233333", "666666", "thanks", "zzzzzz"):
+        assert manager.looks_like_code(text) is True
+        result = manager.try_issue(chat_flow="group:1", code=text, issuer_id=NORMAL)
+        assert result.ok is False
+        assert result.error == "not_found"
+
+    assert manager.is_issue_blocked("group:1") is False
+    issued = manager.try_issue(chat_flow="group:1", code=credential.code, issuer_id=SUPER)
+    assert issued.ok is True
+    assert issued.newly_issued is True
+
+
+def test_rate_limit_notice_is_once_per_cooldown(monkeypatch) -> None:
+    """冷却窗口内每会话只允许提示一次；清窗口标记的三处入口都要生效。"""
+    manager = _manager()
+    _new_credential(manager)
+    assert manager.take_rate_limit_notice("group:1") is True
+    assert manager.take_rate_limit_notice("group:1") is False
+
+    # 成功签发（_clear_issue_failures）清掉窗口标记
+    manager._clear_issue_failures("group:1")
+    assert manager.take_rate_limit_notice("group:1") is True
+
+    # 进入新冷却窗口（_record_issue_failure）也清掉窗口标记
+    for _ in range(_ISSUE_MAX_FAILURES):
+        manager.try_issue(chat_flow="group:1", code="zzzzzz", issuer_id=SUPER)
+    assert manager.is_issue_blocked("group:1") is True
+    assert manager.take_rate_limit_notice("group:1") is True
+
+    # 冷却过期后 cleanup 同样回收窗口标记，下一轮冷却可再提示
+    real_time = time.time
+    monkeypatch.setattr(
+        "neobot_app.credentials.service.time.time",
+        lambda: real_time() + _ISSUE_BLOCK_SECONDS + 1,
+    )
+    manager.cleanup()
+    assert manager.take_rate_limit_notice("group:1") is True
