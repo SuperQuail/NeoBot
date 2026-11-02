@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 6e5808da
-verified_hash: c2f474c21b60
+verified_against: 31683ddf
+verified_hash: 05dcdb502c2c
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -64,7 +64,10 @@ verified_hash: c2f474c21b60
 flowchart TD
     A["build_browser_components / bootstrap/_runtime.py:121"] --> B{"agent.browser.enabled?"}
     B -- 否 --> B1["UnavailableScreenshots：render/save 抛 ScreenshotUnavailable"]
-    B -- 是 --> C{"_find_chrome_binary() 命中?"}
+    B -- 是 --> BP{"显式 browser_path 可访问?"}
+    BP -- 是 --> D
+    BP -- 否 --> BW["有无效配置时告警并清空"]
+    BW --> C{"_find_chrome_binary() 命中?"}
     C -- 否 --> C1["_auto_install_chromium: playwright install chromium，timeout 300s"]
     C1 --> C2{"再查仍为空?"}
     C2 -- 是 --> B1
@@ -175,15 +178,15 @@ flowchart TD
     B -- 无 --> C["_playwright_chromium_path / manager.py:86"]
     C --> C1["Win: chromium-*/chrome-win*/chrome.exe"]
     C --> C2["Linux: chrome-linux / chrome-linux64 / chrome-linux-arm64"]
-    C --> C3["macOS: chrome-mac/Chromium.app/..."]
+    C --> C3["macOS: chrome-mac / arm64 / x64<br/>Chromium 或 Google Chrome for Testing.app"]
     C1 --> C4["只保留文件，按数字 revision 取最新构建"]
     C2 --> C4
     C3 --> C4
     C4 --> D{"命中?"}
     D -- 是 --> Z
     D -- 否 --> E["系统候选列表"]
-    E --> E1["Windows: which(msedge)/which(chrome) 插到最前"]
-    E1 --> E2["再试 Program Files 的 Chrome / Chromium / Edge 与 LOCALAPPDATA"]
+    E --> E1["Windows: Chrome 的 PATH / 注册表 / 安装目录"]
+    E1 --> E2["再试 Edge 的同类来源，最后 Chromium 安装目录"]
     E2 --> E3["Linux/macOS 固定路径"]
     E3 --> F{"存在?"}
     F -- 是 --> Z
@@ -200,15 +203,20 @@ flowchart TD
 `PLAYWRIGHT_BROWSERS_PATH` 优先，值为 `0` 时使用 Python Playwright 包的
 `driver/package/.local-browsers`；相对路径以 `INIT_CWD` 或当前目录解析。
 Linux 默认使用 `$XDG_CACHE_HOME/ms-playwright`，未设置时回退 `~/.cache/ms-playwright`。
+Windows 默认使用 `%LOCALAPPDATA%/ms-playwright`，未设置时才回退用户目录下的 `AppData/Local`。
 发现缓存后冷启动直接复用；缺失时安装一次，随后启动再次使用同一目录。构建号按数字比较，
 因此 r1000 优先于 r999，目录占位不会被当成可执行文件。
 
-文档写"Chrome > Edge > Chromium"，实际 Windows 上 `shutil.which("msedge")` 被 `insert(0)`
-到最前，**PATH 里有 Edge 就用 Edge**；而 Playwright Chromium 又整体优先于系统 Chrome。
+已缓存的 Playwright Chromium 优先于系统候选；Windows 系统候选按 Chrome > Edge > Chromium
+选择，注册表和 PATH 中的 Edge 不会抢先覆盖可用的 Chrome。
 </details>
 
 <details>
 ### 启动、探活与整机重建：3 次重试与"任何异常都重启"
+
+Windows 残留清理识别 `chrome.exe`、`msedge.exe`、`chromium.exe`，仅匹配完整的
+`--user-data-dir` 参数。相似前缀目录、日志路径和其它 profile 均不会触发清理；
+同一 profile 仍有其它存活管理器时，继续跳过所有清理。
 
 ```mermaid
 flowchart TD

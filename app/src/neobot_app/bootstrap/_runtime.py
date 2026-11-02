@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -156,9 +157,14 @@ def build_browser_components(
     configured_available = False
     if configured_browser:
         try:
-            configured_available = Path(configured_browser).is_file()
+            configured_available = Path(configured_browser).is_file() and os.access(
+                configured_browser, os.R_OK | os.X_OK
+            )
         except OSError:
             configured_available = False
+        if not configured_available:
+            logger.warning("配置的 browser_path 不可用，回退自动检测", browser_path=configured_browser)
+            configured_browser = ""
 
     # 已显式配置可用浏览器时不要再下载内嵌 Chromium（Windows 上通常直接复用 Edge/Chrome）。
     if not configured_available and not _find_chrome_binary():

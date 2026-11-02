@@ -98,7 +98,7 @@ def _playwright_cache_directory() -> Path | None:
     if env_cache:
         cache = Path(env_cache)
     elif _windows():
-        cache = home / "AppData" / "Local" / "ms-playwright"
+        cache = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local") / "ms-playwright"
     elif platform.system() == "Linux":
         cache = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache") / "ms-playwright"
     elif platform.system() == "Darwin":
@@ -126,6 +126,9 @@ def _playwright_chromium_path() -> str:
         candidates.extend(browser_cache.glob("chromium-*/chrome-linux-arm64/chrome"))
     elif platform.system() == "Darwin":
         candidates = list(browser_cache.glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"))
+        for layout in ("chrome-mac-arm64", "chrome-mac-x64"):
+            for app in ("Chromium", "Google Chrome for Testing"):
+                candidates.extend(browser_cache.glob(f"chromium-*/{layout}/{app}.app/Contents/MacOS/{app}"))
     else:
         candidates = []
     revisions = []
@@ -136,7 +139,7 @@ def _playwright_chromium_path() -> str:
     return max(revisions)[1] if revisions else ""
 
 
-def _windows_registry_browser_paths() -> list[str]:
+def _windows_registry_browser_paths(executables: tuple[str, ...] = ("chrome.exe", "msedge.exe")) -> list[str]:
     """Windows App Paths 里登记的 chrome.exe / msedge.exe（不依赖固定安装盘符）。"""
     if not _windows():
         return []
@@ -145,7 +148,7 @@ def _windows_registry_browser_paths() -> list[str]:
     except ImportError:
         return []
     paths: list[str] = []
-    for exe in ("msedge.exe", "chrome.exe"):
+    for exe in executables:
         for hive, view in (
             (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
             (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
@@ -185,20 +188,18 @@ def _find_chrome_binary() -> str:
             Path(local_appdata) / "Microsoft" / "Edge" / "Application" / "msedge.exe" if local_appdata else None
         )
         candidates = [
-            *_windows_registry_browser_paths(),
+            shutil.which("chrome") or "",
+            *_windows_registry_browser_paths(("chrome.exe",)),
             str(Path(program_files) / "Google" / "Chrome" / "Application" / "chrome.exe"),
             str(Path(program_files_x86) / "Google" / "Chrome" / "Application" / "chrome.exe"),
             str(chrome_local) if chrome_local else "",
-            str(Path(program_files) / "Chromium" / "Application" / "chrome.exe"),
+            shutil.which("msedge") or "",
+            *_windows_registry_browser_paths(("msedge.exe",)),
             str(Path(program_files) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
             str(Path(program_files_x86) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
             str(edge_local) if edge_local else "",
+            str(Path(program_files) / "Chromium" / "Application" / "chrome.exe"),
         ]
-        # 也尝试通过 PATH 查找
-        if chrome_path := shutil.which("chrome"):
-            candidates.insert(0, chrome_path)
-        if edge_path := shutil.which("msedge"):
-            candidates.insert(0, edge_path)
     elif system == "Linux":
         candidates = [
             "/usr/bin/google-chrome",
@@ -216,6 +217,6 @@ def _find_chrome_binary() -> str:
         ]
     for p in candidates:
         expanded = Path(os.path.expandvars(p))
-        if expanded.exists():
+        if expanded.is_file():
             return str(expanded)
     return ""

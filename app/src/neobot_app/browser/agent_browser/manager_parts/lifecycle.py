@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,6 +23,21 @@ from .process import (
     _unregister_instance,
     _windows,
 )
+
+
+def _uses_user_data_dir(cmdline: list[str], user_data_dir: str) -> bool:
+    """只匹配浏览器的完整 profile 参数，避免清理相似目录的其它实例。"""
+    expected = os.path.normcase(os.path.abspath(user_data_dir))
+    arguments = iter(cmdline)
+    for argument in arguments:
+        if argument == "--user-data-dir":
+            profile = next(arguments, "")
+        elif argument.startswith("--user-data-dir="):
+            profile = argument.partition("=")[2]
+        else:
+            continue
+        return os.path.normcase(os.path.abspath(profile.strip('"'))) == expected
+    return False
 
 
 class LifecycleMixin:
@@ -73,7 +89,7 @@ class LifecycleMixin:
                     _logger.debug("清理浏览器锁文件失败 %s: %s", f, exc)
 
     def _kill_orphaned_chrome(self) -> None:
-        """清理使用相同用户数据目录的残留 Chrome 进程（仅 Windows）。
+        """清理使用相同用户数据目录的残留 Chrome / Edge 进程（仅 Windows）。
 
         浏览器关闭后 Chrome 进程可能未完全退出，导致新实例初始化时出现
         'Chromium' object has no attribute '_dl_mgr' 等异常。
@@ -86,15 +102,13 @@ class LifecycleMixin:
             return
         try:
             import psutil as _psutil
-            ud = self._user_data_dir.lower()
             for proc in _psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
                     name = proc.info["name"]
-                    if not name or "chrome" not in name.lower():
+                    if not name or name.lower() not in {"chrome.exe", "msedge.exe", "chromium.exe"}:
                         continue
                     cmdline = proc.info.get("cmdline") or []
-                    cmd = " ".join(cmdline)
-                    if ud in cmd.lower():
+                    if _uses_user_data_dir(cmdline, self._user_data_dir):
                         p = _psutil.Process(proc.info["pid"])
                         p.kill()
                         p.wait(timeout=3)

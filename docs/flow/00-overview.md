@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: ac061570
-verified_hash: dda53c0eed71
+verified_against: 31683ddf
+verified_hash: c638c4333772
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -156,6 +156,8 @@ Markdown 图片转换器在 `bootstrap/parts/core_services.py` 中接收浏览�
 
 单美元定界符支持 `$42$`、`$0.33$`、`$2m$` 等短公式；价格分隔、跨行及未转义的百分号仍走文本路径。
 维护服务的 `ProviderReloadConsumer` 使用类型检查导入，实际构造时再延迟导入，不改变装配顺序。
+浏览器装配先检查显式 `browser_path`：有效时直接复用；不存在或不可访问时告警并清空，
+随后自动检测已有浏览器，确实缺失时才安装 Chromium，避免把无效路径继续传入运行实例。
 </details>
 
 <details>
