@@ -10,6 +10,7 @@ from neobot_app.browser.agent_browser import _compat  # noqa: F401
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage._base import chromium as chromium_module
 from DrissionPage._base import driver as driver_module
+from DrissionPage._base.chromium import run_browser
 
 
 @pytest.fixture
@@ -114,3 +115,37 @@ def test_failed_connection_is_evicted_and_next_attempt_initializes(transport, fa
     assert calls[-1] == endpoint(state.browser_id)
     assert Chromium._BROWSERS["unrelated"] is unrelated_browser
     assert driver_module.BrowserDriver.BROWSERS["unrelated"] is unrelated_driver
+
+
+@pytest.mark.parametrize("http_available", [False, True])
+def test_explicit_websocket_preserves_endpoint_when_context_id_differs(transport, monkeypatch, http_available):
+    explicit_endpoint = endpoint("endpoint-uuid")
+    addresses = []
+    monkeypatch.setattr(chromium_module, "run_browser", run_browser)
+    monkeypatch.setattr(
+        driver_module,
+        "create_connection",
+        lambda address, **kwargs: addresses.append(address) or Mock(),
+    )
+    monkeypatch.setattr(
+        driver_module.Driver,
+        "run",
+        lambda self, command: (
+            {"targetInfos": [{"browserContextId": "context-id"}]}
+            if command == "Target.getTargets"
+            else {"userAgent": "Chrome/123"}
+        ),
+    )
+    session = Mock()
+    if http_available:
+        session.get.return_value.json.return_value = {"webSocketDebuggerUrl": explicit_endpoint}
+    else:
+        session.get.side_effect = ConnectionError("HTTP endpoint unavailable")
+    monkeypatch.setattr(chromium_module, "Session", lambda: session)
+
+    browser = Chromium(options().set_address(explicit_endpoint))
+
+    assert browser.id == "context-id"
+    assert browser._ws_only is not http_available
+    assert addresses == [explicit_endpoint, explicit_endpoint]
+    assert browser._ws_address == explicit_endpoint

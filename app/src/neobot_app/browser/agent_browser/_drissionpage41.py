@@ -39,7 +39,7 @@ def install_restart_fix() -> None:
         # 上游重启分支只更新 owner.id，仍传入旧 browser id 的 WebSocket 地址。
         # 保留协议、主机、端口和查询串，只同步本地浏览器端点的 id。
         endpoint = urlsplit(address)
-        if not owner._ws_only and endpoint.path.startswith("/devtools/browser/"):
+        if not owner._chromium_options.ws_address and endpoint.path.startswith("/devtools/browser/"):
             address = endpoint._replace(path=f"/devtools/browser/{browser_id}").geturl()
             owner._ws_address = address
         try:
