@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 31683ddf
-verified_hash: ed53f1c0989c
+verified_against: fe26789b
+verified_hash: 6a0423ce712e
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -198,7 +198,7 @@ flowchart TD
 
 缓存根目录由 `manager_parts/process.py:_playwright_cache_directory` 与安装器规则保持一致：
 `PLAYWRIGHT_BROWSERS_PATH` 优先，值为 `0` 时使用 Python Playwright 包的
-`driver/package/.local-browsers`；相对路径以 `INIT_CWD` 或当前目录解析。
+`driver/package/.local-browsers`；相对路径以 `INIT_CWD` 或当前目录解析，并在查找前消除 `.`、`..` 路径段。
 Linux 默认使用 `$XDG_CACHE_HOME/ms-playwright`，未设置时回退 `~/.cache/ms-playwright`。
 发现缓存后冷启动直接复用；缺失时安装一次，随后启动再次使用同一目录。构建号按数字比较，
 因此 r1000 优先于 r999，目录占位不会被当成可执行文件。
