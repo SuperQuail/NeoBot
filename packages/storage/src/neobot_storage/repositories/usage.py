@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neobot_storage.models import ModelUsageRecord
@@ -16,13 +16,13 @@ class SqlAlchemyUsageRepository:
     async def add(self, record: ModelUsageRecord) -> None:
         self._session.add(record)
 
-    async def stats_since(
-        self, since: datetime | None = None
-    ) -> list[ModelUsageRecord]:
+    async def stats_since(self, since: datetime | None = None, *, limit: int | None = None) -> list[ModelUsageRecord]:
         stmt = select(ModelUsageRecord)
         if since is not None:
             stmt = stmt.where(ModelUsageRecord.created_at >= since)
-        stmt = stmt.order_by(ModelUsageRecord.created_at.desc())
+        stmt = stmt.order_by(ModelUsageRecord.created_at.desc(), ModelUsageRecord.id.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
@@ -38,11 +38,23 @@ class SqlAlchemyUsageRepository:
     def _sum_columns() -> tuple[Any, ...]:
         return (
             func.count().label("calls"),
+            func.sum(case((ModelUsageRecord.cost_source == "unpriced", 1), else_=0)).label("unpriced_calls"),
+            func.sum(case((ModelUsageRecord.cost_source == "partial", 1), else_=0)).label("partial_calls"),
+            func.sum(
+                case(
+                    (
+                        (ModelUsageRecord.cost_source == "builtin")
+                        & (ModelUsageRecord.cost_detail.is_(None))
+                        & (ModelUsageRecord.cost_cny == 0)
+                        & ((ModelUsageRecord.input_tokens > 0) | (ModelUsageRecord.output_tokens > 0)),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("unverified_zero_calls"),
             func.coalesce(func.sum(ModelUsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(ModelUsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(ModelUsageRecord.cache_hit_tokens), 0).label(
-                "cache_hit_tokens"
-            ),
+            func.coalesce(func.sum(ModelUsageRecord.cache_hit_tokens), 0).label("cache_hit_tokens"),
             func.coalesce(func.sum(ModelUsageRecord.cost_cny), 0.0).label("cost_cny"),
         )
 
@@ -51,10 +63,13 @@ class SqlAlchemyUsageRepository:
         return {
             "at": at,
             "calls": int(row.calls or 0),
+            "unpriced_calls": int(row.unpriced_calls or 0),
+            "partial_calls": int(row.partial_calls or 0),
+            "unverified_zero_calls": int(row.unverified_zero_calls or 0),
             "input_tokens": int(row.input_tokens or 0),
             "output_tokens": int(row.output_tokens or 0),
             "cache_hit_tokens": int(row.cache_hit_tokens or 0),
-            "cost_cny": round(float(row.cost_cny or 0.0), 8),
+            "cost_cny": float(row.cost_cny or 0.0),
         }
 
     async def series_since(
@@ -64,9 +79,7 @@ class SqlAlchemyUsageRepository:
         bucket: str = "hour",
     ) -> list[dict[str, Any]]:
         """按小时/天汇总用量：金额、输入/输出 Token 与调用次数。"""
-        bucket_col = func.strftime(
-            self._bucket_format(bucket), ModelUsageRecord.created_at
-        ).label("bucket")
+        bucket_col = func.strftime(self._bucket_format(bucket), ModelUsageRecord.created_at).label("bucket")
         stmt = select(bucket_col, *self._sum_columns())
         if since is not None:
             stmt = stmt.where(ModelUsageRecord.created_at >= since)
@@ -107,7 +120,7 @@ class SqlAlchemyUsageRepository:
         self,
         since: datetime | None = None,
         *,
-        limit: int = 12,
+        limit: int | None = 12,
     ) -> list[dict[str, Any]]:
         """按调用模块汇总用量，金额降序。"""
         stmt = select(ModelUsageRecord.module_name, *self._sum_columns())
@@ -116,8 +129,9 @@ class SqlAlchemyUsageRepository:
         stmt = (
             stmt.group_by(ModelUsageRecord.module_name)
             .order_by(func.sum(ModelUsageRecord.cost_cny).desc())
-            .limit(max(1, int(limit)))
         )
+        if limit is not None:
+            stmt = stmt.limit(max(1, limit))
         result = await self._session.execute(stmt)
         items: list[dict[str, Any]] = []
         for row in result:

@@ -11,20 +11,55 @@ import { PanelSkeleton } from '../components/ui/PageSkeleton';
 import { POLL } from '../data/queryKeys';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import InlineAlert from '../components/ui/InlineAlert';
+import { aggregateAmount, fmtCost, pendingCalls } from '../utils/usageCost';
 
 const RANGES = [
   { key: '24h', label: '近 24 小时', hours: 24, bucket: 'hour' },
   { key: '7d', label: '近 7 天', hours: 168, bucket: 'hour' },
   { key: '30d', label: '近 30 天', hours: 720, bucket: 'day' },
 ];
+function fillTimeGaps(points: NonNullable<UsagePayload['points']>, bucket: string) {
+  const parse = (at = '') => Date.parse(at.length === 19 ? at + 'Z' : at);
+  const first = parse(points[0]?.at);
+  const last = parse(points.at(-1)?.at);
+  const step = (bucket === 'day' ? 24 : 1) * 3_600_000;
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last < first || last - first > 720 * 3_600_000) {
+    return points;
+  }
+  const byTime = new Map(points.map((point) => [parse(point.at), point]));
+  const filled: typeof points = [];
+  for (let time = first; time <= last; time += step) {
+    filled.push(byTime.get(time) || { at: new Date(time).toISOString(), calls: 0 });
+  }
+  return filled;
+}
 const TABLES = [
   { key: 'models', label: '按模型' },
   { key: 'modules', label: '按调用模块' },
   { key: 'records', label: '最近调用' },
 ] as const;
-const fmtCost = (value?: number | null) => '¥' + Number(value || 0).toFixed(2);
+const COMPONENT_NAMES: Record<string, string> = {
+  cache_hit: '缓存命中输入',
+  cache_miss: '缓存未命中输入',
+  output: '输出',
+};
+const fmtExact = (value?: number) => value?.toLocaleString('zh-CN') ?? '—';
+const MODULE_NAMES: Record<string, string> = {
+  'agent:memory': '档案总结',
+  'agent:chat_interaction': '聊天互动',
+  'agent:image_parse': '图片理解',
+  'agent:willingness': '发言意愿',
+  reply_agent: 'Agent 回复',
+  reply_common: '普通回复',
+  memory_compaction: '记忆压缩',
+};
+const moduleLabel = (value?: string) => (value && (MODULE_NAMES[value] || value)) || '—';
+const recordAmount = (item: UsageRecordItem) =>
+  item.cost_source === 'unpriced' || item.unverified_zero ? '—' : fmtCost(item.cost_cny);
+
 function fmtTokens(value?: number | null): string {
   const num = Number(value || 0);
+  if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(2) + ' B';
   if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + ' M';
   if (num >= 1_000) return (num / 1_000).toFixed(1) + ' K';
   return String(num);
@@ -35,6 +70,8 @@ function hoverLabel(at?: string | null, bucket?: string): string {
 }
 function sourceLabel(source?: string | null): string {
   const text = String(source || 'builtin');
+  if (text === 'unpriced') return '未配置价格';
+  if (text === 'partial') return '部分待核价';
   if (text.startsWith('script:')) return '脚本: ' + (text.slice(7) || '未命名');
   if (text.startsWith('fallback:')) return '兜底: ' + (text.slice(9) || 'unknown');
   return '固定计费';
@@ -138,10 +175,26 @@ export default function Usage() {
     pauseWhileEditing: false,
   });
 
-  const points = useMemo(() => data?.points || [], [data]);
-  const totals = data?.totals || {};
   const bucket = data?.bucket || active.bucket;
-  const costSeries = useMemo(() => points.map((item) => Number(item.cost_cny || 0)), [points]);
+  const points = useMemo(() => fillTimeGaps(data?.points || [], bucket), [data, bucket]);
+  const totals = data?.totals || {};
+  const unpriced = totals.unpriced_calls || 0;
+  const unverified = totals.unverified_zero_calls || 0;
+  const partial = totals.partial_calls || 0;
+  const partialCost = pendingCalls(totals) > 0;
+  const summaryCost = aggregateAmount(totals);
+  const hasPricedCalls = summaryCost !== '—';
+  const costSeries = useMemo(
+    () =>
+      points.map((item) =>
+        !hasPricedCalls || aggregateAmount(item) === '—' ? null : Number(item.cost_cny || 0),
+      ),
+    [points, hasPricedCalls],
+  );
+  const costPeak = costSeries.reduce<number | null>(
+    (peak, value) => (value === null ? peak : Math.max(peak ?? value, value)),
+    null,
+  );
   const inputSeries = useMemo(() => points.map((item) => Number(item.input_tokens || 0)), [points]);
   const outputSeries = useMemo(() => points.map((item) => Number(item.output_tokens || 0)), [points]);
   const labels = useMemo(() => points.map((item) => hoverLabel(item.at, bucket)), [points, bucket]);
@@ -151,7 +204,11 @@ export default function Usage() {
         { label: '调用', value: fmtTokens(item.calls) },
         { label: '输入 Token', value: fmtTokens(item.input_tokens) },
         { label: '输出 Token', value: fmtTokens(item.output_tokens) },
-        { label: '花费', value: fmtCost(item.cost_cny) },
+        { label: '花费', value: aggregateAmount(item) },
+        ...(item.cache_hit_tokens == null
+          ? []
+          : [{ label: '缓存命中', value: fmtExact(item.cache_hit_tokens) }]),
+        ...(pendingCalls(item) ? [{ label: '费用待核对', value: fmtExact(pendingCalls(item)) }] : []),
       ]),
     [points],
   );
@@ -227,9 +284,18 @@ export default function Usage() {
           <dl className="analytics-summary">
             <div>
               <dt>
-                总花费 <span>CNY</span>
+                {partialCost ? '已计价金额' : '总花费'} <span>CNY</span>
               </dt>
-              <dd>{fmtCost(totals.cost_cny)}</dd>
+              <dd>{summaryCost}</dd>
+              {partialCost && (
+                <small>
+                  {unpriced > 0 && <span>{unpriced} 次未计价</span>}
+                  {unpriced > 0 && partial > 0 && ' · '}
+                  {partial > 0 && <span>{partial} 次部分待核价</span>}
+                  {(unpriced > 0 || partial > 0) && unverified > 0 && ' · '}
+                  {unverified > 0 && <span>{unverified} 次历史零金额待核对</span>}
+                </small>
+              )}
             </div>
             <div>
               <dt>API 调用</dt>
@@ -264,9 +330,9 @@ export default function Usage() {
                 <span>按{bucket === 'day' ? '天' : '小时'}汇总</span>
               </div>
               <div className="analytics-chart-summary">
-                <strong>{fmtCost(totals.cost_cny)}</strong>
+                <strong>{summaryCost}</strong>
                 <span>
-                  峰值 <b>{fmtCost(costSeries.length ? Math.max(...costSeries) : 0)}</b>
+                  峰值 <b>{costPeak === null ? '—' : fmtCost(costPeak)}</b>
                 </span>
               </div>
               {points.length ? (
@@ -279,6 +345,7 @@ export default function Usage() {
                     labels={labels}
                     name="花费"
                     fmtTick={fmtCost}
+                    leftPadding={86}
                     extraRows={rowsOf}
                   />
                 </div>
@@ -292,7 +359,7 @@ export default function Usage() {
               <div className="analytics-chart-caption">
                 <span className="chart-legend">
                   <i />
-                  净花费 · 含冲抵
+                  已计价净花费 · 含冲抵
                 </span>
                 <span title={period}>{period}</span>
               </div>
@@ -342,6 +409,7 @@ export default function Usage() {
                     labels={labels}
                     name={tokenName}
                     fmtTick={fmtTokens}
+                    leftPadding={66}
                     extraRows={rowsOf}
                   />
                 </div>
@@ -395,7 +463,10 @@ export default function Usage() {
                       <td>{fmtTokens(item.calls)}</td>
                       <td>{fmtTokens(item.input_tokens)}</td>
                       <td>{fmtTokens(item.output_tokens)}</td>
-                      <td>{fmtCost(item.cost_cny)}</td>
+                      <td>
+                        {aggregateAmount(item)}
+                        {pendingCalls(item) > 0 && <span>{pendingCalls(item)} 次待核价</span>}
+                      </td>
                     </tr>
                   )}
                 />
@@ -410,12 +481,15 @@ export default function Usage() {
                   renderRow={(item, index) => (
                     <tr key={index}>
                       <td>
-                        <strong title={item.module_name}>{item.module_name || '—'}</strong>
+                        <strong title={item.module_name}>{moduleLabel(item.module_name)}</strong>
                       </td>
                       <td>{fmtTokens(item.calls)}</td>
                       <td>{fmtTokens(item.input_tokens)}</td>
                       <td>{fmtTokens(item.output_tokens)}</td>
-                      <td>{fmtCost(item.cost_cny)}</td>
+                      <td>
+                        {aggregateAmount(item)}
+                        {pendingCalls(item) > 0 && <span>{pendingCalls(item)} 次待核价</span>}
+                      </td>
                     </tr>
                   )}
                 />
@@ -437,14 +511,14 @@ export default function Usage() {
                     key={`records-${range}`}
                     items={records}
                     label="最近调用明细"
-                    columns={['时间 / 模块', '模型', '计费来源', '金额', '分项']}
+                    columns={['时间 / 模块', '模型', '输入 / 命中', '输出', '金额 / 来源', '分项']}
                     className="analytics-records-table"
                     empty={recordsLoading ? '正在读取最近调用…' : '当前时间范围内没有调用记录'}
                     renderRow={(item, index) => (
                       <tr key={index}>
                         <td>
                           <strong>{hoverLabel(item.at)}</strong>
-                          <span title={item.module}>{item.module || '—'}</span>
+                          <span title={item.module}>{moduleLabel(item.module)}</span>
                         </td>
                         <td>
                           <span className="analytics-cell-text" title={item.model_name}>
@@ -452,15 +526,15 @@ export default function Usage() {
                           </span>
                         </td>
                         <td>
-                          <span
-                            className={`${sourceTagClass(item.cost_source)} analytics-source`}
-                            title={sourceLabel(item.cost_source)}
-                          >
-                            {sourceLabel(item.cost_source)}
-                          </span>
+                          <strong>{fmtExact(item.input_tokens)}</strong>
+                          <span title="缓存命中输入 Token">{fmtExact(item.cache_hit_tokens)}</span>
                         </td>
+                        <td>{fmtExact(item.output_tokens)}</td>
                         <td className={item.negative || Number(item.cost_cny) < 0 ? 'analytics-credit' : ''}>
-                          {fmtCost(item.cost_cny)}
+                          <strong>{recordAmount(item)}</strong>
+                          <span className="analytics-cell-text" title={sourceLabel(item.cost_source)}>
+                            {item.unverified_zero ? '历史零金额待核对' : sourceLabel(item.cost_source)}
+                          </span>
                           {(item.negative || Number(item.cost_cny) < 0) && <span>冲抵</span>}
                         </td>
                         <td>
@@ -487,10 +561,10 @@ export default function Usage() {
           <>
             <div className="usage-detail-total">
               <strong className={Number(detailItem.cost_cny) < 0 ? 'analytics-credit' : ''}>
-                {fmtCost(detailItem.cost_cny)}
+                {recordAmount(detailItem)}
               </strong>
               <span className={sourceTagClass(detailItem.cost_source)}>
-                {sourceLabel(detailItem.cost_source)}
+                {detailItem.unverified_zero ? '历史零金额待核对' : sourceLabel(detailItem.cost_source)}
               </span>
               {(detailItem.negative || Number(detailItem.cost_cny) < 0) && (
                 <span className="analytics-credit">冲抵</span>
@@ -503,7 +577,7 @@ export default function Usage() {
               </div>
               <div>
                 <dt>调用模块</dt>
-                <dd>{detailItem.module || '—'}</dd>
+                <dd>{moduleLabel(detailItem.module)}</dd>
               </div>
               <div>
                 <dt>模型</dt>
@@ -515,11 +589,24 @@ export default function Usage() {
               </div>
               <div>
                 <dt>输入 Token</dt>
-                <dd>{fmtTokens(detailItem.input_tokens)}</dd>
+                <dd>{fmtExact(detailItem.input_tokens)}</dd>
               </div>
               <div>
                 <dt>输出 Token</dt>
-                <dd>{fmtTokens(detailItem.output_tokens)}</dd>
+                <dd>{fmtExact(detailItem.output_tokens)}</dd>
+              </div>
+              <div>
+                <dt>缓存命中输入</dt>
+                <dd>{fmtExact(detailItem.cache_hit_tokens)}</dd>
+              </div>
+              <div>
+                <dt>缓存未命中输入</dt>
+                <dd>
+                  {detailItem.cache_miss_tokens === 0 &&
+                  (detailItem.input_tokens || 0) > (detailItem.cache_hit_tokens || 0)
+                    ? '未记录'
+                    : fmtExact(detailItem.cache_miss_tokens)}
+                </dd>
               </div>
             </dl>
             <div className="usage-detail-breakdown">
@@ -539,13 +626,17 @@ export default function Usage() {
                     <dl>
                       {Object.entries(detailItem.cost_detail?.components || {}).map(([name, value]) => (
                         <div key={name}>
-                          <dt>{name}</dt>
-                          <dd>{fmtCost(value)}</dd>
+                          <dt>{COMPONENT_NAMES[name] || name}</dt>
+                          <dd>
+                            {detailItem.cost_detail?.unpriced_components?.includes(name)
+                              ? '待核价'
+                              : fmtCost(value)}
+                          </dd>
                         </div>
                       ))}
                     </dl>
                   ) : (
-                    <p className="muted">无分项（固定计费或脚本未返回 components）</p>
+                    <p className="muted">这条记录没有保存计费分项。</p>
                   )}
                   {detailItem.cost_detail?.note && <p>说明：{detailItem.cost_detail.note}</p>}
                   {detailItem.cost_detail?.error && (
@@ -559,8 +650,9 @@ export default function Usage() {
       </Modal>
       <Modal open={billingHelp} title="计费说明" onClose={() => setBillingHelp(false)}>
         <p>
-          金额单位为
-          CNY，按模型绑定的计价脚本或价格表计算。负金额表示退款或冲抵，花费趋势展示包含冲抵后的净花费。
+          金额单位为 CNY。未计价时，请在模型配置中检查每百万 Token
+          单价。历史零金额保留原值，负金额表示退款或冲抵。 输入 Token
+          包含缓存命中，档案总结等后台模型调用单独记账。
         </p>
         <p>
           最近调用保留当前时间范围内最近 20

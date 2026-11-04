@@ -58,7 +58,9 @@ class UsageReportService:
         total_calls = len(records)
         total_input = sum(r.input_tokens for r in records)
         total_output = sum(r.output_tokens for r in records)
-        total_cost = sum(r.cost_cny for r in records)
+        unpriced_calls = sum(r.cost_source == "unpriced" for r in records)
+        partial_calls = sum(r.cost_source == "partial" for r in records)
+        total_cost = sum(r.cost_cny for r in records if r.cost_source != "unpriced")
 
         by_module: dict[str, dict] = defaultdict(
             lambda: {"calls": 0, "input": 0, "output": 0, "cost": 0.0}
@@ -102,7 +104,11 @@ class UsageReportService:
         lines.append(f"- 总调用次数: {total_calls}")
         lines.append(f"- 总输入 Token: {total_input:,}")
         lines.append(f"- 总输出 Token: {total_output:,}")
-        lines.append(f"- 总费用: ¥{total_cost:.6f}")
+        if unpriced_calls or partial_calls:
+            known_cost = f"¥{total_cost:.6f}" if unpriced_calls < total_calls else "—"
+            lines.append(f"- 已计价金额: {known_cost}（{unpriced_calls} 次未计价，{partial_calls} 次部分待核价）")
+        else:
+            lines.append(f"- 总费用: ¥{total_cost:.6f}")
         lines.append("")
 
         lines.append("## 按模块统计")
@@ -134,7 +140,11 @@ class UsageReportService:
         source_groups: dict[str, dict] = defaultdict(lambda: {"calls": 0, "cost": 0.0, "models": set()})
         for r in records:
             raw_source = str(getattr(r, "cost_source", "") or "builtin")
-            if raw_source.startswith("script:"):
+            if raw_source == "unpriced":
+                label = "未配置价格"
+            elif raw_source == "partial":
+                label = "部分待核价"
+            elif raw_source.startswith("script:"):
                 label = f"脚本: {raw_source[len('script:'):] or '未命名'}"
             elif raw_source.startswith("fallback:"):
                 label = f"兜底: {raw_source[len('fallback:'):] or 'unknown'}"
@@ -164,9 +174,8 @@ class UsageReportService:
         for label in sorted(source_groups):
             g = source_groups[label]
             models_text = ", ".join(sorted(str(item) for item in g["models"])) or "-"
-            lines.append(
-                f"| {label} | {g['calls']} | {models_text} | ¥{g['cost']:.6f} |"
-            )
+            amount = "—" if label == "未配置价格" else f"¥{g['cost']:.6f}"
+            lines.append(f"| {label} | {g['calls']} | {models_text} | {amount} |")
         lines.append("")
         lines.append(f"计费来源合计: {sum(g['calls'] for g in source_groups.values())} 笔")
         lines.append("")

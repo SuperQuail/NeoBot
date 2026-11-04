@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -16,24 +17,27 @@ from neobot_app.statistics.billing import (
     build_billing_context,
     builtin_cost,
 )
+from neobot_app.statistics.billing_parts.core import uncached_input_tokens
 
 CURRENT_USAGE_MODULE: ContextVar[str] = ContextVar("current_usage_module", default="")
 CURRENT_CONVERSATION_KIND: ContextVar[str] = ContextVar("current_conversation_kind", default="")
 CURRENT_CONVERSATION_ID: ContextVar[str] = ContextVar("current_conversation_id", default="")
 
-_VALID_MODULES = frozenset({
-    "reply_agent",
-    "reply_common",
-    "bilibili",
-    "agent:memory",
-    "agent:chat_interaction",
-    "agent:image_parse",
-    "agent:willingness",
-    "agent:scheduled_task",
-    "agent:problem_solver",
-    "agent:self_heal",
-    "memory_compaction",
-})
+_VALID_MODULES = frozenset(
+    {
+        "reply_agent",
+        "reply_common",
+        "bilibili",
+        "agent:memory",
+        "agent:chat_interaction",
+        "agent:image_parse",
+        "agent:willingness",
+        "agent:scheduled_task",
+        "agent:problem_solver",
+        "agent:self_heal",
+        "memory_compaction",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +146,11 @@ class UsageTracker:
         import datetime as _dt
 
         occurred_at = _dt.datetime.now(_dt.timezone.utc)
+        rates = {
+            "cache_hit": entry.pricing.cache_hit_price_per_mtokens,
+            "cache_miss": entry.pricing.input_price_per_mtokens,
+            "output": entry.pricing.output_price_per_mtokens,
+        }
         fallback = builtin_cost(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -152,6 +161,7 @@ class UsageTracker:
         cost = fallback
         source = SOURCE_BUILTIN
         detail: str | None = None
+        uses_price_table = True
 
         # 唯一入队/求值入口（spec(4) §4.1-D4）：只在这里插一层「计费策略」。
         # ``enabled=false`` 时连 ctx 都不组装，保证零额外开销（A9）。
@@ -183,6 +193,27 @@ class UsageTracker:
             cost = outcome.cost_cny
             source = outcome.source
             detail = outcome.detail_json
+            uses_price_table = not outcome.is_script or outcome.uses_price_table
+
+        cache_miss_tokens = uncached_input_tokens(input_tokens, cache_hit_tokens, cache_miss_tokens)
+        counts = {"cache_hit": cache_hit_tokens, "cache_miss": cache_miss_tokens, "output": output_tokens}
+        if source == SOURCE_BUILTIN:
+            components = {name: count * rates[name] / 1_000_000 for name, count in counts.items()}
+            detail = json.dumps({"components": components})
+        if uses_price_table:
+            used_rates = {name: rates[name] for name, count in counts.items() if count > 0}
+            has_rate = any(rate > 0 for rate in (used_rates or rates).values())
+            missing = [name for name, rate in used_rates.items() if rate == 0]
+            if (cost == 0 and not has_rate) or missing:
+                explanation = json.loads(detail) if detail else {}
+                explanation.update(original_source=source, unpriced_components=missing)
+                if cost == 0 and not has_rate:
+                    explanation.setdefault("note", f"模型 {entry.key} 未配置有效单价")
+                    source = "unpriced"
+                else:
+                    explanation.setdefault("note", f"模型 {entry.key} 的部分用量单价为零，请核对价格表")
+                    source = "partial"
+                detail = json.dumps(explanation, ensure_ascii=False)
 
         record_obj = ModelUsageRecord(
             module_name=module,

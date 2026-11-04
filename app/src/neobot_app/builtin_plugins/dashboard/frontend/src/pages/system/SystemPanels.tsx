@@ -1,3 +1,4 @@
+import { aggregateAmount, pendingCalls } from '../../utils/usageCost';
 import { useState } from 'react';
 import Icon from '../../components/Icon';
 import Modal from '../../components/Modal';
@@ -203,8 +204,9 @@ export function SystemUsagePanel({
       </div>
       <dl className="system-usage-summary">
         <div>
-          <dt>总花费</dt>
-          <dd>{usageAvailable && totals.cost_cny != null ? '¥' + totals.cost_cny.toFixed(4) : '—'}</dd>
+          <dt>{pendingCalls(totals) ? '已计价金额' : '总花费'}</dt>
+          <dd>{usageAvailable && totals.cost_cny != null ? aggregateAmount(totals) : '—'}</dd>
+          {pendingCalls(totals) > 0 && <small>{pendingCalls(totals)} 次待核价</small>}
         </div>
         <div>
           <dt>调用次数</dt>
@@ -248,7 +250,8 @@ export function SystemUsagePanel({
                   ['调用次数', fmtNum(item.calls)],
                   ['输入 Token', fmtNum(item.input_tokens)],
                   ['输出 Token', fmtNum(item.output_tokens)],
-                  ['花费', '¥' + Number(item.cost_cny || 0).toFixed(6)],
+                  [pendingCalls(item) ? '已计价金额' : '花费', aggregateAmount(item)],
+                  ['待核价', fmtNum(pendingCalls(item))],
                 ],
               })
             }
@@ -260,7 +263,7 @@ export function SystemUsagePanel({
               </span>
             </span>
             <span className="system-usage-row-amount">
-              <strong>¥{Number(item.cost_cny || 0).toFixed(6)}</strong>
+              <strong>{aggregateAmount(item)}</strong>
               <span>{fmtNum(item.calls)} 次调用</span>
             </span>
             <Icon name="chevron" size={14} />

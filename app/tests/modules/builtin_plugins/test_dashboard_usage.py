@@ -120,7 +120,12 @@ async def test_series_usage_aggregates_cost_and_tokens(usage_panel) -> None:
         response = await client.get(
             base + "/api/series/usage?hours=24&bucket=hour", headers={"X-Token": token}
         )
+        system_response = await client.get(
+            base + "/api/stats/usage?hours=24", headers={"X-Token": token}
+        )
 
+    assert system_response.status_code == 200, system_response.text
+    assert system_response.json()["totals"] == response.json()["totals"]
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["available"] is True
